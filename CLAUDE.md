@@ -37,7 +37,7 @@ We will develop the **Standard** deployment profile first, then expand to other 
 
 ```
 Phase 1: Standard profile end-to-end
-         └── Registry ✅ → Def-Store → Template Store → Document Store → UI
+         └── Registry ✅ → Def-Store ✅ → Template Store → Document Store → UI
 
 Phase 2: Abstract storage layer based on learnings
          └── Extract interfaces where variation is needed
@@ -104,9 +104,18 @@ Even though we're implementing only the Standard profile initially, the architec
   - API key authentication
   - Test suite (10 passing tests)
   - Seed script for dummy data
+- [x] Def-Store service (terminologies/ontologies)
+  - Terminology CRUD with Registry integration (TERM-XXXXXX IDs)
+  - Term CRUD with Registry integration (T-XXXXXX IDs)
+  - Validation API for checking values against terminologies
+  - Import/Export (JSON and CSV formats)
+  - Multi-language support (translations)
+  - Hierarchical terms (parent-child relationships)
+  - API key authentication
+  - Test suite (24 tests)
 
 ### Next Steps
-- [ ] Def-Store service (terminologies/ontologies)
+- [ ] Run Def-Store tests (requires Registry service)
 - [ ] Template Store service
 - [ ] Document Store service
 - [ ] Reporting sync to PostgreSQL
@@ -141,21 +150,65 @@ Even though we're implementing only the Standard profile initially, the architec
 
 ## Running the Project
 
-### Registry Service (Development)
+### Development Setup
+
+All services share a single MongoDB instance via `docker-compose.infra.yml`:
+
 ```bash
+# 1. Start shared infrastructure (MongoDB + Mongo Express)
+podman-compose -f docker-compose.infra.yml up -d
+
+# MongoDB: localhost:27017
+# Mongo Express UI: http://localhost:8081 (admin/admin)
+
+# 2. Start Registry service
 cd components/registry
 podman-compose -f docker-compose.dev.yml up -d
 
-# API: http://localhost:8001
-# Swagger: http://localhost:8001/docs
-# MongoDB UI: http://localhost:8081
+# Registry API: http://localhost:8001
+# Registry Swagger: http://localhost:8001/docs
+
+# 3. Initialize WIP namespaces (one-time setup)
+curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
+  -H "X-API-Key: dev_master_key_for_testing"
+
+# 4. Start Def-Store service
+cd ../def-store
+podman-compose -f docker-compose.dev.yml up -d
+
+# Def-Store API: http://localhost:8002
+# Def-Store Swagger: http://localhost:8002/docs
+```
+
+### Production Setup
+
+```bash
+# Set required environment variables
+export MONGO_PASSWORD=$(openssl rand -hex 16)
+export MASTER_API_KEY=$(openssl rand -hex 32)
+export API_KEY=$MASTER_API_KEY
+export REGISTRY_API_KEY=$MASTER_API_KEY
+
+# Start infrastructure
+podman-compose -f docker-compose.infra.prod.yml up -d
+
+# Start services
+cd components/registry && podman-compose up -d
+cd ../def-store && podman-compose up -d
 ```
 
 ### Running Tests
 ```bash
-podman exec -it wip_registry_app_dev bash -c \
+# Registry tests (requires infra + registry running)
+podman exec -it wip-registry-dev bash -c \
   "pip install pytest pytest-asyncio httpx && \
-   /home/appuser/.local/bin/pytest /app/tests -v"
+   pytest /app/tests -v"
+
+# Def-Store tests (requires infra + def-store running)
+# Note: Tests mock the Registry client, so Registry doesn't need to be running
+podman exec -it wip-def-store-dev bash -c \
+  "pip install pytest pytest-asyncio httpx && \
+   pytest /app/tests -v"
 ```
 
 ### Seed Dummy Data
@@ -182,11 +235,33 @@ WorldInPie/
 │   ├── project-structure.md
 │   └── technology-stack.md
 └── components/
-    └── registry/          # First component (complete)
-        ├── src/registry/
+    ├── registry/          # ID & Namespace Registry (complete)
+    │   ├── src/registry/
+    │   ├── tests/
+    │   ├── scripts/
+    │   ├── config/
+    │   ├── docker-compose.yml
+    │   └── docker-compose.dev.yml
+    └── def-store/         # Terminology & Ontology Store (complete)
+        ├── src/def_store/
+        │   ├── api/       # terminologies, terms, import_export, auth
+        │   ├── models/    # terminology, term, api_models
+        │   └── services/  # registry_client, terminology_service, import_export
         ├── tests/
-        ├── scripts/
-        ├── config/
         ├── docker-compose.yml
-        └── docker-compose.dev.yml
+        ├── docker-compose.dev.yml
+        ├── Dockerfile
+        └── requirements.txt
 ```
+
+## WIP Namespaces
+
+The Registry service manages these WIP-internal namespaces:
+
+| Namespace | ID Generator | Purpose | Service |
+|-----------|--------------|---------|---------|
+| `default` | UUID4 | General use | - |
+| `wip-terminologies` | Prefixed (TERM-) | Terminology IDs | Def-Store |
+| `wip-terms` | Prefixed (T-) | Term IDs | Def-Store |
+| `wip-templates` | Prefixed (TPL-) | Template IDs | Template Store |
+| `wip-documents` | UUID7 | Document IDs | Document Store |

@@ -1,29 +1,28 @@
-# WIP Registry Service - Production
+# WIP Def-Store Service - Production
 # Requires: docker-compose -f ../../docker-compose.infra.prod.yml up -d
+#           Registry service running and WIP namespaces initialized
 version: "3.8"
 
 services:
-  registry:
+  def-store:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: wip-registry
+    container_name: wip-def-store
     ports:
-      - "8001:8001"
+      - "8002:8002"
     environment:
-      - PYTHONPATH=/app/src
       - MONGO_URI=mongodb://mongoadmin:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@wip-mongodb:27017/
-      - DATABASE_NAME=wip_registry
-      - MASTER_API_KEY=${MASTER_API_KEY:?MASTER_API_KEY is required}
-      - AUTH_ENABLED=true
+      - DATABASE_NAME=wip_def_store
+      - API_KEY=${API_KEY:?API_KEY is required}
+      - REGISTRY_URL=http://wip-registry:8001
+      - REGISTRY_API_KEY=${REGISTRY_API_KEY:?REGISTRY_API_KEY is required}
       - CORS_ORIGINS=${CORS_ORIGINS:-}
-    volumes:
-      - ./config:/app/config:ro
     networks:
       - wip-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       retries: 3

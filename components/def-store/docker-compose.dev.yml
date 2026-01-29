@@ -1,0 +1,31 @@
+# WIP Def-Store Service - Development
+# Requires: docker-compose -f ../../docker-compose.infra.yml up -d
+#           Registry service running and WIP namespaces initialized
+version: "3.8"
+
+services:
+  def-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-def-store-dev
+    ports:
+      - "8002:8002"
+    environment:
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_def_store_dev
+      - API_KEY=dev_master_key_for_testing
+      - REGISTRY_URL=http://wip-registry-dev:8001
+      - REGISTRY_API_KEY=dev_master_key_for_testing
+      - CORS_ORIGINS=*
+      - PYTHONPATH=/app/src
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    command: uvicorn def_store.main:app --host 0.0.0.0 --port 8002 --reload
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    external: true

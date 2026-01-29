@@ -1,0 +1,32 @@
+# WIP Shared Infrastructure - Production
+# Start this first, then start individual services
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: wip-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=mongoadmin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    volumes:
+      - wip-mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    name: wip-network
+    driver: bridge
+
+volumes:
+  wip-mongodb-data:
