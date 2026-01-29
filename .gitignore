@@ -16,6 +16,7 @@ build/
 # IDE
 .idea/
 .vscode/
+.github/copilot-instructions.md
 *.swp
 *.swo
 
