@@ -37,7 +37,7 @@ We will develop the **Standard** deployment profile first, then expand to other 
 
 ```
 Phase 1: Standard profile end-to-end
-         └── Registry ✅ → Def-Store ✅ → Template Store → Document Store → UI
+         └── Registry ✅ → Def-Store ✅ → Ontology Editor UI ✅ → Template Store → Document Store
 
 Phase 2: Abstract storage layer based on learnings
          └── Extract interfaces where variation is needed
@@ -113,13 +113,19 @@ Even though we're implementing only the Standard profile initially, the architec
   - Hierarchical terms (parent-child relationships)
   - API key authentication
   - Test suite (24 tests)
+- [x] Ontology Editor UI (Vue 3 + PrimeVue)
+  - Terminology management (list, create, edit, delete)
+  - Term management with bulk import (JSON/CSV)
+  - Export terminologies to JSON/CSV
+  - Value validation (single and bulk)
+  - API key authentication with localStorage persistence
+  - Docker support for dev and production
 
 ### Next Steps
 - [ ] Run Def-Store tests (requires Registry service)
 - [ ] Template Store service
 - [ ] Document Store service
 - [ ] Reporting sync to PostgreSQL
-- [ ] Web UI (Vue 3 + PrimeVue)
 - [ ] Authentication integration (Authentik)
 
 ---
@@ -178,6 +184,19 @@ podman-compose -f docker-compose.dev.yml up -d
 
 # Def-Store API: http://localhost:8002
 # Def-Store Swagger: http://localhost:8002/docs
+
+# 5. Start Ontology Editor UI (optional - local dev)
+cd ../../ui/ontology-editor
+npm install
+npm run dev
+
+# Ontology Editor: http://localhost:3000
+# Enter API key: dev_master_key_for_testing
+
+# 5b. Or run UI in container (uses shared network)
+podman-compose -f docker-compose.dev.yml up -d
+
+# Container connects to def-store via wip-network
 ```
 
 ### Production Setup
@@ -234,24 +253,38 @@ WorldInPie/
 │   ├── glossary.md
 │   ├── project-structure.md
 │   └── technology-stack.md
-└── components/
-    ├── registry/          # ID & Namespace Registry (complete)
-    │   ├── src/registry/
-    │   ├── tests/
-    │   ├── scripts/
-    │   ├── config/
-    │   ├── docker-compose.yml
-    │   └── docker-compose.dev.yml
-    └── def-store/         # Terminology & Ontology Store (complete)
-        ├── src/def_store/
-        │   ├── api/       # terminologies, terms, import_export, auth
-        │   ├── models/    # terminology, term, api_models
-        │   └── services/  # registry_client, terminology_service, import_export
-        ├── tests/
+├── components/
+│   ├── registry/          # ID & Namespace Registry (complete)
+│   │   ├── src/registry/
+│   │   ├── tests/
+│   │   ├── scripts/
+│   │   ├── config/
+│   │   ├── docker-compose.yml
+│   │   └── docker-compose.dev.yml
+│   └── def-store/         # Terminology & Ontology Store (complete)
+│       ├── src/def_store/
+│       │   ├── api/       # terminologies, terms, import_export, validation, auth
+│       │   ├── models/    # terminology, term, api_models
+│       │   └── services/  # registry_client, terminology_service, import_export
+│       ├── tests/
+│       ├── docker-compose.yml
+│       ├── docker-compose.dev.yml
+│       ├── Dockerfile
+│       └── requirements.txt
+└── ui/
+    └── ontology-editor/   # Def-Store Web UI (Vue 3 + PrimeVue)
+        ├── src/
+        │   ├── api/       # API client (axios)
+        │   ├── components/# Vue components
+        │   ├── router/    # Vue Router config
+        │   ├── stores/    # Pinia stores
+        │   ├── types/     # TypeScript interfaces
+        │   └── views/     # Page components
         ├── docker-compose.yml
         ├── docker-compose.dev.yml
         ├── Dockerfile
-        └── requirements.txt
+        ├── Dockerfile.dev
+        └── README.md
 ```
 
 ## WIP Namespaces
