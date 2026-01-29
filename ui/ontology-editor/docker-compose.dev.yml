@@ -1,0 +1,38 @@
+version: '3.8'
+
+# Development setup - assumes you're running the WIP infrastructure separately
+# and want to join the same network.
+#
+# Usage:
+#   1. First start the WIP infrastructure (from WorldInPie root):
+#      podman-compose -f docker-compose.infra.yml up -d
+#      cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
+#
+#   2. Then start this UI (creates/joins the shared network):
+#      podman-compose -f docker-compose.dev.yml up -d
+#
+# The UI will connect to def-store via the shared network using container name.
+
+services:
+  ontology-editor-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: wip-ontology-editor-dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      # Connect to def-store container by name on shared network
+      - VITE_API_TARGET=http://wip-def-store-dev:8002
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    # Creates the network if it doesn't exist, or joins if it does
+    name: wip-network
+    driver: bridge

@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  ontology-editor:
+    build: .
+    container_name: wip-ontology-editor
+    ports:
+      - "3000:80"
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      - def-store
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # Reference to external def-store service
+  def-store:
+    image: wip-def-store:latest
+    container_name: wip-def-store
+    ports:
+      - "8002:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/wip_def_store
+      - REGISTRY_URL=http://registry:8000
+      - API_KEY=${API_KEY:-dev_master_key_for_testing}
+      - REGISTRY_API_KEY=${REGISTRY_API_KEY:-dev_master_key_for_testing}
+    depends_on:
+      - mongodb
+      - registry
+    networks:
+      - wip-network
+
+  registry:
+    image: wip-registry:latest
+    container_name: wip-registry
+    ports:
+      - "8001:8000"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/wip_registry
+      - MASTER_API_KEY=${MASTER_API_KEY:-dev_master_key_for_testing}
+    depends_on:
+      - mongodb
+    networks:
+      - wip-network
+
+  mongodb:
+    image: mongo:7
+    container_name: wip-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
