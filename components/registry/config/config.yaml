@@ -1,0 +1,43 @@
+# WIP Registry Service Configuration
+# Production configuration
+
+# MongoDB connection
+database:
+  uri: ${MONGO_URI:-mongodb://localhost:27017/}
+  name: ${DATABASE_NAME:-wip_registry}
+
+# Authentication
+auth:
+  enabled: true
+  # Master API key (set via environment variable for security)
+  master_key: ${MASTER_API_KEY}
+
+# Server settings
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 1
+  reload: false
+
+# CORS settings
+cors:
+  origins:
+    - "*"
+  allow_credentials: true
+  allow_methods:
+    - "*"
+  allow_headers:
+    - "*"
+
+# Logging
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# ID Generation defaults (can be overridden per namespace)
+id_generation:
+  default_type: uuid4
+  prefixed:
+    default_length: 6
+  nanoid:
+    default_length: 21

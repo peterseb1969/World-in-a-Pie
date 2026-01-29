@@ -1,0 +1,43 @@
+# WIP Registry Service Configuration
+# Development configuration
+
+# MongoDB connection
+database:
+  uri: mongodb://mongoadmin:secret@mongodb:27017/
+  name: wip_registry_dev
+
+# Authentication
+auth:
+  enabled: true
+  # Development master key - DO NOT USE IN PRODUCTION
+  master_key: dev_master_key_change_me
+
+# Server settings
+server:
+  host: 0.0.0.0
+  port: 8000
+  workers: 1
+  reload: true  # Enable auto-reload for development
+
+# CORS settings (permissive for development)
+cors:
+  origins:
+    - "*"
+  allow_credentials: true
+  allow_methods:
+    - "*"
+  allow_headers:
+    - "*"
+
+# Logging
+logging:
+  level: DEBUG
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# ID Generation defaults
+id_generation:
+  default_type: uuid4
+  prefixed:
+    default_length: 6
+  nanoid:
+    default_length: 21

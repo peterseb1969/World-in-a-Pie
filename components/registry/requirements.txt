@@ -1,0 +1,27 @@
+# WIP Registry Service - Python Dependencies
+
+# Web framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# MongoDB
+motor>=3.3.0
+beanie>=1.25.0
+
+# Data validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP client (for proxy queries)
+httpx>=0.26.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Security
+python-jose[cryptography]>=3.3.0  # JWT handling if needed later
+
+# Development dependencies (comment out for production)
+# pytest>=7.4.0
+# pytest-asyncio>=0.23.0
+# httpx>=0.26.0  # Also used for testing

@@ -1,0 +1,62 @@
+# WIP Registry Service - Docker Compose
+# Production configuration
+
+version: '3.8'
+
+services:
+  registry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip_registry_app
+    ports:
+      - "8001:8000"
+    environment:
+      - PYTHONPATH=/app/src
+      - MONGO_URI=mongodb://mongoadmin:${MONGO_PASSWORD:-secret}@mongodb:27017/
+      - DATABASE_NAME=wip_registry
+      - MASTER_API_KEY=${MASTER_API_KEY:-}
+      - AUTH_ENABLED=true
+      - CORS_ORIGINS=*
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - wip_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  mongodb:
+    image: mongo:7
+    container_name: wip_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=mongoadmin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-secret}
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - wip_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  wip_net:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+    driver: local

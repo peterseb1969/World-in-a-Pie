@@ -1,0 +1,75 @@
+# WIP Registry Service - Docker Compose
+# Development configuration with hot reload
+
+version: '3.8'
+
+services:
+  registry:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip_registry_app_dev
+    ports:
+      - "8001:8000"
+    environment:
+      - PYTHONPATH=/app/src
+      - MONGO_URI=mongodb://mongoadmin:secret@mongodb:27017/
+      - DATABASE_NAME=wip_registry_dev
+      - MASTER_API_KEY=dev_master_key_for_testing
+      - AUTH_ENABLED=true
+      - CORS_ORIGINS=*
+    volumes:
+      # Mount source for hot reload
+      - ./src:/app/src:ro
+      - ./config:/app/config:ro
+      - ./tests:/app/tests:ro
+    command: ["uvicorn", "registry.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - wip_net
+
+  mongodb:
+    image: mongo:7
+    container_name: wip_mongodb_dev
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=mongoadmin
+      - MONGO_INITDB_ROOT_PASSWORD=secret
+    volumes:
+      - mongodb_data_dev:/data/db
+    networks:
+      - wip_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Optional: MongoDB admin UI
+  mongo-express:
+    image: mongo-express:latest
+    container_name: wip_mongo_express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=mongoadmin
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=secret
+      - ME_CONFIG_MONGODB_URL=mongodb://mongoadmin:secret@mongodb:27017/
+      - ME_CONFIG_BASICAUTH=false
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - wip_net
+
+networks:
+  wip_net:
+    driver: bridge
+
+volumes:
+  mongodb_data_dev:
+    driver: local
