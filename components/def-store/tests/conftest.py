@@ -104,6 +104,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         document_models=[Terminology, Term]
     )
 
+    # Clean up any leftover data from previous interrupted test runs
+    await Term.delete_all()
+    await Terminology.delete_all()
+
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
 
