@@ -1,0 +1,27 @@
+version: '3.8'
+
+# Production setup
+# Requires WIP services to be running on the same network
+
+services:
+  wip-console:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-console
+    ports:
+      - "80:80"
+    environment:
+      # These are passed to nginx for proxying
+      - DEF_STORE_HOST=wip-def-store:8002
+      - TEMPLATE_STORE_HOST=wip-template-store:8003
+    networks:
+      - wip-network
+    depends_on:
+      - wip-def-store
+      - wip-template-store
+
+networks:
+  wip-network:
+    name: wip-network
+    driver: bridge

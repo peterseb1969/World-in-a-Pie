@@ -113,11 +113,17 @@ Even though we're implementing only the Standard profile initially, the architec
   - Hierarchical terms (parent-child relationships)
   - API key authentication
   - Test suite (24 tests)
-- [x] Ontology Editor UI (Vue 3 + PrimeVue)
+- [x] WIP Console (Unified Web UI - Vue 3 + PrimeVue)
+  - Consolidated UI replacing ontology-editor and template-editor
   - Terminology management (list, create, edit, delete)
   - Term management with bulk import (JSON/CSV)
   - Export terminologies to JSON/CSV
   - Value validation (single and bulk)
+  - Template management (list, create, edit, delete)
+  - Field definitions with terminology references
+  - Validation rules
+  - Cross-linking: shows which templates use each terminology
+  - Sidebar-based navigation
   - API key authentication with localStorage persistence
   - Docker support for dev and production
 - [x] Template Store service (document schemas)
@@ -203,18 +209,19 @@ podman-compose -f docker-compose.dev.yml up -d
 # Template Store API: http://localhost:8003
 # Template Store Swagger: http://localhost:8003/docs
 
-# 7. Start Ontology Editor UI (optional - local dev)
-cd ../../ui/ontology-editor
+# 6. Start WIP Console UI (optional - local dev)
+cd ../../ui/wip-console
 npm install
 npm run dev
 
-# Ontology Editor: http://localhost:3000
+# WIP Console: http://localhost:3000
 # Enter API key: dev_master_key_for_testing
+# Manages both terminologies (Def-Store) and templates (Template-Store)
 
-# 7b. Or run UI in container (uses shared network)
+# 6b. Or run UI in container (uses shared network)
 podman-compose -f docker-compose.dev.yml up -d
 
-# Container connects to def-store via wip-network
+# Container connects to both def-store and template-store via wip-network
 ```
 
 ### Production Setup
@@ -307,19 +314,24 @@ WorldInPie/
 │       ├── Dockerfile
 │       └── requirements.txt
 └── ui/
-    └── ontology-editor/   # Def-Store Web UI (Vue 3 + PrimeVue)
+    └── wip-console/       # Unified Web UI (Vue 3 + PrimeVue)
         ├── src/
-        │   ├── api/       # API client (axios)
-        │   ├── components/# Vue components
-        │   ├── router/    # Vue Router config
-        │   ├── stores/    # Pinia stores
+        │   ├── api/       # Unified API clients (defStoreClient, templateStoreClient)
+        │   ├── components/
+        │   │   ├── layout/        # AppLayout with sidebar navigation
+        │   │   ├── terminologies/ # Terminology components
+        │   │   └── templates/     # Template components
+        │   ├── router/    # Vue Router config (terminologies + templates routes)
+        │   ├── stores/    # Pinia stores (auth, ui, terminology, term, template)
         │   ├── types/     # TypeScript interfaces
-        │   └── views/     # Page components
+        │   └── views/
+        │       ├── terminologies/ # Terminology views
+        │       └── templates/     # Template views
         ├── docker-compose.yml
         ├── docker-compose.dev.yml
         ├── Dockerfile
         ├── Dockerfile.dev
-        └── README.md
+        └── nginx.conf
 ```
 
 ## WIP Namespaces
