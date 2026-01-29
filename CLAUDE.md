@@ -37,7 +37,7 @@ We will develop the **Standard** deployment profile first, then expand to other 
 
 ```
 Phase 1: Standard profile end-to-end
-         └── Registry ✅ → Def-Store ✅ → Ontology Editor UI ✅ → Template Store → Document Store
+         └── Registry ✅ → Def-Store ✅ → Ontology Editor UI ✅ → Template Store ✅ → Document Store
 
 Phase 2: Abstract storage layer based on learnings
          └── Extract interfaces where variation is needed
@@ -120,10 +120,21 @@ Even though we're implementing only the Standard profile initially, the architec
   - Value validation (single and bulk)
   - API key authentication with localStorage persistence
   - Docker support for dev and production
+- [x] Template Store service (document schemas)
+  - Template CRUD with Registry integration (TPL-XXXXXX IDs)
+  - Field definitions with types: string, number, integer, boolean, date, datetime, term, object, array
+  - Terminology references (term type fields link to Def-Store)
+  - Template references (nested objects, array items)
+  - Template inheritance (extends) with field override and rule merging
+  - Cross-field validation rules (conditional_required, conditional_value, mutual_exclusion, dependency)
+  - Field-level validation (pattern, min/max length, min/max value, enum)
+  - Template validation endpoint (checks terminology and template references)
+  - Bulk operations
+  - API key authentication
+  - Test suite (30+ tests)
 
 ### Next Steps
 - [ ] Run Def-Store tests (requires Registry service)
-- [ ] Template Store service
 - [ ] Document Store service
 - [ ] Reporting sync to PostgreSQL
 - [ ] Authentication integration (Authentik)
@@ -185,7 +196,14 @@ podman-compose -f docker-compose.dev.yml up -d
 # Def-Store API: http://localhost:8002
 # Def-Store Swagger: http://localhost:8002/docs
 
-# 5. Start Ontology Editor UI (optional - local dev)
+# 5. Start Template Store service
+cd ../template-store
+podman-compose -f docker-compose.dev.yml up -d
+
+# Template Store API: http://localhost:8003
+# Template Store Swagger: http://localhost:8003/docs
+
+# 7. Start Ontology Editor UI (optional - local dev)
 cd ../../ui/ontology-editor
 npm install
 npm run dev
@@ -193,7 +211,7 @@ npm run dev
 # Ontology Editor: http://localhost:3000
 # Enter API key: dev_master_key_for_testing
 
-# 5b. Or run UI in container (uses shared network)
+# 7b. Or run UI in container (uses shared network)
 podman-compose -f docker-compose.dev.yml up -d
 
 # Container connects to def-store via wip-network
@@ -214,6 +232,7 @@ podman-compose -f docker-compose.infra.prod.yml up -d
 # Start services
 cd components/registry && podman-compose up -d
 cd ../def-store && podman-compose up -d
+cd ../template-store && podman-compose up -d
 ```
 
 ### Running Tests
@@ -226,6 +245,12 @@ podman exec -it wip-registry-dev bash -c \
 # Def-Store tests (requires infra + def-store running)
 # Note: Tests mock the Registry client, so Registry doesn't need to be running
 podman exec -it wip-def-store-dev bash -c \
+  "pip install pytest pytest-asyncio httpx && \
+   pytest /app/tests -v"
+
+# Template Store tests (requires infra + template-store running)
+# Note: Tests mock Registry and Def-Store clients
+podman exec -it wip-template-store-dev bash -c \
   "pip install pytest pytest-asyncio httpx && \
    pytest /app/tests -v"
 ```
@@ -261,11 +286,21 @@ WorldInPie/
 │   │   ├── config/
 │   │   ├── docker-compose.yml
 │   │   └── docker-compose.dev.yml
-│   └── def-store/         # Terminology & Ontology Store (complete)
-│       ├── src/def_store/
-│       │   ├── api/       # terminologies, terms, import_export, validation, auth
-│       │   ├── models/    # terminology, term, api_models
-│       │   └── services/  # registry_client, terminology_service, import_export
+│   ├── def-store/         # Terminology & Ontology Store (complete)
+│   │   ├── src/def_store/
+│   │   │   ├── api/       # terminologies, terms, import_export, validation, auth
+│   │   │   ├── models/    # terminology, term, api_models
+│   │   │   └── services/  # registry_client, terminology_service, import_export
+│   │   ├── tests/
+│   │   ├── docker-compose.yml
+│   │   ├── docker-compose.dev.yml
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   └── template-store/    # Template Schema Store (complete)
+│       ├── src/template_store/
+│       │   ├── api/       # templates, auth
+│       │   ├── models/    # template, field, rule, api_models
+│       │   └── services/  # registry_client, def_store_client, template_service, inheritance_service
 │       ├── tests/
 │       ├── docker-compose.yml
 │       ├── docker-compose.dev.yml

@@ -1,0 +1,34 @@
+# WIP Template Store Service - Development
+# Requires: docker-compose -f ../../docker-compose.infra.yml up -d
+#           Registry service running and WIP namespaces initialized
+#           Def-Store service running (optional, for terminology validation)
+version: "3.8"
+
+services:
+  template-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-template-store-dev
+    ports:
+      - "8003:8003"
+    environment:
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_template_store_dev
+      - API_KEY=dev_master_key_for_testing
+      - REGISTRY_URL=http://wip-registry-dev:8001
+      - REGISTRY_API_KEY=dev_master_key_for_testing
+      - DEF_STORE_URL=http://wip-def-store-dev:8002
+      - DEF_STORE_API_KEY=dev_master_key_for_testing
+      - CORS_ORIGINS=*
+      - PYTHONPATH=/app/src
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    command: uvicorn template_store.main:app --host 0.0.0.0 --port 8003 --reload
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    external: true

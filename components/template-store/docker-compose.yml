@@ -1,0 +1,29 @@
+# WIP Template Store Service - Production
+# Requires: Infrastructure services running (MongoDB)
+version: "3.8"
+
+services:
+  template-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-template-store
+    ports:
+      - "8003:8003"
+    environment:
+      - MONGO_URI=${MONGO_URI:-mongodb://wip-mongodb:27017/}
+      - DATABASE_NAME=${DATABASE_NAME:-wip_template_store}
+      - API_KEY=${API_KEY}
+      - REGISTRY_URL=${REGISTRY_URL:-http://wip-registry:8001}
+      - REGISTRY_API_KEY=${REGISTRY_API_KEY}
+      - DEF_STORE_URL=${DEF_STORE_URL:-http://wip-def-store:8002}
+      - DEF_STORE_API_KEY=${DEF_STORE_API_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - PYTHONPATH=/app/src
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    external: true
