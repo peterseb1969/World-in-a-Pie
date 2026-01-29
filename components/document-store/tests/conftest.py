@@ -1,0 +1,359 @@
+"""Pytest configuration and fixtures for Document Store tests."""
+
+import asyncio
+import os
+import uuid
+from typing import AsyncGenerator
+from unittest.mock import AsyncMock, patch
+
+import pytest
+import pytest_asyncio
+from beanie import init_beanie
+from httpx import AsyncClient, ASGITransport
+from motor.motor_asyncio import AsyncIOMotorClient
+
+# Use existing env vars if set, otherwise defaults for local testing
+os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
+os.environ.setdefault("DATABASE_NAME", "wip_document_store_test")
+os.environ.setdefault("API_KEY", "test_api_key")
+os.environ.setdefault("REGISTRY_URL", "http://localhost:8001")
+os.environ.setdefault("REGISTRY_API_KEY", "test_registry_key")
+os.environ.setdefault("TEMPLATE_STORE_URL", "http://localhost:8003")
+os.environ.setdefault("TEMPLATE_STORE_API_KEY", "test_template_store_key")
+os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
+os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
+
+from document_store.main import app
+from document_store.models.document import Document
+from document_store.api.auth import set_api_key
+from document_store.services.registry_client import RegistryClient
+from document_store.services.template_store_client import TemplateStoreClient
+from document_store.services.def_store_client import DefStoreClient
+
+
+# Counter for generating mock IDs
+_document_counter = 0
+
+
+def _reset_counters():
+    """Reset ID counters for a new test."""
+    global _document_counter
+    _document_counter = 0
+
+
+# Sample templates for testing
+SAMPLE_TEMPLATES = {
+    "TPL-000001": {
+        "template_id": "TPL-000001",
+        "code": "PERSON",
+        "name": "Person Template",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["national_id"],
+        "fields": [
+            {
+                "name": "national_id",
+                "label": "National ID",
+                "type": "string",
+                "mandatory": True,
+                "validation": {"pattern": r"^\d{9}$"}
+            },
+            {
+                "name": "first_name",
+                "label": "First Name",
+                "type": "string",
+                "mandatory": True,
+                "validation": {"min_length": 1, "max_length": 100}
+            },
+            {
+                "name": "last_name",
+                "label": "Last Name",
+                "type": "string",
+                "mandatory": True
+            },
+            {
+                "name": "birth_date",
+                "label": "Birth Date",
+                "type": "date",
+                "mandatory": False
+            },
+            {
+                "name": "gender",
+                "label": "Gender",
+                "type": "term",
+                "terminology_ref": "GENDER",
+                "mandatory": False
+            },
+            {
+                "name": "age",
+                "label": "Age",
+                "type": "integer",
+                "mandatory": False,
+                "validation": {"minimum": 0, "maximum": 150}
+            },
+            {
+                "name": "email",
+                "label": "Email",
+                "type": "string",
+                "mandatory": False,
+                "validation": {"pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"}
+            }
+        ],
+        "rules": []
+    },
+    "TPL-000002": {
+        "template_id": "TPL-000002",
+        "code": "EMPLOYEE",
+        "name": "Employee Template",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["employee_id", "company_id"],
+        "fields": [
+            {
+                "name": "employee_id",
+                "label": "Employee ID",
+                "type": "string",
+                "mandatory": True
+            },
+            {
+                "name": "company_id",
+                "label": "Company ID",
+                "type": "string",
+                "mandatory": True
+            },
+            {
+                "name": "name",
+                "label": "Name",
+                "type": "string",
+                "mandatory": True
+            },
+            {
+                "name": "department",
+                "label": "Department",
+                "type": "string",
+                "mandatory": False
+            },
+            {
+                "name": "manager_id",
+                "label": "Manager ID",
+                "type": "string",
+                "mandatory": False
+            }
+        ],
+        "rules": [
+            {
+                "type": "conditional_required",
+                "conditions": [
+                    {"field": "department", "operator": "exists", "value": True}
+                ],
+                "target_field": "manager_id",
+                "required": True,
+                "error_message": "Manager ID is required when department is specified"
+            }
+        ]
+    },
+    "TPL-INACTIVE": {
+        "template_id": "TPL-INACTIVE",
+        "code": "INACTIVE",
+        "name": "Inactive Template",
+        "version": 1,
+        "status": "inactive",
+        "identity_fields": [],
+        "fields": [],
+        "rules": []
+    }
+}
+
+
+def create_mock_registry_client():
+    """Create a mock registry client for testing."""
+    mock_client = AsyncMock(spec=RegistryClient)
+
+    async def mock_generate_document_id(identity_hash, template_id, created_by=None):
+        # Generate a UUID7-like ID (just use uuid4 for testing)
+        return str(uuid.uuid4())
+
+    async def mock_generate_document_ids_bulk(items, created_by=None):
+        results = []
+        for item in items:
+            results.append({
+                "status": "registered",
+                "registry_id": str(uuid.uuid4())
+            })
+        return results
+
+    async def mock_health_check():
+        return True
+
+    mock_client.generate_document_id = mock_generate_document_id
+    mock_client.generate_document_ids_bulk = mock_generate_document_ids_bulk
+    mock_client.health_check = mock_health_check
+
+    return mock_client
+
+
+def create_mock_template_store_client():
+    """Create a mock Template Store client for testing."""
+    mock_client = AsyncMock(spec=TemplateStoreClient)
+
+    async def mock_get_template(template_id=None, template_code=None, resolve_inheritance=True):
+        if template_id and template_id in SAMPLE_TEMPLATES:
+            return SAMPLE_TEMPLATES[template_id]
+        return None
+
+    async def mock_get_template_resolved(template_id):
+        return await mock_get_template(template_id=template_id)
+
+    async def mock_template_exists(template_ref):
+        return template_ref in SAMPLE_TEMPLATES and SAMPLE_TEMPLATES[template_ref]["status"] == "active"
+
+    async def mock_health_check():
+        return True
+
+    mock_client.get_template = mock_get_template
+    mock_client.get_template_resolved = mock_get_template_resolved
+    mock_client.template_exists = mock_template_exists
+    mock_client.health_check = mock_health_check
+
+    return mock_client
+
+
+def create_mock_def_store_client():
+    """Create a mock Def-Store client for testing."""
+    mock_client = AsyncMock(spec=DefStoreClient)
+
+    # Valid term values for testing
+    VALID_TERMS = {
+        "GENDER": ["M", "F", "O"],
+        "COUNTRY": ["USA", "UK", "CA"],
+    }
+
+    async def mock_terminology_exists(terminology_ref):
+        if terminology_ref.startswith("TERM-"):
+            return True
+        return terminology_ref in VALID_TERMS
+
+    async def mock_get_terminology(terminology_id=None, terminology_code=None):
+        if terminology_id and terminology_id.startswith("TERM-"):
+            return {"terminology_id": terminology_id, "status": "active"}
+        if terminology_code in VALID_TERMS:
+            return {"terminology_id": f"TERM-{terminology_code}", "status": "active"}
+        return None
+
+    async def mock_validate_value(terminology_ref, value):
+        code = terminology_ref.replace("TERM-", "") if terminology_ref.startswith("TERM-") else terminology_ref
+        if code in VALID_TERMS and value in VALID_TERMS[code]:
+            return {"valid": True, "matched_term": {"term_id": "T-001", "value": value}}
+        return {"valid": False, "suggestion": None}
+
+    async def mock_validate_values_bulk(items):
+        results = []
+        for item in items:
+            terminology_ref = item["terminology_ref"]
+            value = item["value"]
+            code = terminology_ref.replace("TERM-", "") if terminology_ref.startswith("TERM-") else terminology_ref
+            if code in VALID_TERMS and value in VALID_TERMS[code]:
+                results.append({"valid": True, "matched_term": {"term_id": "T-001", "value": value}})
+            else:
+                results.append({"valid": False, "suggestion": None})
+        return results
+
+    async def mock_health_check():
+        return True
+
+    mock_client.terminology_exists = mock_terminology_exists
+    mock_client.get_terminology = mock_get_terminology
+    mock_client.validate_value = mock_validate_value
+    mock_client.validate_values_bulk = mock_validate_values_bulk
+    mock_client.health_check = mock_health_check
+
+    return mock_client
+
+
+@pytest.fixture(scope="session")
+def event_loop():
+    """Create an event loop for the test session."""
+    loop = asyncio.get_event_loop_policy().new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    """Create an async HTTP client for testing the API."""
+    _reset_counters()
+
+    # Connect to MongoDB and initialize Beanie
+    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    await init_beanie(
+        database=mongo_client[os.environ["DATABASE_NAME"]],
+        document_models=[Document]
+    )
+
+    # Clean up any leftover data from previous interrupted test runs
+    await Document.delete_all()
+
+    # Store client in app state (needed by health check)
+    app.state.mongodb_client = mongo_client
+
+    # Set API key
+    set_api_key(os.environ["API_KEY"])
+
+    # Create mock clients
+    mock_registry = create_mock_registry_client()
+    mock_template_store = create_mock_template_store_client()
+    mock_def_store = create_mock_def_store_client()
+
+    # Patch where the clients are actually used
+    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry):
+        with patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store):
+            with patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store):
+                with patch('document_store.main.get_registry_client', return_value=mock_registry):
+                    with patch('document_store.main.get_template_store_client', return_value=mock_template_store):
+                        with patch('document_store.main.get_def_store_client', return_value=mock_def_store):
+                            # Create test HTTP client
+                            transport = ASGITransport(app=app)
+                            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                                yield ac
+
+    # Cleanup
+    await Document.delete_all()
+    await mongo_client.drop_database(os.environ["DATABASE_NAME"])
+    mongo_client.close()
+
+
+@pytest.fixture
+def api_key() -> str:
+    """Return the test API key."""
+    return os.environ["API_KEY"]
+
+
+@pytest.fixture
+def auth_headers(api_key: str) -> dict:
+    """Return headers with API key for authenticated requests."""
+    return {"X-API-Key": api_key}
+
+
+@pytest.fixture
+def sample_person_data() -> dict:
+    """Sample valid person document data."""
+    return {
+        "national_id": "123456789",
+        "first_name": "John",
+        "last_name": "Doe",
+        "birth_date": "1990-01-15",
+        "gender": "M",
+        "age": 34
+    }
+
+
+@pytest.fixture
+def sample_employee_data() -> dict:
+    """Sample valid employee document data."""
+    return {
+        "employee_id": "EMP001",
+        "company_id": "COMP001",
+        "name": "Jane Smith",
+        "department": "Engineering",
+        "manager_id": "MGR001"
+    }

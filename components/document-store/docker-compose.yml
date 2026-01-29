@@ -1,0 +1,32 @@
+# WIP Document Store Service - Production
+# Requires: infrastructure stack and other services running
+version: "3.8"
+
+services:
+  document-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-document-store
+    restart: unless-stopped
+    ports:
+      - "8004:8004"
+    environment:
+      - MONGO_URI=${MONGO_URI:-mongodb://wip-mongodb:27017/}
+      - DATABASE_NAME=${DATABASE_NAME:-wip_document_store}
+      - API_KEY=${API_KEY:?API_KEY is required}
+      - REGISTRY_URL=${REGISTRY_URL:-http://wip-registry:8001}
+      - REGISTRY_API_KEY=${REGISTRY_API_KEY:?REGISTRY_API_KEY is required}
+      - TEMPLATE_STORE_URL=${TEMPLATE_STORE_URL:-http://wip-template-store:8003}
+      - TEMPLATE_STORE_API_KEY=${TEMPLATE_STORE_API_KEY:?TEMPLATE_STORE_API_KEY is required}
+      - DEF_STORE_URL=${DEF_STORE_URL:-http://wip-def-store:8002}
+      - DEF_STORE_API_KEY=${DEF_STORE_API_KEY:?DEF_STORE_API_KEY is required}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+    networks:
+      - wip-network
+    depends_on:
+      - wip-mongodb
+
+networks:
+  wip-network:
+    external: true

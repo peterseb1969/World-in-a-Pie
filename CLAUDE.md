@@ -37,7 +37,7 @@ We will develop the **Standard** deployment profile first, then expand to other 
 
 ```
 Phase 1: Standard profile end-to-end
-         └── Registry ✅ → Def-Store ✅ → Ontology Editor UI ✅ → Template Store ✅ → Document Store
+         └── Registry ✅ → Def-Store ✅ → Ontology Editor UI ✅ → Template Store ✅ → Document Store ✅
 
 Phase 2: Abstract storage layer based on learnings
          └── Extract interfaces where variation is needed
@@ -138,12 +138,25 @@ Even though we're implementing only the Standard profile initially, the architec
   - Bulk operations
   - API key authentication
   - Test suite (30+ tests)
+- [x] Document Store service (document storage and validation)
+  - Document CRUD with Registry integration (UUID7 IDs for time-ordering)
+  - Template validation (fetches template from Template Store)
+  - Six-stage validation pipeline (structural, template resolution, field validation, term validation, rule evaluation, identity computation)
+  - Term validation via Def-Store bulk API
+  - Identity-based upsert logic (SHA-256 hash of identity fields)
+  - Automatic document versioning (deactivate old version, create new)
+  - Version history (get all versions, get specific version)
+  - Soft-delete and archive operations
+  - Complex query with filters
+  - Bulk operations
+  - API key authentication
+  - Test suite (30+ tests)
 
 ### Next Steps
 - [ ] Run Def-Store tests (requires Registry service)
-- [ ] Document Store service
 - [ ] Reporting sync to PostgreSQL
 - [ ] Authentication integration (Authentik)
+- [ ] WIP Console: Add document management UI
 
 ---
 
@@ -209,7 +222,14 @@ podman-compose -f docker-compose.dev.yml up -d
 # Template Store API: http://localhost:8003
 # Template Store Swagger: http://localhost:8003/docs
 
-# 6. Start WIP Console UI (optional - local dev)
+# 6. Start Document Store service
+cd ../document-store
+podman-compose -f docker-compose.dev.yml up -d
+
+# Document Store API: http://localhost:8004
+# Document Store Swagger: http://localhost:8004/docs
+
+# 7. Start WIP Console UI (optional - local dev)
 cd ../../ui/wip-console
 npm install
 npm run dev
@@ -260,6 +280,12 @@ podman exec -it wip-def-store-dev bash -c \
 podman exec -it wip-template-store-dev bash -c \
   "pip install pytest pytest-asyncio httpx && \
    pytest /app/tests -v"
+
+# Document Store tests (requires infra + document-store running)
+# Note: Tests mock Registry, Template Store, and Def-Store clients
+podman exec -it wip-document-store-dev bash -c \
+  "pip install pytest pytest-asyncio httpx && \
+   pytest /app/tests -v"
 ```
 
 ### Seed Dummy Data
@@ -303,11 +329,21 @@ WorldInPie/
 │   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
-│   └── template-store/    # Template Schema Store (complete)
-│       ├── src/template_store/
-│       │   ├── api/       # templates, auth
-│       │   ├── models/    # template, field, rule, api_models
-│       │   └── services/  # registry_client, def_store_client, template_service, inheritance_service
+│   ├── template-store/    # Template Schema Store (complete)
+│   │   ├── src/template_store/
+│   │   │   ├── api/       # templates, auth
+│   │   │   ├── models/    # template, field, rule, api_models
+│   │   │   └── services/  # registry_client, def_store_client, template_service, inheritance_service
+│   │   ├── tests/
+│   │   ├── docker-compose.yml
+│   │   ├── docker-compose.dev.yml
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   └── document-store/    # Document Store (complete)
+│       ├── src/document_store/
+│       │   ├── api/       # documents, validation, auth
+│       │   ├── models/    # document, api_models
+│       │   └── services/  # registry_client, template_store_client, def_store_client, document_service, validation_service, identity_service
 │       ├── tests/
 │       ├── docker-compose.yml
 │       ├── docker-compose.dev.yml
