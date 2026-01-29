@@ -38,9 +38,35 @@ export MONGO_PASSWORD=your_secure_password
 docker-compose up -d
 ```
 
-## API Overview
+## Authentication
 
 All endpoints require API key authentication via the `X-API-Key` header.
+
+### Development API Key
+
+For local development, the default API key is:
+```
+dev_master_key_for_testing
+```
+
+This is configured in `docker-compose.dev.yml` via the `MASTER_API_KEY` environment variable.
+
+### Using the Swagger UI
+
+1. Open http://localhost:8001/docs
+2. Click the **"Authorize"** button (lock icon, top right)
+3. Enter the API key: `dev_master_key_for_testing`
+4. Click "Authorize" then "Close"
+5. Now you can test any endpoint
+
+### Production API Key
+
+Generate a secure key for production:
+```bash
+export MASTER_API_KEY=$(openssl rand -hex 32)
+```
+
+## API Overview
 
 ### Namespaces
 
@@ -86,7 +112,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 ```bash
 curl -X POST http://localhost:8001/api/registry/entries/register \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
     "namespace": "default",
@@ -98,7 +124,7 @@ curl -X POST http://localhost:8001/api/registry/entries/register \
 
 ```bash
 curl -X POST http://localhost:8001/api/registry/synonyms/add \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
     "target_namespace": "default",
@@ -112,7 +138,7 @@ curl -X POST http://localhost:8001/api/registry/synonyms/add \
 
 ```bash
 curl -X POST http://localhost:8001/api/registry/search/across-namespaces \
-  -H "X-API-Key: your_api_key" \
+  -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
     "field_criteria": {"vendor_sku": "V1-SKU-001"}
@@ -164,7 +190,7 @@ The registry pre-configures these namespaces for WIP components:
 Initialize these with:
 ```bash
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
-  -H "X-API-Key: your_admin_key"
+  -H "X-API-Key: dev_master_key_for_testing"
 ```
 
 ## Testing
