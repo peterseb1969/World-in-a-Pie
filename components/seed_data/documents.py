@@ -12,16 +12,19 @@ from . import generators
 # Document counts per template for each profile
 DOCUMENT_PROFILES = {
     "minimal": {
+        # Domain templates
         "PERSON": 10,
         "EMPLOYEE": 5,
         "PRODUCT": 10,
         "ORDER": 5,
         "CUSTOMER": 5,
+        # Edge case templates
         "MINIMAL": 5,
         "ALL_TYPES": 5,
         "ARRAY_HEAVY": 5,
     },
     "standard": {
+        # Domain templates
         "PERSON": 50,
         "EMPLOYEE": 30,
         "CONTRACTOR": 10,
@@ -33,11 +36,20 @@ DOCUMENT_PROFILES = {
         "INVOICE": 30,
         "MEDICAL_RECORD": 20,
         "ISSUE_TICKET": 50,
+        # Inheritance templates
+        "PHYSICAL_PRODUCT": 20,
+        "DIGITAL_PRODUCT": 20,
+        "BILLING_ADDRESS": 10,
+        # Edge case templates
         "MINIMAL": 10,
         "ALL_TYPES": 10,
         "ARRAY_HEAVY": 10,
+        "DEEP_NEST": 10,
+        "LARGE_FIELDS": 10,
+        "COMPLEX_RULES": 20,
     },
     "full": {
+        # Domain templates
         "PERSON": 200,
         "EMPLOYEE": 100,
         "CONTRACTOR": 30,
@@ -49,11 +61,20 @@ DOCUMENT_PROFILES = {
         "INVOICE": 100,
         "MEDICAL_RECORD": 50,
         "ISSUE_TICKET": 200,
+        # Inheritance templates
+        "PHYSICAL_PRODUCT": 100,
+        "DIGITAL_PRODUCT": 100,
+        "BILLING_ADDRESS": 50,
+        # Edge case templates
         "MINIMAL": 50,
         "ALL_TYPES": 50,
         "ARRAY_HEAVY": 50,
+        "DEEP_NEST": 50,
+        "LARGE_FIELDS": 50,
+        "COMPLEX_RULES": 100,
     },
     "performance": {
+        # Domain templates
         "PERSON": 5000,
         "EMPLOYEE": 2000,
         "CONTRACTOR": 500,
@@ -65,9 +86,17 @@ DOCUMENT_PROFILES = {
         "INVOICE": 2000,
         "MEDICAL_RECORD": 1000,
         "ISSUE_TICKET": 5000,
+        # Inheritance templates
+        "PHYSICAL_PRODUCT": 2000,
+        "DIGITAL_PRODUCT": 2000,
+        "BILLING_ADDRESS": 500,
+        # Edge case templates
         "MINIMAL": 10000,
         "ALL_TYPES": 1000,
         "ARRAY_HEAVY": 1000,
+        "DEEP_NEST": 500,
+        "LARGE_FIELDS": 500,
+        "COMPLEX_RULES": 2000,
     }
 }
 

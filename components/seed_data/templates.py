@@ -133,10 +133,9 @@ CONTACT_INFO = {
             "error_message": "At least one phone number (phone or mobile) is required"
         },
         {
-            "type": "conditional_value",
+            "type": "conditional_required",
             "conditions": [{"field": "preferred_contact", "operator": "equals", "value": "mobile"}],
             "target_field": "mobile",
-            "constraints": {"not_empty": True},
             "error_message": "Mobile is required when it's the preferred contact method"
         }
     ]
@@ -320,8 +319,8 @@ ORDER = {
         },
         {
             "type": "dependency",
-            "dependent_field": "billing_address",
-            "required_field": "shipping_address",
+            "target_field": "billing_address",
+            "conditions": [{"field": "shipping_address", "operator": "exists"}],
             "error_message": "Shipping address must be set before billing address"
         }
     ]
@@ -356,10 +355,9 @@ CUSTOMER = {
             "error_message": "Tax ID is required for business customers"
         },
         {
-            "type": "conditional_value",
+            "type": "conditional_required",
             "conditions": [{"field": "active", "operator": "equals", "value": True}],
             "target_field": "email",
-            "constraints": {"not_empty": True},
             "error_message": "Email is required for active customers"
         },
         {
@@ -397,8 +395,8 @@ INVOICE = {
     "rules": [
         {
             "type": "dependency",
-            "dependent_field": "paid_date",
-            "required_field": "payment_method",
+            "target_field": "paid_date",
+            "conditions": [{"field": "payment_method", "operator": "exists"}],
             "error_message": "Payment method is required when paid date is set"
         },
         {
@@ -471,15 +469,14 @@ MEDICAL_RECORD = {
         },
         {
             "type": "dependency",
-            "dependent_field": "follow_up_date",
-            "required_field": "diagnosis",
+            "target_field": "follow_up_date",
+            "conditions": [{"field": "diagnosis", "operator": "exists"}],
             "error_message": "Diagnosis must be set before scheduling follow-up"
         },
         {
-            "type": "conditional_value",
+            "type": "conditional_required",
             "conditions": [{"field": "priority", "operator": "in", "value": ["Critical", "High"]}],
             "target_field": "follow_up_date",
-            "constraints": {"not_empty": True},
             "error_message": "Follow-up date is required for critical/high priority cases"
         }
     ]
@@ -521,8 +518,8 @@ ISSUE_TICKET = {
         },
         {
             "type": "dependency",
-            "dependent_field": "resolved_at",
-            "required_field": "assignee_email",
+            "target_field": "resolved_at",
+            "conditions": [{"field": "assignee_email", "operator": "exists"}],
             "error_message": "Ticket must be assigned before it can be resolved"
         }
     ]
@@ -558,15 +555,14 @@ EMPLOYEE = {
         },
         {
             "type": "dependency",
-            "dependent_field": "termination_date",
-            "required_field": "hire_date",
+            "target_field": "termination_date",
+            "conditions": [{"field": "hire_date", "operator": "exists"}],
             "error_message": "Hire date must be set before termination date"
         },
         {
-            "type": "conditional_value",
+            "type": "conditional_required",
             "conditions": [{"field": "employment_type", "operator": "equals", "value": "Full-time"}],
             "target_field": "salary",
-            "constraints": {"not_empty": True},
             "error_message": "Salary is required for full-time employees"
         },
         {
@@ -595,8 +591,8 @@ CONTRACTOR = {
     "rules": [
         {
             "type": "dependency",
-            "dependent_field": "contract_end",
-            "required_field": "contract_start",
+            "target_field": "contract_end",
+            "conditions": [{"field": "contract_start", "operator": "exists"}],
             "error_message": "Contract start date must be set before end date"
         }
     ]
@@ -691,8 +687,8 @@ PHYSICAL_PRODUCT = {
     "rules": [
         {
             "type": "dependency",
-            "dependent_field": "dimension_unit",
-            "required_field": "dimensions",
+            "target_field": "dimension_unit",
+            "conditions": [{"field": "dimensions", "operator": "exists"}],
             "error_message": "Dimensions must be set before dimension unit"
         },
         {
@@ -897,8 +893,8 @@ COMPLEX_RULES = {
         # 4. dependency
         {
             "type": "dependency",
-            "dependent_field": "end_date",
-            "required_field": "start_date",
+            "target_field": "end_date",
+            "conditions": [{"field": "start_date", "operator": "exists"}],
             "error_message": "Start date must be set before end date"
         },
         # 5. pattern

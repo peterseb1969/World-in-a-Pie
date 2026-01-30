@@ -55,12 +55,21 @@ def field_name_to_label(name: str) -> str:
 
 
 def process_template_fields(fields: list[dict]) -> list[dict]:
-    """Process template fields to add labels if missing."""
+    """Process template fields to add labels and ensure validation is not None.
+
+    The Template Store stores validation as null when not specified, which causes
+    the Document Store validation service to fail. We ensure validation is always
+    an empty dict if not specified.
+    """
     processed = []
     for field in fields:
         field_copy = field.copy()
+        # Add label if missing
         if "label" not in field_copy:
             field_copy["label"] = field_name_to_label(field_copy["name"])
+        # Ensure validation is never None (use empty dict as default)
+        if field_copy.get("validation") is None:
+            field_copy["validation"] = {}
         processed.append(field_copy)
     return processed
 
