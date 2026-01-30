@@ -31,7 +31,6 @@ import type {
   Document,
   DocumentListResponse,
   CreateDocumentRequest,
-  UpdateDocumentRequest,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
@@ -389,8 +388,12 @@ class DocumentStoreClient {
     return response.data
   }
 
-  async updateDocument(id: string, data: UpdateDocumentRequest): Promise<Document> {
-    const response = await this.client.put<Document>(`/documents/${id}`, data)
+  async updateDocument(templateId: string, data: Record<string, unknown>): Promise<Document> {
+    // Document Store uses upsert - POST with same identity fields creates a new version
+    const response = await this.client.post<Document>('/documents', {
+      template_id: templateId,
+      data: data
+    })
     return response.data
   }
 

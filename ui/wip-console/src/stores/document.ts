@@ -4,7 +4,6 @@ import { documentStoreClient, templateStoreClient, defStoreClient } from '@/api/
 import type {
   Document,
   CreateDocumentRequest,
-  UpdateDocumentRequest,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
@@ -89,18 +88,21 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function updateDocument(id: string, data: UpdateDocumentRequest) {
+  async function updateDocument(templateId: string, data: Record<string, unknown>) {
     loading.value = true
     error.value = null
     try {
-      const updated = await documentStoreClient.updateDocument(id, data)
-      const index = documents.value.findIndex(d => d.document_id === id)
-      if (index !== -1) {
-        documents.value[index] = updated
+      // Document Store uses upsert - POST with same identity fields creates a new version
+      const updated = await documentStoreClient.updateDocument(templateId, data)
+      // The updated document may have a new ID (new version), so refresh the list
+      const oldId = currentDocument.value?.document_id
+      if (oldId) {
+        const index = documents.value.findIndex(d => d.document_id === oldId)
+        if (index !== -1) {
+          documents.value[index] = updated
+        }
       }
-      if (currentDocument.value?.document_id === id) {
-        currentDocument.value = updated
-      }
+      currentDocument.value = updated
       return updated
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update document'

@@ -160,13 +160,19 @@ async function saveDocument() {
       uiStore.showSuccess('Document Created', 'Document has been created successfully')
       router.push(`/documents/${created.document_id}`)
     } else {
-      // Update existing document
-      await documentStore.updateDocument(props.id!, {
-        data: formData.value
-      })
-      uiStore.showSuccess('Document Updated', 'Document has been updated successfully')
-      // Reload version history
-      await loadVersionHistory()
+      // Update existing document (upsert - creates new version)
+      const updated = await documentStore.updateDocument(
+        currentTemplate.value.template_id,
+        formData.value
+      )
+      uiStore.showSuccess('Document Updated', 'A new version has been created')
+      // Navigate to the new document version if ID changed
+      if (updated.document_id !== props.id) {
+        router.push(`/documents/${updated.document_id}`)
+      } else {
+        // Reload version history
+        await loadVersionHistory()
+      }
     }
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : 'Unknown error'
