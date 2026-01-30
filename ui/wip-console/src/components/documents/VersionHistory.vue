@@ -24,7 +24,7 @@ const sortedVersions = computed(() => {
 function getStatusSeverity(status: string): "success" | "info" | "warn" | "danger" | "secondary" | "contrast" | undefined {
   switch (status) {
     case 'active':
-      return 'success'
+      return 'info'
     case 'inactive':
       return 'secondary'
     case 'archived':

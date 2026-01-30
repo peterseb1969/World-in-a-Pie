@@ -120,7 +120,7 @@ function toggleSidebar() {
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="sidebar-header">
         <div class="logo" v-if="!sidebarCollapsed">
-          <span class="logo-text">WIP Console</span>
+          <img src="@/assets/logo.png" alt="WIP" class="logo-image" />
         </div>
         <Button
           :icon="sidebarCollapsed ? 'pi pi-angle-right' : 'pi pi-angle-left'"
@@ -305,10 +305,9 @@ function toggleSidebar() {
   gap: 0.5rem;
 }
 
-.logo-text {
-  font-size: 1.25rem;
-  font-weight: 600;
-  color: var(--p-primary-color);
+.logo-image {
+  height: 36px;
+  width: auto;
 }
 
 .toggle-btn {

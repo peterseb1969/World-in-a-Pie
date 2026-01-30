@@ -115,7 +115,7 @@ function formatMetadataValue(value: unknown, colName: string): string {
 // Get status severity for tag
 function getStatusSeverity(status: string): "success" | "warn" | "secondary" | "info" {
   switch (status) {
-    case 'active': return 'success'
+    case 'active': return 'info'
     case 'inactive': return 'warn'
     case 'archived': return 'secondary'
     default: return 'info'

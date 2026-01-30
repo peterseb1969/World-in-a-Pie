@@ -230,7 +230,7 @@ async function validateTemplate() {
 function getStatusSeverity(status: string): "success" | "info" | "warn" | "danger" | "secondary" | "contrast" | undefined {
   switch (status) {
     case 'active':
-      return 'success'
+      return 'info'
     case 'deprecated':
       return 'warn'
     case 'inactive':
