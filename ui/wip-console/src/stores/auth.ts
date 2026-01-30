@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { defStoreClient, templateStoreClient } from '@/api/client'
+import { defStoreClient, templateStoreClient, documentStoreClient } from '@/api/client'
 
 const STORAGE_KEY = 'wip-console-api-key'
 
@@ -18,9 +18,10 @@ export const useAuthStore = defineStore('auth', () => {
 
   function setApiKey(key: string) {
     apiKey.value = key
-    // Set API key for both clients
+    // Set API key for all clients
     defStoreClient.setApiKey(key)
     templateStoreClient.setApiKey(key)
+    documentStoreClient.setApiKey(key)
     localStorage.setItem(STORAGE_KEY, key)
   }
 
@@ -28,6 +29,7 @@ export const useAuthStore = defineStore('auth', () => {
     apiKey.value = ''
     defStoreClient.setApiKey('')
     templateStoreClient.setApiKey('')
+    documentStoreClient.setApiKey('')
     localStorage.removeItem(STORAGE_KEY)
   }
 

@@ -1,0 +1,135 @@
+// =============================================================================
+// DOCUMENT TYPES
+// =============================================================================
+
+export type DocumentStatus = 'active' | 'inactive' | 'archived'
+
+export interface DocumentMetadata {
+  source_system: string | null
+  warnings: string[]
+  custom: Record<string, unknown>
+}
+
+export interface Document {
+  document_id: string
+  template_id: string
+  template_version: number
+  identity_hash: string
+  version: number
+  data: Record<string, unknown>
+  status: DocumentStatus
+  created_at: string
+  created_by: string | null
+  updated_at: string
+  updated_by: string | null
+  metadata: DocumentMetadata
+}
+
+// =============================================================================
+// REQUEST/RESPONSE TYPES
+// =============================================================================
+
+export interface CreateDocumentRequest {
+  template_id: string
+  data: Record<string, unknown>
+  created_by?: string
+  metadata?: {
+    source_system?: string
+    custom?: Record<string, unknown>
+  }
+}
+
+export interface UpdateDocumentRequest {
+  data?: Record<string, unknown>
+  updated_by?: string
+  metadata?: {
+    source_system?: string
+    custom?: Record<string, unknown>
+  }
+}
+
+export interface DocumentListResponse {
+  items: Document[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+// =============================================================================
+// VALIDATION TYPES
+// =============================================================================
+
+export interface DocumentValidationError {
+  field: string | null
+  code: string
+  message: string
+  details?: Record<string, unknown>
+}
+
+export interface DocumentValidationResponse {
+  valid: boolean
+  errors: DocumentValidationError[]
+  warnings: string[]
+  identity_hash: string | null
+  template_version: number | null
+}
+
+export interface ValidateDocumentRequest {
+  template_id: string
+  data: Record<string, unknown>
+}
+
+// =============================================================================
+// VERSION TYPES
+// =============================================================================
+
+export interface DocumentVersionSummary {
+  document_id: string
+  version: number
+  status: DocumentStatus
+  created_at: string
+  created_by: string | null
+}
+
+export interface DocumentVersionResponse {
+  identity_hash: string
+  current_version: number
+  versions: DocumentVersionSummary[]
+}
+
+// =============================================================================
+// QUERY TYPES
+// =============================================================================
+
+export interface DocumentQueryParams {
+  page?: number
+  page_size?: number
+  template_id?: string
+  status?: DocumentStatus
+  search?: string
+}
+
+// =============================================================================
+// BULK OPERATION TYPES
+// =============================================================================
+
+export interface BulkCreateDocumentRequest {
+  documents: CreateDocumentRequest[]
+  created_by?: string
+}
+
+export interface DocumentBulkOperationResult {
+  index: number
+  status: 'created' | 'updated' | 'error' | 'skipped'
+  document_id?: string
+  identity_hash?: string
+  error?: string
+}
+
+export interface DocumentBulkOperationResponse {
+  results: DocumentBulkOperationResult[]
+  total: number
+  succeeded: number
+  failed: number
+}

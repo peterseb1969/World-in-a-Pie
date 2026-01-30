@@ -123,6 +123,10 @@ Even though we're implementing only the Standard profile initially, the architec
   - Field definitions with terminology references
   - Validation rules
   - Cross-linking: shows which templates use each terminology
+  - Document management (list, create, edit, delete)
+  - Dynamic form generation based on template fields
+  - Real-time validation feedback
+  - Version history viewing and restore
   - Sidebar-based navigation
   - API key authentication with localStorage persistence
   - Docker support for dev and production
@@ -156,7 +160,6 @@ Even though we're implementing only the Standard profile initially, the architec
 - [ ] Run Def-Store tests (requires Registry service)
 - [ ] Reporting sync to PostgreSQL
 - [ ] Authentication integration (Authentik)
-- [ ] WIP Console: Add document management UI
 
 ---
 
@@ -236,12 +239,12 @@ npm run dev
 
 # WIP Console: http://localhost:3000
 # Enter API key: dev_master_key_for_testing
-# Manages both terminologies (Def-Store) and templates (Template-Store)
+# Manages terminologies (Def-Store), templates (Template-Store), and documents (Document-Store)
 
-# 6b. Or run UI in container (uses shared network)
+# 7b. Or run UI in container (uses shared network)
 podman-compose -f docker-compose.dev.yml up -d
 
-# Container connects to both def-store and template-store via wip-network
+# Container connects to def-store, template-store, and document-store via wip-network
 ```
 
 ### Production Setup
@@ -352,17 +355,19 @@ WorldInPie/
 └── ui/
     └── wip-console/       # Unified Web UI (Vue 3 + PrimeVue)
         ├── src/
-        │   ├── api/       # Unified API clients (defStoreClient, templateStoreClient)
+        │   ├── api/       # Unified API clients (defStoreClient, templateStoreClient, documentStoreClient)
         │   ├── components/
         │   │   ├── layout/        # AppLayout with sidebar navigation
         │   │   ├── terminologies/ # Terminology components
-        │   │   └── templates/     # Template components
-        │   ├── router/    # Vue Router config (terminologies + templates routes)
-        │   ├── stores/    # Pinia stores (auth, ui, terminology, term, template)
+        │   │   ├── templates/     # Template components
+        │   │   └── documents/     # Document components (FieldInput, DocumentForm, VersionHistory)
+        │   ├── router/    # Vue Router config (terminologies + templates + documents routes)
+        │   ├── stores/    # Pinia stores (auth, ui, terminology, term, template, document)
         │   ├── types/     # TypeScript interfaces
         │   └── views/
         │       ├── terminologies/ # Terminology views
-        │       └── templates/     # Template views
+        │       ├── templates/     # Template views
+        │       └── documents/     # Document views (list, detail/create)
         ├── docker-compose.yml
         ├── docker-compose.dev.yml
         ├── Dockerfile

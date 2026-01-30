@@ -27,6 +27,17 @@ import type {
   TemplateBulkOperationResponse,
   ValidateTemplateRequest,
   ValidateTemplateResponse,
+  // Document types
+  Document,
+  DocumentListResponse,
+  CreateDocumentRequest,
+  UpdateDocumentRequest,
+  DocumentValidationResponse,
+  ValidateDocumentRequest,
+  DocumentVersionResponse,
+  DocumentQueryParams,
+  BulkCreateDocumentRequest,
+  DocumentBulkOperationResponse,
   // Shared types
   ApiError
 } from '@/types'
@@ -320,11 +331,126 @@ class TemplateStoreClient {
 }
 
 // =============================================================================
+// DOCUMENT-STORE CLIENT (Documents)
+// =============================================================================
+
+class DocumentStoreClient {
+  private client: AxiosInstance
+  private apiKey: string = ''
+
+  constructor() {
+    this.client = axios.create({
+      baseURL: '/api/document-store',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    })
+
+    this.client.interceptors.request.use((config) => {
+      if (this.apiKey) {
+        config.headers['X-API-Key'] = this.apiKey
+      }
+      return config
+    })
+
+    this.client.interceptors.response.use(
+      (response) => response,
+      (error: AxiosError<ApiError>) => {
+        const message = error.response?.data?.detail || error.message
+        return Promise.reject(new Error(message))
+      }
+    )
+  }
+
+  setApiKey(key: string) {
+    this.apiKey = key
+  }
+
+  getApiKey(): string {
+    return this.apiKey
+  }
+
+  // ===========================================================================
+  // DOCUMENT ENDPOINTS
+  // ===========================================================================
+
+  async listDocuments(params?: DocumentQueryParams): Promise<DocumentListResponse> {
+    const response = await this.client.get<DocumentListResponse>('/documents', { params })
+    return response.data
+  }
+
+  async getDocument(id: string): Promise<Document> {
+    const response = await this.client.get<Document>(`/documents/${id}`)
+    return response.data
+  }
+
+  async createDocument(data: CreateDocumentRequest): Promise<Document> {
+    const response = await this.client.post<Document>('/documents', data)
+    return response.data
+  }
+
+  async updateDocument(id: string, data: UpdateDocumentRequest): Promise<Document> {
+    const response = await this.client.put<Document>(`/documents/${id}`, data)
+    return response.data
+  }
+
+  async deleteDocument(id: string, updatedBy?: string): Promise<void> {
+    const params = updatedBy ? { updated_by: updatedBy } : undefined
+    await this.client.delete(`/documents/${id}`, { params })
+  }
+
+  async archiveDocument(id: string, updatedBy?: string): Promise<Document> {
+    const params = updatedBy ? { updated_by: updatedBy } : undefined
+    const response = await this.client.post<Document>(`/documents/${id}/archive`, null, { params })
+    return response.data
+  }
+
+  async restoreDocument(id: string, updatedBy?: string): Promise<Document> {
+    const params = updatedBy ? { updated_by: updatedBy } : undefined
+    const response = await this.client.post<Document>(`/documents/${id}/restore`, null, { params })
+    return response.data
+  }
+
+  // ===========================================================================
+  // VALIDATION ENDPOINTS
+  // ===========================================================================
+
+  async validateDocument(data: ValidateDocumentRequest): Promise<DocumentValidationResponse> {
+    const response = await this.client.post<DocumentValidationResponse>('/validation/validate', data)
+    return response.data
+  }
+
+  // ===========================================================================
+  // VERSION ENDPOINTS
+  // ===========================================================================
+
+  async getVersions(id: string): Promise<DocumentVersionResponse> {
+    const response = await this.client.get<DocumentVersionResponse>(`/documents/${id}/versions`)
+    return response.data
+  }
+
+  async getVersion(id: string, version: number): Promise<Document> {
+    const response = await this.client.get<Document>(`/documents/${id}/versions/${version}`)
+    return response.data
+  }
+
+  // ===========================================================================
+  // BULK ENDPOINTS
+  // ===========================================================================
+
+  async createDocumentsBulk(data: BulkCreateDocumentRequest): Promise<DocumentBulkOperationResponse> {
+    const response = await this.client.post<DocumentBulkOperationResponse>('/documents/bulk', data)
+    return response.data
+  }
+}
+
+// =============================================================================
 // EXPORTS
 // =============================================================================
 
 export const defStoreClient = new DefStoreClient()
 export const templateStoreClient = new TemplateStoreClient()
+export const documentStoreClient = new DocumentStoreClient()
 
 // Default export for backward compatibility
 export default defStoreClient

@@ -1,6 +1,7 @@
 // Re-export all types
 export * from './terminology'
 export * from './template'
+export * from './document'
 
 // =============================================================================
 // SHARED TYPES

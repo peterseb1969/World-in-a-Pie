@@ -46,6 +46,23 @@ const router = createRouter({
       name: 'template-detail',
       component: () => import('@/views/templates/TemplateDetailView.vue'),
       props: true
+    },
+    // Document routes
+    {
+      path: '/documents',
+      name: 'documents',
+      component: () => import('@/views/documents/DocumentListView.vue')
+    },
+    {
+      path: '/documents/new',
+      name: 'document-create',
+      component: () => import('@/views/documents/DocumentDetailView.vue')
+    },
+    {
+      path: '/documents/:id',
+      name: 'document-detail',
+      component: () => import('@/views/documents/DocumentDetailView.vue'),
+      props: true
     }
   ]
 })
