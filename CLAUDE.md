@@ -268,6 +268,87 @@ If referenced entities are missing (due to test cleanup, data corruption, or bug
 - Validation should **warn** (not error) when referencing inactive entities
 - Historical documents must always be able to resolve their references
 
+#### Streaming Endpoint (TBD)
+
+Real-time streaming endpoint for document changes. Details to be defined.
+
+#### Per-Template Table View (Transactional Access)
+
+**Goal:** Provide immediate, transactional table views for each template - enabling traditional apps to use WIP as a validated data backend.
+
+**Context:**
+WIP is designed for non-transactional use (registration, data quality, integration). Consolidation happens downstream in the reporting layer. However, some traditional apps may want:
+- Templates as "tables"
+- Documents as "rows"
+- Immediate consistency (no sync delay)
+
+**API Design:**
+```
+GET /api/document-store/templates/{template_id}/table
+  ?page=1&page_size=100
+  ?filter[field_name]=value
+  ?sort=field_name
+  ?format=json|csv
+```
+
+**Flattening rules:**
+- Nested objects → prefixed columns (`address.city` → `address_city`)
+- Arrays → multiple rows (one per array element, like SQL `UNNEST`)
+- Term fields → both original value AND term_id columns (`salutation`, `salutation_term_id`)
+- Each row includes `document_id` and array index for traceability
+
+**Example:**
+```
+Template: ORDER (fields: order_id, customer_email, items[])
+
+Document: { order_id: "ORD-1", items: [{sku: "A", qty: 2}, {sku: "B", qty: 1}] }
+
+Table output:
+| document_id | order_id | customer_email | items_idx | items_sku | items_qty |
+|-------------|----------|----------------|-----------|-----------|-----------|
+| 0192abc...  | ORD-1    | john@test.com  | 0         | A         | 2         |
+| 0192abc...  | ORD-1    | john@test.com  | 1         | B         | 1         |
+```
+
+**Multiple arrays - decided approach:**
+
+| Scenario | Behavior |
+|----------|----------|
+| 0 arrays | 1 row per document |
+| 1 array | Flatten into multiple rows |
+| 2+ arrays, cross-product ≤1000 rows | Cross-product (flatten all) |
+| 2+ arrays, cross-product >1000 rows | Keep arrays as JSON fields, no flatten |
+
+**Template creation warning:** If template has 2+ array fields, warn user:
+"Table view will cross-product arrays if ≤1000 rows per document, otherwise arrays remain as JSON."
+
+**Implementation:**
+- MongoDB aggregation pipeline (`$unwind`, `$project`)
+- Direct from MongoDB (no sync delay = transactional consistency)
+- Column list derived from template field definitions
+
+#### Per-Template Reporting (Aggregations)
+
+**Goal:** Auto-generated dashboards with aggregations for each template.
+
+**Features:**
+- Document count per template
+- Field value distributions (term fields: pie charts, numbers: histograms)
+- Timeline of document creation/updates
+- Filter by date range, status, field values
+- Export to CSV/Excel
+
+**Implementation options:**
+1. **Live queries** - Query Document Store on demand (simple, slow for large datasets)
+2. **Materialized views in PostgreSQL** - Sync to reporting DB, pre-aggregate (faster)
+3. **Embedded analytics** - Lightweight BI tool (Metabase, Superset)
+
+#### UI Gap: Term References Not Displayed
+
+**Issue:** The Document Store API returns both `data` (original values) and `term_references` (resolved term IDs), but the WIP Console UI only displays `data`.
+
+**Fix needed:** Add a "Term References" section or tab in DocumentDetailView showing the resolved term_ids alongside original values. Useful for debugging and data lineage.
+
 ---
 
 ## Technical Decisions
