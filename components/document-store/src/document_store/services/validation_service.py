@@ -1,12 +1,17 @@
 """Validation service for document validation against templates."""
 
 import re
+import time
+import logging
 from datetime import datetime, date
 from typing import Any, Optional
 
 from .template_store_client import get_template_store_client, TemplateStoreError
 from .def_store_client import get_def_store_client, DefStoreError
 from .identity_service import IdentityService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ValidationResult:
@@ -19,6 +24,7 @@ class ValidationResult:
         self.identity_hash: Optional[str] = None
         self.template_version: Optional[int] = None
         self.term_references: dict[str, Any] = {}  # field_path -> term_id
+        self.timing: dict[str, float] = {}  # stage -> milliseconds
 
     def add_error(
         self,
@@ -48,7 +54,8 @@ class ValidationResult:
             "warnings": self.warnings,
             "identity_hash": self.identity_hash,
             "template_version": self.template_version,
-            "term_references": self.term_references
+            "term_references": self.term_references,
+            "timing": self.timing
         }
 
 
@@ -63,6 +70,8 @@ class ValidationService:
     4. Term Validation - Validate term values via Def-Store
     5. Rule Evaluation - Cross-field rules
     6. Identity Computation - Extract identity fields, compute hash
+
+    Includes timing instrumentation for performance analysis.
     """
 
     # Type validators mapping field type to validation function
@@ -78,6 +87,52 @@ class ValidationService:
         "array": "_validate_array",
     }
 
+    # Class-level timing statistics
+    _timing_stats: dict[str, list[float]] = {}
+    _validation_count: int = 0
+
+    @classmethod
+    def get_timing_stats(cls) -> dict[str, Any]:
+        """Get aggregated timing statistics across all validations."""
+        if cls._validation_count == 0:
+            return {"validation_count": 0, "stages": {}}
+
+        stats = {
+            "validation_count": cls._validation_count,
+            "stages": {}
+        }
+
+        for stage, times in cls._timing_stats.items():
+            if times:
+                sorted_times = sorted(times)
+                n = len(sorted_times)
+                stats["stages"][stage] = {
+                    "count": n,
+                    "avg_ms": sum(times) / n,
+                    "min_ms": sorted_times[0],
+                    "max_ms": sorted_times[-1],
+                    "p50_ms": sorted_times[n // 2],
+                    "p95_ms": sorted_times[int(n * 0.95)] if n >= 20 else sorted_times[-1],
+                    "p99_ms": sorted_times[int(n * 0.99)] if n >= 100 else sorted_times[-1],
+                }
+
+        return stats
+
+    @classmethod
+    def reset_timing_stats(cls):
+        """Reset timing statistics."""
+        cls._timing_stats = {}
+        cls._validation_count = 0
+
+    @classmethod
+    def _record_timing(cls, timing: dict[str, float]):
+        """Record timing from a validation run."""
+        cls._validation_count += 1
+        for stage, ms in timing.items():
+            if stage not in cls._timing_stats:
+                cls._timing_stats[stage] = []
+            cls._timing_stats[stage].append(ms)
+
     async def validate(
         self,
         template_id: str,
@@ -91,38 +146,62 @@ class ValidationService:
             data: Document data to validate
 
         Returns:
-            ValidationResult with errors, warnings, and identity hash
+            ValidationResult with errors, warnings, identity hash, and timing
         """
         result = ValidationResult()
+        total_start = time.perf_counter()
 
         # Stage 1: Structural validation
+        start = time.perf_counter()
         if not self._validate_structural(data, result):
+            result.timing["1_structural"] = (time.perf_counter() - start) * 1000
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
+        result.timing["1_structural"] = (time.perf_counter() - start) * 1000
 
         # Stage 2: Template resolution
+        start = time.perf_counter()
         template = await self._resolve_template(template_id, result)
+        result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
         if template is None:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
         result.template_version = template.get("version", 1)
 
         # Stage 3: Field validation
+        start = time.perf_counter()
         await self._validate_fields(data, template, result)
+        result.timing["3_field_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
         # Stage 4: Term validation (batched for efficiency)
+        start = time.perf_counter()
         await self._validate_terms(data, template, result)
+        result.timing["4_term_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
         # Stage 5: Rule evaluation
+        start = time.perf_counter()
         self._evaluate_rules(data, template, result)
+        result.timing["5_rule_evaluation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
         # Stage 6: Identity computation
+        start = time.perf_counter()
         self._compute_identity(data, template, result)
+        result.timing["6_identity_computation"] = (time.perf_counter() - start) * 1000
+
+        result.timing["total"] = (time.perf_counter() - total_start) * 1000
+
+        # Record timing for aggregated stats
+        self._record_timing(result.timing)
 
         return result
 

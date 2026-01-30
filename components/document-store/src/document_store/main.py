@@ -225,3 +225,93 @@ async def ready_check():
         return {"ready": True}
     except Exception:
         raise HTTPException(status_code=503, detail={"ready": False})
+
+
+# Debug endpoints for performance analysis
+@app.get("/debug/timing", tags=["Debug"])
+async def get_timing_stats():
+    """
+    Get timing statistics for document creation and validation.
+
+    Returns aggregated timing for:
+
+    **Creation stages:**
+    - 1_validation: Full validation pipeline
+    - 2_find_existing: MongoDB query for existing identity
+    - 3_create_new: Create new document (includes 3a + 3b)
+    - 3a_registry_id: Registry HTTP call for document ID
+    - 3b_mongo_insert: MongoDB insert
+    - total: End-to-end creation time
+
+    **Validation stages:**
+    - 1_structural: Basic dict validation
+    - 2_template_resolution: Fetch template (cached)
+    - 3_field_validation: Field type and constraint checking
+    - 4_term_validation: Term validation (local with cached terminologies)
+    - 5_rule_evaluation: Cross-field rule checking
+    - 6_identity_computation: Identity hash computation
+    """
+    from .services.validation_service import ValidationService
+    from .services.document_service import DocumentService
+
+    return {
+        "creation": DocumentService.get_creation_timing_stats(),
+        "validation": ValidationService.get_timing_stats(),
+    }
+
+
+@app.post("/debug/timing/reset", tags=["Debug"])
+async def reset_timing_stats():
+    """Reset all timing statistics (creation and validation)."""
+    from .services.validation_service import ValidationService
+    from .services.document_service import DocumentService
+    ValidationService.reset_timing_stats()
+    DocumentService.reset_creation_timing_stats()
+    return {"status": "reset"}
+
+
+@app.get("/debug/cache", tags=["Debug"])
+async def get_cache_stats():
+    """
+    Get cache statistics for Template Store and Def-Store clients.
+
+    Shows cache size, hit rate, and configuration.
+    - Template cache: Permanent (template_id is immutable)
+    - Terminology cache: Caches complete terminologies for local term validation
+    """
+    template_client = get_template_store_client()
+    def_store_client = get_def_store_client()
+
+    template_stats = template_client.get_cache_stats()
+    def_store_stats = def_store_client.get_cache_stats()
+
+    # Calculate template hit rate
+    template_total = template_stats["template_cache_hits"] + template_stats["template_cache_misses"]
+    template_hit_rate = (template_stats["template_cache_hits"] / template_total * 100) if template_total > 0 else 0
+
+    # Calculate terminology hit rate
+    terminology_total = def_store_stats["terminology_cache_hits"] + def_store_stats["terminology_cache_misses"]
+    terminology_hit_rate = (def_store_stats["terminology_cache_hits"] / terminology_total * 100) if terminology_total > 0 else 0
+
+    return {
+        "template_cache": {
+            **template_stats,
+            "hit_rate_percent": round(template_hit_rate, 1),
+        },
+        "terminology_cache": {
+            **def_store_stats,
+            "hit_rate_percent": round(terminology_hit_rate, 1),
+        },
+    }
+
+
+@app.post("/debug/cache/clear", tags=["Debug"])
+async def clear_caches():
+    """Clear all caches (template and term validation)."""
+    template_client = get_template_store_client()
+    def_store_client = get_def_store_client()
+
+    template_client.clear_cache()
+    def_store_client.clear_cache()
+
+    return {"status": "cleared"}

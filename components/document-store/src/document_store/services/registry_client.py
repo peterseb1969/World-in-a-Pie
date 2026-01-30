@@ -1,6 +1,7 @@
 """Client for communicating with the WIP Registry service."""
 
 import os
+import uuid
 from typing import Any, Optional
 
 import httpx
@@ -69,7 +70,6 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
-        import uuid
         # Include a unique element to ensure each version gets a new ID
         # The Registry returns the same ID for duplicate composite_keys
         version_uuid = str(uuid.uuid4())
@@ -111,10 +111,10 @@ class RegistryClient:
         created_by: Optional[str] = None
     ) -> list[dict[str, Any]]:
         """
-        Generate multiple document IDs from the Registry.
+        Generate multiple document IDs from the Registry in a single call.
 
         Args:
-            items: List of dicts with identity_hash and template_id
+            items: List of dicts with identity_hash, template_id, and version
             created_by: User or system creating these
 
         Returns:
@@ -123,14 +123,17 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
+        # Each document needs a unique composite key to get a unique ID
+        # We use a UUID for each to guarantee uniqueness in the batch
         registry_items = [
             {
                 "namespace": "wip-documents",
                 "composite_key": {
                     "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],
-                    # Add a unique suffix to ensure new ID each time
-                    "_version_marker": item.get("version", 1)
+                    "version": item.get("version", 1),
+                    # Unique per request to ensure Registry always generates new ID
+                    "version_uuid": str(uuid.uuid4())
                 },
                 "created_by": created_by,
                 "metadata": {"type": "document"}

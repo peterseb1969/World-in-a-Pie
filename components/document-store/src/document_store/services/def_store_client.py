@@ -7,18 +7,72 @@ from typing import Any, Optional
 import httpx
 
 
+class TerminologyCache:
+    """
+    Cache for complete terminologies.
+
+    Caches entire terminologies (with all terms) for fast local validation.
+    Much more efficient than caching individual term validations.
+    """
+
+    def __init__(self, ttl: int = 300):
+        """
+        Initialize the terminology cache.
+
+        Args:
+            ttl: Time-to-live in seconds (default 5 minutes)
+        """
+        self.ttl = ttl
+        # terminology_ref -> (terminology_data, timestamp)
+        self._cache: dict[str, tuple[dict[str, Any], float]] = {}
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, terminology_ref: str) -> Optional[dict[str, Any]]:
+        """Get a cached terminology if not expired."""
+        if terminology_ref in self._cache:
+            data, timestamp = self._cache[terminology_ref]
+            if time.time() - timestamp < self.ttl:
+                self._hits += 1
+                return data
+            else:
+                # Expired
+                del self._cache[terminology_ref]
+        self._misses += 1
+        return None
+
+    def set(self, terminology_ref: str, data: dict[str, Any]):
+        """Cache a terminology."""
+        self._cache[terminology_ref] = (data, time.time())
+
+    def get_stats(self) -> dict[str, Any]:
+        """Get cache statistics."""
+        return {
+            "size": len(self._cache),
+            "hits": self._hits,
+            "misses": self._misses,
+            "ttl_seconds": self.ttl,
+        }
+
+    def clear(self):
+        """Clear the cache."""
+        self._cache.clear()
+        self._hits = 0
+        self._misses = 0
+
+
 class DefStoreClient:
     """
     Client for the WIP Def-Store service.
 
     Used to validate term field values against terminologies.
 
-    Includes TTL-based caching for term validations to improve performance
-    when processing batches of documents with repeated term values.
+    Caches complete terminologies for fast local validation instead of
+    making HTTP calls for each term. This is much more efficient since
+    terminologies are typically small (< 1000 terms) and change rarely.
     """
 
-    # Default cache TTL: 5 minutes
-    DEFAULT_CACHE_TTL = 300
+    DEFAULT_CACHE_TTL = 300  # 5 minutes
 
     def __init__(
         self,
@@ -45,13 +99,13 @@ class DefStoreClient:
             "dev_master_key_for_testing"
         )
         self.timeout = timeout
-        self.cache_ttl = cache_ttl
 
-        # TTL-based cache for term validations
-        # Key: (terminology_ref, value) -> (result, timestamp)
-        self._validation_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
-        self._cache_hits = 0
-        self._cache_misses = 0
+        # Cache for complete terminologies
+        self._terminology_cache = TerminologyCache(ttl=cache_ttl)
+
+        # Track validation stats
+        self._validations_total = 0
+        self._validations_local = 0
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -60,42 +114,177 @@ class DefStoreClient:
             "Content-Type": "application/json"
         }
 
-    def _cache_key(self, terminology_ref: str, value: str) -> tuple[str, str]:
-        """Create a cache key for a term validation."""
-        return (terminology_ref, value)
-
-    def _get_cached(self, terminology_ref: str, value: str) -> Optional[dict[str, Any]]:
-        """Get a cached validation result if not expired."""
-        key = self._cache_key(terminology_ref, value)
-        if key in self._validation_cache:
-            result, timestamp = self._validation_cache[key]
-            if time.time() - timestamp < self.cache_ttl:
-                self._cache_hits += 1
-                return result
-            else:
-                # Expired - remove from cache
-                del self._validation_cache[key]
-        return None
-
-    def _set_cached(self, terminology_ref: str, value: str, result: dict[str, Any]):
-        """Cache a validation result."""
-        key = self._cache_key(terminology_ref, value)
-        self._validation_cache[key] = (result, time.time())
-
     def get_cache_stats(self) -> dict[str, Any]:
         """Get cache statistics."""
+        cache_stats = self._terminology_cache.get_stats()
         return {
-            "validation_cache_size": len(self._validation_cache),
-            "validation_cache_hits": self._cache_hits,
-            "validation_cache_misses": self._cache_misses,
-            "cache_ttl_seconds": self.cache_ttl,
+            "terminology_cache_size": cache_stats["size"],
+            "terminology_cache_hits": cache_stats["hits"],
+            "terminology_cache_misses": cache_stats["misses"],
+            "cache_ttl_seconds": cache_stats["ttl_seconds"],
+            "validations_total": self._validations_total,
+            "validations_local": self._validations_local,
+            "validations_local_percent": round(
+                self._validations_local / self._validations_total * 100, 1
+            ) if self._validations_total > 0 else 0,
         }
 
     def clear_cache(self):
-        """Clear the validation cache."""
-        self._validation_cache.clear()
-        self._cache_hits = 0
-        self._cache_misses = 0
+        """Clear the terminology cache."""
+        self._terminology_cache.clear()
+        self._validations_total = 0
+        self._validations_local = 0
+
+    async def _fetch_terminology_with_terms(
+        self,
+        terminology_ref: str
+    ) -> Optional[dict[str, Any]]:
+        """
+        Fetch a terminology with all its terms from Def-Store.
+
+        Args:
+            terminology_ref: Terminology ID or code
+
+        Returns:
+            Terminology data with terms, or None if not found
+        """
+        # Determine endpoint based on ref format
+        if terminology_ref.startswith("TERM-"):
+            url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
+        else:
+            url = f"{self.base_url}/api/def-store/terminologies/by-code/{terminology_ref}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                # Fetch terminology
+                response = await client.get(url, headers=self._get_headers())
+
+                if response.status_code == 404:
+                    return None
+
+                if response.status_code != 200:
+                    raise DefStoreError(
+                        f"Failed to get terminology: {response.status_code} - {response.text}"
+                    )
+
+                terminology = response.json()
+                terminology_id = terminology.get("terminology_id")
+
+                # Fetch all terms for this terminology
+                terms_url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}/terms"
+                terms_response = await client.get(
+                    terms_url,
+                    headers=self._get_headers(),
+                    params={"limit": 10000}  # Get all terms
+                )
+
+                if terms_response.status_code == 200:
+                    terms_data = terms_response.json()
+                    terminology["terms"] = terms_data.get("items", [])
+                else:
+                    terminology["terms"] = []
+
+                # Build lookup indexes for fast validation
+                terminology["_lookup"] = self._build_term_lookup(terminology["terms"])
+
+                return terminology
+
+        except httpx.RequestError as e:
+            raise DefStoreError(f"Request failed: {str(e)}")
+
+    def _build_term_lookup(self, terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """
+        Build lookup indexes for fast term validation.
+
+        Returns a dict mapping lowercase values to term data:
+        - code (lowercase) -> term
+        - value (lowercase) -> term
+        - each alias (lowercase) -> term
+        """
+        lookup = {}
+        for term in terms:
+            term_id = term.get("term_id")
+            code = term.get("code", "").lower()
+            value = term.get("value", "").lower()
+            aliases = term.get("aliases", [])
+
+            # Create term reference data
+            term_ref = {
+                "term_id": term_id,
+                "code": term.get("code"),
+                "value": term.get("value"),
+            }
+
+            # Index by code
+            if code:
+                lookup[code] = {"term": term_ref, "matched_via": "code"}
+
+            # Index by value
+            if value:
+                lookup[value] = {"term": term_ref, "matched_via": "value"}
+
+            # Index by aliases
+            for alias in aliases:
+                if alias:
+                    lookup[alias.lower()] = {"term": term_ref, "matched_via": "alias"}
+
+        return lookup
+
+    async def _get_terminology_cached(self, terminology_ref: str) -> Optional[dict[str, Any]]:
+        """Get a terminology, using cache if available."""
+        # Check cache first
+        cached = self._terminology_cache.get(terminology_ref)
+        if cached is not None:
+            return cached
+
+        # Fetch and cache
+        terminology = await self._fetch_terminology_with_terms(terminology_ref)
+        if terminology:
+            self._terminology_cache.set(terminology_ref, terminology)
+            # Also cache by the other ref (code or id) for convenience
+            if terminology_ref.startswith("TERM-"):
+                code = terminology.get("code")
+                if code:
+                    self._terminology_cache.set(code, terminology)
+            else:
+                term_id = terminology.get("terminology_id")
+                if term_id:
+                    self._terminology_cache.set(term_id, terminology)
+
+        return terminology
+
+    def _validate_term_locally(
+        self,
+        terminology: dict[str, Any],
+        value: str
+    ) -> dict[str, Any]:
+        """
+        Validate a term value locally using cached terminology.
+
+        Args:
+            terminology: Cached terminology with _lookup index
+            value: Value to validate
+
+        Returns:
+            Validation result dict
+        """
+        lookup = terminology.get("_lookup", {})
+        value_lower = value.lower()
+
+        if value_lower in lookup:
+            match = lookup[value_lower]
+            return {
+                "valid": True,
+                "matched_term": match["term"],
+                "matched_via": match["matched_via"],
+            }
+
+        return {
+            "valid": False,
+            "matched_term": None,
+            "matched_via": None,
+            "suggestion": None,  # Could implement fuzzy matching here
+        }
 
     async def get_terminology(
         self,
@@ -113,27 +302,10 @@ class DefStoreClient:
             Terminology data if found, None otherwise
         """
         if terminology_id:
-            url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
+            return await self._get_terminology_cached(terminology_id)
         elif terminology_code:
-            url = f"{self.base_url}/api/def-store/terminologies/by-code/{terminology_code}"
-        else:
-            return None
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=self._get_headers())
-
-                if response.status_code == 404:
-                    return None
-
-                if response.status_code != 200:
-                    raise DefStoreError(
-                        f"Failed to get terminology: {response.status_code} - {response.text}"
-                    )
-
-                return response.json()
-        except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            return await self._get_terminology_cached(terminology_code)
+        return None
 
     async def terminology_exists(
         self,
@@ -148,16 +320,9 @@ class DefStoreClient:
         Returns:
             True if terminology exists and is active
         """
-        # Try as ID first (if it looks like an ID)
-        if terminology_ref.startswith("TERM-"):
-            terminology = await self.get_terminology(terminology_id=terminology_ref)
-        else:
-            terminology = await self.get_terminology(terminology_code=terminology_ref)
-
+        terminology = await self._get_terminology_cached(terminology_ref)
         if terminology is None:
             return False
-
-        # Check if active
         return terminology.get("status") == "active"
 
     async def validate_value(
@@ -168,45 +333,29 @@ class DefStoreClient:
         """
         Validate a value against a terminology.
 
+        Uses cached terminology for fast local validation.
+
         Args:
             terminology_ref: Terminology ID or code
             value: Value to validate
 
         Returns:
-            Validation result with valid, matched_term, suggestion
+            Validation result with valid, matched_term, matched_via
         """
-        # Check cache first
-        cached = self._get_cached(terminology_ref, value)
-        if cached is not None:
-            return cached
+        self._validations_total += 1
 
-        self._cache_misses += 1
+        # Get terminology (from cache or fetch)
+        terminology = await self._get_terminology_cached(terminology_ref)
 
-        # Determine if ID or code
-        if terminology_ref.startswith("TERM-"):
-            payload = {"terminology_id": terminology_ref, "value": value}
-        else:
-            payload = {"terminology_code": terminology_ref, "value": value}
+        if terminology is None:
+            return {
+                "valid": False,
+                "error": f"Terminology '{terminology_ref}' not found",
+            }
 
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/def-store/validate",
-                    headers=self._get_headers(),
-                    json=payload
-                )
-
-                if response.status_code != 200:
-                    raise DefStoreError(
-                        f"Validation failed: {response.status_code} - {response.text}"
-                    )
-
-                result = response.json()
-                # Cache the result
-                self._set_cached(terminology_ref, value, result)
-                return result
-        except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+        # Validate locally
+        self._validations_local += 1
+        return self._validate_term_locally(terminology, value)
 
     async def validate_values_bulk(
         self,
@@ -215,8 +364,8 @@ class DefStoreClient:
         """
         Validate multiple values against terminologies.
 
-        Uses caching to avoid re-validating the same (terminology, value) pairs.
-        Only uncached items are sent to the Def-Store service.
+        Uses cached terminologies for fast local validation.
+        Fetches any missing terminologies first, then validates all locally.
 
         Args:
             items: List of dicts with terminology_ref and value
@@ -227,66 +376,23 @@ class DefStoreClient:
         if not items:
             return []
 
-        # Check cache for each item and collect uncached ones
-        results: list[Optional[dict[str, Any]]] = [None] * len(items)
-        uncached_items: list[tuple[int, dict[str, str]]] = []
+        # Collect unique terminology refs
+        terminology_refs = set(item["terminology_ref"] for item in items)
 
-        for i, item in enumerate(items):
-            terminology_ref = item["terminology_ref"]
-            value = item["value"]
-            cached = self._get_cached(terminology_ref, value)
-            if cached is not None:
-                results[i] = cached
-            else:
-                uncached_items.append((i, item))
-                self._cache_misses += 1
+        # Ensure all terminologies are cached
+        for ref in terminology_refs:
+            await self._get_terminology_cached(ref)
 
-        # If all items were cached, return early
-        if not uncached_items:
-            return results
+        # Validate all items locally
+        results = []
+        for item in items:
+            result = await self.validate_value(
+                item["terminology_ref"],
+                item["value"]
+            )
+            results.append(result)
 
-        # Transform uncached items to API format
-        api_items = []
-        for _, item in uncached_items:
-            terminology_ref = item["terminology_ref"]
-            if terminology_ref.startswith("TERM-"):
-                api_items.append({
-                    "terminology_id": terminology_ref,
-                    "value": item["value"]
-                })
-            else:
-                api_items.append({
-                    "terminology_code": terminology_ref,
-                    "value": item["value"]
-                })
-
-        try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/api/def-store/validate/bulk",
-                    headers=self._get_headers(),
-                    json={"items": api_items}
-                )
-
-                if response.status_code != 200:
-                    raise DefStoreError(
-                        f"Bulk validation failed: {response.status_code} - {response.text}"
-                    )
-
-                data = response.json()
-                api_results = data.get("results", [])
-
-                # Map results back to original indices and cache them
-                for j, (original_index, item) in enumerate(uncached_items):
-                    if j < len(api_results):
-                        result = api_results[j]
-                        results[original_index] = result
-                        # Cache the result
-                        self._set_cached(item["terminology_ref"], item["value"], result)
-
-                return results
-        except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+        return results
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""

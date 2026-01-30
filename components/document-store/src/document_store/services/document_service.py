@@ -1,5 +1,6 @@
 """Document service for CRUD operations and upsert logic."""
 
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 import math
@@ -31,7 +32,55 @@ class DocumentService:
     Implements the identity-based upsert pattern:
     - If no active document with same identity_hash exists: create new document
     - If active document exists: deactivate old, create new version
+
+    Includes timing instrumentation for performance analysis.
     """
+
+    # Class-level timing statistics for document creation
+    _creation_timing: dict[str, list[float]] = {}
+    _creation_count: int = 0
+
+    @classmethod
+    def get_creation_timing_stats(cls) -> dict[str, Any]:
+        """Get aggregated timing statistics for document creation."""
+        if cls._creation_count == 0:
+            return {"creation_count": 0, "stages": {}}
+
+        stats = {
+            "creation_count": cls._creation_count,
+            "stages": {}
+        }
+
+        for stage, times in cls._creation_timing.items():
+            if times:
+                sorted_times = sorted(times)
+                n = len(sorted_times)
+                stats["stages"][stage] = {
+                    "count": n,
+                    "avg_ms": sum(times) / n,
+                    "min_ms": sorted_times[0],
+                    "max_ms": sorted_times[-1],
+                    "p50_ms": sorted_times[n // 2],
+                    "p95_ms": sorted_times[int(n * 0.95)] if n >= 20 else sorted_times[-1],
+                    "p99_ms": sorted_times[int(n * 0.99)] if n >= 100 else sorted_times[-1],
+                }
+
+        return stats
+
+    @classmethod
+    def reset_creation_timing_stats(cls):
+        """Reset creation timing statistics."""
+        cls._creation_timing = {}
+        cls._creation_count = 0
+
+    @classmethod
+    def _record_creation_timing(cls, timing: dict[str, float]):
+        """Record timing from a document creation."""
+        cls._creation_count += 1
+        for stage, ms in timing.items():
+            if stage not in cls._creation_timing:
+                cls._creation_timing[stage] = []
+            cls._creation_timing[stage].append(ms)
 
     def __init__(self):
         self.validation_service = ValidationService()
@@ -54,30 +103,46 @@ class DocumentService:
         Returns:
             Tuple of (response, error_message)
         """
+        timing = {}
+        total_start = time.perf_counter()
+
         # Validate document
+        start = time.perf_counter()
         validation_result = await self.validation_service.validate(
             request.template_id,
             request.data
         )
+        timing["1_validation"] = (time.perf_counter() - start) * 1000
 
         if not validation_result.valid:
             # Return validation errors
             return None, self._format_validation_errors(validation_result.errors)
 
         # Check for existing active document with same identity
+        start = time.perf_counter()
         identity_hash = validation_result.identity_hash
         existing = await self._find_active_by_identity(identity_hash)
+        timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
         if existing:
             # Upsert: deactivate old, create new version
-            return await self._create_new_version(
+            start = time.perf_counter()
+            result = await self._create_new_version(
                 request, existing, validation_result
             )
+            timing["3_create_version"] = (time.perf_counter() - start) * 1000
         else:
             # Create new document
-            return await self._create_new_document(
+            start = time.perf_counter()
+            result = await self._create_new_document(
                 request, validation_result
             )
+            timing["3_create_new"] = (time.perf_counter() - start) * 1000
+
+        timing["total"] = (time.perf_counter() - total_start) * 1000
+        self._record_creation_timing(timing)
+
+        return result
 
     async def _create_new_document(
         self,
@@ -87,12 +152,14 @@ class DocumentService:
         """Create a brand new document."""
         try:
             # Generate document ID from Registry
+            start = time.perf_counter()
             registry = get_registry_client()
             document_id = await registry.generate_document_id(
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
                 created_by=request.created_by
             )
+            registry_ms = (time.perf_counter() - start) * 1000
 
             # Create document
             now = datetime.now(timezone.utc)
@@ -117,7 +184,15 @@ class DocumentService:
                 metadata=metadata
             )
 
+            start = time.perf_counter()
             await document.insert()
+            mongo_ms = (time.perf_counter() - start) * 1000
+
+            # Record detailed timing
+            self._record_creation_timing({
+                "3a_registry_id": registry_ms,
+                "3b_mongo_insert": mongo_ms,
+            })
 
             return DocumentCreateResponse(
                 document_id=document_id,
@@ -466,59 +541,229 @@ class DocumentService:
         self,
         request: BulkCreateRequest
     ) -> BulkCreateResponse:
-        """Create multiple documents."""
-        results = []
+        """
+        Create multiple documents with optimized bulk operations.
+
+        Optimizations:
+        - All validations run first (using cached templates/terminologies)
+        - Single bulk Registry call for all document IDs
+        - Batch MongoDB operations for existing document checks
+        """
+        timing = {}
+        total_start = time.perf_counter()
+
+        results: list[BulkCreateResult] = []
         created = 0
         updated = 0
         failed = 0
 
+        # Stage 1: Validate all documents
+        start = time.perf_counter()
+        validation_results = []
+        valid_indices = []  # Indices of valid documents
+
         for i, item in enumerate(request.items):
             try:
-                response, error = await self.create_document(item)
-
-                if error:
+                validation_result = await self.validation_service.validate(
+                    item.template_id,
+                    item.data
+                )
+                if validation_result.valid:
+                    validation_results.append((i, item, validation_result))
+                    valid_indices.append(i)
+                else:
                     failed += 1
                     results.append(BulkCreateResult(
                         index=i,
                         status="error",
-                        error=error
+                        error=self._format_validation_errors(validation_result.errors)
                     ))
                     if not request.continue_on_error:
-                        break
-                else:
-                    if response.is_new:
-                        created += 1
-                        status = "created"
-                    else:
-                        updated += 1
-                        status = "updated"
+                        # Fill in remaining as skipped
+                        for j in range(i + 1, len(request.items)):
+                            results.append(BulkCreateResult(
+                                index=j, status="skipped", error="Stopped due to previous error"
+                            ))
+                        timing["1_validation"] = (time.perf_counter() - start) * 1000
+                        timing["total"] = (time.perf_counter() - total_start) * 1000
+                        self._record_creation_timing(timing)
+                        return BulkCreateResponse(
+                            total=len(request.items),
+                            created=0, updated=0, failed=failed,
+                            results=sorted(results, key=lambda r: r.index)
+                        )
+            except Exception as e:
+                failed += 1
+                results.append(BulkCreateResult(
+                    index=i, status="error", error=str(e)
+                ))
+                if not request.continue_on_error:
+                    for j in range(i + 1, len(request.items)):
+                        results.append(BulkCreateResult(
+                            index=j, status="skipped", error="Stopped due to previous error"
+                        ))
+                    timing["1_validation"] = (time.perf_counter() - start) * 1000
+                    timing["total"] = (time.perf_counter() - total_start) * 1000
+                    self._record_creation_timing(timing)
+                    return BulkCreateResponse(
+                        total=len(request.items),
+                        created=0, updated=0, failed=failed,
+                        results=sorted(results, key=lambda r: r.index)
+                    )
 
+        timing["1_validation"] = (time.perf_counter() - start) * 1000
+
+        if not validation_results:
+            timing["total"] = (time.perf_counter() - total_start) * 1000
+            self._record_creation_timing(timing)
+            return BulkCreateResponse(
+                total=len(request.items),
+                created=0, updated=0, failed=failed,
+                results=sorted(results, key=lambda r: r.index)
+            )
+
+        # Stage 2: Batch check for existing documents
+        start = time.perf_counter()
+        identity_hashes = [vr[2].identity_hash for vr in validation_results]
+        existing_docs = await Document.find({
+            "identity_hash": {"$in": identity_hashes},
+            "status": DocumentStatus.ACTIVE.value
+        }).to_list()
+        existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
+        timing["2_find_existing"] = (time.perf_counter() - start) * 1000
+
+        # Stage 3: Bulk request IDs from Registry
+        start = time.perf_counter()
+        registry = get_registry_client()
+        registry_items = [
+            {
+                "identity_hash": vr[2].identity_hash,
+                "template_id": vr[1].template_id,
+                "version": (existing_by_hash[vr[2].identity_hash].version + 1
+                           if vr[2].identity_hash in existing_by_hash else 1)
+            }
+            for vr in validation_results
+        ]
+
+        try:
+            registry_results = await registry.generate_document_ids_bulk(
+                registry_items,
+                created_by=request.items[0].created_by if request.items else None
+            )
+        except RegistryError as e:
+            # All valid documents fail due to Registry error
+            for i, item, _ in validation_results:
+                failed += 1
+                results.append(BulkCreateResult(
+                    index=i, status="error", error=f"Registry error: {str(e)}"
+                ))
+            timing["3_registry_bulk"] = (time.perf_counter() - start) * 1000
+            timing["total"] = (time.perf_counter() - total_start) * 1000
+            self._record_creation_timing(timing)
+            return BulkCreateResponse(
+                total=len(request.items),
+                created=0, updated=0, failed=failed,
+                results=sorted(results, key=lambda r: r.index)
+            )
+
+        timing["3_registry_bulk"] = (time.perf_counter() - start) * 1000
+
+        # Stage 4: Create all documents
+        start = time.perf_counter()
+        now = datetime.now(timezone.utc)
+
+        for idx, ((i, item, validation_result), registry_result) in enumerate(
+            zip(validation_results, registry_results)
+        ):
+            try:
+                if registry_result.get("status") == "error":
+                    failed += 1
                     results.append(BulkCreateResult(
-                        index=i,
-                        status=status,
-                        document_id=response.document_id,
-                        identity_hash=response.identity_hash,
-                        version=response.version,
-                        is_new=response.is_new,
-                        warnings=response.warnings
+                        index=i, status="error",
+                        error=registry_result.get("error", "Failed to generate ID")
                     ))
+                    continue
+
+                document_id = registry_result.get("registry_id")
+                identity_hash = validation_result.identity_hash
+                existing = existing_by_hash.get(identity_hash)
+
+                if existing:
+                    # Deactivate old version
+                    existing.status = DocumentStatus.INACTIVE
+                    existing.updated_at = now
+                    existing.updated_by = item.created_by
+                    await existing.save()
+                    new_version = existing.version + 1
+                    is_new = False
+                else:
+                    new_version = 1
+                    is_new = True
+
+                # Create document
+                metadata = DocumentMetadata(
+                    warnings=validation_result.warnings,
+                    custom=item.metadata or {}
+                )
+                document = Document(
+                    document_id=document_id,
+                    template_id=item.template_id,
+                    template_version=validation_result.template_version,
+                    identity_hash=identity_hash,
+                    version=new_version,
+                    data=item.data,
+                    term_references=validation_result.term_references,
+                    status=DocumentStatus.ACTIVE,
+                    created_at=now,
+                    created_by=item.created_by,
+                    updated_at=now,
+                    updated_by=item.created_by,
+                    metadata=metadata
+                )
+                await document.insert()
+
+                if is_new:
+                    created += 1
+                    status = "created"
+                else:
+                    updated += 1
+                    status = "updated"
+
+                results.append(BulkCreateResult(
+                    index=i,
+                    status=status,
+                    document_id=document_id,
+                    identity_hash=identity_hash,
+                    version=new_version,
+                    is_new=is_new,
+                    warnings=validation_result.warnings
+                ))
 
             except Exception as e:
                 failed += 1
                 results.append(BulkCreateResult(
-                    index=i,
-                    status="error",
-                    error=str(e)
+                    index=i, status="error", error=str(e)
                 ))
                 if not request.continue_on_error:
+                    # Mark remaining as skipped
+                    for remaining_idx in range(idx + 1, len(validation_results)):
+                        remaining_i = validation_results[remaining_idx][0]
+                        results.append(BulkCreateResult(
+                            index=remaining_i, status="skipped",
+                            error="Stopped due to previous error"
+                        ))
                     break
+
+        timing["4_create_documents"] = (time.perf_counter() - start) * 1000
+        timing["total"] = (time.perf_counter() - total_start) * 1000
+        self._record_creation_timing(timing)
 
         return BulkCreateResponse(
             total=len(request.items),
             created=created,
             updated=updated,
             failed=failed,
-            results=results
+            results=sorted(results, key=lambda r: r.index)
         )
 
     async def validate_document(
