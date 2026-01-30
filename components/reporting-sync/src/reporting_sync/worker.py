@@ -6,11 +6,13 @@ Responsibilities:
 - Process events asynchronously
 - Handle retries and error logging
 - Track sync status
+- Record metrics for monitoring
 """
 
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -21,6 +23,7 @@ from nats.js import JetStreamContext
 from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 
 from .config import settings
+from .metrics import metrics
 from .models import EventType, ReportingConfig, SyncStatus, SyncStrategy
 from .schema_manager import SchemaManager
 from .transformer import DocumentTransformer
@@ -82,6 +85,7 @@ class SyncWorker:
 
         Returns True if successful, False otherwise.
         """
+        start_time = time.perf_counter()
         event_type = event_data.get("event_type")
         document = event_data.get("document", {})
         document_id = document.get("document_id")
@@ -89,24 +93,29 @@ class SyncWorker:
 
         if not document_id or not template_id:
             logger.warning(f"Invalid document event: missing document_id or template_id")
+            metrics.record_event_failed(None, None, "invalid_event", "Missing document_id or template_id")
             return False
 
         # Fetch template to get reporting config
         template = await self._fetch_template(template_id)
         if not template:
             logger.warning(f"Template {template_id} not found, skipping document {document_id}")
+            metrics.record_event_failed(None, None, "template_not_found", f"Template {template_id} not found")
             return False
 
+        template_code = template.get("code", "unknown")
         config = self._get_reporting_config(template)
 
         # Check if sync is enabled
         if not config.sync_enabled:
-            logger.debug(f"Sync disabled for template {template['code']}, skipping")
+            logger.debug(f"Sync disabled for template {template_code}, skipping")
+            metrics.record_event_skipped(template_code, "sync_disabled")
             return True  # Not an error, just skipped
 
         # Ensure table exists
         table_name = await self.schema_manager.ensure_table_for_template(template)
         if not table_name:
+            metrics.record_event_skipped(template_code, "table_creation_skipped")
             return True  # Sync disabled
 
         # Transform document to rows
@@ -124,25 +133,34 @@ class SyncWorker:
                     "deleted",
                     document_id,
                 )
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            metrics.record_event_processed(template_code, table_name, latency_ms)
             logger.info(f"Marked document {document_id} as deleted in {table_name}")
             return True
 
         # Insert/update rows
-        async with self.pool.acquire() as conn:
-            for row in rows:
-                sql, values = transformer.generate_upsert_sql(table_name, row, strategy)
-                try:
-                    await conn.execute(sql, *values)
-                except Exception as e:
-                    logger.error(f"Error inserting row for {document_id}: {e}")
-                    logger.debug(f"SQL: {sql}")
-                    logger.debug(f"Values: {values}")
-                    raise
+        try:
+            async with self.pool.acquire() as conn:
+                for row in rows:
+                    sql, values = transformer.generate_upsert_sql(table_name, row, strategy)
+                    try:
+                        await conn.execute(sql, *values)
+                    except Exception as e:
+                        logger.error(f"Error inserting row for {document_id}: {e}")
+                        logger.debug(f"SQL: {sql}")
+                        logger.debug(f"Values: {values}")
+                        raise
 
-        logger.info(
-            f"Synced document {document_id} to {table_name} ({len(rows)} rows)"
-        )
-        return True
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            metrics.record_event_processed(template_code, table_name, latency_ms)
+            logger.info(
+                f"Synced document {document_id} to {table_name} ({len(rows)} rows, {latency_ms:.1f}ms)"
+            )
+            return True
+
+        except Exception as e:
+            metrics.record_event_failed(template_code, table_name, "insert_error", str(e))
+            raise
 
     async def _process_template_event(self, event_data: dict[str, Any]) -> bool:
         """

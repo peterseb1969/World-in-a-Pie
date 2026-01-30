@@ -153,3 +153,137 @@ class BatchSyncResponse(BaseModel):
     template_code: str
     status: BatchSyncStatus
     message: str
+
+
+# =============================================================================
+# MONITORING & METRICS MODELS
+# =============================================================================
+
+
+class PerTemplateStats(BaseModel):
+    """Statistics for a specific template."""
+
+    template_code: str
+    table_name: str
+    documents_synced: int = 0
+    documents_failed: int = 0
+    last_sync_at: datetime | None = None
+    last_error: str | None = None
+    last_error_at: datetime | None = None
+
+
+class ConsumerInfo(BaseModel):
+    """NATS consumer information."""
+
+    stream_name: str
+    consumer_name: str
+    pending_messages: int = 0
+    pending_bytes: int = 0
+    delivered_messages: int = 0
+    ack_pending: int = 0
+    redelivered: int = 0
+    last_delivered: datetime | None = None
+
+
+class LatencyStats(BaseModel):
+    """Latency statistics."""
+
+    sample_count: int = 0
+    min_ms: float = 0.0
+    max_ms: float = 0.0
+    avg_ms: float = 0.0
+    p50_ms: float = 0.0
+    p95_ms: float = 0.0
+    p99_ms: float = 0.0
+
+
+class MetricsResponse(BaseModel):
+    """Comprehensive metrics response."""
+
+    # Uptime
+    started_at: datetime
+    uptime_seconds: float
+
+    # Connection status
+    nats_connected: bool
+    postgres_connected: bool
+
+    # Event processing
+    events_processed: int = 0
+    events_failed: int = 0
+    events_per_second: float = 0.0
+
+    # Queue info
+    consumer_info: ConsumerInfo | None = None
+
+    # Latency
+    processing_latency: LatencyStats = Field(default_factory=LatencyStats)
+
+    # Per-template stats
+    template_stats: list[PerTemplateStats] = Field(default_factory=list)
+
+    # Error breakdown
+    errors_by_type: dict[str, int] = Field(default_factory=dict)
+
+
+class AlertSeverity(str, Enum):
+    """Alert severity levels."""
+
+    INFO = "info"
+    WARNING = "warning"
+    CRITICAL = "critical"
+
+
+class AlertType(str, Enum):
+    """Types of alerts."""
+
+    QUEUE_LAG = "queue_lag"
+    ERROR_RATE = "error_rate"
+    PROCESSING_STALLED = "processing_stalled"
+    CONNECTION_LOST = "connection_lost"
+
+
+class Alert(BaseModel):
+    """An active alert."""
+
+    alert_id: str
+    alert_type: AlertType
+    severity: AlertSeverity
+    message: str
+    triggered_at: datetime
+    resolved_at: datetime | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AlertThresholds(BaseModel):
+    """Configurable alert thresholds."""
+
+    # Queue lag alert
+    queue_lag_warning: int = Field(default=100, description="Pending messages for warning")
+    queue_lag_critical: int = Field(default=1000, description="Pending messages for critical")
+
+    # Error rate alert (errors per minute)
+    error_rate_warning: float = Field(default=5.0, description="Errors/min for warning")
+    error_rate_critical: float = Field(default=20.0, description="Errors/min for critical")
+
+    # Processing stalled (seconds since last event)
+    stall_warning_seconds: int = Field(default=300, description="Seconds for stall warning")
+    stall_critical_seconds: int = Field(default=600, description="Seconds for stall critical")
+
+
+class AlertConfig(BaseModel):
+    """Alert configuration."""
+
+    enabled: bool = True
+    check_interval_seconds: int = Field(default=30, description="How often to check alerts")
+    thresholds: AlertThresholds = Field(default_factory=AlertThresholds)
+    webhook_url: str | None = Field(default=None, description="Webhook URL for notifications")
+    webhook_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class AlertsResponse(BaseModel):
+    """Response containing alerts and config."""
+
+    config: AlertConfig
+    active_alerts: list[Alert] = Field(default_factory=list)
+    resolved_alerts: list[Alert] = Field(default_factory=list)

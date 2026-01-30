@@ -17,8 +17,13 @@ from nats.js import JetStreamContext
 
 from . import __version__
 from .config import settings
+from .metrics import metrics
 from .models import (
+    AlertConfig,
+    AlertsResponse,
+    ConsumerInfo,
     HealthResponse,
+    MetricsResponse,
     SyncStatus,
     BatchSyncJob,
     BatchSyncRequest,
@@ -44,6 +49,7 @@ class AppState:
     jetstream: JetStreamContext | None = None
     postgres_pool: asyncpg.Pool | None = None
     sync_task: asyncio.Task | None = None
+    alert_check_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
     sync_status: SyncStatus = SyncStatus(
         running=False,
@@ -53,6 +59,68 @@ class AppState:
 
 
 state = AppState()
+
+
+async def get_consumer_info() -> ConsumerInfo | None:
+    """Get NATS consumer information including pending messages."""
+    if not state.jetstream:
+        return None
+
+    try:
+        consumer = await state.jetstream.consumer_info(
+            settings.nats_stream_name,
+            settings.nats_durable_name,
+        )
+        return ConsumerInfo(
+            stream_name=settings.nats_stream_name,
+            consumer_name=settings.nats_durable_name,
+            pending_messages=consumer.num_pending,
+            pending_bytes=0,  # Not directly available
+            delivered_messages=consumer.delivered.stream_seq,
+            ack_pending=consumer.num_ack_pending,
+            redelivered=consumer.num_redelivered,
+            last_delivered=None,  # Would need to parse from consumer info
+        )
+    except Exception as e:
+        logger.debug(f"Could not get consumer info: {e}")
+        return None
+
+
+async def run_alert_check_loop() -> None:
+    """Background task that periodically checks alert conditions."""
+    logger.info("Alert check loop started")
+
+    while True:
+        try:
+            config = metrics.get_alert_config()
+            await asyncio.sleep(config.check_interval_seconds)
+
+            if not config.enabled:
+                continue
+
+            # Get current state
+            nats_ok = state.nats_client is not None and state.nats_client.is_connected
+            postgres_ok = state.postgres_pool is not None
+
+            # Quick postgres check
+            if postgres_ok:
+                try:
+                    async with state.postgres_pool.acquire() as conn:
+                        await conn.fetchval("SELECT 1")
+                except Exception:
+                    postgres_ok = False
+
+            consumer_info = await get_consumer_info()
+
+            # Check alerts
+            await metrics.check_alerts(consumer_info, nats_ok, postgres_ok)
+
+        except asyncio.CancelledError:
+            logger.info("Alert check loop cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Error in alert check loop: {e}")
+            await asyncio.sleep(10)  # Back off on error
 
 
 async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
@@ -175,12 +243,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Sync worker not started - missing connections")
 
+    # Start alert check background task
+    state.alert_check_task = asyncio.create_task(run_alert_check_loop())
+    logger.info("Alert check loop started")
+
     logger.info(f"{settings.service_name} started successfully")
 
     yield
 
     # Shutdown
     logger.info(f"Shutting down {settings.service_name}...")
+
+    # Cancel alert check task
+    if state.alert_check_task:
+        state.alert_check_task.cancel()
+        try:
+            await state.alert_check_task
+        except asyncio.CancelledError:
+            pass
 
     # Cancel sync task
     if state.sync_task:
@@ -250,6 +330,121 @@ async def health_check() -> HealthResponse:
 async def get_sync_status() -> SyncStatus:
     """Get current sync worker status."""
     return state.sync_status
+
+
+# =============================================================================
+# MONITORING & METRICS ENDPOINTS
+# =============================================================================
+
+
+@app.get("/metrics", response_model=MetricsResponse)
+async def get_metrics() -> MetricsResponse:
+    """
+    Get comprehensive metrics for the sync service.
+
+    Includes:
+    - Uptime and connection status
+    - Event processing stats (processed, failed, rate)
+    - NATS consumer info (pending messages, lag)
+    - Processing latency statistics (min, max, avg, percentiles)
+    - Per-template sync statistics
+    - Error breakdown by type
+    """
+    nats_ok = state.nats_client is not None and state.nats_client.is_connected
+    postgres_ok = state.postgres_pool is not None
+
+    # Quick postgres check
+    if postgres_ok:
+        try:
+            async with state.postgres_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+        except Exception:
+            postgres_ok = False
+
+    consumer_info = await get_consumer_info()
+
+    return metrics.build_metrics_response(
+        nats_connected=nats_ok,
+        postgres_connected=postgres_ok,
+        consumer_info=consumer_info,
+    )
+
+
+@app.get("/metrics/consumer", response_model=ConsumerInfo | None)
+async def get_consumer_metrics() -> ConsumerInfo | None:
+    """
+    Get NATS consumer information.
+
+    Returns details about the JetStream consumer including:
+    - Pending messages (queue depth)
+    - Acknowledgement pending count
+    - Redelivered message count
+    - Delivered message count
+    """
+    return await get_consumer_info()
+
+
+@app.get("/alerts", response_model=AlertsResponse)
+async def get_alerts() -> AlertsResponse:
+    """
+    Get current alerts and alert configuration.
+
+    Returns:
+    - Current alert configuration (thresholds, webhook settings)
+    - Active alerts (currently triggered)
+    - Recently resolved alerts
+    """
+    return AlertsResponse(
+        config=metrics.get_alert_config(),
+        active_alerts=metrics.get_active_alerts(),
+        resolved_alerts=metrics.get_resolved_alerts(),
+    )
+
+
+@app.put("/alerts/config", response_model=AlertConfig)
+async def update_alert_config(config: AlertConfig) -> AlertConfig:
+    """
+    Update alert configuration.
+
+    Configure:
+    - enabled: Enable/disable alert checking
+    - check_interval_seconds: How often to check alert conditions
+    - thresholds: Warning/critical thresholds for each alert type
+    - webhook_url: Optional webhook for notifications
+    - webhook_headers: Custom headers for webhook requests
+    """
+    metrics.update_alert_config(config)
+    return metrics.get_alert_config()
+
+
+@app.post("/alerts/test")
+async def test_alerts() -> dict[str, Any]:
+    """
+    Manually trigger an alert check and return results.
+
+    Useful for testing alert configuration without waiting for the check interval.
+    """
+    nats_ok = state.nats_client is not None and state.nats_client.is_connected
+    postgres_ok = state.postgres_pool is not None
+
+    if postgres_ok:
+        try:
+            async with state.postgres_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+        except Exception:
+            postgres_ok = False
+
+    consumer_info = await get_consumer_info()
+    new_alerts = await metrics.check_alerts(consumer_info, nats_ok, postgres_ok)
+
+    return {
+        "checked": True,
+        "nats_connected": nats_ok,
+        "postgres_connected": postgres_ok,
+        "consumer_pending": consumer_info.pending_messages if consumer_info else None,
+        "new_alerts": [a.model_dump(mode="json") for a in new_alerts],
+        "active_alerts": [a.model_dump(mode="json") for a in metrics.get_active_alerts()],
+    }
 
 
 @app.get("/schema/{template_code}")
