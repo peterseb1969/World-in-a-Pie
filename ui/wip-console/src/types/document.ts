@@ -138,3 +138,36 @@ export interface DocumentBulkOperationResponse {
   succeeded: number
   failed: number
 }
+
+// =============================================================================
+// TABLE VIEW TYPES
+// =============================================================================
+
+export interface TableColumn {
+  name: string
+  label: string
+  type: string
+  is_array: boolean
+  is_flattened: boolean
+}
+
+export interface TableViewResponse {
+  template_id: string
+  template_code: string
+  template_name: string
+  columns: TableColumn[]
+  rows: Record<string, unknown>[]
+  total_documents: number
+  total_rows: number
+  page: number
+  page_size: number
+  pages: number
+  array_handling: 'none' | 'flattened' | 'json'
+}
+
+export interface TableViewParams {
+  status?: DocumentStatus
+  page?: number
+  page_size?: number
+  max_cross_product?: number
+}

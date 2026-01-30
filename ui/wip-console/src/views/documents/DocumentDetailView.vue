@@ -496,6 +496,14 @@ onMounted(async () => {
                   <span class="label">Identity Fields:</span>
                   <span>{{ currentTemplate.identity_fields.join(', ') || 'None' }}</span>
                 </div>
+                <div class="template-actions">
+                  <router-link :to="{ path: '/templates/' + selectedTemplate }" class="template-link">
+                    <i class="pi pi-external-link"></i> View Template
+                  </router-link>
+                  <router-link :to="{ path: '/documents/table', query: { template: selectedTemplate } }" class="template-link">
+                    <i class="pi pi-table"></i> View as Table
+                  </router-link>
+                </div>
               </div>
             </div>
           </TabPanel>
@@ -699,6 +707,31 @@ onMounted(async () => {
   display: flex;
   gap: 0.5rem;
   font-size: 0.875rem;
+}
+
+.template-actions {
+  display: flex;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--p-surface-200);
+}
+
+.template-link {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--p-primary-color);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.template-link:hover {
+  text-decoration: underline;
+}
+
+.template-link i {
+  font-size: 0.75rem;
 }
 
 .metadata-item .label {

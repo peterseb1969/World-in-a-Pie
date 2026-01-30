@@ -280,9 +280,18 @@ onMounted(loadTemplates)
             {{ formatDate(data.updated_at) }}
           </template>
         </Column>
-        <Column header="Actions" style="width: 100px">
+        <Column header="Actions" style="width: 140px">
           <template #body="{ data }">
             <div class="actions" @click.stop>
+              <Button
+                icon="pi pi-table"
+                severity="secondary"
+                text
+                rounded
+                size="small"
+                @click="router.push({ path: '/documents/table', query: { template: data.template_id } })"
+                v-tooltip="'View as Table'"
+              />
               <Button
                 icon="pi pi-pencil"
                 severity="secondary"

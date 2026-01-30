@@ -51,6 +51,7 @@ const menuItems: MenuItem[] = [
     icon: 'pi pi-folder',
     children: [
       { label: 'Browse', icon: 'pi pi-list', route: '/documents' },
+      { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
       { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
     ]
   }

@@ -322,6 +322,12 @@ onMounted(async () => {
         </template>
         <template v-else>
           <Button
+            label="View as Table"
+            icon="pi pi-table"
+            severity="secondary"
+            @click="router.push({ path: '/documents/table', query: { template: template?.template_id } })"
+          />
+          <Button
             label="Validate"
             icon="pi pi-check-circle"
             severity="secondary"

@@ -37,6 +37,8 @@ import type {
   DocumentQueryParams,
   BulkCreateDocumentRequest,
   DocumentBulkOperationResponse,
+  TableViewResponse,
+  TableViewParams,
   // Shared types
   ApiError
 } from '@/types'
@@ -455,6 +457,26 @@ class DocumentStoreClient {
 
   async createDocumentsBulk(data: BulkCreateDocumentRequest): Promise<DocumentBulkOperationResponse> {
     const response = await this.client.post<DocumentBulkOperationResponse>('/documents/bulk', data)
+    return response.data
+  }
+
+  // ===========================================================================
+  // TABLE VIEW ENDPOINTS
+  // ===========================================================================
+
+  async getTableView(templateId: string, params?: TableViewParams): Promise<TableViewResponse> {
+    const response = await this.client.get<TableViewResponse>(`/table/${templateId}`, { params })
+    return response.data
+  }
+
+  async exportTableCsv(
+    templateId: string,
+    params?: { status?: string; include_metadata?: boolean }
+  ): Promise<Blob> {
+    const response = await this.client.get(`/table/${templateId}/csv`, {
+      params,
+      responseType: 'blob'
+    })
     return response.data
   }
 }
