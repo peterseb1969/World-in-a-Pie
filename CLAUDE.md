@@ -749,6 +749,27 @@ python scripts/seed_comprehensive.py --dry-run
 - Edge case templates (MINIMAL, ALL_TYPES, DEEP_NEST, LARGE_FIELDS)
 - Realistic document data using Faker library
 
+**Template-Driven Document Generation:**
+
+The seed data module uses a template-driven approach where document generators read template definitions and terminology values to automatically produce valid documents:
+
+```python
+from seed_data import generators
+
+# Generate a document for any template
+person = generators.generate_document("PERSON", index=0)
+employee = generators.generate_document("EMPLOYEE", index=1)
+
+# The generator automatically:
+# 1. Reads template field definitions
+# 2. Resolves template inheritance (EMPLOYEE -> PERSON)
+# 3. Generates appropriate values per field type
+# 4. Uses valid terminology values for term fields
+# 5. Applies validation rules (conditional_required, conditional_value, etc.)
+```
+
+This approach ensures generated documents always satisfy validation rules without manually coding rule logic into each generator.
+
 ---
 
 ## File Structure
@@ -771,11 +792,12 @@ WorldInPie/
 ├── components/
 │   ├── seed_data/         # Shared test data module
 │   │   ├── __init__.py
-│   │   ├── terminologies.py   # 15 terminology definitions
-│   │   ├── templates.py       # 24 template definitions
-│   │   ├── generators.py      # Faker-based data generators
-│   │   ├── documents.py       # Document generation configs
-│   │   ├── performance.py     # Benchmarking utilities
+│   │   ├── terminologies.py       # 15 terminology definitions
+│   │   ├── templates.py           # 24 template definitions
+│   │   ├── generators.py          # Simple API for document generation
+│   │   ├── document_generator.py  # Template-driven generator core
+│   │   ├── documents.py           # Document generation configs
+│   │   ├── performance.py         # Benchmarking utilities
 │   │   └── requirements.txt
 │   ├── registry/          # ID & Namespace Registry (complete)
 │   │   ├── src/registry/

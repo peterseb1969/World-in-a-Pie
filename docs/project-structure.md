@@ -183,15 +183,27 @@ world-in-a-pie/
 │   │   │       └── transform/
 │   │   └── tests/
 │   │
-│   └── gateway/                        # ══════════════════════════════
-│       │                               # API GATEWAY (optional)
-│       │                               # Unified entry point
+│   ├── gateway/                        # ══════════════════════════════
+│   │   │                               # API GATEWAY (optional)
+│   │   │                               # Unified entry point
+│   │   │                               # ══════════════════════════════
+│   │   ├── README.md
+│   │   ├── docker-compose.yml
+│   │   ├── Dockerfile
+│   │   └── config/
+│   │       └── traefik.yml
+│   │
+│   └── seed_data/                      # ══════════════════════════════
+│       │                               # SEED DATA MODULE
+│       │                               # Template-driven test data
 │       │                               # ══════════════════════════════
-│       ├── README.md
-│       ├── docker-compose.yml
-│       ├── Dockerfile
-│       └── config/
-│           └── traefik.yml
+│       ├── __init__.py
+│       ├── terminologies.py            # 15 terminology definitions
+│       ├── templates.py                # 24 template definitions
+│       ├── documents.py                # Document generation configs
+│       ├── generators.py               # Simple API for generation
+│       ├── document_generator.py       # Template-driven generator
+│       └── performance.py              # Large-scale data generation
 │
 ├── ui/                                 # Frontend applications
 │   │
