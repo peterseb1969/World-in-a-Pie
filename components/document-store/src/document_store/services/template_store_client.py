@@ -12,6 +12,9 @@ class TemplateStoreClient:
 
     Used to fetch templates for document validation. Templates include
     field definitions, validation rules, and identity field configuration.
+
+    Includes permanent caching for templates since template_id is immutable -
+    each template version gets a unique ID that never changes.
     """
 
     def __init__(
@@ -38,12 +41,30 @@ class TemplateStoreClient:
         )
         self.timeout = timeout
 
+        # Permanent cache for resolved templates (template_id -> template data)
+        # Template IDs are immutable - each version gets a new ID
+        self._template_cache: dict[str, Optional[dict[str, Any]]] = {}
+
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
         return {
             "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
+
+    def get_cache_stats(self) -> dict[str, int]:
+        """Get cache statistics."""
+        return {
+            "template_cache_size": len(self._template_cache),
+            "template_cache_hits": getattr(self, '_cache_hits', 0),
+            "template_cache_misses": getattr(self, '_cache_misses', 0),
+        }
+
+    def clear_cache(self):
+        """Clear the template cache (mainly for testing)."""
+        self._template_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     async def get_template(
         self,
@@ -101,6 +122,7 @@ class TemplateStoreClient:
         Get a template with inheritance fully resolved.
 
         This returns the template with all parent fields and rules merged.
+        Results are permanently cached since template_id is immutable.
 
         Args:
             template_id: Template ID
@@ -108,10 +130,21 @@ class TemplateStoreClient:
         Returns:
             Resolved template data if found, None otherwise
         """
-        return await self.get_template(
+        # Check cache first
+        if template_id in self._template_cache:
+            self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+            return self._template_cache[template_id]
+
+        # Cache miss - fetch from service
+        self._cache_misses = getattr(self, '_cache_misses', 0) + 1
+        template = await self.get_template(
             template_id=template_id,
             resolve_inheritance=True
         )
+
+        # Cache the result (including None for not found)
+        self._template_cache[template_id] = template
+        return template
 
     async def template_exists(
         self,

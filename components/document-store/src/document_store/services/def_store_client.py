@@ -1,6 +1,7 @@
 """Client for communicating with the WIP Def-Store service."""
 
 import os
+import time
 from typing import Any, Optional
 
 import httpx
@@ -11,13 +12,20 @@ class DefStoreClient:
     Client for the WIP Def-Store service.
 
     Used to validate term field values against terminologies.
+
+    Includes TTL-based caching for term validations to improve performance
+    when processing batches of documents with repeated term values.
     """
+
+    # Default cache TTL: 5 minutes
+    DEFAULT_CACHE_TTL = 300
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        cache_ttl: int = DEFAULT_CACHE_TTL
     ):
         """
         Initialize the Def-Store client.
@@ -26,6 +34,7 @@ class DefStoreClient:
             base_url: Def-Store API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
+            cache_ttl: Cache time-to-live in seconds (default 5 minutes)
         """
         self.base_url = base_url or os.getenv(
             "DEF_STORE_URL",
@@ -36,6 +45,13 @@ class DefStoreClient:
             "dev_master_key_for_testing"
         )
         self.timeout = timeout
+        self.cache_ttl = cache_ttl
+
+        # TTL-based cache for term validations
+        # Key: (terminology_ref, value) -> (result, timestamp)
+        self._validation_cache: dict[tuple[str, str], tuple[dict[str, Any], float]] = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -43,6 +59,43 @@ class DefStoreClient:
             "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
+
+    def _cache_key(self, terminology_ref: str, value: str) -> tuple[str, str]:
+        """Create a cache key for a term validation."""
+        return (terminology_ref, value)
+
+    def _get_cached(self, terminology_ref: str, value: str) -> Optional[dict[str, Any]]:
+        """Get a cached validation result if not expired."""
+        key = self._cache_key(terminology_ref, value)
+        if key in self._validation_cache:
+            result, timestamp = self._validation_cache[key]
+            if time.time() - timestamp < self.cache_ttl:
+                self._cache_hits += 1
+                return result
+            else:
+                # Expired - remove from cache
+                del self._validation_cache[key]
+        return None
+
+    def _set_cached(self, terminology_ref: str, value: str, result: dict[str, Any]):
+        """Cache a validation result."""
+        key = self._cache_key(terminology_ref, value)
+        self._validation_cache[key] = (result, time.time())
+
+    def get_cache_stats(self) -> dict[str, Any]:
+        """Get cache statistics."""
+        return {
+            "validation_cache_size": len(self._validation_cache),
+            "validation_cache_hits": self._cache_hits,
+            "validation_cache_misses": self._cache_misses,
+            "cache_ttl_seconds": self.cache_ttl,
+        }
+
+    def clear_cache(self):
+        """Clear the validation cache."""
+        self._validation_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     async def get_terminology(
         self,
@@ -122,6 +175,13 @@ class DefStoreClient:
         Returns:
             Validation result with valid, matched_term, suggestion
         """
+        # Check cache first
+        cached = self._get_cached(terminology_ref, value)
+        if cached is not None:
+            return cached
+
+        self._cache_misses += 1
+
         # Determine if ID or code
         if terminology_ref.startswith("TERM-"):
             payload = {"terminology_id": terminology_ref, "value": value}
@@ -141,7 +201,10 @@ class DefStoreClient:
                         f"Validation failed: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                result = response.json()
+                # Cache the result
+                self._set_cached(terminology_ref, value, result)
+                return result
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {str(e)}")
 
@@ -152,18 +215,39 @@ class DefStoreClient:
         """
         Validate multiple values against terminologies.
 
+        Uses caching to avoid re-validating the same (terminology, value) pairs.
+        Only uncached items are sent to the Def-Store service.
+
         Args:
             items: List of dicts with terminology_ref and value
 
         Returns:
-            List of validation results
+            List of validation results (in same order as input)
         """
         if not items:
             return []
 
-        # Transform items to API format
+        # Check cache for each item and collect uncached ones
+        results: list[Optional[dict[str, Any]]] = [None] * len(items)
+        uncached_items: list[tuple[int, dict[str, str]]] = []
+
+        for i, item in enumerate(items):
+            terminology_ref = item["terminology_ref"]
+            value = item["value"]
+            cached = self._get_cached(terminology_ref, value)
+            if cached is not None:
+                results[i] = cached
+            else:
+                uncached_items.append((i, item))
+                self._cache_misses += 1
+
+        # If all items were cached, return early
+        if not uncached_items:
+            return results
+
+        # Transform uncached items to API format
         api_items = []
-        for item in items:
+        for _, item in uncached_items:
             terminology_ref = item["terminology_ref"]
             if terminology_ref.startswith("TERM-"):
                 api_items.append({
@@ -190,7 +274,17 @@ class DefStoreClient:
                     )
 
                 data = response.json()
-                return data.get("results", [])
+                api_results = data.get("results", [])
+
+                # Map results back to original indices and cache them
+                for j, (original_index, item) in enumerate(uncached_items):
+                    if j < len(api_results):
+                        result = api_results[j]
+                        results[original_index] = result
+                        # Cache the result
+                        self._set_cached(item["terminology_ref"], item["value"], result)
+
+                return results
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {str(e)}")
 
@@ -223,9 +317,14 @@ def get_def_store_client() -> DefStoreClient:
 
 def configure_def_store_client(
     base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    api_key: Optional[str] = None,
+    cache_ttl: Optional[int] = None
 ) -> DefStoreClient:
     """Configure and return the Def-Store client."""
     global _client
-    _client = DefStoreClient(base_url=base_url, api_key=api_key)
+    _client = DefStoreClient(
+        base_url=base_url,
+        api_key=api_key,
+        cache_ttl=cache_ttl or DefStoreClient.DEFAULT_CACHE_TTL
+    )
     return _client
