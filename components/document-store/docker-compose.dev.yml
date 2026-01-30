@@ -23,6 +23,7 @@ services:
       - TEMPLATE_STORE_API_KEY=dev_master_key_for_testing
       - DEF_STORE_URL=http://wip-def-store-dev:8002
       - DEF_STORE_API_KEY=dev_master_key_for_testing
+      - NATS_URL=nats://wip-nats:4222
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
     volumes:

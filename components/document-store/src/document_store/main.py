@@ -18,6 +18,7 @@ from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.template_store_client import configure_template_store_client, get_template_store_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
+from .services.nats_client import configure_nats_client, close_nats_client, health_check as nats_health_check
 
 
 # Application configuration
@@ -33,6 +34,7 @@ class Settings:
     TEMPLATE_STORE_API_KEY: str = os.getenv("TEMPLATE_STORE_API_KEY", "dev_master_key_for_testing")
     DEF_STORE_URL: str = os.getenv("DEF_STORE_URL", "http://localhost:8002")
     DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY", "dev_master_key_for_testing")
+    NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
 
 
@@ -101,10 +103,24 @@ async def lifespan(app: FastAPI):
     else:
         print("WARNING: Def-Store service is not reachable. Terminology validation may not work.")
 
+    # Configure NATS client (optional - for reporting sync)
+    if settings.NATS_URL:
+        nats_connected = await configure_nats_client(settings.NATS_URL)
+        if nats_connected:
+            print(f"NATS client connected to {settings.NATS_URL}")
+        else:
+            print("WARNING: NATS not available. Document events will not be published.")
+    else:
+        print("NATS_URL not configured. Document event publishing disabled.")
+
     yield
 
     # Shutdown
     print("Shutting down WIP Document Store Service...")
+
+    # Close NATS connection
+    await close_nats_client()
+
     app.state.mongodb_client.close()
     print("MongoDB connection closed.")
 
@@ -201,6 +217,9 @@ async def health_check():
     def_store_client = get_def_store_client()
     def_store_status = "connected" if await def_store_client.health_check() else "disconnected"
 
+    # Check NATS (optional)
+    nats_status = "connected" if await nats_health_check() else "disabled"
+
     status = "healthy" if mongo_status == "connected" else "unhealthy"
 
     return {
@@ -209,6 +228,7 @@ async def health_check():
         "registry": registry_status,
         "template_store": template_store_status,
         "def_store": def_store_status,
+        "nats": nats_status,
     }
 
 

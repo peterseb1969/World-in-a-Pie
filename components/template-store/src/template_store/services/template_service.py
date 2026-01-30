@@ -16,6 +16,7 @@ from ..models.api_models import (
 from .registry_client import get_registry_client, RegistryError
 from .def_store_client import get_def_store_client, DefStoreError
 from .inheritance_service import InheritanceService, InheritanceError
+from .nats_client import publish_template_event, EventType
 
 
 class TemplateService:
@@ -84,6 +85,13 @@ class TemplateService:
             created_by=request.created_by,
         )
         await template.insert()
+
+        # Publish template created event
+        await publish_template_event(
+            EventType.TEMPLATE_CREATED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=request.created_by
+        )
 
         return TemplateService._to_template_response(template)
 
@@ -350,6 +358,13 @@ class TemplateService:
         )
         await new_template.insert()
 
+        # Publish template updated event
+        await publish_template_event(
+            EventType.TEMPLATE_UPDATED,
+            TemplateService._template_to_event_payload(new_template),
+            changed_by=request.updated_by
+        )
+
         return TemplateService._to_template_response(new_template)
 
     @staticmethod
@@ -383,6 +398,13 @@ class TemplateService:
         template.updated_at = datetime.now(timezone.utc)
         template.updated_by = updated_by
         await template.save()
+
+        # Publish template deleted event
+        await publish_template_event(
+            EventType.TEMPLATE_DELETED,
+            TemplateService._template_to_event_payload(template),
+            changed_by=updated_by
+        )
 
         return True
 
@@ -584,6 +606,27 @@ class TemplateService:
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    @staticmethod
+    def _template_to_event_payload(t: Template) -> dict:
+        """Convert Template document to event payload for NATS publishing."""
+        return {
+            "template_id": t.template_id,
+            "code": t.code,
+            "name": t.name,
+            "description": t.description,
+            "version": t.version,
+            "extends": t.extends,
+            "identity_fields": t.identity_fields,
+            "fields": [f.model_dump() for f in t.fields] if t.fields else [],
+            "rules": [r.model_dump() for r in t.rules] if t.rules else [],
+            "metadata": t.metadata.model_dump() if t.metadata else {},
+            "status": t.status,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "created_by": t.created_by,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            "updated_by": t.updated_by,
+        }
 
     @staticmethod
     def _to_template_response(t: Template) -> TemplateResponse:

@@ -23,6 +23,7 @@ from ..models.api_models import (
 )
 from .registry_client import get_registry_client, RegistryError
 from .validation_service import ValidationService
+from .nats_client import publish_document_event, EventType, is_nats_enabled
 
 
 class DocumentService:
@@ -194,6 +195,13 @@ class DocumentService:
                 "3b_mongo_insert": mongo_ms,
             })
 
+            # Publish document created event
+            await publish_document_event(
+                EventType.DOCUMENT_CREATED,
+                self._document_to_event_payload(document),
+                changed_by=request.created_by
+            )
+
             return DocumentCreateResponse(
                 document_id=document_id,
                 template_id=request.template_id,
@@ -255,6 +263,13 @@ class DocumentService:
 
             await document.insert()
 
+            # Publish document updated event
+            await publish_document_event(
+                EventType.DOCUMENT_UPDATED,
+                self._document_to_event_payload(document),
+                changed_by=request.created_by
+            )
+
             return DocumentCreateResponse(
                 document_id=document_id,
                 template_id=request.template_id,
@@ -285,6 +300,23 @@ class DocumentService:
         """Format validation errors as a string."""
         messages = [e.get("message", "Validation error") for e in errors]
         return "; ".join(messages)
+
+    def _document_to_event_payload(self, document: Document) -> dict[str, Any]:
+        """Convert Document to event payload for NATS publishing."""
+        return {
+            "document_id": document.document_id,
+            "template_id": document.template_id,
+            "template_version": document.template_version,
+            "identity_hash": document.identity_hash,
+            "version": document.version,
+            "data": document.data,
+            "term_references": document.term_references,
+            "status": document.status.value if hasattr(document.status, 'value') else document.status,
+            "created_at": document.created_at.isoformat() if document.created_at else None,
+            "created_by": document.created_by,
+            "updated_at": document.updated_at.isoformat() if document.updated_at else None,
+            "updated_by": document.updated_by,
+        }
 
     async def get_document(
         self,
@@ -445,6 +477,13 @@ class DocumentService:
         document.updated_by = deleted_by
         await document.save()
 
+        # Publish document deleted event
+        await publish_document_event(
+            EventType.DOCUMENT_DELETED,
+            self._document_to_event_payload(document),
+            changed_by=deleted_by
+        )
+
         return True
 
     async def archive_document(
@@ -461,6 +500,13 @@ class DocumentService:
         document.updated_at = datetime.now(timezone.utc)
         document.updated_by = archived_by
         await document.save()
+
+        # Publish document archived event
+        await publish_document_event(
+            EventType.DOCUMENT_ARCHIVED,
+            self._document_to_event_payload(document),
+            changed_by=archived_by
+        )
 
         return True
 
@@ -721,6 +767,14 @@ class DocumentService:
                     metadata=metadata
                 )
                 await document.insert()
+
+                # Publish event
+                event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
+                await publish_document_event(
+                    event_type,
+                    self._document_to_event_payload(document),
+                    changed_by=item.created_by
+                )
 
                 if is_new:
                     created += 1

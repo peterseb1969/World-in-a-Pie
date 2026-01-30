@@ -1,8 +1,19 @@
 # WIP Shared Infrastructure - Development
 # Start this first, then start individual services
+#
+# Services:
+#   - MongoDB (document store): localhost:27017
+#   - Mongo Express (MongoDB UI): http://localhost:8081 (admin/admin)
+#   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
+#   - pgAdmin (PostgreSQL UI): http://localhost:5050 (admin@wip.local/admin)
+#   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
+#
 version: "3.8"
 
 services:
+  # ===================
+  # Document Store
+  # ===================
   mongodb:
     image: mongo:7
     container_name: wip-mongodb
@@ -35,6 +46,70 @@ services:
       - wip-network
     restart: unless-stopped
 
+  # ===================
+  # Reporting Store
+  # ===================
+  postgres:
+    image: postgres:16
+    container_name: wip-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: wip_reporting
+      POSTGRES_USER: wip
+      POSTGRES_PASSWORD: wip_dev_password
+    volumes:
+      - wip-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wip -d wip_reporting"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: wip-pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@wip.local
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    volumes:
+      - wip-pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # ===================
+  # Message Queue
+  # ===================
+  nats:
+    image: nats:2.10
+    container_name: wip-nats
+    command: ["--js", "--sd", "/data", "-m", "8222"]
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - wip-nats-data:/data
+    healthcheck:
+      # NATS minimal image doesn't have wget/curl, use nats-server --help as liveness check
+      test: ["CMD", "nats-server", "--help"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
 networks:
   wip-network:
     name: wip-network
@@ -42,3 +117,6 @@ networks:
 
 volumes:
   wip-mongodb-data:
+  wip-postgres-data:
+  wip-pgadmin-data:
+  wip-nats-data:

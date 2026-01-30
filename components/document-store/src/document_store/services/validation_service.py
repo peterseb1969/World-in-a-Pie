@@ -314,7 +314,7 @@ class ValidationService:
     ):
         """Validate a single field value."""
         field_type = field.get("type", "string")
-        validation = field.get("validation", {})
+        validation = field.get("validation") or {}
 
         # Handle null values
         if value is None:

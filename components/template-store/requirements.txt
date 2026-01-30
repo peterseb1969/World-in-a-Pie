@@ -11,6 +11,9 @@ motor>=3.3.0,<4.0.0
 # HTTP client for Registry and Def-Store communication
 httpx>=0.26.0,<0.28.0
 
+# NATS client for event publishing (reporting sync)
+nats-py>=2.6.0,<3.0.0
+
 # Pydantic for data validation
 pydantic>=2.5.0,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0
