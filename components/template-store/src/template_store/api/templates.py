@@ -47,17 +47,22 @@ async def create_template(request: CreateTemplateRequest):
 async def list_templates(
     status: Optional[str] = Query(None, description="Filter by status"),
     extends: Optional[str] = Query(None, description="Filter by parent template"),
+    code: Optional[str] = Query(None, description="Filter by template code (shows all versions)"),
+    latest_only: bool = Query(False, description="Only return latest version of each template"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page")
 ):
     """
     List templates with pagination.
 
-    Supports filtering by status and parent template.
+    Supports filtering by status, parent template, and code.
+    Use latest_only=true to only show the most recent version of each template.
     """
     templates, total = await TemplateService.list_templates(
         status=status,
         extends=extends,
+        code=code,
+        latest_only=latest_only,
         page=page,
         page_size=page_size
     )
@@ -100,20 +105,22 @@ async def get_template_raw(template_id: str):
 @router.get("/by-code/{code}", response_model=TemplateResponse)
 async def get_template_by_code(code: str):
     """
-    Get a template by code.
+    Get the latest version of a template by code.
 
     Returns the template with inheritance resolved.
+    To get a specific version, use /by-code/{code}/versions/{version}.
     """
-    template = await TemplateService.get_template(code=code)
-    if not template:
+    versions = await TemplateService.get_template_versions(code)
+    if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
-    return template
+    # Return the first one (highest version since sorted descending)
+    return versions[0]
 
 
 @router.get("/by-code/{code}/raw", response_model=TemplateResponse)
 async def get_template_by_code_raw(code: str):
     """
-    Get a template by code without inheritance resolution.
+    Get the latest version of a template by code without inheritance resolution.
     """
     template = await TemplateService.get_template_raw(code=code)
     if not template:
@@ -121,13 +128,53 @@ async def get_template_by_code_raw(code: str):
     return template
 
 
+@router.get("/by-code/{code}/versions", response_model=TemplateListResponse)
+async def get_template_versions(code: str):
+    """
+    Get all versions of a template by code.
+
+    Returns all versions sorted by version number (newest first).
+    This allows viewing the full version history of a template.
+    """
+    versions = await TemplateService.get_template_versions(code)
+    if not versions:
+        raise HTTPException(status_code=404, detail="Template not found")
+    return TemplateListResponse(
+        items=versions,
+        total=len(versions),
+        page=1,
+        page_size=len(versions)
+    )
+
+
+@router.get("/by-code/{code}/versions/{version}", response_model=TemplateResponse)
+async def get_template_by_code_and_version(code: str, version: int):
+    """
+    Get a specific version of a template.
+
+    Args:
+        code: Template code
+        version: Version number
+
+    Returns the template with inheritance resolved.
+    """
+    template = await TemplateService.get_template_by_code_and_version(code, version)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template version not found")
+    return template
+
+
 @router.put("/{template_id}", response_model=TemplateResponse)
 async def update_template(template_id: str, request: UpdateTemplateRequest):
     """
-    Update a template.
+    Update a template by creating a new version.
 
-    Creates a new version of the template. If the code changes, a synonym
-    is added in the Registry so both old and new codes resolve to the same ID.
+    This creates a NEW template document with a new template_id and incremented
+    version number. The original version remains unchanged, allowing documents
+    to continue referencing it. This supports gradual migration scenarios where
+    different systems may use different template versions.
+
+    Returns the newly created template version.
     """
     try:
         template = await TemplateService.update_template(template_id, request)

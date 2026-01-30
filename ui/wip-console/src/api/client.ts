@@ -254,6 +254,8 @@ class TemplateStoreClient {
     page_size?: number
     status?: string
     extends?: string
+    code?: string
+    latest_only?: boolean
   }): Promise<TemplateListResponse> {
     const response = await this.client.get<TemplateListResponse>('/templates', { params })
     return response.data
@@ -276,6 +278,16 @@ class TemplateStoreClient {
 
   async getTemplateByCodeRaw(code: string): Promise<Template> {
     const response = await this.client.get<Template>(`/templates/by-code/${code}/raw`)
+    return response.data
+  }
+
+  async getTemplateVersions(code: string): Promise<TemplateListResponse> {
+    const response = await this.client.get<TemplateListResponse>(`/templates/by-code/${code}/versions`)
+    return response.data
+  }
+
+  async getTemplateByCodeAndVersion(code: string, version: number): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-code/${code}/versions/${version}`)
     return response.data
   }
 

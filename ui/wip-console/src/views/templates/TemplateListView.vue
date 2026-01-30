@@ -9,6 +9,7 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
+import ToggleSwitch from 'primevue/toggleswitch'
 import { useTemplateStore, useAuthStore, useUiStore } from '@/stores'
 import type { Template, CreateTemplateRequest } from '@/types'
 
@@ -21,6 +22,7 @@ const uiStore = useUiStore()
 const searchQuery = ref('')
 const statusFilter = ref<string | null>(null)
 const extendsFilter = ref<string | null>(null)
+const showAllVersions = ref(true)  // Show all versions by default (as per user requirement)
 
 const statusOptions = [
   { label: 'All Status', value: null },
@@ -85,6 +87,7 @@ async function loadTemplates() {
     await templateStore.fetchTemplates({
       status: statusFilter.value || undefined,
       extends: extendsFilter.value || undefined,
+      latest_only: !showAllVersions.value,
       page_size: 100
     })
   } catch (e) {
@@ -208,6 +211,10 @@ onMounted(loadTemplates)
           class="filter-select"
           @change="loadTemplates"
         />
+        <div class="versions-toggle">
+          <ToggleSwitch v-model="showAllVersions" @change="loadTemplates" inputId="showAllVersions" />
+          <label for="showAllVersions" class="versions-label">Show all versions</label>
+        </div>
         <Button
           icon="pi pi-refresh"
           severity="secondary"
@@ -229,9 +236,12 @@ onMounted(loadTemplates)
         @row-click="(e) => viewTemplate(e.data)"
         rowHover
       >
-        <Column field="code" header="Code" sortable style="width: 150px">
+        <Column field="code" header="Code" sortable style="width: 180px">
           <template #body="{ data }">
-            <code class="template-code">{{ data.code }}</code>
+            <div class="template-code-cell">
+              <code class="template-code">{{ data.code }}</code>
+              <Tag v-if="showAllVersions" :value="`v${data.version}`" severity="info" class="version-tag" />
+            </div>
           </template>
         </Column>
         <Column field="name" header="Name" sortable style="min-width: 200px">
@@ -420,6 +430,31 @@ onMounted(loadTemplates)
 
 .filter-select {
   min-width: 150px;
+}
+
+.versions-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.5rem;
+}
+
+.versions-label {
+  font-size: 0.875rem;
+  color: var(--p-text-muted-color);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.template-code-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.version-tag {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
 }
 
 .templates-table :deep(.p-datatable-tbody > tr) {

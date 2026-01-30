@@ -48,6 +48,7 @@ class RegistryClient:
         self,
         code: str,
         name: str,
+        version: int = 1,
         created_by: Optional[str] = None
     ) -> str:
         """
@@ -56,6 +57,7 @@ class RegistryClient:
         Args:
             code: Template code (e.g., 'PERSON')
             name: Template name
+            version: Template version (included in composite key for versioning)
             created_by: User or system creating this
 
         Returns:
@@ -72,10 +74,11 @@ class RegistryClient:
                     "namespace": "wip-templates",
                     "composite_key": {
                         "code": code,
-                        "name": name
+                        "name": name,
+                        "version": version
                     },
                     "created_by": created_by,
-                    "metadata": {"type": "template"}
+                    "metadata": {"type": "template", "version": version}
                 }]
             )
 
@@ -105,7 +108,7 @@ class RegistryClient:
         Register multiple templates in the Registry.
 
         Args:
-            templates: List of template dicts with 'code' and 'name'
+            templates: List of template dicts with 'code', 'name', and optional 'version'
             created_by: User or system creating these
 
         Returns:
@@ -119,10 +122,11 @@ class RegistryClient:
                 "namespace": "wip-templates",
                 "composite_key": {
                     "code": template["code"],
-                    "name": template["name"]
+                    "name": template["name"],
+                    "version": template.get("version", 1)
                 },
                 "created_by": created_by,
-                "metadata": {"type": "template"}
+                "metadata": {"type": "template", "version": template.get("version", 1)}
             }
             for template in templates
         ]

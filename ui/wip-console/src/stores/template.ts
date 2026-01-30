@@ -13,6 +13,7 @@ export const useTemplateStore = defineStore('template', () => {
   const templates = ref<Template[]>([])
   const currentTemplate = ref<Template | null>(null)
   const currentTemplateRaw = ref<Template | null>(null)
+  const templateVersions = ref<Template[]>([])  // Version history for current template
   const total = ref(0)
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -25,6 +26,8 @@ export const useTemplateStore = defineStore('template', () => {
     page_size?: number
     status?: string
     extends?: string
+    code?: string
+    latest_only?: boolean
   }) {
     loading.value = true
     error.value = null
@@ -107,15 +110,15 @@ export const useTemplateStore = defineStore('template', () => {
     loading.value = true
     error.value = null
     try {
-      const updated = await templateStoreClient.updateTemplate(id, data)
-      const index = templates.value.findIndex(t => t.template_id === id)
-      if (index !== -1) {
-        templates.value[index] = updated
-      }
-      if (currentTemplate.value?.template_id === id) {
-        currentTemplate.value = updated
-      }
-      return updated
+      // Note: updateTemplate creates a NEW version with a NEW template_id
+      const newVersion = await templateStoreClient.updateTemplate(id, data)
+      // Add the new version to the list
+      templates.value.unshift(newVersion)
+      total.value++
+      // Update current template to point to the new version
+      currentTemplate.value = newVersion
+      currentTemplateRaw.value = newVersion
+      return newVersion
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update template'
       throw e
@@ -184,6 +187,37 @@ export const useTemplateStore = defineStore('template', () => {
     }
   }
 
+  async function fetchTemplateVersions(code: string) {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await templateStoreClient.getTemplateVersions(code)
+      templateVersions.value = response.items
+      return response.items
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch template versions'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchTemplateByCodeAndVersion(code: string, version: number) {
+    loading.value = true
+    error.value = null
+    try {
+      const template = await templateStoreClient.getTemplateByCodeAndVersion(code, version)
+      currentTemplate.value = template
+      currentTemplateRaw.value = template
+      return template
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch template version'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
   // Fetch terminologies from Def-Store for term field references
   async function fetchTerminologies() {
     try {
@@ -204,6 +238,7 @@ export const useTemplateStore = defineStore('template', () => {
     templates,
     currentTemplate,
     currentTemplateRaw,
+    templateVersions,
     total,
     loading,
     error,
@@ -218,6 +253,8 @@ export const useTemplateStore = defineStore('template', () => {
     validateTemplate,
     getChildren,
     getDescendants,
+    fetchTemplateVersions,
+    fetchTemplateByCodeAndVersion,
     fetchTerminologies,
     clearCurrent
   }

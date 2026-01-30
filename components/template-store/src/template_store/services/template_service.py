@@ -148,6 +148,8 @@ class TemplateService:
     async def list_templates(
         status: Optional[str] = None,
         extends: Optional[str] = None,
+        code: Optional[str] = None,
+        latest_only: bool = False,
         page: int = 1,
         page_size: int = 50
     ) -> tuple[list[TemplateResponse], int]:
@@ -157,6 +159,8 @@ class TemplateService:
         Args:
             status: Filter by status (active, deprecated, inactive)
             extends: Filter by parent template ID
+            code: Filter by template code (shows all versions of that code)
+            latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
 
@@ -168,15 +172,43 @@ class TemplateService:
             query["status"] = status
         if extends:
             query["extends"] = extends
+        if code:
+            query["code"] = code
 
-        total = await Template.find(query).count()
-        skip = (page - 1) * page_size
+        if latest_only and not code:
+            # Use aggregation to get only the latest version of each code
+            pipeline = [
+                {"$match": query} if query else {"$match": {}},
+                {"$sort": {"code": 1, "version": -1}},
+                {"$group": {
+                    "_id": "$code",
+                    "doc": {"$first": "$$ROOT"}
+                }},
+                {"$replaceRoot": {"newRoot": "$doc"}},
+                {"$sort": {"name": 1}}
+            ]
 
-        templates = await Template.find(query) \
-            .sort("name") \
-            .skip(skip) \
-            .limit(page_size) \
-            .to_list()
+            # Get total count
+            count_pipeline = pipeline + [{"$count": "total"}]
+            count_result = await Template.aggregate(count_pipeline).to_list()
+            total = count_result[0]["total"] if count_result else 0
+
+            # Get paginated results
+            paginated_pipeline = pipeline + [
+                {"$skip": (page - 1) * page_size},
+                {"$limit": page_size}
+            ]
+            results = await Template.aggregate(paginated_pipeline).to_list()
+            templates = [Template(**doc) for doc in results]
+        else:
+            total = await Template.find(query).count()
+            skip = (page - 1) * page_size
+
+            templates = await Template.find(query) \
+                .sort([("code", 1), ("version", -1)]) \
+                .skip(skip) \
+                .limit(page_size) \
+                .to_list()
 
         return (
             [TemplateService._to_template_response(t) for t in templates],
@@ -184,88 +216,141 @@ class TemplateService:
         )
 
     @staticmethod
+    async def get_template_versions(
+        code: str
+    ) -> list[TemplateResponse]:
+        """
+        Get all versions of a template by code.
+
+        Args:
+            code: Template code
+
+        Returns:
+            List of all versions, sorted by version descending (newest first)
+        """
+        templates = await Template.find({"code": code}) \
+            .sort([("version", -1)]) \
+            .to_list()
+
+        return [TemplateService._to_template_response(t) for t in templates]
+
+    @staticmethod
+    async def get_template_by_code_and_version(
+        code: str,
+        version: int,
+        resolve_inheritance: bool = True
+    ) -> Optional[TemplateResponse]:
+        """
+        Get a specific version of a template by code and version number.
+
+        Args:
+            code: Template code
+            version: Version number
+            resolve_inheritance: Whether to resolve inheritance
+
+        Returns:
+            Template if found, None otherwise
+        """
+        template = await Template.find_one({"code": code, "version": version})
+        if not template:
+            return None
+
+        if resolve_inheritance and template.extends:
+            try:
+                template = await InheritanceService.resolve_template(template)
+            except InheritanceError:
+                pass
+
+        return TemplateService._to_template_response(template)
+
+    @staticmethod
     async def update_template(
         template_id: str,
         request: UpdateTemplateRequest
     ) -> Optional[TemplateResponse]:
         """
-        Update a template (creates a new version).
+        Update a template by creating a new version.
 
-        If code changes, adds a synonym in the Registry.
+        Creates a NEW template document with incremented version, rather than
+        modifying in-place. This allows multiple versions to exist simultaneously,
+        supporting gradual migration of documents to new template versions.
 
         Args:
-            template_id: Template to update
+            template_id: Template to update (any version)
             request: Update request
 
         Returns:
-            Updated template, or None if not found
+            New template version, or None if original not found
         """
-        template = await Template.find_one({"template_id": template_id})
-        if not template:
+        original = await Template.find_one({"template_id": template_id})
+        if not original:
             return None
 
-        # Track if code is changing
-        old_code = template.code
-        code_changed = request.code and request.code != old_code
+        # Calculate new version number (max version for this code + 1)
+        max_version_template = await Template.find(
+            {"code": original.code}
+        ).sort([("version", -1)]).limit(1).to_list()
+        new_version = max_version_template[0].version + 1 if max_version_template else 1
 
-        # If code changes, add synonym in Registry
-        if code_changed:
-            # Check new code doesn't exist
-            existing = await Template.find_one({"code": request.code})
-            if existing:
-                raise ValueError(f"Template with code '{request.code}' already exists")
+        # Determine the code for the new version
+        new_code = request.code if request.code is not None else original.code
 
-            # Add synonym for new code
-            client = get_registry_client()
-            await client.add_synonym(
-                target_id=template_id,
-                new_code=request.code,
-                additional_fields={"name": request.name or template.name}
-            )
+        # If code is changing, check it doesn't conflict with another template family
+        if new_code != original.code:
+            existing_other = await Template.find_one({
+                "code": new_code,
+                "code": {"$ne": original.code}  # Different template family
+            })
+            if existing_other:
+                raise ValueError(f"Template with code '{new_code}' already exists")
 
         # Validate extends if changing
-        if request.extends is not None and request.extends != template.extends:
-            if request.extends:
-                # Check it exists
-                parent = await Template.find_one({"template_id": request.extends})
-                if not parent:
-                    parent = await Template.find_one({"code": request.extends})
-                    if parent:
-                        request.extends = parent.template_id
-                    else:
-                        raise ValueError(f"Parent template '{request.extends}' not found")
+        extends_value = request.extends if request.extends is not None else original.extends
+        if extends_value and extends_value != original.extends:
+            parent = await Template.find_one({"template_id": extends_value})
+            if not parent:
+                parent = await Template.find_one({"code": extends_value})
+                if parent:
+                    extends_value = parent.template_id
+                else:
+                    raise ValueError(f"Parent template '{extends_value}' not found")
 
-                # Check for circular inheritance
-                if await InheritanceService.check_circular_inheritance(
-                    template_id, request.extends
-                ):
-                    raise ValueError("Setting this parent would create circular inheritance")
+            # Check for circular inheritance
+            if await InheritanceService.check_circular_inheritance(
+                template_id, extends_value
+            ):
+                raise ValueError("Setting this parent would create circular inheritance")
 
-        # Apply updates
-        if request.code is not None:
-            template.code = request.code
-        if request.name is not None:
-            template.name = request.name
-        if request.description is not None:
-            template.description = request.description
-        if request.extends is not None:
-            template.extends = request.extends if request.extends else None
-        if request.identity_fields is not None:
-            template.identity_fields = request.identity_fields
-        if request.fields is not None:
-            template.fields = request.fields
-        if request.rules is not None:
-            template.rules = request.rules
-        if request.metadata is not None:
-            template.metadata = request.metadata
+        # Register new version with Registry to get a new template_id
+        client = get_registry_client()
+        new_template_id = await client.register_template(
+            code=new_code,
+            name=request.name if request.name is not None else original.name,
+            version=new_version,
+            created_by=request.updated_by
+        )
 
-        # Increment version
-        template.version += 1
-        template.updated_at = datetime.now(timezone.utc)
-        template.updated_by = request.updated_by
-        await template.save()
+        # Create new template document for this version
+        new_template = Template(
+            template_id=new_template_id,
+            code=new_code,
+            name=request.name if request.name is not None else original.name,
+            description=request.description if request.description is not None else original.description,
+            version=new_version,
+            extends=extends_value if extends_value else None,
+            identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
+            fields=request.fields if request.fields is not None else original.fields,
+            rules=request.rules if request.rules is not None else original.rules,
+            metadata=request.metadata if request.metadata is not None else original.metadata,
+            status="active",
+            created_at=datetime.now(timezone.utc),
+            created_by=request.updated_by,
+            updated_at=datetime.now(timezone.utc),
+            updated_by=request.updated_by,
+        )
+        await new_template.insert()
 
-        return TemplateService._to_template_response(template)
+        return TemplateService._to_template_response(new_template)
 
     @staticmethod
     async def delete_template(

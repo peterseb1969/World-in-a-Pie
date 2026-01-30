@@ -257,6 +257,90 @@ All versions share the same `identity_hash`, making it easy to trace document hi
 
 ---
 
+## Template Versioning
+
+### CRITICAL: Multiple Template Versions Can Be Active Simultaneously
+
+Templates support **multi-version operation** where different versions of the same template can be active at the same time. This is essential for gradual migration scenarios.
+
+**Use Case Example:**
+You have contracts with different companies about data sheet formats. When you update a template, you can't migrate all companies at once. Different companies use different template versions during the migration period.
+
+### How Template Versioning Works
+
+```
+Template Update Flow:
+  PUT /api/template-store/templates/{template_id}
+    ↓
+  Create NEW template document with:
+    - NEW template_id (from Registry)
+    - Same code
+    - Incremented version number
+    ↓
+  Original template remains unchanged and active
+```
+
+| Operation | Result |
+|-----------|--------|
+| Create template (code=PERSON) | TPL-000001, version=1 |
+| Update TPL-000001 | NEW TPL-000002, version=2, original unchanged |
+| Update TPL-000002 | NEW TPL-000003, version=3, both originals unchanged |
+
+### Template IDs vs Codes
+
+- **template_id**: Unique per version (e.g., TPL-000001, TPL-000002)
+- **code**: Shared across versions (e.g., PERSON)
+
+Documents reference **template_id** which uniquely identifies the exact template version they conform to.
+
+### API Endpoints for Versions
+
+```bash
+# List all versions of a template by code
+GET /api/template-store/templates/by-code/{code}/versions
+
+# Get specific version
+GET /api/template-store/templates/by-code/{code}/versions/{version}
+
+# Get latest version (default behavior)
+GET /api/template-store/templates/by-code/{code}
+
+# List all templates (shows all versions by default)
+GET /api/template-store/templates
+
+# List only latest version of each template
+GET /api/template-store/templates?latest_only=true
+```
+
+### Document-Template Relationship
+
+Documents store both `template_id` and `template_version`:
+
+```json
+{
+  "document_id": "0192abc...",
+  "template_id": "TPL-000001",     // Exact version reference
+  "template_version": 1,           // Redundant but useful for queries
+  "data": {...}
+}
+```
+
+This allows:
+- Documents to continue referencing older template versions
+- Queries to filter documents by template version
+- Validation to use the exact template the document was created with
+
+### Key Differences from Document Versioning
+
+| Aspect | Documents | Templates |
+|--------|-----------|-----------|
+| Trigger | Same identity_hash | PUT request |
+| Old version status | `inactive` | Remains `active` |
+| Use case | Audit trail | Gradual migration |
+| Identity | identity_hash groups versions | code groups versions |
+
+---
+
 ## Running the Project
 
 ### Development Setup

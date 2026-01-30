@@ -128,7 +128,9 @@ class Template(Document):
         name = "templates"
         indexes = [
             IndexModel([("template_id", 1)], unique=True, name="template_id_unique_idx"),
-            IndexModel([("code", 1)], unique=True, name="code_unique_idx"),
+            # Changed from unique on code alone to (code, version) to support multi-version
+            IndexModel([("code", 1), ("version", 1)], unique=True, name="code_version_unique_idx"),
+            IndexModel([("code", 1)], name="code_idx"),  # For listing versions by code
             IndexModel([("status", 1)], name="status_idx"),
             IndexModel([("extends", 1)], name="extends_idx"),
             IndexModel([("name", "text"), ("description", "text")], name="text_search_idx"),
