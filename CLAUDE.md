@@ -187,6 +187,76 @@ Even though we're implementing only the Standard profile initially, the architec
 
 ---
 
+## Document Identity and Upsert Model
+
+### CRITICAL: Identity Fields Drive Versioning
+
+The Document Store uses a **single POST endpoint** for both creating new documents and updating existing ones. The behavior is determined by the **identity hash**:
+
+```
+POST /api/document-store/documents
+  ↓
+Compute identity_hash = SHA-256(identity_field_1 + identity_field_2 + ...)
+  ↓
+Find active document with same identity_hash?
+  → NO:  Create NEW document (version 1)
+  → YES: Create NEW VERSION (version N+1), deactivate old version
+```
+
+### Identity Fields Configuration
+
+Templates define which fields form the document's identity:
+
+```json
+{
+  "code": "PERSON",
+  "name": "Person",
+  "identity_fields": ["email"],           // Single field identity
+  "fields": [...]
+}
+
+{
+  "code": "ORDER_LINE",
+  "name": "Order Line Item",
+  "identity_fields": ["order_id", "product_sku"],  // Composite identity
+  "fields": [...]
+}
+```
+
+**Important considerations:**
+- Identity fields MUST be mandatory (enforced by validation)
+- Choose fields that naturally identify the entity (email, SKU, order_id+line_number)
+- Templates without identity fields cannot use upsert logic (each POST creates a new document)
+
+### How Versioning Works
+
+| Scenario | identity_hash | Result |
+|----------|---------------|--------|
+| First document with email="john@example.com" | `abc123...` | New document v1 |
+| Update document with email="john@example.com" | `abc123...` | New version v2, v1 deactivated |
+| New document with email="jane@example.com" | `def456...` | New document v1 (different identity) |
+
+### Key Implementation Details
+
+1. **Identity Hash**: SHA-256 of concatenated identity field values
+2. **Document ID**: Unique UUID7 per version (for time-ordering)
+3. **Version Number**: Incremented for each new version of same identity
+4. **Status**: Only one `active` version per identity_hash; old versions become `inactive`
+
+### Querying Versions
+
+```bash
+# Get all versions of a document
+GET /api/document-store/documents/{document_id}/versions
+
+# Get specific version
+GET /api/document-store/documents/{document_id}/versions/{version}
+```
+
+All versions share the same `identity_hash`, making it easy to trace document history.
+
+---
+
 ## Running the Project
 
 ### Development Setup
