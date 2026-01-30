@@ -272,45 +272,32 @@ If referenced entities are missing (due to test cleanup, data corruption, or bug
 
 Real-time streaming endpoint for document changes. Details to be defined.
 
-#### Per-Template Table View (Transactional Access)
+#### Per-Template Table View (Transactional Access) ✅ IMPLEMENTED
 
 **Goal:** Provide immediate, transactional table views for each template - enabling traditional apps to use WIP as a validated data backend.
 
-**Context:**
-WIP is designed for non-transactional use (registration, data quality, integration). Consolidation happens downstream in the reporting layer. However, some traditional apps may want:
-- Templates as "tables"
-- Documents as "rows"
-- Immediate consistency (no sync delay)
+**Status:** Implemented in Document Store API.
 
-**API Design:**
+**Endpoints:**
 ```
-GET /api/document-store/templates/{template_id}/table
+GET /api/document-store/table/{template_id}
   ?page=1&page_size=100
-  ?filter[field_name]=value
-  ?sort=field_name
-  ?format=json|csv
+  ?status=active
+  ?max_cross_product=1000
+
+GET /api/document-store/table/{template_id}/csv
+  ?status=active
+  ?include_metadata=true
 ```
 
-**Flattening rules:**
-- Nested objects → prefixed columns (`address.city` → `address_city`)
-- Arrays → multiple rows (one per array element, like SQL `UNNEST`)
-- Term fields → both original value AND term_id columns (`salutation`, `salutation_term_id`)
-- Each row includes `document_id` and array index for traceability
+**Features:**
+- JSON response with column metadata and flattened rows
+- CSV export with proper escaping
+- Metadata columns (_document_id, _version, _identity_hash, _status, _created_at, _updated_at)
+- Array flattening with configurable cross-product threshold
+- Nested objects serialized as JSON strings
 
-**Example:**
-```
-Template: ORDER (fields: order_id, customer_email, items[])
-
-Document: { order_id: "ORD-1", items: [{sku: "A", qty: 2}, {sku: "B", qty: 1}] }
-
-Table output:
-| document_id | order_id | customer_email | items_idx | items_sku | items_qty |
-|-------------|----------|----------------|-----------|-----------|-----------|
-| 0192abc...  | ORD-1    | john@test.com  | 0         | A         | 2         |
-| 0192abc...  | ORD-1    | john@test.com  | 1         | B         | 1         |
-```
-
-**Multiple arrays - decided approach:**
+**Array Handling (implemented):**
 
 | Scenario | Behavior |
 |----------|----------|
@@ -319,13 +306,21 @@ Table output:
 | 2+ arrays, cross-product ≤1000 rows | Cross-product (flatten all) |
 | 2+ arrays, cross-product >1000 rows | Keep arrays as JSON fields, no flatten |
 
-**Template creation warning:** If template has 2+ array fields, warn user:
-"Table view will cross-product arrays if ≤1000 rows per document, otherwise arrays remain as JSON."
-
-**Implementation:**
-- MongoDB aggregation pipeline (`$unwind`, `$project`)
-- Direct from MongoDB (no sync delay = transactional consistency)
-- Column list derived from template field definitions
+**Example output:**
+```json
+{
+  "template_id": "TPL-000029",
+  "template_code": "PERSON",
+  "columns": [{"name": "first_name", "type": "string", "is_array": false}, ...],
+  "rows": [
+    {"_document_id": "...", "first_name": "John", "languages": "English"},
+    {"_document_id": "...", "first_name": "John", "languages": "Spanish"}
+  ],
+  "total_documents": 100,
+  "total_rows": 150,
+  "array_handling": "flattened"
+}
+```
 
 #### Per-Template Reporting (Aggregations)
 
@@ -343,11 +338,14 @@ Table output:
 2. **Materialized views in PostgreSQL** - Sync to reporting DB, pre-aggregate (faster)
 3. **Embedded analytics** - Lightweight BI tool (Metabase, Superset)
 
-#### UI Gap: Term References Not Displayed
+#### UI Gap: Term References Not Displayed ✅ FIXED
 
-**Issue:** The Document Store API returns both `data` (original values) and `term_references` (resolved term IDs), but the WIP Console UI only displays `data`.
+**Issue:** The Document Store API returns both `data` (original values) and `term_references` (resolved term IDs), but the WIP Console UI only displayed `data`.
 
-**Fix needed:** Add a "Term References" section or tab in DocumentDetailView showing the resolved term_ids alongside original values. Useful for debugging and data lineage.
+**Fix:** Added "Term References" section in DocumentDetailView.vue Metadata tab:
+- Table showing field path, original value, and resolved term_id
+- Handles both single terms and arrays of terms
+- Also added to Raw JSON tab for complete data visibility
 
 ---
 

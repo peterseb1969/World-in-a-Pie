@@ -237,6 +237,28 @@ function formatDateTime(dateString: string): string {
   return new Date(dateString).toLocaleString()
 }
 
+function getFieldValue(fieldPath: string): string {
+  // Get the original value from document data for a field path
+  const doc = documentStore.currentDocument
+  if (!doc?.data) return '-'
+
+  // Handle nested paths like "address.country"
+  const parts = fieldPath.split('.')
+  let value: unknown = doc.data
+  for (const part of parts) {
+    if (value && typeof value === 'object' && part in value) {
+      value = (value as Record<string, unknown>)[part]
+    } else {
+      return '-'
+    }
+  }
+
+  if (Array.isArray(value)) {
+    return value.join(', ')
+  }
+  return String(value ?? '-')
+}
+
 // Import template store client for direct use
 import { templateStoreClient } from '@/api/client'
 
@@ -423,6 +445,35 @@ onMounted(async () => {
                 <p>No metadata available</p>
               </div>
 
+              <h4>Term References</h4>
+              <div v-if="!isCreateMode && documentStore.currentDocument?.term_references && Object.keys(documentStore.currentDocument.term_references).length > 0" class="term-references">
+                <p class="term-references-description">
+                  Resolved term IDs for terminology fields. Original values are preserved in the data, these are the canonical term identifiers.
+                </p>
+                <table class="term-references-table">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Original Value</th>
+                      <th>Term ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(termId, field) in documentStore.currentDocument.term_references" :key="field">
+                      <td><code>{{ field }}</code></td>
+                      <td>{{ getFieldValue(field) }}</td>
+                      <td>
+                        <code v-if="Array.isArray(termId)">{{ termId.join(', ') }}</code>
+                        <code v-else>{{ termId }}</code>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else-if="!isCreateMode" class="no-term-refs">
+                <p>No term fields in this document</p>
+              </div>
+
               <h4>Template Information</h4>
               <div class="template-info">
                 <div class="metadata-item">
@@ -453,6 +504,11 @@ onMounted(async () => {
             <div class="raw-json">
               <h4>Current Form Data</h4>
               <pre>{{ JSON.stringify(formData, null, 2) }}</pre>
+
+              <template v-if="!isCreateMode && documentStore.currentDocument?.term_references">
+                <h4>Term References</h4>
+                <pre>{{ JSON.stringify(documentStore.currentDocument.term_references, null, 2) }}</pre>
+              </template>
             </div>
           </TabPanel>
         </TabView>
@@ -663,9 +719,50 @@ onMounted(async () => {
   padding-left: 1.5rem;
 }
 
-.no-metadata {
+.no-metadata,
+.no-term-refs {
   color: var(--p-text-muted-color);
   font-size: 0.875rem;
+}
+
+.term-references {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.term-references-description {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
+}
+
+.term-references-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.term-references-table th,
+.term-references-table td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--p-surface-200);
+}
+
+.term-references-table th {
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.term-references-table code {
+  background-color: var(--p-surface-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: var(--p-border-radius);
+  font-size: 0.75rem;
 }
 
 .raw-json {

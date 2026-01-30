@@ -17,12 +17,17 @@ export interface Document {
   identity_hash: string
   version: number
   data: Record<string, unknown>
+  term_references: Record<string, string | string[]>  // field_path -> term_id or array of term_ids
   status: DocumentStatus
   created_at: string
   created_by: string | null
   updated_at: string
   updated_by: string | null
   metadata: DocumentMetadata
+  // Version tracking
+  is_latest_version?: boolean
+  latest_version?: number
+  latest_document_id?: string
 }
 
 // =============================================================================
