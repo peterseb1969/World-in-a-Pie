@@ -697,10 +697,57 @@ podman exec -it wip-document-store-dev bash -c \
 ```
 
 ### Seed Dummy Data
+
+#### Registry Seed (basic namespace demo)
 ```bash
 source .venv/bin/activate
 python components/registry/scripts/seed_data.py
 ```
+
+#### Comprehensive Seed (all services)
+```bash
+# Install requirements
+pip install faker requests
+
+# Seed with standard profile (recommended for development)
+python scripts/seed_comprehensive.py
+
+# Options:
+#   --profile minimal     Quick dev testing (50 docs)
+#   --profile standard    Full functional testing (500 docs)
+#   --profile full        Comprehensive coverage (2000 docs)
+#   --profile performance Benchmarking (100k docs)
+
+# Seed specific services only
+python scripts/seed_comprehensive.py --services def-store,template-store
+
+# Skip terminologies/templates (seed documents only)
+python scripts/seed_comprehensive.py --skip-terminologies --skip-templates
+
+# Run with benchmarks
+python scripts/seed_comprehensive.py --benchmark --output benchmark.json
+
+# Dry run (see what would be created)
+python scripts/seed_comprehensive.py --dry-run
+```
+
+**Data Profile Summary:**
+
+| Profile | Terminologies | Terms | Templates | Documents |
+|---------|---------------|-------|-----------|-----------|
+| minimal | 5 | ~50 | 5 | 50 |
+| standard | 15 | ~500 | 24 | 500 |
+| full | 15 | ~500 | 24 | 2,000 |
+| performance | 15 | ~500 | 24 | 100,000 |
+
+**Test Data Includes:**
+- 15 terminologies (SALUTATION, GENDER, COUNTRY, CURRENCY, LANGUAGE, etc.)
+- Term aliases for validation testing (Mr, MR, Mr., MR. all resolve to same term)
+- Hierarchical terms (DEPARTMENT with parent-child relationships)
+- 24 templates covering all field types and validation rules
+- Inheritance chain testing (MANAGER -> EMPLOYEE -> PERSON)
+- Edge case templates (MINIMAL, ALL_TYPES, DEEP_NEST, LARGE_FIELDS)
+- Realistic document data using Faker library
 
 ---
 
@@ -710,6 +757,8 @@ python components/registry/scripts/seed_data.py
 WorldInPie/
 ├── CLAUDE.md              # This file - session context
 ├── README.md              # Project overview
+├── scripts/               # Project-wide scripts
+│   └── seed_comprehensive.py  # Comprehensive test data seeding
 ├── docs/                  # Documentation
 │   ├── philosophy.md
 │   ├── architecture.md
@@ -720,6 +769,14 @@ WorldInPie/
 │   ├── project-structure.md
 │   └── technology-stack.md
 ├── components/
+│   ├── seed_data/         # Shared test data module
+│   │   ├── __init__.py
+│   │   ├── terminologies.py   # 15 terminology definitions
+│   │   ├── templates.py       # 24 template definitions
+│   │   ├── generators.py      # Faker-based data generators
+│   │   ├── documents.py       # Document generation configs
+│   │   ├── performance.py     # Benchmarking utilities
+│   │   └── requirements.txt
 │   ├── registry/          # ID & Namespace Registry (complete)
 │   │   ├── src/registry/
 │   │   ├── tests/

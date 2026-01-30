@@ -1,0 +1,3 @@
+# Requirements for WIP seed-data module
+faker>=22.0.0
+requests>=2.31.0
