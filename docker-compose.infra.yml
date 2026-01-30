@@ -5,8 +5,9 @@
 #   - MongoDB (document store): localhost:27017
 #   - Mongo Express (MongoDB UI): http://localhost:8081 (admin/admin)
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
-#   - pgAdmin (PostgreSQL UI): http://localhost:5050 (admin@wip.local/admin)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
+#
+# To access PostgreSQL: podman exec -it wip-postgres psql -U wip -d wip_reporting
 #
 version: "3.8"
 
@@ -69,24 +70,6 @@ services:
       - wip-network
     restart: unless-stopped
 
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: wip-pgadmin
-    ports:
-      - "5050:80"
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@wip.local
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"
-    volumes:
-      - wip-pgadmin-data:/var/lib/pgadmin
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - wip-network
-    restart: unless-stopped
-
   # ===================
   # Message Queue
   # ===================
@@ -118,5 +101,4 @@ networks:
 volumes:
   wip-mongodb-data:
   wip-postgres-data:
-  wip-pgadmin-data:
   wip-nats-data:
