@@ -502,12 +502,13 @@ onMounted(async () => {
 
           <TabPanel value="raw" header="Raw JSON">
             <div class="raw-json">
-              <h4>Current Form Data</h4>
-              <pre>{{ JSON.stringify(formData, null, 2) }}</pre>
-
-              <template v-if="!isCreateMode && documentStore.currentDocument?.term_references">
-                <h4>Term References</h4>
-                <pre>{{ JSON.stringify(documentStore.currentDocument.term_references, null, 2) }}</pre>
+              <template v-if="!isCreateMode && documentStore.currentDocument">
+                <h4>API Response (Document)</h4>
+                <pre>{{ JSON.stringify(documentStore.currentDocument, null, 2) }}</pre>
+              </template>
+              <template v-else>
+                <h4>Current Form Data</h4>
+                <pre>{{ JSON.stringify(formData, null, 2) }}</pre>
               </template>
             </div>
           </TabPanel>
