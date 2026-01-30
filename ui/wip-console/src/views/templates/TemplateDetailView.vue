@@ -7,11 +7,13 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
 import Select from 'primevue/select'
+import MultiSelect from 'primevue/multiselect'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import Tag from 'primevue/tag'
 import Chips from 'primevue/chips'
 import ToggleSwitch from 'primevue/toggleswitch'
+import Message from 'primevue/message'
 import FieldList from '@/components/templates/FieldList.vue'
 import RuleList from '@/components/templates/RuleList.vue'
 import TemplatePreview from '@/components/templates/TemplatePreview.vue'
@@ -425,16 +427,21 @@ onMounted(async () => {
 
             <div class="form-field">
               <label for="identity">Identity Fields</label>
-              <Select
+              <MultiSelect
                 id="identity"
                 v-model="form.identity_fields"
                 :options="fieldNames"
                 :disabled="!isEditing && !isNew"
-                placeholder="Select fields"
-                multiple
+                placeholder="Select fields for document identity"
+                display="chip"
                 class="w-full"
               />
-              <small>Fields used to uniquely identify documents</small>
+              <small v-if="form.identity_fields.length > 0" class="identity-hint">
+                Documents will be identified by: {{ form.identity_fields.join(' + ') }}
+              </small>
+              <Message v-else severity="warn" :closable="false" class="identity-warning">
+                No identity fields selected. Document versioning (upsert) will not work - each save creates a new document.
+              </Message>
             </div>
           </div>
         </template>
@@ -713,5 +720,18 @@ onMounted(async () => {
     flex-direction: column;
     gap: 0.5rem;
   }
+}
+
+.identity-hint {
+  color: var(--p-green-600);
+  font-weight: 500;
+}
+
+.identity-warning {
+  margin-top: 0.5rem;
+}
+
+.identity-warning :deep(.p-message-text) {
+  font-size: 0.8125rem;
 }
 </style>
