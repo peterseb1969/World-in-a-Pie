@@ -212,6 +212,62 @@ Features needed:
 
 This ensures audit trails are trustworthy and tamper-evident.
 
+#### Referential Integrity and Data Protection
+
+**Problem:** The system has cross-service references that are not validated:
+- Templates reference terminologies (via `terminology_ref` in term fields)
+- Documents reference templates (via `template_id`)
+- Documents store `term_references` pointing to term IDs
+
+If referenced entities are missing (due to test cleanup, data corruption, or bugs), the system has orphaned references with no way to detect or recover.
+
+**Core Principle:** Data is never deleted, and references must always resolve (even to inactive entities).
+
+**Required changes:**
+
+1. **Integrity Health Check API** - New endpoint(s) to scan for orphaned references:
+   ```
+   GET /api/health/integrity
+   Response:
+   {
+     "status": "warning",
+     "orphaned_template_refs": [...],    // Templates referencing missing terminologies
+     "orphaned_document_refs": [...],    // Documents referencing missing templates
+     "orphaned_term_refs": [...],        // Documents with term_references to missing terms
+     "inactive_refs": [...]              // References to inactive (but existing) entities
+   }
+   ```
+
+2. **Startup Validation** - Services log warnings about missing references on startup:
+   - Document Store checks that referenced templates exist
+   - Template Store checks that referenced terminologies exist
+   - Non-blocking (service starts anyway) but visible in logs
+
+3. **Cascade Status Warnings** - When deactivating an entity:
+   - Warn about downstream dependencies
+   - Example: "This terminology is used by 3 templates and 47 documents"
+   - Require `force=true` or show confirmation in UI
+
+4. **Reference Protection** - Prevent deactivating entities with active references:
+   - Option A: Block deactivation, require deactivating dependents first
+   - Option B: Allow with `force` flag, log warning
+   - Option C: Cascade deactivation (dangerous, needs confirmation)
+
+5. **Recovery Tools** - Scripts/endpoints to:
+   - List all orphaned references
+   - Export orphaned documents for analysis
+   - Re-link orphaned data if source is restored
+
+6. **Test Isolation** - Ensure development data safety:
+   - Tests MUST use separate database (e.g., `wip_def_store_test` not `wip_def_store`)
+   - Never run cleanup on non-test databases
+   - CI/CD uses ephemeral databases
+
+**Inactive vs Deleted:**
+- `inactive` status means "soft-deleted" - still retrievable, still resolvable
+- Validation should **warn** (not error) when referencing inactive entities
+- Historical documents must always be able to resolve their references
+
 ---
 
 ## Technical Decisions
@@ -232,7 +288,9 @@ This ensures audit trails are trustworthy and tamper-evident.
 - RESTful design with OpenAPI documentation at `/docs`
 
 ### Data Principles
-- Never delete, only deactivate (versioning policy)
+- Never delete, only deactivate (soft-delete sets status to `inactive`)
+- Inactive entities must remain retrievable (for historical reference resolution)
+- References must always resolve (even to inactive entities)
 - Composite keys with SHA-256 hashing for identity
 - Namespaces for ID isolation across systems
 
