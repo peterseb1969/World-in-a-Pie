@@ -132,6 +132,31 @@ async def get_document_version(
     return document
 
 
+@router.get(
+    "/{document_id}/latest",
+    response_model=DocumentResponse,
+    summary="Get latest version of document",
+    description="""
+Get the latest version of a document given any document ID.
+
+This is useful when you have a reference to an old version but want
+the current data. The response includes the latest document ID and version.
+    """
+)
+async def get_latest_document(
+    document_id: str,
+    _: str = Depends(require_api_key)
+):
+    """Get the latest version of a document."""
+    service = get_document_service()
+    document = await service.get_latest_document(document_id)
+
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return document
+
+
 @router.delete(
     "/{document_id}",
     summary="Soft-delete document",

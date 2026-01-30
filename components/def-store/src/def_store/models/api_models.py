@@ -130,6 +130,10 @@ class CreateTermRequest(BaseModel):
         ...,
         description="The value stored in documents"
     )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
+    )
     label: str = Field(
         ...,
         description="Display label for UI"
@@ -170,6 +174,10 @@ class UpdateTermRequest(BaseModel):
     value: Optional[str] = Field(
         None,
         description="New value"
+    )
+    aliases: Optional[list[str]] = Field(
+        None,
+        description="Update aliases (replaces existing list)"
     )
     label: Optional[str] = Field(
         None,
@@ -225,6 +233,7 @@ class TermResponse(BaseModel):
     terminology_id: str
     code: str
     value: str
+    aliases: list[str] = []
     label: str
     description: Optional[str] = None
     sort_order: int = 0
@@ -362,6 +371,10 @@ class ValidateValueResponse(BaseModel):
     terminology_code: str
     value: str
     matched_term: Optional[TermResponse] = None
+    matched_via: Optional[str] = Field(
+        None,
+        description="How the match was made: 'code', 'value', or 'alias'"
+    )
     suggestion: Optional[TermResponse] = Field(
         None,
         description="Suggested term if value is close but not exact"
@@ -382,3 +395,33 @@ class BulkValidateResponse(BaseModel):
     total: int
     valid_count: int
     invalid_count: int
+
+
+# =============================================================================
+# AUDIT LOG MODELS
+# =============================================================================
+
+class AuditLogEntry(BaseModel):
+    """A single audit log entry."""
+
+    term_id: str
+    terminology_id: str
+    action: str = Field(
+        ...,
+        description="Type of change: created, updated, deprecated, deleted"
+    )
+    changed_at: datetime
+    changed_by: Optional[str] = None
+    changed_fields: list[str] = []
+    previous_values: dict[str, Any] = {}
+    new_values: dict[str, Any] = {}
+    comment: Optional[str] = None
+
+
+class AuditLogResponse(BaseModel):
+    """Response for audit log queries."""
+
+    items: list[AuditLogEntry]
+    total: int
+    page: int = 1
+    page_size: int = 50

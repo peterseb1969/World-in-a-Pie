@@ -5,6 +5,7 @@ from typing import Optional
 
 from ..models.terminology import Terminology, TerminologyMetadata
 from ..models.term import Term
+from ..models.audit_log import TermAuditLog
 from ..models.api_models import (
     CreateTerminologyRequest,
     UpdateTerminologyRequest,
@@ -288,6 +289,7 @@ class TerminologyService:
             terminology_id=terminology_id,
             code=request.code,
             value=request.value,
+            aliases=request.aliases,
             label=request.label,
             description=request.description,
             sort_order=request.sort_order,
@@ -297,6 +299,20 @@ class TerminologyService:
             created_by=request.created_by,
         )
         await term.insert()
+
+        # Create audit log entry
+        await TerminologyService._create_audit_log(
+            term_id=term_id,
+            terminology_id=terminology_id,
+            action="created",
+            changed_by=request.created_by,
+            new_values={
+                "code": request.code,
+                "value": request.value,
+                "aliases": request.aliases,
+                "label": request.label,
+            }
+        )
 
         # Update terminology term count
         terminology.term_count += 1
@@ -368,6 +384,7 @@ class TerminologyService:
                 terminology_id=terminology_id,
                 code=term_req.code,
                 value=term_req.value,
+                aliases=term_req.aliases,
                 label=term_req.label,
                 description=term_req.description,
                 sort_order=term_req.sort_order,
@@ -377,6 +394,21 @@ class TerminologyService:
                 created_by=created_by,
             )
             await term.insert()
+
+            # Create audit log entry
+            await TerminologyService._create_audit_log(
+                term_id=term_id,
+                terminology_id=terminology_id,
+                action="created",
+                changed_by=created_by,
+                new_values={
+                    "code": term_req.code,
+                    "value": term_req.value,
+                    "aliases": term_req.aliases,
+                    "label": term_req.label,
+                }
+            )
+
             created_count += 1
 
             results.append(BulkOperationResult(
@@ -461,10 +493,16 @@ class TerminologyService:
         Update a term.
 
         If code changes, adds a synonym in the Registry.
+        Creates an audit log entry for all changes.
         """
         term = await Term.find_one({"term_id": term_id})
         if not term:
             return None
+
+        # Track changes for audit log
+        changed_fields = []
+        previous_values = {}
+        new_values = {}
 
         # Track if code is changing
         old_code = term.code
@@ -491,27 +529,76 @@ class TerminologyService:
                 }
             )
 
-        # Apply updates
-        if request.code is not None:
+        # Apply updates and track changes
+        if request.code is not None and request.code != term.code:
+            changed_fields.append("code")
+            previous_values["code"] = term.code
+            new_values["code"] = request.code
             term.code = request.code
-        if request.value is not None:
+
+        if request.value is not None and request.value != term.value:
+            changed_fields.append("value")
+            previous_values["value"] = term.value
+            new_values["value"] = request.value
             term.value = request.value
-        if request.label is not None:
+
+        if request.aliases is not None and request.aliases != term.aliases:
+            changed_fields.append("aliases")
+            previous_values["aliases"] = term.aliases
+            new_values["aliases"] = request.aliases
+            term.aliases = request.aliases
+
+        if request.label is not None and request.label != term.label:
+            changed_fields.append("label")
+            previous_values["label"] = term.label
+            new_values["label"] = request.label
             term.label = request.label
-        if request.description is not None:
+
+        if request.description is not None and request.description != term.description:
+            changed_fields.append("description")
+            previous_values["description"] = term.description
+            new_values["description"] = request.description
             term.description = request.description
-        if request.sort_order is not None:
+
+        if request.sort_order is not None and request.sort_order != term.sort_order:
+            changed_fields.append("sort_order")
+            previous_values["sort_order"] = term.sort_order
+            new_values["sort_order"] = request.sort_order
             term.sort_order = request.sort_order
-        if request.parent_term_id is not None:
+
+        if request.parent_term_id is not None and request.parent_term_id != term.parent_term_id:
+            changed_fields.append("parent_term_id")
+            previous_values["parent_term_id"] = term.parent_term_id
+            new_values["parent_term_id"] = request.parent_term_id
             term.parent_term_id = request.parent_term_id
+
         if request.translations is not None:
+            changed_fields.append("translations")
+            previous_values["translations"] = [t.model_dump() for t in term.translations]
+            new_values["translations"] = [t.model_dump() for t in request.translations]
             term.translations = request.translations
+
         if request.metadata is not None:
+            changed_fields.append("metadata")
+            previous_values["metadata"] = term.metadata.copy()
             term.metadata.update(request.metadata)
+            new_values["metadata"] = term.metadata
 
         term.updated_at = datetime.now(timezone.utc)
         term.updated_by = request.updated_by
         await term.save()
+
+        # Create audit log entry if there were changes
+        if changed_fields:
+            await TerminologyService._create_audit_log(
+                term_id=term_id,
+                terminology_id=term.terminology_id,
+                action="updated",
+                changed_by=request.updated_by,
+                changed_fields=changed_fields,
+                previous_values=previous_values,
+                new_values=new_values
+            )
 
         return TerminologyService._to_term_response(term)
 
@@ -580,9 +667,11 @@ class TerminologyService:
         terminology_id: Optional[str] = None,
         terminology_code: Optional[str] = None,
         value: str = ""
-    ) -> tuple[bool, Optional[Term], Optional[Term]]:
+    ) -> tuple[bool, Optional[Term], Optional[str], Optional[Term]]:
         """
         Validate a value against a terminology.
+
+        Matches against code, value, OR aliases.
 
         Args:
             terminology_id: Terminology ID
@@ -590,7 +679,8 @@ class TerminologyService:
             value: Value to validate
 
         Returns:
-            Tuple of (is_valid, matched_term, suggestion)
+            Tuple of (is_valid, matched_term, matched_via, suggestion)
+            matched_via is 'code', 'value', or 'alias' if matched
         """
         # Find terminology
         if terminology_id:
@@ -598,52 +688,52 @@ class TerminologyService:
         elif terminology_code:
             terminology = await Terminology.find_one({"code": terminology_code})
         else:
-            return (False, None, None)
+            return (False, None, None, None)
 
         if not terminology:
-            return (False, None, None)
+            return (False, None, None, None)
 
         # Prepare value for comparison
         compare_value = value if terminology.case_sensitive else value.lower()
 
-        # Find exact match
-        if terminology.case_sensitive:
-            term = await Term.find_one({
-                "terminology_id": terminology.terminology_id,
-                "value": value,
-                "status": "active"
-            })
-        else:
-            # Case-insensitive search
-            terms = await Term.find({
-                "terminology_id": terminology.terminology_id,
-                "status": "active"
-            }).to_list()
+        # Get all active terms in this terminology
+        terms = await Term.find({
+            "terminology_id": terminology.terminology_id,
+            "status": "active"
+        }).to_list()
 
-            term = next(
-                (t for t in terms if t.value.lower() == compare_value),
-                None
-            )
-
-        if term:
-            return (True, term, None)
+        # Try to find match by code, value, or alias
+        for term in terms:
+            if terminology.case_sensitive:
+                # Check code
+                if term.code == value:
+                    return (True, term, "code", None)
+                # Check value
+                if term.value == value:
+                    return (True, term, "value", None)
+                # Check aliases
+                if value in term.aliases:
+                    return (True, term, "alias", None)
+            else:
+                # Case-insensitive matching
+                if term.code.lower() == compare_value:
+                    return (True, term, "code", None)
+                if term.value.lower() == compare_value:
+                    return (True, term, "value", None)
+                if any(alias.lower() == compare_value for alias in term.aliases):
+                    return (True, term, "alias", None)
 
         # No exact match - try to find suggestion
         # Simple approach: find terms that start with the value
         suggestion = None
         if len(value) >= 2:
-            terms = await Term.find({
-                "terminology_id": terminology.terminology_id,
-                "status": "active"
-            }).to_list()
-
             for t in terms:
                 t_value = t.value if terminology.case_sensitive else t.value.lower()
                 if t_value.startswith(compare_value):
                     suggestion = t
                     break
 
-        return (False, None, suggestion)
+        return (False, None, None, suggestion)
 
     # =========================================================================
     # HELPERS
@@ -677,6 +767,7 @@ class TerminologyService:
             terminology_id=t.terminology_id,
             code=t.code,
             value=t.value,
+            aliases=t.aliases,
             label=t.label,
             description=t.description,
             sort_order=t.sort_order,
@@ -691,3 +782,27 @@ class TerminologyService:
             updated_at=t.updated_at,
             updated_by=t.updated_by,
         )
+
+    @staticmethod
+    async def _create_audit_log(
+        term_id: str,
+        terminology_id: str,
+        action: str,
+        changed_by: Optional[str] = None,
+        changed_fields: list[str] = None,
+        previous_values: dict = None,
+        new_values: dict = None,
+        comment: Optional[str] = None
+    ):
+        """Create an audit log entry for a term change."""
+        audit_entry = TermAuditLog(
+            term_id=term_id,
+            terminology_id=terminology_id,
+            action=action,
+            changed_by=changed_by,
+            changed_fields=changed_fields or [],
+            previous_values=previous_values or {},
+            new_values=new_values or {},
+            comment=comment
+        )
+        await audit_entry.insert()

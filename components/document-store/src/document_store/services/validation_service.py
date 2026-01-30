@@ -18,6 +18,7 @@ class ValidationResult:
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
         self.template_version: Optional[int] = None
+        self.term_references: dict[str, Any] = {}  # field_path -> term_id
 
     def add_error(
         self,
@@ -46,7 +47,8 @@ class ValidationResult:
             "errors": self.errors,
             "warnings": self.warnings,
             "identity_hash": self.identity_hash,
-            "template_version": self.template_version
+            "template_version": self.template_version,
+            "term_references": self.term_references
         }
 
 
@@ -573,6 +575,7 @@ class ValidationService:
         Stage 4: Term validation.
 
         Collects all term fields and validates them in batch via Def-Store.
+        Also collects term_references (resolved term IDs) for storage.
         """
         # Collect all term values to validate
         term_validations = self._collect_term_values(data, template.get("fields", []), "")
@@ -588,19 +591,40 @@ class ValidationService:
                 for tv in term_validations
             ])
 
-            # Process results
+            # Process results and collect term references
             for i, validation_result in enumerate(validation_results):
+                term_val = term_validations[i]
+                field_path = term_val["field_path"]
+
                 if not validation_result.get("valid", False):
-                    term_val = term_validations[i]
                     result.add_error(
                         code="invalid_term",
                         message=f"Value '{term_val['value']}' is not valid for terminology '{term_val['terminology_ref']}'",
-                        field=term_val["field_path"],
+                        field=field_path,
                         details={
                             "terminology": term_val["terminology_ref"],
                             "suggestion": validation_result.get("suggestion")
                         }
                     )
+                else:
+                    # Extract term_id from matched_term and store in term_references
+                    matched_term = validation_result.get("matched_term")
+                    if matched_term and matched_term.get("term_id"):
+                        term_id = matched_term["term_id"]
+
+                        # Handle array fields - store as list
+                        if "[" in field_path:
+                            # Extract base path (e.g., "languages" from "languages[0]")
+                            base_path = field_path.split("[")[0]
+                            if base_path not in result.term_references:
+                                result.term_references[base_path] = []
+                            # Ensure list is long enough
+                            index = int(field_path.split("[")[1].rstrip("]"))
+                            while len(result.term_references[base_path]) <= index:
+                                result.term_references[base_path].append(None)
+                            result.term_references[base_path][index] = term_id
+                        else:
+                            result.term_references[field_path] = term_id
 
         except DefStoreError as e:
             # If Def-Store is unavailable, add a warning but don't fail

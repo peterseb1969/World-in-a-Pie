@@ -108,6 +108,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 version=1,
                 data=request.data,
+                term_references=validation_result.term_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=request.created_by,
@@ -168,6 +169,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
                 data=request.data,
+                term_references=validation_result.term_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=request.created_by,
@@ -217,7 +219,7 @@ class DocumentService:
         document = await Document.find_one({"document_id": document_id})
         if not document:
             return None
-        return self._to_response(document)
+        return await self._to_response(document)
 
     async def get_document_by_identity(
         self,
@@ -232,7 +234,7 @@ class DocumentService:
         document = await Document.find_one(query)
         if not document:
             return None
-        return self._to_response(document)
+        return await self._to_response(document)
 
     async def list_documents(
         self,
@@ -255,8 +257,11 @@ class DocumentService:
         skip = (page - 1) * page_size
         documents = await Document.find(query).skip(skip).limit(page_size).to_list()
 
+        # Convert to responses (async)
+        items = [await self._to_response(d) for d in documents]
+
         return DocumentListResponse(
-            items=[self._to_response(d) for d in documents],
+            items=items,
             total=total,
             page=page,
             page_size=page_size,
@@ -313,7 +318,39 @@ class DocumentService:
         if not version_doc:
             return None
 
-        return self._to_response(version_doc)
+        return await self._to_response(version_doc)
+
+    async def get_latest_document(
+        self,
+        document_id: str
+    ) -> Optional[DocumentResponse]:
+        """
+        Get the latest version of a document.
+
+        Given any document_id (even an old version), returns the latest version.
+        This is useful when you have a reference to an old version but want
+        the current data.
+
+        Args:
+            document_id: Any document ID from the version chain
+
+        Returns:
+            The latest version of the document, or None if not found
+        """
+        # Find the document first to get identity_hash
+        document = await Document.find_one({"document_id": document_id})
+        if not document:
+            return None
+
+        # Find the latest version with same identity_hash
+        latest = await Document.find(
+            {"identity_hash": document.identity_hash}
+        ).sort([("version", -1)]).limit(1).to_list()
+
+        if not latest:
+            return None
+
+        return await self._to_response(latest[0])
 
     async def delete_document(
         self,
@@ -374,8 +411,11 @@ class DocumentService:
             .limit(request.page_size)\
             .to_list()
 
+        # Convert to responses (async)
+        items = [await self._to_response(d) for d in documents]
+
         return DocumentQueryResponse(
-            items=[self._to_response(d) for d in documents],
+            items=items,
             total=total,
             page=request.page,
             page_size=request.page_size,
@@ -502,11 +542,28 @@ class DocumentService:
             ],
             warnings=result.warnings,
             identity_hash=result.identity_hash,
-            template_version=result.template_version
+            template_version=result.template_version,
+            term_references=result.term_references
         )
 
-    def _to_response(self, document: Document) -> DocumentResponse:
-        """Convert Document to DocumentResponse."""
+    async def _to_response(self, document: Document) -> DocumentResponse:
+        """Convert Document to DocumentResponse with latest version info."""
+        # Find the latest version for this identity
+        latest = await Document.find(
+            {"identity_hash": document.identity_hash}
+        ).sort([("version", -1)]).limit(1).to_list()
+
+        if latest:
+            latest_doc = latest[0]
+            is_latest = document.version == latest_doc.version
+            latest_version = latest_doc.version
+            latest_document_id = latest_doc.document_id
+        else:
+            # This shouldn't happen, but handle gracefully
+            is_latest = True
+            latest_version = document.version
+            latest_document_id = document.document_id
+
         return DocumentResponse(
             document_id=document.document_id,
             template_id=document.template_id,
@@ -514,12 +571,16 @@ class DocumentService:
             identity_hash=document.identity_hash,
             version=document.version,
             data=document.data,
+            term_references=document.term_references,
             status=document.status,
             created_at=document.created_at,
             created_by=document.created_by,
             updated_at=document.updated_at,
             updated_by=document.updated_by,
-            metadata=document.metadata
+            metadata=document.metadata,
+            is_latest_version=is_latest,
+            latest_version=latest_version,
+            latest_document_id=latest_document_id
         )
 
 

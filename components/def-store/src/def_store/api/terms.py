@@ -274,7 +274,7 @@ async def validate_value(
             error="Terminology not found"
         )
 
-    is_valid, matched_term, suggestion = await TerminologyService.validate_value(
+    is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
         terminology_id=terminology.terminology_id,
         value=request.value
     )
@@ -285,6 +285,7 @@ async def validate_value(
         terminology_code=terminology.code,
         value=request.value,
         matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
+        matched_via=matched_via,
         suggestion=TerminologyService._to_term_response(suggestion) if suggestion else None
     )
 
@@ -331,7 +332,7 @@ async def validate_values_bulk(
             invalid_count += 1
             continue
 
-        is_valid, matched_term, suggestion = await TerminologyService.validate_value(
+        is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
             terminology_id=terminology.terminology_id,
             value=item.value
         )
@@ -342,6 +343,7 @@ async def validate_values_bulk(
             terminology_code=terminology.code,
             value=item.value,
             matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
+            matched_via=matched_via,
             suggestion=TerminologyService._to_term_response(suggestion) if suggestion else None
         ))
 

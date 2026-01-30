@@ -15,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from .models.terminology import Terminology
 from .models.term import Term
+from .models.audit_log import TermAuditLog
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 
@@ -47,7 +48,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Terminology, Term]
+        document_models=[Terminology, Term, TermAuditLog]
     )
     print("MongoDB connection and Beanie initialization successful.")
 

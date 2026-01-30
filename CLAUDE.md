@@ -107,12 +107,14 @@ Even though we're implementing only the Standard profile initially, the architec
 - [x] Def-Store service (terminologies/ontologies)
   - Terminology CRUD with Registry integration (TERM-XXXXXX IDs)
   - Term CRUD with Registry integration (T-XXXXXX IDs)
-  - Validation API for checking values against terminologies
+  - Term aliases (multiple values resolve to same term_id)
+  - Term audit log with REST API (tracks all changes without versioning)
+  - Validation API with match type (code/value/alias)
   - Import/Export (JSON and CSV formats)
   - Multi-language support (translations)
   - Hierarchical terms (parent-child relationships)
   - API key authentication
-  - Test suite (24 tests)
+  - Test suite (25 tests)
 - [x] WIP Console (Unified Web UI - Vue 3 + PrimeVue)
   - Consolidated UI replacing ontology-editor and template-editor
   - Terminology management (list, create, edit, delete)
@@ -147,9 +149,11 @@ Even though we're implementing only the Standard profile initially, the architec
   - Template validation (fetches template from Template Store)
   - Six-stage validation pipeline (structural, template resolution, field validation, term validation, rule evaluation, identity computation)
   - Term validation via Def-Store bulk API
+  - Term reference storage (stores both original value AND resolved term_id)
   - Identity-based upsert logic (SHA-256 hash of identity fields)
   - Automatic document versioning (deactivate old version, create new)
-  - Version history (get all versions, get specific version)
+  - Version history (get all versions, get specific version, get latest version)
+  - Latest version info in all document responses (is_latest_version, latest_document_id)
   - Soft-delete and archive operations
   - Complex query with filters
   - Bulk operations
@@ -157,9 +161,56 @@ Even though we're implementing only the Standard profile initially, the architec
   - Test suite (30+ tests)
 
 ### Next Steps
-- [ ] Run Def-Store tests (requires Registry service)
 - [ ] Reporting sync to PostgreSQL
 - [ ] Authentication integration (Authentik)
+
+### Future Requirements
+
+#### Cross-Entity Audit Dashboard
+
+Add a unified audit/history view to WIP Console that shows changes across all entity types:
+- Terminologies (created, updated, deleted)
+- Terms (created, updated, deprecated, deleted) - already has audit log API
+- Templates (version history)
+- Documents (version history)
+
+Features needed:
+- Timeline view of recent changes across all entities
+- Filter by entity type, date range, user/API key
+- Drill-down to see detailed change history
+- Compare versions (diff view)
+
+#### API Key Identity Tracking
+
+**Problem:** Currently `created_by`/`updated_by` fields are self-reported by clients. The actual API key used for authentication is not recorded, making audit trails unreliable.
+
+**Required changes:**
+
+1. **API Key Registry** - Store API keys with metadata:
+   ```
+   api_key_id: string (hash of key)
+   name: string (human-readable identifier)
+   owner: string (user or system)
+   created_at: datetime
+   last_used_at: datetime
+   permissions: list[string]
+   ```
+
+2. **Automatic Identity Injection** - When a request is authenticated:
+   - Look up the API key's identity
+   - Automatically set `created_by`/`updated_by` from the key's owner
+   - Override any self-reported value (or reject if mismatch)
+
+3. **Audit Log Enhancement** - Record:
+   - `api_key_id` - Which key was used (hashed)
+   - `api_key_name` - Human-readable key name
+   - `claimed_by` - What the client claimed (if different)
+
+4. **Integration with Authentik** - When OAuth/OIDC is added:
+   - Use authenticated user identity instead of API key
+   - Support both API key (system-to-system) and user auth (UI)
+
+This ensures audit trails are trustworthy and tamper-evident.
 
 ---
 
@@ -341,6 +392,148 @@ This allows:
 
 ---
 
+## Term Storage and Reference Resolution
+
+### CRITICAL: Documents Store Both Value and Term ID
+
+The system stores **both** the original submitted value **and** the resolved term_id for term fields. This is essential for data integrity and audit compliance.
+
+**Philosophy:** We never migrate data. Mapping, ETL, and transformation happen downstream in PostgreSQL if needed. Data duplication is acceptable for preservation.
+
+### How It Works
+
+```json
+// Document stored in MongoDB
+{
+  "document_id": "0192abc...",
+  "template_id": "TPL-000001",
+  "data": {
+    "salutation": "Mr.",          // Original submitted value
+    "country": "United Kingdom"   // Original submitted value
+  },
+  "term_references": {
+    "salutation": "T-000001",     // Resolved term ID
+    "country": "T-000042"         // Resolved term ID
+  }
+}
+```
+
+### Term Aliases
+
+Terms support **aliases** - alternative values that resolve to the same term_id:
+
+```json
+{
+  "term_id": "T-000001",
+  "code": "MR",
+  "value": "Mr",
+  "aliases": ["MR", "MR.", "Mr.", "mr"]
+}
+```
+
+When validating, all of these inputs resolve to the same term_id:
+- "Mr" → matched via `value`
+- "MR" → matched via `code`
+- "Mr." → matched via `alias`
+- "MR." → matched via `alias`
+
+The validation response includes `matched_via` indicating how the match was made: "code", "value", or "alias".
+
+### Why This Matters
+
+1. **Audit Trail**: Original values are preserved for compliance
+2. **Flexibility**: Aliases handle common variations without requiring exact matches
+3. **Stable References**: term_id is stable even if code/value/aliases change
+4. **No Migration**: Old documents retain their original data; only term_references link to the term
+
+---
+
+## Term Audit Log (No Versioning)
+
+### CRITICAL: Terms Don't Have Versioning
+
+Unlike documents and templates, **terms do not have versioning**. The term_id represents a stable **concept**, not a point-in-time snapshot.
+
+### Rationale
+
+- term_id represents a concept (e.g., "Mr" as a salutation)
+- Changing the display value or adding aliases doesn't change the concept
+- Documents reference term_id for the concept, not for exact historical state
+- Versioning would create unnecessary complexity (two IDs per term)
+
+### Audit Log Instead
+
+All changes to terms are recorded in an audit log:
+
+```json
+{
+  "term_id": "T-000001",
+  "terminology_id": "TERM-000001",
+  "action": "updated",
+  "changed_at": "2024-01-30T10:00:00Z",
+  "changed_by": "admin",
+  "changed_fields": ["aliases"],
+  "previous_values": {"aliases": ["MR", "MR."]},
+  "new_values": {"aliases": ["MR", "MR.", "Mr.", "mr"]}
+}
+```
+
+The audit log tracks:
+- `created` - new term added
+- `updated` - term modified
+- `deprecated` - term marked deprecated
+- `deleted` - term soft-deleted
+
+---
+
+## Document Version References
+
+### CRITICAL: Old Document References Still Work
+
+When a document is updated, a new version is created with a **new document_id**. Old references to previous versions must still resolve correctly.
+
+### Every Document Response Includes Latest Version Info
+
+When retrieving any document (including old versions), the response includes:
+
+```json
+{
+  "document_id": "0192abc-old...",
+  "version": 1,
+  "is_latest_version": false,
+  "latest_version": 3,
+  "latest_document_id": "0192xyz-new...",
+  // ... rest of document
+}
+```
+
+This allows:
+- Old references to still resolve to valid data
+- Clients to discover if they have a stale reference
+- Easy navigation to the latest version
+
+### Get Latest Version Endpoint
+
+```bash
+# Given any document_id (even an old version), get the latest version
+GET /api/document-store/documents/{document_id}/latest
+```
+
+This endpoint:
+- Takes any document_id from the version chain
+- Returns the latest version of that document
+- Response includes the new document_id for future reference
+
+### Use Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Reference to current version | Returns document, `is_latest_version=true` |
+| Reference to old version | Returns document, `is_latest_version=false`, shows latest_version and latest_document_id |
+| Call /latest on old reference | Returns the current version with new document_id |
+
+---
+
 ## Running the Project
 
 ### Development Setup
@@ -479,7 +672,7 @@ WorldInPie/
 │   ├── def-store/         # Terminology & Ontology Store (complete)
 │   │   ├── src/def_store/
 │   │   │   ├── api/       # terminologies, terms, import_export, validation, auth
-│   │   │   ├── models/    # terminology, term, api_models
+│   │   │   ├── models/    # terminology, term, audit_log, api_models
 │   │   │   └── services/  # registry_client, terminology_service, import_export
 │   │   ├── tests/
 │   │   ├── docker-compose.yml

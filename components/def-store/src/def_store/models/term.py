@@ -61,6 +61,12 @@ class Term(Document):
         description="The value stored in documents (e.g., 'approved')"
     )
 
+    # Alternative values that resolve to this term
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Alternative values that resolve to this term (e.g., ['MR.', 'mr', 'Mr.'])"
+    )
+
     # Display information
     label: str = Field(
         ...,
@@ -127,6 +133,7 @@ class Term(Document):
             IndexModel([("term_id", 1)], unique=True, name="term_id_unique_idx"),
             IndexModel([("terminology_id", 1), ("code", 1)], unique=True, name="terminology_code_unique_idx"),
             IndexModel([("terminology_id", 1), ("value", 1)], name="terminology_value_idx"),
+            IndexModel([("terminology_id", 1), ("aliases", 1)], name="terminology_aliases_idx"),
             IndexModel([("terminology_id", 1), ("sort_order", 1)], name="terminology_sort_idx"),
             IndexModel([("terminology_id", 1), ("status", 1)], name="terminology_status_idx"),
             IndexModel([("parent_term_id", 1)], name="parent_term_idx"),

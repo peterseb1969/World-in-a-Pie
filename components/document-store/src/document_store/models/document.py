@@ -79,6 +79,12 @@ class Document(BeanieDocument):
         description="Document content conforming to template"
     )
 
+    # Term references - resolved term IDs for term fields
+    term_references: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Resolved term IDs for term fields (field_path -> term_id or list of term_ids)"
+    )
+
     # Lifecycle
     status: DocumentStatus = Field(
         default=DocumentStatus.ACTIVE,

@@ -42,12 +42,30 @@ class DocumentResponse(BaseModel):
     identity_hash: str
     version: int
     data: dict[str, Any]
+    term_references: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Resolved term IDs for term fields"
+    )
     status: DocumentStatus
     created_at: datetime
     created_by: Optional[str]
     updated_at: datetime
     updated_by: Optional[str]
     metadata: DocumentMetadata
+
+    # Latest version info - populated when returning document
+    is_latest_version: bool = Field(
+        default=True,
+        description="Whether this is the latest version of the document"
+    )
+    latest_version: Optional[int] = Field(
+        None,
+        description="The latest version number for this identity"
+    )
+    latest_document_id: Optional[str] = Field(
+        None,
+        description="Document ID of the latest version"
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -282,4 +300,8 @@ class ValidationResponse(BaseModel):
     template_version: Optional[int] = Field(
         None,
         description="Template version used for validation"
+    )
+    term_references: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Resolved term IDs for term fields"
     )

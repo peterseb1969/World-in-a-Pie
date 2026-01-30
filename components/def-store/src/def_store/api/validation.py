@@ -21,6 +21,7 @@ def term_to_response(term) -> TermResponse:
         terminology_id=term.terminology_id,
         code=term.code,
         value=term.value,
+        aliases=term.aliases,
         label=term.label,
         description=term.description,
         sort_order=term.sort_order,
@@ -51,7 +52,7 @@ async def validate_value(request: ValidateValueRequest) -> ValidateValueResponse
         )
 
     try:
-        is_valid, matched_term, suggestion = await TerminologyService.validate_value(
+        is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
             terminology_id=request.terminology_id,
             terminology_code=request.terminology_code,
             value=request.value
@@ -72,6 +73,7 @@ async def validate_value(request: ValidateValueRequest) -> ValidateValueResponse
             terminology_code=terminology.code,
             value=request.value,
             matched_term=term_to_response(matched_term) if matched_term else None,
+            matched_via=matched_via,
             suggestion=term_to_response(suggestion) if suggestion else None,
         )
     except ValueError as e:
@@ -100,7 +102,7 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
                 invalid_count += 1
                 continue
 
-            is_valid, matched_term, suggestion = await TerminologyService.validate_value(
+            is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
                 terminology_id=item.terminology_id,
                 terminology_code=item.terminology_code,
                 value=item.value
@@ -129,6 +131,7 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
                 terminology_code=terminology.code,
                 value=item.value,
                 matched_term=term_to_response(matched_term) if matched_term else None,
+                matched_via=matched_via,
                 suggestion=term_to_response(suggestion) if suggestion else None,
             ))
 

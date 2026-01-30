@@ -2,6 +2,7 @@
 
 from .terminology import Terminology
 from .term import Term
+from .audit_log import TermAuditLog
 from .api_models import (
     CreateTerminologyRequest,
     UpdateTerminologyRequest,
@@ -18,6 +19,7 @@ from .api_models import (
 __all__ = [
     "Terminology",
     "Term",
+    "TermAuditLog",
     "CreateTerminologyRequest",
     "UpdateTerminologyRequest",
     "TerminologyResponse",
