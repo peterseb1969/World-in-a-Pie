@@ -69,6 +69,11 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
+        import uuid
+        # Include a unique element to ensure each version gets a new ID
+        # The Registry returns the same ID for duplicate composite_keys
+        version_uuid = str(uuid.uuid4())
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
@@ -77,7 +82,8 @@ class RegistryClient:
                     "namespace": "wip-documents",
                     "composite_key": {
                         "identity_hash": identity_hash,
-                        "template_id": template_id
+                        "template_id": template_id,
+                        "version_uuid": version_uuid
                     },
                     "created_by": created_by,
                     "metadata": {"type": "document"}
