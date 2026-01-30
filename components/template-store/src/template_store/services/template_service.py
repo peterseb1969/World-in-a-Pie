@@ -82,6 +82,7 @@ class TemplateService:
             fields=request.fields,
             rules=request.rules,
             metadata=request.metadata or TemplateMetadata(),
+            reporting=request.reporting,
             created_by=request.created_by,
         )
         await template.insert()
@@ -350,6 +351,7 @@ class TemplateService:
             fields=request.fields if request.fields is not None else original.fields,
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
+            reporting=request.reporting if request.reporting is not None else original.reporting,
             status="active",
             created_at=datetime.now(timezone.utc),
             created_by=request.updated_by,
@@ -471,6 +473,7 @@ class TemplateService:
                 fields=template_req.fields,
                 rules=template_req.rules,
                 metadata=template_req.metadata or TemplateMetadata(),
+                reporting=template_req.reporting,
                 created_by=created_by,
             )
             await template.insert()
@@ -621,6 +624,7 @@ class TemplateService:
             "fields": [f.model_dump() for f in t.fields] if t.fields else [],
             "rules": [r.model_dump() for r in t.rules] if t.rules else [],
             "metadata": t.metadata.model_dump() if t.metadata else {},
+            "reporting": t.reporting.model_dump() if t.reporting else None,
             "status": t.status,
             "created_at": t.created_at.isoformat() if t.created_at else None,
             "created_by": t.created_by,
@@ -642,6 +646,7 @@ class TemplateService:
             fields=t.fields,
             rules=t.rules,
             metadata=t.metadata,
+            reporting=t.reporting,
             status=t.status,
             created_at=t.created_at,
             created_by=t.created_by,

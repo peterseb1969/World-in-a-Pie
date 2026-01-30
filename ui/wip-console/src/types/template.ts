@@ -108,6 +108,26 @@ export interface ValidationRule {
 }
 
 // =============================================================================
+// REPORTING CONFIG
+// =============================================================================
+
+export type SyncStrategy = 'latest_only' | 'all_versions'
+
+export const SYNC_STRATEGIES: { value: SyncStrategy; label: string; description: string }[] = [
+  { value: 'latest_only', label: 'Latest Only', description: 'Keep only the latest version of each document (upsert)' },
+  { value: 'all_versions', label: 'All Versions', description: 'Store all document versions (insert, no updates)' }
+]
+
+export interface ReportingConfig {
+  sync_enabled: boolean
+  sync_strategy: SyncStrategy
+  table_name?: string
+  include_metadata: boolean
+  flatten_arrays: boolean
+  max_array_elements: number
+}
+
+// =============================================================================
 // TEMPLATE TYPES
 // =============================================================================
 
@@ -129,6 +149,7 @@ export interface Template {
   fields: FieldDefinition[]
   rules: ValidationRule[]
   metadata: TemplateMetadata
+  reporting?: ReportingConfig
   status: 'active' | 'deprecated' | 'inactive'
   created_at: string
   created_by?: string
@@ -145,6 +166,7 @@ export interface CreateTemplateRequest {
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>
+  reporting?: Partial<ReportingConfig>
   created_by?: string
 }
 
@@ -157,6 +179,7 @@ export interface UpdateTemplateRequest {
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>
+  reporting?: Partial<ReportingConfig>
   updated_by?: string
 }
 

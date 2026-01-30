@@ -18,7 +18,9 @@ import FieldList from '@/components/templates/FieldList.vue'
 import RuleList from '@/components/templates/RuleList.vue'
 import TemplatePreview from '@/components/templates/TemplatePreview.vue'
 import { useTemplateStore, useAuthStore, useUiStore } from '@/stores'
-import type { Template, UpdateTemplateRequest, FieldDefinition, ValidationRule } from '@/types'
+import type { Template, UpdateTemplateRequest, FieldDefinition, ValidationRule, SyncStrategy } from '@/types'
+import { SYNC_STRATEGIES } from '@/types'
+import InputNumber from 'primevue/inputnumber'
 
 const props = defineProps<{
   id?: string
@@ -49,6 +51,14 @@ const form = ref<{
     category: string
     tags: string[]
   }
+  reporting: {
+    sync_enabled: boolean
+    sync_strategy: SyncStrategy
+    table_name: string
+    include_metadata: boolean
+    flatten_arrays: boolean
+    max_array_elements: number
+  }
 }>({
   code: '',
   name: '',
@@ -61,6 +71,14 @@ const form = ref<{
     domain: '',
     category: '',
     tags: []
+  },
+  reporting: {
+    sync_enabled: true,
+    sync_strategy: 'latest_only',
+    table_name: '',
+    include_metadata: true,
+    flatten_arrays: true,
+    max_array_elements: 10
   }
 })
 
@@ -120,6 +138,14 @@ function resetForm(t: Template) {
       domain: t.metadata.domain || '',
       category: t.metadata.category || '',
       tags: [...t.metadata.tags]
+    },
+    reporting: {
+      sync_enabled: t.reporting?.sync_enabled ?? true,
+      sync_strategy: t.reporting?.sync_strategy ?? 'latest_only',
+      table_name: t.reporting?.table_name || '',
+      include_metadata: t.reporting?.include_metadata ?? true,
+      flatten_arrays: t.reporting?.flatten_arrays ?? true,
+      max_array_elements: t.reporting?.max_array_elements ?? 10
     }
   }
 }
@@ -131,6 +157,16 @@ async function saveTemplate() {
   }
 
   try {
+    // Build reporting config (only include if changed from defaults or explicitly set)
+    const reportingConfig = {
+      sync_enabled: form.value.reporting.sync_enabled,
+      sync_strategy: form.value.reporting.sync_strategy,
+      table_name: form.value.reporting.table_name || undefined,
+      include_metadata: form.value.reporting.include_metadata,
+      flatten_arrays: form.value.reporting.flatten_arrays,
+      max_array_elements: form.value.reporting.max_array_elements
+    }
+
     if (isNew.value) {
       const created = await templateStore.createTemplate({
         code: form.value.code,
@@ -145,7 +181,8 @@ async function saveTemplate() {
           category: form.value.metadata.category || undefined,
           tags: form.value.metadata.tags,
           custom: {}
-        }
+        },
+        reporting: reportingConfig
       })
       uiStore.showSuccess('Template Created', `Template "${created.name}" has been created`)
       router.push(`/templates/${created.template_id}`)
@@ -163,7 +200,8 @@ async function saveTemplate() {
           category: form.value.metadata.category || undefined,
           tags: form.value.metadata.tags,
           custom: {}
-        }
+        },
+        reporting: reportingConfig
       }
       await templateStore.updateTemplate(props.id, updateData)
       uiStore.showSuccess('Template Updated', `Template "${form.value.name}" has been saved`)
@@ -280,6 +318,14 @@ onMounted(async () => {
         domain: '',
         category: '',
         tags: []
+      },
+      reporting: {
+        sync_enabled: true,
+        sync_strategy: 'latest_only',
+        table_name: '',
+        include_metadata: true,
+        flatten_arrays: true,
+        max_array_elements: 10
       }
     }
   } else {
@@ -490,6 +536,91 @@ onMounted(async () => {
                 class="w-full"
               />
             </div>
+          </div>
+        </template>
+      </Card>
+
+      <!-- Reporting Card -->
+      <Card class="reporting-card">
+        <template #title>
+          <div class="card-title-with-toggle">
+            <span>Reporting / Analytics</span>
+            <div class="sync-toggle" v-if="isEditing || isNew">
+              <span class="toggle-label">Sync to PostgreSQL</span>
+              <ToggleSwitch v-model="form.reporting.sync_enabled" />
+            </div>
+            <Tag v-else :value="form.reporting.sync_enabled ? 'Enabled' : 'Disabled'"
+                 :severity="form.reporting.sync_enabled ? 'success' : 'secondary'" />
+          </div>
+        </template>
+        <template #content>
+          <div v-if="form.reporting.sync_enabled" class="form-grid">
+            <div class="form-field">
+              <label for="sync_strategy">Sync Strategy</label>
+              <Select
+                id="sync_strategy"
+                v-model="form.reporting.sync_strategy"
+                :options="SYNC_STRATEGIES"
+                optionLabel="label"
+                optionValue="value"
+                :disabled="!isEditing && !isNew"
+                class="w-full"
+              />
+              <small>{{ SYNC_STRATEGIES.find(s => s.value === form.reporting.sync_strategy)?.description }}</small>
+            </div>
+
+            <div class="form-field">
+              <label for="table_name">Custom Table Name</label>
+              <InputText
+                id="table_name"
+                v-model="form.reporting.table_name"
+                :disabled="!isEditing && !isNew"
+                :placeholder="`doc_${form.code?.toLowerCase() || 'template'}`"
+                class="w-full"
+              />
+              <small>Leave empty to auto-generate from template code</small>
+            </div>
+
+            <div class="form-field">
+              <label>Include Metadata Columns</label>
+              <div class="toggle-option">
+                <ToggleSwitch
+                  v-model="form.reporting.include_metadata"
+                  :disabled="!isEditing && !isNew"
+                />
+                <span>{{ form.reporting.include_metadata ? 'Yes' : 'No' }}</span>
+              </div>
+              <small>Include created_at, created_by, updated_at, updated_by</small>
+            </div>
+
+            <div class="form-field">
+              <label>Flatten Arrays</label>
+              <div class="toggle-option">
+                <ToggleSwitch
+                  v-model="form.reporting.flatten_arrays"
+                  :disabled="!isEditing && !isNew"
+                />
+                <span>{{ form.reporting.flatten_arrays ? 'Yes' : 'No' }}</span>
+              </div>
+              <small>Expand arrays into multiple rows (cross-product)</small>
+            </div>
+
+            <div class="form-field" v-if="form.reporting.flatten_arrays">
+              <label for="max_array_elements">Max Array Elements</label>
+              <InputNumber
+                id="max_array_elements"
+                v-model="form.reporting.max_array_elements"
+                :disabled="!isEditing && !isNew"
+                :min="1"
+                :max="100"
+                class="w-full"
+              />
+              <small>Limit array elements when flattening (1-100)</small>
+            </div>
+          </div>
+          <div v-else class="sync-disabled-message">
+            <i class="pi pi-info-circle"></i>
+            <span>Documents of this template will not be synced to PostgreSQL for reporting.</span>
           </div>
         </template>
       </Card>
@@ -739,5 +870,49 @@ onMounted(async () => {
 
 .identity-warning :deep(.p-message-text) {
   font-size: 0.8125rem;
+}
+
+.card-title-with-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.sync-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: normal;
+}
+
+.toggle-label {
+  color: var(--p-text-muted-color);
+}
+
+.toggle-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sync-disabled-message {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background-color: var(--p-surface-100);
+  border-radius: var(--p-border-radius);
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+.sync-disabled-message i {
+  font-size: 1rem;
+}
+
+.reporting-card :deep(.p-card-title) {
+  width: 100%;
 }
 </style>

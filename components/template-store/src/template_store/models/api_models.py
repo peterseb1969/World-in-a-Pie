@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 from .field import FieldDefinition
 from .rule import ValidationRule
-from .template import TemplateMetadata
+from .template import TemplateMetadata, ReportingConfig
 
 
 # =============================================================================
@@ -48,6 +48,10 @@ class CreateTemplateRequest(BaseModel):
     metadata: Optional[TemplateMetadata] = Field(
         None,
         description="Additional metadata"
+    )
+    reporting: Optional[ReportingConfig] = Field(
+        None,
+        description="Configuration for PostgreSQL reporting sync"
     )
     created_by: Optional[str] = Field(
         None,
@@ -90,6 +94,10 @@ class UpdateTemplateRequest(BaseModel):
         None,
         description="Update metadata"
     )
+    reporting: Optional[ReportingConfig] = Field(
+        None,
+        description="Update reporting configuration"
+    )
     updated_by: Optional[str] = Field(
         None,
         description="User or system updating this template"
@@ -109,6 +117,7 @@ class TemplateResponse(BaseModel):
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []
     metadata: TemplateMetadata
+    reporting: Optional[ReportingConfig] = None
     status: str
     created_at: datetime
     created_by: Optional[str] = None

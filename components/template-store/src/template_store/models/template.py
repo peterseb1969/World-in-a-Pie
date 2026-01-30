@@ -11,6 +11,37 @@ from .field import FieldDefinition
 from .rule import ValidationRule
 
 
+class ReportingConfig(BaseModel):
+    """Configuration for reporting/analytics sync to PostgreSQL."""
+
+    sync_enabled: bool = Field(
+        default=True,
+        description="Whether to sync documents of this template to PostgreSQL"
+    )
+    sync_strategy: str = Field(
+        default="latest_only",
+        description="Sync strategy: 'latest_only' (upsert) or 'all_versions' (insert all)"
+    )
+    table_name: Optional[str] = Field(
+        default=None,
+        description="Custom PostgreSQL table name (auto-generated from code if not set)"
+    )
+    include_metadata: bool = Field(
+        default=True,
+        description="Include created_at, created_by, etc. columns"
+    )
+    flatten_arrays: bool = Field(
+        default=True,
+        description="Flatten arrays into multiple rows (cross-product)"
+    )
+    max_array_elements: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum array elements to include when flattening"
+    )
+
+
 class TemplateMetadata(BaseModel):
     """Additional metadata for a template."""
 
@@ -102,6 +133,12 @@ class Template(Document):
     metadata: TemplateMetadata = Field(
         default_factory=TemplateMetadata,
         description="Additional metadata"
+    )
+
+    # Reporting configuration
+    reporting: Optional[ReportingConfig] = Field(
+        default=None,
+        description="Configuration for PostgreSQL reporting sync"
     )
 
     # Lifecycle
