@@ -131,7 +131,7 @@ class DefStoreClient:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/def-store/validation/validate",
+                    f"{self.base_url}/api/def-store/validate",
                     headers=self._get_headers(),
                     json=payload
                 )
@@ -179,7 +179,7 @@ class DefStoreClient:
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/def-store/validation/validate/bulk",
+                    f"{self.base_url}/api/def-store/validate/bulk",
                     headers=self._get_headers(),
                     json={"items": api_items}
                 )
