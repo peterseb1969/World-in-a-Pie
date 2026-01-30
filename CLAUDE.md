@@ -38,7 +38,7 @@ We will develop the **Standard** deployment profile first, then expand to other 
 ```
 Phase 1: Standard profile end-to-end
          └── Registry ✅ → Def-Store ✅ → WIP Console ✅ → Template Store ✅ → Document Store ✅
-         └── Reporting Layer (PostgreSQL sync) ⏳ IN PROGRESS
+         └── Reporting Layer (PostgreSQL sync) ✅ COMPLETE
 
 Phase 2: Authentication & Authorization
          └── Authentik integration, RBAC, API key registry
@@ -163,9 +163,20 @@ Even though we're implementing only the Standard profile initially, the architec
   - Bulk operations
   - API key authentication
   - Test suite (30+ tests)
+- [x] Reporting Sync service (MongoDB → PostgreSQL sync)
+  - NATS JetStream consumer for document/template events
+  - Automatic PostgreSQL table creation from template definitions
+  - Document transformation (flatten nested objects, handle arrays)
+  - Upsert with version checking (handles out-of-order events)
+  - Batch sync for initial population and recovery
+  - Per-template sync configuration (strategy, table name, flatten options)
+  - Schema evolution (add columns for new fields)
+  - Monitoring and metrics (latency, throughput, per-template stats)
+  - Alert system with configurable thresholds
+  - Webhook notifications for alerts
+  - API: http://localhost:8005
 
 ### Next Steps
-- [ ] Reporting sync to PostgreSQL (see Reporting Layer Architecture below)
 - [ ] Authentication integration (Authentik)
 
 ---
@@ -542,7 +553,6 @@ services:
 **Phase 1: Infrastructure** ✅ COMPLETE
 - [x] Add PostgreSQL to docker-compose.infra.yml
 - [x] Add NATS to docker-compose.infra.yml
-- [x] Add pgAdmin for PostgreSQL management
 - [x] Create reporting-sync service skeleton
   - FastAPI app with health endpoints
   - NATS connection with JetStream stream creation
@@ -551,37 +561,42 @@ services:
   - Transformer for document flattening
   - Worker skeleton for event processing
 
-**Phase 2: Event Publishing**
-- [ ] Document Store publishes events to NATS on create/update/delete
-- [ ] Event contains full document (not just ID)
-- [ ] JetStream for persistence (replay on worker restart)
+**Phase 2: Event Publishing** ✅ COMPLETE
+- [x] Document Store publishes events to NATS on create/update/delete
+- [x] Template Store publishes events on create/update
+- [x] Event contains full document/template (self-contained)
+- [x] JetStream for persistence (replay on worker restart)
 
-**Phase 3: Schema Management**
-- [ ] Read template definitions from Template Store
-- [ ] Generate PostgreSQL table DDL from template
-- [ ] Handle schema evolution (new fields, type changes)
-- [ ] Migration tracking table
+**Phase 3: Schema Management** ✅ COMPLETE
+- [x] Read template definitions from Template Store
+- [x] Generate PostgreSQL table DDL from template
+- [x] Handle schema evolution (new fields added as nullable columns)
+- [x] Migration tracking table (_wip_schema_migrations)
 
-**Phase 4: Sync Worker**
-- [ ] NATS consumer subscribes to document events
-- [ ] Transformer: Document → flat row(s)
-- [ ] Upsert to PostgreSQL with version check
-- [ ] Error handling and dead letter queue
+**Phase 4: Sync Worker** ✅ COMPLETE
+- [x] NATS consumer subscribes to document events
+- [x] Transformer: Document → flat row(s)
+- [x] Upsert to PostgreSQL with version check
+- [x] Error handling with retry (NATS redelivery)
 
-**Phase 5: Batch Sync**
-- [ ] Endpoint in Document Store: GET /sync/changes?since=timestamp
-- [ ] Batch sync command for initial population
-- [ ] Consistency check (compare counts)
+**Phase 5: Batch Sync** ✅ COMPLETE
+- [x] POST /sync/batch/{template_code} - Sync all documents for a template
+- [x] POST /sync/batch - Sync all templates
+- [x] Job management (list, get, cancel jobs)
+- [x] Progress tracking (total, synced, failed)
 
-**Phase 6: Template Configuration**
-- [ ] Add `reporting` config to template model
-- [ ] UI for configuring sync behavior per template
-- [ ] Version-independent storage
+**Phase 6: Template Configuration** ✅ COMPLETE
+- [x] Add `reporting` config to template model
+- [x] UI for configuring sync behavior per template (WIP Console)
+- [x] Settings: sync_enabled, sync_strategy, table_name, include_metadata, flatten_arrays, max_array_elements
 
-**Phase 7: Monitoring & Observability**
-- [ ] Sync lag metrics
-- [ ] Error rate dashboard
-- [ ] Health checks
+**Phase 7: Monitoring & Alerts** ✅ COMPLETE
+- [x] Metrics collection (latency percentiles, throughput, per-template stats)
+- [x] NATS consumer info (queue depth, pending messages)
+- [x] Alert system with configurable thresholds
+- [x] Alert types: queue_lag, error_rate, processing_stalled, connection_lost
+- [x] Webhook notifications for alerts
+- [x] Background alert checking task
 
 ### Configuration
 
@@ -611,13 +626,24 @@ template_store:
 
 ### API Endpoints (Reporting Sync Service)
 
+**Base URL:** http://localhost:8005
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/status` | Sync status (lag, errors, throughput) |
-| POST | `/sync/batch` | Trigger batch sync for template |
-| POST | `/sync/full` | Full resync (dangerous, requires confirmation) |
+| GET | `/health` | Health check (nats/postgres status) |
+| GET | `/status` | Sync worker status |
+| GET | `/metrics` | Comprehensive metrics (latency, throughput, per-template stats) |
+| GET | `/metrics/consumer` | NATS consumer info (queue depth, pending) |
+| GET | `/alerts` | Active alerts and configuration |
+| PUT | `/alerts/config` | Update alert thresholds and webhook |
+| POST | `/alerts/test` | Manually trigger alert check |
 | GET | `/schema/{template_code}` | View generated schema for template |
+| POST | `/sync/batch/{template_code}` | Trigger batch sync for one template |
+| POST | `/sync/batch` | Trigger batch sync for all templates |
+| GET | `/sync/batch/jobs` | List all batch sync jobs |
+| GET | `/sync/batch/jobs/{job_id}` | Get specific job status |
+| DELETE | `/sync/batch/jobs/{job_id}` | Cancel a running job |
+| DELETE | `/sync/batch/jobs` | Clear completed jobs from memory |
 
 ---
 
@@ -1146,7 +1172,7 @@ podman-compose -f docker-compose.infra.yml up -d
 # MongoDB (document store): localhost:27017
 # Mongo Express UI: http://localhost:8081 (admin/admin)
 # PostgreSQL (reporting): localhost:5432 (wip/wip_dev_password, db: wip_reporting)
-# pgAdmin UI: http://localhost:5050 (admin@wip.local/admin)
+#   CLI access: podman exec -it wip-postgres psql -U wip -d wip_reporting
 # NATS (message queue): localhost:4222
 # NATS Monitoring: http://localhost:8222
 
@@ -1182,7 +1208,16 @@ podman-compose -f docker-compose.dev.yml up -d
 # Document Store API: http://localhost:8004
 # Document Store Swagger: http://localhost:8004/docs
 
-# 7. Start WIP Console UI (optional - local dev)
+# 7. Start Reporting Sync service
+cd ../reporting-sync
+podman-compose -f docker-compose.dev.yml up -d
+
+# Reporting Sync API: http://localhost:8005
+# Reporting Sync Swagger: http://localhost:8005/docs
+# Metrics: http://localhost:8005/metrics
+# Alerts: http://localhost:8005/alerts
+
+# 9. Start WIP Console UI (optional - local dev)
 cd ../../ui/wip-console
 npm install
 npm run dev
@@ -1191,10 +1226,10 @@ npm run dev
 # Enter API key: dev_master_key_for_testing
 # Manages terminologies (Def-Store), templates (Template-Store), and documents (Document-Store)
 
-# 7b. Or run UI in container (uses shared network)
+# 9b. Or run UI in container (uses shared network)
 podman-compose -f docker-compose.dev.yml up -d
 
-# Container connects to def-store, template-store, and document-store via wip-network
+# Container connects to all services via wip-network
 ```
 
 ### Production Setup
@@ -1381,14 +1416,16 @@ WorldInPie/
 │   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
 │   │   └── requirements.txt
-│   └── reporting-sync/    # Reporting Sync Worker (PLANNED)
+│   └── reporting-sync/    # Reporting Sync Worker (complete)
 │       ├── src/reporting_sync/
-│       │   ├── main.py          # FastAPI app (health endpoints)
-│       │   ├── config.py        # Configuration
-│       │   ├── worker.py        # NATS consumer + sync logic
-│       │   ├── transformer.py   # Document → flat row transformation
+│       │   ├── main.py           # FastAPI app with health, metrics, alerts endpoints
+│       │   ├── config.py         # Configuration (NATS, PostgreSQL, etc.)
+│       │   ├── models.py         # Pydantic models for events, metrics, alerts
+│       │   ├── worker.py         # NATS consumer + sync logic
+│       │   ├── transformer.py    # Document → flat row transformation
 │       │   ├── schema_manager.py # PostgreSQL table management
-│       │   └── batch_sync.py    # Batch/recovery sync
+│       │   ├── batch_sync.py     # Batch/recovery sync
+│       │   └── metrics.py        # Metrics collection and alert management
 │       ├── tests/
 │       ├── docker-compose.yml
 │       ├── docker-compose.dev.yml
