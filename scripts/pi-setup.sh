@@ -27,6 +27,54 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
+# Health check settings
+HEALTH_CHECK_INTERVAL=10  # seconds between checks
+HEALTH_CHECK_TIMEOUT=60   # total seconds before giving up
+HEALTH_CHECK_ATTEMPTS=$((HEALTH_CHECK_TIMEOUT / HEALTH_CHECK_INTERVAL))
+
+# Wait for a container to be running
+# Usage: wait_for_container <container_name>
+wait_for_container() {
+    local container="$1"
+    local attempt=1
+
+    while [ $attempt -le $HEALTH_CHECK_ATTEMPTS ]; do
+        if podman ps --format "{{.Names}}" | grep -q "^${container}$"; then
+            echo "  $container: running"
+            return 0
+        fi
+        echo "  $container: waiting... ($attempt/$HEALTH_CHECK_ATTEMPTS)"
+        sleep $HEALTH_CHECK_INTERVAL
+        attempt=$((attempt + 1))
+    done
+
+    log_error "$container failed to start after ${HEALTH_CHECK_TIMEOUT}s"
+    podman logs "$container" 2>&1 | tail -10 || true
+    return 1
+}
+
+# Wait for an HTTP health endpoint to return healthy
+# Usage: wait_for_health <name> <url>
+wait_for_health() {
+    local name="$1"
+    local url="$2"
+    local attempt=1
+
+    while [ $attempt -le $HEALTH_CHECK_ATTEMPTS ]; do
+        HEALTH=$(curl -s "$url" 2>/dev/null || echo '{"status":"unreachable"}')
+        if echo "$HEALTH" | grep -q '"healthy"\|"status":"healthy"'; then
+            log_info "  $name is healthy"
+            return 0
+        fi
+        echo "  $name: waiting for health... ($attempt/$HEALTH_CHECK_ATTEMPTS)"
+        sleep $HEALTH_CHECK_INTERVAL
+        attempt=$((attempt + 1))
+    done
+
+    log_error "$name failed health check after ${HEALTH_CHECK_TIMEOUT}s: $HEALTH"
+    return 1
+}
+
 # Configuration
 REPO_URL="http://192.168.1.17:3000/peter/World-In-A-Pie.git"
 INSTALL_DIR="$HOME/Development/WorldInPie"
@@ -205,11 +253,9 @@ fi
 cd "$INSTALL_DIR"
 podman-compose --env-file "$ENV_FILE" -f "$INFRA_COMPOSE" up -d
 
-log_info "Waiting for infrastructure to be healthy (30 seconds)..."
-sleep 30
+log_info "Waiting for infrastructure containers (checking every ${HEALTH_CHECK_INTERVAL}s, timeout ${HEALTH_CHECK_TIMEOUT}s)..."
 
 # Check infrastructure health - EXIT ON FAILURE
-log_info "Checking infrastructure..."
 INFRA_HEALTHY=true
 
 # Core containers (always required)
@@ -221,11 +267,7 @@ if [ "$DEPLOY_MODE" = "full" ]; then
 fi
 
 for container in $CORE_CONTAINERS; do
-    if podman ps --format "{{.Names}}" | grep -q "^${container}$"; then
-        echo "  $container: running"
-    else
-        log_error "$container is not running!"
-        podman logs $container 2>&1 | tail -10 || true
+    if ! wait_for_container "$container"; then
         INFRA_HEALTHY=false
     fi
 done
@@ -249,14 +291,9 @@ cd "$INSTALL_DIR/components/registry"
 podman-compose --env-file "../../$ENV_FILE" -f docker-compose.dev.yml up -d
 
 log_info "Waiting for Registry to be ready..."
-sleep 10
 
 # Check if Registry is healthy
-REGISTRY_HEALTH=$(curl -s http://localhost:8001/health 2>/dev/null || echo '{"status":"unreachable"}')
-if echo "$REGISTRY_HEALTH" | grep -q '"healthy"\|"status":"healthy"'; then
-    log_info "  Registry is healthy"
-else
-    log_error "Registry failed to start: $REGISTRY_HEALTH"
+if ! wait_for_health "Registry" "http://localhost:8001/health"; then
     podman logs wip-registry-dev 2>&1 | tail -20 || true
     exit 1
 fi
@@ -283,16 +320,9 @@ start_service() {
     cd "$INSTALL_DIR/components/$dir"
     podman-compose --env-file "../../$ENV_FILE" -f docker-compose.dev.yml up -d
 
-    # Wait for service to be ready
-    sleep 10
-
-    HEALTH=$(curl -s "http://localhost:$port/health" 2>/dev/null || echo '{"status":"unreachable"}')
-    if echo "$HEALTH" | grep -q '"healthy"\|"status":"healthy"'; then
-        log_info "  $name is healthy"
-        return 0
-    else
-        log_warn "  $name may not be ready yet: $HEALTH"
-        return 1
+    # Wait for service to be healthy
+    if ! wait_for_health "$name" "http://localhost:$port/health"; then
+        log_warn "$name may still be starting - continuing anyway"
     fi
 }
 

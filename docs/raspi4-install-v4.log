@@ -110,4 +110,17 @@ Services via Caddy HTTPS:
   - Console: https://wip-dev-pi.local/
   - Dex OIDC: https://wip-dev-pi.local/dex/
   - APIs: https://wip-dev-pi.local/api/{service}/
+
+Data seeded:
+  - 15 terminologies
+  - 24 templates
+  - 505 documents
 ```
+
+## Setup Script Improvements
+
+The `pi-setup.sh` script includes:
+- Automatic unprivileged port configuration (Step 3b)
+- Health check with retry logic: checks every 10s for up to 60s
+- Separate container health checks and HTTP endpoint health checks
+- Graceful failure with container logs on error
