@@ -293,10 +293,12 @@ Even though we're implementing only the Standard profile initially, the architec
   - Webhook notifications for alerts
   - API: http://localhost:8005
 
-### In Progress
-- [ ] WIP Console OIDC support (browser-based login via Dex)
-
 ### Recently Completed
+- [x] WIP Console OIDC support (browser-based login via Dex)
+  - [x] oidc-client-ts library integration
+  - [x] Dual auth mode (OIDC + API key)
+  - [x] Configurable provider name for UI
+  - [x] Auth callback routes and views
 - [x] Authentication integration (wip-auth library)
   - [x] Shared auth library (`libs/wip-auth`)
   - [x] Pluggable provider architecture
