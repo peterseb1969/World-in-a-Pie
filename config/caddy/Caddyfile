@@ -3,13 +3,13 @@
 #
 # Uses self-signed certificate for local network access.
 # Browser will warn about self-signed cert - accept once.
+#
+# To switch to Let's Encrypt (production):
+#   1. Replace hostname patterns with your real domain
+#   2. Remove "tls internal" (Caddy auto-fetches certs)
+#   3. Ensure ports 80/443 are reachable from internet
 
-{
-    # Debug logging to help troubleshoot TLS issues
-    debug
-}
-
-# HTTPS server with internal TLS
+# HTTPS server with internal TLS (self-signed)
 localhost, *.local, 127.0.0.1, 192.168.*.* {
     tls internal
 
@@ -39,9 +39,15 @@ localhost, *.local, 127.0.0.1, 192.168.*.* {
     handle {
         reverse_proxy wip-console-dev:3000
     }
+
+    log {
+        output stdout
+        format console
+        level WARN
+    }
 }
 
-# HTTP redirect
+# HTTP redirect to HTTPS
 http:// {
     redir https://{host}{uri} permanent
 }
