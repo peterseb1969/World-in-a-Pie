@@ -6,6 +6,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Divider from 'primevue/divider'
 import { useAuthStore, useUiStore } from '@/stores'
+import { oidcProviderName } from '@/config/auth'
 
 const router = useRouter()
 const route = useRoute()
@@ -319,7 +320,7 @@ function toggleSidebar() {
           </p>
 
           <Button
-            label="Login with Dex"
+            :label="`Login with ${oidcProviderName}`"
             icon="pi pi-sign-in"
             class="w-full login-btn"
             @click="loginWithOidc"

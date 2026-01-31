@@ -2,13 +2,14 @@
  * Authentication configuration for WIP Console
  *
  * Supports two authentication modes:
- * - OIDC: OAuth2/OpenID Connect via Dex (or any OIDC provider)
+ * - OIDC: OAuth2/OpenID Connect via any OIDC provider (Dex, Authelia, Authentik, etc.)
  * - API Key: Legacy X-API-Key header authentication
  *
  * Environment variables:
  * - VITE_OIDC_AUTHORITY: OIDC provider URL (default: http://localhost:5556/dex)
  * - VITE_OIDC_CLIENT_ID: OAuth2 client ID (default: wip-console)
  * - VITE_OIDC_CLIENT_SECRET: OAuth2 client secret (optional, for confidential clients)
+ * - VITE_OIDC_PROVIDER_NAME: Display name for the OIDC provider (default: SSO)
  */
 
 import type { UserManagerSettings } from 'oidc-client-ts'
@@ -55,3 +56,6 @@ export const AUTH_STORAGE_KEYS = {
 
 // Auth modes
 export type AuthMode = 'none' | 'api_key' | 'oidc'
+
+// OIDC provider display name (for UI)
+export const oidcProviderName = import.meta.env.VITE_OIDC_PROVIDER_NAME || 'SSO'
