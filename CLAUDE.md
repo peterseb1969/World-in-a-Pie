@@ -17,21 +17,30 @@ World In a Pie (WIP) is a universal template-driven document storage system desi
 ### Decision: Focus on Standard Profile First
 
 **Date:** 2024-01-29
+**Updated:** 2024-01-31 (Auth: Dex replaces Authelia/Authentik for all profiles)
 
 We will develop the **Standard** deployment profile first, then expand to other profiles:
 
 | Profile | Target | Document Store | Reporting | Auth | RAM |
 |---------|--------|----------------|-----------|------|-----|
-| **Minimal** | Pi Zero/3 | SQLite | SQLite | Authelia | ~512MB |
-| **Standard** | Pi 4/5 | MongoDB | PostgreSQL | Authentik | ~2GB |
-| **Production** | Cloud/Server | MongoDB | PostgreSQL | Authentik | ~4GB+ |
+| **Minimal** | Pi 4 (1GB) | MongoDB | PostgreSQL | Dex | ~1GB |
+| **Standard** | Pi 5 (8GB) | MongoDB | PostgreSQL | Dex | ~2GB |
+| **Production** | Cloud/Server | MongoDB | PostgreSQL | Dex/Authentik | ~4GB+ |
+
+**Target sweet spot:** Raspberry Pi 5 with 8GB RAM - plenty of headroom for the Standard profile.
 
 **Why Standard first:**
 1. Registry already uses MongoDB (working code and tests)
 2. PostgreSQL for reporting is enterprise-ready
-3. Authentik is full-featured (won't hit auth limitations)
-4. Pi 4/5 is a realistic primary target
+3. Dex provides full OIDC with minimal resources (~30MB RAM)
+4. Pi 5 is a realistic primary target with excellent performance
 5. Middle complexity - not too minimal, not over-engineered
+
+**Why Dex for auth:**
+- Lightweight (~30MB RAM) vs Authentik (~1.2GB)
+- Works over HTTP (no HTTPS/certificate requirement for development)
+- Full OIDC protocol - same as Authelia/Authentik, easy to switch later
+- Static users via YAML config (no database required)
 
 ### Development Phases
 
@@ -40,8 +49,8 @@ Phase 1: Standard profile end-to-end
          └── Registry ✅ → Def-Store ✅ → WIP Console ✅ → Template Store ✅ → Document Store ✅
          └── Reporting Layer (PostgreSQL sync) ✅ COMPLETE
 
-Phase 2: Authentication & Authorization
-         └── Authentik integration, RBAC, API key registry
+Phase 2: Authentication & Authorization ✅ COMPLETE (Dex + wip-auth library)
+         └── OIDC integration (Dex), dual auth (API key + JWT), RBAC via groups
 
 Phase 3: Abstract storage layer based on learnings
          └── Extract interfaces where variation is needed
@@ -50,6 +59,91 @@ Phase 4: Add Minimal profile (SQLite backends)
 
 Phase 5: Production profile (scaling, HA configs)
 ```
+
+---
+
+## Alternative Deployment Architectures (Not Planned)
+
+**Status:** Hypothetical analysis only. Not currently planned for implementation.
+
+The current architecture uses separate containers for each service. For extremely resource-constrained environments, two alternative approaches were analyzed:
+
+### Option 1: Single Container for All Python Services
+
+Combine registry, def-store, template-store, document-store, and reporting-sync into one container.
+
+**Memory comparison:**
+
+| Setup | Python Runtime | Dependencies | Container Overhead | Total |
+|-------|---------------|--------------|-------------------|-------|
+| 5 separate containers | 5 × ~50MB = 250MB | Duplicated ~100MB | 5 × ~15MB = 75MB | **~425MB** |
+| 1 unified container | 1 × ~50MB = 50MB | Shared ~60MB | 1 × ~15MB = 15MB | **~125MB** |
+
+**Savings: ~300MB RAM**
+
+**Tradeoffs:**
+- Pro: Inter-service calls become direct function calls (~0.01ms vs ~1-5ms)
+- Pro: Shared database connection pools
+- Pro: Faster startup (~5s vs ~20s)
+- Con: Single point of failure (one crash takes everything down)
+- Con: Can't scale services independently
+- Con: Full restart required for any code change
+
+### Option 2: Native (Non-Containerized) Deployment
+
+Run all services directly on the Pi without containers.
+
+**Memory comparison (1GB Pi 4):**
+
+| Component | Containerized | Native |
+|-----------|--------------|--------|
+| Container runtime (Podman) | ~80MB | 0 |
+| Container overhead (7 containers) | ~100MB | 0 |
+| MongoDB | ~150MB | ~80MB (tuned) |
+| PostgreSQL | ~100MB | ~50MB (tuned) |
+| NATS | ~30MB | ~20MB |
+| Dex | ~30MB | ~20MB |
+| Python services | ~300MB (5 containers) | ~120MB (unified) |
+| nginx + static | ~20MB | ~15MB |
+| Linux OS | ~100MB | ~100MB |
+| **Total** | **~910MB** | **~505MB** |
+
+**Savings: ~400MB RAM**
+
+**Tradeoffs:**
+- Pro: Runs comfortably on 1GB Pi with ~500MB headroom
+- Pro: Faster I/O (no overlay filesystem)
+- Pro: Better for SD card longevity
+- Con: No isolation between services
+- Con: Dependency conflicts possible
+- Con: Harder to reproduce environment
+- Con: No easy "reset to clean state"
+- Con: Manual updates (no container pull)
+
+### Extreme Minimal Scenario
+
+Combining both approaches (single native process) could theoretically run on ~385MB:
+
+```
+MongoDB (tuned): ~80MB
+PostgreSQL (tuned): ~50MB
+NATS: ~20MB
+Dex: ~20MB
+wip-unified (single Python): ~100MB
+nginx (static Vue): ~15MB
+Linux OS: ~100MB
+────────────────────────
+Total: ~385MB (would fit on 512MB Pi with swap)
+```
+
+### Why Not Implement These?
+
+1. **Target is Pi 5 (8GB)** - Plenty of headroom, no need to optimize this aggressively
+2. **Development convenience** - Containers provide isolation, easy reset, reproducible builds
+3. **Maintainability** - Separate services are easier to develop, test, and update independently
+4. **Future flexibility** - Can scale individual services if needed
+
+These options remain available if targeting extremely constrained environments in the future.
 
 ---
 
@@ -67,9 +161,11 @@ Even though we're implementing only the Standard profile initially, the architec
    - Use repository pattern or similar abstraction
 
 2. **Authentication Abstraction**
-   - Must support Authentik AND Authelia (later)
-   - API key auth for system-to-system (Registry)
-   - OAuth2/OIDC for user auth
+   - Currently using Dex (lightweight OIDC provider)
+   - Can switch to Authentik for enterprise features (same OIDC protocol)
+   - API key auth for system-to-system communication
+   - JWT/OIDC for user authentication
+   - Configured via `WIP_AUTH_*` environment variables
 
 3. **Configuration-Driven**
    - Backend selection via config file, not code changes
@@ -177,14 +273,16 @@ Even though we're implementing only the Standard profile initially, the architec
   - API: http://localhost:8005
 
 ### In Progress
-- [~] Authentication integration (wip-auth library)
+- [ ] WIP Console OIDC support (browser-based login via Dex)
+
+### Recently Completed
+- [x] Authentication integration (wip-auth library)
   - [x] Shared auth library (`libs/wip-auth`)
   - [x] Pluggable provider architecture
   - [x] API key provider with backward compatibility
   - [x] OIDC provider for JWT authentication
-  - [x] Service integration (def-store, template-store, document-store, reporting-sync)
-  - [ ] Authelia infrastructure (optional - for user login)
-  - [ ] WIP Console OIDC support (optional)
+  - [x] Service integration (all services use dual mode)
+  - [x] Dex OIDC provider (replaces Authelia - works over HTTP, ~30MB RAM)
 
 ---
 
@@ -210,16 +308,19 @@ The authentication layer uses a **shared library** (`libs/wip-auth`) that provid
 All auth settings are read from environment variables with `WIP_AUTH_` prefix:
 
 ```bash
-# Current behavior (default, backward compatible)
+# API key only (backward compatible)
 WIP_AUTH_MODE=api_key_only
-# Falls back to API_KEY env var for legacy compatibility
-
-# With OIDC/JWT (Authelia, Authentik, etc.)
-WIP_AUTH_MODE=dual
-WIP_AUTH_JWT_ISSUER_URL=http://authelia:9091
-WIP_AUTH_JWT_AUDIENCE=wip
 WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+
+# Dual mode with Dex (current development setup)
+WIP_AUTH_MODE=dual
+WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+WIP_AUTH_JWT_JWKS_URI=http://host.containers.internal:5556/dex/keys
+WIP_AUTH_JWT_AUDIENCE=wip-console
 ```
+
+**Note:** The split issuer/JWKS configuration allows JWT tokens to work from both browser (localhost) and containers (host.containers.internal) without requiring `/etc/hosts` modifications.
 
 Legacy environment variables (`API_KEY`, `MASTER_API_KEY`) are automatically mapped to `WIP_AUTH_LEGACY_API_KEY` for backward compatibility.
 
@@ -289,11 +390,13 @@ class UserIdentity:
 
 ### Provider Comparison
 
-| Provider | Containers | RAM | Use Case |
-|----------|------------|-----|----------|
-| **Authelia** | 1 | ~30-100 MB | Lightweight, Pi-friendly |
-| **Authentik** | 3 | ~1.2 GB | Enterprise features |
-| **Generic OIDC** | varies | varies | Any OIDC provider |
+| Provider | Containers | RAM | HTTP OK | Use Case |
+|----------|------------|-----|---------|----------|
+| **Dex** (current) | 1 | ~30 MB | Yes | Development, Pi deployment |
+| Authelia | 1 | ~30-100 MB | No (HTTPS) | Production with domain |
+| Authentik | 3 | ~1.2 GB | Yes | Enterprise features, SSO |
+
+**Why Dex:** Works over HTTP (no certificates needed), minimal RAM, full OIDC protocol (easy to switch providers later), static users via YAML config.
 
 ---
 
@@ -957,17 +1060,21 @@ GET /api/document-store/table/{template_id}/csv
 
 ### Technology Stack
 - **Backend:** Python 3.11+ / FastAPI
-- **Document Store:** MongoDB (Standard/Production), SQLite (Minimal)
-- **Reporting Store:** PostgreSQL (Standard/Production), SQLite (Minimal)
+- **Document Store:** MongoDB (Standard/Production), SQLite (Minimal - future)
+- **Reporting Store:** PostgreSQL (Standard/Production), SQLite (Minimal - future)
 - **Message Queue:** NATS with JetStream
-- **Auth:** Authentik (Standard/Production), Authelia (Minimal)
+- **Auth:** Dex (all profiles), Authentik (optional for enterprise)
+- **Auth Library:** wip-auth (shared library with pluggable providers)
 - **Frontend:** Vue 3 + PrimeVue
 - **Container:** Docker/Podman
 
 ### API Conventions
 - All endpoints support bulk operations
-- API key auth via `X-API-Key` header
+- Dual authentication supported:
+  - API key via `X-API-Key` header (service-to-service)
+  - JWT via `Authorization: Bearer <token>` header (user auth)
 - Development API key: `dev_master_key_for_testing`
+- Development users: admin@wip.local, editor@wip.local, viewer@wip.local (password: `<user>123`)
 - RESTful design with OpenAPI documentation at `/docs`
 
 ### Data Principles
