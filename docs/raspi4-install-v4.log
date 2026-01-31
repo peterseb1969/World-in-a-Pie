@@ -1,0 +1,98 @@
+# WIP Raspberry Pi 4 Installation Log - v4
+# Date: 2025-01-31
+# Target: Raspberry Pi 4 (2GB RAM) with Caddy/OIDC
+
+## Prerequisites
+
+### 1. Enable Unprivileged Ports for Rootless Podman
+
+Caddy needs ports 80 and 443. Rootless Podman can't bind to ports < 1024 by default.
+
+**Fix (required before running pi-setup.sh):**
+```bash
+echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+This persists across reboots.
+
+### 2. Podman Registry Configuration
+
+Ensure docker.io is configured:
+```bash
+grep -q 'docker.io' /etc/containers/registries.conf || \
+  echo 'unqualified-search-registries = ["docker.io"]' | sudo tee -a /etc/containers/registries.conf
+```
+
+## Installation Steps
+
+```bash
+# 1. Download setup script
+curl -O http://192.168.1.17:3000/peter/World-In-A-Pie/raw/branch/main/scripts/pi-setup.sh
+
+# 2. Run setup (full mode with Caddy/OIDC)
+bash pi-setup.sh
+
+# Or minimal mode (API keys only, no Caddy):
+bash pi-setup.sh --minimal
+```
+
+## Deployment Modes
+
+| Mode | Containers | Auth | Access | RAM |
+|------|------------|------|--------|-----|
+| Full | MongoDB, PostgreSQL, NATS, Dex, Caddy + 6 services | OIDC + API keys | https://hostname | ~1GB |
+| Minimal | MongoDB, PostgreSQL, NATS + 6 services | API keys only | http://hostname:3000 | ~900MB |
+
+## Test Users (Dex OIDC)
+
+| Email | Password | Group |
+|-------|----------|-------|
+| admin@wip.local | admin123 | wip-admins |
+| editor@wip.local | editor123 | wip-editors |
+| viewer@wip.local | viewer123 | wip-viewers |
+
+## Troubleshooting
+
+### Port Permission Denied
+```
+Error: rootlessport cannot expose privileged port 80
+```
+**Fix:** Run the sysctl command in Prerequisites section.
+
+### Caddy Not Starting
+Check logs:
+```bash
+podman logs wip-caddy
+```
+
+### OIDC Login Not Working
+1. Ensure you're accessing via HTTPS (https://hostname)
+2. Accept the self-signed certificate warning
+3. Check Dex is running: `podman logs wip-dex`
+
+## Wipe and Restart
+
+To completely reset and start fresh:
+```bash
+podman system reset -f
+rm -rf ~/Development/WorldInPie
+# Then run installation steps above
+```
+
+## Architecture (Full Mode)
+
+```
+Browser → Caddy (HTTPS :443) → Services
+              ↓
+          /dex/*     → Dex (OIDC provider)
+          /api/*     → Backend services
+          /*         → WIP Console
+```
+
+## Key Lessons Learned
+
+1. **Rootless Podman port restriction** - Ports < 1024 require sysctl change
+2. **Crypto.subtle requires HTTPS** - OIDC/PKCE won't work over HTTP
+3. **Caddy auto-generates TLS** - Uses internal CA, browser warns once
+4. **MongoDB 4.4.18** - Last version supporting ARMv8.0 (Pi 4's Cortex-A72)
