@@ -2,24 +2,125 @@
 
 This guide explains how to configure authentication for World In a Pie (WIP) services.
 
-## Overview
+## Introduction: What is API Authentication?
 
-WIP uses a pluggable authentication system that supports multiple modes:
+When you call a WIP API (like `GET /api/def-store/terminologies`), the service needs to know **who you are** and **whether you're allowed** to make that request. This is called **API authentication**.
 
-| Mode | Description | Use Case |
-|------|-------------|----------|
-| `none` | No authentication required | Local development |
-| `api_key_only` | API key via `X-API-Key` header (default) | Service-to-service |
-| `jwt_only` | JWT tokens via `Authorization: Bearer` | User authentication |
-| `dual` | Both API keys and JWT tokens | Production with users |
+### Two Separate Authentication Layers
+
+WIP has **two independent authentication layers**:
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                                                                         │
+│   You (Browser/Script)          WIP Service              Database       │
+│   ────────────────────          ───────────              ────────       │
+│                                                                         │
+│   curl/browser  ────── API Auth ──────►  Def-Store  ──── DB Auth ──► MongoDB
+│                       (this guide)                     (MONGO_URI)      │
+│                                                                         │
+│   1. API Auth: Who can call the REST API? (X-API-Key or JWT)           │
+│   2. DB Auth:  How does the service connect to MongoDB? (MONGO_URI)     │
+│                                                                         │
+│   These are INDEPENDENT - this guide only covers API Auth (#1)          │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**This guide only covers API authentication** - how clients authenticate to WIP services. Database authentication (MongoDB, PostgreSQL) is configured separately via connection strings and is not affected by the settings described here.
+
+### Authentication Methods Explained
+
+#### Method 1: API Keys
+
+An **API key** is a secret string that you include in your HTTP request. It's like a password for your application.
+
+```bash
+curl http://localhost:8002/api/def-store/terminologies \
+  -H "X-API-Key: dev_master_key_for_testing"
+           ▲
+           └── This is the API key
+```
+
+**How it works:**
+1. You send a request with the `X-API-Key` header
+2. The service checks if the key matches the configured key
+3. If it matches, the request is allowed
+
+**Best for:** Service-to-service communication (e.g., Document-Store calling Template-Store), scripts, and simple setups.
+
+#### Method 2: JWT Tokens (via OIDC)
+
+A **JWT (JSON Web Token)** is a token that proves you logged in with a username and password. It's issued by an **identity provider** (like Authelia) after you authenticate.
+
+**What is Authelia?**
+Authelia is an open-source identity provider - a service that:
+- Stores usernames and passwords
+- Lets users log in
+- Issues JWT tokens that prove "this user logged in successfully"
+
+**What is OIDC?**
+OIDC (OpenID Connect) is a standard protocol for authentication. Many identity providers support it (Authelia, Authentik, Keycloak, Auth0, Google, etc.). WIP can work with any OIDC-compliant provider.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                         JWT Authentication Flow                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   1. User logs in to Authelia                                            │
+│      ┌────────┐         ┌──────────┐                                     │
+│      │  User  │ ──────► │ Authelia │  "I'm admin, password is admin123"  │
+│      └────────┘         └────┬─────┘                                     │
+│                              │                                           │
+│   2. Authelia returns a JWT token                                        │
+│                              │                                           │
+│                              ▼                                           │
+│      "Here's your token: eyJhbGciOiJS..."                                │
+│                                                                          │
+│   3. User sends token to WIP service                                     │
+│      ┌────────┐         ┌───────────┐                                    │
+│      │  User  │ ──────► │ Def-Store │  Authorization: Bearer eyJhbG...   │
+│      └────────┘         └─────┬─────┘                                    │
+│                               │                                          │
+│   4. Service validates token with Authelia's public key                  │
+│                               │                                          │
+│                               ▼                                          │
+│      "Token is valid, user is 'admin' with groups [wip-admins]"          │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**Best for:** User authentication (real people logging in), web applications, and when you need user identity information (who created this document?).
+
+### Comparison
+
+| Aspect | API Key | JWT Token |
+|--------|---------|-----------|
+| **What it is** | A secret string | A token from login |
+| **Who uses it** | Services, scripts | Logged-in users |
+| **How you get it** | Configured in environment | Login to Authelia |
+| **User identity** | Just "valid key" | Full user info (name, email, groups) |
+| **Expiration** | Never (unless you change it) | Short-lived (e.g., 1 hour) |
+| **Header** | `X-API-Key: xxx` | `Authorization: Bearer xxx` |
+
+## Authentication Modes
+
+WIP supports four authentication modes:
+
+| Mode | Description | When to Use |
+|------|-------------|-------------|
+| `none` | No authentication - all requests allowed | Local development, testing |
+| `api_key_only` | Only API key authentication (default) | Service-to-service, scripts, simple setups |
+| `jwt_only` | Only JWT tokens from Authelia/OIDC | User-facing apps (no service accounts) |
+| `dual` | Both API keys AND JWT tokens accepted | Production with users AND service accounts |
+
+**Default:** `api_key_only` - this is the current behavior, no changes needed.
 
 ## Where to Set Environment Variables
 
 Environment variables are set in the **docker-compose files** for each service.
 
 ### Service Docker-Compose Files
-
-Each service has its own `docker-compose.dev.yml` (or `docker-compose.yml` for production):
 
 | Service | File Location |
 |---------|---------------|
@@ -37,7 +138,7 @@ services:
   def-store:
     # ... other settings ...
     environment:
-      # Existing settings
+      # Existing settings (database, etc.)
       - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_def_store_dev
       - REGISTRY_URL=http://wip-registry-dev:8001
@@ -56,9 +157,9 @@ services:
 
 ## Configuration Scenarios
 
-### Scenario 1: Default (API Key Only)
+### Scenario 1: API Key Only (Default)
 
-This is the current default behavior. No changes needed - existing `API_KEY` env var works.
+This is the current default behavior. **No changes needed** - existing `API_KEY` env var works.
 
 **Each service's docker-compose.dev.yml:**
 ```yaml
@@ -69,9 +170,15 @@ environment:
   - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
 ```
 
+**Usage:**
+```bash
+curl http://localhost:8002/api/def-store/terminologies \
+  -H "X-API-Key: dev_master_key_for_testing"
+```
+
 ### Scenario 2: No Authentication (Development)
 
-For local development without any auth checks.
+For local development without any auth checks. All requests are allowed.
 
 **Each service's docker-compose.dev.yml:**
 ```yaml
@@ -79,13 +186,19 @@ environment:
   - WIP_AUTH_MODE=none
 ```
 
-### Scenario 3: With Authelia (User Login)
+**Usage:**
+```bash
+# No header needed
+curl http://localhost:8002/api/def-store/terminologies
+```
 
-For user authentication via OIDC.
+### Scenario 3: Dual Mode with Authelia (User Login)
+
+For user authentication via OIDC while still allowing API keys for services.
 
 **Step 1:** Enable Authelia in `docker-compose.infra.yml`:
 
-Uncomment the Authelia service:
+Uncomment the Authelia service section:
 ```yaml
 services:
   # ... other services ...
@@ -111,27 +224,11 @@ podman-compose -f docker-compose.infra.yml up -d
 
 **Step 3:** Update **each service's** docker-compose.dev.yml:
 
-`components/def-store/docker-compose.dev.yml`:
 ```yaml
 environment:
-  - WIP_AUTH_MODE=dual
-  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
-  - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
-  - WIP_AUTH_JWT_AUDIENCE=wip
-```
+  # ... existing settings ...
 
-`components/template-store/docker-compose.dev.yml`:
-```yaml
-environment:
-  - WIP_AUTH_MODE=dual
-  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
-  - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
-  - WIP_AUTH_JWT_AUDIENCE=wip
-```
-
-`components/document-store/docker-compose.dev.yml`:
-```yaml
-environment:
+  # Authentication
   - WIP_AUTH_MODE=dual
   - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
   - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
@@ -140,9 +237,22 @@ environment:
 
 **Step 4:** Restart services:
 ```bash
-cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
+cd components/def-store && podman-compose -f docker-compose.dev.yml down && podman-compose -f docker-compose.dev.yml up -d
+# Repeat for other services
+```
+
+**Usage with API key:**
+```bash
+curl http://localhost:8002/api/def-store/terminologies \
+  -H "X-API-Key: dev_master_key_for_testing"
+```
+
+**Usage with JWT token:**
+```bash
+# First, get a token by logging in to Authelia
+# Then use the token:
+curl http://localhost:8002/api/def-store/terminologies \
+  -H "Authorization: Bearer eyJhbGciOiJS..."
 ```
 
 ## Environment Variable Reference
@@ -151,74 +261,22 @@ cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
 |----------|---------|-------------|
 | `WIP_AUTH_MODE` | `api_key_only` | Auth mode: `none`, `api_key_only`, `jwt_only`, `dual` |
 | `WIP_AUTH_LEGACY_API_KEY` | - | API key value (plain text) |
-| `WIP_AUTH_JWT_ISSUER_URL` | - | OIDC issuer URL (e.g., `http://wip-authelia:9091`) |
+| `WIP_AUTH_JWT_ISSUER_URL` | - | Authelia URL (e.g., `http://wip-authelia:9091`) |
 | `WIP_AUTH_JWT_AUDIENCE` | `wip` | Expected JWT audience claim |
 | `WIP_AUTH_JWT_GROUPS_CLAIM` | `groups` | JWT claim containing user groups |
 | `WIP_AUTH_ADMIN_GROUPS` | `wip-admins` | Groups considered admin |
 
 ### Legacy Compatibility
 
-The old `API_KEY` environment variable still works and is automatically mapped:
-- `API_KEY` → `WIP_AUTH_LEGACY_API_KEY`
-
-So this still works:
+The old `API_KEY` environment variable still works:
 ```yaml
 environment:
-  - API_KEY=dev_master_key_for_testing
-```
-
-## Quick Reference: Full docker-compose.dev.yml Examples
-
-### Def-Store with Dual Auth
-
-`components/def-store/docker-compose.dev.yml`:
-```yaml
-version: "3.8"
-
-services:
-  def-store:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: wip-def-store-dev
-    ports:
-      - "8002:8002"
-    environment:
-      # Database
-      - MONGO_URI=mongodb://wip-mongodb:27017/
-      - DATABASE_NAME=wip_def_store_dev
-
-      # Service dependencies
-      - REGISTRY_URL=http://wip-registry-dev:8001
-      - REGISTRY_API_KEY=dev_master_key_for_testing
-
-      # CORS
-      - CORS_ORIGINS=*
-
-      # Python
-      - PYTHONPATH=/app/src
-
-      # Authentication
-      - WIP_AUTH_MODE=dual
-      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
-      - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
-      - WIP_AUTH_JWT_AUDIENCE=wip
-
-    volumes:
-      - ./src:/app/src:ro
-      - ./tests:/app/tests:ro
-    command: uvicorn def_store.main:app --host 0.0.0.0 --port 8002 --reload
-    networks:
-      - wip-network
-
-networks:
-  wip-network:
-    external: true
+  - API_KEY=dev_master_key_for_testing  # Still works!
 ```
 
 ## Authelia Default Users
 
-The development configuration (`config/authelia/users.yml`) includes:
+When using Authelia, these test users are pre-configured in `config/authelia/users.yml`:
 
 | Username | Password | Groups |
 |----------|----------|--------|
@@ -231,37 +289,27 @@ The development configuration (`config/authelia/users.yml`) includes:
 ### Test API Key Auth
 
 ```bash
-# Should succeed
+# Should succeed (200 OK)
 curl http://localhost:8002/api/def-store/terminologies \
   -H "X-API-Key: dev_master_key_for_testing"
 
-# Should fail (401)
+# Should fail (401 Unauthorized)
 curl http://localhost:8002/api/def-store/terminologies \
   -H "X-API-Key: wrong_key"
 ```
 
-### Test JWT Auth (requires Authelia)
+### Test No Auth Mode
 
 ```bash
-# Get token from Authelia
-TOKEN=$(curl -s -X POST http://localhost:9091/api/oidc/token \
-  -d "grant_type=password" \
-  -d "client_id=wip-console" \
-  -d "client_secret=wip_console_secret" \
-  -d "username=admin" \
-  -d "password=admin123" \
-  -d "scope=openid profile email groups" | jq -r '.access_token')
-
-# Use token
-curl http://localhost:8002/api/def-store/terminologies \
-  -H "Authorization: Bearer $TOKEN"
+# With WIP_AUTH_MODE=none, no header needed
+curl http://localhost:8002/api/def-store/terminologies
 ```
 
 ## Troubleshooting
 
 ### "Invalid API key" Error
 
-1. Check the environment variable is set in docker-compose:
+1. Check the environment variable is set correctly:
    ```bash
    podman exec wip-def-store-dev env | grep -E "(API_KEY|WIP_AUTH)"
    ```
@@ -278,7 +326,17 @@ podman-compose -f docker-compose.dev.yml up -d
 
 ### Authelia Not Reachable from Services
 
-Make sure Authelia is on the same Docker network (`wip-network`) and use the container name `wip-authelia` in the issuer URL:
+Use the container name `wip-authelia` (not `localhost`) in the issuer URL:
 ```yaml
-- WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091  # NOT localhost
+- WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091  # Correct
+- WIP_AUTH_JWT_ISSUER_URL=http://localhost:9091     # Wrong (from inside container)
 ```
+
+## Summary
+
+| I want to... | Set `WIP_AUTH_MODE` to... | Also set... |
+|--------------|---------------------------|-------------|
+| Disable auth for testing | `none` | Nothing else needed |
+| Use API keys only (default) | `api_key_only` | `WIP_AUTH_LEGACY_API_KEY` or `API_KEY` |
+| Use Authelia for user login | `dual` | `WIP_AUTH_JWT_ISSUER_URL`, enable Authelia |
+| Use only JWT (no API keys) | `jwt_only` | `WIP_AUTH_JWT_ISSUER_URL`, enable Authelia |
