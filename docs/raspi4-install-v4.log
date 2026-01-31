@@ -96,3 +96,18 @@ Browser → Caddy (HTTPS :443) → Services
 2. **Crypto.subtle requires HTTPS** - OIDC/PKCE won't work over HTTP
 3. **Caddy auto-generates TLS** - Uses internal CA, browser warns once
 4. **MongoDB 4.4.18** - Last version supporting ARMv8.0 (Pi 4's Cortex-A72)
+5. **Dex YAML doesn't substitute env vars** - Use shell entrypoint with sed
+6. **Caddy needs explicit hostnames** - `localhost, *.local, 192.168.*.*` works for internal TLS
+
+## Successful Deployment (2025-01-31)
+
+```
+Containers: 11 (all running)
+Memory: ~876MB used / 1.8GB available
+Access: https://wip-dev-pi.local
+
+Services via Caddy HTTPS:
+  - Console: https://wip-dev-pi.local/
+  - Dex OIDC: https://wip-dev-pi.local/dex/
+  - APIs: https://wip-dev-pi.local/api/{service}/
+```
