@@ -9,11 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy wip-auth library first (for caching)
+COPY libs/wip-auth /app/libs/wip-auth
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir /app/libs/wip-auth && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy application source
 COPY src/ /app/src/

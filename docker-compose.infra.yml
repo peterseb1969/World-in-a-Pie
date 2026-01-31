@@ -6,9 +6,24 @@
 #   - Mongo Express (MongoDB UI): http://localhost:8081 (admin/admin)
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
-#   - Authelia (OIDC provider, optional): http://localhost:9091
+#   - Dex (OIDC provider): http://localhost:5556
 #
 # To access PostgreSQL: podman exec -it wip-postgres psql -U wip -d wip_reporting
+#
+# OIDC Setup (Dex):
+#   Test users (password grant enabled for development):
+#     - admin@wip.local / admin123
+#     - editor@wip.local / editor123
+#     - viewer@wip.local / viewer123
+#
+#   Get a token:
+#     curl -X POST http://localhost:5556/dex/token \
+#       -d "grant_type=password&username=admin@wip.local&password=admin123" \
+#       -d "client_id=wip-console&client_secret=wip-console-secret&scope=openid profile email"
+#
+#   Use the token:
+#     curl http://localhost:8002/api/def-store/terminologies \
+#       -H "Authorization: Bearer <token>"
 #
 version: "3.8"
 
@@ -95,28 +110,26 @@ services:
     restart: unless-stopped
 
   # ===================
-  # Authentication (Optional)
+  # Authentication (OIDC)
   # ===================
-  # Uncomment to enable Authelia for user login (OIDC/JWT)
-  # Then set WIP_AUTH_MODE=dual and WIP_AUTH_JWT_ISSUER_URL=http://authelia:9091
-  #
-  # authelia:
-  #   image: authelia/authelia:latest
-  #   container_name: wip-authelia
-  #   volumes:
-  #     - ./config/authelia:/config:ro
-  #   ports:
-  #     - "9091:9091"
-  #   environment:
-  #     TZ: UTC
-  #   healthcheck:
-  #     test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:9091/api/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #   networks:
-  #     - wip-network
-  #   restart: unless-stopped
+  dex:
+    image: ghcr.io/dexidp/dex:v2.38.0
+    container_name: wip-dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./config/dex:/etc/dex:ro
+      - wip-dex-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
 
 networks:
   wip-network:
@@ -127,3 +140,4 @@ volumes:
   wip-mongodb-data:
   wip-postgres-data:
   wip-nats-data:
+  wip-dex-data:

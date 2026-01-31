@@ -25,8 +25,18 @@ services:
       # Document Store (for batch sync)
       - DOCUMENT_STORE_URL=http://wip-document-store-dev:8004
       - API_KEY=dev_master_key_for_testing
+      # Authentication - dual mode allows both API keys and JWT tokens
+      - WIP_AUTH_MODE=dual
+      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+      # Issuer URL matches what's in the token (localhost for browser/CLI compatibility)
+      - WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+      # JWKS fetched via host.containers.internal (reachable from inside container)
+      - WIP_AUTH_JWT_JWKS_URI=http://host.containers.internal:5556/dex/keys
+      - WIP_AUTH_JWT_AUDIENCE=wip-console
     volumes:
       - ./src:/app/src:ro
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn reporting_sync.main:app --host 0.0.0.0 --port 8005 --reload"
     networks:
       - wip-network
     restart: unless-stopped

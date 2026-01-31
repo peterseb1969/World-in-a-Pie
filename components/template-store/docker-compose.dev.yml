@@ -15,7 +15,6 @@ services:
     environment:
       - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_template_store_dev
-      - API_KEY=dev_master_key_for_testing
       - REGISTRY_URL=http://wip-registry-dev:8001
       - REGISTRY_API_KEY=dev_master_key_for_testing
       - DEF_STORE_URL=http://wip-def-store-dev:8002
@@ -23,10 +22,19 @@ services:
       - NATS_URL=nats://wip-nats:4222
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
+      # Authentication - dual mode allows both API keys and JWT tokens
+      - WIP_AUTH_MODE=dual
+      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+      # Issuer URL matches what's in the token (localhost for browser/CLI compatibility)
+      - WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+      # JWKS fetched via host.containers.internal (reachable from inside container)
+      - WIP_AUTH_JWT_JWKS_URI=http://host.containers.internal:5556/dex/keys
+      - WIP_AUTH_JWT_AUDIENCE=wip-console
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
-    command: uvicorn template_store.main:app --host 0.0.0.0 --port 8003 --reload
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn template_store.main:app --host 0.0.0.0 --port 8003 --reload"
     networks:
       - wip-network
 

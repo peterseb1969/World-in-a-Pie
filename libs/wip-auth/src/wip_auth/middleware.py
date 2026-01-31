@@ -7,9 +7,9 @@ context variable for access by route handlers.
 
 from typing import Sequence
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from .identity import clear_current_identity, set_current_identity
 from .models import UserIdentity
@@ -59,9 +59,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 identity = await provider.authenticate(request)
                 if identity is not None:
                     break
+            except HTTPException as exc:
+                # Provider raised an HTTPException (e.g., invalid credentials)
+                # Convert to a proper JSON response
+                return JSONResponse(
+                    status_code=exc.status_code,
+                    content={"detail": exc.detail},
+                    headers=exc.headers,
+                )
             except Exception:
-                # Provider raised an exception (e.g., invalid credentials)
-                # Re-raise to return error response
+                # Unexpected error - re-raise
                 raise
 
         # Store identity in context for route handlers

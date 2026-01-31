@@ -141,15 +141,29 @@ RequireAdmin = require_admin
 OptionalIdentity = optional_identity
 
 
-# Legacy compatibility: function that takes api_key parameter
-# This matches the signature of the old require_api_key dependency
-def require_api_key() -> Callable[[Request], Awaitable[UserIdentity]]:
-    """Legacy compatibility wrapper for require_identity.
+# Legacy compatibility: direct dependency function for require_api_key
+# This matches the old signature where Depends(require_api_key) was used
+async def require_api_key(request: Request) -> UserIdentity:
+    """Legacy compatibility wrapper for authentication.
 
     This function provides backward compatibility with existing code that
-    uses require_api_key. It simply wraps require_identity.
+    uses Depends(require_api_key). It checks authentication and returns
+    the UserIdentity (which can be used where str was expected).
+
+    Args:
+        request: The FastAPI request
 
     Returns:
-        Dependency function for use with FastAPI's Depends()
+        UserIdentity if authenticated
+
+    Raises:
+        HTTPException: If not authenticated
     """
-    return require_identity()
+    identity = get_current_identity()
+    if identity is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer, ApiKey"},
+        )
+    return identity
