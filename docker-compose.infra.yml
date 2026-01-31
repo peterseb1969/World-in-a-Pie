@@ -32,7 +32,7 @@ services:
   # Document Store
   # ===================
   mongodb:
-    image: mongo:7
+    image: docker.io/library/mongo:7
     container_name: wip-mongodb
     ports:
       - "27017:27017"
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   mongo-express:
-    image: mongo-express
+    image: docker.io/library/mongo-express
     container_name: wip-mongo-express
     ports:
       - "8081:8081"
@@ -67,7 +67,7 @@ services:
   # Reporting Store
   # ===================
   postgres:
-    image: postgres:16
+    image: docker.io/library/postgres:16
     container_name: wip-postgres
     ports:
       - "5432:5432"
@@ -90,7 +90,7 @@ services:
   # Message Queue
   # ===================
   nats:
-    image: nats:2.10
+    image: docker.io/library/nats:2.10
     container_name: wip-nats
     command: ["--js", "--sd", "/data", "-m", "8222"]
     ports:

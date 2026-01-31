@@ -1,5 +1,5 @@
 # WIP Def-Store Service Dockerfile
-FROM python:3.12-slim
+FROM docker.io/library/python:3.12-slim
 
 # Set working directory
 WORKDIR /app
@@ -9,13 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy wip-auth library first (for caching)
-COPY libs/wip-auth /app/libs/wip-auth
-
 # Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir /app/libs/wip-auth && \
-    pip install --no-cache-dir -r requirements.txt
+# Note: wip-auth is mounted and installed at runtime via docker-compose
+COPY requirements-docker.txt .
+RUN pip install --no-cache-dir -r requirements-docker.txt
 
 # Copy application source
 COPY src/ /app/src/

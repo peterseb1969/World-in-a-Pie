@@ -26,7 +26,7 @@ services:
   # Document Store
   # ===================
   mongodb:
-    image: mongo:4.4.18
+    image: docker.io/library/mongo:4.4.18
     container_name: wip-mongodb
     ports:
       - "27017:27017"
@@ -45,7 +45,7 @@ services:
   # Reporting Store
   # ===================
   postgres:
-    image: postgres:16
+    image: docker.io/library/postgres:16
     container_name: wip-postgres
     ports:
       - "5432:5432"
@@ -68,7 +68,7 @@ services:
   # Message Queue
   # ===================
   nats:
-    image: nats:2.10
+    image: docker.io/library/nats:2.10
     container_name: wip-nats
     command: ["--js", "--sd", "/data", "-m", "8222"]
     ports:

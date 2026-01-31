@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM docker.io/library/node:20-alpine AS builder
 
 WORKDIR /app
 
@@ -29,7 +29,7 @@ ENV VITE_OIDC_PROVIDER_NAME=$VITE_OIDC_PROVIDER_NAME
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine
+FROM docker.io/library/nginx:alpine
 
 # Copy the built application
 COPY --from=builder /app/dist /usr/share/nginx/html

@@ -61,17 +61,20 @@ fi
 echo "  podman-compose: $(podman-compose --version 2>/dev/null || echo 'installed')"
 echo ""
 
-# Step 3: Configure Podman registries
+# Step 3: Configure Podman registries (ensure proper config)
 log_info "Configuring Podman registries..."
-if grep -q "unqualified-search-registries" /etc/containers/registries.conf 2>/dev/null; then
-    log_info "  Registries already configured"
-else
-    sudo tee -a /etc/containers/registries.conf > /dev/null << 'EOF'
+REGISTRIES_CONF="/etc/containers/registries.conf"
 
-# Added by WIP setup script
-unqualified-search-registries = ["docker.io"]
-EOF
-    log_info "  Added docker.io to unqualified-search-registries"
+# Check if docker.io is properly configured
+if grep -qE '^\s*unqualified-search-registries\s*=.*docker\.io' "$REGISTRIES_CONF" 2>/dev/null; then
+    log_info "  Registries already properly configured"
+else
+    log_warn "  Adding docker.io to unqualified-search-registries"
+    # Remove any existing (possibly malformed) unqualified-search-registries line
+    sudo sed -i '/unqualified-search-registries/d' "$REGISTRIES_CONF" 2>/dev/null || true
+    # Add proper configuration
+    echo 'unqualified-search-registries = ["docker.io"]' | sudo tee -a "$REGISTRIES_CONF" > /dev/null
+    log_info "  Registry configuration updated"
 fi
 echo ""
 
@@ -96,18 +99,34 @@ log_info "Starting infrastructure (MongoDB 4.4, PostgreSQL, NATS, Dex)..."
 cd "$INSTALL_DIR"
 podman-compose -f docker-compose.infra.pi.yml up -d
 
-log_info "Waiting for infrastructure to be healthy..."
-sleep 10
+log_info "Waiting for infrastructure to be healthy (30 seconds)..."
+sleep 30
 
-# Check infrastructure health
+# Check infrastructure health - EXIT ON FAILURE
+log_info "Checking infrastructure..."
+INFRA_HEALTHY=true
+
 for container in wip-mongodb wip-postgres wip-nats wip-dex; do
     if podman ps --format "{{.Names}}" | grep -q "^${container}$"; then
         echo "  $container: running"
     else
         log_error "$container is not running!"
-        podman logs $container 2>&1 | tail -5
+        podman logs $container 2>&1 | tail -10 || true
+        INFRA_HEALTHY=false
     fi
 done
+
+if [ "$INFRA_HEALTHY" = false ]; then
+    log_error "Infrastructure failed to start. Cannot continue."
+    log_error "Please check the errors above and try again."
+    echo ""
+    echo "Troubleshooting:"
+    echo "  1. Check available disk space: df -h"
+    echo "  2. Check available memory: free -h"
+    echo "  3. View all container logs: podman logs <container-name>"
+    echo "  4. Try pulling images manually: podman pull docker.io/library/mongo:4.4.18"
+    exit 1
+fi
 echo ""
 
 # Step 6: Start Registry and initialize namespaces
@@ -116,9 +135,19 @@ cd "$INSTALL_DIR/components/registry"
 podman-compose -f docker-compose.dev.yml up -d
 
 log_info "Waiting for Registry to be ready..."
-sleep 5
+sleep 10
 
-# Try to initialize namespaces (may already exist)
+# Check if Registry is healthy
+REGISTRY_HEALTH=$(curl -s http://localhost:8001/health 2>/dev/null || echo '{"status":"unreachable"}')
+if echo "$REGISTRY_HEALTH" | grep -q '"healthy"\|"status":"healthy"'; then
+    log_info "  Registry is healthy"
+else
+    log_error "Registry failed to start: $REGISTRY_HEALTH"
+    podman logs wip-registry-dev 2>&1 | tail -20 || true
+    exit 1
+fi
+
+# Initialize namespaces (may already exist)
 log_info "Initializing WIP namespaces..."
 INIT_RESULT=$(curl -s -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
     -H "X-API-Key: $API_KEY" 2>/dev/null || echo "failed")
@@ -130,22 +159,33 @@ else
 fi
 echo ""
 
-# Step 7: Start remaining services
-log_info "Starting Def-Store..."
-cd "$INSTALL_DIR/components/def-store"
-podman-compose -f docker-compose.dev.yml up -d
+# Step 7: Start remaining services (one at a time with health checks)
+start_service() {
+    local name="$1"
+    local dir="$2"
+    local port="$3"
 
-log_info "Starting Template-Store..."
-cd "$INSTALL_DIR/components/template-store"
-podman-compose -f docker-compose.dev.yml up -d
+    log_info "Starting $name..."
+    cd "$INSTALL_DIR/components/$dir"
+    podman-compose -f docker-compose.dev.yml up -d
 
-log_info "Starting Document-Store..."
-cd "$INSTALL_DIR/components/document-store"
-podman-compose -f docker-compose.dev.yml up -d
+    # Wait for service to be ready
+    sleep 10
 
-log_info "Starting Reporting-Sync..."
-cd "$INSTALL_DIR/components/reporting-sync"
-podman-compose -f docker-compose.dev.yml up -d
+    HEALTH=$(curl -s "http://localhost:$port/health" 2>/dev/null || echo '{"status":"unreachable"}')
+    if echo "$HEALTH" | grep -q '"healthy"\|"status":"healthy"'; then
+        log_info "  $name is healthy"
+        return 0
+    else
+        log_warn "  $name may not be ready yet: $HEALTH"
+        return 1
+    fi
+}
+
+start_service "Def-Store" "def-store" "8002"
+start_service "Template-Store" "template-store" "8003"
+start_service "Document-Store" "document-store" "8004"
+start_service "Reporting-Sync" "reporting-sync" "8005"
 
 echo ""
 
@@ -154,12 +194,12 @@ log_info "Starting WIP Console..."
 cd "$INSTALL_DIR/ui/wip-console"
 podman-compose -f docker-compose.dev.yml up -d
 
-log_info "Waiting for services to start..."
-sleep 10
+log_info "Waiting for Console to start..."
+sleep 15
 echo ""
 
-# Step 9: Health checks
-log_info "Running health checks..."
+# Step 9: Final health checks
+log_info "Running final health checks..."
 SERVICES=(
     "Registry:8001"
     "Def-Store:8002"
@@ -201,6 +241,8 @@ if $ALL_HEALTHY; then
     echo -e "${GREEN}  Setup completed successfully!${NC}"
 else
     echo -e "${YELLOW}  Setup completed with warnings${NC}"
+    echo -e "${YELLOW}  Some services may still be starting.${NC}"
+    echo -e "${YELLOW}  Wait a minute and check: curl http://localhost:800X/health${NC}"
 fi
 echo "=========================================="
 echo ""

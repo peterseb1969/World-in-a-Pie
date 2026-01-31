@@ -1,7 +1,7 @@
 # WIP Registry Service Dockerfile
 # Production build
 
-FROM python:3.11-slim
+FROM docker.io/library/python:3.11-slim
 
 # Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
