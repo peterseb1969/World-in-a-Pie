@@ -6,10 +6,13 @@
  * - API Key: Legacy X-API-Key header authentication
  *
  * Environment variables:
- * - VITE_OIDC_AUTHORITY: OIDC provider URL (default: http://localhost:5556/dex)
+ * - VITE_OIDC_ENABLED: Enable/disable OIDC login button (default: true)
+ * - VITE_OIDC_AUTHORITY: OIDC provider URL (default: /dex)
  * - VITE_OIDC_CLIENT_ID: OAuth2 client ID (default: wip-console)
  * - VITE_OIDC_CLIENT_SECRET: OAuth2 client secret (optional, for confidential clients)
  * - VITE_OIDC_PROVIDER_NAME: Display name for the OIDC provider (default: SSO)
+ *
+ * For API-key only deployments (no Caddy/HTTPS), set VITE_OIDC_ENABLED=false
  */
 
 import type { UserManagerSettings } from 'oidc-client-ts'
@@ -44,8 +47,14 @@ export const oidcConfig: UserManagerSettings = {
   loadUserInfo: true,
 }
 
-// Check if OIDC is configured (authority is set)
+// Check if OIDC is enabled
+// Disabled when VITE_OIDC_ENABLED=false (for API-key only deployments)
 export const isOidcEnabled = (): boolean => {
+  const enabled = import.meta.env.VITE_OIDC_ENABLED
+  // Default to true unless explicitly set to 'false'
+  if (enabled === 'false' || enabled === false) {
+    return false
+  }
   return !!oidcConfig.authority
 }
 

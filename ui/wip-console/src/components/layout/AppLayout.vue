@@ -6,7 +6,9 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Divider from 'primevue/divider'
 import { useAuthStore, useUiStore } from '@/stores'
-import { oidcProviderName } from '@/config/auth'
+import { oidcProviderName, isOidcEnabled } from '@/config/auth'
+
+const oidcEnabled = isOidcEnabled()
 
 const router = useRouter()
 const route = useRoute()
@@ -16,6 +18,9 @@ const uiStore = useUiStore()
 const showAuthDialog = ref(false)
 const apiKeyInput = ref('')
 const showApiKeyForm = ref(false)
+const showOidcForm = ref(false)
+const oidcUsername = ref('')
+const oidcPassword = ref('')
 
 const sidebarCollapsed = ref(false)
 
@@ -93,14 +98,27 @@ function openAuthDialog() {
 function closeAuthDialog() {
   showAuthDialog.value = false
   showApiKeyForm.value = false
+  showOidcForm.value = false
   apiKeyInput.value = ''
+  oidcUsername.value = ''
+  oidcPassword.value = ''
 }
 
-async function loginWithOidc() {
+function showOidcLoginForm() {
+  showOidcForm.value = true
+}
+
+async function loginWithOidcPassword() {
+  if (!oidcUsername.value.trim() || !oidcPassword.value) {
+    uiStore.showError('Login Failed', 'Please enter username and password')
+    return
+  }
   try {
-    await authStore.loginWithOidc()
+    await authStore.loginWithPassword(oidcUsername.value.trim(), oidcPassword.value)
+    uiStore.showSuccess('Login Successful', `Welcome, ${authStore.currentUser?.name || authStore.currentUser?.email || 'User'}`)
+    closeAuthDialog()
   } catch (err) {
-    uiStore.showError('Login Failed', err instanceof Error ? err.message : 'Failed to initiate login')
+    uiStore.showError('Login Failed', err instanceof Error ? err.message : 'Failed to login')
   }
 }
 
@@ -313,30 +331,82 @@ function toggleSidebar() {
           </div>
         </div>
 
+        <!-- OIDC Login form -->
+        <div v-else-if="showOidcForm" class="oidc-form">
+          <p class="help-text">
+            Enter your credentials to login via {{ oidcProviderName }}.
+            <br><small>Default: admin@wip.local / admin123</small>
+          </p>
+          <div class="input-group">
+            <label for="oidc-username">Email / Username</label>
+            <InputText
+              id="oidc-username"
+              v-model="oidcUsername"
+              type="text"
+              placeholder="admin@wip.local"
+              class="w-full"
+              @keyup.enter="loginWithOidcPassword"
+            />
+          </div>
+          <div class="input-group">
+            <label for="oidc-password">Password</label>
+            <InputText
+              id="oidc-password"
+              v-model="oidcPassword"
+              type="password"
+              placeholder="Password"
+              class="w-full"
+              @keyup.enter="loginWithOidcPassword"
+            />
+          </div>
+          <div class="form-actions">
+            <Button
+              label="Back"
+              severity="secondary"
+              text
+              @click="showOidcForm = false"
+            />
+            <Button
+              label="Login"
+              @click="loginWithOidcPassword"
+              :loading="authStore.isLoading"
+              :disabled="!oidcUsername.trim() || !oidcPassword"
+            />
+          </div>
+        </div>
+
         <!-- Login options -->
         <div v-else class="login-options">
           <p class="help-text">
-            Choose how you want to authenticate with WIP Console.
+            <template v-if="oidcEnabled">
+              Choose how you want to authenticate with WIP Console.
+            </template>
+            <template v-else>
+              Enter your API key to authenticate with WIP Console.
+              <br><small>For development, use: <code>dev_master_key_for_testing</code></small>
+            </template>
           </p>
 
-          <Button
-            :label="`Login with ${oidcProviderName}`"
-            icon="pi pi-sign-in"
-            class="w-full login-btn"
-            @click="loginWithOidc"
-            :loading="authStore.isLoading"
-          />
+          <template v-if="oidcEnabled">
+            <Button
+              :label="`Login with ${oidcProviderName}`"
+              icon="pi pi-sign-in"
+              class="w-full login-btn"
+              @click="showOidcLoginForm"
+            />
 
-          <Divider align="center">
-            <span class="divider-text">or</span>
-          </Divider>
+            <Divider align="center">
+              <span class="divider-text">or</span>
+            </Divider>
+          </template>
 
           <Button
             label="Use API Key"
             icon="pi pi-key"
-            severity="secondary"
-            outlined
+            :severity="oidcEnabled ? 'secondary' : undefined"
+            :outlined="oidcEnabled"
             class="w-full"
+            :class="{ 'login-btn': !oidcEnabled }"
             @click="showApiKeyForm = true"
           />
         </div>
@@ -357,7 +427,7 @@ function toggleSidebar() {
             @click="closeAuthDialog"
           />
         </div>
-        <div v-else-if="!showApiKeyForm" class="dialog-footer">
+        <div v-else-if="!showApiKeyForm && !showOidcForm" class="dialog-footer">
           <Button
             label="Cancel"
             severity="secondary"
@@ -666,7 +736,8 @@ function toggleSidebar() {
   font-size: 0.875rem;
 }
 
-.api-key-form {
+.api-key-form,
+.oidc-form {
   display: flex;
   flex-direction: column;
   gap: 1rem;

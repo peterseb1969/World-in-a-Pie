@@ -4,15 +4,30 @@ import { UserManager, User } from 'oidc-client-ts'
 import { oidcConfig, AUTH_STORAGE_KEYS, type AuthMode } from '@/config/auth'
 import { defStoreClient, templateStoreClient, documentStoreClient } from '@/api/client'
 
+// Simple token storage for password grant flow
+interface PasswordGrantUser {
+  access_token: string
+  id_token?: string
+  token_type: string
+  expires_at: number
+  profile: {
+    sub: string
+    email?: string
+    name?: string
+    preferred_username?: string
+  }
+}
+
 export const useAuthStore = defineStore('auth', () => {
   // State
   const authMode = ref<AuthMode>('none')
   const apiKey = ref<string>('')
   const oidcUser = ref<User | null>(null)
+  const passwordGrantUser = ref<PasswordGrantUser | null>(null)
   const isLoading = ref(false)
   const error = ref<string | null>(null)
 
-  // OIDC UserManager (lazy initialized)
+  // OIDC UserManager (lazy initialized) - kept for redirect flow if needed
   let userManager: UserManager | null = null
 
   function getUserManager(): UserManager {
@@ -58,25 +73,45 @@ export const useAuthStore = defineStore('auth', () => {
       return apiKey.value.length > 0
     }
     if (authMode.value === 'oidc') {
-      return oidcUser.value !== null && !oidcUser.value.expired
+      // Check both redirect flow (oidcUser) and password grant flow (passwordGrantUser)
+      if (oidcUser.value !== null && !oidcUser.value.expired) {
+        return true
+      }
+      if (passwordGrantUser.value !== null && passwordGrantUser.value.expires_at > Date.now() / 1000) {
+        return true
+      }
     }
     return false
   })
 
   const currentUser = computed(() => {
-    if (authMode.value === 'oidc' && oidcUser.value) {
-      return {
-        email: oidcUser.value.profile.email || '',
-        name: oidcUser.value.profile.name || oidcUser.value.profile.preferred_username || '',
-        sub: oidcUser.value.profile.sub,
+    if (authMode.value === 'oidc') {
+      if (oidcUser.value) {
+        return {
+          email: oidcUser.value.profile.email || '',
+          name: oidcUser.value.profile.name || oidcUser.value.profile.preferred_username || '',
+          sub: oidcUser.value.profile.sub,
+        }
+      }
+      if (passwordGrantUser.value) {
+        return {
+          email: passwordGrantUser.value.profile.email || '',
+          name: passwordGrantUser.value.profile.name || passwordGrantUser.value.profile.preferred_username || '',
+          sub: passwordGrantUser.value.profile.sub,
+        }
       }
     }
     return null
   })
 
   const accessToken = computed(() => {
-    if (authMode.value === 'oidc' && oidcUser.value && !oidcUser.value.expired) {
-      return oidcUser.value.access_token
+    if (authMode.value === 'oidc') {
+      if (oidcUser.value && !oidcUser.value.expired) {
+        return oidcUser.value.access_token
+      }
+      if (passwordGrantUser.value && passwordGrantUser.value.expires_at > Date.now() / 1000) {
+        return passwordGrantUser.value.access_token
+      }
     }
     return null
   })
@@ -87,10 +122,17 @@ export const useAuthStore = defineStore('auth', () => {
       defStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       templateStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       documentStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
-    } else if (authMode.value === 'oidc' && oidcUser.value) {
-      defStoreClient.setAuth({ type: 'bearer', value: oidcUser.value.access_token })
-      templateStoreClient.setAuth({ type: 'bearer', value: oidcUser.value.access_token })
-      documentStoreClient.setAuth({ type: 'bearer', value: oidcUser.value.access_token })
+    } else if (authMode.value === 'oidc') {
+      const token = oidcUser.value?.access_token || passwordGrantUser.value?.access_token
+      if (token) {
+        defStoreClient.setAuth({ type: 'bearer', value: token })
+        templateStoreClient.setAuth({ type: 'bearer', value: token })
+        documentStoreClient.setAuth({ type: 'bearer', value: token })
+      } else {
+        defStoreClient.setAuth(null)
+        templateStoreClient.setAuth(null)
+        documentStoreClient.setAuth(null)
+      }
     } else {
       defStoreClient.setAuth(null)
       templateStoreClient.setAuth(null)
@@ -102,13 +144,33 @@ export const useAuthStore = defineStore('auth', () => {
   async function initialize() {
     const storedMode = localStorage.getItem(AUTH_STORAGE_KEYS.AUTH_MODE) as AuthMode | null
     const storedApiKey = localStorage.getItem(AUTH_STORAGE_KEYS.API_KEY)
+    const storedPasswordGrantUser = localStorage.getItem('wip-console-password-grant-user')
 
     if (storedMode === 'api_key' && storedApiKey) {
       authMode.value = 'api_key'
       apiKey.value = storedApiKey
       updateClients()
     } else if (storedMode === 'oidc') {
-      // Try to restore OIDC session
+      // Try to restore password grant session first
+      if (storedPasswordGrantUser) {
+        try {
+          const user = JSON.parse(storedPasswordGrantUser) as PasswordGrantUser
+          if (user.expires_at > Date.now() / 1000) {
+            authMode.value = 'oidc'
+            passwordGrantUser.value = user
+            updateClients()
+            return
+          } else {
+            // Token expired
+            localStorage.removeItem('wip-console-password-grant-user')
+          }
+        } catch (err) {
+          console.error('[Auth] Failed to restore password grant session:', err)
+          localStorage.removeItem('wip-console-password-grant-user')
+        }
+      }
+
+      // Try redirect flow session
       try {
         const user = await getUserManager().getUser()
         if (user && !user.expired) {
@@ -143,7 +205,7 @@ export const useAuthStore = defineStore('auth', () => {
     updateClients()
   }
 
-  // OIDC authentication
+  // OIDC authentication (redirect flow - requires HTTPS for PKCE)
   async function loginWithOidc() {
     isLoading.value = true
     error.value = null
@@ -153,6 +215,88 @@ export const useAuthStore = defineStore('auth', () => {
       error.value = err instanceof Error ? err.message : 'Login failed'
       isLoading.value = false
       throw err
+    }
+  }
+
+  // Password grant flow - works over HTTP (no PKCE required)
+  async function loginWithPassword(username: string, password: string) {
+    isLoading.value = true
+    error.value = null
+    try {
+      // Get the token endpoint from OIDC config
+      // The authority is /dex (proxied), so token endpoint is /dex/token
+      const authority = oidcConfig.authority || '/dex'
+      const tokenEndpoint = `${authority}/token`
+
+      const params = new URLSearchParams({
+        grant_type: 'password',
+        username,
+        password,
+        client_id: oidcConfig.client_id || 'wip-console',
+        client_secret: oidcConfig.client_secret || 'wip-console-secret',
+        scope: 'openid profile email',
+      })
+
+      const response = await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params.toString(),
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error_description || errorData.error || 'Login failed')
+      }
+
+      const tokenResponse = await response.json()
+
+      // Parse the ID token to get user info (it's a JWT)
+      let profile: PasswordGrantUser['profile'] = { sub: 'unknown' }
+      if (tokenResponse.id_token) {
+        try {
+          const payload = tokenResponse.id_token.split('.')[1]
+          const decoded = JSON.parse(atob(payload))
+          profile = {
+            sub: decoded.sub || 'unknown',
+            email: decoded.email,
+            name: decoded.name,
+            preferred_username: decoded.preferred_username,
+          }
+        } catch (e) {
+          console.warn('[Auth] Failed to parse id_token:', e)
+        }
+      }
+
+      // Calculate expiration time
+      const expiresIn = tokenResponse.expires_in || 86400 // Default 24h
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresIn
+
+      const user: PasswordGrantUser = {
+        access_token: tokenResponse.access_token,
+        id_token: tokenResponse.id_token,
+        token_type: tokenResponse.token_type || 'Bearer',
+        expires_at: expiresAt,
+        profile,
+      }
+
+      passwordGrantUser.value = user
+      authMode.value = 'oidc'
+
+      // Store for session persistence
+      localStorage.setItem(AUTH_STORAGE_KEYS.AUTH_MODE, 'oidc')
+      localStorage.setItem('wip-console-password-grant-user', JSON.stringify(user))
+      localStorage.removeItem(AUTH_STORAGE_KEYS.API_KEY)
+      apiKey.value = ''
+
+      updateClients()
+      return user
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : 'Login failed'
+      throw err
+    } finally {
+      isLoading.value = false
     }
   }
 
@@ -187,9 +331,11 @@ export const useAuthStore = defineStore('auth', () => {
 
   function clearOidcUser() {
     oidcUser.value = null
+    passwordGrantUser.value = null
     if (authMode.value === 'oidc') {
       authMode.value = 'none'
       localStorage.removeItem(AUTH_STORAGE_KEYS.AUTH_MODE)
+      localStorage.removeItem('wip-console-password-grant-user')
     }
     updateClients()
   }
@@ -221,6 +367,7 @@ export const useAuthStore = defineStore('auth', () => {
     authMode,
     apiKey,
     oidcUser,
+    passwordGrantUser,
     isLoading,
     error,
 
@@ -234,6 +381,7 @@ export const useAuthStore = defineStore('auth', () => {
     setApiKey,
     clearApiKey,
     loginWithOidc,
+    loginWithPassword,
     handleOidcCallback,
     handleSilentRenewCallback,
     logoutOidc,

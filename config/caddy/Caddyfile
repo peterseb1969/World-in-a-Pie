@@ -1,0 +1,68 @@
+# WIP Caddy Configuration
+# Provides HTTPS reverse proxy for all WIP services
+#
+# Features:
+# - Auto-generated self-signed TLS certificate (internal CA)
+# - Single entry point for all services
+# - Enables OIDC login over network (Crypto.subtle works with HTTPS)
+#
+# Access: https://<hostname> or https://<ip>
+# Browser will warn about self-signed cert - accept once
+
+{
+    # Use internal CA for self-signed certs (no external validation needed)
+    # For local network / development use
+    auto_https disable_redirects
+}
+
+:443 {
+    # Self-signed TLS for local network
+    tls internal
+
+    # Dex OIDC provider
+    handle /dex/* {
+        reverse_proxy wip-dex:5556
+    }
+
+    # API Services - Registry
+    handle /api/registry/* {
+        reverse_proxy wip-registry-dev:8001
+    }
+
+    # API Services - Def Store
+    handle /api/def-store/* {
+        reverse_proxy wip-def-store-dev:8002
+    }
+
+    # API Services - Template Store
+    handle /api/template-store/* {
+        reverse_proxy wip-template-store-dev:8003
+    }
+
+    # API Services - Document Store
+    handle /api/document-store/* {
+        reverse_proxy wip-document-store-dev:8004
+    }
+
+    # API Services - Reporting Sync
+    handle /api/reporting-sync/* {
+        reverse_proxy wip-reporting-sync-dev:8005
+    }
+
+    # Console (catch-all)
+    handle {
+        reverse_proxy wip-console-dev:3000
+    }
+
+    # Logging
+    log {
+        output stdout
+        format console
+        level WARN
+    }
+}
+
+# HTTP redirect to HTTPS
+:80 {
+    redir https://{host}{uri} permanent
+}

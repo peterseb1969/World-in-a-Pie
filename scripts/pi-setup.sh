@@ -8,6 +8,10 @@
 #
 # Or if repo is already cloned:
 #   bash scripts/pi-setup.sh
+#
+# Options:
+#   --minimal    Deploy without Caddy/Dex (API keys only)
+#   --full       Deploy with Caddy/Dex (OIDC enabled, default)
 
 set -e
 
@@ -15,24 +19,49 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # Configuration
 REPO_URL="http://192.168.1.17:3000/peter/World-In-A-Pie.git"
 INSTALL_DIR="$HOME/Development/WorldInPie"
 API_KEY="dev_master_key_for_testing"
 
+# Deployment mode: full (with Caddy/OIDC) or minimal (API keys only)
+DEPLOY_MODE="full"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --minimal)
+            DEPLOY_MODE="minimal"
+            shift
+            ;;
+        --full)
+            DEPLOY_MODE="full"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 [--full|--minimal]"
+            exit 1
+            ;;
+    esac
+done
+
 echo "=========================================="
 echo "  WIP Raspberry Pi 4 Setup Script"
+echo "  Mode: $DEPLOY_MODE"
 echo "=========================================="
 echo ""
 
 # Step 1: Check system
-log_info "Checking system..."
+log_step "Step 1: Checking system..."
 echo "  OS: $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
 echo "  Kernel: $(uname -r)"
 echo "  Architecture: $(uname -m)"
@@ -40,7 +69,7 @@ echo "  Memory: $(free -h | grep Mem | awk '{print $2}') total, $(free -h | grep
 echo ""
 
 # Step 2: Check/install dependencies
-log_info "Checking dependencies..."
+log_step "Step 2: Checking dependencies..."
 
 if ! command -v git &> /dev/null; then
     log_warn "Git not found. Installing..."
@@ -59,10 +88,16 @@ if ! command -v podman-compose &> /dev/null; then
     sudo apt install -y podman-compose
 fi
 echo "  podman-compose: $(podman-compose --version 2>/dev/null || echo 'installed')"
+
+if ! command -v jq &> /dev/null; then
+    log_warn "jq not found. Installing..."
+    sudo apt install -y jq
+fi
+echo "  jq: $(jq --version)"
 echo ""
 
 # Step 3: Configure Podman registries (ensure proper config)
-log_info "Configuring Podman registries..."
+log_step "Step 3: Configuring Podman registries..."
 REGISTRIES_CONF="/etc/containers/registries.conf"
 
 # Check if docker.io is properly configured
@@ -79,7 +114,7 @@ fi
 echo ""
 
 # Step 4: Clone or update repository
-log_info "Setting up repository..."
+log_step "Step 4: Setting up repository..."
 mkdir -p "$(dirname $INSTALL_DIR)"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -94,10 +129,64 @@ fi
 echo "  Location: $INSTALL_DIR"
 echo ""
 
-# Step 5: Start infrastructure
-log_info "Starting infrastructure (MongoDB 4.4, PostgreSQL, NATS, Dex)..."
+# Step 5: Set up environment file
+log_step "Step 5: Setting up environment..."
 cd "$INSTALL_DIR"
-podman-compose -f docker-compose.infra.pi.yml up -d
+
+# Get hostname for configuration
+HOSTNAME=$(hostname)
+PI_HOSTNAME="${HOSTNAME}.local"
+
+if [ "$DEPLOY_MODE" = "full" ]; then
+    ENV_FILE=".env.pi"
+    ENV_EXAMPLE=".env.pi.example"
+    INFRA_COMPOSE="docker-compose.infra.pi.yml"
+
+    if [ ! -f "$ENV_FILE" ]; then
+        log_info "  Creating $ENV_FILE from template..."
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        # Update hostname in the file
+        sed -i "s/wip-dev-pi.local/$PI_HOSTNAME/g" "$ENV_FILE"
+        log_info "  Hostname set to: $PI_HOSTNAME"
+    else
+        log_info "  Using existing $ENV_FILE"
+    fi
+
+    # Export env vars for this session
+    export WIP_HOSTNAME="$PI_HOSTNAME"
+    export WIP_AUTH_JWT_ISSUER_URL="https://$PI_HOSTNAME/dex"
+
+else
+    ENV_FILE=".env.pi.minimal"
+    INFRA_COMPOSE="docker-compose.infra.pi.minimal.yml"
+
+    if [ ! -f "$ENV_FILE" ]; then
+        log_info "  Creating $ENV_FILE for minimal deployment..."
+        cat > "$ENV_FILE" << EOF
+# WIP Minimal Deployment - API Keys Only
+WIP_AUTH_MODE=api_key_only
+VITE_OIDC_ENABLED=false
+EOF
+    fi
+
+    # Export env vars for this session
+    export WIP_AUTH_MODE="api_key_only"
+    export VITE_OIDC_ENABLED="false"
+fi
+
+echo "  Environment file: $ENV_FILE"
+echo "  Infrastructure: $INFRA_COMPOSE"
+echo ""
+
+# Step 6: Start infrastructure
+if [ "$DEPLOY_MODE" = "full" ]; then
+    log_step "Step 6: Starting infrastructure (MongoDB 4.4, PostgreSQL, NATS, Dex, Caddy)..."
+else
+    log_step "Step 6: Starting infrastructure (MongoDB 4.4, PostgreSQL, NATS)..."
+fi
+
+cd "$INSTALL_DIR"
+podman-compose --env-file "$ENV_FILE" -f "$INFRA_COMPOSE" up -d
 
 log_info "Waiting for infrastructure to be healthy (30 seconds)..."
 sleep 30
@@ -106,7 +195,15 @@ sleep 30
 log_info "Checking infrastructure..."
 INFRA_HEALTHY=true
 
-for container in wip-mongodb wip-postgres wip-nats wip-dex; do
+# Core containers (always required)
+CORE_CONTAINERS="wip-mongodb wip-postgres wip-nats"
+
+# Add Caddy and Dex for full mode
+if [ "$DEPLOY_MODE" = "full" ]; then
+    CORE_CONTAINERS="$CORE_CONTAINERS wip-dex wip-caddy"
+fi
+
+for container in $CORE_CONTAINERS; do
     if podman ps --format "{{.Names}}" | grep -q "^${container}$"; then
         echo "  $container: running"
     else
@@ -129,10 +226,10 @@ if [ "$INFRA_HEALTHY" = false ]; then
 fi
 echo ""
 
-# Step 6: Start Registry and initialize namespaces
-log_info "Starting Registry service..."
+# Step 7: Start Registry and initialize namespaces
+log_step "Step 7: Starting Registry service..."
 cd "$INSTALL_DIR/components/registry"
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose --env-file "../../$ENV_FILE" -f docker-compose.dev.yml up -d
 
 log_info "Waiting for Registry to be ready..."
 sleep 10
@@ -159,7 +256,7 @@ else
 fi
 echo ""
 
-# Step 7: Start remaining services (one at a time with health checks)
+# Step 8: Start remaining services (one at a time with health checks)
 start_service() {
     local name="$1"
     local dir="$2"
@@ -167,7 +264,7 @@ start_service() {
 
     log_info "Starting $name..."
     cd "$INSTALL_DIR/components/$dir"
-    podman-compose -f docker-compose.dev.yml up -d
+    podman-compose --env-file "../../$ENV_FILE" -f docker-compose.dev.yml up -d
 
     # Wait for service to be ready
     sleep 10
@@ -182,6 +279,7 @@ start_service() {
     fi
 }
 
+log_step "Step 8: Starting application services..."
 start_service "Def-Store" "def-store" "8002"
 start_service "Template-Store" "template-store" "8003"
 start_service "Document-Store" "document-store" "8004"
@@ -189,17 +287,17 @@ start_service "Reporting-Sync" "reporting-sync" "8005"
 
 echo ""
 
-# Step 8: Start Console
-log_info "Starting WIP Console..."
+# Step 9: Start Console
+log_step "Step 9: Starting WIP Console..."
 cd "$INSTALL_DIR/ui/wip-console"
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose --env-file "../../$ENV_FILE" -f docker-compose.dev.yml up -d
 
 log_info "Waiting for Console to start..."
 sleep 15
 echo ""
 
-# Step 9: Final health checks
-log_info "Running final health checks..."
+# Step 10: Final health checks
+log_step "Step 10: Running final health checks..."
 SERVICES=(
     "Registry:8001"
     "Def-Store:8002"
@@ -222,8 +320,8 @@ for svc in "${SERVICES[@]}"; do
 done
 echo ""
 
-# Step 10: Final status
-log_info "Final status..."
+# Step 11: Final status
+log_step "Step 11: Final status..."
 echo ""
 echo "Containers running:"
 podman ps --format "  {{.Names}}: {{.Status}}"
@@ -233,7 +331,6 @@ free -h | grep -E "Mem|Swap"
 echo ""
 
 # Get hostname for access info
-HOSTNAME=$(hostname)
 IP=$(hostname -I | awk '{print $1}')
 
 echo "=========================================="
@@ -246,14 +343,33 @@ else
 fi
 echo "=========================================="
 echo ""
-echo "Access WIP Console:"
-echo "  Local:   http://localhost:3000"
-echo "  Network: http://$HOSTNAME.local:3000"
-echo "           http://$IP:3000"
+
+if [ "$DEPLOY_MODE" = "full" ]; then
+    echo "Access WIP Console (via HTTPS):"
+    echo "  Network: https://$PI_HOSTNAME"
+    echo "           https://$IP"
+    echo ""
+    echo "  Note: Browser will warn about self-signed certificate."
+    echo "        Click 'Advanced' -> 'Proceed' to accept."
+    echo ""
+    echo "Login options:"
+    echo "  - Click 'Login with Dex' -> admin@wip.local / admin123"
+    echo "  - Or use API Key: $API_KEY"
+else
+    echo "Access WIP Console (HTTP only):"
+    echo "  Local:   http://localhost:3000"
+    echo "  Network: http://$PI_HOSTNAME:3000"
+    echo "           http://$IP:3000"
+    echo ""
+    echo "Login:"
+    echo "  - Use API Key: $API_KEY"
+    echo "  - (OIDC disabled in minimal mode)"
+fi
 echo ""
-echo "Login options:"
-echo "  - Click 'Login with Dex' -> admin@wip.local / admin123"
-echo "  - Or use API Key: $API_KEY"
+echo "Test users (for Dex OIDC):"
+echo "  admin@wip.local / admin123 (wip-admins group)"
+echo "  editor@wip.local / editor123 (wip-editors group)"
+echo "  viewer@wip.local / viewer123 (wip-viewers group)"
 echo ""
 echo "API Documentation:"
 echo "  Registry:       http://localhost:8001/docs"

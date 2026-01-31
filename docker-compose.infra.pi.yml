@@ -4,20 +4,22 @@
 # Key differences from standard infra:
 #   - MongoDB 4.4.18 (last version supporting ARMv8.0, Pi 4's Cortex-A72)
 #   - No Mongo Express (saves ~50MB RAM)
+#   - Caddy for HTTPS (enables OIDC over network)
 #
 # Services:
 #   - MongoDB (document store): localhost:27017
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
-#   - Dex (OIDC provider): http://localhost:5556
+#   - Dex (OIDC provider): internal only (via Caddy)
+#   - Caddy (reverse proxy): https://localhost:443, http://localhost:80
 #
 # Usage:
 #   podman-compose -f docker-compose.infra.pi.yml up -d
 #
-# To access PostgreSQL: podman exec -it wip-postgres psql -U wip -d wip_reporting
+# Access: https://<hostname> (e.g., https://wip-dev-pi.local)
+#   Browser will warn about self-signed cert - accept it once
 #
-# IMPORTANT: After starting, you may need to update config/dex/config.yaml
-# to set the correct issuer URL for your Pi's hostname (e.g., wip-dev-pi.local)
+# To disable OIDC/Caddy: use docker-compose.infra.pi.minimal.yml instead
 #
 version: "3.8"
 
@@ -92,14 +94,40 @@ services:
   dex:
     image: ghcr.io/dexidp/dex:v2.38.0
     container_name: wip-dex
-    command: ["dex", "serve", "/etc/dex/config.yaml"]
-    ports:
-      - "5556:5556"
+    command: ["dex", "serve", "/etc/dex/config.pi.yaml"]
+    # No external ports - accessed via Caddy
+    environment:
+      # Set this to your Pi's hostname (e.g., wip-dev-pi.local)
+      # Override with: WIP_HOSTNAME=mypi.local podman-compose up -d
+      - WIP_HOSTNAME=${WIP_HOSTNAME:-wip-dev-pi.local}
     volumes:
       - ./config/dex:/etc/dex:ro
       - wip-dex-data:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # ===================
+  # Reverse Proxy (HTTPS)
+  # ===================
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: wip-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - wip-caddy-data:/data
+      - wip-caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -118,3 +146,5 @@ volumes:
   wip-postgres-data:
   wip-nats-data:
   wip-dex-data:
+  wip-caddy-data:
+  wip-caddy-config:

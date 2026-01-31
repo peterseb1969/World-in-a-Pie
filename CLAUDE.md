@@ -1496,6 +1496,76 @@ cd ../def-store && podman-compose up -d
 cd ../template-store && podman-compose up -d
 ```
 
+### Raspberry Pi Deployment
+
+Two deployment modes are supported for Raspberry Pi 4/5:
+
+| Mode | Infrastructure | Auth | RAM Usage | Use Case |
+|------|----------------|------|-----------|----------|
+| **Full** | MongoDB, PostgreSQL, NATS, Dex, Caddy | OIDC + API keys | ~1GB | Multi-user, network access |
+| **Minimal** | MongoDB, PostgreSQL, NATS | API keys only | ~900MB | Single-user, dev/testing |
+
+#### Quick Setup (Automated)
+
+```bash
+# Download and run setup script
+curl -O http://192.168.1.17:3000/peter/World-In-A-Pie/raw/branch/main/scripts/pi-setup.sh
+
+# Full mode (with Caddy/OIDC, default)
+bash pi-setup.sh
+
+# Or minimal mode (API keys only)
+bash pi-setup.sh --minimal
+```
+
+#### Manual Setup
+
+```bash
+# Clone repository
+git clone http://192.168.1.17:3000/peter/World-In-A-Pie.git
+cd WorldInPie
+
+# Full mode with Caddy/OIDC:
+cp .env.pi.example .env.pi
+# Edit .env.pi to set your hostname (WIP_HOSTNAME=your-pi.local)
+podman-compose --env-file .env.pi -f docker-compose.infra.pi.yml up -d
+
+# Start services with env file:
+cd components/registry && podman-compose --env-file ../../.env.pi -f docker-compose.dev.yml up -d
+# ... repeat for other services
+
+# Access: https://your-pi.local (accept self-signed cert warning)
+```
+
+```bash
+# Minimal mode (API keys only):
+podman-compose -f docker-compose.infra.pi.minimal.yml up -d
+
+# Start services (no env file needed):
+cd components/registry && podman-compose -f docker-compose.dev.yml up -d
+# ... repeat for other services
+
+# Access: http://your-pi.local:3000
+```
+
+#### Why Caddy for OIDC?
+
+The OIDC library (oidc-client-ts) uses PKCE which requires `Crypto.subtle`, available only in secure contexts (HTTPS or localhost). Caddy provides:
+- Auto-generated self-signed TLS certificate
+- Reverse proxy for all services on single port (443)
+- OIDC login works over network without SSH tunnels
+- ~25MB RAM overhead
+
+For API-key-only deployments, skip Caddy to save resources.
+
+#### Test Users (Dex)
+
+| Email | Password | Group |
+|-------|----------|-------|
+| admin@wip.local | admin123 | wip-admins |
+| editor@wip.local | editor123 | wip-editors |
+| viewer@wip.local | viewer123 | wip-viewers |
+
 ### Running Tests
 ```bash
 # Registry tests (requires infra + registry running)

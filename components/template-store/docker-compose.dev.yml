@@ -23,13 +23,13 @@ services:
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
       # Authentication - dual mode allows both API keys and JWT tokens
-      - WIP_AUTH_MODE=dual
+      - WIP_AUTH_MODE=${WIP_AUTH_MODE:-dual}
       - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
-      # Issuer URL matches what's in the token (localhost for browser/CLI compatibility)
-      - WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+      # Issuer URL matches what's in the token (override for Pi: https://hostname/dex)
+      - WIP_AUTH_JWT_ISSUER_URL=${WIP_AUTH_JWT_ISSUER_URL:-http://localhost:5556/dex}
       # JWKS fetched via container network (wip-dex is on the same network)
-      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
-      - WIP_AUTH_JWT_AUDIENCE=wip-console
+      - WIP_AUTH_JWT_JWKS_URI=${WIP_AUTH_JWT_JWKS_URI:-http://wip-dex:5556/dex/keys}
+      - WIP_AUTH_JWT_AUDIENCE=${WIP_AUTH_JWT_AUDIENCE:-wip-console}
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro
