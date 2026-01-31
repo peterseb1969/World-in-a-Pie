@@ -10,12 +10,12 @@
 # Browser will warn about self-signed cert - accept once
 
 {
-    # Use internal CA for self-signed certs (no external validation needed)
-    # For local network / development use
-    auto_https disable_redirects
+    # Disable ACME (we use internal certs)
+    auto_https disable_certs
 }
 
-:443 {
+# Match any hostname on HTTPS
+https:// {
     # Self-signed TLS for local network
     tls internal
 
@@ -63,6 +63,6 @@
 }
 
 # HTTP redirect to HTTPS
-:80 {
+http:// {
     redir https://{host}{uri} permanent
 }
