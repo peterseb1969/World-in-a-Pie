@@ -6,6 +6,7 @@
 #   - Mongo Express (MongoDB UI): http://localhost:8081 (admin/admin)
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
+#   - Authelia (OIDC provider, optional): http://localhost:9091
 #
 # To access PostgreSQL: podman exec -it wip-postgres psql -U wip -d wip_reporting
 #
@@ -92,6 +93,30 @@ services:
     networks:
       - wip-network
     restart: unless-stopped
+
+  # ===================
+  # Authentication (Optional)
+  # ===================
+  # Uncomment to enable Authelia for user login (OIDC/JWT)
+  # Then set WIP_AUTH_MODE=dual and WIP_AUTH_JWT_ISSUER_URL=http://authelia:9091
+  #
+  # authelia:
+  #   image: authelia/authelia:latest
+  #   container_name: wip-authelia
+  #   volumes:
+  #     - ./config/authelia:/config:ro
+  #   ports:
+  #     - "9091:9091"
+  #   environment:
+  #     TZ: UTC
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:9091/api/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #   networks:
+  #     - wip-network
+  #   restart: unless-stopped
 
 networks:
   wip-network:

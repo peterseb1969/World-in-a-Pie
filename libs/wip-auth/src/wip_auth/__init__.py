@@ -1,0 +1,204 @@
+"""WIP Authentication Library.
+
+A pluggable authentication library for World In a Pie (WIP) services.
+Supports multiple authentication modes and providers.
+
+Quick Start:
+    from wip_auth import setup_auth, require_identity
+    from fastapi import FastAPI, Depends
+
+    app = FastAPI()
+
+    # Setup auth (reads from environment)
+    setup_auth(app)
+
+    @app.get("/protected")
+    async def protected(identity = Depends(require_identity())):
+        return {"user": identity.username}
+
+Configuration via environment variables:
+    WIP_AUTH_MODE=api_key_only      # or: none, jwt_only, dual
+    WIP_AUTH_LEGACY_API_KEY=xxx     # backward compatible API key
+    WIP_AUTH_JWT_ISSUER_URL=xxx     # OIDC issuer (if using JWT)
+
+For more details, see the README.md.
+"""
+
+from .config import (
+    AuthConfig,
+    get_auth_config,
+    reset_auth_config,
+    set_auth_config,
+)
+from .dependencies import (
+    optional_identity,
+    require_admin,
+    require_api_key,
+    require_groups,
+    require_identity,
+)
+from .identity import (
+    clear_current_identity,
+    get_current_identity,
+    get_identity_string,
+    set_current_identity,
+)
+from .middleware import AuthMiddleware, create_auth_middleware
+from .models import APIKeyRecord, AuthResult, UserIdentity
+from .providers import (
+    APIKeyProvider,
+    AuthProvider,
+    NoAuthProvider,
+    OIDCProvider,
+    hash_api_key,
+)
+
+__version__ = "0.1.0"
+
+__all__ = [
+    # Config
+    "AuthConfig",
+    "get_auth_config",
+    "set_auth_config",
+    "reset_auth_config",
+    # Models
+    "UserIdentity",
+    "APIKeyRecord",
+    "AuthResult",
+    # Providers
+    "AuthProvider",
+    "NoAuthProvider",
+    "APIKeyProvider",
+    "OIDCProvider",
+    "hash_api_key",
+    # Dependencies
+    "require_identity",
+    "require_groups",
+    "require_admin",
+    "require_api_key",
+    "optional_identity",
+    # Identity context
+    "get_current_identity",
+    "set_current_identity",
+    "clear_current_identity",
+    "get_identity_string",
+    # Middleware
+    "AuthMiddleware",
+    "create_auth_middleware",
+    # Setup
+    "setup_auth",
+    "create_providers_from_config",
+]
+
+
+def create_providers_from_config(
+    config: AuthConfig | None = None,
+) -> list[AuthProvider]:
+    """Create auth providers based on configuration.
+
+    This factory function creates the appropriate providers based on
+    the auth mode in the configuration.
+
+    Args:
+        config: Auth configuration (uses get_auth_config() if None)
+
+    Returns:
+        List of configured auth providers
+    """
+    if config is None:
+        config = get_auth_config()
+
+    providers: list[AuthProvider] = []
+
+    if config.mode == "none":
+        # No auth mode - use pass-through provider
+        providers.append(NoAuthProvider(default_groups=config.default_groups))
+
+    elif config.mode == "api_key_only":
+        # API key only - load keys and create provider
+        keys = config.load_api_keys()
+        providers.append(APIKeyProvider(
+            keys=keys,
+            header_name=config.api_key_header,
+            hash_salt=config.api_key_hash_salt,
+            default_groups=config.default_groups,
+        ))
+
+    elif config.mode == "jwt_only":
+        # JWT only - create OIDC provider
+        if not config.jwt_issuer_url and not config.jwt_jwks_uri:
+            raise ValueError(
+                "JWT mode requires WIP_AUTH_JWT_ISSUER_URL or WIP_AUTH_JWT_JWKS_URI"
+            )
+        providers.append(OIDCProvider(
+            issuer_url=config.jwt_issuer_url,
+            jwks_url=config.jwt_jwks_uri,
+            audience=config.jwt_audience,
+            algorithms=config.jwt_algorithms,
+            groups_claim=config.jwt_groups_claim,
+            default_groups=config.default_groups,
+            verify_exp=config.jwt_verify_exp,
+            leeway=config.jwt_leeway_seconds,
+        ))
+
+    elif config.mode == "dual":
+        # Dual mode - try JWT first, then API key
+        # JWT is checked first because Bearer token is more explicit
+        if config.jwt_issuer_url or config.jwt_jwks_uri:
+            providers.append(OIDCProvider(
+                issuer_url=config.jwt_issuer_url,
+                jwks_url=config.jwt_jwks_uri,
+                audience=config.jwt_audience,
+                algorithms=config.jwt_algorithms,
+                groups_claim=config.jwt_groups_claim,
+                default_groups=config.default_groups,
+                verify_exp=config.jwt_verify_exp,
+                leeway=config.jwt_leeway_seconds,
+            ))
+
+        keys = config.load_api_keys()
+        if keys:
+            providers.append(APIKeyProvider(
+                keys=keys,
+                header_name=config.api_key_header,
+                hash_salt=config.api_key_hash_salt,
+                default_groups=config.default_groups,
+            ))
+
+    return providers
+
+
+def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
+    """Setup authentication for a FastAPI application.
+
+    This is the main entry point for configuring auth. It:
+    1. Loads configuration from environment (or uses provided config)
+    2. Creates appropriate providers based on auth mode
+    3. Adds the auth middleware to the application
+
+    Args:
+        app: The FastAPI application
+        config: Optional auth configuration (loads from env if None)
+
+    Returns:
+        List of configured providers (for testing/inspection)
+
+    Example:
+        from fastapi import FastAPI
+        from wip_auth import setup_auth
+
+        app = FastAPI()
+        setup_auth(app)  # Reads from WIP_AUTH_* env vars
+    """
+    if config is None:
+        config = get_auth_config()
+    else:
+        set_auth_config(config)
+
+    providers = create_providers_from_config(config)
+
+    if providers:
+        middleware_class = create_auth_middleware(providers)
+        app.add_middleware(middleware_class)
+
+    return providers

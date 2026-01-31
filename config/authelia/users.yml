@@ -1,0 +1,36 @@
+# Authelia Users Configuration
+# https://www.authelia.com/configuration/first-factor/file/
+
+# Generate password hashes with:
+# docker run authelia/authelia:latest authelia crypto hash generate argon2 --password 'your_password'
+
+users:
+  # Admin user (password: admin123)
+  admin:
+    displayname: Admin User
+    # Password: admin123
+    password: '$argon2id$v=19$m=65536,t=3,p=4$bGtYdEtQWjJLeVdxZFdHdA$xnSHLdT9TfONSfhiM7xnJl1a9HMhBqVwgYW1uTxDCAk'
+    email: admin@example.com
+    groups:
+      - wip-admins
+      - wip-editors
+      - wip-viewers
+
+  # Editor user (password: editor123)
+  editor:
+    displayname: Editor User
+    # Password: editor123
+    password: '$argon2id$v=19$m=65536,t=3,p=4$bGtYdEtQWjJLeVdxZFdHdA$sCQAqJP+qvjg7HfHvCgfTZHFBMXn+c9oMM6rmjxwzRM'
+    email: editor@example.com
+    groups:
+      - wip-editors
+      - wip-viewers
+
+  # Viewer user (password: viewer123)
+  viewer:
+    displayname: Viewer User
+    # Password: viewer123
+    password: '$argon2id$v=19$m=65536,t=3,p=4$bGtYdEtQWjJLeVdxZFdHdA$7rGBJvHqPRcNmWcfaC6KjShsGRCDfpKLCKqvQYwTPfI'
+    email: viewer@example.com
+    groups:
+      - wip-viewers

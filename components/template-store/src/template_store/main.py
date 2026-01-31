@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from wip_auth import setup_auth
+
 from .models.template import Template
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
@@ -138,6 +140,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
+setup_auth(app)
 
 # Add CORS middleware
 app.add_middleware(

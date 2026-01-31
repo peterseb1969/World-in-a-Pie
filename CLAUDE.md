@@ -176,8 +176,124 @@ Even though we're implementing only the Standard profile initially, the architec
   - Webhook notifications for alerts
   - API: http://localhost:8005
 
-### Next Steps
-- [ ] Authentication integration (Authentik)
+### In Progress
+- [~] Authentication integration (wip-auth library)
+  - [x] Shared auth library (`libs/wip-auth`)
+  - [x] Pluggable provider architecture
+  - [x] API key provider with backward compatibility
+  - [x] OIDC provider for JWT authentication
+  - [x] Service integration (def-store, template-store, document-store, reporting-sync)
+  - [ ] Authelia infrastructure (optional - for user login)
+  - [ ] WIP Console OIDC support (optional)
+
+---
+
+## Authentication Architecture
+
+**Date:** 2025-01-30
+
+### Overview
+
+The authentication layer uses a **shared library** (`libs/wip-auth`) that provides pluggable authentication for all WIP services. This allows swapping auth providers via configuration.
+
+### Auth Modes
+
+| Mode | Use Case | Providers |
+|------|----------|-----------|
+| `none` | Development/testing | NoAuthProvider (pass-through) |
+| `api_key_only` | Service-to-service (default) | APIKeyProvider |
+| `jwt_only` | User authentication | OIDCProvider |
+| `dual` | Both API keys and user login | APIKeyProvider + OIDCProvider |
+
+### Configuration
+
+All auth settings are read from environment variables with `WIP_AUTH_` prefix:
+
+```bash
+# Current behavior (default, backward compatible)
+WIP_AUTH_MODE=api_key_only
+# Falls back to API_KEY env var for legacy compatibility
+
+# With OIDC/JWT (Authelia, Authentik, etc.)
+WIP_AUTH_MODE=dual
+WIP_AUTH_JWT_ISSUER_URL=http://authelia:9091
+WIP_AUTH_JWT_AUDIENCE=wip
+WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+```
+
+Legacy environment variables (`API_KEY`, `MASTER_API_KEY`) are automatically mapped to `WIP_AUTH_LEGACY_API_KEY` for backward compatibility.
+
+### Library Structure
+
+```
+libs/wip-auth/
+├── src/wip_auth/
+│   ├── __init__.py        # Main exports, setup_auth()
+│   ├── config.py          # AuthConfig from environment
+│   ├── models.py          # UserIdentity, APIKeyRecord
+│   ├── identity.py        # Request-scoped identity context
+│   ├── dependencies.py    # FastAPI dependencies (require_identity, etc.)
+│   ├── middleware.py      # AuthMiddleware
+│   └── providers/
+│       ├── base.py        # AuthProvider protocol
+│       ├── none.py        # NoAuthProvider (dev)
+│       ├── api_key.py     # APIKeyProvider (service-to-service)
+│       └── oidc.py        # OIDCProvider (user auth)
+└── tests/
+```
+
+### Integration Pattern
+
+Services integrate with wip-auth in two files:
+
+**main.py:**
+```python
+from wip_auth import setup_auth
+
+app = FastAPI()
+setup_auth(app)  # Reads from WIP_AUTH_* env vars
+```
+
+**api/auth.py:**
+```python
+from wip_auth import require_identity, require_api_key, optional_identity
+
+# These are re-exported for backward compatibility
+```
+
+### Dependencies
+
+| Dependency | Purpose |
+|------------|---------|
+| `require_identity()` | Require any authenticated identity (401 if not) |
+| `require_groups(["group"])` | Require specific group membership (403 if not) |
+| `require_admin()` | Shortcut for require_groups(["wip-admins"]) |
+| `optional_identity()` | Get identity if present, None otherwise |
+| `require_api_key()` | Alias for require_identity (backward compat) |
+
+### UserIdentity Model
+
+```python
+class UserIdentity:
+    user_id: str          # Unique identifier
+    username: str         # Display name
+    email: str | None     # Email (if available)
+    groups: list[str]     # Group memberships
+    auth_method: str      # "jwt", "api_key", or "none"
+
+    @property
+    def identity_string(self) -> str:
+        # "user:<id>", "apikey:<name>", or "anonymous"
+        # For created_by/updated_by fields
+```
+
+### Provider Comparison
+
+| Provider | Containers | RAM | Use Case |
+|----------|------------|-----|----------|
+| **Authelia** | 1 | ~30-100 MB | Lightweight, Pi-friendly |
+| **Authentik** | 3 | ~1.2 GB | Enterprise features |
+| **Generic OIDC** | varies | varies | Any OIDC provider |
 
 ---
 
@@ -1360,6 +1476,19 @@ WorldInPie/
 ├── README.md              # Project overview
 ├── scripts/               # Project-wide scripts
 │   └── seed_comprehensive.py  # Comprehensive test data seeding
+├── libs/                  # Shared libraries
+│   └── wip-auth/          # Pluggable authentication library
+│       ├── src/wip_auth/
+│       │   ├── __init__.py        # Main exports, setup_auth()
+│       │   ├── config.py          # AuthConfig from environment
+│       │   ├── models.py          # UserIdentity, APIKeyRecord
+│       │   ├── identity.py        # Request-scoped identity context
+│       │   ├── dependencies.py    # FastAPI dependencies
+│       │   ├── middleware.py      # AuthMiddleware
+│       │   └── providers/         # Auth provider implementations
+│       ├── tests/
+│       ├── pyproject.toml
+│       └── README.md
 ├── docs/                  # Documentation
 │   ├── philosophy.md
 │   ├── architecture.md

@@ -1,0 +1,77 @@
+# Authelia Configuration for WIP
+# https://www.authelia.com/configuration/
+
+server:
+  address: 'tcp://:9091'
+  buffers:
+    read: 4096
+    write: 4096
+
+log:
+  level: info
+  format: text
+
+# OIDC Provider Configuration
+identity_providers:
+  oidc:
+    cors:
+      allowed_origins_from_client_redirect_uris: true
+    clients:
+      - client_id: wip-console
+        client_name: WIP Console
+        # Generate secret with: docker run authelia/authelia:latest authelia crypto hash generate pbkdf2 --variant sha512 --password 'your_client_secret'
+        # Default for dev: 'wip_console_secret'
+        client_secret: '$pbkdf2-sha512$310000$lWZT0dqb.Nh2c4uqI2s4HA$J4HH5XoQv2QVgpqLMwLJZEDxWZGxuScNVq8Y4gU7.K1iRSNq1cvxpxqn9c2zfUbZXVTcNDnKxJLz9vqzNbJrFA'
+        public: false
+        authorization_policy: one_factor  # Use two_factor for production
+        redirect_uris:
+          - http://localhost:3000/auth/callback
+          - http://localhost:3000/auth/silent-renew
+        scopes:
+          - openid
+          - profile
+          - email
+          - groups
+        userinfo_signed_response_alg: none
+        token_endpoint_auth_method: client_secret_post
+
+# Authentication Backend (file-based for development)
+authentication_backend:
+  file:
+    path: /config/users.yml
+    password:
+      algorithm: argon2id
+      iterations: 3
+      memory: 65536
+      parallelism: 4
+      key_length: 32
+      salt_length: 16
+
+# Access Control
+access_control:
+  default_policy: deny
+  rules:
+    # Allow all traffic to localhost domains
+    - domain: '*.localhost'
+      policy: one_factor
+    - domain: 'localhost'
+      policy: one_factor
+
+# Session Configuration
+session:
+  cookies:
+    - name: authelia_session
+      domain: localhost
+      authelia_url: http://localhost:9091
+      expiration: 1h
+      inactivity: 5m
+
+# Storage (SQLite for development, PostgreSQL for production)
+storage:
+  local:
+    path: /config/db.sqlite3
+
+# Notification (file-based for development)
+notifier:
+  filesystem:
+    filename: /config/notification.txt

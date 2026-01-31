@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from wip_auth import setup_auth
+
 from .models.terminology import Terminology
 from .models.term import Term
 from .models.audit_log import TermAuditLog
@@ -108,6 +110,9 @@ unique, system-wide identifiers (TERM-000001, T-000042).
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
+setup_auth(app)
 
 # Add CORS middleware
 app.add_middleware(

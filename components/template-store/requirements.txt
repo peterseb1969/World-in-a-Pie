@@ -1,5 +1,8 @@
 # WIP Template Store Service Dependencies
 
+# WIP shared libraries
+-e ../../libs/wip-auth
+
 # Web framework
 fastapi>=0.109.0,<0.120.0
 uvicorn[standard]>=0.27.0,<0.35.0
