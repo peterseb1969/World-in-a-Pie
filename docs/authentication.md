@@ -13,86 +13,212 @@ WIP uses a pluggable authentication system that supports multiple modes:
 | `jwt_only` | JWT tokens via `Authorization: Bearer` | User authentication |
 | `dual` | Both API keys and JWT tokens | Production with users |
 
-## Quick Start
+## Where to Set Environment Variables
 
-### Default: API Key Only
+Environment variables are set in the **docker-compose files** for each service.
 
-By default, WIP services use API key authentication. No additional configuration is needed:
+### Service Docker-Compose Files
 
-```bash
-# Start infrastructure
-podman-compose -f docker-compose.infra.yml up -d
+Each service has its own `docker-compose.dev.yml` (or `docker-compose.yml` for production):
 
-# Start services (they use API_KEY env var)
-cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
-# ... repeat for other services
+| Service | File Location |
+|---------|---------------|
+| Def-Store | `components/def-store/docker-compose.dev.yml` |
+| Template-Store | `components/template-store/docker-compose.dev.yml` |
+| Document-Store | `components/document-store/docker-compose.dev.yml` |
+| Reporting-Sync | `components/reporting-sync/docker-compose.dev.yml` |
 
-# Make authenticated requests
-curl http://localhost:8002/api/def-store/terminologies \
-  -H "X-API-Key: dev_master_key_for_testing"
+### Example: Configuring Def-Store
+
+Edit `components/def-store/docker-compose.dev.yml`:
+
+```yaml
+services:
+  def-store:
+    # ... other settings ...
+    environment:
+      # Existing settings
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_def_store_dev
+      - REGISTRY_URL=http://wip-registry-dev:8001
+      - REGISTRY_API_KEY=dev_master_key_for_testing
+      - CORS_ORIGINS=*
+      - PYTHONPATH=/app/src
+
+      # Authentication settings (add these)
+      - WIP_AUTH_MODE=api_key_only           # or: none, jwt_only, dual
+      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+
+      # For JWT/OIDC (only needed if mode is jwt_only or dual)
+      # - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
+      # - WIP_AUTH_JWT_AUDIENCE=wip
 ```
 
-### With User Authentication (Authelia)
+## Configuration Scenarios
 
-To enable user login with JWT tokens:
+### Scenario 1: Default (API Key Only)
 
-1. **Enable Authelia** in `docker-compose.infra.yml`:
+This is the current default behavior. No changes needed - existing `API_KEY` env var works.
 
-   Uncomment the Authelia service section:
-   ```yaml
-   authelia:
-     image: authelia/authelia:latest
-     container_name: wip-authelia
-     volumes:
-       - ./config/authelia:/config:ro
-     ports:
-       - "9091:9091"
-     # ...
-   ```
+**Each service's docker-compose.dev.yml:**
+```yaml
+environment:
+  - API_KEY=dev_master_key_for_testing
+  # OR explicitly:
+  - WIP_AUTH_MODE=api_key_only
+  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+```
 
-2. **Restart infrastructure**:
-   ```bash
-   podman-compose -f docker-compose.infra.yml up -d
-   ```
+### Scenario 2: No Authentication (Development)
 
-3. **Configure services** to use dual mode:
-   ```bash
-   export WIP_AUTH_MODE=dual
-   export WIP_AUTH_JWT_ISSUER_URL=http://authelia:9091
-   export WIP_AUTH_JWT_AUDIENCE=wip
-   ```
+For local development without any auth checks.
 
-4. **Access Authelia**: http://localhost:9091
+**Each service's docker-compose.dev.yml:**
+```yaml
+environment:
+  - WIP_AUTH_MODE=none
+```
 
-## Configuration Reference
+### Scenario 3: With Authelia (User Login)
 
-### Environment Variables
+For user authentication via OIDC.
 
-All auth settings use the `WIP_AUTH_` prefix:
+**Step 1:** Enable Authelia in `docker-compose.infra.yml`:
+
+Uncomment the Authelia service:
+```yaml
+services:
+  # ... other services ...
+
+  authelia:
+    image: authelia/authelia:latest
+    container_name: wip-authelia
+    volumes:
+      - ./config/authelia:/config:ro
+    ports:
+      - "9091:9091"
+    environment:
+      TZ: UTC
+    networks:
+      - wip-network
+    restart: unless-stopped
+```
+
+**Step 2:** Restart infrastructure:
+```bash
+podman-compose -f docker-compose.infra.yml up -d
+```
+
+**Step 3:** Update **each service's** docker-compose.dev.yml:
+
+`components/def-store/docker-compose.dev.yml`:
+```yaml
+environment:
+  - WIP_AUTH_MODE=dual
+  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+  - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
+  - WIP_AUTH_JWT_AUDIENCE=wip
+```
+
+`components/template-store/docker-compose.dev.yml`:
+```yaml
+environment:
+  - WIP_AUTH_MODE=dual
+  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+  - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
+  - WIP_AUTH_JWT_AUDIENCE=wip
+```
+
+`components/document-store/docker-compose.dev.yml`:
+```yaml
+environment:
+  - WIP_AUTH_MODE=dual
+  - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+  - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
+  - WIP_AUTH_JWT_AUDIENCE=wip
+```
+
+**Step 4:** Restart services:
+```bash
+cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
+cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
+cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
+```
+
+## Environment Variable Reference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WIP_AUTH_MODE` | `api_key_only` | Auth mode: `none`, `api_key_only`, `jwt_only`, `dual` |
-| `WIP_AUTH_LEGACY_API_KEY` | - | API key for backward compatibility |
-| `WIP_AUTH_JWT_ISSUER_URL` | - | OIDC issuer URL (e.g., `http://authelia:9091`) |
-| `WIP_AUTH_JWT_JWKS_URI` | - | JWKS endpoint (auto-derived from issuer if not set) |
+| `WIP_AUTH_LEGACY_API_KEY` | - | API key value (plain text) |
+| `WIP_AUTH_JWT_ISSUER_URL` | - | OIDC issuer URL (e.g., `http://wip-authelia:9091`) |
 | `WIP_AUTH_JWT_AUDIENCE` | `wip` | Expected JWT audience claim |
 | `WIP_AUTH_JWT_GROUPS_CLAIM` | `groups` | JWT claim containing user groups |
-| `WIP_AUTH_API_KEY_HEADER` | `X-API-Key` | HTTP header for API key |
-| `WIP_AUTH_DEFAULT_GROUPS` | `wip-users` | Default groups for authenticated users |
 | `WIP_AUTH_ADMIN_GROUPS` | `wip-admins` | Groups considered admin |
 
 ### Legacy Compatibility
 
-For backward compatibility, these env vars are automatically mapped:
+The old `API_KEY` environment variable still works and is automatically mapped:
 - `API_KEY` → `WIP_AUTH_LEGACY_API_KEY`
-- `MASTER_API_KEY` → `WIP_AUTH_LEGACY_API_KEY`
 
-## Authelia Setup
+So this still works:
+```yaml
+environment:
+  - API_KEY=dev_master_key_for_testing
+```
 
-### Default Users
+## Quick Reference: Full docker-compose.dev.yml Examples
 
-The development configuration includes these users:
+### Def-Store with Dual Auth
+
+`components/def-store/docker-compose.dev.yml`:
+```yaml
+version: "3.8"
+
+services:
+  def-store:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-def-store-dev
+    ports:
+      - "8002:8002"
+    environment:
+      # Database
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_def_store_dev
+
+      # Service dependencies
+      - REGISTRY_URL=http://wip-registry-dev:8001
+      - REGISTRY_API_KEY=dev_master_key_for_testing
+
+      # CORS
+      - CORS_ORIGINS=*
+
+      # Python
+      - PYTHONPATH=/app/src
+
+      # Authentication
+      - WIP_AUTH_MODE=dual
+      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+      - WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091
+      - WIP_AUTH_JWT_AUDIENCE=wip
+
+    volumes:
+      - ./src:/app/src:ro
+      - ./tests:/app/tests:ro
+    command: uvicorn def_store.main:app --host 0.0.0.0 --port 8002 --reload
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    external: true
+```
+
+## Authelia Default Users
+
+The development configuration (`config/authelia/users.yml`) includes:
 
 | Username | Password | Groups |
 |----------|----------|--------|
@@ -100,194 +226,59 @@ The development configuration includes these users:
 | `editor` | `editor123` | wip-editors, wip-viewers |
 | `viewer` | `viewer123` | wip-viewers |
 
-### Adding Users
+## Testing Authentication
 
-Edit `config/authelia/users.yml`:
-
-```yaml
-users:
-  newuser:
-    displayname: New User
-    password: '$argon2id$...'  # Generate with command below
-    email: newuser@example.com
-    groups:
-      - wip-editors
-```
-
-Generate password hash:
-```bash
-docker run authelia/authelia:latest authelia crypto hash generate argon2 --password 'your_password'
-```
-
-### Changing Client Secret
-
-The OIDC client secret for WIP Console is in `config/authelia/configuration.yml`.
-
-Generate a new secret:
-```bash
-# Generate hash for use in configuration.yml
-docker run authelia/authelia:latest authelia crypto hash generate pbkdf2 \
-  --variant sha512 --password 'your_new_secret'
-```
-
-## Groups and Permissions
-
-WIP uses group-based access control:
-
-| Group | Purpose |
-|-------|---------|
-| `wip-admins` | Full administrative access |
-| `wip-editors` | Create and modify content |
-| `wip-viewers` | Read-only access |
-| `wip-services` | Service-to-service access |
-
-### Using Groups in Code
-
-```python
-from fastapi import Depends
-from wip_auth import require_identity, require_groups, require_admin
-
-# Require any authenticated user
-@app.get("/api/data")
-async def get_data(identity = Depends(require_identity())):
-    return {"user": identity.username}
-
-# Require specific group
-@app.post("/api/data")
-async def create_data(identity = Depends(require_groups(["wip-editors"]))):
-    return {"created_by": identity.identity_string}
-
-# Require admin
-@app.delete("/api/data/{id}")
-async def delete_data(id: str, identity = Depends(require_admin())):
-    return {"deleted_by": identity.username}
-```
-
-## API Authentication
-
-### Using API Keys
+### Test API Key Auth
 
 ```bash
+# Should succeed
 curl http://localhost:8002/api/def-store/terminologies \
-  -H "X-API-Key: your_api_key"
+  -H "X-API-Key: dev_master_key_for_testing"
+
+# Should fail (401)
+curl http://localhost:8002/api/def-store/terminologies \
+  -H "X-API-Key: wrong_key"
 ```
 
-### Using JWT Tokens
-
-First, obtain a token from Authelia:
+### Test JWT Auth (requires Authelia)
 
 ```bash
-# OAuth2 Password Grant (for testing)
-curl -X POST http://localhost:9091/api/oidc/token \
+# Get token from Authelia
+TOKEN=$(curl -s -X POST http://localhost:9091/api/oidc/token \
   -d "grant_type=password" \
   -d "client_id=wip-console" \
   -d "client_secret=wip_console_secret" \
   -d "username=admin" \
   -d "password=admin123" \
-  -d "scope=openid profile email groups"
-```
+  -d "scope=openid profile email groups" | jq -r '.access_token')
 
-Then use the token:
-
-```bash
+# Use token
 curl http://localhost:8002/api/def-store/terminologies \
-  -H "Authorization: Bearer eyJhbG..."
+  -H "Authorization: Bearer $TOKEN"
 ```
 
 ## Troubleshooting
 
 ### "Invalid API key" Error
 
-- Check that `WIP_AUTH_LEGACY_API_KEY` or `API_KEY` is set correctly
-- Verify the header name matches `WIP_AUTH_API_KEY_HEADER`
-
-### "Token validation failed" Error
-
-- Check `WIP_AUTH_JWT_ISSUER_URL` matches Authelia's URL
-- Verify the token hasn't expired
-- Check `WIP_AUTH_JWT_AUDIENCE` matches the token's audience
-
-### Authelia Won't Start
-
-- Ensure `config/authelia/` directory exists with configuration files
-- Check volume mount in docker-compose.yml points to correct path
-- Review Authelia logs: `podman logs wip-authelia`
-
-### JWT Claims Missing Groups
-
-- Check `WIP_AUTH_JWT_GROUPS_CLAIM` matches the claim name in your tokens
-- Authelia uses `groups` by default
-- Other providers may use `roles` or custom claims
-
-## Production Considerations
-
-### Security Checklist
-
-- [ ] Change default passwords in `config/authelia/users.yml`
-- [ ] Generate new client secret for WIP Console
-- [ ] Use HTTPS for all services
-- [ ] Set `authorization_policy: two_factor` in Authelia config
-- [ ] Configure proper session storage (Redis/PostgreSQL)
-- [ ] Set up notification provider (SMTP) for password resets
-
-### Scaling
-
-For production deployments:
-
-1. **Use external database** for Authelia:
-   ```yaml
-   storage:
-     postgres:
-       host: postgres
-       database: authelia
-       username: authelia
-       password: ${AUTHELIA_DB_PASSWORD}
+1. Check the environment variable is set in docker-compose:
+   ```bash
+   podman exec wip-def-store-dev env | grep -E "(API_KEY|WIP_AUTH)"
    ```
 
-2. **Use Redis for sessions**:
-   ```yaml
-   session:
-     redis:
-       host: redis
-       port: 6379
-   ```
+2. Verify the key matches what you're sending in the header
 
-3. **Configure SMTP** for notifications:
-   ```yaml
-   notifier:
-     smtp:
-       host: smtp.example.com
-       port: 587
-       username: authelia@example.com
-       password: ${SMTP_PASSWORD}
-       sender: "WIP Auth <authelia@example.com>"
-   ```
+### Services Not Picking Up New Environment Variables
 
-## Alternative Providers
-
-The wip-auth library works with any OIDC-compliant provider:
-
-### Authentik
-
+Restart the service after changing docker-compose.yml:
 ```bash
-WIP_AUTH_MODE=dual
-WIP_AUTH_JWT_ISSUER_URL=http://authentik:9000/application/o/wip/
-WIP_AUTH_JWT_AUDIENCE=wip
+podman-compose -f docker-compose.dev.yml down
+podman-compose -f docker-compose.dev.yml up -d
 ```
 
-### Keycloak
+### Authelia Not Reachable from Services
 
-```bash
-WIP_AUTH_MODE=dual
-WIP_AUTH_JWT_ISSUER_URL=http://keycloak:8080/realms/wip
-WIP_AUTH_JWT_AUDIENCE=wip
-```
-
-### Generic OIDC
-
-```bash
-WIP_AUTH_MODE=jwt_only
-WIP_AUTH_JWT_ISSUER_URL=https://auth.example.com/
-WIP_AUTH_JWT_AUDIENCE=wip
-WIP_AUTH_JWT_GROUPS_CLAIM=groups  # or 'roles', 'permissions', etc.
+Make sure Authelia is on the same Docker network (`wip-network`) and use the container name `wip-authelia` in the issuer URL:
+```yaml
+- WIP_AUTH_JWT_ISSUER_URL=http://wip-authelia:9091  # NOT localhost
 ```
