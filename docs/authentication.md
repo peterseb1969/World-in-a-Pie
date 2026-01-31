@@ -565,7 +565,144 @@ Common issues:
 
 ---
 
+## Security Risks and Production Guidance
+
+### Understanding the Risks
+
+#### API Key Risks
+
+| Risk | Description | Mitigation |
+|------|-------------|------------|
+| **No expiration** | Compromised keys work forever | Regular key rotation, monitoring |
+| **Shared secret** | One key for all services (currently) | Use per-service keys in production |
+| **No user identity** | Can't audit WHO used the key | Use JWT for user-facing operations |
+| **Replay attacks** | Key can be reused indefinitely | Network isolation, TLS |
+| **Exposure in logs** | Key might appear in error logs | Ensure logging doesn't capture headers |
+
+#### JWT Risks
+
+| Risk | Description | Mitigation |
+|------|-------------|------------|
+| **Token theft** | Stolen token usable until expiry | Short expiration (24h), secure storage |
+| **OIDC provider compromise** | Attacker can issue valid tokens | Secure Dex/Authelia deployment |
+| **Algorithm confusion** | Weak algorithm exploitation | Enforce RS256, reject HS256 |
+
+### Security by Deployment Profile
+
+#### Minimal/Standard Profile (Pi at Home)
+
+**Threat model:** Trusted home network, no internet exposure
+
+**Acceptable configuration:**
+```yaml
+WIP_AUTH_MODE=dual
+WIP_AUTH_LEGACY_API_KEY=<random-key>  # NOT the dev key
+```
+
+**Risks accepted:**
+- API keys don't expire (acceptable in isolated network)
+- Shared API key across services (acceptable for simplicity)
+
+**Recommendations:**
+1. Generate a strong key: `openssl rand -hex 32`
+2. Don't expose ports to internet directly
+3. Use firewall to restrict access to local network
+
+#### Production Profile (Cloud/Internet-Exposed)
+
+**Threat model:** Untrusted network, potential attackers
+
+**Required configuration:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Internet                                 │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                       ┌─────▼─────┐
+                       │  Reverse  │  ← TLS termination (HTTPS)
+                       │  Proxy    │  ← JWT validation required
+                       │ (nginx)   │  ← Rate limiting
+                       └─────┬─────┘
+                             │ Only authenticated requests pass
+┌────────────────────────────┼────────────────────────────────────┐
+│              Private Network (not internet-accessible)           │
+│                            │                                     │
+│   ┌───────────┐      ┌─────▼─────┐      ┌──────────────┐        │
+│   │ Def-Store │◄────►│Doc-Store  │◄────►│Template-Store│        │
+│   └───────────┘      └───────────┘      └──────────────┘        │
+│         │                  │                    │                │
+│         └──────────────────┼────────────────────┘                │
+│                   API keys OK here                               │
+│              (internal network only)                             │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Requirements:**
+
+1. **Reverse proxy (nginx/Traefik):**
+   - Terminates TLS (HTTPS required)
+   - Validates JWT for all external requests
+   - API key header stripped from external requests
+   - Rate limiting to prevent brute force
+
+2. **OIDC provider:**
+   - Use Authelia (requires HTTPS, proper domain)
+   - Or Authentik (enterprise features, user management UI)
+   - Not Dex (designed for development, HTTP-only)
+
+3. **Network isolation:**
+   - Services not directly accessible from internet
+   - Only reverse proxy is internet-facing
+   - Internal service-to-service uses API keys (acceptable)
+
+4. **Strong API keys:**
+   ```bash
+   # Generate per-service keys
+   REGISTRY_API_KEY=$(openssl rand -hex 32)
+   DEF_STORE_API_KEY=$(openssl rand -hex 32)
+   TEMPLATE_STORE_API_KEY=$(openssl rand -hex 32)
+   # etc.
+   ```
+
+5. **Secrets management:**
+   - Don't store keys in docker-compose files
+   - Use Docker secrets, Kubernetes secrets, or Vault
+   - Rotate keys periodically
+
+### API Keys vs JWT: When to Use What
+
+| Scenario | Recommended Auth | Reason |
+|----------|-----------------|--------|
+| Service-to-service (internal) | API Key | Simple, no token refresh needed |
+| User via browser | JWT | Identity, expiration, audit trail |
+| External scripts/integrations | JWT | Should go through reverse proxy |
+| CI/CD pipelines | API Key (scoped) | Service account, internal network |
+| Admin CLI tools | JWT | User identity for audit |
+
+### Risk Assessment Summary
+
+| Deployment | `dual` Mode Acceptable? | Additional Requirements |
+|------------|------------------------|------------------------|
+| Development | ✅ Yes | None (use dev key) |
+| Home Pi (isolated) | ✅ Yes | Strong random key |
+| Home Pi (port forwarded) | ⚠️ Caution | Reverse proxy + JWT required externally |
+| Cloud (internal only) | ✅ Yes | Network policies, strong keys |
+| Cloud (internet-facing) | ⚠️ Caution | Reverse proxy, Authelia/Authentik, network isolation |
+| Enterprise/regulated | ❌ Needs more | mTLS, audit logging, per-service keys, SIEM integration |
+
+### Future Security Enhancements (Not Implemented)
+
+1. **Per-service API keys** - Each service gets its own key with limited scope
+2. **API key registry** - Track key usage, creation, rotation
+3. **mTLS** - Certificate-based service-to-service authentication
+4. **Audit logging** - Record all authentication events
+5. **Rate limiting** - Built into services (currently rely on reverse proxy)
+
+---
+
 ## Switching to a Different OIDC Provider
+
+For production deployments, you should switch from Dex to a more robust OIDC provider.
 
 Because WIP uses the standard OIDC protocol, you can switch providers by changing environment variables:
 

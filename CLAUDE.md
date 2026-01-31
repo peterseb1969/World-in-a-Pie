@@ -36,11 +36,32 @@ We will develop the **Standard** deployment profile first, then expand to other 
 4. Pi 5 is a realistic primary target with excellent performance
 5. Middle complexity - not too minimal, not over-engineered
 
-**Why Dex for auth:**
+**Why Dex for auth (development/minimal):**
 - Lightweight (~30MB RAM) vs Authentik (~1.2GB)
 - Works over HTTP (no HTTPS/certificate requirement for development)
 - Full OIDC protocol - same as Authelia/Authentik, easy to switch later
 - Static users via YAML config (no database required)
+
+### Authentication Security by Profile
+
+| Profile | OIDC Provider | Auth Mode | Network | Security Notes |
+|---------|---------------|-----------|---------|----------------|
+| **Minimal** | Dex | `dual` | Home/isolated | API keys OK for internal services |
+| **Standard** | Dex | `dual` | Home/small office | Same as minimal, physically controlled network |
+| **Production** | Authelia/Authentik | `dual` + reverse proxy | Cloud/internet | External traffic requires JWT only |
+
+**Production security requirements:**
+1. **Network isolation** - Services not directly exposed to internet
+2. **Reverse proxy** - nginx/Traefik terminates TLS, enforces JWT for external requests
+3. **Strong API keys** - Generate with `openssl rand -hex 32`, not dev keys
+4. **OIDC provider** - Authelia (lightweight, requires HTTPS) or Authentik (enterprise features)
+5. **Per-service keys** - Each service should have its own API key (future enhancement)
+
+```
+Internet → [Reverse Proxy: JWT required] → Private Network → [Services: API keys OK]
+```
+
+See `docs/authentication.md` for detailed security guidance and risk assessment.
 
 ### Development Phases
 
