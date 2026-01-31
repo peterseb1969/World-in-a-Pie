@@ -16,8 +16,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        # OIDC configuration - override these for your environment
-        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-http://localhost:5556/dex}
+        # OIDC configuration - uses /dex proxy to avoid CORS issues
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-/dex}
         VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-wip-console}
         VITE_OIDC_CLIENT_SECRET: ${VITE_OIDC_CLIENT_SECRET:-wip-console-secret}
         VITE_OIDC_PROVIDER_NAME: ${VITE_OIDC_PROVIDER_NAME:-SSO}

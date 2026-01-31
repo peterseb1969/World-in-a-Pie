@@ -13,7 +13,8 @@ RUN npm ci
 COPY . .
 
 # Build arguments for OIDC configuration (baked into static JS at build time)
-ARG VITE_OIDC_AUTHORITY=http://localhost:5556/dex
+# Uses /dex proxy path to avoid CORS issues
+ARG VITE_OIDC_AUTHORITY=/dex
 ARG VITE_OIDC_CLIENT_ID=wip-console
 ARG VITE_OIDC_CLIENT_SECRET=wip-console-secret
 ARG VITE_OIDC_PROVIDER_NAME=SSO

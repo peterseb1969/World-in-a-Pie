@@ -15,7 +15,8 @@
 import type { UserManagerSettings } from 'oidc-client-ts'
 
 // Get OIDC authority from environment
-const authority = import.meta.env.VITE_OIDC_AUTHORITY || 'http://localhost:5556/dex'
+// Default to /dex proxy path to avoid CORS issues (proxied by Vite/nginx)
+const authority = import.meta.env.VITE_OIDC_AUTHORITY || '/dex'
 
 // OIDC Configuration
 export const oidcConfig: UserManagerSettings = {
