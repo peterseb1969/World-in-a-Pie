@@ -81,7 +81,7 @@ async function loadDashboard() {
 
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
   switch (status) {
-    case 'active': return 'info'
+    case 'active': return 'success'
     case 'deprecated': return 'warn'
     case 'inactive': return 'danger'
     default: return 'secondary'

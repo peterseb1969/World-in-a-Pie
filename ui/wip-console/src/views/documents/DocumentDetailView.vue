@@ -500,7 +500,7 @@ onMounted(async () => {
                   <router-link :to="{ path: '/templates/' + selectedTemplate }" class="template-link">
                     <i class="pi pi-external-link"></i> View Template
                   </router-link>
-                  <router-link :to="{ path: '/documents/table', query: { template: selectedTemplate } }" class="template-link">
+                  <router-link :to="{ path: '/documents/table', query: { template: selectedTemplateId } }" class="template-link">
                     <i class="pi pi-table"></i> View as Table
                   </router-link>
                 </div>

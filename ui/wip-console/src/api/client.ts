@@ -44,24 +44,37 @@ import type {
 } from '@/types'
 
 // =============================================================================
-// DEF-STORE CLIENT (Terminologies & Terms)
+// AUTH TYPES
 // =============================================================================
 
-class DefStoreClient {
-  private client: AxiosInstance
-  private apiKey: string = ''
+export type AuthConfig = {
+  type: 'api_key' | 'bearer'
+  value: string
+} | null
 
-  constructor() {
+// =============================================================================
+// BASE CLIENT WITH AUTH SUPPORT
+// =============================================================================
+
+abstract class BaseApiClient {
+  protected client: AxiosInstance
+  protected auth: AuthConfig = null
+
+  constructor(baseURL: string) {
     this.client = axios.create({
-      baseURL: '/api/def-store',
+      baseURL,
       headers: {
         'Content-Type': 'application/json'
       }
     })
 
     this.client.interceptors.request.use((config) => {
-      if (this.apiKey) {
-        config.headers['X-API-Key'] = this.apiKey
+      if (this.auth) {
+        if (this.auth.type === 'api_key') {
+          config.headers['X-API-Key'] = this.auth.value
+        } else if (this.auth.type === 'bearer') {
+          config.headers['Authorization'] = `Bearer ${this.auth.value}`
+        }
       }
       return config
     })
@@ -75,12 +88,31 @@ class DefStoreClient {
     )
   }
 
+  setAuth(auth: AuthConfig) {
+    this.auth = auth
+  }
+
+  // Legacy method for backward compatibility
   setApiKey(key: string) {
-    this.apiKey = key
+    if (key) {
+      this.auth = { type: 'api_key', value: key }
+    } else {
+      this.auth = null
+    }
   }
 
   getApiKey(): string {
-    return this.apiKey
+    return this.auth?.type === 'api_key' ? this.auth.value : ''
+  }
+}
+
+// =============================================================================
+// DEF-STORE CLIENT (Terminologies & Terms)
+// =============================================================================
+
+class DefStoreClient extends BaseApiClient {
+  constructor() {
+    super('/api/def-store')
   }
 
   // ===========================================================================
@@ -211,40 +243,9 @@ class DefStoreClient {
 // TEMPLATE-STORE CLIENT (Templates)
 // =============================================================================
 
-class TemplateStoreClient {
-  private client: AxiosInstance
-  private apiKey: string = ''
-
+class TemplateStoreClient extends BaseApiClient {
   constructor() {
-    this.client = axios.create({
-      baseURL: '/api/template-store',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    })
-
-    this.client.interceptors.request.use((config) => {
-      if (this.apiKey) {
-        config.headers['X-API-Key'] = this.apiKey
-      }
-      return config
-    })
-
-    this.client.interceptors.response.use(
-      (response) => response,
-      (error: AxiosError<ApiError>) => {
-        const message = error.response?.data?.detail || error.message
-        return Promise.reject(new Error(message))
-      }
-    )
-  }
-
-  setApiKey(key: string) {
-    this.apiKey = key
-  }
-
-  getApiKey(): string {
-    return this.apiKey
+    super('/api/template-store')
   }
 
   // ===========================================================================
@@ -347,40 +348,9 @@ class TemplateStoreClient {
 // DOCUMENT-STORE CLIENT (Documents)
 // =============================================================================
 
-class DocumentStoreClient {
-  private client: AxiosInstance
-  private apiKey: string = ''
-
+class DocumentStoreClient extends BaseApiClient {
   constructor() {
-    this.client = axios.create({
-      baseURL: '/api/document-store',
-      headers: {
-        'Content-Type': 'application/json'
-      }
-    })
-
-    this.client.interceptors.request.use((config) => {
-      if (this.apiKey) {
-        config.headers['X-API-Key'] = this.apiKey
-      }
-      return config
-    })
-
-    this.client.interceptors.response.use(
-      (response) => response,
-      (error: AxiosError<ApiError>) => {
-        const message = error.response?.data?.detail || error.message
-        return Promise.reject(new Error(message))
-      }
-    )
-  }
-
-  setApiKey(key: string) {
-    this.apiKey = key
-  }
-
-  getApiKey(): string {
-    return this.apiKey
+    super('/api/document-store')
   }
 
   // ===========================================================================

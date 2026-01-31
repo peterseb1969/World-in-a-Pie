@@ -50,19 +50,11 @@ const templateOptions = computed(() => {
     }))
 })
 
-// Metadata columns (prefixed with _)
-const metadataColumns = ['_document_id', '_version', '_identity_hash', '_status', '_created_at', '_updated_at']
-
 // Data columns from template
 const dataColumns = computed(() => {
   if (!tableData.value) return []
   return tableData.value.columns
 })
-
-// Check if a column is a metadata column
-function isMetadataColumn(name: string): boolean {
-  return name.startsWith('_')
-}
 
 // Get column width based on type
 function getColumnWidth(col: TableColumn): string {

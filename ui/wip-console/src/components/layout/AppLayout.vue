@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import Divider from 'primevue/divider'
 import { useAuthStore, useUiStore } from '@/stores'
 
 const router = useRouter()
@@ -11,8 +12,9 @@ const route = useRoute()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 
-const showApiKeyDialog = ref(false)
+const showAuthDialog = ref(false)
 const apiKeyInput = ref('')
+const showApiKeyForm = ref(false)
 
 const sidebarCollapsed = ref(false)
 
@@ -81,9 +83,24 @@ function navigate(routePath: string | undefined) {
   }
 }
 
-function openApiKeyDialog() {
+function openAuthDialog() {
   apiKeyInput.value = authStore.apiKey
-  showApiKeyDialog.value = true
+  showApiKeyForm.value = false
+  showAuthDialog.value = true
+}
+
+function closeAuthDialog() {
+  showAuthDialog.value = false
+  showApiKeyForm.value = false
+  apiKeyInput.value = ''
+}
+
+async function loginWithOidc() {
+  try {
+    await authStore.loginWithOidc()
+  } catch (err) {
+    uiStore.showError('Login Failed', err instanceof Error ? err.message : 'Failed to initiate login')
+  }
 }
 
 function saveApiKey() {
@@ -91,22 +108,38 @@ function saveApiKey() {
     authStore.setApiKey(apiKeyInput.value.trim())
     uiStore.showSuccess('API Key Saved', 'Your API key has been saved successfully')
   }
-  showApiKeyDialog.value = false
+  closeAuthDialog()
 }
 
-function clearApiKey() {
-  authStore.clearApiKey()
-  apiKeyInput.value = ''
-  uiStore.showInfo('API Key Cleared', 'Your API key has been removed')
-  showApiKeyDialog.value = false
+async function logout() {
+  try {
+    await authStore.logout()
+    uiStore.showInfo('Logged Out', 'You have been logged out successfully')
+    closeAuthDialog()
+  } catch (err) {
+    console.error('Logout error:', err)
+  }
 }
 
 const authStatusText = computed(() => {
-  return authStore.isAuthenticated ? 'Connected' : 'Not Connected'
+  if (authStore.authMode === 'oidc' && authStore.currentUser) {
+    return authStore.currentUser.name || authStore.currentUser.email
+  }
+  if (authStore.authMode === 'api_key') {
+    return 'API Key'
+  }
+  return 'Not Connected'
 })
 
 const authStatusClass = computed(() => {
   return authStore.isAuthenticated ? 'status-connected' : 'status-disconnected'
+})
+
+const authIcon = computed(() => {
+  if (authStore.authMode === 'oidc') {
+    return 'pi pi-user'
+  }
+  return 'pi pi-key'
 })
 
 function toggleSidebar() {
@@ -181,18 +214,18 @@ function toggleSidebar() {
 
       <!-- Sidebar footer -->
       <div class="sidebar-footer" v-if="!sidebarCollapsed">
-        <div class="auth-status" :class="authStatusClass" @click="openApiKeyDialog">
-          <i class="pi pi-key"></i>
+        <div class="auth-status" :class="authStatusClass" @click="openAuthDialog">
+          <i :class="authIcon"></i>
           <span>{{ authStatusText }}</span>
         </div>
       </div>
       <div class="sidebar-footer collapsed-footer" v-else>
         <Button
-          icon="pi pi-key"
+          :icon="authIcon"
           text
           rounded
           :severity="authStore.isAuthenticated ? 'success' : 'danger'"
-          @click="openApiKeyDialog"
+          @click="openAuthDialog"
         />
       </div>
     </aside>
@@ -208,7 +241,7 @@ function toggleSidebar() {
             icon="pi pi-cog"
             text
             rounded
-            @click="openApiKeyDialog"
+            @click="openAuthDialog"
             v-tooltip.left="'Settings'"
           />
         </div>
@@ -218,48 +251,119 @@ function toggleSidebar() {
       </div>
     </main>
 
-    <!-- API Key Dialog -->
+    <!-- Auth Dialog -->
     <Dialog
-      v-model:visible="showApiKeyDialog"
-      header="API Key Configuration"
+      v-model:visible="showAuthDialog"
+      :header="authStore.isAuthenticated ? 'Account' : 'Login'"
       :modal="true"
       :style="{ width: '450px' }"
     >
-      <div class="api-key-form">
-        <p class="help-text">
-          Enter your API key to authenticate with WIP services.
-          For development, use: <code>dev_master_key_for_testing</code>
-        </p>
-        <div class="input-group">
-          <label for="api-key">API Key</label>
-          <InputText
-            id="api-key"
-            v-model="apiKeyInput"
-            type="password"
-            placeholder="Enter your API key"
+      <!-- Logged in state -->
+      <div v-if="authStore.isAuthenticated" class="auth-content">
+        <!-- OIDC user info -->
+        <div v-if="authStore.authMode === 'oidc' && authStore.currentUser" class="user-info">
+          <div class="user-avatar">
+            <i class="pi pi-user"></i>
+          </div>
+          <div class="user-details">
+            <div class="user-name">{{ authStore.currentUser.name }}</div>
+            <div class="user-email">{{ authStore.currentUser.email }}</div>
+          </div>
+        </div>
+
+        <!-- API Key info -->
+        <div v-else-if="authStore.authMode === 'api_key'" class="api-key-info">
+          <i class="pi pi-key"></i>
+          <span>Authenticated with API Key</span>
+        </div>
+      </div>
+
+      <!-- Not logged in state -->
+      <div v-else class="auth-content">
+        <!-- API Key form -->
+        <div v-if="showApiKeyForm" class="api-key-form">
+          <p class="help-text">
+            Enter your API key to authenticate with WIP services.
+            For development, use: <code>dev_master_key_for_testing</code>
+          </p>
+          <div class="input-group">
+            <label for="api-key">API Key</label>
+            <InputText
+              id="api-key"
+              v-model="apiKeyInput"
+              type="password"
+              placeholder="Enter your API key"
+              class="w-full"
+              @keyup.enter="saveApiKey"
+            />
+          </div>
+          <div class="form-actions">
+            <Button
+              label="Back"
+              severity="secondary"
+              text
+              @click="showApiKeyForm = false"
+            />
+            <Button
+              label="Save"
+              @click="saveApiKey"
+              :disabled="!apiKeyInput.trim()"
+            />
+          </div>
+        </div>
+
+        <!-- Login options -->
+        <div v-else class="login-options">
+          <p class="help-text">
+            Choose how you want to authenticate with WIP Console.
+          </p>
+
+          <Button
+            label="Login with Dex"
+            icon="pi pi-sign-in"
+            class="w-full login-btn"
+            @click="loginWithOidc"
+            :loading="authStore.isLoading"
+          />
+
+          <Divider align="center">
+            <span class="divider-text">or</span>
+          </Divider>
+
+          <Button
+            label="Use API Key"
+            icon="pi pi-key"
+            severity="secondary"
+            outlined
             class="w-full"
+            @click="showApiKeyForm = true"
           />
         </div>
       </div>
+
       <template #footer>
-        <Button
-          label="Clear"
-          severity="danger"
-          text
-          @click="clearApiKey"
-          :disabled="!authStore.isAuthenticated"
-        />
-        <Button
-          label="Cancel"
-          severity="secondary"
-          text
-          @click="showApiKeyDialog = false"
-        />
-        <Button
-          label="Save"
-          @click="saveApiKey"
-          :disabled="!apiKeyInput.trim()"
-        />
+        <div v-if="authStore.isAuthenticated" class="dialog-footer">
+          <Button
+            label="Logout"
+            severity="danger"
+            text
+            @click="logout"
+          />
+          <Button
+            label="Close"
+            severity="secondary"
+            text
+            @click="closeAuthDialog"
+          />
+        </div>
+        <div v-else-if="!showApiKeyForm" class="dialog-footer">
+          <Button
+            label="Cancel"
+            severity="secondary"
+            text
+            @click="closeAuthDialog"
+          />
+        </div>
       </template>
     </Dialog>
   </div>
@@ -474,17 +578,79 @@ function toggleSidebar() {
   background-color: var(--p-surface-ground);
 }
 
-/* API Key Dialog */
-.api-key-form {
+/* Auth Dialog */
+.auth-content {
+  padding: 0.5rem 0;
+}
+
+.user-info {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background-color: var(--p-surface-50);
+  border-radius: 8px;
+}
+
+.user-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background-color: var(--p-primary-100);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.user-avatar i {
+  font-size: 1.5rem;
+  color: var(--p-primary-600);
+}
+
+.user-details {
+  flex: 1;
+}
+
+.user-name {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.user-email {
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+.api-key-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  background-color: var(--p-surface-50);
+  border-radius: 8px;
+  color: var(--p-text-muted-color);
+}
+
+.api-key-info i {
+  font-size: 1.25rem;
+}
+
+.login-options {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+}
+
+.login-btn {
+  height: 48px;
+  font-size: 1rem;
 }
 
 .help-text {
   color: var(--p-text-muted-color);
   font-size: 0.875rem;
   line-height: 1.5;
+  margin-bottom: 1rem;
 }
 
 .help-text code {
@@ -492,6 +658,17 @@ function toggleSidebar() {
   padding: 0.125rem 0.375rem;
   border-radius: 4px;
   font-size: 0.8125rem;
+}
+
+.divider-text {
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+.api-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .input-group {
@@ -503,6 +680,19 @@ function toggleSidebar() {
 .input-group label {
   font-size: 0.875rem;
   font-weight: 500;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
 }
 
 .w-full {

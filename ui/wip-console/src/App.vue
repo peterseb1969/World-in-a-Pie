@@ -1,13 +1,26 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { watch, onMounted, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Toast from 'primevue/toast'
 import ConfirmDialog from 'primevue/confirmdialog'
 import AppLayout from '@/components/layout/AppLayout.vue'
-import { useUiStore } from '@/stores'
+import { useUiStore, useAuthStore } from '@/stores'
 
+const route = useRoute()
 const toast = useToast()
 const uiStore = useUiStore()
+const authStore = useAuthStore()
+
+// Check if current route should skip layout (auth callbacks)
+const showLayout = computed(() => {
+  return route.meta?.layout !== 'none'
+})
+
+// Initialize auth store on mount
+onMounted(async () => {
+  await authStore.initialize()
+})
 
 // Watch for toast messages and display them
 watch(
@@ -25,9 +38,16 @@ watch(
 <template>
   <Toast position="top-right" />
   <ConfirmDialog />
-  <AppLayout>
+
+  <!-- Routes with layout: 'none' render without AppLayout (e.g., auth callbacks) -->
+  <template v-if="showLayout">
+    <AppLayout>
+      <router-view />
+    </AppLayout>
+  </template>
+  <template v-else>
     <router-view />
-  </AppLayout>
+  </template>
 </template>
 
 <style>

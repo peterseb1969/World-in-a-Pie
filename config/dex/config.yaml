@@ -26,6 +26,10 @@ storage:
 # Web server configuration
 web:
   http: 0.0.0.0:5556
+  # Allow CORS for WIP Console (browser-based OIDC)
+  allowedOrigins:
+    - http://localhost:3000
+    - http://localhost:3001
 
 # Enable the password database for static users
 enablePasswordDB: true

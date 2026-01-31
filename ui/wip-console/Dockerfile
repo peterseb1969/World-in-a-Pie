@@ -12,6 +12,16 @@ RUN npm ci
 # Copy source code
 COPY . .
 
+# Build arguments for OIDC configuration (baked into static JS at build time)
+ARG VITE_OIDC_AUTHORITY=http://localhost:5556/dex
+ARG VITE_OIDC_CLIENT_ID=wip-console
+ARG VITE_OIDC_CLIENT_SECRET=wip-console-secret
+
+# Set environment variables for build
+ENV VITE_OIDC_AUTHORITY=$VITE_OIDC_AUTHORITY
+ENV VITE_OIDC_CLIENT_ID=$VITE_OIDC_CLIENT_ID
+ENV VITE_OIDC_CLIENT_SECRET=$VITE_OIDC_CLIENT_SECRET
+
 # Build the application
 RUN npm run build
 

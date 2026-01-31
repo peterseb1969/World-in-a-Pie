@@ -8,6 +8,19 @@ const router = createRouter({
       name: 'home',
       component: () => import('@/views/HomeView.vue')
     },
+    // Auth routes (OIDC callbacks)
+    {
+      path: '/auth/callback',
+      name: 'auth-callback',
+      component: () => import('@/views/auth/AuthCallback.vue'),
+      meta: { layout: 'none' }
+    },
+    {
+      path: '/auth/silent-renew',
+      name: 'auth-silent-renew',
+      component: () => import('@/views/auth/SilentRenew.vue'),
+      meta: { layout: 'none' }
+    },
     // Terminology routes
     {
       path: '/terminologies',

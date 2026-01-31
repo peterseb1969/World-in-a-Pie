@@ -2,24 +2,34 @@ version: '3.8'
 
 # Production setup
 # Requires WIP services to be running on the same network
+#
+# Build with custom OIDC settings:
+#   podman-compose build --build-arg VITE_OIDC_AUTHORITY=https://auth.example.com
+#
+# Or set in environment before building:
+#   export VITE_OIDC_AUTHORITY=https://auth.example.com
+#   podman-compose build
 
 services:
   wip-console:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # OIDC configuration - override these for your environment
+        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-http://localhost:5556/dex}
+        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-wip-console}
+        VITE_OIDC_CLIENT_SECRET: ${VITE_OIDC_CLIENT_SECRET:-wip-console-secret}
     container_name: wip-console
     ports:
       - "80:80"
     environment:
-      # These are passed to nginx for proxying
+      # These are passed to nginx for proxying (runtime config)
       - DEF_STORE_HOST=wip-def-store:8002
       - TEMPLATE_STORE_HOST=wip-template-store:8003
+      - DOCUMENT_STORE_HOST=wip-document-store:8004
     networks:
       - wip-network
-    depends_on:
-      - wip-def-store
-      - wip-template-store
 
 networks:
   wip-network:
