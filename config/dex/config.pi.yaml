@@ -13,7 +13,8 @@
 
 # Issuer URL - must match what's in JWT tokens
 # Uses environment variable for hostname (set in docker-compose)
-issuer: https://${WIP_HOSTNAME}/dex
+# Port 8443 avoids need for privileged port configuration
+issuer: https://${WIP_HOSTNAME}:8443/dex
 
 # Storage backend - SQLite for simplicity
 storage:
@@ -49,9 +50,9 @@ staticClients:
     name: WIP Console
     secret: wip-console-secret
     redirectURIs:
-      # HTTPS redirect URIs for Caddy deployment
-      - https://${WIP_HOSTNAME}/auth/callback
-      - https://${WIP_HOSTNAME}/auth/silent-renew
+      # HTTPS redirect URIs for Caddy deployment (port 8443)
+      - https://${WIP_HOSTNAME}:8443/auth/callback
+      - https://${WIP_HOSTNAME}:8443/auth/silent-renew
       # Also allow localhost for direct access on Pi
       - http://localhost:3000/auth/callback
     public: false

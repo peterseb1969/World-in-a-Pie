@@ -161,23 +161,6 @@ else
 fi
 echo ""
 
-# Step 3b: Enable unprivileged ports for rootless Podman (needed for Caddy on 80/443)
-if [ "$DEPLOY_MODE" = "full" ]; then
-    log_step "Step 3b: Configuring unprivileged ports for Caddy..."
-    CURRENT_PORT_START=$(sysctl -n net.ipv4.ip_unprivileged_port_start 2>/dev/null || echo "1024")
-    if [ "$CURRENT_PORT_START" -gt 80 ]; then
-        log_warn "  Enabling ports 80/443 for rootless Podman (requires sudo)"
-        if ! grep -q 'net.ipv4.ip_unprivileged_port_start=80' /etc/sysctl.conf 2>/dev/null; then
-            echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee -a /etc/sysctl.conf > /dev/null
-        fi
-        sudo sysctl -w net.ipv4.ip_unprivileged_port_start=80 > /dev/null
-        log_info "  Unprivileged ports now start at 80"
-    else
-        log_info "  Unprivileged ports already configured (start at $CURRENT_PORT_START)"
-    fi
-    echo ""
-fi
-
 # Step 4: Clone or update repository
 log_step "Step 4: Setting up repository..."
 mkdir -p "$(dirname $INSTALL_DIR)"
@@ -393,8 +376,8 @@ echo ""
 
 if [ "$DEPLOY_MODE" = "full" ]; then
     echo "Access WIP Console (via HTTPS):"
-    echo "  Network: https://$PI_HOSTNAME"
-    echo "           https://$IP"
+    echo "  Network: https://$PI_HOSTNAME:8443"
+    echo "           https://$IP:8443"
     echo ""
     echo "  Note: Browser will warn about self-signed certificate."
     echo "        Click 'Advanced' -> 'Proceed' to accept."

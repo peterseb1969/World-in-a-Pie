@@ -4,19 +4,7 @@
 
 ## Prerequisites
 
-### 1. Enable Unprivileged Ports for Rootless Podman
-
-Caddy needs ports 80 and 443. Rootless Podman can't bind to ports < 1024 by default.
-
-**Fix (required before running pi-setup.sh):**
-```bash
-echo 'net.ipv4.ip_unprivileged_port_start=80' | sudo tee -a /etc/sysctl.conf
-sudo sysctl -p
-```
-
-This persists across reboots.
-
-### 2. Podman Registry Configuration
+### 1. Podman Registry Configuration
 
 Ensure docker.io is configured:
 ```bash
@@ -41,7 +29,7 @@ bash pi-setup.sh --minimal
 
 | Mode | Containers | Auth | Access | RAM |
 |------|------------|------|--------|-----|
-| Full | MongoDB, PostgreSQL, NATS, Dex, Caddy + 6 services | OIDC + API keys | https://hostname | ~1GB |
+| Full | MongoDB, PostgreSQL, NATS, Dex, Caddy + 6 services | OIDC + API keys | https://hostname:8443 | ~1GB |
 | Minimal | MongoDB, PostgreSQL, NATS + 6 services | API keys only | http://hostname:3000 | ~900MB |
 
 ## Test Users (Dex OIDC)
@@ -53,12 +41,6 @@ bash pi-setup.sh --minimal
 | viewer@wip.local | viewer123 | wip-viewers |
 
 ## Troubleshooting
-
-### Port Permission Denied
-```
-Error: rootlessport cannot expose privileged port 80
-```
-**Fix:** Run the sysctl command in Prerequisites section.
 
 ### Caddy Not Starting
 Check logs:
@@ -83,7 +65,7 @@ rm -rf ~/Development/WorldInPie
 ## Architecture (Full Mode)
 
 ```
-Browser → Caddy (HTTPS :443) → Services
+Browser → Caddy (HTTPS :8443) → Services
               ↓
           /dex/*     → Dex (OIDC provider)
           /api/*     → Backend services
@@ -92,7 +74,7 @@ Browser → Caddy (HTTPS :443) → Services
 
 ## Key Lessons Learned
 
-1. **Rootless Podman port restriction** - Ports < 1024 require sysctl change
+1. **Use high ports for Caddy** - Ports 8080/8443 avoid privileged port issues on both Mac and Pi
 2. **Crypto.subtle requires HTTPS** - OIDC/PKCE won't work over HTTP
 3. **Caddy auto-generates TLS** - Uses internal CA, browser warns once
 4. **MongoDB 4.4.18** - Last version supporting ARMv8.0 (Pi 4's Cortex-A72)
@@ -104,12 +86,12 @@ Browser → Caddy (HTTPS :443) → Services
 ```
 Containers: 11 (all running)
 Memory: ~876MB used / 1.8GB available
-Access: https://wip-dev-pi.local
+Access: https://wip-dev-pi.local:8443
 
 Services via Caddy HTTPS:
-  - Console: https://wip-dev-pi.local/
-  - Dex OIDC: https://wip-dev-pi.local/dex/
-  - APIs: https://wip-dev-pi.local/api/{service}/
+  - Console: https://wip-dev-pi.local:8443/
+  - Dex OIDC: https://wip-dev-pi.local:8443/dex/
+  - APIs: https://wip-dev-pi.local:8443/api/{service}/
 
 Data seeded:
   - 15 terminologies

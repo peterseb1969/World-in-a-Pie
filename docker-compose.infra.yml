@@ -7,6 +7,9 @@
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
 #   - Dex (OIDC provider): http://localhost:5556
+#   - Caddy (reverse proxy): https://localhost:8443, http://localhost:8080
+#
+# Access: https://localhost:8443 (accept self-signed cert)
 #
 # To access PostgreSQL: podman exec -it wip-postgres psql -U wip -d wip_reporting
 #
@@ -131,6 +134,29 @@ services:
       - wip-network
     restart: unless-stopped
 
+  # ===================
+  # Reverse Proxy (HTTPS)
+  # ===================
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: wip-caddy
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - wip-caddy-data:/data
+      - wip-caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
 networks:
   wip-network:
     name: wip-network
@@ -141,3 +167,5 @@ volumes:
   wip-postgres-data:
   wip-nats-data:
   wip-dex-data:
+  wip-caddy-data:
+  wip-caddy-config:

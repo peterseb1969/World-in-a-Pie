@@ -154,7 +154,7 @@ echo ""
 
 # Step 4: Start infrastructure
 if [ "$DEPLOY_MODE" = "full" ]; then
-    log_step "Step 4: Starting infrastructure (MongoDB, PostgreSQL, NATS, Dex, Mongo Express)..."
+    log_step "Step 4: Starting infrastructure (MongoDB, PostgreSQL, NATS, Dex, Caddy, Mongo Express)..."
     INFRA_COMPOSE="docker-compose.infra.yml"
 else
     log_step "Step 4: Starting infrastructure (MongoDB, PostgreSQL, NATS)..."
@@ -178,9 +178,9 @@ INFRA_HEALTHY=true
 # Core containers (always required)
 CORE_CONTAINERS="wip-mongodb wip-postgres wip-nats"
 
-# Add Dex and Mongo Express for full mode
+# Add Dex, Caddy and Mongo Express for full mode
 if [ "$DEPLOY_MODE" = "full" ]; then
-    CORE_CONTAINERS="$CORE_CONTAINERS wip-dex wip-mongo-express"
+    CORE_CONTAINERS="$CORE_CONTAINERS wip-dex wip-caddy wip-mongo-express"
 fi
 
 for container in $CORE_CONTAINERS; do
@@ -302,14 +302,17 @@ echo "=========================================="
 echo ""
 
 if [ "$DEPLOY_MODE" = "full" ]; then
-    echo "Access WIP Console:"
-    echo "  http://localhost:3000"
+    echo "Access WIP Console (via HTTPS):"
+    echo "  https://localhost:8443"
+    echo ""
+    echo "  Note: Browser will warn about self-signed certificate."
+    echo "        Click 'Advanced' -> 'Proceed' to accept."
     echo ""
     echo "Login options:"
     echo "  - Click 'Login with Dex' -> admin@wip.local / admin123"
     echo "  - Or use API Key: $API_KEY"
 else
-    echo "Access WIP Console:"
+    echo "Access WIP Console (HTTP only):"
     echo "  http://localhost:3000"
     echo ""
     echo "Login:"
