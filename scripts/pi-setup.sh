@@ -80,6 +80,11 @@ REPO_URL="http://192.168.1.17:3000/peter/World-In-A-Pie.git"
 INSTALL_DIR="$HOME/Development/WorldInPie"
 API_KEY="dev_master_key_for_testing"
 
+# Storage directory (can be overridden with WIP_DATA_DIR env var)
+# Default is ./data, but can be set to external storage like /mnt/usb-ssd
+WIP_DATA_DIR="${WIP_DATA_DIR:-$INSTALL_DIR/data}"
+export WIP_DATA_DIR
+
 # Deployment mode: full (with Caddy/OIDC) or minimal (API keys only)
 DEPLOY_MODE="full"
 
@@ -224,6 +229,13 @@ fi
 
 echo "  Environment file: $ENV_FILE"
 echo "  Infrastructure: $INFRA_COMPOSE"
+echo ""
+
+# Step 5b: Create storage directories
+log_step "Step 5b: Setting up storage directories..."
+echo "  Data directory: $WIP_DATA_DIR"
+mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config}
+echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy"
 echo ""
 
 # Step 6: Start infrastructure

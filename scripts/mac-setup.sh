@@ -80,6 +80,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="$(dirname "$SCRIPT_DIR")"
 API_KEY="dev_master_key_for_testing"
 
+# Storage directory (can be overridden with WIP_DATA_DIR env var)
+WIP_DATA_DIR="${WIP_DATA_DIR:-$INSTALL_DIR/data}"
+export WIP_DATA_DIR
+
 # Deployment mode: full (with Dex/OIDC) or minimal (API keys only)
 DEPLOY_MODE="full"
 
@@ -150,6 +154,13 @@ echo ""
 log_step "Step 3: Setting up project directory..."
 cd "$INSTALL_DIR"
 echo "  Location: $INSTALL_DIR"
+echo ""
+
+# Step 3b: Create storage directories
+log_step "Step 3b: Setting up storage directories..."
+echo "  Data directory: $WIP_DATA_DIR"
+mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config}
+echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy"
 echo ""
 
 # Step 4: Start infrastructure

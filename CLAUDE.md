@@ -1407,7 +1407,40 @@ This endpoint:
 
 ## Running the Project
 
-### Development Setup
+### Quick Start (Recommended)
+
+Use the setup scripts for automated deployment:
+
+```bash
+# Mac
+bash scripts/mac-setup.sh
+
+# Raspberry Pi
+bash scripts/pi-setup.sh
+
+# Access: https://localhost:8443 (Mac) or https://hostname:8443 (Pi)
+# Login: admin@wip.local / admin123
+```
+
+### Storage Configuration
+
+Data is stored in `./data/` by default. Override with `WIP_DATA_DIR`:
+
+```bash
+# Use external storage (USB SSD on Pi, NFS share, etc.)
+WIP_DATA_DIR=/mnt/usb-ssd bash scripts/pi-setup.sh
+
+# Storage locations:
+# - mongodb/   : Document store data
+# - postgres/  : Reporting database
+# - nats/      : Message queue persistence
+# - dex/       : OIDC tokens
+# - caddy/     : TLS certificates
+```
+
+See `docs/storage.md` for detailed options (USB SSD, NFS, GlusterFS, Ceph).
+
+### Manual Development Setup
 
 All services share infrastructure via `docker-compose.infra.yml`:
 

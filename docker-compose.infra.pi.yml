@@ -13,6 +13,16 @@
 #   - Dex (OIDC provider): internal only (via Caddy)
 #   - Caddy (reverse proxy): https://localhost:8443, http://localhost:8080
 #
+# Storage Configuration:
+#   Set WIP_DATA_DIR to customize where data is stored.
+#   Default: ./data (relative to this file)
+#
+#   Examples:
+#     WIP_DATA_DIR=/mnt/usb-ssd podman-compose -f docker-compose.infra.pi.yml up -d
+#     WIP_DATA_DIR=/mnt/nfs/wip podman-compose -f docker-compose.infra.pi.yml up -d
+#
+#   See docs/storage.md for detailed configuration options.
+#
 # Usage:
 #   podman-compose -f docker-compose.infra.pi.yml up -d
 #
@@ -33,7 +43,7 @@ services:
     ports:
       - "27017:27017"
     volumes:
-      - wip-mongodb-data:/data/db
+      - ${WIP_DATA_DIR:-./data}/mongodb:/data/db
     healthcheck:
       test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
       interval: 10s
@@ -56,7 +66,7 @@ services:
       POSTGRES_USER: wip
       POSTGRES_PASSWORD: wip_dev_password
     volumes:
-      - wip-postgres-data:/var/lib/postgresql/data
+      - ${WIP_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U wip -d wip_reporting"]
       interval: 10s
@@ -77,7 +87,7 @@ services:
       - "4222:4222"   # Client connections
       - "8222:8222"   # HTTP monitoring
     volumes:
-      - wip-nats-data:/data
+      - ${WIP_DATA_DIR:-./data}/nats:/data
     healthcheck:
       test: ["CMD", "nats-server", "--help"]
       interval: 30s
@@ -107,7 +117,7 @@ services:
       - WIP_HOSTNAME=${WIP_HOSTNAME:-wip-dev-pi.local}
     volumes:
       - ./config/dex:/etc/dex:ro
-      - wip-dex-data:/data
+      - ${WIP_DATA_DIR:-./data}/dex:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/healthz"]
       interval: 30s
@@ -129,8 +139,8 @@ services:
       - "8443:443"
     volumes:
       - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - wip-caddy-data:/data
-      - wip-caddy-config:/config
+      - ${WIP_DATA_DIR:-./data}/caddy/data:/data
+      - ${WIP_DATA_DIR:-./data}/caddy/config:/config
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 30s
@@ -146,10 +156,5 @@ networks:
     name: wip-network
     driver: bridge
 
-volumes:
-  wip-mongodb-data:
-  wip-postgres-data:
-  wip-nats-data:
-  wip-dex-data:
-  wip-caddy-data:
-  wip-caddy-config:
+# No named volumes - using bind mounts for configurable storage
+# Data stored in ${WIP_DATA_DIR:-./data}/
