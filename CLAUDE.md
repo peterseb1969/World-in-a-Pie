@@ -328,8 +328,8 @@ Even though we're implementing only the Standard profile initially, the architec
 | 1 | **File Upload (CSV/XLSX)** | Upload documents via file instead of JSON API |
 | 2 | **Binary File Storage** | Store files (images, PDFs) with document manifests via MinIO |
 | 3 | **BI Dashboard Container** | Metabase for SQL analytics on PostgreSQL reporting data |
-| 4 | **Cross-Entity Audit Dashboard** | Unified timeline of changes across all entities |
-| 5 | **Referential Integrity** | Health check API for orphaned references |
+| 4 | **Referential Integrity** | ✅ Health check API implemented, UI integration pending |
+| 5 | **Cross-Entity Audit Dashboard** | Unified timeline + data quality section |
 
 ### Future Enhancements
 
@@ -1165,20 +1165,81 @@ If referenced entities are missing (due to test cleanup, data corruption, or bug
 
 **Core Principle:** Data is never deleted, and references must always resolve (even to inactive entities).
 
-**Required changes:**
+**Implementation Status:**
 
-1. **Integrity Health Check API** - New endpoint(s) to scan for orphaned references:
-   ```
-   GET /api/health/integrity
-   Response:
-   {
-     "status": "warning",
-     "orphaned_template_refs": [...],    // Templates referencing missing terminologies
-     "orphaned_document_refs": [...],    // Documents referencing missing templates
-     "orphaned_term_refs": [...],        // Documents with term_references to missing terms
-     "inactive_refs": [...]              // References to inactive (but existing) entities
-   }
-   ```
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Integrity Health Check API | ✅ Complete | Per-service + aggregated endpoints |
+| Startup Validation | ❌ Pending | Log warnings on startup |
+| Cascade Status Warnings | ❌ Pending | Warn about dependencies when deactivating |
+| Reference Protection | ❌ Pending | Block/warn deactivation with active refs |
+| Recovery Tools | ❌ Pending | Scripts to export orphaned data |
+| Test Isolation | ✅ Existing | Tests use separate databases |
+
+**Implemented Endpoints:**
+
+**Per-Service Endpoints:**
+```
+# Template Store - check terminology references
+GET /health/integrity?status={active|deprecated|inactive}&limit=1000
+
+# Document Store - check template and term references
+GET /health/integrity?status={active|inactive|archived}&template_id={id}&limit=1000&check_term_refs=true
+```
+
+**Aggregated Endpoint (Reporting Sync Service):**
+```
+GET /health/integrity
+  ?template_status={filter}
+  &document_status={filter}
+  &template_limit=1000
+  &document_limit=1000
+  &check_term_refs=true
+
+Response:
+{
+  "status": "healthy" | "warning" | "error" | "partial",
+  "checked_at": "2024-...",
+  "services_checked": ["template-store", "document-store"],
+  "services_unavailable": [],
+  "summary": {
+    "total_templates": 100,
+    "total_documents": 500,
+    "templates_with_issues": 2,
+    "documents_with_issues": 5,
+    "orphaned_terminology_refs": 1,
+    "orphaned_template_refs": 3,
+    "orphaned_term_refs": 2,
+    "inactive_refs": 1
+  },
+  "issues": [
+    {
+      "type": "orphaned_terminology_ref",
+      "severity": "error",
+      "source": "template-store",
+      "entity_id": "TPL-000001",
+      "entity_code": "PERSON",
+      "field_path": "gender",
+      "reference": "GENDER",
+      "message": "Terminology 'GENDER' not found"
+    }
+  ]
+}
+```
+
+**Issue Types:**
+- `orphaned_terminology_ref` - Template references non-existent terminology
+- `orphaned_template_ref` - Template/document references non-existent template
+- `orphaned_term_ref` - Document has term_reference to non-existent term
+- `inactive_terminology_ref` - Reference to inactive/deprecated terminology
+- `inactive_template_ref` - Reference to inactive/deprecated template
+
+**Remaining Tasks:**
+
+1. **UI Integration** - Add "Data Quality" section to WIP Console dashboard:
+   - Call aggregated endpoint on dashboard load
+   - Display summary stats (healthy/warning/error badge)
+   - List issues with links to affected entities
 
 2. **Startup Validation** - Services log warnings about missing references on startup:
    - Document Store checks that referenced templates exist
@@ -1199,11 +1260,6 @@ If referenced entities are missing (due to test cleanup, data corruption, or bug
    - List all orphaned references
    - Export orphaned documents for analysis
    - Re-link orphaned data if source is restored
-
-6. **Test Isolation** - Ensure development data safety:
-   - Tests MUST use separate database (e.g., `wip_def_store_test` not `wip_def_store`)
-   - Never run cleanup on non-test databases
-   - CI/CD uses ephemeral databases
 
 **Inactive vs Deleted:**
 - `inactive` status means "soft-deleted" - still retrievable, still resolvable

@@ -394,6 +394,34 @@ class DefStoreClient:
 
         return results
 
+    async def get_term(self, term_id: str) -> Optional[dict[str, Any]]:
+        """
+        Get a term by ID.
+
+        Args:
+            term_id: Term ID (e.g., 'T-000001')
+
+        Returns:
+            Term data if found, None otherwise
+        """
+        url = f"{self.base_url}/api/def-store/terms/{term_id}"
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=self._get_headers())
+
+                if response.status_code == 404:
+                    return None
+
+                if response.status_code != 200:
+                    raise DefStoreError(
+                        f"Failed to get term: {response.status_code} - {response.text}"
+                    )
+
+                return response.json()
+        except httpx.RequestError as e:
+            raise DefStoreError(f"Request failed: {str(e)}")
+
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
         try:

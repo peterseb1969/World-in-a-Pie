@@ -21,6 +21,7 @@ from .services.registry_client import configure_registry_client, get_registry_cl
 from .services.template_store_client import configure_template_store_client, get_template_store_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.nats_client import configure_nats_client, close_nats_client, health_check as nats_health_check
+from .services.integrity_service import check_all_documents, IntegrityCheckResult
 
 
 # Application configuration
@@ -114,6 +115,36 @@ async def lifespan(app: FastAPI):
             print("WARNING: NATS not available. Document events will not be published.")
     else:
         print("NATS_URL not configured. Document event publishing disabled.")
+
+    # Run startup integrity check (non-blocking, log warnings only)
+    # Only check template refs, skip term refs for faster startup
+    import logging
+    logger = logging.getLogger("document_store.startup")
+    try:
+        logger.info("Running startup integrity check...")
+        result = await check_all_documents(
+            status_filter="active",
+            limit=500,
+            check_term_refs=False  # Skip term refs for faster startup
+        )
+        if result.status == "healthy":
+            logger.info(f"Integrity check: OK ({result.summary.total_documents} documents checked)")
+        else:
+            logger.warning(f"Integrity check found {len(result.issues)} issues:")
+            # Group issues by type
+            issue_counts = {}
+            for issue in result.issues:
+                issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
+            for issue_type, count in issue_counts.items():
+                logger.warning(f"  - {issue_type}: {count}")
+            # Log first few specific issues
+            for issue in result.issues[:5]:
+                doc_id_short = issue.document_id[:12] if len(issue.document_id) > 12 else issue.document_id
+                logger.warning(f"  [{doc_id_short}...] {issue.field_path or 'template_id'}: {issue.message}")
+            if len(result.issues) > 5:
+                logger.warning(f"  ... and {len(result.issues) - 5} more issues")
+    except Exception as e:
+        logger.warning(f"Startup integrity check failed: {e}")
 
     yield
 
@@ -340,3 +371,36 @@ async def clear_caches():
     def_store_client.clear_cache()
 
     return {"status": "cleared"}
+
+
+# Integrity check endpoint
+@app.get("/health/integrity", tags=["Health"], response_model=IntegrityCheckResult)
+async def integrity_check(
+    status: str = None,
+    template_id: str = None,
+    limit: int = 1000,
+    check_term_refs: bool = True
+):
+    """
+    Check referential integrity of document references.
+
+    Scans documents for:
+    - Orphaned template references (referenced template not found)
+    - Orphaned term references (term_references pointing to missing terms)
+    - Inactive template references (referenced template is deprecated/inactive)
+
+    Args:
+        status: Filter documents by status ('active', 'inactive', 'archived')
+        template_id: Filter documents by template_id
+        limit: Maximum number of documents to check (default 1000)
+        check_term_refs: Whether to check term references (default true, can be slow)
+
+    Returns:
+        IntegrityCheckResult with status, summary, and list of issues
+    """
+    return await check_all_documents(
+        status_filter=status,
+        template_id_filter=template_id,
+        limit=limit,
+        check_term_refs=check_term_refs
+    )

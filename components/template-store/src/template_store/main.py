@@ -20,6 +20,7 @@ from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.nats_client import configure_nats_client, close_nats_client, health_check as nats_health_check
+from .services.integrity_service import check_all_templates, IntegrityCheckResult
 
 
 # Application configuration
@@ -97,6 +98,30 @@ async def lifespan(app: FastAPI):
             print("WARNING: NATS not available. Template events will not be published.")
     else:
         print("NATS_URL not configured. Template event publishing disabled.")
+
+    # Run startup integrity check (non-blocking, log warnings only)
+    import logging
+    logger = logging.getLogger("template_store.startup")
+    try:
+        logger.info("Running startup integrity check...")
+        result = await check_all_templates(status_filter="active", limit=500)
+        if result.status == "healthy":
+            logger.info(f"Integrity check: OK ({result.summary.total_templates} templates checked)")
+        else:
+            logger.warning(f"Integrity check found {len(result.issues)} issues:")
+            # Group issues by type
+            issue_counts = {}
+            for issue in result.issues:
+                issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
+            for issue_type, count in issue_counts.items():
+                logger.warning(f"  - {issue_type}: {count}")
+            # Log first few specific issues
+            for issue in result.issues[:5]:
+                logger.warning(f"  [{issue.template_code}] {issue.field_path or 'extends'}: {issue.message}")
+            if len(result.issues) > 5:
+                logger.warning(f"  ... and {len(result.issues) - 5} more issues")
+    except Exception as e:
+        logger.warning(f"Startup integrity check failed: {e}")
 
     yield
 
@@ -219,3 +244,27 @@ async def ready_check():
         return {"ready": True}
     except Exception:
         raise HTTPException(status_code=503, detail={"ready": False})
+
+
+# Integrity check endpoint
+@app.get("/health/integrity", tags=["Health"], response_model=IntegrityCheckResult)
+async def integrity_check(
+    status: str = None,
+    limit: int = 1000
+):
+    """
+    Check referential integrity of template references.
+
+    Scans all templates for:
+    - Orphaned terminology references (referenced terminology not found)
+    - Orphaned template references (extends, template_ref not found)
+    - Inactive references (referenced entity is deprecated/inactive)
+
+    Args:
+        status: Filter templates by status ('active', 'deprecated', 'inactive')
+        limit: Maximum number of templates to check (default 1000)
+
+    Returns:
+        IntegrityCheckResult with status, summary, and list of issues
+    """
+    return await check_all_templates(status_filter=status, limit=limit)

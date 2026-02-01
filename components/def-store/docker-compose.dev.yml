@@ -16,6 +16,8 @@ services:
       - DATABASE_NAME=wip_def_store_dev
       - REGISTRY_URL=http://wip-registry-dev:8001
       - REGISTRY_API_KEY=dev_master_key_for_testing
+      - TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
+      - TEMPLATE_STORE_API_KEY=dev_master_key_for_testing
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
       # Authentication - dual mode allows both API keys and JWT tokens

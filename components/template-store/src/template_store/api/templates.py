@@ -17,6 +17,7 @@ from ..models.api_models import (
 from ..services.template_service import TemplateService
 from ..services.registry_client import RegistryError
 from ..services.inheritance_service import InheritanceService, InheritanceError
+from ..services.dependency_service import DependencyService, TemplateDependencies
 from .auth import require_api_key
 
 
@@ -187,22 +188,77 @@ async def update_template(template_id: str, request: UpdateTemplateRequest):
         raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
 
 
+@router.get("/{template_id}/dependencies", response_model=TemplateDependencies)
+async def get_template_dependencies(template_id: str):
+    """
+    Get dependencies of a template.
+
+    Returns information about what depends on this template:
+    - Templates that extend it
+    - Documents that use it
+
+    Use this to check before deactivating a template.
+    """
+    try:
+        return await DependencyService.check_template_dependencies(template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.delete("/{template_id}")
 async def delete_template(
     template_id: str,
-    updated_by: Optional[str] = Query(None, description="User performing deletion")
+    updated_by: Optional[str] = Query(None, description="User performing deletion"),
+    force: bool = Query(False, description="Force deletion even if documents exist")
 ):
     """
     Soft-delete a template.
 
     Sets the template status to 'inactive'. Cannot delete templates that
     have other templates extending them.
+
+    If documents exist that use this template, returns a warning unless force=true.
+    Use GET /{template_id}/dependencies to check dependencies first.
     """
     try:
+        # Check dependencies first
+        deps = await DependencyService.check_template_dependencies(template_id)
+
+        # Block if child templates exist
+        if deps.child_template_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Cannot deactivate: template has children",
+                    "message": deps.warning_message,
+                    "child_count": deps.child_template_count,
+                    "children": deps.child_templates
+                }
+            )
+
+        # Warn if documents exist (unless force)
+        if deps.document_count > 0 and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Template has dependent documents",
+                    "message": deps.warning_message,
+                    "document_count": deps.document_count,
+                    "hint": "Use force=true to deactivate anyway"
+                }
+            )
+
         deleted = await TemplateService.delete_template(template_id, updated_by)
         if not deleted:
             raise HTTPException(status_code=404, detail="Template not found")
-        return {"status": "deleted", "template_id": template_id}
+
+        response = {"status": "deleted", "template_id": template_id}
+        if deps.document_count > 0:
+            response["warning"] = f"{deps.document_count} documents still reference this template"
+
+        return response
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

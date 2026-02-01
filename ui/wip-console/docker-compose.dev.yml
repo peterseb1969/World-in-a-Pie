@@ -35,6 +35,8 @@ services:
       - VITE_TEMPLATE_STORE_TARGET=http://wip-template-store-dev:8003
       # Connect to document-store container by name on shared network
       - VITE_DOCUMENT_STORE_TARGET=http://wip-document-store-dev:8004
+      # Connect to reporting-sync container by name on shared network
+      - VITE_REPORTING_SYNC_TARGET=http://wip-reporting-sync-dev:8005
       # Dex target for Vite proxy (container-to-container)
       - VITE_DEX_TARGET=${VITE_DEX_TARGET:-http://wip-dex:5556}
       # OIDC configuration - uses /dex proxy to avoid CORS issues

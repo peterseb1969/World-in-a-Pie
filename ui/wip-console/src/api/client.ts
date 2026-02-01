@@ -473,12 +473,75 @@ class DocumentStoreClient extends BaseApiClient {
 }
 
 // =============================================================================
+// REPORTING-SYNC CLIENT (Integrity & Metrics)
+// =============================================================================
+
+// Integrity check types
+export interface IntegrityIssue {
+  type: string
+  severity: string
+  source: string
+  entity_id: string
+  entity_code: string | null
+  field_path: string | null
+  reference: string
+  message: string
+}
+
+export interface IntegritySummary {
+  total_templates: number
+  total_documents: number
+  templates_with_issues: number
+  documents_with_issues: number
+  orphaned_terminology_refs: number
+  orphaned_template_refs: number
+  orphaned_term_refs: number
+  inactive_refs: number
+}
+
+export interface IntegrityCheckResult {
+  status: 'healthy' | 'warning' | 'error' | 'partial'
+  checked_at: string
+  services_checked: string[]
+  services_unavailable: string[]
+  summary: IntegritySummary
+  issues: IntegrityIssue[]
+}
+
+class ReportingSyncClient extends BaseApiClient {
+  constructor() {
+    super('/api/reporting-sync')
+  }
+
+  async getIntegrityCheck(params?: {
+    template_status?: string
+    document_status?: string
+    template_limit?: number
+    document_limit?: number
+    check_term_refs?: boolean
+  }): Promise<IntegrityCheckResult> {
+    const response = await this.client.get<IntegrityCheckResult>('/health/integrity', { params })
+    return response.data
+  }
+
+  async healthCheck(): Promise<boolean> {
+    try {
+      const response = await this.client.get('/health')
+      return response.status === 200
+    } catch {
+      return false
+    }
+  }
+}
+
+// =============================================================================
 // EXPORTS
 // =============================================================================
 
 export const defStoreClient = new DefStoreClient()
 export const templateStoreClient = new TemplateStoreClient()
 export const documentStoreClient = new DocumentStoreClient()
+export const reportingSyncClient = new ReportingSyncClient()
 
 // Default export for backward compatibility
 export default defStoreClient

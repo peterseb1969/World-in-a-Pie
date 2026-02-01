@@ -8,12 +8,15 @@ The actual sync work is done by the worker module.
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
+import httpx
 import nats
 from fastapi import FastAPI, HTTPException
 from nats.js import JetStreamContext
+from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import settings
@@ -616,6 +619,204 @@ async def clear_completed_jobs() -> dict[str, Any]:
     return {"cleared": count}
 
 
+# =============================================================================
+# INTEGRITY CHECK ENDPOINTS
+# =============================================================================
+
+
+class IntegrityIssue(BaseModel):
+    """A single referential integrity issue."""
+
+    type: str
+    severity: str
+    source: str = Field(..., description="Source service (template-store or document-store)")
+    entity_id: str = Field(..., description="ID of the entity with the issue")
+    entity_code: str | None = Field(None, description="Code of the entity (if applicable)")
+    field_path: str | None = Field(None, description="Field path")
+    reference: str
+    message: str
+
+
+class IntegritySummary(BaseModel):
+    """Summary of aggregated integrity check results."""
+
+    total_templates: int = 0
+    total_documents: int = 0
+    templates_with_issues: int = 0
+    documents_with_issues: int = 0
+    orphaned_terminology_refs: int = 0
+    orphaned_template_refs: int = 0
+    orphaned_term_refs: int = 0
+    inactive_refs: int = 0
+
+
+class AggregatedIntegrityResult(BaseModel):
+    """Aggregated integrity check result from all services."""
+
+    status: str = Field(
+        ...,
+        description="Overall status: healthy, warning, error, partial (if some services unreachable)"
+    )
+    checked_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+    services_checked: list[str] = Field(default_factory=list)
+    services_unavailable: list[str] = Field(default_factory=list)
+    summary: IntegritySummary = Field(default_factory=IntegritySummary)
+    issues: list[IntegrityIssue] = Field(default_factory=list)
+
+
+@app.get("/health/integrity", response_model=AggregatedIntegrityResult)
+async def aggregated_integrity_check(
+    template_status: str = None,
+    document_status: str = None,
+    template_limit: int = 1000,
+    document_limit: int = 1000,
+    check_term_refs: bool = True,
+) -> AggregatedIntegrityResult:
+    """
+    Aggregated referential integrity check across all services.
+
+    Calls Template Store and Document Store integrity endpoints and combines results.
+
+    This endpoint provides a unified view of data quality issues:
+    - Orphaned terminology references (templates referencing missing terminologies)
+    - Orphaned template references (documents referencing missing templates)
+    - Orphaned term references (documents with term_references to missing terms)
+    - Inactive references (references to deprecated/inactive entities)
+
+    Args:
+        template_status: Filter templates by status ('active', 'deprecated', 'inactive')
+        document_status: Filter documents by status ('active', 'inactive', 'archived')
+        template_limit: Maximum templates to check (default 1000)
+        document_limit: Maximum documents to check (default 1000)
+        check_term_refs: Whether to check term references in documents (default true)
+
+    Returns:
+        Aggregated integrity check results from all services
+    """
+    services_checked = []
+    services_unavailable = []
+    all_issues: list[IntegrityIssue] = []
+    summary = IntegritySummary()
+
+    # Check Template Store
+    template_store_url = settings.template_store_url
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            params = {"limit": template_limit}
+            if template_status:
+                params["status"] = template_status
+
+            response = await client.get(
+                f"{template_store_url}/health/integrity",
+                params=params,
+                headers={"X-API-Key": settings.api_key},
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                services_checked.append("template-store")
+
+                # Extract summary
+                ts_summary = data.get("summary", {})
+                summary.total_templates = ts_summary.get("total_templates", 0)
+                summary.templates_with_issues = ts_summary.get("templates_with_issues", 0)
+                summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
+                summary.inactive_refs += ts_summary.get("inactive_terminology_refs", 0)
+                summary.inactive_refs += ts_summary.get("inactive_template_refs", 0)
+
+                # Convert issues
+                for issue in data.get("issues", []):
+                    all_issues.append(IntegrityIssue(
+                        type=issue.get("type"),
+                        severity=issue.get("severity", "warning"),
+                        source="template-store",
+                        entity_id=issue.get("template_id"),
+                        entity_code=issue.get("template_code"),
+                        field_path=issue.get("field_path"),
+                        reference=issue.get("reference"),
+                        message=issue.get("message"),
+                    ))
+            else:
+                logger.warning(f"Template Store integrity check failed: {response.status_code}")
+                services_unavailable.append("template-store")
+    except Exception as e:
+        logger.error(f"Failed to reach Template Store for integrity check: {e}")
+        services_unavailable.append("template-store")
+
+    # Check Document Store
+    document_store_url = settings.document_store_url
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:  # Longer timeout for documents
+            params = {"limit": document_limit, "check_term_refs": check_term_refs}
+            if document_status:
+                params["status"] = document_status
+
+            response = await client.get(
+                f"{document_store_url}/health/integrity",
+                params=params,
+                headers={"X-API-Key": settings.api_key},
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                services_checked.append("document-store")
+
+                # Extract summary
+                ds_summary = data.get("summary", {})
+                summary.total_documents = ds_summary.get("total_documents", 0)
+                summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
+                summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
+                summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
+                summary.inactive_refs += ds_summary.get("inactive_template_refs", 0)
+
+                # Convert issues
+                for issue in data.get("issues", []):
+                    all_issues.append(IntegrityIssue(
+                        type=issue.get("type"),
+                        severity=issue.get("severity", "warning"),
+                        source="document-store",
+                        entity_id=issue.get("document_id"),
+                        entity_code=None,
+                        field_path=issue.get("field_path"),
+                        reference=issue.get("reference"),
+                        message=issue.get("message"),
+                    ))
+            else:
+                logger.warning(f"Document Store integrity check failed: {response.status_code}")
+                services_unavailable.append("document-store")
+    except Exception as e:
+        logger.error(f"Failed to reach Document Store for integrity check: {e}")
+        services_unavailable.append("document-store")
+
+    # Determine overall status
+    has_errors = any(i.severity == "error" for i in all_issues)
+    has_warnings = any(i.severity == "warning" for i in all_issues)
+
+    if services_unavailable:
+        if services_checked:
+            # Partial check
+            status = "partial"
+        else:
+            # No services reachable
+            status = "error"
+    elif has_errors:
+        status = "error"
+    elif has_warnings:
+        status = "warning"
+    else:
+        status = "healthy"
+
+    return AggregatedIntegrityResult(
+        status=status,
+        services_checked=services_checked,
+        services_unavailable=services_unavailable,
+        summary=summary,
+        issues=all_issues,
+    )
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -625,6 +826,7 @@ async def root():
         "docs": "/docs",
         "health": "/health",
         "status": "/status",
+        "integrity": "/health/integrity",
     }
 
 

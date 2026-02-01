@@ -12,6 +12,7 @@ from ..models.api_models import (
 )
 from ..services.terminology_service import TerminologyService
 from ..services.registry_client import RegistryError
+from ..services.dependency_service import DependencyService, TerminologyDependencies
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -113,22 +114,74 @@ async def update_terminology(
         raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
 
 
+@router.get(
+    "/{terminology_id}/dependencies",
+    response_model=TerminologyDependencies,
+    summary="Get terminology dependencies"
+)
+async def get_terminology_dependencies(
+    terminology_id: str,
+    api_key: str = Depends(require_api_key)
+) -> TerminologyDependencies:
+    """
+    Get dependencies of a terminology.
+
+    Returns information about what depends on this terminology:
+    - Templates that reference it via terminology_ref fields
+
+    Use this to check before deactivating a terminology.
+    """
+    try:
+        return await DependencyService.check_terminology_dependencies(terminology_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @router.delete("/{terminology_id}", summary="Delete a terminology")
 async def delete_terminology(
     terminology_id: str,
     updated_by: Optional[str] = Query(None, description="User performing deletion"),
+    force: bool = Query(False, description="Force deletion even if templates reference it"),
     api_key: str = Depends(require_api_key)
 ) -> dict:
     """
     Soft-delete a terminology (set status to inactive).
 
     All terms in the terminology will also be deactivated.
-    """
-    success = await TerminologyService.delete_terminology(
-        terminology_id=terminology_id,
-        updated_by=updated_by
-    )
-    if not success:
-        raise HTTPException(status_code=404, detail="Terminology not found")
 
-    return {"status": "deleted", "terminology_id": terminology_id}
+    If templates reference this terminology, returns a warning unless force=true.
+    Use GET /{terminology_id}/dependencies to check dependencies first.
+    """
+    try:
+        # Check dependencies first
+        deps = await DependencyService.check_terminology_dependencies(terminology_id)
+
+        # Warn if templates reference this (unless force)
+        if deps.template_count > 0 and not force:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "Terminology has dependent templates",
+                    "message": deps.warning_message,
+                    "template_count": deps.template_count,
+                    "templates": deps.templates,
+                    "hint": "Use force=true to deactivate anyway"
+                }
+            )
+
+        success = await TerminologyService.delete_terminology(
+            terminology_id=terminology_id,
+            updated_by=updated_by
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Terminology not found")
+
+        response = {"status": "deleted", "terminology_id": terminology_id}
+        if deps.template_count > 0:
+            response["warning"] = f"{deps.template_count} templates still reference this terminology"
+
+        return response
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
