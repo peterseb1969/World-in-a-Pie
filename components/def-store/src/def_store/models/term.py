@@ -48,6 +48,10 @@ class Term(Document):
         ...,
         description="ID of the parent terminology (e.g., TERM-000001)"
     )
+    terminology_code: Optional[str] = Field(
+        None,
+        description="Code of the parent terminology (e.g., 'GENDER'). Denormalized for efficient lookups."
+    )
 
     # Human-friendly identifier (mutable, unique within terminology)
     code: str = Field(

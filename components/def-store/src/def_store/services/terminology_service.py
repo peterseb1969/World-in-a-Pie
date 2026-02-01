@@ -303,6 +303,7 @@ class TerminologyService:
         term = Term(
             term_id=term_id,
             terminology_id=terminology_id,
+            terminology_code=terminology.code,
             code=request.code,
             value=request.value,
             aliases=request.aliases,
@@ -401,6 +402,7 @@ class TerminologyService:
             term = Term(
                 term_id=term_id,
                 terminology_id=terminology_id,
+                terminology_code=terminology.code,
                 code=term_req.code,
                 value=term_req.value,
                 aliases=term_req.aliases,
@@ -793,6 +795,7 @@ class TerminologyService:
         return TermResponse(
             term_id=t.term_id,
             terminology_id=t.terminology_id,
+            terminology_code=t.terminology_code,
             code=t.code,
             value=t.value,
             aliases=t.aliases,

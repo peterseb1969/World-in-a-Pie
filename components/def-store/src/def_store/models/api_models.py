@@ -231,6 +231,7 @@ class TermResponse(BaseModel):
 
     term_id: str
     terminology_id: str
+    terminology_code: Optional[str] = None
     code: str
     value: str
     aliases: list[str] = []
