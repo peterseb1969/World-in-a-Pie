@@ -153,26 +153,34 @@ async function saveDocument() {
   try {
     if (isCreateMode.value) {
       // Create new document
-      const created = await documentStore.createDocument({
+      const result = await documentStore.createDocument({
         template_id: currentTemplate.value.template_id,
         data: formData.value
       })
       uiStore.showSuccess('Document Created', 'Document has been created successfully')
-      router.push(`/documents/${created.document_id}`)
+      router.push(`/documents/${result.document_id}`)
     } else {
-      // Update existing document (upsert - creates new version)
-      const updated = await documentStore.updateDocument(
+      // Update existing document (upsert - creates new version if data changed)
+      const result = await documentStore.updateDocument(
         currentTemplate.value.template_id,
         formData.value
       )
-      uiStore.showSuccess('Document Updated', 'A new version has been created')
-      // Navigate to the new document version if ID changed
-      if (updated.document_id !== props.id) {
-        router.push(`/documents/${updated.document_id}`)
+
+      // Check if anything actually changed
+      if (result.previous_version === null && !result.is_new) {
+        // No changes were made
+        uiStore.showInfo('No Changes', 'Document was not modified - no new version created')
       } else {
-        // Reload version history
-        await loadVersionHistory()
+        // A new version was created
+        uiStore.showSuccess('Document Updated', `New version ${result.version} created`)
+        // Navigate to the new document version if ID changed
+        if (result.document_id !== props.id) {
+          router.push(`/documents/${result.document_id}`)
+          return
+        }
       }
+      // Reload version history
+      await loadVersionHistory()
     }
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : 'Unknown error'

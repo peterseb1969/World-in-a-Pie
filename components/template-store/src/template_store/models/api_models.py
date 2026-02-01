@@ -138,6 +138,22 @@ class TemplateListResponse(BaseModel):
     page_size: int = 50
 
 
+class TemplateUpdateResponse(BaseModel):
+    """Response after updating a template."""
+
+    template_id: str
+    code: str
+    version: int
+    is_new_version: bool = Field(
+        ...,
+        description="True if a new version was created, False if unchanged"
+    )
+    previous_version: Optional[int] = Field(
+        None,
+        description="Previous version number if a new version was created"
+    )
+
+
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================

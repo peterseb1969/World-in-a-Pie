@@ -215,6 +215,14 @@ export interface TemplateListResponse {
   page_size: number
 }
 
+export interface TemplateUpdateResponse {
+  template_id: string
+  code: string
+  version: number
+  is_new_version: boolean
+  previous_version: number | null
+}
+
 // =============================================================================
 // BULK OPERATION TYPES
 // =============================================================================

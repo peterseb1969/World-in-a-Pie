@@ -4,6 +4,7 @@ import { documentStoreClient, templateStoreClient, defStoreClient } from '@/api/
 import type {
   Document,
   CreateDocumentRequest,
+  DocumentCreateResponse,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
@@ -72,14 +73,16 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function createDocument(data: CreateDocumentRequest) {
+  async function createDocument(data: CreateDocumentRequest): Promise<DocumentCreateResponse> {
     loading.value = true
     error.value = null
     try {
-      const created = await documentStoreClient.createDocument(data)
-      documents.value.unshift(created)
-      total.value++
-      return created
+      const result = await documentStoreClient.createDocument(data)
+      // Don't add to documents array - the view will navigate and fetch the full document
+      if (result.is_new) {
+        total.value++
+      }
+      return result
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to create document'
       throw e
@@ -88,22 +91,14 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function updateDocument(templateId: string, data: Record<string, unknown>) {
+  async function updateDocument(templateId: string, data: Record<string, unknown>): Promise<DocumentCreateResponse> {
     loading.value = true
     error.value = null
     try {
       // Document Store uses upsert - POST with same identity fields creates a new version
-      const updated = await documentStoreClient.updateDocument(templateId, data)
-      // The updated document may have a new ID (new version), so refresh the list
-      const oldId = currentDocument.value?.document_id
-      if (oldId) {
-        const index = documents.value.findIndex(d => d.document_id === oldId)
-        if (index !== -1) {
-          documents.value[index] = updated
-        }
-      }
-      currentDocument.value = updated
-      return updated
+      const result = await documentStoreClient.updateDocument(templateId, data)
+      // Don't update documents array here - let the view handle navigation/refresh
+      return result
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update document'
       throw e

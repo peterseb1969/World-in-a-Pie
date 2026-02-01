@@ -8,6 +8,7 @@ from ..models.api_models import (
     CreateTemplateRequest,
     UpdateTemplateRequest,
     TemplateResponse,
+    TemplateUpdateResponse,
     TemplateListResponse,
     BulkCreateTemplateRequest,
     BulkOperationResponse,
@@ -165,7 +166,7 @@ async def get_template_by_code_and_version(code: str, version: int):
     return template
 
 
-@router.put("/{template_id}", response_model=TemplateResponse)
+@router.put("/{template_id}", response_model=TemplateUpdateResponse)
 async def update_template(template_id: str, request: UpdateTemplateRequest):
     """
     Update a template by creating a new version.
@@ -175,13 +176,22 @@ async def update_template(template_id: str, request: UpdateTemplateRequest):
     to continue referencing it. This supports gradual migration scenarios where
     different systems may use different template versions.
 
-    Returns the newly created template version.
+    If no changes are detected, returns the current template info without
+    creating a new version.
+
+    Returns:
+        TemplateUpdateResponse with:
+        - template_id: The ID of the template (new if changed, existing if unchanged)
+        - code: The template code
+        - version: The version number
+        - is_new_version: True if a new version was created
+        - previous_version: Previous version number if created, None if unchanged
     """
     try:
-        template = await TemplateService.update_template(template_id, request)
-        if not template:
+        result = await TemplateService.update_template(template_id, request)
+        if not result:
             raise HTTPException(status_code=404, detail="Template not found")
-        return template
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:

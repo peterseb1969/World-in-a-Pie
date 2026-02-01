@@ -203,12 +203,20 @@ async function saveTemplate() {
         },
         reporting: reportingConfig
       }
-      await templateStore.updateTemplate(props.id, updateData)
-      uiStore.showSuccess('Template Updated', `Template "${form.value.name}" has been saved`)
+      const result = await templateStore.updateTemplate(props.id, updateData)
+
+      if (result.is_new_version) {
+        uiStore.showSuccess('Template Updated', `New version ${result.version} created`)
+        // Navigate to the new template version
+        router.push(`/templates/${result.template_id}`)
+      } else {
+        uiStore.showInfo('No Changes', 'Template was not modified - no new version created')
+      }
       isEditing.value = false
 
-      // Reload to get updated resolved view
-      await templateStore.fetchTemplateWithRaw(props.id)
+      // Reload to get updated resolved view (use new ID if created)
+      const templateId = result.is_new_version ? result.template_id : props.id
+      await templateStore.fetchTemplateWithRaw(templateId)
       if (templateStore.currentTemplateRaw) {
         resetForm(templateStore.currentTemplateRaw)
       }

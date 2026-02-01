@@ -223,6 +223,44 @@ class DocumentService:
         except RegistryError as e:
             return None, f"Failed to generate document ID: {str(e)}"
 
+    def _data_has_changed(
+        self,
+        existing: Document,
+        new_data: dict[str, Any],
+        new_term_references: list[dict[str, Any]],
+        new_references: list[dict[str, Any]]
+    ) -> bool:
+        """
+        Check if document data has changed.
+
+        Compares the data, term_references, and references to determine
+        if a new version should be created.
+        """
+        import json
+
+        # Compare data (use JSON serialization for consistent comparison)
+        existing_data_json = json.dumps(existing.data, sort_keys=True, default=str)
+        new_data_json = json.dumps(new_data, sort_keys=True, default=str)
+
+        if existing_data_json != new_data_json:
+            return True
+
+        # Compare term_references
+        existing_term_refs_json = json.dumps(existing.term_references, sort_keys=True, default=str)
+        new_term_refs_json = json.dumps(new_term_references, sort_keys=True, default=str)
+
+        if existing_term_refs_json != new_term_refs_json:
+            return True
+
+        # Compare references
+        existing_refs_json = json.dumps(existing.references, sort_keys=True, default=str)
+        new_refs_json = json.dumps(new_references, sort_keys=True, default=str)
+
+        if existing_refs_json != new_refs_json:
+            return True
+
+        return False
+
     async def _create_new_version(
         self,
         request: DocumentCreateRequest,
@@ -230,6 +268,24 @@ class DocumentService:
         validation_result: Any
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a new version of an existing document."""
+        # Check if data has actually changed
+        if not self._data_has_changed(
+            existing,
+            request.data,
+            validation_result.term_references,
+            validation_result.references
+        ):
+            # No change - return existing document info without creating new version
+            return DocumentCreateResponse(
+                document_id=existing.document_id,
+                template_id=existing.template_id,
+                identity_hash=existing.identity_hash,
+                version=existing.version,
+                is_new=False,
+                previous_version=None,  # No previous version because nothing changed
+                warnings=validation_result.warnings
+            ), None
+
         try:
             # Get authenticated identity (not client-provided)
             actor = get_identity_string()
@@ -620,6 +676,7 @@ class DocumentService:
         results: list[BulkCreateResult] = []
         created = 0
         updated = 0
+        unchanged = 0
         failed = 0
 
         # Stage 1: Validate all documents
@@ -654,7 +711,7 @@ class DocumentService:
                         self._record_creation_timing(timing)
                         return BulkCreateResponse(
                             total=len(request.items),
-                            created=0, updated=0, failed=failed,
+                            created=0, updated=0, unchanged=0, failed=failed,
                             results=sorted(results, key=lambda r: r.index)
                         )
             except Exception as e:
@@ -672,7 +729,7 @@ class DocumentService:
                     self._record_creation_timing(timing)
                     return BulkCreateResponse(
                         total=len(request.items),
-                        created=0, updated=0, failed=failed,
+                        created=0, updated=0, unchanged=0, failed=failed,
                         results=sorted(results, key=lambda r: r.index)
                     )
 
@@ -683,7 +740,7 @@ class DocumentService:
             self._record_creation_timing(timing)
             return BulkCreateResponse(
                 total=len(request.items),
-                created=0, updated=0, failed=failed,
+                created=0, updated=0, unchanged=0, failed=failed,
                 results=sorted(results, key=lambda r: r.index)
             )
 
@@ -730,7 +787,7 @@ class DocumentService:
             self._record_creation_timing(timing)
             return BulkCreateResponse(
                 total=len(request.items),
-                created=0, updated=0, failed=failed,
+                created=0, updated=0, unchanged=0, failed=failed,
                 results=sorted(results, key=lambda r: r.index)
             )
 
@@ -757,6 +814,26 @@ class DocumentService:
                 existing = existing_by_hash.get(identity_hash)
 
                 if existing:
+                    # Check if data has actually changed
+                    if not self._data_has_changed(
+                        existing,
+                        item.data,
+                        validation_result.term_references,
+                        validation_result.references
+                    ):
+                        # No change - return existing document info without creating new version
+                        unchanged += 1
+                        results.append(BulkCreateResult(
+                            index=i,
+                            status="unchanged",
+                            document_id=existing.document_id,
+                            identity_hash=identity_hash,
+                            version=existing.version,
+                            is_new=False,
+                            warnings=validation_result.warnings
+                        ))
+                        continue
+
                     # Deactivate old version
                     existing.status = DocumentStatus.INACTIVE
                     existing.updated_at = now
@@ -839,6 +916,7 @@ class DocumentService:
             total=len(request.items),
             created=created,
             updated=updated,
+            unchanged=unchanged,
             failed=failed,
             results=sorted(results, key=lambda r: r.index)
         )

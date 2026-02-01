@@ -121,6 +121,42 @@ function handleTermInput(value: string | null) {
   emit('update:modelValue', value)
 }
 
+function handleReferenceInput(value: string | undefined) {
+  emit('update:modelValue', value || null)
+}
+
+// Reference field helper text
+const referenceHelpText = computed(() => {
+  if (props.field.type !== 'reference') return ''
+
+  const refType = props.field.reference_type
+  switch (refType) {
+    case 'document':
+      return 'Enter document ID, hash:identity_hash, or business key'
+    case 'term':
+      return 'Enter term ID (e.g., T-000001)'
+    case 'terminology':
+      return 'Enter terminology ID (e.g., TERM-000001)'
+    case 'template':
+      return 'Enter template ID (e.g., TPL-000001)'
+    default:
+      return 'Enter reference value'
+  }
+})
+
+const referenceTargetInfo = computed(() => {
+  if (props.field.type !== 'reference') return ''
+
+  const refType = props.field.reference_type
+  if (refType === 'document' && props.field.target_templates?.length) {
+    return `Allowed templates: ${props.field.target_templates.join(', ')}`
+  }
+  if (refType === 'term' && props.field.target_terminologies?.length) {
+    return `Allowed terminologies: ${props.field.target_terminologies.join(', ')}`
+  }
+  return ''
+})
+
 // Array field handlers
 function addArrayItem() {
   const newArray = [...arrayValue.value]
@@ -150,6 +186,7 @@ function getDefaultValueForType(type: string): unknown {
     case 'date': return null
     case 'datetime': return null
     case 'term': return null
+    case 'reference': return null
     case 'object': return {}
     case 'array': return []
     default: return null
@@ -164,6 +201,11 @@ const arrayItemField = computed((): FieldDefinition => ({
   mandatory: false,
   terminology_ref: props.field.array_terminology_ref,
   template_ref: props.field.array_template_ref,
+  // Pass through reference-related properties for array items
+  reference_type: props.field.reference_type,
+  target_templates: props.field.target_templates,
+  target_terminologies: props.field.target_terminologies,
+  version_strategy: props.field.version_strategy,
   metadata: {}
 }))
 
@@ -309,6 +351,31 @@ onMounted(() => {
       </small>
     </template>
 
+    <!-- Reference field -->
+    <template v-else-if="field.type === 'reference'">
+      <div class="reference-field">
+        <InputText
+          :modelValue="(modelValue as string) || ''"
+          @update:modelValue="handleReferenceInput"
+          :disabled="disabled"
+          :placeholder="referenceHelpText"
+          class="w-full"
+        />
+        <div class="reference-info">
+          <small class="reference-type">
+            <i class="pi pi-link"></i>
+            {{ field.reference_type || 'document' }} reference
+          </small>
+          <small v-if="referenceTargetInfo" class="reference-targets">
+            {{ referenceTargetInfo }}
+          </small>
+          <small v-if="field.version_strategy" class="reference-strategy">
+            Strategy: {{ field.version_strategy }}
+          </small>
+        </div>
+      </div>
+    </template>
+
     <!-- Object field (nested) -->
     <template v-else-if="field.type === 'object'">
       <div class="object-field">
@@ -412,6 +479,42 @@ onMounted(() => {
 .terminology-ref {
   color: var(--p-text-muted-color);
   font-size: 0.75rem;
+}
+
+.reference-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.reference-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.reference-type {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+}
+
+.reference-type i {
+  font-size: 0.7rem;
+}
+
+.reference-targets {
+  color: var(--p-primary-color);
+  font-size: 0.75rem;
+}
+
+.reference-strategy {
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+  font-style: italic;
 }
 
 .object-field {

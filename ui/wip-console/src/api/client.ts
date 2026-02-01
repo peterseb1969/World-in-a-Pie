@@ -23,6 +23,7 @@ import type {
   TemplateListResponse,
   CreateTemplateRequest,
   UpdateTemplateRequest,
+  TemplateUpdateResponse,
   BulkCreateTemplateRequest,
   TemplateBulkOperationResponse,
   ValidateTemplateRequest,
@@ -31,6 +32,7 @@ import type {
   Document,
   DocumentListResponse,
   CreateDocumentRequest,
+  DocumentCreateResponse,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
@@ -320,8 +322,8 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<Template> {
-    const response = await this.client.put<Template>(`/templates/${id}`, data)
+  async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<TemplateUpdateResponse> {
+    const response = await this.client.put<TemplateUpdateResponse>(`/templates/${id}`, data)
     return response.data
   }
 
@@ -388,14 +390,14 @@ class DocumentStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async createDocument(data: CreateDocumentRequest): Promise<Document> {
-    const response = await this.client.post<Document>('/documents', data)
+  async createDocument(data: CreateDocumentRequest): Promise<DocumentCreateResponse> {
+    const response = await this.client.post<DocumentCreateResponse>('/documents', data)
     return response.data
   }
 
-  async updateDocument(templateId: string, data: Record<string, unknown>): Promise<Document> {
+  async updateDocument(templateId: string, data: Record<string, unknown>): Promise<DocumentCreateResponse> {
     // Document Store uses upsert - POST with same identity fields creates a new version
-    const response = await this.client.post<Document>('/documents', {
+    const response = await this.client.post<DocumentCreateResponse>('/documents', {
       template_id: templateId,
       data: data
     })

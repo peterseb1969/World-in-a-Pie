@@ -8,6 +8,7 @@ from ..models.api_models import (
     CreateTemplateRequest,
     UpdateTemplateRequest,
     TemplateResponse,
+    TemplateUpdateResponse,
     BulkOperationResult,
     ValidateTemplateResponse,
     ValidationError,
@@ -290,10 +291,89 @@ class TemplateService:
         return TemplateService._to_template_response(template)
 
     @staticmethod
+    def _template_has_changed(
+        original: Template,
+        request: UpdateTemplateRequest
+    ) -> bool:
+        """
+        Check if the update request would change the template.
+
+        Compares all changeable fields between the original and the request.
+        """
+        import json
+
+        # Check each field that can be updated
+        if request.code is not None and request.code != original.code:
+            return True
+        if request.name is not None and request.name != original.name:
+            return True
+        if request.description is not None and request.description != original.description:
+            return True
+        if request.extends is not None and request.extends != original.extends:
+            return True
+        if request.identity_fields is not None:
+            if request.identity_fields != original.identity_fields:
+                return True
+
+        # Compare fields using JSON serialization
+        if request.fields is not None:
+            original_fields_json = json.dumps(
+                [f.model_dump() for f in original.fields],
+                sort_keys=True, default=str
+            )
+            new_fields_json = json.dumps(
+                [f.model_dump() for f in request.fields],
+                sort_keys=True, default=str
+            )
+            if original_fields_json != new_fields_json:
+                return True
+
+        # Compare rules using JSON serialization
+        if request.rules is not None:
+            original_rules_json = json.dumps(
+                [r.model_dump() for r in original.rules],
+                sort_keys=True, default=str
+            )
+            new_rules_json = json.dumps(
+                [r.model_dump() for r in request.rules],
+                sort_keys=True, default=str
+            )
+            if original_rules_json != new_rules_json:
+                return True
+
+        # Compare metadata
+        if request.metadata is not None:
+            original_meta_json = json.dumps(
+                original.metadata.model_dump() if original.metadata else {},
+                sort_keys=True, default=str
+            )
+            new_meta_json = json.dumps(
+                request.metadata.model_dump() if request.metadata else {},
+                sort_keys=True, default=str
+            )
+            if original_meta_json != new_meta_json:
+                return True
+
+        # Compare reporting config
+        if request.reporting is not None:
+            original_reporting_json = json.dumps(
+                original.reporting.model_dump() if original.reporting else {},
+                sort_keys=True, default=str
+            )
+            new_reporting_json = json.dumps(
+                request.reporting.model_dump() if request.reporting else {},
+                sort_keys=True, default=str
+            )
+            if original_reporting_json != new_reporting_json:
+                return True
+
+        return False
+
+    @staticmethod
     async def update_template(
         template_id: str,
         request: UpdateTemplateRequest
-    ) -> Optional[TemplateResponse]:
+    ) -> Optional[TemplateUpdateResponse]:
         """
         Update a template by creating a new version.
 
@@ -301,16 +381,30 @@ class TemplateService:
         modifying in-place. This allows multiple versions to exist simultaneously,
         supporting gradual migration of documents to new template versions.
 
+        If no changes are detected, returns the current template info without
+        creating a new version.
+
         Args:
             template_id: Template to update (any version)
             request: Update request
 
         Returns:
-            New template version, or None if original not found
+            Update response indicating if a new version was created, or None if not found
         """
         original = await Template.find_one({"template_id": template_id})
         if not original:
             return None
+
+        # Check if anything has actually changed
+        if not TemplateService._template_has_changed(original, request):
+            # No changes - return current template info
+            return TemplateUpdateResponse(
+                template_id=original.template_id,
+                code=original.code,
+                version=original.version,
+                is_new_version=False,
+                previous_version=None
+            )
 
         # Calculate new version number (max version for this code + 1)
         max_version_template = await Template.find(
@@ -387,7 +481,13 @@ class TemplateService:
             changed_by=actor
         )
 
-        return TemplateService._to_template_response(new_template)
+        return TemplateUpdateResponse(
+            template_id=new_template_id,
+            code=new_code,
+            version=new_version,
+            is_new_version=True,
+            previous_version=original.version
+        )
 
     @staticmethod
     async def delete_template(

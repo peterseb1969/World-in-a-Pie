@@ -76,6 +76,16 @@ export interface CreateDocumentRequest {
   }
 }
 
+export interface DocumentCreateResponse {
+  document_id: string
+  template_id: string
+  identity_hash: string
+  version: number
+  is_new: boolean
+  previous_version: number | null
+  warnings: string[]
+}
+
 export interface UpdateDocumentRequest {
   data?: Record<string, unknown>
   updated_by?: string

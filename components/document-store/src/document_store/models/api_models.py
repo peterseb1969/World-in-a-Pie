@@ -209,7 +209,7 @@ class BulkCreateResult(BaseModel):
     index: int
     status: str = Field(
         ...,
-        description="created, updated, or error"
+        description="created, updated, unchanged, skipped, or error"
     )
     document_id: Optional[str] = None
     identity_hash: Optional[str] = None
@@ -240,6 +240,7 @@ class BulkCreateResponse(BaseModel):
     total: int
     created: int
     updated: int
+    unchanged: int = 0
     failed: int
     results: list[BulkCreateResult]
 

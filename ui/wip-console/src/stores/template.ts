@@ -5,6 +5,7 @@ import type {
   Template,
   CreateTemplateRequest,
   UpdateTemplateRequest,
+  TemplateUpdateResponse,
   ValidateTemplateResponse,
   Terminology
 } from '@/types'
@@ -106,19 +107,24 @@ export const useTemplateStore = defineStore('template', () => {
     }
   }
 
-  async function updateTemplate(id: string, data: UpdateTemplateRequest) {
+  async function updateTemplate(id: string, data: UpdateTemplateRequest): Promise<TemplateUpdateResponse> {
     loading.value = true
     error.value = null
     try {
-      // Note: updateTemplate creates a NEW version with a NEW template_id
-      const newVersion = await templateStoreClient.updateTemplate(id, data)
-      // Add the new version to the list
-      templates.value.unshift(newVersion)
-      total.value++
-      // Update current template to point to the new version
-      currentTemplate.value = newVersion
-      currentTemplateRaw.value = newVersion
-      return newVersion
+      // Note: updateTemplate creates a NEW version with a NEW template_id if changed
+      const result = await templateStoreClient.updateTemplate(id, data)
+      // Only update the list if a new version was created
+      if (result.is_new_version) {
+        // Fetch the new template to add to the list
+        const newTemplate = await templateStoreClient.getTemplate(result.template_id)
+        if (newTemplate) {
+          templates.value.unshift(newTemplate)
+          total.value++
+          currentTemplate.value = newTemplate
+          currentTemplateRaw.value = newTemplate
+        }
+      }
+      return result
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to update template'
       throw e
