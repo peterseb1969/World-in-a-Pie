@@ -26,6 +26,9 @@
 
 set -e
 
+# Error handling - show where script failed
+trap 'log_error "Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -246,14 +249,23 @@ validate_config() {
 # Load profile configuration
 load_profile() {
     local profile_file="$PROJECT_ROOT/config/profiles/${PROFILE}.env"
-    log_debug "Loading profile from: $profile_file"
+    log_step "Loading profile from: $profile_file"
+
+    if [ ! -f "$profile_file" ]; then
+        log_error "Profile file not found: $profile_file"
+        log_error "Make sure you have pulled the latest code: git pull"
+        exit 1
+    fi
 
     # Source profile file
     set -a
-    source "$profile_file"
+    if ! source "$profile_file"; then
+        log_error "Failed to load profile file: $profile_file"
+        exit 1
+    fi
     set +a
 
-    log_debug "Profile: $WIP_PROFILE_DESCRIPTION"
+    log_info "Profile loaded: $WIP_PROFILE_DESCRIPTION"
     log_debug "MongoDB image: $WIP_MONGODB_IMAGE"
     log_debug "Include Dex: $WIP_INCLUDE_DEX"
     log_debug "Include Caddy: $WIP_INCLUDE_CADDY"
@@ -848,6 +860,7 @@ main() {
     echo "  Data dir: $WIP_DATA_DIR"
     echo ""
 
+    log_step "Starting setup..."
     load_profile
     select_compose_files
 
