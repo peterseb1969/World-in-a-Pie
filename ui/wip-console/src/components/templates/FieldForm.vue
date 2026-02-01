@@ -8,7 +8,8 @@ import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import Fieldset from 'primevue/fieldset'
 import type { FieldDefinition, Terminology, Template } from '@/types'
-import { FIELD_TYPES } from '@/types'
+import { FIELD_TYPES, REFERENCE_TYPES, VERSION_STRATEGIES } from '@/types'
+import MultiSelect from 'primevue/multiselect'
 
 const props = defineProps<{
   visible: boolean
@@ -31,6 +32,10 @@ const form = ref<FieldDefinition>({
   default_value: undefined,
   terminology_ref: undefined,
   template_ref: undefined,
+  reference_type: undefined,
+  target_templates: undefined,
+  target_terminologies: undefined,
+  version_strategy: undefined,
   array_item_type: undefined,
   array_terminology_ref: undefined,
   array_template_ref: undefined,
@@ -55,6 +60,10 @@ watch(() => props.visible, (visible) => {
         default_value: undefined,
         terminology_ref: undefined,
         template_ref: undefined,
+        reference_type: undefined,
+        target_templates: undefined,
+        target_terminologies: undefined,
+        version_strategy: undefined,
         array_item_type: undefined,
         array_terminology_ref: undefined,
         array_template_ref: undefined,
@@ -97,6 +106,13 @@ const currentTypeDescription = computed(() => {
 // Determine which reference fields to show based on type
 const showTerminologyRef = computed(() => form.value.type === 'term')
 const showTemplateRef = computed(() => form.value.type === 'object')
+const showReferenceConfig = computed(() => form.value.type === 'reference')
+const showTargetTemplates = computed(() =>
+  form.value.type === 'reference' && form.value.reference_type === 'document'
+)
+const showTargetTerminologies = computed(() =>
+  form.value.type === 'reference' && form.value.reference_type === 'term'
+)
 const showArrayConfig = computed(() => form.value.type === 'array')
 const showArrayTerminologyRef = computed(() =>
   form.value.type === 'array' && form.value.array_item_type === 'term'
@@ -105,10 +121,26 @@ const showArrayTemplateRef = computed(() =>
   form.value.type === 'array' && form.value.array_item_type === 'object'
 )
 
+// Options for target templates (by code for user-friendliness)
+const targetTemplateOptions = computed(() =>
+  props.templates.map(t => ({
+    label: `${t.name} (${t.code})`,
+    value: t.code
+  }))
+)
+
+// Options for target terminologies (by code)
+const targetTerminologyOptions = computed(() =>
+  props.terminologies.map(t => ({
+    label: `${t.name} (${t.code})`,
+    value: t.code
+  }))
+)
+
 // Whether to show the validation fieldset at all
 const showValidationSection = computed(() => {
   // Don't show validation for types that have their own validation mechanisms
-  const noValidationTypes = ['term', 'object', 'boolean', 'date', 'datetime']
+  const noValidationTypes = ['term', 'reference', 'object', 'boolean', 'date', 'datetime']
   if (noValidationTypes.includes(form.value.type)) return false
   if (form.value.type === 'array') {
     // For arrays, show validation if item type supports it
@@ -135,16 +167,32 @@ watch(() => form.value.type, (newType) => {
   if (newType !== 'object') {
     form.value.template_ref = undefined
   }
+  if (newType !== 'reference') {
+    form.value.reference_type = undefined
+    form.value.target_templates = undefined
+    form.value.target_terminologies = undefined
+    form.value.version_strategy = undefined
+  }
   if (newType !== 'array') {
     form.value.array_item_type = undefined
     form.value.array_terminology_ref = undefined
     form.value.array_template_ref = undefined
   }
   // Clear validation for types that don't support it
-  const noValidationTypes = ['term', 'object', 'boolean', 'date', 'datetime']
+  const noValidationTypes = ['term', 'reference', 'object', 'boolean', 'date', 'datetime']
   if (noValidationTypes.includes(newType)) {
     form.value.validation = undefined
     validationEnabled.value = false
+  }
+})
+
+// Clear target fields when reference type changes
+watch(() => form.value.reference_type, (newRefType) => {
+  if (newRefType !== 'document') {
+    form.value.target_templates = undefined
+  }
+  if (newRefType !== 'term') {
+    form.value.target_terminologies = undefined
   }
 })
 
@@ -342,6 +390,88 @@ function save() {
           <small v-else>Nested objects will follow this template's structure</small>
         </div>
       </div>
+
+      <!-- Reference configuration -->
+      <Fieldset v-if="showReferenceConfig" legend="Reference Configuration">
+        <div class="form-row">
+          <div class="form-field">
+            <label for="reference_type">Reference Type *</label>
+            <Select
+              id="reference_type"
+              v-model="form.reference_type"
+              :options="REFERENCE_TYPES"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Select what this field references"
+              class="w-full"
+            >
+              <template #option="{ option }">
+                <div class="type-option">
+                  <span class="type-label">{{ option.label }}</span>
+                  <span class="type-description">{{ option.description }}</span>
+                </div>
+              </template>
+            </Select>
+          </div>
+
+          <div class="form-field">
+            <label for="version_strategy">Version Strategy</label>
+            <Select
+              id="version_strategy"
+              v-model="form.version_strategy"
+              :options="VERSION_STRATEGIES"
+              optionLabel="label"
+              optionValue="value"
+              placeholder="Latest (default)"
+              class="w-full"
+            >
+              <template #option="{ option }">
+                <div class="type-option">
+                  <span class="type-label">{{ option.label }}</span>
+                  <span class="type-description">{{ option.description }}</span>
+                </div>
+              </template>
+            </Select>
+            <small>How to resolve reference versions over time</small>
+          </div>
+        </div>
+
+        <div class="form-field" v-if="showTargetTemplates">
+          <label for="target_templates">Target Templates *</label>
+          <MultiSelect
+            id="target_templates"
+            v-model="form.target_templates"
+            :options="targetTemplateOptions"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="Select allowed templates"
+            class="w-full"
+            display="chip"
+          />
+          <small v-if="targetTemplateOptions.length === 0" class="p-error">
+            No templates available. Create a template first.
+          </small>
+          <small v-else>Documents referenced must conform to one of these templates</small>
+        </div>
+
+        <div class="form-field" v-if="showTargetTerminologies">
+          <label for="target_terminologies">Target Terminologies *</label>
+          <MultiSelect
+            id="target_terminologies"
+            v-model="form.target_terminologies"
+            :options="targetTerminologyOptions"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="Select allowed terminologies"
+            class="w-full"
+            display="chip"
+          />
+          <small v-if="targetTerminologyOptions.length === 0" class="p-error">
+            No terminologies available. Create a terminology first.
+          </small>
+          <small v-else>Terms referenced must belong to one of these terminologies</small>
+        </div>
+      </Fieldset>
 
       <!-- Array configuration -->
       <Fieldset v-if="showArrayConfig" legend="Array Configuration">

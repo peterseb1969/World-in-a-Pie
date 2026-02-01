@@ -10,8 +10,12 @@ export type FieldType =
   | 'date'
   | 'datetime'
   | 'term'
+  | 'reference'
   | 'object'
   | 'array'
+
+export type ReferenceType = 'document' | 'term' | 'terminology' | 'template'
+export type VersionStrategy = 'latest' | 'pinned'
 
 export const FIELD_TYPES: { value: FieldType; label: string; description: string }[] = [
   { value: 'string', label: 'String', description: 'Free text value' },
@@ -21,8 +25,21 @@ export const FIELD_TYPES: { value: FieldType; label: string; description: string
   { value: 'date', label: 'Date', description: 'Date without time' },
   { value: 'datetime', label: 'DateTime', description: 'Date with time' },
   { value: 'term', label: 'Term (Controlled Vocabulary)', description: 'Value from a terminology - ensures data consistency' },
+  { value: 'reference', label: 'Reference', description: 'Reference to another entity (document, term, terminology, or template)' },
   { value: 'object', label: 'Object (Nested Template)', description: 'Structured data following another template' },
   { value: 'array', label: 'Array', description: 'List of values' }
+]
+
+export const REFERENCE_TYPES: { value: ReferenceType; label: string; description: string }[] = [
+  { value: 'document', label: 'Document', description: 'Reference to a document from specified templates' },
+  { value: 'term', label: 'Term', description: 'Reference to a term from specified terminologies' },
+  { value: 'terminology', label: 'Terminology', description: 'Reference to a terminology' },
+  { value: 'template', label: 'Template', description: 'Reference to a template' }
+]
+
+export const VERSION_STRATEGIES: { value: VersionStrategy; label: string; description: string }[] = [
+  { value: 'latest', label: 'Latest', description: 'Always resolve to the current active version' },
+  { value: 'pinned', label: 'Pinned', description: 'Lock to the specific version at creation time' }
 ]
 
 export interface FieldValidation {
@@ -40,8 +57,16 @@ export interface FieldDefinition {
   type: FieldType
   mandatory: boolean
   default_value?: unknown
+  // For term type (legacy)
   terminology_ref?: string
+  // For object type
   template_ref?: string
+  // For reference type
+  reference_type?: ReferenceType
+  target_templates?: string[]
+  target_terminologies?: string[]
+  version_strategy?: VersionStrategy
+  // For array type
   array_item_type?: FieldType
   array_terminology_ref?: string
   array_template_ref?: string

@@ -83,6 +83,7 @@ function getTypeSeverity(type: string): "success" | "info" | "warn" | "danger" |
     case 'datetime':
       return 'secondary'
     case 'term':
+    case 'reference':
       return 'contrast'
     case 'object':
     case 'array':
@@ -179,6 +180,18 @@ function getTemplateName(id: string | undefined): string {
           <div class="reference-info" v-else-if="data.type === 'object' && data.template_ref">
             <i class="pi pi-file-edit"></i>
             {{ getTemplateName(data.template_ref) }}
+          </div>
+          <div class="reference-info" v-else-if="data.type === 'reference'">
+            <i class="pi pi-link"></i>
+            <span v-if="data.reference_type === 'document'">
+              {{ data.target_templates?.join(', ') || 'document' }}
+            </span>
+            <span v-else-if="data.reference_type === 'term'">
+              {{ data.target_terminologies?.join(', ') || 'term' }}
+            </span>
+            <span v-else>
+              {{ data.reference_type }}
+            </span>
           </div>
           <div class="reference-info" v-else-if="data.type === 'array'">
             <span v-if="data.array_item_type === 'term' && data.array_terminology_ref">

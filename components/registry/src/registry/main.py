@@ -13,10 +13,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from .models.namespace import Namespace
+from .models.namespace import Namespace, IdGeneratorType
 from .models.entry import RegistryEntry
 from .api import api_router
 from .services.auth import AuthService
+from .services.id_generator import IdGeneratorService
 
 
 # Application configuration
@@ -31,6 +32,43 @@ class Settings:
 
 
 settings = Settings()
+
+
+async def initialize_prefixed_counters():
+    """
+    Initialize prefixed ID counters from existing entries in the database.
+
+    This ensures that after a restart, new IDs don't collide with existing ones.
+    """
+    # Find all namespaces with prefixed generators
+    namespaces = await Namespace.find(
+        {"id_generator.type": IdGeneratorType.PREFIXED}
+    ).to_list()
+
+    for ns in namespaces:
+        prefix = ns.id_generator.prefix or ""
+        namespace_id = ns.namespace_id
+        counter_key = f"{namespace_id}:{prefix}"
+
+        # Find the highest entry_id for this namespace
+        # Use find with sort and limit instead of aggregate
+        result = await RegistryEntry.find(
+            {"primary_namespace": namespace_id}
+        ).sort("-entry_id").limit(1).to_list()
+
+        if result:
+            # Extract the number from the entry_id (e.g., "TPL-000026" -> 26)
+            entry_id = result[0].entry_id
+            try:
+                # Remove prefix and parse number
+                number_str = entry_id[len(prefix):]
+                max_number = int(number_str)
+                IdGeneratorService._counters[counter_key] = max_number
+                print(f"Initialized counter for {namespace_id}: {entry_id} (counter={max_number})")
+            except (ValueError, IndexError) as e:
+                print(f"Warning: Could not parse entry_id {entry_id} for {namespace_id}: {e}")
+        else:
+            print(f"No existing entries for {namespace_id}, counter starts at 0")
 
 
 @asynccontextmanager
@@ -59,6 +97,9 @@ async def lifespan(app: FastAPI):
         print("Auth service initialized with master key.")
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
+
+    # Initialize prefixed ID counters from existing entries
+    await initialize_prefixed_counters()
 
     yield
 
