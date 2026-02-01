@@ -9,7 +9,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore } from '@/stores'
-import { reportingSyncClient, type IntegrityCheckResult, type IntegrityIssue } from '@/api/client'
+import { reportingSyncClient, type IntegrityCheckResult } from '@/api/client'
 import type { Terminology, Template } from '@/types'
 
 const router = useRouter()
@@ -145,23 +145,6 @@ function getIntegritySeverity(status: string): 'success' | 'warn' | 'danger' | '
     case 'error': return 'danger'
     case 'partial': return 'secondary'
     default: return 'secondary'
-  }
-}
-
-function getIssueSeverity(severity: string): 'success' | 'warn' | 'danger' | 'secondary' {
-  switch (severity) {
-    case 'error': return 'danger'
-    case 'warning': return 'warn'
-    case 'info': return 'secondary'
-    default: return 'secondary'
-  }
-}
-
-function navigateToIssue(issue: IntegrityIssue) {
-  if (issue.source === 'template-store') {
-    router.push(`/templates/${issue.entity_id}`)
-  } else if (issue.source === 'document-store') {
-    router.push(`/documents/${issue.entity_id}`)
   }
 }
 
@@ -357,34 +340,21 @@ watch(
                 </div>
               </div>
 
-              <!-- Issue breakdown -->
-              <div v-if="integrityResult.issues.length > 0" class="quality-issues">
-                <h4>Issues Found ({{ integrityResult.issues.length }})</h4>
-                <DataTable
-                  :value="integrityResult.issues.slice(0, 10)"
-                  size="small"
-                  @row-click="(e) => navigateToIssue(e.data)"
-                  class="clickable-rows"
-                  :pt="{ bodyRow: { style: 'cursor: pointer' } }"
-                >
-                  <Column field="type" header="Type" style="width: 180px">
-                    <template #body="{ data }">
-                      <Tag :severity="getIssueSeverity(data.severity)" size="small">
-                        {{ data.type.replace(/_/g, ' ') }}
-                      </Tag>
-                    </template>
-                  </Column>
-                  <Column field="entity_code" header="Entity" style="width: 120px">
-                    <template #body="{ data }">
-                      {{ data.entity_code || data.entity_id.substring(0, 12) }}
-                    </template>
-                  </Column>
-                  <Column field="field_path" header="Field" style="width: 120px" />
-                  <Column field="message" header="Message" />
-                </DataTable>
-                <div v-if="integrityResult.issues.length > 10" class="more-issues">
-                  ... and {{ integrityResult.issues.length - 10 }} more issues
-                </div>
+              <!-- Issue summary with link to Audit Trail -->
+              <div v-if="integrityResult.issues.length > 0" class="quality-issues-summary">
+                <Message severity="warn" :closable="false">
+                  <div class="issues-message">
+                    <span>{{ integrityResult.issues.length }} issue{{ integrityResult.issues.length !== 1 ? 's' : '' }} found</span>
+                    <Button
+                      label="View Details"
+                      icon="pi pi-arrow-right"
+                      iconPos="right"
+                      text
+                      size="small"
+                      @click="router.push('/audit')"
+                    />
+                  </div>
+                </Message>
               </div>
 
               <!-- All healthy -->
@@ -710,21 +680,15 @@ watch(
   color: var(--p-red-500);
 }
 
-.quality-issues h4 {
-  margin: 0 0 0.5rem 0;
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
+.quality-issues-summary :deep(.p-message) {
+  margin: 0;
 }
 
-.quality-issues :deep(.p-datatable) {
-  font-size: 0.875rem;
-}
-
-.more-issues {
-  text-align: center;
-  padding: 0.5rem;
-  color: var(--p-text-muted-color);
-  font-size: 0.875rem;
+.issues-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
 }
 
 .quality-healthy {

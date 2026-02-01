@@ -67,6 +67,16 @@ class TemplateService:
                 else:
                     raise ValueError(f"Parent template '{request.extends}' not found")
 
+        # Validate references if requested (default: True)
+        if request.validate_references:
+            validation_errors = await TemplateService._validate_field_references(
+                request.fields
+            )
+            if validation_errors:
+                raise ValueError(
+                    f"Invalid references: {'; '.join(validation_errors)}"
+                )
+
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
@@ -669,3 +679,72 @@ class TemplateService:
             updated_at=t.updated_at,
             updated_by=t.updated_by,
         )
+
+    @staticmethod
+    async def _validate_field_references(fields: list) -> list[str]:
+        """
+        Validate terminology_ref and template_ref values in fields.
+
+        Args:
+            fields: List of field definitions
+
+        Returns:
+            List of error messages for invalid references
+        """
+        errors = []
+        def_store = get_def_store_client()
+
+        for field in fields:
+            field_name = field.name if hasattr(field, 'name') else field.get('name', 'unknown')
+            field_type = field.type if hasattr(field, 'type') else field.get('type')
+
+            # Check terminology_ref for term fields
+            if field_type == 'term':
+                term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
+                if term_ref:
+                    try:
+                        terminology = await def_store.get_terminology(term_ref)
+                        if terminology is None:
+                            errors.append(f"Field '{field_name}': terminology '{term_ref}' not found")
+                        elif terminology.get('status') != 'active':
+                            errors.append(f"Field '{field_name}': terminology '{term_ref}' is {terminology.get('status')}")
+                    except DefStoreError as e:
+                        errors.append(f"Field '{field_name}': could not validate terminology '{term_ref}': {e}")
+
+            # Check template_ref for object fields
+            if field_type == 'object':
+                tpl_ref = field.template_ref if hasattr(field, 'template_ref') else field.get('template_ref')
+                if tpl_ref:
+                    # Look up by code (template_ref stores code, not ID)
+                    referenced = await Template.find_one({"code": tpl_ref})
+                    if referenced is None:
+                        errors.append(f"Field '{field_name}': template '{tpl_ref}' not found")
+                    elif referenced.status != 'active':
+                        errors.append(f"Field '{field_name}': template '{tpl_ref}' is {referenced.status}")
+
+            # Check array item references
+            if field_type == 'array':
+                array_item_type = field.array_item_type if hasattr(field, 'array_item_type') else field.get('array_item_type')
+
+                if array_item_type == 'term':
+                    array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
+                    if array_term_ref:
+                        try:
+                            terminology = await def_store.get_terminology(array_term_ref)
+                            if terminology is None:
+                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found")
+                            elif terminology.get('status') != 'active':
+                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' is {terminology.get('status')}")
+                        except DefStoreError as e:
+                            errors.append(f"Field '{field_name}[]': could not validate terminology '{array_term_ref}': {e}")
+
+                if array_item_type == 'object':
+                    array_tpl_ref = field.array_template_ref if hasattr(field, 'array_template_ref') else field.get('array_template_ref')
+                    if array_tpl_ref:
+                        referenced = await Template.find_one({"code": array_tpl_ref})
+                        if referenced is None:
+                            errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' not found")
+                        elif referenced.status != 'active':
+                            errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' is {referenced.status}")
+
+        return errors

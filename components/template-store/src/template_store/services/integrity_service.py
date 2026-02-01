@@ -118,19 +118,27 @@ async def check_template_reference(
     ref: str,
     template: Template,
     field_path: Optional[str],
-    issues: list[IntegrityIssue]
+    issues: list[IntegrityIssue],
+    lookup_by_id: bool = False
 ) -> None:
     """
     Check if a template reference is valid.
 
     Args:
-        ref: Template ID
+        ref: Template code or ID depending on lookup_by_id
         template: Template containing the reference
         field_path: Path to the field (None for 'extends')
         issues: List to append issues to
+        lookup_by_id: If True, look up by template_id (for extends);
+                      if False, look up by code (for template_ref)
     """
     # Look up the referenced template
-    referenced = await Template.find_one(Template.template_id == ref)
+    if lookup_by_id:
+        # 'extends' stores template_id
+        referenced = await Template.find_one(Template.template_id == ref)
+    else:
+        # 'template_ref' stores code
+        referenced = await Template.find_one(Template.code == ref)
 
     if referenced is None:
         issues.append(IntegrityIssue(
@@ -165,13 +173,14 @@ async def check_template_integrity(template: Template) -> list[IntegrityIssue]:
     """
     issues: list[IntegrityIssue] = []
 
-    # Check extends reference
+    # Check extends reference (extends stores template_id, not code)
     if template.extends:
         await check_template_reference(
             template.extends,
             template,
             field_path=None,  # 'extends' is not a field
-            issues=issues
+            issues=issues,
+            lookup_by_id=True  # extends stores template_id
         )
 
     # Check field references

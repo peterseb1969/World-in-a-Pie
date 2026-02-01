@@ -508,6 +508,109 @@ export interface IntegrityCheckResult {
   issues: IntegrityIssue[]
 }
 
+// Search and activity types
+export interface SearchResult {
+  type: 'terminology' | 'term' | 'template' | 'document'
+  id: string
+  code: string | null
+  name: string | null
+  status: string | null
+  description: string | null
+  updated_at: string | null
+}
+
+export interface SearchResponse {
+  query: string
+  results: SearchResult[]
+  counts: Record<string, number>
+  total: number
+}
+
+export interface ActivityItem {
+  type: 'terminology' | 'term' | 'template' | 'document'
+  action: 'created' | 'updated' | 'deleted' | 'deprecated'
+  entity_id: string
+  entity_code: string | null
+  entity_name: string | null
+  timestamp: string
+  user: string | null
+  version: number | null
+  details: Record<string, unknown> | null
+}
+
+export interface ActivityResponse {
+  activities: ActivityItem[]
+  total: number
+}
+
+export interface DocumentReference {
+  document_id: string
+  template_id: string
+  template_code: string | null
+  field_path: string
+  status: string
+  created_at: string | null
+}
+
+export interface TermDocumentsResponse {
+  term_id: string
+  documents: DocumentReference[]
+  total: number
+}
+
+// Entity references types
+export interface EntityReference {
+  ref_type: 'template' | 'terminology' | 'term'
+  ref_id: string
+  ref_code: string | null
+  ref_name: string | null
+  field_path: string | null
+  status: 'valid' | 'broken' | 'inactive'
+  error: string | null
+}
+
+export interface EntityDetails {
+  entity_type: 'document' | 'template' | 'terminology' | 'term'
+  entity_id: string
+  entity_code: string | null
+  entity_name: string | null
+  entity_status: string | null
+  version: number | null
+  created_at: string | null
+  updated_at: string | null
+  data: Record<string, unknown> | null
+  references: EntityReference[]
+  valid_refs: number
+  broken_refs: number
+  inactive_refs: number
+}
+
+export interface EntityReferencesResponse {
+  entity: EntityDetails | null
+  error: string | null
+}
+
+// Incoming reference (what references this entity)
+export interface IncomingReference {
+  entity_type: 'document' | 'template'
+  entity_id: string
+  entity_code: string | null
+  entity_name: string | null
+  entity_status: string | null
+  field_path: string | null
+  reference_type: 'uses_template' | 'extends' | 'template_ref' | 'terminology_ref' | 'term_ref'
+}
+
+export interface ReferencedByResponse {
+  entity_type: 'document' | 'template' | 'terminology' | 'term'
+  entity_id: string
+  entity_code: string | null
+  entity_name: string | null
+  referenced_by: IncomingReference[]
+  total: number
+  error: string | null
+}
+
 class ReportingSyncClient extends BaseApiClient {
   constructor() {
     super('/api/reporting-sync')
@@ -531,6 +634,58 @@ class ReportingSyncClient extends BaseApiClient {
     } catch {
       return false
     }
+  }
+
+  // ===========================================================================
+  // SEARCH ENDPOINTS
+  // ===========================================================================
+
+  async search(params: {
+    query: string
+    types?: string[]
+    status?: string
+    limit?: number
+  }): Promise<SearchResponse> {
+    const response = await this.client.post<SearchResponse>('/search', params)
+    return response.data
+  }
+
+  async getRecentActivity(params?: {
+    types?: string
+    limit?: number
+  }): Promise<ActivityResponse> {
+    const response = await this.client.get<ActivityResponse>('/activity/recent', { params })
+    return response.data
+  }
+
+  async getTermDocuments(termId: string, limit?: number): Promise<TermDocumentsResponse> {
+    const response = await this.client.get<TermDocumentsResponse>(
+      `/references/term/${termId}/documents`,
+      { params: limit ? { limit } : undefined }
+    )
+    return response.data
+  }
+
+  async getEntityReferences(
+    entityType: 'document' | 'template' | 'terminology' | 'term',
+    entityId: string
+  ): Promise<EntityReferencesResponse> {
+    const response = await this.client.get<EntityReferencesResponse>(
+      `/entity/${entityType}/${entityId}/references`
+    )
+    return response.data
+  }
+
+  async getReferencedBy(
+    entityType: 'document' | 'template' | 'terminology' | 'term',
+    entityId: string,
+    limit: number = 100
+  ): Promise<ReferencedByResponse> {
+    const response = await this.client.get<ReferencedByResponse>(
+      `/entity/${entityType}/${entityId}/referenced-by`,
+      { params: { limit } }
+    )
+    return response.data
   }
 }
 

@@ -62,13 +62,22 @@ const menuItems: MenuItem[] = [
       { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
       { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
     ]
+  },
+  {
+    label: 'Audit Trail',
+    icon: 'pi pi-history',
+    children: [
+      { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
+      { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
+    ]
   }
 ]
 
 const expandedMenus = ref<Record<string, boolean>>({
   'Terminologies': true,
   'Templates': true,
-  'Documents': true
+  'Documents': true,
+  'Audit Trail': true
 })
 
 function toggleMenu(label: string) {

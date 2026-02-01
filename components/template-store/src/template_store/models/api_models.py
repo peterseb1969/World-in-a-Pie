@@ -57,6 +57,10 @@ class CreateTemplateRequest(BaseModel):
         None,
         description="User or system creating this template"
     )
+    validate_references: bool = Field(
+        default=True,
+        description="Validate that terminology_ref and template_ref values exist before creating"
+    )
 
 
 class UpdateTemplateRequest(BaseModel):

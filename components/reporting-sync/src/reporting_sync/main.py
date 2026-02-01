@@ -14,7 +14,7 @@ from typing import Any
 import asyncpg
 import httpx
 import nats
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,15 @@ from .models import (
 )
 from .worker import run_sync_worker
 from .batch_sync import BatchSyncService
+from .search_service import (
+    SearchService,
+    SearchRequest,
+    SearchResponse,
+    ActivityResponse,
+    TermDocumentsResponse,
+    EntityReferencesResponse,
+    ReferencedByResponse,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -54,6 +63,7 @@ class AppState:
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
+    search_service: SearchService | None = None
     sync_status: SyncStatus = SyncStatus(
         running=False,
         connected_to_nats=False,
@@ -230,6 +240,10 @@ async def lifespan(app: FastAPI):
     if state.postgres_pool:
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
+
+    # Initialize search service (works with or without PostgreSQL)
+    state.search_service = SearchService(state.postgres_pool)
+    logger.info("Search service initialized")
 
     # Start the sync worker task if both connections are up
     if state.sync_status.connected_to_nats and state.sync_status.connected_to_postgres:
@@ -817,6 +831,167 @@ async def aggregated_integrity_check(
     )
 
 
+# =============================================================================
+# SEARCH & ACTIVITY ENDPOINTS
+# =============================================================================
+
+
+@app.post("/search", response_model=SearchResponse)
+async def unified_search(request: SearchRequest) -> SearchResponse:
+    """
+    Unified search across all WIP entity types.
+
+    Searches terminologies, terms, templates, and documents in parallel.
+    Results are sorted by relevance (exact matches first).
+
+    Args:
+        request: Search parameters
+            - query: Search string (required)
+            - types: Entity types to search (optional, defaults to all)
+            - status: Filter by status (optional)
+            - limit: Max results per type (1-200, default 50)
+
+    Returns:
+        SearchResponse with results grouped by type and total counts
+    """
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
+    return await state.search_service.search(request)
+
+
+@app.get("/activity/recent", response_model=ActivityResponse)
+async def get_recent_activity(
+    types: str | None = None,
+    limit: int = 50
+) -> ActivityResponse:
+    """
+    Get recent activity across all entity types.
+
+    Returns a timeline of recent changes (creates, updates, deletes)
+    aggregated from all WIP services.
+
+    Args:
+        types: Comma-separated list of entity types (optional)
+               Valid types: terminology, term, template, document
+        limit: Maximum number of activities to return (1-200, default 50)
+
+    Returns:
+        ActivityResponse with list of activities sorted by timestamp (newest first)
+    """
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
+    type_list = types.split(",") if types else None
+    if limit < 1 or limit > 200:
+        limit = 50
+
+    return await state.search_service.get_recent_activity(types=type_list, limit=limit)
+
+
+@app.get("/references/term/{term_id}/documents", response_model=TermDocumentsResponse)
+async def get_term_documents(
+    term_id: str,
+    limit: int = 100
+) -> TermDocumentsResponse:
+    """
+    Get documents that reference a specific term.
+
+    Searches the PostgreSQL reporting database for documents with
+    term_references containing the given term_id.
+
+    Args:
+        term_id: Term ID to search for (e.g., T-000001)
+        limit: Maximum number of documents to return (1-1000, default 100)
+
+    Returns:
+        TermDocumentsResponse with list of referencing documents
+    """
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
+    if limit < 1 or limit > 1000:
+        limit = 100
+
+    return await state.search_service.get_term_documents(term_id=term_id, limit=limit)
+
+
+@app.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
+async def get_entity_references(
+    entity_type: str,
+    entity_id: str
+) -> EntityReferencesResponse:
+    """
+    Get an entity's details and validate all its references.
+
+    Returns the entity with a list of all outgoing references and their
+    validation status (valid, broken, or inactive).
+
+    Args:
+        entity_type: Entity type (document, template, terminology, term)
+        entity_id: Entity ID
+
+    Returns:
+        EntityReferencesResponse with entity details and reference validation
+    """
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
+    valid_types = ["document", "template", "terminology", "term"]
+    if entity_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid entity type: {entity_type}. Must be one of: {valid_types}"
+        )
+
+    return await state.search_service.get_entity_references(
+        entity_type=entity_type,
+        entity_id=entity_id
+    )
+
+
+@app.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
+async def get_referenced_by(
+    entity_type: str,
+    entity_id: str,
+    limit: int = Query(100, ge=1, le=500, description="Max results to return")
+) -> ReferencedByResponse:
+    """
+    Find all entities that reference the given entity.
+
+    Returns a list of entities (documents, templates) that have references
+    pointing to the target entity.
+
+    - **Template**: documents using it, templates extending it, templates with template_ref
+    - **Terminology**: templates with terminology_ref
+    - **Term**: documents with term_references
+    - **Document**: (not referenced by other entities)
+
+    Args:
+        entity_type: Entity type (document, template, terminology, term)
+        entity_id: Entity ID
+        limit: Max results to return (default 100, max 500)
+
+    Returns:
+        ReferencedByResponse with list of referencing entities
+    """
+    if not state.search_service:
+        raise HTTPException(status_code=503, detail="Search service not available")
+
+    valid_types = ["document", "template", "terminology", "term"]
+    if entity_type not in valid_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid entity type: {entity_type}. Must be one of: {valid_types}"
+        )
+
+    return await state.search_service.get_referenced_by(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        limit=limit
+    )
+
+
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -827,6 +1002,8 @@ async def root():
         "health": "/health",
         "status": "/status",
         "integrity": "/health/integrity",
+        "search": "/search",
+        "activity": "/activity/recent",
     }
 
 

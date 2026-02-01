@@ -38,6 +38,11 @@ class Settings(BaseSettings):
         default="http://localhost:8004", alias="DOCUMENT_STORE_URL"
     )
 
+    # Def-Store API (for terminology/term search)
+    def_store_url: str = Field(
+        default="http://localhost:8002", alias="DEF_STORE_URL"
+    )
+
     api_key: str = Field(default="dev_master_key_for_testing", alias="API_KEY")
 
     # Sync configuration

@@ -81,6 +81,17 @@ const router = createRouter({
       name: 'document-detail',
       component: () => import('@/views/documents/DocumentDetailView.vue'),
       props: true
+    },
+    // Audit Trail routes
+    {
+      path: '/audit',
+      name: 'audit-overview',
+      component: () => import('@/views/audit/AuditOverviewView.vue')
+    },
+    {
+      path: '/audit/explorer',
+      name: 'audit-explorer',
+      component: () => import('@/views/audit/AuditExplorerView.vue')
     }
   ]
 })

@@ -24,6 +24,8 @@ services:
       - TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
       # Document Store (for batch sync)
       - DOCUMENT_STORE_URL=http://wip-document-store-dev:8004
+      # Def-Store (for terminology/term search)
+      - DEF_STORE_URL=http://wip-def-store-dev:8002
       - API_KEY=dev_master_key_for_testing
       # Authentication - dual mode allows both API keys and JWT tokens
       - WIP_AUTH_MODE=${WIP_AUTH_MODE:-dual}
