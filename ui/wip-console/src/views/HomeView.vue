@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
@@ -107,6 +107,17 @@ function navigateToTemplate(template: Template) {
 onMounted(() => {
   loadDashboard()
 })
+
+// Watch for auth changes and reload dashboard when user logs in
+watch(
+  () => authStore.isAuthenticated,
+  (isAuth, wasAuth) => {
+    // Only reload when transitioning from not authenticated to authenticated
+    if (isAuth && !wasAuth) {
+      loadDashboard()
+    }
+  }
+)
 </script>
 
 <template>
