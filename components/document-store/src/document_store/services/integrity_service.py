@@ -174,40 +174,22 @@ async def check_term_reference(
         ))
 
 
-def extract_term_ids(term_references: dict[str, Any]) -> list[tuple[str, str]]:
+def extract_term_ids(term_references: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """
-    Extract all term IDs from a term_references dictionary.
+    Extract all term IDs from a term_references array.
+
+    New array format: [{"field_path": "gender", "term_id": "T-001", ...}, ...]
 
     Returns:
         List of (field_path, term_id) tuples
     """
     results = []
 
-    def process(obj: Any, path: str):
-        if isinstance(obj, str):
-            # Simple term ID
-            if obj.startswith("T-"):
-                results.append((path, obj))
-        elif isinstance(obj, list):
-            # Array of term IDs
-            for i, item in enumerate(obj):
-                process(item, f"{path}[{i}]")
-        elif isinstance(obj, dict):
-            # Nested object
-            for key, value in obj.items():
-                new_path = f"{path}.{key}" if path else key
-                process(value, new_path)
-
-    for field_path, value in term_references.items():
-        if isinstance(value, str):
-            if value.startswith("T-"):
-                results.append((field_path, value))
-        elif isinstance(value, list):
-            for i, item in enumerate(value):
-                if isinstance(item, str) and item.startswith("T-"):
-                    results.append((f"{field_path}[{i}]", item))
-        elif isinstance(value, dict):
-            process(value, field_path)
+    for ref in term_references:
+        field_path = ref.get("field_path", "")
+        term_id = ref.get("term_id", "")
+        if term_id and term_id.startswith("T-"):
+            results.append((field_path, term_id))
 
     return results
 
