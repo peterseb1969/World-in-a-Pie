@@ -4,6 +4,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
+import Chips from 'primevue/chips'
 import Button from 'primevue/button'
 import { useTermStore, useUiStore } from '@/stores'
 import type { Term, CreateTermRequest, UpdateTermRequest } from '@/types'
@@ -29,6 +30,7 @@ const dialogTitle = computed(() => isEdit.value ? 'Edit Term' : 'Create Term')
 const form = ref({
   code: '',
   value: '',
+  aliases: [] as string[],
   label: '',
   description: '',
   sort_order: 0
@@ -45,6 +47,7 @@ watch(
         form.value = {
           code: props.term.code,
           value: props.term.value,
+          aliases: props.term.aliases || [],
           label: props.term.label,
           description: props.term.description || '',
           sort_order: props.term.sort_order
@@ -63,6 +66,7 @@ function resetForm() {
   form.value = {
     code: '',
     value: '',
+    aliases: [],
     label: '',
     description: '',
     sort_order: maxOrder + 1
@@ -98,6 +102,7 @@ async function submit() {
       const updateData: UpdateTermRequest = {
         code: form.value.code !== props.term.code ? form.value.code : undefined,
         value: form.value.value,
+        aliases: form.value.aliases,
         label: form.value.label,
         description: form.value.description || undefined,
         sort_order: form.value.sort_order
@@ -109,6 +114,7 @@ async function submit() {
       const createData: CreateTermRequest = {
         code: form.value.code,
         value: form.value.value,
+        aliases: form.value.aliases.length > 0 ? form.value.aliases : undefined,
         label: form.value.label,
         description: form.value.description || undefined,
         sort_order: form.value.sort_order
@@ -203,6 +209,19 @@ function onCodeChange() {
           />
           <small v-if="errors.label" class="p-error">{{ errors.label }}</small>
           <small v-else class="help-text">Display text in UI</small>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-field">
+          <label for="aliases">Aliases</label>
+          <Chips
+            id="aliases"
+            v-model="form.aliases"
+            placeholder="Type and press Enter to add..."
+            :allow-duplicate="false"
+          />
+          <small class="help-text">Alternative values that resolve to this term (e.g., Mr., MR, mr)</small>
         </div>
       </div>
 

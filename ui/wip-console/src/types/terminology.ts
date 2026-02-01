@@ -71,6 +71,7 @@ export interface Term {
   terminology_id: string
   code: string
   value: string
+  aliases: string[]
   label: string
   description?: string
   sort_order: number
@@ -89,6 +90,7 @@ export interface Term {
 export interface CreateTermRequest {
   code: string
   value: string
+  aliases?: string[]
   label: string
   description?: string
   sort_order?: number
@@ -101,6 +103,7 @@ export interface CreateTermRequest {
 export interface UpdateTermRequest {
   code?: string
   value?: string
+  aliases?: string[]
   label?: string
   description?: string
   sort_order?: number

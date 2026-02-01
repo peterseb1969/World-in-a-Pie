@@ -56,6 +56,7 @@ function parseJSON() {
     parsedTerms.value = terms.map((t: CreateTermRequest, i: number) => ({
       code: t.code || '',
       value: t.value || '',
+      aliases: t.aliases || [],
       label: t.label || '',
       description: t.description,
       sort_order: t.sort_order ?? i
@@ -85,9 +86,14 @@ function parseCSV() {
   const terms: CreateTermRequest[] = []
   for (let i = 1; i < lines.length; i++) {
     const values = lines[i].split(',').map(v => v.trim())
+    // Parse aliases as pipe-separated values (e.g., "Mr.|MR.|mr")
+    const aliasesRaw = headers.includes('aliases') ? values[headers.indexOf('aliases')] : ''
+    const aliases = aliasesRaw ? aliasesRaw.split('|').map(a => a.trim()).filter(a => a) : []
+
     const term: CreateTermRequest = {
       code: values[headers.indexOf('code')] || '',
       value: values[headers.indexOf('value')] || '',
+      aliases: aliases.length > 0 ? aliases : undefined,
       label: values[headers.indexOf('label')] || '',
       description: headers.includes('description') ? values[headers.indexOf('description')] : undefined,
       sort_order: headers.includes('sort_order') ? parseInt(values[headers.indexOf('sort_order')]) : i - 1
@@ -178,8 +184,8 @@ function getResultSeverity(status: string): 'success' | 'warn' | 'danger' | 'inf
             v-model="jsonInput"
             rows="10"
             placeholder='[
-  { "code": "ACTIVE", "value": "active", "label": "Active" },
-  { "code": "INACTIVE", "value": "inactive", "label": "Inactive" }
+  { "code": "MR", "value": "Mr", "label": "Mister", "aliases": ["Mr.", "MR.", "mr"] },
+  { "code": "MS", "value": "Ms", "label": "Ms", "aliases": ["Ms.", "MS.", "ms"] }
 ]'
             class="input-textarea"
           />
@@ -196,9 +202,9 @@ function getResultSeverity(status: string): 'success' | 'warn' | 'danger' | 'inf
           <Textarea
             v-model="csvInput"
             rows="10"
-            placeholder="code,value,label,description
-ACTIVE,active,Active,Currently active
-INACTIVE,inactive,Inactive,Not active"
+            placeholder="code,value,label,aliases,description
+MR,Mr,Mister,Mr.|MR.|mr,Male title
+MS,Ms,Ms,Ms.|MS.|ms,Female title"
             class="input-textarea"
           />
           <Button
@@ -226,15 +232,20 @@ INACTIVE,inactive,Inactive,Not active"
       </div>
 
       <DataTable :value="parsedTerms" striped-rows size="small" scrollable scroll-height="300px">
-        <Column field="code" header="Code" style="width: 20%" />
-        <Column field="value" header="Value" style="width: 20%" />
-        <Column field="label" header="Label" style="width: 25%" />
-        <Column field="description" header="Description" style="width: 25%">
+        <Column field="code" header="Code" style="width: 15%" />
+        <Column field="value" header="Value" style="width: 15%" />
+        <Column field="label" header="Label" style="width: 20%" />
+        <Column field="aliases" header="Aliases" style="width: 20%">
+          <template #body="{ data }">
+            {{ data.aliases?.join(', ') || '-' }}
+          </template>
+        </Column>
+        <Column field="description" header="Description" style="width: 22%">
           <template #body="{ data }">
             {{ data.description || '-' }}
           </template>
         </Column>
-        <Column field="sort_order" header="#" style="width: 10%" />
+        <Column field="sort_order" header="#" style="width: 8%" />
       </DataTable>
     </div>
 

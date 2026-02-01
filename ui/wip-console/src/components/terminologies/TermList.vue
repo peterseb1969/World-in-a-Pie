@@ -33,7 +33,8 @@ const filteredTerms = computed(() => {
     t.code.toLowerCase().includes(query) ||
     t.value.toLowerCase().includes(query) ||
     t.label.toLowerCase().includes(query) ||
-    t.description?.toLowerCase().includes(query)
+    t.description?.toLowerCase().includes(query) ||
+    t.aliases?.some(alias => alias.toLowerCase().includes(query))
   )
 })
 
@@ -162,19 +163,35 @@ async function onDeprecated() {
         </template>
       </Column>
 
-      <Column field="value" header="Value" sortable style="width: 15%">
+      <Column field="value" header="Value" sortable style="width: 12%">
         <template #body="{ data }">
           <code class="value-text">{{ data.value }}</code>
         </template>
       </Column>
 
-      <Column field="label" header="Label" sortable style="width: 20%">
+      <Column field="aliases" header="Aliases" style="width: 15%">
+        <template #body="{ data }">
+          <div class="aliases-container" v-if="data.aliases?.length">
+            <span
+              v-for="alias in data.aliases.slice(0, 3)"
+              :key="alias"
+              class="alias-badge"
+            >{{ alias }}</span>
+            <span v-if="data.aliases.length > 3" class="alias-more">
+              +{{ data.aliases.length - 3 }}
+            </span>
+          </div>
+          <span v-else class="no-aliases">-</span>
+        </template>
+      </Column>
+
+      <Column field="label" header="Label" sortable style="width: 15%">
         <template #body="{ data }">
           <span>{{ data.label }}</span>
         </template>
       </Column>
 
-      <Column field="description" header="Description" style="width: 25%">
+      <Column field="description" header="Description" style="width: 18%">
         <template #body="{ data }">
           <span class="description-text">{{ data.description || '-' }}</span>
         </template>
@@ -296,6 +313,31 @@ async function onDeprecated() {
   background: var(--p-surface-50);
   padding: 0.125rem 0.375rem;
   border-radius: 3px;
+}
+
+.aliases-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.alias-badge {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: var(--p-primary-50);
+  color: var(--p-primary-700);
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+}
+
+.alias-more {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.no-aliases {
+  color: var(--p-text-muted-color);
 }
 
 .description-text {
