@@ -20,8 +20,10 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     container_name: wip-console-dev
-    ports:
-      - "3000:3000"
+    # Port 3000 not exposed to host - access via Caddy on https://localhost:8443
+    # Caddy reaches the container internally via wip-network
+    expose:
+      - "3000"
     volumes:
       - .:/app
       - /app/node_modules

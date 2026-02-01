@@ -27,9 +27,14 @@ storage:
 web:
   http: 0.0.0.0:5556
   # Allow CORS for WIP Console (browser-based OIDC)
+  # Include both HTTP (direct Vite) and HTTPS (via Caddy) origins
   allowedOrigins:
     - http://localhost:3000
     - http://localhost:3001
+    - https://localhost:8443
+    - https://localhost
+    - https://127.0.0.1:8443
+    - https://127.0.0.1
 
 # Enable the password database for static users
 enablePasswordDB: true
@@ -56,8 +61,14 @@ staticClients:
     name: WIP Console
     secret: wip-console-secret
     redirectURIs:
+      # HTTP (direct Vite dev server)
       - http://localhost:3000/auth/callback
       - http://localhost:3000/auth/silent-renew
+      # HTTPS (via Caddy reverse proxy)
+      - https://localhost:8443/auth/callback
+      - https://localhost:8443/auth/silent-renew
+      - https://localhost/auth/callback
+      - https://localhost/auth/silent-renew
     # Public client for SPA (PKCE flow)
     public: false
 
