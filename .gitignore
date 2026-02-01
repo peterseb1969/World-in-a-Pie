@@ -27,6 +27,11 @@ Thumbs.db
 # Docker
 *.log
 
+# Generated config files (created by scripts/setup.sh)
+config/dex/config.yaml
+config/caddy/Caddyfile
+.env
+
 # Testing
 .pytest_cache/
 .coverage
