@@ -99,8 +99,8 @@ check_containers() {
 
     local containers_running=true
 
-    if ! podman ps --format "{{.Names}}" 2>/dev/null | grep -q "wip-mongo"; then
-        log_warn "MongoDB container (wip-mongo) not running"
+    if ! podman ps --format "{{.Names}}" 2>/dev/null | grep -q "wip-mongodb"; then
+        log_warn "MongoDB container (wip-mongodb) not running"
         containers_running=false
     fi
 
@@ -121,19 +121,31 @@ check_containers() {
 wipe_mongodb() {
     log_step "Wiping MongoDB collections..."
 
-    # List of MongoDB databases to wipe
-    local databases=("wip_registry" "wip_def_store" "wip_template_store" "wip_document_store")
+    # Base database names (without suffix)
+    local base_names=("wip_registry" "wip_def_store" "wip_template_store" "wip_document_store")
+
+    # Build list with both variants (with and without _dev suffix)
+    local databases=()
+    for base in "${base_names[@]}"; do
+        databases+=("$base" "${base}_dev")
+    done
+
+    # Determine which mongo shell to use (mongosh for newer, mongo for older MongoDB)
+    local mongo_cmd="mongosh"
+    if ! podman exec wip-mongodb which mongosh >/dev/null 2>&1; then
+        mongo_cmd="mongo"
+    fi
 
     for db in "${databases[@]}"; do
-        log_info "  Dropping all collections in $db..."
-        podman exec wip-mongo mongosh "$db" --quiet --eval '
-            db.getCollectionNames().forEach(function(c) {
-                if (!c.startsWith("system.")) {
-                    db[c].drop();
-                    print("    Dropped: " + c);
-                }
-            });
-        ' 2>/dev/null || log_warn "  Database $db may not exist yet (OK)"
+        # Check if database exists before trying to drop
+        local exists=$(podman exec wip-mongodb $mongo_cmd --quiet --eval "db.getMongo().getDBNames().indexOf('$db') >= 0 ? 'yes' : 'no'" 2>/dev/null || echo "no")
+
+        if [ "$exists" = "yes" ]; then
+            log_info "  Dropping database $db..."
+            podman exec wip-mongodb $mongo_cmd --quiet --eval "db.dropDatabase()" "$db" 2>/dev/null \
+                && log_info "    Dropped: $db" \
+                || log_warn "    Failed to drop $db"
+        fi
     done
 
     log_info "MongoDB wipe complete"
