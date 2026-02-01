@@ -161,6 +161,11 @@ log_step "Step 3b: Setting up storage directories..."
 echo "  Data directory: $WIP_DATA_DIR"
 mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config}
 echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy"
+
+# Fix ownership for Dex directory (runs as UID 1001 inside container)
+# podman unshare maps host user's subuid range to container UIDs
+log_info "Setting Dex directory ownership for rootless Podman..."
+podman unshare chown 1001:1001 "$WIP_DATA_DIR/dex"
 echo ""
 
 # Step 4: Start infrastructure

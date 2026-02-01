@@ -195,6 +195,22 @@ sudo chown -R $USER:$USER /path/to/storage
 
 For external mounts (USB, NFS), ensure the mount has correct permissions or use `no_root_squash` for NFS.
 
+### Container User Mapping
+
+Some containers run as non-root users inside the container. With rootless Podman, these UIDs are mapped through the user namespace. The setup scripts handle this automatically, but if you're setting up storage manually:
+
+**Dex (OIDC provider)** runs as UID 1001 inside the container:
+```bash
+# Use podman unshare to set ownership within Podman's user namespace
+podman unshare chown 1001:1001 /path/to/storage/dex
+```
+
+This maps to a high UID on the host (e.g., 101000) but appears as UID 1001 inside the container.
+
+**MongoDB and PostgreSQL** create their own data directories with correct permissions, so no special handling is needed.
+
+**Why not chmod 777?** Never use 777 for directories containing authentication data. The `podman unshare chown` approach maintains proper security by giving only the specific container user access.
+
 ## Backup
 
 ### Quick Backup
@@ -290,6 +306,19 @@ Ensure network is up before mounting:
 ```bash
 # Use _netdev option in fstab
 nas.local:/exports/wip  /mnt/wip-data  nfs  defaults,_netdev  0  0
+```
+
+### Dex Won't Start (Database Error)
+
+If Dex logs show:
+```
+failed to initialize storage: unable to open database file: no such file or directory
+```
+
+**Fix:** Set correct ownership for the Dex directory:
+```bash
+podman unshare chown 1001:1001 $WIP_DATA_DIR/dex
+podman restart wip-dex
 ```
 
 ### Disk Full
