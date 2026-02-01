@@ -18,6 +18,10 @@ from .def_store_client import get_def_store_client, DefStoreError
 from .inheritance_service import InheritanceService, InheritanceError
 from .nats_client import publish_template_event, EventType
 
+# Import identity helper from wip-auth
+# This returns the authenticated identity, not the client-provided value
+from ..api.auth import get_identity_string
+
 
 class TemplateService:
     """Service for managing templates."""
@@ -63,12 +67,15 @@ class TemplateService:
                 else:
                     raise ValueError(f"Parent template '{request.extends}' not found")
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register with Registry to get ID
         client = get_registry_client()
         template_id = await client.register_template(
             code=request.code,
             name=request.name,
-            created_by=request.created_by
+            created_by=actor
         )
 
         # Create template document
@@ -83,7 +90,7 @@ class TemplateService:
             rules=request.rules,
             metadata=request.metadata or TemplateMetadata(),
             reporting=request.reporting,
-            created_by=request.created_by,
+            created_by=actor,
         )
         await template.insert()
 
@@ -91,7 +98,7 @@ class TemplateService:
         await publish_template_event(
             EventType.TEMPLATE_CREATED,
             TemplateService._template_to_event_payload(template),
-            changed_by=request.created_by
+            changed_by=actor
         )
 
         return TemplateService._to_template_response(template)
@@ -330,13 +337,16 @@ class TemplateService:
             ):
                 raise ValueError("Setting this parent would create circular inheritance")
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register new version with Registry to get a new template_id
         client = get_registry_client()
         new_template_id = await client.register_template(
             code=new_code,
             name=request.name if request.name is not None else original.name,
             version=new_version,
-            created_by=request.updated_by
+            created_by=actor
         )
 
         # Create new template document for this version
@@ -354,9 +364,9 @@ class TemplateService:
             reporting=request.reporting if request.reporting is not None else original.reporting,
             status="active",
             created_at=datetime.now(timezone.utc),
-            created_by=request.updated_by,
+            created_by=actor,
             updated_at=datetime.now(timezone.utc),
-            updated_by=request.updated_by,
+            updated_by=actor,
         )
         await new_template.insert()
 
@@ -364,7 +374,7 @@ class TemplateService:
         await publish_template_event(
             EventType.TEMPLATE_UPDATED,
             TemplateService._template_to_event_payload(new_template),
-            changed_by=request.updated_by
+            changed_by=actor
         )
 
         return TemplateService._to_template_response(new_template)
@@ -372,14 +382,14 @@ class TemplateService:
     @staticmethod
     async def delete_template(
         template_id: str,
-        updated_by: Optional[str] = None
+        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """
         Soft-delete a template (set status to inactive).
 
         Args:
             template_id: Template to delete
-            updated_by: User performing the deletion
+            updated_by: Deprecated - uses authenticated identity
 
         Returns:
             True if deleted, False if not found
@@ -395,17 +405,20 @@ class TemplateService:
                 f"Cannot delete template: {len(children)} template(s) extend it"
             )
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Deactivate template
         template.status = "inactive"
         template.updated_at = datetime.now(timezone.utc)
-        template.updated_by = updated_by
+        template.updated_by = actor
         await template.save()
 
         # Publish template deleted event
         await publish_template_event(
             EventType.TEMPLATE_DELETED,
             TemplateService._template_to_event_payload(template),
-            changed_by=updated_by
+            changed_by=actor
         )
 
         return True
@@ -417,23 +430,26 @@ class TemplateService:
     @staticmethod
     async def create_templates_bulk(
         templates: list[CreateTemplateRequest],
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> list[BulkOperationResult]:
         """
         Create multiple templates.
 
         Args:
             templates: Templates to create
-            created_by: User creating the templates
+            created_by: Deprecated - uses authenticated identity
 
         Returns:
             List of operation results
         """
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register all templates with Registry
         client = get_registry_client()
         registry_results = await client.register_templates_bulk(
             templates=[{"code": t.code, "name": t.name} for t in templates],
-            created_by=created_by
+            created_by=actor
         )
 
         results = []
@@ -474,7 +490,7 @@ class TemplateService:
                 rules=template_req.rules,
                 metadata=template_req.metadata or TemplateMetadata(),
                 reporting=template_req.reporting,
-                created_by=created_by,
+                created_by=actor,
             )
             await template.insert()
 

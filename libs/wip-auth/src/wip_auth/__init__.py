@@ -39,7 +39,9 @@ from .dependencies import (
 )
 from .identity import (
     clear_current_identity,
+    get_actor_info,
     get_current_identity,
+    get_identity_owner,
     get_identity_string,
     set_current_identity,
 )
@@ -82,6 +84,8 @@ __all__ = [
     "set_current_identity",
     "clear_current_identity",
     "get_identity_string",
+    "get_identity_owner",
+    "get_actor_info",
     # Middleware
     "AuthMiddleware",
     "create_auth_middleware",

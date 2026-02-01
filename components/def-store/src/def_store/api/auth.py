@@ -7,7 +7,9 @@ It re-exports the common auth functions for backward compatibility.
 from wip_auth import (
     AuthConfig,
     UserIdentity,
+    get_actor_info,
     get_auth_config,
+    get_identity_owner,
     get_identity_string,
     optional_identity,
     require_admin,
@@ -22,7 +24,9 @@ from wip_auth import (
 __all__ = [
     "AuthConfig",
     "UserIdentity",
+    "get_actor_info",
     "get_auth_config",
+    "get_identity_owner",
     "get_identity_string",
     "optional_identity",
     "require_admin",

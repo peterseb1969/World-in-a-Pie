@@ -25,6 +25,10 @@ from .registry_client import get_registry_client, RegistryError
 from .validation_service import ValidationService
 from .nats_client import publish_document_event, EventType, is_nats_enabled
 
+# Import identity helper from wip-auth
+# This returns the authenticated identity, not the client-provided value
+from ..api.auth import get_identity_string
+
 
 class DocumentService:
     """
@@ -152,13 +156,16 @@ class DocumentService:
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document."""
         try:
+            # Get authenticated identity (not client-provided)
+            actor = get_identity_string()
+
             # Generate document ID from Registry
             start = time.perf_counter()
             registry = get_registry_client()
             document_id = await registry.generate_document_id(
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
-                created_by=request.created_by
+                created_by=actor
             )
             registry_ms = (time.perf_counter() - start) * 1000
 
@@ -179,9 +186,9 @@ class DocumentService:
                 term_references=validation_result.term_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
-                created_by=request.created_by,
+                created_by=actor,
                 updated_at=now,
-                updated_by=request.created_by,
+                updated_by=actor,
                 metadata=metadata
             )
 
@@ -199,7 +206,7 @@ class DocumentService:
             await publish_document_event(
                 EventType.DOCUMENT_CREATED,
                 self._document_to_event_payload(document),
-                changed_by=request.created_by
+                changed_by=actor
             )
 
             return DocumentCreateResponse(
@@ -223,18 +230,21 @@ class DocumentService:
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a new version of an existing document."""
         try:
+            # Get authenticated identity (not client-provided)
+            actor = get_identity_string()
+
             # Generate new document ID from Registry
             registry = get_registry_client()
             document_id = await registry.generate_document_id(
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
-                created_by=request.created_by
+                created_by=actor
             )
 
             # Deactivate old version
             existing.status = DocumentStatus.INACTIVE
             existing.updated_at = datetime.now(timezone.utc)
-            existing.updated_by = request.created_by
+            existing.updated_by = actor
             await existing.save()
 
             # Create new version
@@ -255,9 +265,9 @@ class DocumentService:
                 term_references=validation_result.term_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
-                created_by=request.created_by,
+                created_by=actor,
                 updated_at=now,
-                updated_by=request.created_by,
+                updated_by=actor,
                 metadata=metadata
             )
 
@@ -267,7 +277,7 @@ class DocumentService:
             await publish_document_event(
                 EventType.DOCUMENT_UPDATED,
                 self._document_to_event_payload(document),
-                changed_by=request.created_by
+                changed_by=actor
             )
 
             return DocumentCreateResponse(
@@ -462,7 +472,7 @@ class DocumentService:
     async def delete_document(
         self,
         document_id: str,
-        deleted_by: Optional[str] = None
+        deleted_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Soft-delete a document (set status to inactive)."""
         document = await Document.find_one({"document_id": document_id})
@@ -472,16 +482,19 @@ class DocumentService:
         if document.status == DocumentStatus.INACTIVE:
             return True  # Already inactive
 
+        # Use authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         document.status = DocumentStatus.INACTIVE
         document.updated_at = datetime.now(timezone.utc)
-        document.updated_by = deleted_by
+        document.updated_by = actor
         await document.save()
 
         # Publish document deleted event
         await publish_document_event(
             EventType.DOCUMENT_DELETED,
             self._document_to_event_payload(document),
-            changed_by=deleted_by
+            changed_by=actor
         )
 
         return True
@@ -489,23 +502,26 @@ class DocumentService:
     async def archive_document(
         self,
         document_id: str,
-        archived_by: Optional[str] = None
+        archived_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Archive a document."""
         document = await Document.find_one({"document_id": document_id})
         if not document:
             return False
 
+        # Use authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         document.status = DocumentStatus.ARCHIVED
         document.updated_at = datetime.now(timezone.utc)
-        document.updated_by = archived_by
+        document.updated_by = actor
         await document.save()
 
         # Publish document archived event
         await publish_document_event(
             EventType.DOCUMENT_ARCHIVED,
             self._document_to_event_payload(document),
-            changed_by=archived_by
+            changed_by=actor
         )
 
         return True
@@ -678,6 +694,9 @@ class DocumentService:
         existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
         timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Stage 3: Bulk request IDs from Registry
         start = time.perf_counter()
         registry = get_registry_client()
@@ -694,7 +713,7 @@ class DocumentService:
         try:
             registry_results = await registry.generate_document_ids_bulk(
                 registry_items,
-                created_by=request.items[0].created_by if request.items else None
+                created_by=actor
             )
         except RegistryError as e:
             # All valid documents fail due to Registry error
@@ -738,7 +757,7 @@ class DocumentService:
                     # Deactivate old version
                     existing.status = DocumentStatus.INACTIVE
                     existing.updated_at = now
-                    existing.updated_by = item.created_by
+                    existing.updated_by = actor
                     await existing.save()
                     new_version = existing.version + 1
                     is_new = False
@@ -761,9 +780,9 @@ class DocumentService:
                     term_references=validation_result.term_references,
                     status=DocumentStatus.ACTIVE,
                     created_at=now,
-                    created_by=item.created_by,
+                    created_by=actor,
                     updated_at=now,
-                    updated_by=item.created_by,
+                    updated_by=actor,
                     metadata=metadata
                 )
                 await document.insert()
@@ -773,7 +792,7 @@ class DocumentService:
                 await publish_document_event(
                     event_type,
                     self._document_to_event_payload(document),
-                    changed_by=item.created_by
+                    changed_by=actor
                 )
 
                 if is_new:

@@ -306,6 +306,185 @@ Even though we're implementing only the Standard profile initially, the architec
   - [x] OIDC provider for JWT authentication
   - [x] Service integration (all services use dual mode)
   - [x] Dex OIDC provider (replaces Authelia - works over HTTP, ~30MB RAM)
+- [x] Deployment automation
+  - [x] mac-setup.sh and pi-setup.sh scripts
+  - [x] Configurable storage via WIP_DATA_DIR
+  - [x] Caddy reverse proxy for HTTPS
+  - [x] Full and minimal deployment modes
+- [x] API Key Identity Tracking (Phase 1)
+  - [x] Named API keys with owner and groups
+  - [x] Authenticated identity used for created_by/updated_by
+  - [x] Services use authenticated identity, not client-provided values
+  - [x] Config-based API key definitions (JSON env var or file)
+
+---
+
+## Roadmap
+
+### Next Steps
+
+| Priority | Task | Description |
+|----------|------|-------------|
+| 1 | **File Upload (CSV/XLSX)** | Upload documents via file instead of JSON API |
+| 2 | **Binary File Storage** | Store files (images, PDFs) with document manifests via MinIO |
+| 3 | **BI Dashboard Container** | Metabase for SQL analytics on PostgreSQL reporting data |
+| 4 | **Cross-Entity Audit Dashboard** | Unified timeline of changes across all entities |
+| 5 | **Referential Integrity** | Health check API for orphaned references |
+
+### Future Enhancements
+
+| Task | Description |
+|------|-------------|
+| **BI Dashboard Container** | Metabase or similar for SQL analytics on PostgreSQL reporting data |
+| **Streaming Endpoint** | WebSocket bridge for real-time document changes (NATS ready) |
+| **Per-Service API Keys** | Scoped keys instead of shared master key |
+| **Group-Based Access Control** | RBAC using JWT groups claim |
+| **OIDC Discovery** | Auto-detect JWKS URL (low priority - current config works) |
+
+### Task Details
+
+#### 1. OIDC Discovery
+
+**Problem:** Currently requires both `WIP_AUTH_JWT_ISSUER_URL` and `WIP_AUTH_JWT_JWKS_URI` to be configured separately.
+
+**Solution:** OIDC providers publish a discovery endpoint at `{issuer}/.well-known/openid-configuration` containing the JWKS URI. The wip-auth library should:
+
+1. Only require `WIP_AUTH_JWT_ISSUER_URL`
+2. On startup, fetch `{issuer}/.well-known/openid-configuration`
+3. Extract `jwks_uri` from the response
+4. Cache the discovery document (refresh periodically)
+
+**Benefits:**
+- Simpler configuration (one URL instead of two)
+- Works automatically with any OIDC-compliant provider
+- No need to know internal JWKS endpoint structure
+
+**Example:**
+```bash
+# Before (current)
+WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+WIP_AUTH_JWT_JWKS_URI=http://host.containers.internal:5556/dex/keys
+
+# After (with discovery)
+WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+# JWKS URI auto-discovered from /.well-known/openid-configuration
+```
+
+#### 2. File Upload (CSV/XLSX)
+
+**Goal:** Allow bulk document creation via file upload instead of JSON API.
+
+**Endpoints:**
+```
+POST /api/document-store/upload/{template_code}
+  Content-Type: multipart/form-data
+  file: <CSV or XLSX file>
+
+Response:
+{
+  "total_rows": 100,
+  "created": 95,
+  "updated": 3,
+  "errors": 2,
+  "error_details": [...]
+}
+```
+
+**Features:**
+- CSV and XLSX format support
+- Column mapping to template fields (auto-detect or explicit)
+- Validation errors returned per row
+- Dry-run mode to preview without committing
+- Progress tracking for large files
+
+#### 3. Binary File Storage (MinIO)
+
+**Goal:** Store binary files (images, PDFs, attachments) alongside document metadata.
+
+**Architecture:**
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Document with Attachments                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Document Store (MongoDB)           MinIO (S3-compatible)       │
+│   ─────────────────────────         ──────────────────────       │
+│   {                                  bucket: wip-attachments     │
+│     "document_id": "...",            ├── doc-123/                │
+│     "data": {...},                   │   ├── photo.jpg           │
+│     "attachments": [                 │   └── report.pdf          │
+│       {                              └── doc-456/                │
+│         "name": "photo.jpg",             └── scan.png            │
+│         "content_type": "image/jpeg",                            │
+│         "size": 102400,                                          │
+│         "storage_key": "doc-123/photo.jpg"                       │
+│       }                                                          │
+│     ]                                                            │
+│   }                                                              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Infrastructure:**
+- Add MinIO container (~200MB RAM) to docker-compose.infra.yml
+- S3-compatible API for file operations
+- Pre-signed URLs for direct upload/download
+
+**Template Configuration:**
+```json
+{
+  "code": "MEDICAL_RECORD",
+  "fields": [
+    {"name": "patient_id", "type": "string"},
+    {"name": "scan_image", "type": "attachment", "allowed_types": ["image/*", "application/pdf"]}
+  ]
+}
+```
+
+#### 4. BI Dashboard Container
+
+**Goal:** Provide self-service analytics and dashboards on PostgreSQL reporting data.
+
+**Options:**
+
+| Tool | RAM | Ease of Use | Features | Best For |
+|------|-----|-------------|----------|----------|
+| **Metabase** | ~500MB-1GB | Very easy | Dashboards, questions, embedding | Non-technical users |
+| Grafana | ~200-400MB | Medium | Time series, alerting | Ops/monitoring |
+| Apache Superset | ~1GB+ | Complex | Advanced analytics, SQL Lab | Data analysts |
+| Redash | ~500MB | Easy | Query-focused, sharing | SQL-savvy users |
+
+**Recommendation:** Metabase for Standard/Production profiles (user-friendly, good PostgreSQL support).
+
+**Infrastructure:**
+```yaml
+# docker-compose.infra.yml addition
+metabase:
+  image: metabase/metabase:latest
+  container_name: wip-metabase
+  ports:
+    - "3001:3000"
+  environment:
+    MB_DB_TYPE: postgres
+    MB_DB_DBNAME: metabase
+    MB_DB_PORT: 5432
+    MB_DB_USER: wip
+    MB_DB_PASS: wip_dev_password
+    MB_DB_HOST: wip-postgres
+  volumes:
+    - ${WIP_DATA_DIR:-./data}/metabase:/metabase-data
+  networks:
+    - wip-network
+  restart: unless-stopped
+```
+
+**Pre-configured dashboards:**
+- Document counts per template
+- Creation/update activity timeline
+- Field value distributions (term fields)
+- Cross-template joins and aggregations
+
+**Access:** http://localhost:3001 (separate from WIP Console)
 
 ---
 
@@ -907,9 +1086,47 @@ Features needed:
 
 #### API Key Identity Tracking
 
-**Problem:** Currently `created_by`/`updated_by` fields are self-reported by clients. The actual API key used for authentication is not recorded, making audit trails unreliable.
+**Status:** Phase 1 COMPLETE - Named API keys with identity tracking implemented.
 
-**Required changes:**
+**Problem:** Previously `created_by`/`updated_by` fields were self-reported by clients. The actual API key used for authentication was not recorded, making audit trails unreliable.
+
+**Phase 1 (Complete):** Config-based named API keys
+
+Services now use the authenticated identity from wip-auth instead of client-provided values:
+
+```python
+# Before (client could claim any identity)
+POST /api/document-store/documents
+{ "data": {...}, "created_by": "I can claim to be anyone" }
+
+# After (identity from authenticated API key)
+POST /api/document-store/documents
+{ "data": {...} }  # created_by set by service from API key identity
+```
+
+**Configuration options:**
+
+1. **Environment variable (JSON):**
+```bash
+WIP_AUTH_API_KEYS_JSON='[
+  {"name": "admin", "key": "secret123", "owner": "admin@wip.local", "groups": ["wip-admins"]},
+  {"name": "etl", "key": "etlkey456", "owner": "system:etl", "groups": ["wip-writers"]}
+]'
+```
+
+2. **JSON file:**
+```bash
+WIP_AUTH_API_KEYS_FILE=/etc/wip/api-keys.json
+```
+
+See `config/api-keys.example.json` for example configuration.
+
+**Phase 2 (Future):** Database-backed API key registry with:
+- CRUD API for key management
+- Key rotation support
+- Usage tracking and analytics
+
+**Remaining changes for full audit trail:
 
 1. **API Key Registry** - Store API keys with metadata:
    ```

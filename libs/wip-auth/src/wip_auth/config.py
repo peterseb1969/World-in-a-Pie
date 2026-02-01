@@ -86,6 +86,10 @@ class AuthConfig(BaseSettings):
         default=None,
         description="Single API key for backward compatibility (maps to 'legacy' key)"
     )
+    api_keys_json: str | None = Field(
+        default=None,
+        description="JSON array of API key definitions (alternative to file)"
+    )
     api_keys_file: str | None = Field(
         default=None,
         description="Path to JSON file containing API key definitions"
@@ -149,20 +153,64 @@ class AuthConfig(BaseSettings):
     def load_api_keys(self) -> list[APIKeyRecord]:
         """Load API key records from configuration.
 
-        Returns keys from both legacy_api_key and api_keys_file.
+        Returns keys from legacy_api_key, api_keys_json, and api_keys_file.
+
+        API keys can be defined in three ways:
+        1. WIP_AUTH_LEGACY_API_KEY - Single key for backward compatibility
+        2. WIP_AUTH_API_KEYS_JSON - JSON array of key definitions
+        3. WIP_AUTH_API_KEYS_FILE - Path to JSON file with key definitions
+
+        Example JSON format for api_keys_json:
+        [
+            {
+                "name": "admin-console",
+                "key": "plaintext_key_here",
+                "owner": "admin@wip.local",
+                "groups": ["wip-admins"]
+            },
+            {
+                "name": "etl-service",
+                "key": "another_key_here",
+                "owner": "system:etl",
+                "groups": ["wip-services"]
+            }
+        ]
+
+        Note: Keys in JSON can be provided as plaintext "key" (will be hashed)
+        or pre-hashed "key_hash". Plaintext keys are hashed on load.
         """
+        from .providers.api_key import hash_api_key
+
         keys: list[APIKeyRecord] = []
+        seen_names: set[str] = set()
 
         # Load legacy key if set
         if self.legacy_api_key:
-            from .providers.api_key import hash_api_key
             keys.append(APIKeyRecord(
                 name="legacy",
                 key_hash=hash_api_key(self.legacy_api_key, self.api_key_hash_salt),
-                owner="system",
+                owner="system:legacy",
                 groups=self.admin_groups,  # Legacy key gets admin access
                 description="Legacy API key from WIP_AUTH_LEGACY_API_KEY"
             ))
+            seen_names.add("legacy")
+
+        # Load keys from JSON environment variable
+        if self.api_keys_json:
+            try:
+                key_list = json.loads(self.api_keys_json)
+                for key_dict in key_list:
+                    key_record = self._parse_key_dict(key_dict, hash_api_key)
+                    if key_record.name in seen_names:
+                        # Skip duplicates (later sources override earlier)
+                        keys = [k for k in keys if k.name != key_record.name]
+                    keys.append(key_record)
+                    seen_names.add(key_record.name)
+            except json.JSONDecodeError as e:
+                import logging
+                logging.getLogger("wip_auth").warning(
+                    f"Failed to parse WIP_AUTH_API_KEYS_JSON: {e}"
+                )
 
         # Load keys from file if specified
         if self.api_keys_file:
@@ -171,9 +219,30 @@ class AuthConfig(BaseSettings):
                 with open(file_path) as f:
                     key_data = json.load(f)
                 for key_dict in key_data.get("keys", []):
-                    keys.append(APIKeyRecord(**key_dict))
+                    key_record = self._parse_key_dict(key_dict, hash_api_key)
+                    if key_record.name in seen_names:
+                        keys = [k for k in keys if k.name != key_record.name]
+                    keys.append(key_record)
+                    seen_names.add(key_record.name)
 
         return keys
+
+    def _parse_key_dict(self, key_dict: dict, hash_func) -> "APIKeyRecord":
+        """Parse a key dictionary, hashing plaintext keys if needed.
+
+        Args:
+            key_dict: Dictionary with key definition
+            hash_func: Function to hash plaintext keys
+
+        Returns:
+            APIKeyRecord with hashed key
+        """
+        # If plaintext key is provided, hash it
+        if "key" in key_dict and "key_hash" not in key_dict:
+            key_dict = key_dict.copy()
+            key_dict["key_hash"] = hash_func(key_dict.pop("key"), self.api_key_hash_salt)
+
+        return APIKeyRecord(**key_dict)
 
 
 def get_auth_config() -> AuthConfig:

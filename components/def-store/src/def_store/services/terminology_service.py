@@ -18,6 +18,10 @@ from ..models.api_models import (
 )
 from .registry_client import get_registry_client, RegistryError
 
+# Import identity helper from wip-auth
+# This returns the authenticated identity, not the client-provided value
+from ..api.auth import get_identity_string
+
 
 class TerminologyService:
     """Service for managing terminologies and terms."""
@@ -51,12 +55,15 @@ class TerminologyService:
         if existing:
             raise ValueError(f"Terminology with code '{request.code}' already exists")
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register with Registry to get ID
         client = get_registry_client()
         terminology_id = await client.register_terminology(
             code=request.code,
             name=request.name,
-            created_by=request.created_by
+            created_by=actor
         )
 
         # Create terminology document
@@ -69,7 +76,7 @@ class TerminologyService:
             allow_multiple=request.allow_multiple,
             extensible=request.extensible,
             metadata=request.metadata or TerminologyMetadata(),
-            created_by=request.created_by,
+            created_by=actor,
         )
         await terminology.insert()
 
@@ -193,8 +200,11 @@ class TerminologyService:
         if request.metadata is not None:
             terminology.metadata = request.metadata
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         terminology.updated_at = datetime.now(timezone.utc)
-        terminology.updated_by = request.updated_by
+        terminology.updated_by = actor
         await terminology.save()
 
         return TerminologyService._to_terminology_response(terminology)
@@ -202,7 +212,7 @@ class TerminologyService:
     @staticmethod
     async def delete_terminology(
         terminology_id: str,
-        updated_by: Optional[str] = None
+        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """
         Soft-delete a terminology (set status to inactive).
@@ -211,7 +221,7 @@ class TerminologyService:
 
         Args:
             terminology_id: Terminology to delete
-            updated_by: User performing the deletion
+            updated_by: Deprecated - uses authenticated identity
 
         Returns:
             True if deleted, False if not found
@@ -220,10 +230,13 @@ class TerminologyService:
         if not terminology:
             return False
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Deactivate terminology
         terminology.status = "inactive"
         terminology.updated_at = datetime.now(timezone.utc)
-        terminology.updated_by = updated_by
+        terminology.updated_by = actor
         await terminology.save()
 
         # Deactivate all terms
@@ -231,7 +244,7 @@ class TerminologyService:
             "$set": {
                 "status": "inactive",
                 "updated_at": datetime.now(timezone.utc),
-                "updated_by": updated_by
+                "updated_by": actor
             }
         })
 
@@ -274,13 +287,16 @@ class TerminologyService:
                 f"Term with code '{request.code}' already exists in terminology"
             )
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register with Registry to get ID
         client = get_registry_client()
         term_id = await client.register_term(
             terminology_id=terminology_id,
             code=request.code,
             value=request.value,
-            created_by=request.created_by
+            created_by=actor
         )
 
         # Create term document
@@ -296,7 +312,7 @@ class TerminologyService:
             parent_term_id=request.parent_term_id,
             translations=request.translations,
             metadata=request.metadata,
-            created_by=request.created_by,
+            created_by=actor,
         )
         await term.insert()
 
@@ -305,7 +321,7 @@ class TerminologyService:
             term_id=term_id,
             terminology_id=terminology_id,
             action="created",
-            changed_by=request.created_by,
+            changed_by=actor,
             new_values={
                 "code": request.code,
                 "value": request.value,
@@ -325,7 +341,7 @@ class TerminologyService:
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> list[BulkOperationResult]:
         """
         Create multiple terms in a terminology.
@@ -333,7 +349,7 @@ class TerminologyService:
         Args:
             terminology_id: Parent terminology ID
             terms: Terms to create
-            created_by: User creating the terms
+            created_by: Deprecated - uses authenticated identity
 
         Returns:
             List of operation results
@@ -343,12 +359,15 @@ class TerminologyService:
         if not terminology:
             raise ValueError(f"Terminology '{terminology_id}' not found")
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         # Register all terms with Registry
         client = get_registry_client()
         registry_results = await client.register_terms_bulk(
             terminology_id=terminology_id,
             terms=[{"code": t.code, "value": t.value} for t in terms],
-            created_by=created_by
+            created_by=actor
         )
 
         results = []
@@ -391,7 +410,7 @@ class TerminologyService:
                 parent_term_id=term_req.parent_term_id,
                 translations=term_req.translations,
                 metadata=term_req.metadata,
-                created_by=created_by,
+                created_by=actor,
             )
             await term.insert()
 
@@ -400,7 +419,7 @@ class TerminologyService:
                 term_id=term_id,
                 terminology_id=terminology_id,
                 action="created",
-                changed_by=created_by,
+                changed_by=actor,
                 new_values={
                     "code": term_req.code,
                     "value": term_req.value,
@@ -584,8 +603,11 @@ class TerminologyService:
             term.metadata.update(request.metadata)
             new_values["metadata"] = term.metadata
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         term.updated_at = datetime.now(timezone.utc)
-        term.updated_by = request.updated_by
+        term.updated_by = actor
         await term.save()
 
         # Create audit log entry if there were changes
@@ -594,7 +616,7 @@ class TerminologyService:
                 term_id=term_id,
                 terminology_id=term.terminology_id,
                 action="updated",
-                changed_by=request.updated_by,
+                changed_by=actor,
                 changed_fields=changed_fields,
                 previous_values=previous_values,
                 new_values=new_values
@@ -614,11 +636,14 @@ class TerminologyService:
         if not term:
             return None
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         term.status = "deprecated"
         term.deprecated_reason = request.reason
         term.replaced_by_term_id = request.replaced_by_term_id
         term.updated_at = datetime.now(timezone.utc)
-        term.updated_by = request.updated_by
+        term.updated_by = actor
         await term.save()
 
         # Update terminology term count
@@ -635,16 +660,19 @@ class TerminologyService:
     @staticmethod
     async def delete_term(
         term_id: str,
-        updated_by: Optional[str] = None
+        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Soft-delete a term."""
         term = await Term.find_one({"term_id": term_id})
         if not term:
             return False
 
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
         term.status = "inactive"
         term.updated_at = datetime.now(timezone.utc)
-        term.updated_by = updated_by
+        term.updated_by = actor
         await term.save()
 
         # Update terminology term count

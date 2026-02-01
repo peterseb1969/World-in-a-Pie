@@ -54,3 +54,62 @@ def get_identity_string() -> str:
     if identity:
         return identity.identity_string
     return "anonymous"
+
+
+def get_identity_owner() -> str | None:
+    """Get the owner of the current identity.
+
+    For API keys, this is the configured owner (e.g., "admin@wip.local").
+    For JWT users, this is the email or user_id.
+    For anonymous, returns None.
+
+    Returns:
+        Owner string or None
+    """
+    identity = get_current_identity()
+    if identity is None:
+        return None
+
+    # For API keys, owner is in raw_claims
+    if identity.auth_method == "api_key":
+        raw_claims = identity.raw_claims or {}
+        return raw_claims.get("owner")
+
+    # For JWT users, prefer email, fall back to user_id
+    if identity.auth_method == "jwt":
+        return identity.email or identity.user_id
+
+    return None
+
+
+def get_actor_info() -> dict:
+    """Get complete actor information for audit logging.
+
+    Returns a dictionary with:
+    - actor: The identity string (apikey:name or user:id)
+    - actor_owner: The human-readable owner (email or configured owner)
+    - auth_method: How the actor was authenticated
+
+    Returns:
+        Dictionary with actor information
+    """
+    identity = get_current_identity()
+    if identity is None:
+        return {
+            "actor": "anonymous",
+            "actor_owner": None,
+            "auth_method": "none",
+        }
+
+    owner = None
+    if identity.auth_method == "api_key":
+        raw_claims = identity.raw_claims or {}
+        owner = raw_claims.get("owner")
+    else:
+        owner = identity.email or identity.user_id
+
+    return {
+        "actor": identity.identity_string,
+        "actor_owner": owner,
+        "auth_method": identity.auth_method,
+    }
