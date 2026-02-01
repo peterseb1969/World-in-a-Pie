@@ -15,9 +15,26 @@ class FieldType(str, Enum):
     BOOLEAN = "boolean"
     DATE = "date"
     DATETIME = "datetime"
-    TERM = "term"  # Reference to Def-Store terminology
+    TERM = "term"  # Reference to Def-Store terminology (legacy, use REFERENCE instead)
+    REFERENCE = "reference"  # Unified reference to any WIP entity
     OBJECT = "object"  # Nested template
     ARRAY = "array"  # Collection of items
+
+
+class ReferenceType(str, Enum):
+    """Types of entities that can be referenced."""
+
+    DOCUMENT = "document"  # Reference to another document
+    TERM = "term"  # Reference to a term in a terminology
+    TERMINOLOGY = "terminology"  # Reference to a terminology itself
+    TEMPLATE = "template"  # Reference to a template itself
+
+
+class VersionStrategy(str, Enum):
+    """How references are resolved over time."""
+
+    LATEST = "latest"  # Always resolve to current active version
+    PINNED = "pinned"  # Lock to specific version at creation time
 
 
 class FieldValidation(BaseModel):
@@ -75,7 +92,7 @@ class FieldDefinition(BaseModel):
         description="Default value if not provided"
     )
 
-    # For type=term: reference to Def-Store terminology
+    # For type=term: reference to Def-Store terminology (legacy)
     terminology_ref: Optional[str] = Field(
         None,
         description="Reference to terminology ID or code (for term type)"
@@ -85,6 +102,24 @@ class FieldDefinition(BaseModel):
     template_ref: Optional[str] = Field(
         None,
         description="Reference to nested template ID (for object type)"
+    )
+
+    # For type=reference: unified reference configuration
+    reference_type: Optional[ReferenceType] = Field(
+        None,
+        description="Type of entity being referenced (for reference type)"
+    )
+    target_templates: Optional[list[str]] = Field(
+        None,
+        description="Allowed template codes for document references"
+    )
+    target_terminologies: Optional[list[str]] = Field(
+        None,
+        description="Allowed terminology codes for term references"
+    )
+    version_strategy: Optional[VersionStrategy] = Field(
+        None,
+        description="How to resolve reference versions (default: latest)"
     )
 
     # For type=array: item configuration

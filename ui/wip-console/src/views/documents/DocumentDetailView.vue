@@ -259,6 +259,25 @@ function getFieldValue(fieldPath: string): string {
   return String(value ?? '-')
 }
 
+function getResolvedId(ref: { reference_type: string; resolved: Record<string, unknown> }): string {
+  // Extract the primary resolved ID based on reference type
+  const resolved = ref.resolved
+  if (!resolved) return '-'
+
+  switch (ref.reference_type) {
+    case 'document':
+      return String(resolved.document_id ?? '-')
+    case 'term':
+      return String(resolved.term_id ?? '-')
+    case 'terminology':
+      return String(resolved.terminology_id ?? '-')
+    case 'template':
+      return String(resolved.template_id ?? '-')
+    default:
+      return '-'
+  }
+}
+
 // Import template store client for direct use
 import { templateStoreClient } from '@/api/client'
 
@@ -446,7 +465,7 @@ onMounted(async () => {
               </div>
 
               <h4>Term References</h4>
-              <div v-if="!isCreateMode && documentStore.currentDocument?.term_references && Object.keys(documentStore.currentDocument.term_references).length > 0" class="term-references">
+              <div v-if="!isCreateMode && documentStore.currentDocument?.term_references?.length > 0" class="term-references">
                 <p class="term-references-description">
                   Resolved term IDs for terminology fields. Original values are preserved in the data, these are the canonical term identifiers.
                 </p>
@@ -456,22 +475,49 @@ onMounted(async () => {
                       <th>Field</th>
                       <th>Original Value</th>
                       <th>Term ID</th>
+                      <th>Matched Via</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="(termId, field) in documentStore.currentDocument.term_references" :key="field">
-                      <td><code>{{ field }}</code></td>
-                      <td>{{ getFieldValue(field) }}</td>
-                      <td>
-                        <code v-if="Array.isArray(termId)">{{ termId.join(', ') }}</code>
-                        <code v-else>{{ termId }}</code>
-                      </td>
+                    <tr v-for="ref in documentStore.currentDocument.term_references" :key="ref.field_path">
+                      <td><code>{{ ref.field_path }}</code></td>
+                      <td>{{ getFieldValue(ref.field_path) }}</td>
+                      <td><code>{{ ref.term_id }}</code></td>
+                      <td>{{ ref.matched_via || '-' }}</td>
                     </tr>
                   </tbody>
                 </table>
               </div>
               <div v-else-if="!isCreateMode" class="no-term-refs">
                 <p>No term fields in this document</p>
+              </div>
+
+              <h4>References</h4>
+              <div v-if="!isCreateMode && documentStore.currentDocument?.references?.length > 0" class="references">
+                <p class="references-description">
+                  Resolved references to other entities (documents, terms, terminologies, templates).
+                </p>
+                <table class="references-table">
+                  <thead>
+                    <tr>
+                      <th>Field</th>
+                      <th>Type</th>
+                      <th>Lookup Value</th>
+                      <th>Resolved ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="ref in documentStore.currentDocument.references" :key="ref.field_path">
+                      <td><code>{{ ref.field_path }}</code></td>
+                      <td>{{ ref.reference_type }}</td>
+                      <td>{{ ref.lookup_value }}</td>
+                      <td><code>{{ getResolvedId(ref) }}</code></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else-if="!isCreateMode" class="no-refs">
+                <p>No reference fields in this document</p>
               </div>
 
               <h4>Template Information</h4>
@@ -797,6 +843,51 @@ onMounted(async () => {
   padding: 0.125rem 0.375rem;
   border-radius: var(--p-border-radius);
   font-size: 0.75rem;
+}
+
+.references {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.references-description {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  margin: 0;
+}
+
+.references-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.references-table th,
+.references-table td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--p-surface-200);
+}
+
+.references-table th {
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.references-table code {
+  background-color: var(--p-surface-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: var(--p-border-radius);
+  font-size: 0.75rem;
+}
+
+.no-refs {
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
 }
 
 .raw-json {

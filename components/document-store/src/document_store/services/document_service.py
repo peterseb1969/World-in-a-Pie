@@ -184,6 +184,7 @@ class DocumentService:
                 version=1,
                 data=request.data,
                 term_references=validation_result.term_references,
+                references=validation_result.references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=actor,
@@ -263,6 +264,7 @@ class DocumentService:
                 version=new_version,
                 data=request.data,
                 term_references=validation_result.term_references,
+                references=validation_result.references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=actor,
@@ -321,6 +323,7 @@ class DocumentService:
             "version": document.version,
             "data": document.data,
             "term_references": document.term_references,
+            "references": document.references,
             "status": document.status.value if hasattr(document.status, 'value') else document.status,
             "created_at": document.created_at.isoformat() if document.created_at else None,
             "created_by": document.created_by,
@@ -778,6 +781,7 @@ class DocumentService:
                     version=new_version,
                     data=item.data,
                     term_references=validation_result.term_references,
+                    references=validation_result.references,
                     status=DocumentStatus.ACTIVE,
                     created_at=now,
                     created_by=actor,
@@ -861,7 +865,8 @@ class DocumentService:
             warnings=result.warnings,
             identity_hash=result.identity_hash,
             template_version=result.template_version,
-            term_references=result.term_references
+            term_references=result.term_references,
+            references=result.references
         )
 
     async def _to_response(self, document: Document) -> DocumentResponse:
@@ -890,6 +895,7 @@ class DocumentService:
             version=document.version,
             data=document.data,
             term_references=document.term_references,
+            references=document.references,
             status=document.status,
             created_at=document.created_at,
             created_by=document.created_by,

@@ -42,9 +42,13 @@ class DocumentResponse(BaseModel):
     identity_hash: str
     version: int
     data: dict[str, Any]
-    term_references: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Resolved term IDs for term fields"
+    term_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved term IDs for term fields (legacy)"
+    )
+    references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved references for reference type fields"
     )
     status: DocumentStatus
     created_at: datetime
@@ -301,7 +305,11 @@ class ValidationResponse(BaseModel):
         None,
         description="Template version used for validation"
     )
-    term_references: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Resolved term IDs for term fields"
+    term_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved term IDs for term fields (legacy)"
+    )
+    references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved references for reference type fields"
     )

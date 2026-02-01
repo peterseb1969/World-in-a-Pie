@@ -23,7 +23,10 @@ class ValidationResult:
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
         self.template_version: Optional[int] = None
-        self.term_references: dict[str, Any] = {}  # field_path -> term_id
+        # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
+        self.term_references: list[dict[str, Any]] = []
+        # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
+        self.references: list[dict[str, Any]] = []
         self.timing: dict[str, float] = {}  # stage -> milliseconds
 
     def add_error(
@@ -55,6 +58,7 @@ class ValidationResult:
             "identity_hash": self.identity_hash,
             "template_version": self.template_version,
             "term_references": self.term_references,
+            "references": self.references,
             "timing": self.timing
         }
 
@@ -63,13 +67,14 @@ class ValidationService:
     """
     Service for validating documents against templates.
 
-    Implements a 6-stage validation pipeline:
+    Implements a 7-stage validation pipeline:
     1. Structural - Valid dict, required envelope fields
     2. Template Resolution - Fetch template, check active, resolve inheritance
     3. Field Validation - Mandatory fields, type checking, field-level constraints
-    4. Term Validation - Validate term values via Def-Store
-    5. Rule Evaluation - Cross-field rules
-    6. Identity Computation - Extract identity fields, compute hash
+    4. Term Validation - Validate term values via Def-Store (legacy term fields)
+    5. Reference Validation - Validate and resolve reference fields
+    6. Rule Evaluation - Cross-field rules
+    7. Identity Computation - Extract identity fields, compute hash
 
     Includes timing instrumentation for performance analysis.
     """
@@ -83,6 +88,7 @@ class ValidationService:
         "date": "_validate_date",
         "datetime": "_validate_datetime",
         "term": "_validate_term",
+        "reference": "_validate_reference",
         "object": "_validate_object",
         "array": "_validate_array",
     }
@@ -177,7 +183,7 @@ class ValidationService:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
-        # Stage 4: Term validation (batched for efficiency)
+        # Stage 4: Term validation (batched for efficiency) - legacy term fields
         start = time.perf_counter()
         await self._validate_terms(data, template, result)
         result.timing["4_term_validation"] = (time.perf_counter() - start) * 1000
@@ -185,18 +191,26 @@ class ValidationService:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
-        # Stage 5: Rule evaluation
+        # Stage 5: Reference validation - unified reference fields
         start = time.perf_counter()
-        self._evaluate_rules(data, template, result)
-        result.timing["5_rule_evaluation"] = (time.perf_counter() - start) * 1000
+        await self._validate_references(data, template, result)
+        result.timing["5_reference_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
 
-        # Stage 6: Identity computation
+        # Stage 6: Rule evaluation
+        start = time.perf_counter()
+        self._evaluate_rules(data, template, result)
+        result.timing["6_rule_evaluation"] = (time.perf_counter() - start) * 1000
+        if not result.valid:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
+            return result
+
+        # Stage 7: Identity computation
         start = time.perf_counter()
         self._compute_identity(data, template, result)
-        result.timing["6_identity_computation"] = (time.perf_counter() - start) * 1000
+        result.timing["7_identity_computation"] = (time.perf_counter() - start) * 1000
 
         result.timing["total"] = (time.perf_counter() - total_start) * 1000
 
@@ -536,6 +550,64 @@ class ValidationService:
                 field=field_path
             )
 
+    async def _validate_reference(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        template: dict[str, Any],
+        result: ValidationResult,
+        validation: dict[str, Any]
+    ):
+        """
+        Validate reference field (will be batch resolved later).
+
+        Reference values can be:
+        - document_id (UUID7 format) - direct lookup
+        - identity_hash (prefixed with 'hash:') - lookup by hash
+        - business key (string or dict for composite) - resolve via identity fields
+        """
+        reference_type = field.get("reference_type")
+
+        if reference_type == "document":
+            # Document refs accept string (id, hash, or business key) or dict (composite business key)
+            if not isinstance(value, (str, dict)):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be a string or object (document reference)",
+                    field=field_path
+                )
+        elif reference_type == "term":
+            # Term refs accept string (term code/value/alias)
+            if not isinstance(value, str):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be a string (term reference)",
+                    field=field_path
+                )
+        elif reference_type == "terminology":
+            # Terminology refs accept string (code)
+            if not isinstance(value, str):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be a string (terminology code)",
+                    field=field_path
+                )
+        elif reference_type == "template":
+            # Template refs accept string (code or ID)
+            if not isinstance(value, str):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be a string (template code)",
+                    field=field_path
+                )
+        else:
+            result.add_error(
+                code="invalid_reference_type",
+                message=f"Field '{field_path}' has invalid reference_type '{reference_type}'",
+                field=field_path
+            )
+
     async def _validate_object(
         self,
         value: Any,
@@ -686,24 +758,15 @@ class ValidationService:
                         }
                     )
                 else:
-                    # Extract term_id from matched_term and store in term_references
+                    # Extract term_id from matched_term and store in term_references (array format)
                     matched_term = validation_result.get("matched_term")
                     if matched_term and matched_term.get("term_id"):
-                        term_id = matched_term["term_id"]
-
-                        # Handle array fields - store as list
-                        if "[" in field_path:
-                            # Extract base path (e.g., "languages" from "languages[0]")
-                            base_path = field_path.split("[")[0]
-                            if base_path not in result.term_references:
-                                result.term_references[base_path] = []
-                            # Ensure list is long enough
-                            index = int(field_path.split("[")[1].rstrip("]"))
-                            while len(result.term_references[base_path]) <= index:
-                                result.term_references[base_path].append(None)
-                            result.term_references[base_path][index] = term_id
-                        else:
-                            result.term_references[field_path] = term_id
+                        result.term_references.append({
+                            "field_path": field_path,
+                            "term_id": matched_term["term_id"],
+                            "terminology_ref": term_val["terminology_ref"],
+                            "matched_via": validation_result.get("matched_via"),
+                        })
 
         except DefStoreError as e:
             # If Def-Store is unavailable, add a warning but don't fail
@@ -750,6 +813,367 @@ class ValidationService:
                             })
 
         return term_values
+
+    async def _validate_references(
+        self,
+        data: dict[str, Any],
+        template: dict[str, Any],
+        result: ValidationResult
+    ):
+        """
+        Validate and resolve reference fields.
+
+        Handles document references by looking up the target document
+        by document_id, identity_hash, or business key.
+        """
+        from .document_service import DocumentService  # Import here to avoid circular import
+        from ..models.document import Document
+
+        # Collect all reference values to validate
+        ref_validations = self._collect_reference_values(data, template.get("fields", []), "")
+
+        for ref_val in ref_validations:
+            field_path = ref_val["field_path"]
+            reference_type = ref_val["reference_type"]
+            value = ref_val["value"]
+            target_templates = ref_val.get("target_templates", [])
+            target_terminologies = ref_val.get("target_terminologies", [])
+            version_strategy = ref_val.get("version_strategy", "latest")
+
+            try:
+                if reference_type == "document":
+                    # Resolve document reference
+                    resolved = await self._resolve_document_reference(
+                        value, target_templates, result, field_path
+                    )
+                    if resolved:
+                        result.references.append({
+                            "field_path": field_path,
+                            "reference_type": "document",
+                            "lookup_value": value if isinstance(value, str) else str(value),
+                            "version_strategy": version_strategy,
+                            "resolved": resolved,
+                        })
+
+                elif reference_type == "term":
+                    # Resolve term reference (similar to legacy term validation)
+                    if target_terminologies:
+                        resolved = await self._resolve_term_reference(
+                            value, target_terminologies, result, field_path
+                        )
+                        if resolved:
+                            result.references.append({
+                                "field_path": field_path,
+                                "reference_type": "term",
+                                "lookup_value": value,
+                                "version_strategy": version_strategy,
+                                "resolved": resolved,
+                            })
+                            # Also populate term_references for backward compatibility
+                            result.term_references.append({
+                                "field_path": field_path,
+                                "term_id": resolved.get("term_id"),
+                                "terminology_ref": resolved.get("terminology_code"),
+                                "matched_via": resolved.get("matched_via"),
+                            })
+
+                elif reference_type == "terminology":
+                    # Resolve terminology reference
+                    resolved = await self._resolve_terminology_reference(
+                        value, result, field_path
+                    )
+                    if resolved:
+                        result.references.append({
+                            "field_path": field_path,
+                            "reference_type": "terminology",
+                            "lookup_value": value,
+                            "version_strategy": version_strategy,
+                            "resolved": resolved,
+                        })
+
+                elif reference_type == "template":
+                    # Resolve template reference
+                    resolved = await self._resolve_template_reference(
+                        value, result, field_path
+                    )
+                    if resolved:
+                        result.references.append({
+                            "field_path": field_path,
+                            "reference_type": "template",
+                            "lookup_value": value,
+                            "version_strategy": version_strategy,
+                            "resolved": resolved,
+                        })
+
+            except Exception as e:
+                result.add_warning(f"Could not resolve reference for field '{field_path}': {str(e)}")
+
+    async def _resolve_document_reference(
+        self,
+        value: Any,
+        target_templates: list[str],
+        result: ValidationResult,
+        field_path: str
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a document reference by ID, hash, or business key."""
+        from ..models.document import Document, DocumentStatus
+
+        # Determine lookup method based on value format
+        if isinstance(value, str):
+            if self._is_uuid7(value):
+                # Direct document_id lookup
+                doc = await Document.find_one({
+                    "document_id": value,
+                    "status": DocumentStatus.ACTIVE
+                })
+                if not doc:
+                    # Try inactive too for pinned references
+                    doc = await Document.find_one({"document_id": value})
+            elif value.startswith("hash:"):
+                # Identity hash lookup
+                identity_hash = value[5:]  # Remove "hash:" prefix
+                doc = await Document.find_one({
+                    "identity_hash": identity_hash,
+                    "status": DocumentStatus.ACTIVE
+                })
+            else:
+                # Business key lookup - need to find by template's identity fields
+                doc = await self._lookup_by_business_key(value, target_templates)
+        elif isinstance(value, dict):
+            # Composite business key
+            doc = await self._lookup_by_business_key(value, target_templates)
+        else:
+            result.add_error(
+                code="invalid_reference_value",
+                message=f"Invalid reference value for field '{field_path}'",
+                field=field_path
+            )
+            return None
+
+        if not doc:
+            result.add_error(
+                code="reference_not_found",
+                message=f"Referenced document not found for field '{field_path}'",
+                field=field_path,
+                details={"value": str(value), "target_templates": target_templates}
+            )
+            return None
+
+        # Verify template matches target_templates
+        # Look up the template code for this document
+        try:
+            client = get_template_store_client()
+            doc_template = await client.get_template(doc.template_id)
+            if doc_template and target_templates:
+                if doc_template.get("code") not in target_templates:
+                    result.add_error(
+                        code="invalid_reference_template",
+                        message=f"Referenced document is '{doc_template.get('code')}', expected one of {target_templates}",
+                        field=field_path
+                    )
+                    return None
+        except TemplateStoreError:
+            result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
+
+        # Check if document is inactive (warning only)
+        if doc.status != DocumentStatus.ACTIVE:
+            result.add_warning(f"Referenced document for field '{field_path}' is {doc.status.value}")
+
+        return {
+            "document_id": doc.document_id,
+            "identity_hash": doc.identity_hash,
+            "template_id": doc.template_id,
+            "version": doc.version
+        }
+
+    async def _lookup_by_business_key(
+        self,
+        value: Any,
+        target_templates: list[str]
+    ) -> Optional[Any]:
+        """Look up a document by business key value(s)."""
+        from ..models.document import Document, DocumentStatus
+
+        # For each target template, try to find a matching document
+        client = get_template_store_client()
+
+        for tpl_code in target_templates:
+            try:
+                template = await client.get_template(template_code=tpl_code)
+                if not template:
+                    continue
+
+                identity_fields = template.get("identity_fields", [])
+                if not identity_fields:
+                    continue
+
+                # Build query based on identity fields
+                if isinstance(value, str) and len(identity_fields) == 1:
+                    # Single identity field - value is the direct value
+                    query = {
+                        f"data.{identity_fields[0]}": value,
+                        "status": DocumentStatus.ACTIVE
+                    }
+                elif isinstance(value, dict):
+                    # Composite identity - value is a dict
+                    query = {"status": DocumentStatus.ACTIVE}
+                    for field_name in identity_fields:
+                        if field_name in value:
+                            query[f"data.{field_name}"] = value[field_name]
+                else:
+                    continue
+
+                doc = await Document.find_one(query)
+                if doc:
+                    return doc
+
+            except TemplateStoreError:
+                continue
+
+        return None
+
+    async def _resolve_term_reference(
+        self,
+        value: str,
+        target_terminologies: list[str],
+        result: ValidationResult,
+        field_path: str
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a term reference."""
+        client = get_def_store_client()
+
+        # Try each terminology until we find a match
+        for terminology_code in target_terminologies:
+            try:
+                validation_result = await client.validate_value(terminology_code, value)
+                if validation_result.get("valid"):
+                    matched_term = validation_result.get("matched_term", {})
+                    return {
+                        "term_id": matched_term.get("term_id"),
+                        "terminology_code": terminology_code,
+                        "matched_via": validation_result.get("matched_via")
+                    }
+            except DefStoreError:
+                continue
+
+        result.add_error(
+            code="invalid_term_reference",
+            message=f"Term '{value}' not found in terminologies {target_terminologies}",
+            field=field_path
+        )
+        return None
+
+    async def _resolve_terminology_reference(
+        self,
+        value: str,
+        result: ValidationResult,
+        field_path: str
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a terminology reference."""
+        client = get_def_store_client()
+
+        try:
+            exists = await client.terminology_exists(value)
+            if exists:
+                terminology = await client.get_terminology(value)
+                if terminology:
+                    return {
+                        "terminology_id": terminology.get("terminology_id"),
+                        "terminology_code": terminology.get("code"),
+                    }
+        except DefStoreError:
+            pass
+
+        result.add_error(
+            code="invalid_terminology_reference",
+            message=f"Terminology '{value}' not found",
+            field=field_path
+        )
+        return None
+
+    async def _resolve_template_reference(
+        self,
+        value: str,
+        result: ValidationResult,
+        field_path: str
+    ) -> Optional[dict[str, Any]]:
+        """Resolve a template reference."""
+        client = get_template_store_client()
+
+        try:
+            template = await client.get_template(template_id=value)
+            if not template:
+                template = await client.get_template(template_code=value)
+
+            if template:
+                return {
+                    "template_id": template.get("template_id"),
+                    "template_code": template.get("code"),
+                    "version": template.get("version")
+                }
+        except TemplateStoreError:
+            pass
+
+        result.add_error(
+            code="invalid_template_reference",
+            message=f"Template '{value}' not found",
+            field=field_path
+        )
+        return None
+
+    def _is_uuid7(self, value: str) -> bool:
+        """Check if a value looks like a UUID7."""
+        import re
+        # UUID format: 8-4-4-4-12 hex digits
+        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+        return bool(re.match(uuid_pattern, value.lower()))
+
+    def _collect_reference_values(
+        self,
+        data: dict[str, Any],
+        fields: list[dict[str, Any]],
+        prefix: str
+    ) -> list[dict[str, Any]]:
+        """Recursively collect reference field values for resolution."""
+        ref_values = []
+
+        for field in fields:
+            field_name = field["name"]
+            full_path = f"{prefix}{field_name}" if prefix else field_name
+
+            if field_name not in data:
+                continue
+
+            value = data[field_name]
+            if value is None:
+                continue
+
+            field_type = field.get("type", "string")
+
+            if field_type == "reference":
+                ref_values.append({
+                    "field_path": full_path,
+                    "reference_type": field.get("reference_type"),
+                    "target_templates": field.get("target_templates", []),
+                    "target_terminologies": field.get("target_terminologies", []),
+                    "version_strategy": field.get("version_strategy", "latest"),
+                    "value": value
+                })
+
+            elif field_type == "array" and field.get("array_item_type") == "reference":
+                # Array of references
+                if isinstance(value, list):
+                    for i, item in enumerate(value):
+                        ref_values.append({
+                            "field_path": f"{full_path}[{i}]",
+                            "reference_type": field.get("reference_type"),
+                            "target_templates": field.get("target_templates", []),
+                            "target_terminologies": field.get("target_terminologies", []),
+                            "version_strategy": field.get("version_strategy", "latest"),
+                            "value": item
+                        })
+
+        return ref_values
 
     def _evaluate_rules(
         self,

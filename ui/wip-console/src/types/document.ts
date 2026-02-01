@@ -10,6 +10,37 @@ export interface DocumentMetadata {
   custom: Record<string, unknown>
 }
 
+// Term reference entry (array format for indexing)
+export interface TermReference {
+  field_path: string
+  term_id: string
+  terminology_ref?: string
+  matched_via?: string
+}
+
+// Reference entry (array format for indexing)
+export interface Reference {
+  field_path: string
+  reference_type: 'document' | 'term' | 'terminology' | 'template'
+  lookup_value: string
+  version_strategy?: 'latest' | 'pinned'
+  resolved: {
+    // For document references
+    document_id?: string
+    identity_hash?: string
+    template_id?: string
+    version?: number
+    // For term references
+    term_id?: string
+    terminology_code?: string
+    matched_via?: string
+    // For terminology references
+    terminology_id?: string
+    // For template references
+    template_code?: string
+  }
+}
+
 export interface Document {
   document_id: string
   template_id: string
@@ -17,7 +48,8 @@ export interface Document {
   identity_hash: string
   version: number
   data: Record<string, unknown>
-  term_references: Record<string, string | string[]>  // field_path -> term_id or array of term_ids
+  term_references: TermReference[]  // Array format for indexing
+  references: Reference[]  // Unified references
   status: DocumentStatus
   created_at: string
   created_by: string | null

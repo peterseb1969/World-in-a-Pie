@@ -625,6 +625,60 @@ class TemplateService:
                             message=f"Template '{field.array_template_ref}' not found"
                         ))
 
+                # Check reference type fields
+                if field.type.value == "reference":
+                    # reference_type is required
+                    if not field.reference_type:
+                        errors.append(ValidationError(
+                            field=f"fields.{field.name}.reference_type",
+                            code="required",
+                            message="reference_type is required for reference fields"
+                        ))
+                    else:
+                        # Validate target_templates for document references
+                        if field.reference_type.value == "document":
+                            if not field.target_templates:
+                                errors.append(ValidationError(
+                                    field=f"fields.{field.name}.target_templates",
+                                    code="required",
+                                    message="target_templates is required for document references"
+                                ))
+                            elif check_templates:
+                                for tpl_code in field.target_templates:
+                                    ref_tpl = await Template.find_one({"code": tpl_code})
+                                    if not ref_tpl:
+                                        errors.append(ValidationError(
+                                            field=f"fields.{field.name}.target_templates",
+                                            code="invalid_reference",
+                                            message=f"Template '{tpl_code}' not found"
+                                        ))
+
+                        # Validate target_terminologies for term references
+                        elif field.reference_type.value == "term":
+                            if not field.target_terminologies:
+                                errors.append(ValidationError(
+                                    field=f"fields.{field.name}.target_terminologies",
+                                    code="required",
+                                    message="target_terminologies is required for term references"
+                                ))
+                            elif check_terminologies:
+                                def_store = get_def_store_client()
+                                for term_code in field.target_terminologies:
+                                    try:
+                                        exists = await def_store.terminology_exists(term_code)
+                                        if not exists:
+                                            errors.append(ValidationError(
+                                                field=f"fields.{field.name}.target_terminologies",
+                                                code="invalid_reference",
+                                                message=f"Terminology '{term_code}' not found or inactive"
+                                            ))
+                                    except DefStoreError as e:
+                                        warnings.append(ValidationWarning(
+                                            field=f"fields.{field.name}.target_terminologies",
+                                            code="validation_failed",
+                                            message=f"Could not validate terminology: {str(e)}"
+                                        ))
+
         return ValidateTemplateResponse(
             valid=len(errors) == 0,
             template_id=template_id,

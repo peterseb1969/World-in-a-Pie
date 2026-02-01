@@ -79,10 +79,18 @@ class Document(BeanieDocument):
         description="Document content conforming to template"
     )
 
-    # Term references - resolved term IDs for term fields
-    term_references: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Resolved term IDs for term fields (field_path -> term_id or list of term_ids)"
+    # Term references - resolved term IDs for term fields (legacy, use references instead)
+    # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
+    term_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved term IDs for term fields"
+    )
+
+    # Unified references - resolved references for all reference type fields
+    # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
+    references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved references for reference type fields"
     )
 
     # Lifecycle
@@ -128,5 +136,37 @@ class Document(BeanieDocument):
             IndexModel(
                 [("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
                 name="template_status_time_idx"
+            ),
+            # Term reference reverse lookups (find documents referencing a term)
+            IndexModel(
+                [("term_references.term_id", 1)],
+                name="term_references_term_id_idx",
+                sparse=True
+            ),
+            # Reference reverse lookups (find documents referencing another document)
+            IndexModel(
+                [("references.resolved.document_id", 1)],
+                name="references_document_id_idx",
+                sparse=True
+            ),
+            IndexModel(
+                [("references.resolved.identity_hash", 1)],
+                name="references_identity_hash_idx",
+                sparse=True
+            ),
+            IndexModel(
+                [("references.resolved.term_id", 1)],
+                name="references_term_id_idx",
+                sparse=True
+            ),
+            IndexModel(
+                [("references.resolved.template_id", 1)],
+                name="references_template_id_idx",
+                sparse=True
+            ),
+            IndexModel(
+                [("references.resolved.terminology_id", 1)],
+                name="references_terminology_id_idx",
+                sparse=True
             ),
         ]
