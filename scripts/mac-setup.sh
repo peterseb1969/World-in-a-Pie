@@ -327,8 +327,10 @@ if [ "$DEPLOY_MODE" = "full" ]; then
     echo "  - Click 'Login with Dex' -> admin@wip.local / admin123"
     echo "  - Or use API Key: $API_KEY"
 else
-    echo "Access WIP Console (HTTP only):"
+    echo "Access WIP Console (HTTP only - minimal mode):"
     echo "  http://localhost:3000"
+    echo ""
+    echo "  NOTE: Minimal mode is deprecated. Use --full for HTTPS + OIDC."
     echo ""
     echo "Login:"
     echo "  - Use API Key: $API_KEY"
