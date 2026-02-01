@@ -185,7 +185,24 @@ class DocumentTransformer:
             List of flat row dictionaries ready for PostgreSQL insert/upsert
         """
         data = document.get("data", {})
-        term_references = document.get("term_references", {})
+        term_references_list = document.get("term_references", [])
+
+        # Convert array format to dict for compatibility with existing flattening logic
+        # Array format: [{"field_path": "gender", "term_id": "T-001"}, ...]
+        # Dict format: {"gender": "T-001", ...}
+        term_references = {}
+        for ref in term_references_list:
+            field_path = ref.get("field_path", "")
+            term_id = ref.get("term_id", "")
+            if field_path and term_id:
+                # Handle array indices in field path (e.g., "languages[0]")
+                if "[" in field_path:
+                    base_path = field_path.split("[")[0]
+                    if base_path not in term_references:
+                        term_references[base_path] = []
+                    term_references[base_path].append(term_id)
+                else:
+                    term_references[field_path] = term_id
 
         # Base row with system columns
         base_row = {
@@ -220,7 +237,7 @@ class DocumentTransformer:
 
         # Store original JSON
         base_row["data_json"] = json.dumps(data)
-        base_row["term_references_json"] = json.dumps(term_references)
+        base_row["term_references_json"] = json.dumps(term_references_list)
 
         # Expand arrays if configured
         rows = self._expand_arrays(base_row, data, term_references)

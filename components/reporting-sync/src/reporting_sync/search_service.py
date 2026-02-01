@@ -854,21 +854,19 @@ class SearchService:
                         error="Template not found"
                     ))
 
-            # Get term references
-            term_refs = doc.get("term_references", {})
+            # Get term references (array format)
+            term_refs = doc.get("term_references", [])
             if term_refs:
                 # Collect all unique term IDs
                 term_ids = set()
                 term_field_map: dict[str, list[str]] = {}  # term_id -> [field_paths]
 
-                for field_path, term_id_or_list in term_refs.items():
-                    if isinstance(term_id_or_list, list):
-                        for tid in term_id_or_list:
-                            term_ids.add(tid)
-                            term_field_map.setdefault(tid, []).append(f"{field_path}[]")
-                    else:
-                        term_ids.add(term_id_or_list)
-                        term_field_map.setdefault(term_id_or_list, []).append(field_path)
+                for ref in term_refs:
+                    field_path = ref.get("field_path", "")
+                    term_id = ref.get("term_id", "")
+                    if term_id:
+                        term_ids.add(term_id)
+                        term_field_map.setdefault(term_id, []).append(field_path)
 
                 # Validate terms via Def-Store
                 for term_id in term_ids:
