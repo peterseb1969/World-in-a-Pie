@@ -117,6 +117,8 @@ async function loginWithOidcPassword() {
     await authStore.loginWithPassword(oidcUsername.value.trim(), oidcPassword.value)
     uiStore.showSuccess('Login Successful', `Welcome, ${authStore.currentUser?.name || authStore.currentUser?.email || 'User'}`)
     closeAuthDialog()
+    // Refresh dashboard data by navigating to home
+    router.push('/')
   } catch (err) {
     uiStore.showError('Login Failed', err instanceof Error ? err.message : 'Failed to login')
   }
@@ -126,8 +128,12 @@ function saveApiKey() {
   if (apiKeyInput.value.trim()) {
     authStore.setApiKey(apiKeyInput.value.trim())
     uiStore.showSuccess('API Key Saved', 'Your API key has been saved successfully')
+    closeAuthDialog()
+    // Refresh dashboard data by navigating to home
+    router.push('/')
+  } else {
+    closeAuthDialog()
   }
-  closeAuthDialog()
 }
 
 async function logout() {
@@ -135,6 +141,8 @@ async function logout() {
     await authStore.logout()
     uiStore.showInfo('Logged Out', 'You have been logged out successfully')
     closeAuthDialog()
+    // Redirect to dashboard after logout
+    router.push('/')
   } catch (err) {
     console.error('Logout error:', err)
   }

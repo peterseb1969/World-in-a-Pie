@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { watch, onMounted, computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useToast } from 'primevue/usetoast'
 import Toast from 'primevue/toast'
 import ConfirmDialog from 'primevue/confirmdialog'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import { useUiStore, useAuthStore } from '@/stores'
+import { setAuthErrorHandler } from '@/api/client'
 
 const route = useRoute()
+const router = useRouter()
 const toast = useToast()
 const uiStore = useUiStore()
 const authStore = useAuthStore()
@@ -20,6 +22,13 @@ const showLayout = computed(() => {
 // Initialize auth store on mount
 onMounted(async () => {
   await authStore.initialize()
+
+  // Set up auth error handler for API client
+  // When a 401/403 is received, clear auth and redirect to home
+  setAuthErrorHandler(() => {
+    authStore.logout()
+    router.push('/')
+  })
 })
 
 // Watch for toast messages and display them

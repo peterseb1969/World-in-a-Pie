@@ -52,6 +52,13 @@ export type AuthConfig = {
   value: string
 } | null
 
+// Callback for handling auth errors (set by the app to enable redirect)
+let onAuthError: (() => void) | null = null
+
+export function setAuthErrorHandler(handler: () => void) {
+  onAuthError = handler
+}
+
 // =============================================================================
 // BASE CLIENT WITH AUTH SUPPORT
 // =============================================================================
@@ -82,7 +89,21 @@ abstract class BaseApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError<ApiError>) => {
+        const status = error.response?.status
         const message = error.response?.data?.detail || error.message
+
+        // Handle auth errors (401 Unauthorized, 403 Forbidden)
+        if (status === 401 || status === 403) {
+          console.error(`[API] Auth error (${status}):`, message)
+          // Clear auth and trigger redirect via handler
+          this.auth = null
+          if (onAuthError) {
+            onAuthError()
+          }
+          // Return a user-friendly message without showing error toast
+          return Promise.reject(new Error('Session expired. Please log in again.'))
+        }
+
         return Promise.reject(new Error(message))
       }
     )
