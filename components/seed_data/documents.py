@@ -4,6 +4,7 @@ Document generation configurations and helpers.
 Defines document counts per template for each profile and provides
 helpers for generating batches of documents.
 """
+from __future__ import annotations
 
 from typing import Any
 from . import generators

@@ -4,6 +4,7 @@ Performance testing utilities and benchmark helpers.
 Provides tools for measuring API performance and generating
 benchmark reports.
 """
+from __future__ import annotations
 
 import time
 import statistics

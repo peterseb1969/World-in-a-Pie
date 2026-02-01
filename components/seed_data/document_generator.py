@@ -8,6 +8,7 @@ Usage:
     generator = DocumentGenerator()
     doc = generator.generate("PERSON", index=0)
 """
+from __future__ import annotations
 
 import random
 import string

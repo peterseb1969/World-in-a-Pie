@@ -20,6 +20,7 @@ Usage:
     if gen:
         product = gen(0)
 """
+from __future__ import annotations
 
 from typing import Any, Callable
 

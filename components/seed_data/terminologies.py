@@ -8,8 +8,10 @@ Contains 15 terminologies covering various use cases:
 - Workflow (DOC_STATUS, PRIORITY, SEVERITY)
 - E-commerce (PRODUCT_CATEGORY, PAYMENT_METHOD, UNIT_OF_MEASURE)
 - HR (EMPLOYMENT_TYPE)
+
 - Healthcare (BLOOD_TYPE)
 """
+from __future__ import annotations
 
 from typing import Any
 

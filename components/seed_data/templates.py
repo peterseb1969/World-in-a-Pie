@@ -7,6 +7,7 @@ Contains 20+ templates covering:
 - Inheritance testing (EMPLOYEE -> PERSON, MANAGER -> EMPLOYEE)
 - Edge cases (MINIMAL, ALL_TYPES, DEEP_NEST, LARGE_FIELDS, COMPLEX_RULES)
 """
+from __future__ import annotations
 
 from typing import Any
 
