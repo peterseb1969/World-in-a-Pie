@@ -1,5 +1,24 @@
 #!/bin/bash
-# WIP Raspberry Pi 4 Setup Script
+# ============================================================================
+# DEPRECATED: This script is deprecated in favor of the unified setup script.
+#
+# Please use the new unified setup.sh instead:
+#   ./scripts/setup.sh                                    # Auto-detect profile
+#   ./scripts/setup.sh --profile pi-standard              # Pi with OIDC
+#   ./scripts/setup.sh --profile pi-minimal               # Pi API keys only
+#   ./scripts/setup.sh --profile pi-large                 # Pi 5 8GB+ full stack
+#   ./scripts/setup.sh --hostname wip-pi.local            # With specific hostname
+#
+# The unified script provides:
+#   - Separate network mode (localhost/remote/both) and hardware profile
+#   - Auto-detection of Pi model and appropriate defaults
+#   - Template-based configuration generation
+#   - Better support for Pi 5 vs Pi 4 differences
+#
+# This script will continue to work but may be removed in a future version.
+# ============================================================================
+
+# WIP Raspberry Pi 4 Setup Script (DEPRECATED)
 # Run this on a fresh Pi to deploy the full WIP stack
 #
 # Usage:

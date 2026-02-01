@@ -1,0 +1,869 @@
+#!/bin/bash
+# WIP Unified Setup Script
+#
+# Configurable deployment for Mac, Raspberry Pi, or any Linux system.
+# Separates two independent concerns:
+#   1. Network Configuration - How users access the system
+#   2. Hardware Profile - What services run
+#
+# Usage:
+#   ./scripts/setup.sh --profile mac --network localhost
+#   ./scripts/setup.sh --profile pi-standard --network both --hostname wip-pi.local
+#   ./scripts/setup.sh --profile pi-minimal --network localhost
+#   ./scripts/setup.sh --help
+#
+# Network Modes:
+#   localhost - Only accessible from local machine (default for mac profile)
+#   remote    - Only accessible from network (requires --hostname)
+#   both      - Both localhost and network access (default for pi profiles)
+#
+# Hardware Profiles:
+#   mac         - Mac development with full stack + Mongo Express
+#   pi-minimal  - Pi with limited resources, API keys only
+#   pi-standard - Pi 4 (2-4GB) with full stack, no Mongo Express
+#   pi-large    - Pi 5 8GB+ with full stack + Mongo Express
+#   dev-minimal - Any platform, API keys only (no OIDC)
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_step() { echo -e "${BLUE}[STEP]${NC} $1"; }
+log_debug() { [ "$DEBUG" = "true" ] && echo -e "${CYAN}[DEBUG]${NC} $1"; }
+
+# Script location and project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Default configuration
+PROFILE=""
+NETWORK=""
+HOSTNAME=""
+HTTPS_PORT="8443"
+HTTP_PORT="8080"
+API_KEY="dev_master_key_for_testing"
+DEBUG="false"
+
+# Storage directory
+WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
+
+# Detect platform
+detect_platform() {
+    if [[ "$(uname)" == "Darwin" ]]; then
+        echo "mac"
+    elif [[ -f /proc/device-tree/model ]] && grep -qi "raspberry" /proc/device-tree/model 2>/dev/null; then
+        # Detect Pi model for appropriate defaults
+        if grep -qi "pi 5" /proc/device-tree/model 2>/dev/null; then
+            local mem_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+            if [ "$mem_kb" -gt 6000000 ]; then
+                echo "pi-large"
+            else
+                echo "pi-standard"
+            fi
+        else
+            echo "pi-standard"
+        fi
+    else
+        echo "linux"
+    fi
+}
+
+# Show help
+show_help() {
+    cat << EOF
+WIP Unified Setup Script
+
+Usage: $(basename "$0") [OPTIONS]
+
+Network Modes (--network):
+  localhost   Only accessible from local machine
+  remote      Only accessible from network (requires --hostname)
+  both        Both localhost and network access
+
+Hardware Profiles (--profile):
+  mac         Mac development - full stack + Mongo Express
+  pi-minimal  Pi minimal - API keys only, no OIDC (~80MB less RAM)
+  pi-standard Pi standard - full stack without Mongo Express
+  pi-large    Pi 5 8GB+ - full stack + Mongo Express
+  dev-minimal Any platform - API keys only
+
+Options:
+  -p, --profile PROFILE    Hardware profile (auto-detected if not specified)
+  -n, --network MODE       Network mode: localhost, remote, both
+  -h, --hostname HOSTNAME  Hostname for remote/both network modes
+      --https-port PORT    HTTPS port (default: 8443)
+      --http-port PORT     HTTP port (default: 8080)
+      --data-dir DIR       Data storage directory (default: ./data)
+      --debug              Enable debug output
+      --help               Show this help message
+
+Examples:
+  # Mac localhost development (auto-detects profile and network)
+  $(basename "$0")
+
+  # Mac with network access
+  $(basename "$0") --network both --hostname dev-mac.local
+
+  # Pi standard deployment
+  $(basename "$0") --profile pi-standard --hostname wip-pi.local
+
+  # Pi minimal (API keys only)
+  $(basename "$0") --profile pi-minimal
+
+  # Quick development without OIDC
+  $(basename "$0") --profile dev-minimal
+
+EOF
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -p|--profile)
+                PROFILE="$2"
+                shift 2
+                ;;
+            -n|--network)
+                NETWORK="$2"
+                shift 2
+                ;;
+            -h|--hostname)
+                HOSTNAME="$2"
+                shift 2
+                ;;
+            --https-port)
+                HTTPS_PORT="$2"
+                shift 2
+                ;;
+            --http-port)
+                HTTP_PORT="$2"
+                shift 2
+                ;;
+            --data-dir)
+                WIP_DATA_DIR="$2"
+                shift 2
+                ;;
+            --debug)
+                DEBUG="true"
+                shift
+                ;;
+            --help)
+                show_help
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo "Use --help for usage information"
+                exit 1
+                ;;
+        esac
+    done
+}
+
+# Set defaults based on detected platform
+set_defaults() {
+    local detected_platform=$(detect_platform)
+
+    # Auto-detect profile if not specified
+    if [ -z "$PROFILE" ]; then
+        case "$detected_platform" in
+            mac)
+                PROFILE="mac"
+                ;;
+            pi-large)
+                PROFILE="pi-large"
+                ;;
+            pi-standard|pi-*)
+                PROFILE="pi-standard"
+                ;;
+            *)
+                PROFILE="mac"  # Default to mac for unknown Linux
+                ;;
+        esac
+        log_info "Auto-detected profile: $PROFILE"
+    fi
+
+    # Auto-detect network mode based on profile
+    if [ -z "$NETWORK" ]; then
+        case "$PROFILE" in
+            mac|dev-minimal)
+                NETWORK="localhost"
+                ;;
+            pi-*)
+                NETWORK="both"
+                ;;
+            *)
+                NETWORK="localhost"
+                ;;
+        esac
+        log_info "Auto-selected network mode: $NETWORK"
+    fi
+
+    # Auto-detect hostname for remote/both modes
+    if [ -z "$HOSTNAME" ] && [ "$NETWORK" != "localhost" ]; then
+        HOSTNAME="$(hostname).local"
+        log_info "Auto-detected hostname: $HOSTNAME"
+    fi
+}
+
+# Validate configuration
+validate_config() {
+    # Validate profile
+    local profile_file="$PROJECT_ROOT/config/profiles/${PROFILE}.env"
+    if [ ! -f "$profile_file" ]; then
+        log_error "Unknown profile: $PROFILE"
+        echo "Available profiles: mac, pi-minimal, pi-standard, pi-large, dev-minimal"
+        exit 1
+    fi
+
+    # Validate network mode
+    case "$NETWORK" in
+        localhost|remote|both) ;;
+        *)
+            log_error "Invalid network mode: $NETWORK"
+            echo "Valid modes: localhost, remote, both"
+            exit 1
+            ;;
+    esac
+
+    # Require hostname for remote/both modes
+    if [ "$NETWORK" != "localhost" ] && [ -z "$HOSTNAME" ]; then
+        log_error "Network mode '$NETWORK' requires --hostname"
+        exit 1
+    fi
+}
+
+# Load profile configuration
+load_profile() {
+    local profile_file="$PROJECT_ROOT/config/profiles/${PROFILE}.env"
+    log_debug "Loading profile from: $profile_file"
+
+    # Source profile file
+    set -a
+    source "$profile_file"
+    set +a
+
+    log_debug "Profile: $WIP_PROFILE_DESCRIPTION"
+    log_debug "MongoDB image: $WIP_MONGODB_IMAGE"
+    log_debug "Include Dex: $WIP_INCLUDE_DEX"
+    log_debug "Include Caddy: $WIP_INCLUDE_CADDY"
+    log_debug "Include Mongo Express: $WIP_INCLUDE_MONGO_EXPRESS"
+}
+
+# Generate Dex configuration from template
+generate_dex_config() {
+    if [ "$WIP_INCLUDE_DEX" != "true" ]; then
+        log_debug "Skipping Dex config (not included in profile)"
+        return
+    fi
+
+    log_info "Generating Dex configuration..."
+
+    local template="$PROJECT_ROOT/config/dex/config.yaml.template"
+    local output="$PROJECT_ROOT/config/dex/config.yaml"
+
+    # Determine issuer URL based on network mode
+    local issuer
+    case "$NETWORK" in
+        localhost)
+            issuer="http://localhost:5556/dex"
+            ;;
+        remote|both)
+            issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
+            ;;
+    esac
+
+    # Build allowed origins
+    local origins=""
+    case "$NETWORK" in
+        localhost)
+            origins="    - http://localhost:3000
+    - http://localhost:3001
+    - https://localhost:${HTTPS_PORT}
+    - https://localhost
+    - https://127.0.0.1:${HTTPS_PORT}
+    - https://127.0.0.1"
+            ;;
+        remote)
+            origins="    - https://${HOSTNAME}:${HTTPS_PORT}"
+            ;;
+        both)
+            origins="    - http://localhost:3000
+    - http://localhost:3001
+    - https://localhost:${HTTPS_PORT}
+    - https://localhost
+    - https://127.0.0.1:${HTTPS_PORT}
+    - https://127.0.0.1
+    - https://${HOSTNAME}:${HTTPS_PORT}"
+            ;;
+    esac
+
+    # Build redirect URIs
+    local redirects=""
+    case "$NETWORK" in
+        localhost)
+            redirects="      - http://localhost:3000/auth/callback
+      - http://localhost:3000/auth/silent-renew
+      - https://localhost:${HTTPS_PORT}/auth/callback
+      - https://localhost:${HTTPS_PORT}/auth/silent-renew
+      - https://localhost/auth/callback
+      - https://localhost/auth/silent-renew"
+            ;;
+        remote)
+            redirects="      - https://${HOSTNAME}:${HTTPS_PORT}/auth/callback
+      - https://${HOSTNAME}:${HTTPS_PORT}/auth/silent-renew"
+            ;;
+        both)
+            redirects="      - http://localhost:3000/auth/callback
+      - http://localhost:3000/auth/silent-renew
+      - https://localhost:${HTTPS_PORT}/auth/callback
+      - https://localhost:${HTTPS_PORT}/auth/silent-renew
+      - https://localhost/auth/callback
+      - https://localhost/auth/silent-renew
+      - https://${HOSTNAME}:${HTTPS_PORT}/auth/callback
+      - https://${HOSTNAME}:${HTTPS_PORT}/auth/silent-renew"
+            ;;
+    esac
+
+    # Generate config using sed substitution
+    sed -e "s|\${WIP_DEX_ISSUER}|${issuer}|g" \
+        -e "s|\${WIP_DEX_ALLOWED_ORIGINS}|${origins}|g" \
+        -e "s|\${WIP_DEX_REDIRECT_URIS}|${redirects}|g" \
+        "$template" > "$output"
+
+    log_debug "Generated Dex config with issuer: $issuer"
+}
+
+# Generate Caddy configuration from template
+generate_caddy_config() {
+    if [ "$WIP_INCLUDE_CADDY" != "true" ]; then
+        log_debug "Skipping Caddy config (not included in profile)"
+        return
+    fi
+
+    log_info "Generating Caddy configuration..."
+
+    local template="$PROJECT_ROOT/config/caddy/Caddyfile.template"
+    local output="$PROJECT_ROOT/config/caddy/Caddyfile"
+
+    # Determine host patterns based on network mode
+    local hosts
+    case "$NETWORK" in
+        localhost)
+            hosts="localhost, 127.0.0.1"
+            ;;
+        remote)
+            hosts="${HOSTNAME}"
+            # Also add IP if we can detect it
+            local ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+            if [ -n "$ip" ]; then
+                hosts="${hosts}, ${ip}"
+            fi
+            ;;
+        both)
+            hosts="localhost, 127.0.0.1, *.local, 192.168.*.*"
+            if [ -n "$HOSTNAME" ]; then
+                hosts="${hosts}, ${HOSTNAME}"
+            fi
+            ;;
+    esac
+
+    # Generate config using sed substitution
+    sed -e "s|\${WIP_CADDY_HOSTS}|${hosts}|g" \
+        "$template" > "$output"
+
+    log_debug "Generated Caddy config with hosts: $hosts"
+}
+
+# Generate environment file
+generate_env_file() {
+    log_info "Generating environment file..."
+
+    local env_file="$PROJECT_ROOT/.env"
+
+    # Determine JWT issuer URL
+    local jwt_issuer
+    if [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        case "$NETWORK" in
+            localhost)
+                jwt_issuer="http://localhost:5556/dex"
+                ;;
+            remote|both)
+                jwt_issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
+                ;;
+        esac
+    fi
+
+    # Determine OIDC enabled state
+    local oidc_enabled="false"
+    if [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        oidc_enabled="true"
+    fi
+
+    # Write environment file
+    cat > "$env_file" << EOF
+# WIP Environment Configuration
+# Generated by scripts/setup.sh
+# Profile: $PROFILE | Network: $NETWORK | Hostname: ${HOSTNAME:-localhost}
+
+# ============================================
+# PROFILE SETTINGS
+# ============================================
+WIP_PROFILE=$PROFILE
+WIP_DATA_DIR=$WIP_DATA_DIR
+
+# ============================================
+# NETWORK SETTINGS
+# ============================================
+WIP_NETWORK_MODE=$NETWORK
+WIP_HOSTNAME=${HOSTNAME:-localhost}
+WIP_HTTPS_PORT=$HTTPS_PORT
+WIP_HTTP_PORT=$HTTP_PORT
+
+# ============================================
+# SERVICE IMAGES
+# ============================================
+WIP_MONGODB_IMAGE=$WIP_MONGODB_IMAGE
+
+# ============================================
+# AUTH CONFIGURATION
+# ============================================
+WIP_AUTH_MODE=$WIP_AUTH_MODE
+WIP_AUTH_LEGACY_API_KEY=$API_KEY
+EOF
+
+    # Add JWT config if Dex is enabled
+    if [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        cat >> "$env_file" << EOF
+WIP_AUTH_JWT_ISSUER_URL=$jwt_issuer
+WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+WIP_AUTH_JWT_AUDIENCE=wip-console
+EOF
+    fi
+
+    # Add console config
+    cat >> "$env_file" << EOF
+
+# ============================================
+# CONSOLE CONFIGURATION
+# ============================================
+VITE_OIDC_ENABLED=$oidc_enabled
+EOF
+
+    if [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        cat >> "$env_file" << EOF
+VITE_OIDC_AUTHORITY=/dex
+VITE_DEX_TARGET=http://wip-dex:5556
+VITE_OIDC_CLIENT_ID=wip-console
+VITE_OIDC_CLIENT_SECRET=wip-console-secret
+VITE_OIDC_PROVIDER_NAME=Dex
+EOF
+    fi
+
+    log_debug "Generated environment file: $env_file"
+}
+
+# Select and start infrastructure compose file
+select_compose_files() {
+    # Determine base infrastructure file based on profile
+    if [ "$WIP_INCLUDE_DEX" = "true" ] && [ "$WIP_INCLUDE_CADDY" = "true" ]; then
+        if [[ "$PROFILE" == pi-* ]]; then
+            INFRA_COMPOSE="docker-compose.infra.pi.yml"
+        else
+            INFRA_COMPOSE="docker-compose.infra.yml"
+        fi
+    else
+        if [[ "$PROFILE" == pi-* ]]; then
+            INFRA_COMPOSE="docker-compose.infra.pi.minimal.yml"
+        else
+            INFRA_COMPOSE="docker-compose.infra.minimal.yml"
+        fi
+    fi
+
+    log_debug "Selected infrastructure compose: $INFRA_COMPOSE"
+}
+
+# Check dependencies
+check_dependencies() {
+    log_step "Checking dependencies..."
+
+    local missing=()
+
+    if ! command -v podman &> /dev/null; then
+        missing+=("podman")
+    else
+        echo "  podman: $(podman --version | head -1)"
+    fi
+
+    if ! command -v podman-compose &> /dev/null; then
+        missing+=("podman-compose")
+    else
+        echo "  podman-compose: installed"
+    fi
+
+    if ! command -v jq &> /dev/null; then
+        missing+=("jq")
+    else
+        echo "  jq: $(jq --version)"
+    fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing dependencies: ${missing[*]}"
+        echo ""
+        echo "Installation instructions:"
+
+        local platform=$(detect_platform)
+        case "$platform" in
+            mac)
+                echo "  brew install podman jq"
+                echo "  pip3 install podman-compose"
+                echo "  podman machine init && podman machine start"
+                ;;
+            pi-*|linux)
+                echo "  sudo apt update && sudo apt install -y podman podman-compose jq"
+                ;;
+        esac
+        exit 1
+    fi
+
+    # Check podman machine on Mac
+    if [[ "$(uname)" == "Darwin" ]]; then
+        if ! podman machine inspect 2>/dev/null | grep -q '"State": "running"'; then
+            log_warn "Podman machine not running. Starting..."
+            podman machine start || {
+                log_error "Failed to start Podman machine."
+                echo "Please run: podman machine init && podman machine start"
+                exit 1
+            }
+        fi
+        echo "  podman machine: running"
+    fi
+
+    echo ""
+}
+
+# Create storage directories
+setup_storage() {
+    log_step "Setting up storage directories..."
+    echo "  Data directory: $WIP_DATA_DIR"
+
+    mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config}
+    echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy"
+
+    # Fix Dex directory ownership for rootless Podman on Linux
+    if [[ "$(uname)" != "Darwin" ]] && [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        log_info "Setting Dex directory ownership for rootless Podman..."
+        podman unshare chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+    fi
+
+    echo ""
+}
+
+# Health check functions
+wait_for_container() {
+    local container="$1"
+    local attempt=1
+    local max_attempts=$((WIP_HEALTH_CHECK_TIMEOUT / WIP_HEALTH_CHECK_INTERVAL))
+
+    while [ $attempt -le $max_attempts ]; do
+        if podman ps --format "{{.Names}}" | grep -q "^${container}$"; then
+            echo "  $container: running"
+            return 0
+        fi
+        echo "  $container: waiting... ($attempt/$max_attempts)"
+        sleep $WIP_HEALTH_CHECK_INTERVAL
+        attempt=$((attempt + 1))
+    done
+
+    log_error "$container failed to start after ${WIP_HEALTH_CHECK_TIMEOUT}s"
+    podman logs "$container" 2>&1 | tail -10 || true
+    return 1
+}
+
+wait_for_health() {
+    local name="$1"
+    local url="$2"
+    local attempt=1
+    local max_attempts=$((WIP_HEALTH_CHECK_TIMEOUT / WIP_HEALTH_CHECK_INTERVAL))
+
+    while [ $attempt -le $max_attempts ]; do
+        local health=$(curl -s "$url" 2>/dev/null || echo '{"status":"unreachable"}')
+        if echo "$health" | grep -q '"healthy"\|"status":"healthy"'; then
+            log_info "  $name is healthy"
+            return 0
+        fi
+        echo "  $name: waiting for health... ($attempt/$max_attempts)"
+        sleep $WIP_HEALTH_CHECK_INTERVAL
+        attempt=$((attempt + 1))
+    done
+
+    log_error "$name failed health check after ${WIP_HEALTH_CHECK_TIMEOUT}s"
+    return 1
+}
+
+# Start infrastructure
+start_infrastructure() {
+    log_step "Starting infrastructure..."
+
+    local services_desc="MongoDB, PostgreSQL, NATS"
+    [ "$WIP_INCLUDE_DEX" = "true" ] && services_desc="$services_desc, Dex"
+    [ "$WIP_INCLUDE_CADDY" = "true" ] && services_desc="$services_desc, Caddy"
+    [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && services_desc="$services_desc, Mongo Express"
+
+    log_info "Services: $services_desc"
+
+    cd "$PROJECT_ROOT"
+    podman-compose --env-file .env -f "$INFRA_COMPOSE" up -d
+
+    log_info "Waiting for infrastructure containers..."
+
+    local containers="wip-mongodb wip-postgres wip-nats"
+    [ "$WIP_INCLUDE_DEX" = "true" ] && containers="$containers wip-dex"
+    [ "$WIP_INCLUDE_CADDY" = "true" ] && containers="$containers wip-caddy"
+    [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && containers="$containers wip-mongo-express"
+
+    local all_healthy=true
+    for container in $containers; do
+        if ! wait_for_container "$container"; then
+            all_healthy=false
+        fi
+    done
+
+    if [ "$all_healthy" = false ]; then
+        log_error "Infrastructure failed to start. Cannot continue."
+        exit 1
+    fi
+
+    echo ""
+}
+
+# Start a service
+start_service() {
+    local name="$1"
+    local dir="$2"
+    local port="$3"
+
+    log_info "Starting $name..."
+    cd "$PROJECT_ROOT/components/$dir"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+
+    if ! wait_for_health "$name" "http://localhost:$port/health"; then
+        log_warn "$name may still be starting - continuing anyway"
+    fi
+}
+
+# Start all application services
+start_services() {
+    log_step "Starting Registry and initializing namespaces..."
+
+    cd "$PROJECT_ROOT/components/registry"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+
+    if ! wait_for_health "Registry" "http://localhost:8001/health"; then
+        log_error "Registry failed to start"
+        exit 1
+    fi
+
+    # Initialize namespaces
+    log_info "Initializing WIP namespaces..."
+    local init_result=$(curl -s -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
+        -H "X-API-Key: $API_KEY" 2>/dev/null || echo "failed")
+
+    if echo "$init_result" | grep -q "created\|exists"; then
+        log_info "  Namespaces initialized"
+    else
+        log_warn "  Namespace initialization response: $init_result"
+    fi
+    echo ""
+
+    log_step "Starting application services..."
+    start_service "Def-Store" "def-store" "8002"
+    start_service "Template-Store" "template-store" "8003"
+    start_service "Document-Store" "document-store" "8004"
+    start_service "Reporting-Sync" "reporting-sync" "8005"
+    echo ""
+
+    log_step "Starting WIP Console..."
+    cd "$PROJECT_ROOT/ui/wip-console"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+    log_info "Waiting for Console to start..."
+    sleep 10
+    echo ""
+}
+
+# Run final health checks
+final_health_checks() {
+    log_step "Running final health checks..."
+
+    local services=(
+        "Registry:8001"
+        "Def-Store:8002"
+        "Template-Store:8003"
+        "Document-Store:8004"
+        "Reporting-Sync:8005"
+    )
+
+    local all_healthy=true
+    for svc in "${services[@]}"; do
+        local name="${svc%%:*}"
+        local port="${svc##*:}"
+        local health=$(curl -s "http://localhost:$port/health" 2>/dev/null || echo '{"status":"unreachable"}')
+        if echo "$health" | grep -q '"healthy"\|"status":"healthy"'; then
+            echo "  $name (port $port): healthy"
+        else
+            echo "  $name (port $port): NOT HEALTHY"
+            all_healthy=false
+        fi
+    done
+
+    echo ""
+    echo "$all_healthy"
+}
+
+# Print final status and access information
+print_status() {
+    local all_healthy="$1"
+
+    log_step "Final status..."
+    echo ""
+    echo "Containers running:"
+    podman ps --format "  {{.Names}}: {{.Status}}"
+    echo ""
+
+    # Show memory on Pi
+    if [[ "$(uname)" != "Darwin" ]]; then
+        echo "Memory usage:"
+        free -h | grep -E "Mem|Swap"
+        echo ""
+    fi
+
+    local ip=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
+
+    echo "=========================================="
+    if [ "$all_healthy" = "true" ]; then
+        echo -e "${GREEN}  Setup completed successfully!${NC}"
+    else
+        echo -e "${YELLOW}  Setup completed with warnings${NC}"
+        echo -e "${YELLOW}  Some services may still be starting.${NC}"
+    fi
+    echo "=========================================="
+    echo ""
+    echo "Configuration:"
+    echo "  Profile: $PROFILE"
+    echo "  Network: $NETWORK"
+    [ -n "$HOSTNAME" ] && echo "  Hostname: $HOSTNAME"
+    echo ""
+
+    # Access URLs based on network mode and profile
+    if [ "$WIP_INCLUDE_CADDY" = "true" ]; then
+        echo "Access WIP Console (HTTPS):"
+        case "$NETWORK" in
+            localhost)
+                echo "  https://localhost:${HTTPS_PORT}"
+                ;;
+            remote)
+                echo "  https://${HOSTNAME}:${HTTPS_PORT}"
+                [ -n "$ip" ] && echo "  https://${ip}:${HTTPS_PORT}"
+                ;;
+            both)
+                echo "  https://localhost:${HTTPS_PORT}"
+                echo "  https://${HOSTNAME}:${HTTPS_PORT}"
+                [ -n "$ip" ] && echo "  https://${ip}:${HTTPS_PORT}"
+                ;;
+        esac
+        echo ""
+        echo "  Note: Browser will warn about self-signed certificate."
+        echo "        Click 'Advanced' -> 'Proceed' to accept."
+    else
+        echo "Access WIP Console (HTTP):"
+        echo "  http://localhost:3000"
+        [ "$NETWORK" != "localhost" ] && [ -n "$HOSTNAME" ] && echo "  http://${HOSTNAME}:3000"
+        [ "$NETWORK" != "localhost" ] && [ -n "$ip" ] && echo "  http://${ip}:3000"
+    fi
+    echo ""
+
+    # Login information
+    if [ "$WIP_INCLUDE_DEX" = "true" ]; then
+        echo "Login options:"
+        echo "  - Click 'Login with Dex' -> admin@wip.local / admin123"
+        echo "  - Or use API Key: $API_KEY"
+        echo ""
+        echo "Test users (for Dex OIDC):"
+        echo "  admin@wip.local / admin123 (wip-admins group)"
+        echo "  editor@wip.local / editor123 (wip-editors group)"
+        echo "  viewer@wip.local / viewer123 (wip-viewers group)"
+    else
+        echo "Login:"
+        echo "  Use API Key: $API_KEY"
+        echo "  (OIDC disabled - API keys only mode)"
+    fi
+    echo ""
+
+    echo "API Documentation:"
+    echo "  Registry:       http://localhost:8001/docs"
+    echo "  Def-Store:      http://localhost:8002/docs"
+    echo "  Template-Store: http://localhost:8003/docs"
+    echo "  Document-Store: http://localhost:8004/docs"
+    echo "  Reporting-Sync: http://localhost:8005/docs"
+    echo ""
+
+    echo "Database access:"
+    [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && echo "  Mongo Express:  http://localhost:8081 (admin/admin)"
+    echo "  MongoDB CLI:    podman exec -it wip-mongodb mongo"
+    echo "  PostgreSQL:     podman exec -it wip-postgres psql -U wip -d wip_reporting"
+    echo ""
+
+    echo "Seed test data:"
+    echo "  python3 -m venv .venv && source .venv/bin/activate"
+    echo "  pip install faker requests"
+    echo "  python scripts/seed_comprehensive.py"
+    echo ""
+}
+
+# Main execution
+main() {
+    echo "=========================================="
+    echo "  WIP Unified Setup Script"
+    echo "=========================================="
+    echo ""
+
+    parse_args "$@"
+    set_defaults
+    validate_config
+
+    echo "Configuration:"
+    echo "  Profile:  $PROFILE"
+    echo "  Network:  $NETWORK"
+    [ -n "$HOSTNAME" ] && echo "  Hostname: $HOSTNAME"
+    echo "  Data dir: $WIP_DATA_DIR"
+    echo ""
+
+    load_profile
+    select_compose_files
+
+    check_dependencies
+    setup_storage
+
+    generate_dex_config
+    generate_caddy_config
+    generate_env_file
+
+    start_infrastructure
+    start_services
+
+    local all_healthy=$(final_health_checks)
+    print_status "$all_healthy"
+}
+
+# Run main
+main "$@"

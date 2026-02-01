@@ -328,7 +328,7 @@ Even though we're implementing only the Standard profile initially, the architec
 | 1 | **File Upload (CSV/XLSX)** | Upload documents via file instead of JSON API |
 | 2 | **Binary File Storage** | Store files (images, PDFs) with document manifests via MinIO |
 | 3 | **BI Dashboard Container** | Metabase for SQL analytics on PostgreSQL reporting data |
-| 4 | **Referential Integrity** | ✅ Health check API implemented, UI integration pending |
+| 4 | **Referential Integrity** | ✅ Complete (API, UI, startup validation, protection) |
 | 5 | **Cross-Entity Audit Dashboard** | Unified timeline + data quality section |
 
 ### Future Enhancements
@@ -1170,9 +1170,10 @@ If referenced entities are missing (due to test cleanup, data corruption, or bug
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Integrity Health Check API | ✅ Complete | Per-service + aggregated endpoints |
-| Startup Validation | ❌ Pending | Log warnings on startup |
-| Cascade Status Warnings | ❌ Pending | Warn about dependencies when deactivating |
-| Reference Protection | ❌ Pending | Block/warn deactivation with active refs |
+| UI Integration | ✅ Complete | Dashboard card + Audit Trail details table |
+| Startup Validation | ✅ Complete | Services log warnings on startup (Template Store, Document Store) |
+| Cascade Status Warnings | ✅ Complete | Dependencies endpoint + warnings in delete response |
+| Reference Protection | ✅ Complete | 409 Conflict with details, `force=true` to override |
 | Recovery Tools | ❌ Pending | Scripts to export orphaned data |
 | Test Isolation | ✅ Existing | Tests use separate databases |
 
@@ -1236,30 +1237,17 @@ Response:
 
 **Remaining Tasks:**
 
-1. **UI Integration** - Add "Data Quality" section to WIP Console dashboard:
-   - Call aggregated endpoint on dashboard load
-   - Display summary stats (healthy/warning/error badge)
-   - List issues with links to affected entities
-
-2. **Startup Validation** - Services log warnings about missing references on startup:
-   - Document Store checks that referenced templates exist
-   - Template Store checks that referenced terminologies exist
-   - Non-blocking (service starts anyway) but visible in logs
-
-3. **Cascade Status Warnings** - When deactivating an entity:
-   - Warn about downstream dependencies
-   - Example: "This terminology is used by 3 templates and 47 documents"
-   - Require `force=true` or show confirmation in UI
-
-4. **Reference Protection** - Prevent deactivating entities with active references:
-   - Option A: Block deactivation, require deactivating dependents first
-   - Option B: Allow with `force` flag, log warning
-   - Option C: Cascade deactivation (dangerous, needs confirmation)
-
-5. **Recovery Tools** - Scripts/endpoints to:
+1. **Recovery Tools** - Scripts/endpoints to:
    - List all orphaned references
    - Export orphaned documents for analysis
    - Re-link orphaned data if source is restored
+
+**Completed Tasks:**
+
+1. ✅ **UI Integration** - Dashboard Data Quality card + Audit Trail details table
+2. ✅ **Startup Validation** - Template Store and Document Store run integrity checks on startup
+3. ✅ **Cascade Status Warnings** - `GET /{id}/dependencies` endpoints + warnings in delete responses
+4. ✅ **Reference Protection** - Returns 409 Conflict with dependency details, `force=true` to override
 
 **Inactive vs Deleted:**
 - `inactive` status means "soft-deleted" - still retrievable, still resolvable
@@ -1682,26 +1670,68 @@ This endpoint:
 
 ### Quick Start (Recommended)
 
-Use the setup scripts for automated deployment:
+Use the unified setup script for automated deployment:
 
 ```bash
-# Mac
-bash scripts/mac-setup.sh
+# Auto-detect platform and use sensible defaults
+./scripts/setup.sh
 
-# Raspberry Pi
-bash scripts/pi-setup.sh
+# Or specify profile and network mode explicitly
+./scripts/setup.sh --profile mac --network localhost
+./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
 
-# Access: https://localhost:8443 (Mac) or https://hostname:8443 (Pi)
-# Login: admin@wip.local / admin123
+# Access: https://localhost:8443 (default)
+# Login: admin@wip.local / admin123 (Dex OIDC)
+# Or API Key: dev_master_key_for_testing
+```
+
+### Network Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `localhost` | Only accessible from local machine | Mac development |
+| `remote` | Only accessible from network | Headless Pi |
+| `both` | Both localhost and network (default for Pi) | Pi accessible anywhere |
+
+### Hardware Profiles
+
+| Profile | Description | Services |
+|---------|-------------|----------|
+| `mac` | Mac development | Full stack + Mongo Express |
+| `pi-minimal` | Pi with limited resources | API keys only, no OIDC |
+| `pi-standard` | Pi 4 (2-4GB) | Full stack, no Mongo Express |
+| `pi-large` | Pi 5 8GB+ | Full stack + Mongo Express |
+| `dev-minimal` | Any platform | API keys only (quick testing) |
+
+### Common Setup Examples
+
+```bash
+# Mac localhost development (auto-detects)
+./scripts/setup.sh
+
+# Mac with network access for mobile testing
+./scripts/setup.sh --network both --hostname dev-mac.local
+
+# Pi standard with OIDC
+./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
+
+# Pi minimal for API-only deployments
+./scripts/setup.sh --profile pi-minimal
+
+# Quick development without OIDC
+./scripts/setup.sh --profile dev-minimal
 ```
 
 ### Storage Configuration
 
-Data is stored in `./data/` by default. Override with `WIP_DATA_DIR`:
+Data is stored in `./data/` by default. Override with `--data-dir` or `WIP_DATA_DIR`:
 
 ```bash
 # Use external storage (USB SSD on Pi, NFS share, etc.)
-WIP_DATA_DIR=/mnt/usb-ssd bash scripts/pi-setup.sh
+./scripts/setup.sh --data-dir /mnt/usb-ssd --profile pi-standard --hostname wip-pi.local
+
+# Or via environment variable
+WIP_DATA_DIR=/mnt/usb-ssd ./scripts/setup.sh
 
 # Storage locations:
 # - mongodb/   : Document store data
@@ -1804,54 +1834,31 @@ cd ../template-store && podman-compose up -d
 
 ### Raspberry Pi Deployment
 
-Two deployment modes are supported for Raspberry Pi 4/5:
+Three profiles are available for Raspberry Pi:
 
-| Mode | Infrastructure | Auth | RAM Usage | Use Case |
-|------|----------------|------|-----------|----------|
-| **Full** | MongoDB, PostgreSQL, NATS, Dex, Caddy | OIDC + API keys | ~1GB | Multi-user, network access |
-| **Minimal** | MongoDB, PostgreSQL, NATS | API keys only | ~900MB | Single-user, dev/testing |
+| Profile | Target | Services | RAM Usage | Use Case |
+|---------|--------|----------|-----------|----------|
+| **pi-minimal** | Pi 4 1-2GB | MongoDB, PostgreSQL, NATS | ~800MB | API keys only |
+| **pi-standard** | Pi 4 2-4GB | + Dex, Caddy | ~1GB | OIDC + network access |
+| **pi-large** | Pi 5 8GB+ | + Mongo Express | ~1.2GB | Full development |
 
-#### Quick Setup (Automated)
-
-```bash
-# Download and run setup script
-curl -O http://192.168.1.17:3000/peter/World-In-A-Pie/raw/branch/main/scripts/pi-setup.sh
-
-# Full mode (with Caddy/OIDC, default)
-bash pi-setup.sh
-
-# Or minimal mode (API keys only)
-bash pi-setup.sh --minimal
-```
-
-#### Manual Setup
+#### Quick Setup (Recommended)
 
 ```bash
 # Clone repository
 git clone http://192.168.1.17:3000/peter/World-In-A-Pie.git
 cd WorldInPie
 
-# Full mode with Caddy/OIDC:
-cp .env.pi.example .env.pi
-# Edit .env.pi to set your hostname (WIP_HOSTNAME=your-pi.local)
-podman-compose --env-file .env.pi -f docker-compose.infra.pi.yml up -d
+# Auto-detect Pi model and deploy with OIDC
+./scripts/setup.sh --hostname your-pi.local
 
-# Start services with env file:
-cd components/registry && podman-compose --env-file ../../.env.pi -f docker-compose.dev.yml up -d
-# ... repeat for other services
+# Or specify profile explicitly
+./scripts/setup.sh --profile pi-standard --hostname your-pi.local
+./scripts/setup.sh --profile pi-minimal  # API keys only
+./scripts/setup.sh --profile pi-large --hostname your-pi.local  # Pi 5 8GB+
 
-# Access: https://your-pi.local (accept self-signed cert warning)
-```
-
-```bash
-# Minimal mode (API keys only):
-podman-compose -f docker-compose.infra.pi.minimal.yml up -d
-
-# Start services (no env file needed):
-cd components/registry && podman-compose -f docker-compose.dev.yml up -d
-# ... repeat for other services
-
-# Access: http://your-pi.local:3000
+# With external storage
+./scripts/setup.sh --data-dir /mnt/usb-ssd --profile pi-standard --hostname your-pi.local
 ```
 
 #### Why Caddy for OIDC?
@@ -1862,7 +1869,7 @@ The OIDC library (oidc-client-ts) uses PKCE which requires `Crypto.subtle`, avai
 - OIDC login works over network without SSH tunnels
 - ~25MB RAM overhead
 
-For API-key-only deployments, skip Caddy to save resources.
+For API-key-only deployments, use `--profile pi-minimal` to skip Caddy.
 
 #### Test Users (Dex)
 

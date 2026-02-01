@@ -1,5 +1,22 @@
 #!/bin/bash
-# WIP Mac Development Setup Script
+# ============================================================================
+# DEPRECATED: This script is deprecated in favor of the unified setup script.
+#
+# Please use the new unified setup.sh instead:
+#   ./scripts/setup.sh                     # Auto-detect profile and network
+#   ./scripts/setup.sh --profile mac       # Explicit Mac profile
+#   ./scripts/setup.sh --network both --hostname dev-mac.local  # With remote access
+#
+# The unified script provides:
+#   - Separate network mode (localhost/remote/both) and hardware profile
+#   - Auto-detection of platform and appropriate defaults
+#   - Template-based configuration generation
+#   - Better Pi support with multiple profiles
+#
+# This script will continue to work but may be removed in a future version.
+# ============================================================================
+
+# WIP Mac Development Setup Script (DEPRECATED)
 # Run this to deploy the full WIP stack on macOS
 #
 # Usage:
