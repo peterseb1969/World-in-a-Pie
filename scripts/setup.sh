@@ -487,22 +487,31 @@ EOF
 
 # Select and start infrastructure compose file
 select_compose_files() {
+    log_step "Selecting compose configuration..."
+    log_debug "WIP_INCLUDE_DEX=$WIP_INCLUDE_DEX, WIP_INCLUDE_CADDY=$WIP_INCLUDE_CADDY"
+
     # Determine base infrastructure file based on profile
+    # Using case for portability instead of [[ ]]
+    local is_pi_profile=false
+    case "$PROFILE" in
+        pi-*) is_pi_profile=true ;;
+    esac
+
     if [ "$WIP_INCLUDE_DEX" = "true" ] && [ "$WIP_INCLUDE_CADDY" = "true" ]; then
-        if [[ "$PROFILE" == pi-* ]]; then
+        if [ "$is_pi_profile" = "true" ]; then
             INFRA_COMPOSE="docker-compose.infra.pi.yml"
         else
             INFRA_COMPOSE="docker-compose.infra.yml"
         fi
     else
-        if [[ "$PROFILE" == pi-* ]]; then
+        if [ "$is_pi_profile" = "true" ]; then
             INFRA_COMPOSE="docker-compose.infra.pi.minimal.yml"
         else
             INFRA_COMPOSE="docker-compose.infra.minimal.yml"
         fi
     fi
 
-    log_debug "Selected infrastructure compose: $INFRA_COMPOSE"
+    log_info "Infrastructure compose file: $INFRA_COMPOSE"
 }
 
 # Check dependencies
@@ -861,9 +870,11 @@ main() {
     echo ""
 
     log_step "Starting setup..."
+    log_debug "Calling load_profile..."
     load_profile
+    log_debug "Calling select_compose_files..."
     select_compose_files
-
+    log_debug "Calling check_dependencies..."
     check_dependencies
     setup_storage
 
