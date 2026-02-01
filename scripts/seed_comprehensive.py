@@ -31,6 +31,7 @@ Examples:
     # Seed documents only (using existing terminologies and templates)
     python scripts/seed_comprehensive.py --skip-terminologies --skip-templates --services document-store
 """
+from __future__ import annotations
 
 import argparse
 import sys
