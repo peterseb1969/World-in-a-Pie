@@ -135,7 +135,7 @@ services:
       - "9001:9001"   # Web Console
     environment:
       MINIO_ROOT_USER: wip-minio-root
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wip-minio-password}
+      MINIO_ROOT_PASSWORD: wip-minio-password
     volumes:
       - ${WIP_DATA_DIR:-./data}/minio:/data
     healthcheck:
