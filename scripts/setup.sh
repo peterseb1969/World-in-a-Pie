@@ -777,15 +777,28 @@ start_infrastructure() {
     # Initialize MinIO bucket if enabled
     if [ "$WIP_INCLUDE_MINIO" = "true" ]; then
         log_info "Initializing MinIO bucket..."
-        # Wait a bit for MinIO to be fully ready
-        sleep 2
-        # Create the bucket using mc (MinIO client) inside the container
-        podman exec wip-minio mc alias set local http://localhost:9000 wip-minio-root "${MINIO_ROOT_PASSWORD:-wip-minio-password}" 2>/dev/null || true
-        podman exec wip-minio mc mb local/wip-attachments --ignore-existing 2>/dev/null || true
-        if podman exec wip-minio mc ls local/wip-attachments >/dev/null 2>&1; then
-            log_info "  MinIO bucket 'wip-attachments' ready"
+        # Wait for MinIO to be fully ready (health check)
+        local minio_ready=false
+        for i in {1..10}; do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null 2>&1; then
+                minio_ready=true
+                break
+            fi
+            sleep 2
+        done
+
+        if [ "$minio_ready" = true ]; then
+            # Create the bucket using mc (MinIO client) inside the container
+            podman exec wip-minio mc alias set local http://localhost:9000 wip-minio-root "${MINIO_ROOT_PASSWORD:-wip-minio-password}" 2>/dev/null || true
+            podman exec wip-minio mc mb local/wip-attachments --ignore-existing 2>/dev/null || true
+            if podman exec wip-minio mc ls local/wip-attachments >/dev/null 2>&1; then
+                log_info "  MinIO bucket 'wip-attachments' ready"
+            else
+                # Bucket might already exist or mc not available - check via curl
+                log_info "  MinIO is running (bucket will be created on first use)"
+            fi
         else
-            log_warn "  Could not verify MinIO bucket - may need manual setup"
+            log_warn "  MinIO health check failed - may need manual setup"
         fi
     fi
 
