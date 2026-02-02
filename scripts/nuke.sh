@@ -214,8 +214,22 @@ else
 fi
 echo ""
 
-# Step 6: Prune dangling resources
-log_step "Step 6: Pruning dangling resources..."
+# Step 6: Remove WIP images
+log_step "Step 6: Removing WIP images..."
+
+WIP_IMAGES=$(podman images --format "{{.Repository}}:{{.Tag}}" | grep -E "wip-|worldinpie" || true)
+if [ -n "$WIP_IMAGES" ]; then
+    echo "$WIP_IMAGES" | while read image; do
+        log_info "Removing image: $image"
+        podman rmi -f "$image" 2>/dev/null || true
+    done
+else
+    log_info "No WIP images found"
+fi
+echo ""
+
+# Step 7: Prune dangling resources
+log_step "Step 7: Pruning dangling resources..."
 podman system prune -f 2>/dev/null || true
 echo ""
 
