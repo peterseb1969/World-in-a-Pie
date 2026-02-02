@@ -31,8 +31,11 @@ staticClients:
       - https://localhost:8443/auth/silent-renew
       - https://localhost/auth/callback
       - https://localhost/auth/silent-renew
+<<<<<<< HEAD
       - https://sebbelp-F09R6T.local:8443/auth/callback
       - https://sebbelp-F09R6T.local:8443/auth/silent-renew
+=======
+>>>>>>> 53a3388 (Updated some files)
     public: false
 
 enablePasswordDB: true

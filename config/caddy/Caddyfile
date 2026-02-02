@@ -12,7 +12,11 @@
 #   3. Ensure ports 80/443 are reachable from internet
 
 # HTTPS server with internal TLS (self-signed)
+<<<<<<< HEAD
 localhost, 127.0.0.1, *.local, 192.168.*.*, sebbelp-F09R6T.local {
+=======
+localhost, 127.0.0.1 {
+>>>>>>> 53a3388 (Updated some files)
     tls internal
 
     # Dex OIDC provider
