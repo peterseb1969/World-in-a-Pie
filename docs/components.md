@@ -9,20 +9,20 @@ This document provides detailed specifications for each component in the World I
 1. [Def-Store](#def-store)
 2. [Template Store](#template-store)
 3. [Document Store](#document-store)
-4. [Validation Engine](#validation-engine)
-5. [Registry](#registry)
-6. [Web UIs](#web-uis)
-7. [Reporting Layer](#reporting-layer)
-8. [Message Queue](#message-queue)
-9. [Auth Service](#auth-service)
+4. [Registry](#registry)
+5. [Reporting Sync](#reporting-sync)
+6. [WIP Console](#wip-console)
+7. [Infrastructure](#infrastructure)
 
 ---
 
 ## Def-Store
 
+**Port:** 8002 | **API Base:** `/api/def-store`
+
 ### Purpose
 
-The Def-Store is the **foundational layer** containing all ontologies and terminologies. It defines *what concepts exist* in the system.
+The Def-Store is the **foundational layer** containing all terminologies and terms. It defines *what concepts exist* in the system.
 
 ### Data Structures
 
@@ -32,92 +32,144 @@ A collection of related terms forming a controlled vocabulary.
 
 ```json
 {
-  "id": "term-gender",
+  "terminology_id": "TERM-000001",
+  "code": "GENDER",
   "name": "Gender",
   "description": "Controlled vocabulary for gender identification",
-  "version": 1,
   "status": "active",
   "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "admin",
-  "terms": [
-    {"ref": "term-gender-male"},
-    {"ref": "term-gender-female"},
-    {"ref": "term-gender-other"},
-    {"ref": "term-gender-undisclosed"}
-  ]
+  "created_by": "apikey:legacy",
+  "updated_at": "2024-01-15T10:00:00Z",
+  "updated_by": "apikey:legacy"
 }
 ```
 
 #### Term
 
-An individual concept within a terminology.
+An individual concept within a terminology. **Terms do not have versioning** - changes are tracked via audit log.
 
 ```json
 {
-  "id": "term-gender-male",
-  "terminology_id": "term-gender",
+  "term_id": "T-000001",
+  "terminology_id": "TERM-000001",
   "code": "M",
-  "label": "Male",
+  "value": "Male",
+  "aliases": ["MR", "Mr", "Mr.", "MALE"],
   "description": "Male gender identity",
-  "version": 1,
   "status": "active",
   "parent_id": null,
   "metadata": {
     "iso_5218": "1",
     "hl7_v3": "M"
-  }
+  },
+  "translations": {
+    "de": "Männlich",
+    "fr": "Masculin"
+  },
+  "created_at": "2024-01-15T10:00:00Z",
+  "created_by": "apikey:legacy"
 }
 ```
 
+**Key difference from other entities:** Terms represent stable concepts. Instead of versioning, all changes are recorded in an **audit log**.
+
+### Term Aliases
+
+Multiple input values can resolve to the same term:
+
+```json
+{
+  "term_id": "T-000001",
+  "code": "M",
+  "value": "Male",
+  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
+}
+```
+
+When validating, all these inputs resolve to `T-000001`:
+- "Male" → matched via `value`
+- "M" → matched via `code`
+- "Mr." → matched via `alias`
+
 ### Hierarchical Terms
 
-Terms can form hierarchies (e.g., location taxonomies):
+Terms can form hierarchies (e.g., location taxonomies, departments):
 
 ```
-term-location-world
-├── term-location-europe
-│   ├── term-location-germany
-│   │   ├── term-location-berlin
-│   │   └── term-location-munich
-│   └── term-location-france
-└── term-location-asia
-    └── term-location-japan
+DEPARTMENT (terminology)
+├── T-000010 Engineering (parent: null)
+│   ├── T-000011 Frontend (parent: T-000010)
+│   ├── T-000012 Backend (parent: T-000010)
+│   └── T-000013 DevOps (parent: T-000010)
+└── T-000020 Sales (parent: null)
+    ├── T-000021 Enterprise (parent: T-000020)
+    └── T-000022 SMB (parent: T-000020)
 ```
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/terminologies` | List all terminologies |
-| GET | `/api/terminologies/{id}` | Get terminology with terms |
-| POST | `/api/terminologies` | Create terminology |
-| PUT | `/api/terminologies/{id}` | Update terminology (new version) |
-| DELETE | `/api/terminologies/{id}` | Deactivate terminology |
-| GET | `/api/terms/{id}` | Get single term |
-| POST | `/api/terms` | Create term |
-| PUT | `/api/terms/{id}` | Update term (new version) |
-| DELETE | `/api/terms/{id}` | Deactivate term |
+| **Terminologies** | | |
+| GET | `/api/def-store/terminologies` | List all terminologies |
+| GET | `/api/def-store/terminologies/{id}` | Get terminology details |
+| POST | `/api/def-store/terminologies` | Create terminology |
+| PUT | `/api/def-store/terminologies/{id}` | Update terminology |
+| DELETE | `/api/def-store/terminologies/{id}` | Deactivate terminology |
+| POST | `/api/def-store/terminologies/bulk` | Bulk create terminologies |
+| GET | `/api/def-store/terminologies/{id}/dependencies` | Get dependent templates |
+| **Terms** | | |
+| GET | `/api/def-store/terminologies/{term_id}/terms` | List terms in terminology |
+| GET | `/api/def-store/terms/{id}` | Get single term |
+| POST | `/api/def-store/terminologies/{term_id}/terms` | Create term |
+| PUT | `/api/def-store/terms/{id}` | Update term |
+| DELETE | `/api/def-store/terms/{id}` | Deactivate term |
+| POST | `/api/def-store/terms/bulk` | Bulk create/update terms |
+| GET | `/api/def-store/terms/{id}/audit` | Get term audit log |
+| **Validation** | | |
+| POST | `/api/def-store/validate` | Validate single value |
+| POST | `/api/def-store/validate/bulk` | Bulk validate values |
+| **Import/Export** | | |
+| GET | `/api/def-store/terminologies/{id}/export` | Export to JSON/CSV |
+| POST | `/api/def-store/terminologies/{id}/import` | Import from JSON/CSV |
+| **Health** | | |
+| GET | `/api/def-store/health/integrity` | Check referential integrity |
 
-### Access Control
+### Validation Response
 
-| Role | Permissions |
-|------|-------------|
-| admin | Full CRUD |
-| architect | Read only |
-| editor | Read only |
-| viewer | Read only |
+```json
+{
+  "terminology_code": "GENDER",
+  "input_value": "Mr.",
+  "valid": true,
+  "term_id": "T-000001",
+  "matched_via": "alias",
+  "normalized_value": "Male"
+}
+```
 
-### Bootstrapping
+### Audit Log (Instead of Term Versioning)
 
-The Def-Store requires manual bootstrapping since it cannot validate against non-existent templates. A bootstrap script seeds the foundational terminologies:
+All term changes are recorded:
 
-```bash
-python -m wip.bootstrap --seed-definitions
+```json
+{
+  "term_id": "T-000001",
+  "terminology_id": "TERM-000001",
+  "action": "updated",
+  "changed_at": "2024-01-30T10:00:00Z",
+  "changed_by": "user:admin-001",
+  "changed_fields": ["aliases"],
+  "previous_values": {"aliases": ["MR", "MR."]},
+  "new_values": {"aliases": ["MR", "MR.", "Mr.", "mr"]}
+}
 ```
 
 ---
 
 ## Template Store
+
+**Port:** 8003 | **API Base:** `/api/template-store`
 
 ### Purpose
 
@@ -127,97 +179,78 @@ The Template Store defines **how concepts from the Def-Store combine** into reus
 
 #### Template
 
-A schema definition for documents.
+A schema definition for documents. **Multiple template versions can be active simultaneously** for gradual migration.
 
 ```json
 {
-  "id": "template-person",
+  "template_id": "TPL-000001",
+  "code": "PERSON",
   "name": "Person",
   "description": "Template for person records",
   "version": 3,
   "status": "active",
   "extends": null,
-  "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "architect",
-  "identity_fields": ["national_id"],
+  "identity_fields": ["email"],
   "fields": [
     {
       "name": "first_name",
-      "label": "First Name",
       "type": "string",
       "mandatory": true,
-      "terminology_ref": null
-    },
-    {
-      "name": "last_name",
-      "label": "Last Name",
-      "type": "string",
-      "mandatory": true,
-      "terminology_ref": null
+      "description": "Person's first name"
     },
     {
       "name": "gender",
-      "label": "Gender",
       "type": "term",
       "mandatory": false,
-      "terminology_ref": "term-gender"
-    },
-    {
-      "name": "birth_date",
-      "label": "Date of Birth",
-      "type": "date",
-      "mandatory": true,
-      "terminology_ref": null
-    },
-    {
-      "name": "national_id",
-      "label": "National ID",
-      "type": "string",
-      "mandatory": true,
-      "terminology_ref": null
+      "terminology_ref": "GENDER"
     },
     {
       "name": "address",
-      "label": "Address",
       "type": "object",
       "mandatory": false,
-      "template_ref": "template-address"
+      "template_ref": "ADDRESS"
     }
   ],
   "rules": [
     {
       "type": "conditional_required",
-      "if": {"field": "country", "equals": "DE"},
-      "then": {"field": "tax_id", "required": true}
+      "condition": {"field": "country", "operator": "equals", "value": "DE"},
+      "target_field": "tax_id"
     }
-  ]
+  ],
+  "reporting": {
+    "sync_enabled": true,
+    "sync_strategy": "latest_only",
+    "table_name": "doc_person"
+  },
+  "created_at": "2024-01-15T10:00:00Z",
+  "created_by": "apikey:legacy"
 }
 ```
 
 #### Field Types
 
-| Type | Description | Example |
-|------|-------------|---------|
-| `string` | Free text | "John" |
-| `number` | Numeric value | 42, 3.14 |
-| `integer` | Whole number | 42 |
-| `boolean` | True/false | true |
-| `date` | ISO 8601 date | "2024-01-15" |
-| `datetime` | ISO 8601 datetime | "2024-01-15T10:30:00Z" |
-| `term` | Reference to terminology term | "term-gender-male" |
-| `object` | Nested object (ref to template) | {...} |
-| `array` | List of items | [...] |
+| Type | Description | Example | Additional Config |
+|------|-------------|---------|-------------------|
+| `string` | Free text | "John" | `min_length`, `max_length`, `pattern` |
+| `number` | Numeric value | 42, 3.14 | `minimum`, `maximum` |
+| `integer` | Whole number | 42 | `minimum`, `maximum` |
+| `boolean` | True/false | true | - |
+| `date` | ISO 8601 date | "2024-01-15" | - |
+| `datetime` | ISO 8601 datetime | "2024-01-15T10:30:00Z" | - |
+| `term` | Reference to terminology | "Male" | `terminology_ref` |
+| `object` | Nested object | {...} | `template_ref` |
+| `array` | List of items | [...] | `items` (field definition) |
+| `reference` | Cross-document reference | "DOC-..." | `reference_template` |
 
 #### Rule Types
 
-| Rule Type | Description |
-|-----------|-------------|
-| `conditional_required` | Field required if condition met |
-| `conditional_value` | Field value constrained by condition |
-| `mutual_exclusion` | Only one of listed fields can have value |
-| `dependency` | Field requires another field to be present |
-| `pattern` | Field must match regex pattern |
-| `range` | Numeric field must be within range |
+| Rule Type | Description | Example |
+|-----------|-------------|---------|
+| `conditional_required` | Field required if condition met | Tax ID required if country=DE |
+| `conditional_value` | Field value constrained by condition | Discount only if member=true |
+| `mutual_exclusion` | Only one of listed fields can have value | Either phone OR mobile |
+| `dependency` | Field requires another field to be present | Expiry requires issue date |
 
 ### Template Inheritance
 
@@ -225,21 +258,20 @@ Templates can extend other templates:
 
 ```json
 {
-  "id": "template-employee",
+  "template_id": "TPL-000002",
+  "code": "EMPLOYEE",
   "name": "Employee",
-  "extends": "template-person",
+  "extends": "PERSON",
   "fields": [
     {
       "name": "employee_id",
-      "label": "Employee ID",
       "type": "string",
       "mandatory": true
     },
     {
       "name": "department",
-      "label": "Department",
       "type": "term",
-      "terminology_ref": "term-departments"
+      "terminology_ref": "DEPARTMENT"
     }
   ],
   "identity_fields": ["employee_id"]
@@ -248,35 +280,73 @@ Templates can extend other templates:
 
 Inheritance resolution:
 1. Child inherits all parent fields
-2. Child can override parent fields
+2. Child can override parent fields (same name)
 3. Child adds its own fields
 4. Child defines its own identity fields (replaces parent's)
 5. Rules are merged (child rules evaluated after parent rules)
+
+### Template Versioning
+
+**Key difference from document versioning:** Multiple template versions can be active simultaneously.
+
+| Operation | Result |
+|-----------|--------|
+| Create template (code=PERSON) | TPL-000001, version=1 |
+| Update TPL-000001 | NEW TPL-000002, version=2, **original still active** |
+| Update TPL-000002 | NEW TPL-000003, version=3, **all versions still active** |
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/templates` | List all templates |
-| GET | `/api/templates/{id}` | Get template (resolved if extends) |
-| GET | `/api/templates/{id}/raw` | Get template without inheritance resolution |
-| POST | `/api/templates` | Create template |
-| PUT | `/api/templates/{id}` | Update template (new version) |
-| DELETE | `/api/templates/{id}` | Deactivate template |
-| GET | `/api/templates/{id}/validate` | Validate template references |
+| **Templates** | | |
+| GET | `/api/template-store/templates` | List all templates |
+| GET | `/api/template-store/templates?latest_only=true` | List only latest versions |
+| GET | `/api/template-store/templates/{id}` | Get template (resolved if extends) |
+| GET | `/api/template-store/templates/{id}?resolve=false` | Get template without inheritance |
+| POST | `/api/template-store/templates` | Create template |
+| PUT | `/api/template-store/templates/{id}` | Update template (creates new version) |
+| DELETE | `/api/template-store/templates/{id}` | Deactivate template |
+| POST | `/api/template-store/templates/bulk` | Bulk create templates |
+| GET | `/api/template-store/templates/{id}/dependencies` | Get dependent documents |
+| **By Code** | | |
+| GET | `/api/template-store/templates/by-code/{code}` | Get latest version by code |
+| GET | `/api/template-store/templates/by-code/{code}/versions` | List all versions |
+| GET | `/api/template-store/templates/by-code/{code}/versions/{v}` | Get specific version |
+| **Validation** | | |
+| POST | `/api/template-store/templates/{id}/validate` | Validate template references |
+| **Health** | | |
+| GET | `/api/template-store/health/integrity` | Check referential integrity |
 
-### Access Control
+### Reporting Configuration
 
-| Role | Permissions |
-|------|-------------|
-| admin | Full CRUD |
-| architect | Full CRUD |
-| editor | Read only |
-| viewer | Read only |
+Templates include configuration for PostgreSQL sync:
+
+```json
+{
+  "reporting": {
+    "sync_enabled": true,
+    "sync_strategy": "latest_only",
+    "table_name": "doc_person",
+    "include_metadata": true,
+    "flatten_arrays": true,
+    "max_array_elements": 10
+  }
+}
+```
+
+| Setting | Options | Description |
+|---------|---------|-------------|
+| `sync_enabled` | true/false | Whether to sync to PostgreSQL |
+| `sync_strategy` | `latest_only`, `all_versions`, `disabled` | Version handling |
+| `table_name` | string | Custom table name (default: `doc_{code}`) |
+| `flatten_arrays` | true/false | Flatten arrays into multiple rows |
 
 ---
 
 ## Document Store
+
+**Port:** 8004 | **API Base:** `/api/document-store`
 
 ### Purpose
 
@@ -288,454 +358,188 @@ The Document Store holds **actual data** that conforms to templates. It is the p
 
 ```json
 {
-  "id": "doc-550e8400-e29b-41d4-a716-446655440000",
-  "template_id": "template-person",
+  "document_id": "0192abc1-def2-7abc-8def-123456789abc",
+  "template_id": "TPL-000001",
+  "template_code": "PERSON",
   "template_version": 3,
   "identity_hash": "a1b2c3d4e5f6...",
   "version": 2,
   "status": "active",
-  "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "user-123",
-  "updated_at": "2024-02-20T14:30:00Z",
-  "updated_by": "user-456",
+  "is_latest_version": true,
+  "latest_version": 2,
+  "latest_document_id": "0192abc1-def2-7abc-8def-123456789abc",
   "data": {
     "first_name": "Alice",
     "last_name": "Smith",
-    "gender": "term-gender-female",
-    "birth_date": "1990-05-15",
-    "national_id": "DE123456789",
-    "address": {
-      "street": "Hauptstraße 1",
-      "city": "Berlin",
-      "postal_code": "10115",
-      "country": "DE"
-    }
-  }
+    "gender": "Female",
+    "email": "alice@example.com"
+  },
+  "term_references": {
+    "gender": "T-000002"
+  },
+  "created_at": "2024-01-15T10:00:00Z",
+  "created_by": "user:admin-001",
+  "updated_at": "2024-02-20T14:30:00Z",
+  "updated_by": "user:admin-001"
 }
 ```
+
+**Key fields:**
+- `data` - Original submitted values
+- `term_references` - Resolved term IDs for term fields (stores both original value AND term_id)
+- `identity_hash` - SHA-256 of identity field values
+- `is_latest_version` - Whether this is the current version
+- `latest_document_id` - ID of the latest version (for navigation from old versions)
 
 ### Identity and Versioning
 
 #### Identity Hash Computation
 
 ```python
-def compute_identity_hash(document: dict, template: dict) -> str:
-    """
-    Compute deterministic identity hash from identity fields.
-    """
-    identity_fields = template["identity_fields"]
-
-    # Sort fields alphanumerically
+def compute_identity_hash(data: dict, identity_fields: list) -> str:
     sorted_fields = sorted(identity_fields)
-
-    # Build normalized string: field1=value1|field2=value2|...
     parts = []
     for field in sorted_fields:
-        value = document["data"].get(field, "")
+        value = data.get(field, "")
         parts.append(f"{field}={value}")
-
     normalized = "|".join(parts)
-
-    # Hash with SHA-256
     return hashlib.sha256(normalized.encode()).hexdigest()
 ```
 
-#### Upsert Behavior
+#### Upsert Behavior (Single POST Endpoint)
 
 ```
-New document submitted
+POST /api/document-store/documents
         │
         ▼
-Compute identity hash
+Compute identity_hash from identity fields
         │
         ▼
-Search for existing active document with same hash
+Search for active document with same hash
         │
-        ├─── Not found ──► CREATE new document (version 1)
+        ├── Not found ──► CREATE new document (version 1)
         │
-        └─── Found ──► UPDATE (deactivate old, create new version)
+        └── Found ──► CREATE new version, deactivate old
+```
+
+### Six-Stage Validation Pipeline
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    VALIDATION PIPELINE                            │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  1. STRUCTURAL CHECK                                              │
+│     • Is it valid JSON?                                           │
+│     • Does it have required fields? (template_id, data)           │
+│                                                                   │
+│  2. TEMPLATE RESOLUTION                                           │
+│     • Fetch template from Template Store                          │
+│     • Resolve inheritance chain                                   │
+│                                                                   │
+│  3. FIELD VALIDATION                                              │
+│     • Are mandatory fields present?                               │
+│     • Are field types correct?                                    │
+│     • Are nested objects valid against their templates?           │
+│                                                                   │
+│  4. TERM VALIDATION                                               │
+│     • Bulk validate term values via Def-Store API                 │
+│     • Collect resolved term_ids for term_references               │
+│                                                                   │
+│  5. RULE EVALUATION                                               │
+│     • Evaluate conditional_required rules                         │
+│     • Check cross-field constraints                               │
+│     • Validate patterns and ranges                                │
+│                                                                   │
+│  6. IDENTITY COMPUTATION                                          │
+│     • Are all identity fields present?                            │
+│     • Compute identity hash                                       │
+│     • Determine if CREATE or UPDATE                               │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ### API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/documents` | List documents (with filtering) |
-| GET | `/api/documents/{id}` | Get document |
-| GET | `/api/documents/{id}/versions` | Get all versions |
-| GET | `/api/documents/{id}/versions/{v}` | Get specific version |
-| POST | `/api/documents` | Create/update document |
-| DELETE | `/api/documents/{id}` | Deactivate document |
-| POST | `/api/documents/query` | Complex query |
-| POST | `/api/documents/bulk` | Bulk create/update |
+| **Documents** | | |
+| GET | `/api/document-store/documents` | List documents (with filtering) |
+| GET | `/api/document-store/documents/{id}` | Get document |
+| POST | `/api/document-store/documents` | Create/update document (upsert) |
+| DELETE | `/api/document-store/documents/{id}` | Soft-delete (set status=inactive) |
+| POST | `/api/document-store/documents/bulk` | Bulk create/update |
+| **Versions** | | |
+| GET | `/api/document-store/documents/{id}/versions` | Get all versions |
+| GET | `/api/document-store/documents/{id}/versions/{v}` | Get specific version |
+| GET | `/api/document-store/documents/{id}/latest` | Get latest version |
+| POST | `/api/document-store/documents/{id}/restore/{v}` | Restore specific version |
+| **Table View** | | |
+| GET | `/api/document-store/table/{template_id}` | Flattened table view |
+| GET | `/api/document-store/table/{template_id}/csv` | Export as CSV |
+| **Query** | | |
+| POST | `/api/document-store/documents/query` | Complex query |
+| **Health** | | |
+| GET | `/api/document-store/health/integrity` | Check referential integrity |
 
-### Query Capabilities
-
-```json
-{
-  "template_id": "template-person",
-  "filter": {
-    "data.city": "Berlin",
-    "data.birth_date": {"$gte": "1990-01-01"}
-  },
-  "sort": [{"field": "data.last_name", "order": "asc"}],
-  "pagination": {
-    "offset": 0,
-    "limit": 50
-  },
-  "include_inactive": false
-}
-```
-
-### Access Control
-
-| Role | Permissions |
-|------|-------------|
-| admin | Full CRUD |
-| architect | Read only |
-| editor | Full CRUD |
-| viewer | Read only |
-| system | Full CRUD (API key auth) |
-
----
-
-## Validation Engine
-
-### Purpose
-
-The Validation Engine ensures all documents conform to their declared templates before storage.
-
-### Validation Pipeline
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     VALIDATION PIPELINE                          │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. STRUCTURAL VALIDATION                                        │
-│     • Is it valid JSON?                                          │
-│     • Does it have required envelope fields?                     │
-│       (template_id, data)                                        │
-│                                                                  │
-│  2. TEMPLATE RESOLUTION                                          │
-│     • Does the template exist?                                   │
-│     • Is the template active?                                    │
-│     • Resolve inheritance if applicable                          │
-│                                                                  │
-│  3. FIELD VALIDATION                                             │
-│     • Are all mandatory fields present?                          │
-│     • Are field types correct?                                   │
-│     • Do term references point to valid terms?                   │
-│     • Are nested objects valid against their templates?          │
-│                                                                  │
-│  4. RULE EVALUATION                                              │
-│     • Evaluate conditional rules                                 │
-│     • Check cross-field constraints                              │
-│     • Validate patterns and ranges                               │
-│                                                                  │
-│  5. IDENTITY COMPUTATION                                         │
-│     • Are all identity fields present?                           │
-│     • Compute identity hash                                      │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Validation Response
-
-#### Success
+### Table View Response
 
 ```json
 {
-  "valid": true,
-  "identity_hash": "a1b2c3d4e5f6...",
-  "is_update": false,
-  "warnings": []
-}
-```
-
-#### Failure
-
-```json
-{
-  "valid": false,
-  "errors": [
-    {
-      "field": "data.national_id",
-      "code": "REQUIRED_FIELD_MISSING",
-      "message": "Field 'national_id' is required"
-    },
-    {
-      "field": "data.gender",
-      "code": "INVALID_TERM_REFERENCE",
-      "message": "Term 'term-gender-unknown' does not exist in terminology 'term-gender'"
-    }
+  "template_id": "TPL-000001",
+  "template_code": "PERSON",
+  "columns": [
+    {"name": "_document_id", "type": "string", "is_array": false},
+    {"name": "first_name", "type": "string", "is_array": false},
+    {"name": "languages", "type": "string", "is_array": true}
   ],
-  "warnings": [
-    {
-      "field": "data.phone",
-      "code": "DEPRECATED_FIELD",
-      "message": "Field 'phone' is deprecated, use 'contact_phone' instead"
-    }
-  ]
+  "rows": [
+    {"_document_id": "...", "first_name": "John", "languages": "English"},
+    {"_document_id": "...", "first_name": "John", "languages": "Spanish"}
+  ],
+  "total_documents": 100,
+  "total_rows": 150,
+  "array_handling": "flattened"
 }
 ```
-
-### Error Codes
-
-| Code | Description |
-|------|-------------|
-| `INVALID_JSON` | Document is not valid JSON |
-| `MISSING_TEMPLATE_ID` | No template_id specified |
-| `TEMPLATE_NOT_FOUND` | Template does not exist |
-| `TEMPLATE_INACTIVE` | Template is deactivated |
-| `REQUIRED_FIELD_MISSING` | Mandatory field not provided |
-| `INVALID_TYPE` | Field value has wrong type |
-| `INVALID_TERM_REFERENCE` | Term reference not found |
-| `INVALID_PATTERN` | Value doesn't match pattern |
-| `OUT_OF_RANGE` | Numeric value outside range |
-| `RULE_VIOLATION` | Conditional rule violated |
-| `IDENTITY_FIELD_MISSING` | Identity field not provided |
 
 ---
 
 ## Registry
 
+**Port:** 8001 | **API Base:** `/api/registry`
+
 ### Purpose
 
-The Registry provides **federated identity management** across WIP instances and external systems. It is the **foundational service** that generates IDs for all WIP entities (terminologies, terms, templates, documents) and enables:
+The Registry provides **federated identity management** and is the **ID generator for all WIP entities**.
 
-- Mapping composite keys to stable identifiers
-- Cross-system identity resolution via **namespaces**
-- Multiple keys resolving to the same entity via **synonyms**
-- Duplicate resolution via **ID-as-synonym**
+### WIP Namespaces
 
-### Core Concepts
-
-#### Namespaces
-
-Namespaces prevent ID collisions when the same identifier exists in different systems.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              NAMESPACES                                      │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐            │
-│   │    default      │  │    vendor1      │  │    vendor2      │            │
-│   │   (Registry     │  │   (External     │  │   (External     │            │
-│   │    managed)     │  │    system)      │  │    system)      │            │
-│   ├─────────────────┤  ├─────────────────┤  ├─────────────────┤            │
-│   │                 │  │                 │  │                 │            │
-│   │  ID: "XY"  ─────┼──┼── ID: "XY" ─────┼──┼── ID: "XY"      │            │
-│   │                 │  │                 │  │                 │            │
-│   │  (different     │  │  (different     │  │  (different     │            │
-│   │   entities)     │  │   entities)     │  │   entities)     │            │
-│   │                 │  │                 │  │                 │            │
-│   └─────────────────┘  └─────────────────┘  └─────────────────┘            │
-│                                                                              │
-│   Same ID "XY" in different namespaces = different entities                 │
-│   Namespaces enable coexistence without collision                           │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-| Namespace Type | ID Generation | Uniqueness |
-|----------------|---------------|------------|
-| **default** | Registry-managed (configurable strategy) | Enforced by Registry |
-| **custom** | Per-namespace configurable strategy | Managed by source system |
-
-#### Synonyms
-
-Multiple composite keys can resolve to the **same** Registry ID. This enables cross-system identity matching.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           SYNONYM EXAMPLE                                    │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Registry ID: 550e8400-e29b-41d4-a716-446655440000 (preferred)             │
-│                                                                              │
-│   Synonyms (all resolve to the same entity):                                │
-│   ┌──────────────┬─────────────────────────────────────────────────────┐   │
-│   │  Namespace   │  Composite Key                                      │   │
-│   ├──────────────┼─────────────────────────────────────────────────────┤   │
-│   │  default     │  {product_id: "PROD-001", region: "EU", sku: "A1"}  │   │
-│   │  vendor1     │  {vendor_sku: "AB-123"}                             │   │
-│   │  vendor2     │  {part_number: "CD-456", revision: "2"}             │   │
-│   │  erp_system  │  {material_id: "MAT999", plant: "DE01"}             │   │
-│   └──────────────┴─────────────────────────────────────────────────────┘   │
-│                                                                              │
-│   Note: Each namespace can have different composite key structures          │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Use Case**: A product exists in your system as "XY", Vendor 1 calls it "AB", Vendor 2 calls it "CD". The Registry links all three as synonyms of the same entity.
-
-#### ID-as-Synonym (Duplicate Resolution)
-
-When the same entity was accidentally registered twice with different IDs, one ID can become a synonym for the other.
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        DUPLICATE RESOLUTION                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   BEFORE: Two IDs for the same entity (mistake)                             │
-│                                                                              │
-│   Registry ID A: 550e8400-...  ──► Entity "Product X"                       │
-│   Registry ID B: 661f9511-...  ──► Entity "Product X" (duplicate!)          │
-│                                                                              │
-│   ─────────────────────────────────────────────────────────────────────     │
-│                                                                              │
-│   AFTER: B becomes synonym for A                                            │
-│                                                                              │
-│   Registry ID A: 550e8400-...  ──► Entity "Product X" (PREFERRED)           │
-│                       ▲                                                      │
-│                       │ synonym                                              │
-│   Registry ID B: 661f9511-...  ─┘                                           │
-│                                                                              │
-│   Result:                                                                    │
-│   • Query for A → Returns A (preferred) + B (additional)                    │
-│   • Query for B → Returns A (preferred) + B (additional)                    │
-│   • Downstream systems using B continue to work                             │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-**Tradeoff**: An entity may have multiple valid IDs, but they all resolve consistently.
-
-### Data Structures
-
-#### Namespace
-
-```json
-{
-  "id": "vendor1",
-  "name": "Vendor 1 System",
-  "description": "External vendor product catalog",
-  "id_generator": {
-    "type": "external",
-    "description": "IDs provided by vendor"
-  },
-  "source_endpoint": "https://vendor1.example.com/api",
-  "api_key_hash": "...",
-  "status": "active",
-  "created_at": "2024-01-01T00:00:00Z",
-  "metadata": {}
-}
-```
-
-#### Registry Entry
-
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "namespace": "default",
-  "is_preferred": true,
-  "composite_key_hash": "sha256:a1b2c3d4e5f6...",
-  "composite_key_values": {
-    "product_id": "PROD-001",
-    "region": "EU",
-    "sku": "A1"
-  },
-  "synonyms": [
-    {
-      "namespace": "vendor1",
-      "composite_key_hash": "sha256:b2c3d4e5f6...",
-      "composite_key_values": {"vendor_sku": "AB-123"}
-    },
-    {
-      "namespace": "vendor2",
-      "composite_key_hash": "sha256:c3d4e5f6g7...",
-      "composite_key_values": {"part_number": "CD-456", "revision": "2"}
-    }
-  ],
-  "additional_ids": ["661f9511-..."],
-  "source_system": "wip-main",
-  "status": "active",
-  "created_at": "2024-01-15T10:00:00Z",
-  "updated_at": "2024-02-20T14:30:00Z"
-}
-```
-
-#### Query Response
-
-All queries return **all IDs** with preferred ID indicated:
-
-```json
-{
-  "preferred_id": "550e8400-e29b-41d4-a716-446655440000",
-  "additional_ids": ["661f9511-..."],
-  "namespace": "default",
-  "composite_key_values": {
-    "product_id": "PROD-001",
-    "region": "EU",
-    "sku": "A1"
-  },
-  "synonyms": [
-    {
-      "namespace": "vendor1",
-      "composite_key_values": {"vendor_sku": "AB-123"}
-    },
-    {
-      "namespace": "vendor2",
-      "composite_key_values": {"part_number": "CD-456", "revision": "2"}
-    }
-  ],
-  "source_system": "wip-main",
-  "status": "active"
-}
-```
+| Namespace | ID Generator | Purpose |
+|-----------|--------------|---------|
+| `wip-terminologies` | Prefixed (TERM-) | Terminology IDs |
+| `wip-terms` | Prefixed (T-) | Term IDs |
+| `wip-templates` | Prefixed (TPL-) | Template IDs |
+| `wip-documents` | UUID7 | Document IDs (time-ordered) |
+| `default` | UUID4 | General use |
 
 ### ID Generators
-
-Configurable per namespace:
 
 | Generator | Format | Use Case |
 |-----------|--------|----------|
 | `uuid4` | `550e8400-e29b-41d4-a716-446655440000` | Default, universally unique |
 | `uuid7` | Time-ordered UUID | Sortable by creation time |
-| `nanoid` | `V1StGXR8_Z5jdHi6B-myT` | URL-friendly, shorter |
-| `prefixed` | `TERM-001`, `TPL-002` | Human-readable with prefix |
-| `external` | Any format | IDs provided by external system |
-| `custom` | Configurable pattern | Domain-specific formats |
+| `prefixed` | `TERM-000001`, `TPL-000002` | Human-readable with prefix |
 
-### Search Capabilities
+### Synonyms
 
-#### Search Modes
+Multiple identifiers can resolve to the same entity:
 
-| Mode | Description |
-|------|-------------|
-| **Full composite key** | Exact match on all key fields |
-| **Partial key** | Match on subset of fields |
-| **Individual field value** | Search by any single field value |
-| **Cross-namespace** | Search across all namespaces (default) |
-| **Single namespace** | Restrict search to one namespace |
-
-#### Search Request
-
-```json
-{
-  "namespace": null,
-  "search": {
-    "field": "vendor_sku",
-    "value": "AB-123"
-  },
-  "include_synonyms": true
-}
 ```
-
-#### Search by Composite Key
-
-```json
-{
-  "namespace": "vendor2",
-  "composite_key": {
-    "part_number": "CD-456",
-    "revision": "2"
-  }
-}
+Registry ID: TPL-000001 (preferred)
+    │
+    ├── Synonym: legacy_system:OLD-TPL-42
+    └── Synonym: external_api:template_abc
 ```
 
 ### API Endpoints
@@ -745,321 +549,289 @@ Configurable per namespace:
 | **Namespaces** | | |
 | GET | `/api/registry/namespaces` | List all namespaces |
 | POST | `/api/registry/namespaces` | Create namespace |
-| GET | `/api/registry/namespaces/{ns}` | Get namespace details |
-| PUT | `/api/registry/namespaces/{ns}` | Update namespace |
-| DELETE | `/api/registry/namespaces/{ns}` | Deactivate namespace |
-| **Registration** | | |
-| POST | `/api/registry/register` | Register new composite key |
-| POST | `/api/registry/register-synonym` | Add synonym to existing ID |
-| POST | `/api/registry/merge` | Merge two IDs (make one synonym of other) |
-| **Lookup** | | |
-| GET | `/api/registry/{ns}/{id}` | Lookup by namespace and ID |
-| POST | `/api/registry/lookup` | Lookup by composite key |
-| POST | `/api/registry/search` | Search by field values |
-| **Management** | | |
-| PUT | `/api/registry/{ns}/{id}` | Update entry |
-| DELETE | `/api/registry/{ns}/{id}` | Deactivate entry |
-| DELETE | `/api/registry/{ns}/{id}/synonyms/{syn_ns}/{syn_hash}` | Remove synonym |
-| PUT | `/api/registry/{ns}/{id}/preferred` | Set as preferred ID |
-
-### Authentication
-
-Registry uses **API keys** for system-to-system authentication:
-
-```http
-POST /api/registry/register
-X-API-Key: wip_sk_live_abc123...
-Content-Type: application/json
-
-{
-  "namespace": "default",
-  "composite_key": {
-    "product_id": "PROD-001",
-    "region": "EU"
-  }
-}
-```
-
-### WIP Integration
-
-The Registry serves as the **ID generator for all WIP components**:
-
-| Component | Registry Usage |
-|-----------|----------------|
-| **Terminologies** | IDs generated via Registry (namespace: `wip-terminologies`) |
-| **Terms** | IDs generated via Registry (namespace: `wip-terms`) |
-| **Templates** | IDs generated via Registry (namespace: `wip-templates`) |
-| **Documents** | IDs generated via Registry (namespace: `wip-documents`) |
-
-This ensures consistent identity management across the entire WIP ecosystem.
+| POST | `/api/registry/namespaces/initialize-wip` | Initialize WIP namespaces |
+| **IDs** | | |
+| POST | `/api/registry/ids` | Generate new ID |
+| POST | `/api/registry/ids/bulk` | Bulk generate IDs |
+| GET | `/api/registry/ids/{id}` | Lookup by ID |
+| **Synonyms** | | |
+| POST | `/api/registry/synonyms` | Add synonym |
+| GET | `/api/registry/synonyms/{id}` | Get synonyms for ID |
+| **Search** | | |
+| POST | `/api/registry/search` | Search by composite key |
 
 ---
 
-## Web UIs
+## Reporting Sync
 
-### Ontology/Terminology Editor
-
-**Purpose**: Manage the Def-Store (terminologies and terms).
-
-**Features**:
-- Tree view of terminologies and terms
-- Drag-drop reordering for hierarchical terms
-- Version history viewer
-- Import/export (CSV, JSON)
-- Search across all terms
-- Bulk operations
-
-**Key Components**:
-- `TreeTable` for hierarchy display
-- `Dialog` for term editing
-- `DataTable` for flat views
-- `FileUpload` for imports
-
-### Template Editor
-
-**Purpose**: Create and manage templates.
-
-**Features**:
-- Visual field designer
-- Drag-drop field reordering
-- Rule builder (visual)
-- Template inheritance visualization
-- Preview mode (sample document)
-- Validation testing
-- Version comparison
-
-**Key Components**:
-- `OrderList` for field arrangement
-- `Panel` for field configuration
-- `Dropdown` for terminology selection
-- `TabView` for rule categories
-
-### Admin UI
-
-**Purpose**: Direct data curation and fixes.
-
-**Features**:
-- Browse any store
-- Direct document editing (⚠️ bypasses some validations)
-- Bulk status changes
-- Version restoration
-- Archive management
-- System health dashboard
-
-**Access**: Highly restricted (admin role only)
-
-### Query Builder
-
-**Purpose**: Build and execute ad-hoc queries.
-
-**Features**:
-- Visual filter builder
-- Template-aware field suggestions
-- Save/load queries
-- Export results (CSV, JSON)
-- Query history
-- Share queries with team
-
-**Key Components**:
-- `AutoComplete` for fields
-- `MultiSelect` for term values
-- `DataTable` for results
-- `Dialog` for save/load
-
----
-
-## Reporting Layer
+**Port:** 8005 | **API Base:** `/api/reporting-sync`
 
 ### Purpose
 
-Provide a **relational database projection** of document data for SQL-based querying and reporting tools.
+Synchronize document data from MongoDB to PostgreSQL for SQL-based analytics and BI tools.
 
 ### Architecture
 
 ```
-Document Store ──► Sync Worker ──► Reporting Store
-   (MongoDB)           │           (PostgreSQL)
-                       │
-                ┌──────┴──────┐
-                │  Transform  │
-                │             │
-                │ • Flatten   │
-                │ • Type map  │
-                │ • Index     │
-                └─────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                   REPORTING SYNC ARCHITECTURE                    │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Document Store                    NATS                         │
+│       :8004                       :4222                          │
+│         │                           │                            │
+│         ├──► MongoDB (save)         │                            │
+│         │                           │                            │
+│         └──► NATS publish ──────────┤                            │
+│              wip.documents.created  │                            │
+│                                     ▼                            │
+│                              Reporting Sync                      │
+│                                  :8005                           │
+│                                     │                            │
+│                              ┌──────┴──────┐                     │
+│                              │ Transform   │                     │
+│                              │ • Flatten   │                     │
+│                              │ • Type map  │                     │
+│                              └──────┬──────┘                     │
+│                                     │                            │
+│                                     ▼                            │
+│                              PostgreSQL                          │
+│                                :5432                             │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Table Generation
 
-For each template, a corresponding table is generated:
-
-**Template**: `template-person`
-
-**Generated Table**: `doc_person`
+For each template, a corresponding PostgreSQL table is generated:
 
 ```sql
 CREATE TABLE doc_person (
-    id UUID PRIMARY KEY,
-    version INTEGER,
-    status VARCHAR(20),
-    created_at TIMESTAMP,
+    -- System columns
+    document_id TEXT PRIMARY KEY,
+    template_id TEXT NOT NULL,
+    template_version INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    identity_hash TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL,
+    created_by TEXT,
     updated_at TIMESTAMP,
+    updated_by TEXT,
 
-    -- Flattened data fields
-    first_name VARCHAR(255),
-    last_name VARCHAR(255),
-    gender VARCHAR(50),
-    birth_date DATE,
-    national_id VARCHAR(50),
+    -- Data columns (from template fields)
+    first_name TEXT,
+    last_name TEXT,
+    email TEXT,
+    gender TEXT,
+    gender_term_id TEXT,
 
     -- Nested objects flattened
-    address_street VARCHAR(255),
-    address_city VARCHAR(255),
-    address_postal_code VARCHAR(20),
-    address_country VARCHAR(10),
+    address_street TEXT,
+    address_city TEXT,
 
-    -- Original JSON for complex queries
-    data_json JSONB
+    -- Original JSON
+    data_json JSONB,
+    term_references_json JSONB
 );
 ```
 
-### Sync Modes
+### NATS Event Format
 
-Configured per deployment:
-
-```yaml
-reporting:
-  enabled: true
-  store:
-    type: postgresql
-    connection: postgresql://localhost:5432/wip_reporting
-
-  sync:
-    mode: event  # batch, event, queue
-
-    # Batch mode settings
-    batch:
-      schedule: "0 */6 * * *"  # Every 6 hours
-
-    # Event mode settings
-    event:
-      debounce_ms: 1000
-
-    # Queue mode settings
-    queue:
-      subject: "wip.documents.>"
-```
-
----
-
-## Message Queue
-
-### Purpose
-
-Enable **asynchronous communication** for event-driven sync and notifications.
-
-### NATS Subjects
-
-| Subject | Purpose |
-|---------|---------|
-| `wip.documents.created` | New document created |
-| `wip.documents.updated` | Document updated (new version) |
-| `wip.documents.deactivated` | Document deactivated |
-| `wip.templates.created` | New template created |
-| `wip.templates.updated` | Template updated |
-| `wip.sync.request` | Request sync for document |
-| `wip.sync.complete` | Sync completed |
-
-### Event Format
+Events contain the full document (self-contained):
 
 ```json
 {
   "event_id": "evt-123",
   "event_type": "document.created",
-  "timestamp": "2024-01-15T10:00:00Z",
-  "payload": {
-    "document_id": "doc-456",
-    "template_id": "template-person",
-    "identity_hash": "a1b2c3..."
+  "timestamp": "2024-01-30T10:00:00Z",
+  "document": {
+    "document_id": "0192abc...",
+    "template_id": "TPL-000001",
+    "template_code": "PERSON",
+    "version": 1,
+    "status": "active",
+    "data": { "..." },
+    "term_references": { "..." }
   }
 }
 ```
 
-### JetStream (Persistence)
+### API Endpoints
 
-For guaranteed delivery:
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| **Health** | | |
+| GET | `/health` | Health check (NATS/PostgreSQL status) |
+| GET | `/status` | Sync worker status |
+| **Metrics** | | |
+| GET | `/metrics` | Latency, throughput, per-template stats |
+| GET | `/metrics/consumer` | NATS queue depth, pending messages |
+| **Alerts** | | |
+| GET | `/alerts` | Active alerts and configuration |
+| PUT | `/alerts/config` | Update thresholds and webhook |
+| POST | `/alerts/test` | Trigger manual alert check |
+| **Schema** | | |
+| GET | `/schema/{template_code}` | View generated schema |
+| **Batch Sync** | | |
+| POST | `/sync/batch/{template_code}` | Sync all docs for template |
+| POST | `/sync/batch` | Sync all templates |
+| GET | `/sync/batch/jobs` | List batch jobs |
+| GET | `/sync/batch/jobs/{id}` | Get job status |
+| DELETE | `/sync/batch/jobs/{id}` | Cancel job |
+| **Integrity** | | |
+| GET | `/health/integrity` | Aggregated integrity check |
 
-```yaml
-nats:
-  jetstream:
-    enabled: true
-    streams:
-      - name: WIP_EVENTS
-        subjects:
-          - "wip.>"
-        retention: limits
-        max_age: 168h  # 7 days
-        max_bytes: 1073741824  # 1GB
-```
+### Alert Types
+
+| Alert | Trigger |
+|-------|---------|
+| `queue_lag` | NATS pending messages exceed threshold |
+| `error_rate` | Sync errors exceed threshold |
+| `processing_stalled` | No events processed for threshold time |
+| `connection_lost` | NATS or PostgreSQL connection lost |
 
 ---
 
-## Auth Service
+## WIP Console
+
+**Port:** 3000 (dev) / 80 (production) | **Access:** `https://localhost:8443`
 
 ### Purpose
 
-Centralized **authentication and authorization** for all WIP components.
+Unified web UI for managing all WIP components.
 
-### Integration
+### Technology Stack
 
+- **Framework:** Vue 3 + TypeScript
+- **UI Library:** PrimeVue
+- **Build:** Vite
+- **OIDC:** oidc-client-ts
+
+### Features
+
+#### Terminology Management
+- List, create, edit, delete terminologies
+- Manage terms with bulk import (JSON/CSV)
+- Export terminologies to JSON/CSV
+- Value validation (single and bulk)
+- View which templates use each terminology
+
+#### Template Management
+- List, create, edit, delete templates
+- Visual field editor
+- Validation rules configuration
+- Template inheritance visualization
+- Reporting sync configuration
+- Version history
+
+#### Document Management
+- List documents by template
+- Dynamic form generation based on template fields
+- Real-time validation feedback
+- Version history viewing and restore
+- Table view with CSV export
+
+### Authentication
+
+- **OIDC Login:** Via Dex (admin@wip.local, editor@wip.local, viewer@wip.local)
+- **API Key:** For development/testing
+- Configurable via settings panel
+
+---
+
+## Infrastructure
+
+### MongoDB
+
+**Port:** 27017
+
+Primary document store. Databases:
+- `wip_registry`
+- `wip_def_store`
+- `wip_template_store`
+- `wip_document_store`
+
+### PostgreSQL
+
+**Port:** 5432
+
+Reporting database. Tables auto-generated from templates:
+- `doc_{template_code}` for each template with sync enabled
+- `_wip_schema_migrations` for tracking schema changes
+
+### NATS
+
+**Port:** 4222 | **Monitoring:** 8222
+
+Message queue with JetStream for event persistence.
+
+**Subjects:**
+| Subject | Publisher | Consumer |
+|---------|-----------|----------|
+| `wip.documents.created` | Document Store | Reporting Sync |
+| `wip.documents.updated` | Document Store | Reporting Sync |
+| `wip.documents.deleted` | Document Store | Reporting Sync |
+| `wip.templates.created` | Template Store | Reporting Sync |
+| `wip.templates.updated` | Template Store | Reporting Sync |
+
+### Dex
+
+**Port:** 5556
+
+Lightweight OIDC provider (~30MB RAM). Features:
+- Static users via YAML config
+- Works over HTTP (no TLS required)
+- Standard OIDC protocol
+
+### Caddy
+
+**Ports:** 8080 (HTTP) / 8443 (HTTPS)
+
+Reverse proxy with auto-generated TLS certificates. Routes:
+- `/` → WIP Console
+- `/api/*` → Microservices
+- `/dex/` → Dex OIDC
+
+### Mongo Express (Optional)
+
+**Port:** 8081
+
+MongoDB admin UI. Included in `mac` and `pi-large` profiles.
+
+---
+
+## Authentication
+
+All services use the **wip-auth** shared library.
+
+### Auth Modes
+
+| Mode | Description |
+|------|-------------|
+| `none` | No authentication (development) |
+| `api_key_only` | API key via `X-API-Key` header |
+| `jwt_only` | JWT from OIDC provider |
+| `dual` | Both API key and JWT (default) |
+
+### Dependencies
+
+```python
+from wip_auth import require_identity, require_groups, require_admin
+
+@app.get("/protected")
+async def protected(identity = Depends(require_identity)):
+    return {"user": identity.username}
+
+@app.post("/admin-only")
+async def admin_only(identity = Depends(require_admin)):
+    return {"admin": identity.username}
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                  │
-│   User ──► UI ──► Authentik ──► JWT ──► API ──► Protected      │
-│                                               Resource          │
-│                                                                  │
-│   System ──► API Key ──► API ──► Protected Resource             │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
 
-### JWT Claims
+### Identity Tracking
 
-```json
-{
-  "sub": "user-123",
-  "email": "alice@example.com",
-  "name": "Alice Smith",
-  "roles": ["editor", "architect"],
-  "groups": ["team-europe"],
-  "exp": 1705320000,
-  "iat": 1705316400
-}
-```
+All operations record the authenticated identity:
+- `created_by`: `apikey:legacy` or `user:admin-001`
+- `updated_by`: Same format
 
-### API Key Format
-
-```
-wip_sk_live_abc123def456...
-│   │  │    │
-│   │  │    └── Random bytes (base64)
-│   │  └─────── Environment (live/test)
-│   └────────── Type (sk = secret key)
-└────────────── Prefix
-```
-
-### Configuration
-
-```yaml
-auth:
-  provider: authentik  # authentik, authelia, none
-
-  authentik:
-    url: http://authentik:9000
-    client_id: wip-api
-    client_secret: ${AUTHENTIK_SECRET}
-
-  api_keys:
-    enabled: true
-    hash_algorithm: argon2id
-```
+See [authentication.md](authentication.md) for full configuration details.

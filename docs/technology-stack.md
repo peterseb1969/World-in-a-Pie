@@ -19,6 +19,7 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 │  │  Vite           │  Build tool                           │    │
 │  │  TypeScript     │  Type safety                          │    │
 │  │  Pinia          │  State management                     │    │
+│  │  oidc-client-ts │  OIDC authentication                  │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  BACKEND                                                         │
@@ -30,29 +31,29 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 │  │  asyncpg        │  Async PostgreSQL driver              │    │
 │  │  nats-py        │  NATS client                          │    │
 │  │  uvicorn        │  ASGI server                          │    │
+│  │  wip-auth       │  Shared authentication library        │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  AUTH                                                            │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Authentik      │  Full-featured (default)              │    │
-│  │  Authelia       │  Lightweight alternative              │    │
+│  │  Dex            │  Lightweight OIDC provider (~30MB)    │    │
+│  │  wip-auth       │  Shared auth library (dual mode)      │    │
 │  │  PyJWT          │  JWT validation                       │    │
+│  │  jwcrypto       │  JWKS handling                        │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  DATA                                                            │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │  MongoDB        │  Document store (default)             │    │
-│  │  PostgreSQL     │  Reporting store (default)            │    │
-│  │  SQLite         │  Lightweight alternative              │    │
-│  │  NATS           │  Message queue                        │    │
+│  │  MongoDB        │  Document store                       │    │
+│  │  PostgreSQL     │  Reporting store                      │    │
+│  │  NATS           │  Message queue (with JetStream)       │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │
 │  INFRASTRUCTURE                                                  │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Docker         │  Containerization                     │    │
-│  │  Docker Compose │  Local/Pi orchestration               │    │
-│  │  MicroK8s       │  Demo/production orchestration        │    │
-│  │  Traefik        │  Reverse proxy                        │    │
+│  │  Podman         │  Container runtime                    │    │
+│  │  Podman Compose │  Service orchestration                │    │
+│  │  Caddy          │  Reverse proxy with auto-TLS          │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
@@ -95,22 +96,14 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 
 | Component | Use Case |
 |-----------|----------|
-| TreeTable | Ontology hierarchy display |
-| DataTable | Document browsing, results display |
-| OrderList | Field arrangement in template editor |
-| AutoComplete | Term/field selection |
+| DataTable | Document and terminology browsing |
 | Dialog | Modal editing forms |
+| InputText/Number | Form inputs |
+| Dropdown | Terminology term selection |
+| AutoComplete | Search with suggestions |
 | Toast | Notifications |
 | ConfirmDialog | Destructive action confirmation |
-| FileUpload | Import functionality |
-
-**Alternatives Considered**:
-
-| Alternative | Why Not Chosen |
-|-------------|----------------|
-| Vuetify | Material Design too opinionated; heavier |
-| Naive UI | Beautiful but smaller component set |
-| Element Plus | Less feature-rich for complex scenarios |
+| TabView | Document metadata/raw JSON views |
 
 ### Vite
 
@@ -132,6 +125,16 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 - **Modular**: Store composition without boilerplate
 - **DevTools**: Excellent debugging support
 
+### oidc-client-ts
+
+**Choice**: oidc-client-ts for browser-side OIDC
+
+**Rationale**:
+- **PKCE support**: Secure authorization code flow
+- **TypeScript**: Full type definitions
+- **Token management**: Automatic refresh, silent renew
+- **Standard compliant**: Works with any OIDC provider
+
 ---
 
 ## Backend
@@ -146,14 +149,6 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 - **Performance**: 3.11 brought significant speed improvements
 - **Team familiarity**: Common knowledge base
 - **Async support**: Native async/await for I/O-bound workloads
-
-**Alternatives Considered**:
-
-| Alternative | Why Not Chosen |
-|-------------|----------------|
-| Node.js | Good async but less type safety; callback patterns |
-| Go | Excellent performance but slower development |
-| Rust | Best performance but steepest learning curve |
 
 ### FastAPI
 
@@ -171,12 +166,14 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 ```python
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel, Field
+from wip_auth import setup_auth, require_identity
 
 app = FastAPI(
-    title="World In a Pie API",
-    description="Template-driven document storage",
+    title="Document Store API",
+    description="Document storage and validation",
     version="1.0.0"
 )
+setup_auth(app)  # Pluggable authentication
 
 class DocumentCreate(BaseModel):
     """Document creation request."""
@@ -186,23 +183,12 @@ class DocumentCreate(BaseModel):
 @app.post("/documents", response_model=Document)
 async def create_document(
     doc: DocumentCreate,
-    validator: ValidationEngine = Depends(get_validator),
-    store: DocumentStore = Depends(get_store)
+    identity: UserIdentity = Depends(require_identity)
 ):
     """Create a new document with validation."""
-    result = await validator.validate(doc)
-    if not result.valid:
-        raise HTTPException(400, detail=result.errors)
-    return await store.save(doc)
+    # identity contains user info from JWT or API key
+    ...
 ```
-
-**Alternatives Considered**:
-
-| Alternative | Why Not Chosen |
-|-------------|----------------|
-| Django + DRF | Too heavy; ORM not needed for document store |
-| Flask | Too minimal; would need many extensions |
-| Starlette | FastAPI is built on it and adds critical features |
 
 ### Pydantic
 
@@ -215,114 +201,92 @@ async def create_document(
 - **Performance**: v2 rewritten in Rust, very fast
 - **Error messages**: Detailed, user-friendly validation errors
 
-**Usage Pattern**:
+### wip-auth (Shared Library)
 
+**Choice**: Custom shared authentication library
+
+**Rationale**:
+- **Pluggable providers**: Switch between none, api_key, jwt, dual modes
+- **Consistent API**: Same dependencies across all services
+- **Named API keys**: Support for owner/groups on API keys
+- **Environment-driven**: Configuration via WIP_AUTH_* variables
+
+**Usage**:
 ```python
-from pydantic import BaseModel, field_validator
+from wip_auth import setup_auth, require_identity, require_admin
 
-class TemplateField(BaseModel):
-    name: str
-    type: Literal["string", "number", "date", "term", "object", "array"]
-    mandatory: bool = False
-    terminology_ref: str | None = None
+app = FastAPI()
+setup_auth(app)
 
-    @field_validator("terminology_ref")
-    @classmethod
-    def validate_term_ref(cls, v, info):
-        if info.data.get("type") == "term" and not v:
-            raise ValueError("terminology_ref required for term type")
-        return v
-```
-
-### Database Drivers
-
-**Motor** (MongoDB):
-```python
-from motor.motor_asyncio import AsyncIOMotorClient
-
-client = AsyncIOMotorClient("mongodb://localhost:27017")
-db = client.wip
-documents = db.documents
-```
-
-**asyncpg** (PostgreSQL):
-```python
-import asyncpg
-
-pool = await asyncpg.create_pool("postgresql://localhost/wip_reporting")
-async with pool.acquire() as conn:
-    rows = await conn.fetch("SELECT * FROM doc_person WHERE city = $1", "Berlin")
+@app.get("/admin-only")
+async def admin_endpoint(identity = Depends(require_admin())):
+    # Only users in wip-admins group can access
+    ...
 ```
 
 ---
 
 ## Authentication
 
-### Authentik (Default)
+### Dex (OIDC Provider)
 
-**Choice**: Authentik for full-featured deployments
-
-**Rationale**:
-- **Python-based**: Matches the stack, team can contribute
-- **Self-hosted**: Complete control over auth infrastructure
-- **Full-featured**: OIDC, SAML, LDAP, MFA, RBAC
-- **Modern UI**: Good user experience for login flows
-- **Audit logging**: Compliance-ready
-
-**Resource Usage**: ~300-500MB RAM
-
-**Configuration**:
-```yaml
-auth:
-  provider: authentik
-  authentik:
-    url: http://authentik:9000
-    client_id: wip-api
-    client_secret: ${AUTHENTIK_CLIENT_SECRET}
-```
-
-### Authelia (Lightweight Alternative)
-
-**Choice**: Authelia for constrained deployments
+**Choice**: Dex for OIDC authentication
 
 **Rationale**:
-- **Minimal footprint**: ~30-50MB RAM
-- **Simple config**: YAML-based, easy to understand
-- **Sufficient features**: OIDC, 2FA, session management
-- **Pi-friendly**: Runs comfortably on limited hardware
+- **Lightweight**: ~30MB RAM footprint
+- **Works over HTTP**: No HTTPS requirement for development
+- **Full OIDC**: Standard protocol, easy to switch providers later
+- **Static users**: YAML configuration for development/testing
+- **Pluggable connectors**: Can connect to LDAP, SAML, etc.
 
-**Configuration**:
+**Resource Usage**: ~30MB RAM
+
+**Configuration** (via setup.sh):
 ```yaml
-auth:
-  provider: authelia
-  authelia:
-    url: http://authelia:9091
+issuer: http://localhost:5556/dex
+
+staticClients:
+  - id: wip-console
+    name: WIP Console
+    secret: wip-console-secret
+    redirectURIs:
+      - http://localhost:3000/auth/callback
+
+staticPasswords:
+  - email: "admin@wip.local"
+    hash: "..."  # bcrypt hash
+    username: "admin"
+    userID: "admin-001"
 ```
 
-### JWT Handling
+**Test Users**:
 
-```python
-from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer
-import jwt
+| Email | Password | Group |
+|-------|----------|-------|
+| admin@wip.local | admin123 | wip-admins |
+| editor@wip.local | editor123 | wip-editors |
+| viewer@wip.local | viewer123 | wip-viewers |
 
-security = HTTPBearer()
+### wip-auth Library
 
-async def get_current_user(token: str = Depends(security)):
-    try:
-        payload = jwt.decode(
-            token.credentials,
-            key=settings.jwt_public_key,
-            algorithms=["RS256"],
-            audience=settings.jwt_audience
-        )
-        return User(
-            id=payload["sub"],
-            email=payload.get("email"),
-            roles=payload.get("roles", [])
-        )
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Invalid token")
+Shared library providing authentication for all services:
+
+**Auth Modes**:
+
+| Mode | Use Case |
+|------|----------|
+| `none` | Development/testing (no auth) |
+| `api_key_only` | Service-to-service only |
+| `jwt_only` | User authentication only |
+| `dual` | Both API keys and JWT (default) |
+
+**Configuration**:
+```bash
+WIP_AUTH_MODE=dual
+WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+WIP_AUTH_JWT_ISSUER_URL=http://localhost:5556/dex
+WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+WIP_AUTH_JWT_AUDIENCE=wip-console
 ```
 
 ---
@@ -331,36 +295,22 @@ async def get_current_user(token: str = Depends(security)):
 
 ### MongoDB (Document Store)
 
-**Choice**: MongoDB as default document store
+**Choice**: MongoDB as document store
 
 **Rationale**:
 - **Native JSON**: No impedance mismatch with document model
 - **Flexible schema**: Aligns with "store anything" philosophy
 - **Rich queries**: Query nested documents, arrays naturally
-- **Indexing**: Compound indexes, text search, geospatial
-- **ARM support**: Official Raspberry Pi builds available
+- **Indexing**: Compound indexes, text search
+- **ARM support**: Official Raspberry Pi builds (4.4.x for Pi 4)
 
-**Connection**:
-```python
-from motor.motor_asyncio import AsyncIOMotorClient
-
-class MongoDocumentStore(DocumentStore):
-    def __init__(self, connection_string: str):
-        self.client = AsyncIOMotorClient(connection_string)
-        self.db = self.client.wip
-
-    async def save(self, document: Document) -> str:
-        result = await self.db.documents.insert_one(document.dict())
-        return str(result.inserted_id)
-
-    async def get(self, id: str) -> Document | None:
-        doc = await self.db.documents.find_one({"_id": ObjectId(id)})
-        return Document(**doc) if doc else None
-```
+**Version Notes**:
+- Pi 4: MongoDB 4.4.x (ARMv8.0 support)
+- Pi 5 / Mac / Cloud: MongoDB 7.x
 
 ### PostgreSQL (Reporting Store)
 
-**Choice**: PostgreSQL as default reporting store
+**Choice**: PostgreSQL as reporting store
 
 **Rationale**:
 - **SQL power**: Complex queries, aggregations, window functions
@@ -372,33 +322,14 @@ class MongoDocumentStore(DocumentStore):
 **Reporting Table Generation**:
 ```python
 async def generate_table(template: Template, conn: asyncpg.Connection):
-    columns = ["id UUID PRIMARY KEY", "version INTEGER", "status VARCHAR(20)"]
+    columns = ["document_id TEXT PRIMARY KEY", "version INTEGER"]
 
     for field in template.fields:
         sql_type = TYPE_MAP.get(field.type, "TEXT")
         columns.append(f"{field.name} {sql_type}")
 
-    sql = f"CREATE TABLE IF NOT EXISTS doc_{template.name} ({', '.join(columns)})"
+    sql = f"CREATE TABLE IF NOT EXISTS doc_{template.code} ({', '.join(columns)})"
     await conn.execute(sql)
-```
-
-### SQLite (Lightweight Alternative)
-
-For minimal deployments where MongoDB + PostgreSQL is too heavy:
-
-```python
-import aiosqlite
-
-class SQLiteDocumentStore(DocumentStore):
-    async def save(self, document: Document) -> str:
-        async with aiosqlite.connect(self.path) as db:
-            data_json = json.dumps(document.data)
-            await db.execute(
-                "INSERT INTO documents (id, template_id, data) VALUES (?, ?, ?)",
-                (document.id, document.template_id, data_json)
-            )
-            await db.commit()
-            return document.id
 ```
 
 ---
@@ -410,10 +341,10 @@ class SQLiteDocumentStore(DocumentStore):
 **Choice**: NATS as message queue
 
 **Rationale**:
-- **Lightweight**: 10-20MB RAM footprint
+- **Lightweight**: ~30MB RAM footprint with JetStream
 - **Fast**: Millions of messages per second
 - **Simple**: Easy to understand pub/sub model
-- **JetStream**: Persistence when needed
+- **JetStream**: Persistence and replay capabilities
 - **Request/Reply**: Supports synchronous patterns too
 
 **Alternatives Considered**:
@@ -427,40 +358,46 @@ class SQLiteDocumentStore(DocumentStore):
 **Usage**:
 ```python
 import nats
+from nats.js.api import StreamConfig
 
-async def publish_event(event: Event):
+async def setup_nats():
+    nc = await nats.connect("nats://localhost:4222")
+    js = nc.jetstream()
+
+    # Create stream for document events
+    await js.add_stream(
+        StreamConfig(
+            name="WIP_EVENTS",
+            subjects=["wip.documents.>", "wip.templates.>"]
+        )
+    )
+
+async def publish_event(event: DocumentEvent):
     nc = await nats.connect("nats://localhost:4222")
     await nc.publish(
-        f"wip.documents.{event.type}",
-        event.json().encode()
+        f"wip.documents.{event.event_type}",
+        event.model_dump_json().encode()
     )
-    await nc.close()
-
-async def subscribe_events():
-    nc = await nats.connect("nats://localhost:4222")
-    sub = await nc.subscribe("wip.documents.>")
-    async for msg in sub.messages:
-        event = Event.parse_raw(msg.data)
-        await handle_event(event)
 ```
 
 ---
 
 ## Infrastructure
 
-### Docker
+### Podman
 
-**Choice**: Docker for containerization
+**Choice**: Podman for containerization
 
 **Rationale**:
-- **Portability**: Same containers run everywhere
-- **Isolation**: Dependencies don't conflict
-- **Reproducibility**: Same environment dev to prod
-- **ARM support**: Multi-arch images available
+- **Rootless**: Better security without root daemon
+- **Docker compatible**: Same CLI, same Dockerfiles
+- **Daemonless**: No background daemon required
+- **SystemD integration**: Native on Linux
+- **Pod support**: Group containers together
 
 **Base Images**:
 ```dockerfile
-# API
+# API services
 FROM python:3.11-slim
 
 # UI
@@ -468,44 +405,61 @@ FROM node:20-alpine AS build
 FROM nginx:alpine AS runtime
 
 # MongoDB
-FROM mongo:7
+FROM mongo:7        # Mac/Pi 5
+FROM mongo:4.4.18   # Pi 4 (ARMv8.0)
 
 # PostgreSQL
 FROM postgres:16
 
 # NATS
 FROM nats:2.10
+
+# Dex
+FROM ghcr.io/dexidp/dex:v2.38.0
+
+# Caddy
+FROM caddy:2-alpine
 ```
 
-### Docker Compose
+### Caddy (Reverse Proxy)
 
-**Choice**: Docker Compose for local/Pi deployments
-
-**Rationale**:
-- **Simple**: Single file defines entire stack
-- **Portable**: Works on Pi, laptop, server
-- **Networking**: Automatic service discovery
-- **Volumes**: Persistent data management
-
-### MicroK8s
-
-**Choice**: MicroK8s for demo/production
+**Choice**: Caddy as reverse proxy
 
 **Rationale**:
-- **Lightweight**: Single-node Kubernetes that actually works
-- **Snap install**: Easy setup
-- **Add-ons**: Built-in ingress, storage, registry
-- **Production-ready**: Can scale when needed
+- **Auto-TLS**: Automatic HTTPS with self-signed or Let's Encrypt
+- **Simple config**: Caddyfile is human-readable
+- **Lightweight**: Low resource usage (~25MB)
+- **Pi-friendly**: Enables OIDC over network without SSH tunnels
 
-### Traefik
+**Why Caddy over nginx/Traefik**:
+- OIDC requires HTTPS for `Crypto.subtle` (PKCE)
+- Caddy auto-generates self-signed certificates
+- Simpler configuration than nginx
+- Lower memory than Traefik
 
-**Choice**: Traefik as reverse proxy
+**Caddyfile**:
+```
+{
+    auto_https disable_redirects
+}
 
-**Rationale**:
-- **Auto-discovery**: Detects services automatically
-- **Let's Encrypt**: Automatic HTTPS certificates
-- **Dashboard**: Visual route management
-- **Lightweight**: Lower resource usage than nginx + config
+localhost, 127.0.0.1 {
+    tls internal
+
+    handle /api/def-store/* {
+        reverse_proxy wip-def-store:8002
+    }
+    handle /api/document-store/* {
+        reverse_proxy wip-document-store:8004
+    }
+    handle /dex/* {
+        reverse_proxy wip-dex:5556
+    }
+    handle {
+        reverse_proxy wip-console:3000
+    }
+}
+```
 
 ---
 
@@ -526,43 +480,16 @@ FROM nats:2.10
 ### Development Workflow
 
 ```bash
-# Backend
-cd backend
-python -m venv venv
-source venv/bin/activate
-pip install -e ".[dev]"
-pytest
-ruff check .
-mypy .
+# Backend service
+cd components/def-store
+pip install -r requirements.txt
+pytest tests/ -v
 
 # Frontend
-cd frontend
+cd ui/wip-console
 npm install
 npm run dev
 npm run test
-npm run lint
-```
-
-### Pre-commit Hooks
-
-```yaml
-# .pre-commit-config.yaml
-repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.0
-    hooks:
-      - id: ruff
-      - id: ruff-format
-
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.0.0
-    hooks:
-      - id: mypy
-
-  - repo: https://github.com/pre-commit/mirrors-eslint
-    rev: v8.0.0
-    hooks:
-      - id: eslint
 ```
 
 ---
@@ -576,8 +503,9 @@ repos:
 | Pydantic | 2.0+ | v2 for Rust-based performance |
 | Vue | 3.4+ | Composition API |
 | PrimeVue | 3.40+ | Latest stable |
-| MongoDB | 7.0+ | Document store |
+| MongoDB | 4.4+ (Pi 4), 7.0+ (others) | ARM compatibility varies |
 | PostgreSQL | 16+ | Reporting store |
-| NATS | 2.10+ | With JetStream |
-| Docker | 24+ | BuildKit enabled |
-| Authentik | 2024.1+ | Auth provider |
+| NATS | 2.10+ | With JetStream enabled |
+| Dex | 2.38+ | OIDC provider |
+| Caddy | 2.x | Reverse proxy |
+| Podman | 4.x+ | Container runtime |

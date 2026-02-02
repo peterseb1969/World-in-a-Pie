@@ -23,8 +23,8 @@ By default, data is stored in `./data/` relative to the project root. To use a d
 export WIP_DATA_DIR=/path/to/storage
 
 # Run setup script
-bash scripts/mac-setup.sh   # Mac
-bash scripts/pi-setup.sh    # Raspberry Pi
+./scripts/setup.sh   # Mac
+./scripts/setup.sh    # Raspberry Pi
 ```
 
 ## Storage Options
@@ -35,10 +35,10 @@ Uses a directory on the local filesystem. Good for development and simple deploy
 
 ```bash
 # Default (./data in project directory)
-bash scripts/mac-setup.sh
+./scripts/setup.sh
 
 # Custom local path
-WIP_DATA_DIR=/opt/wip-data bash scripts/mac-setup.sh
+WIP_DATA_DIR=/opt/wip-data ./scripts/setup.sh
 ```
 
 ### USB SSD (Raspberry Pi)
@@ -62,7 +62,7 @@ sudo mount /dev/sda1 /mnt/wip-data
 sudo chown -R $USER:$USER /mnt/wip-data
 
 # 6. Run setup with external storage
-WIP_DATA_DIR=/mnt/wip-data bash scripts/pi-setup.sh
+WIP_DATA_DIR=/mnt/wip-data ./scripts/setup.sh
 ```
 
 **Auto-mount on boot:**
@@ -99,7 +99,7 @@ sudo mount -t nfs nas.local:/exports/wip-data /mnt/wip-data
 sudo chown -R $USER:$USER /mnt/wip-data
 
 # 5. Run setup
-WIP_DATA_DIR=/mnt/wip-data bash scripts/pi-setup.sh
+WIP_DATA_DIR=/mnt/wip-data ./scripts/setup.sh
 ```
 
 **Auto-mount on boot:**
@@ -142,7 +142,7 @@ sudo mkdir -p /mnt/wip-data
 sudo mount -t glusterfs node1.local:/wip-volume /mnt/wip-data
 
 # 4. Run setup
-WIP_DATA_DIR=/mnt/wip-data bash scripts/pi-setup.sh
+WIP_DATA_DIR=/mnt/wip-data ./scripts/setup.sh
 ```
 
 **Auto-mount on boot:**
@@ -167,7 +167,7 @@ sudo mount -t ceph mon1:6789:/ /mnt/wip-data -o name=admin,secret=<key>
 sudo ceph-fuse /mnt/wip-data
 
 # 3. Run setup
-WIP_DATA_DIR=/mnt/wip-data bash scripts/pi-setup.sh
+WIP_DATA_DIR=/mnt/wip-data ./scripts/setup.sh
 ```
 
 ## Directory Structure
@@ -225,7 +225,7 @@ podman stop -a
 tar -czvf wip-backup-$(date +%Y%m%d).tar.gz $WIP_DATA_DIR
 
 # Restart services
-bash scripts/mac-setup.sh  # or pi-setup.sh
+./scripts/setup.sh  # or pi-setup.sh
 ```
 
 ### MongoDB Backup (Hot)
@@ -260,7 +260,7 @@ rsync -av $WIP_DATA_DIR/ /new/location/
 
 # 3. Update WIP_DATA_DIR and restart
 export WIP_DATA_DIR=/new/location
-bash scripts/mac-setup.sh
+./scripts/setup.sh
 ```
 
 ## Performance Considerations

@@ -1,16 +1,16 @@
 # Project Structure
 
-This document defines the directory structure for World In a Pie (WIP), designed to keep components isolated and avoid conflicts.
+This document defines the directory structure for World In a Pie (WIP), designed to keep components isolated and independently deployable.
 
 ---
 
 ## Design Principles
 
-1. **Component Isolation**: Each component lives in its own directory with its own configuration
-2. **Independent Deployment**: Components can be built and deployed independently
-3. **No Compose Conflicts**: Each component has its own `docker-compose.yml`
-4. **Shared Libraries**: Common code extracted to shared packages
-5. **Clear Boundaries**: API contracts defined between components
+1. **Component Isolation**: Each service lives in its own directory with its own configuration
+2. **Independent Deployment**: Services can be built and deployed independently
+3. **Shared Infrastructure**: Common databases and message queue shared via docker-compose.infra.yml
+4. **Shared Libraries**: Common authentication code in `libs/wip-auth`
+5. **Clear Boundaries**: API contracts defined between services
 
 ---
 
@@ -19,461 +19,399 @@ This document defines the directory structure for World In a Pie (WIP), designed
 ```
 world-in-a-pie/
 │
-├── README.md                           # Project overview
-├── docs/                               # Documentation (this folder)
+├── README.md                              # Project overview
+├── CLAUDE.md                              # AI assistant context and roadmap
+│
+├── docs/                                  # Documentation
 │   ├── philosophy.md
 │   ├── architecture.md
+│   ├── authentication.md
 │   ├── components.md
-│   ├── technology-stack.md
-│   ├── deployment.md
 │   ├── data-models.md
-│   ├── project-structure.md
-│   └── glossary.md
+│   ├── deployment.md
+│   ├── glossary.md
+│   ├── project-structure.md              # This file
+│   ├── storage.md
+│   ├── technology-stack.md
+│   ├── owl-support.md
+│   ├── design/                           # Design documents
+│   │   └── reference-fields.md
+│   └── use-cases/                        # Use case documentation
+│       ├── README.md
+│       └── master-data/
+│           └── README.md
 │
-├── shared/                             # Shared libraries and utilities
-│   ├── wip-common/                     # Common Python package
-│   │   ├── pyproject.toml
-│   │   ├── src/
-│   │   │   └── wip_common/
-│   │   │       ├── __init__.py
-│   │   │       ├── models/             # Shared Pydantic models
-│   │   │       │   ├── __init__.py
-│   │   │       │   ├── base.py         # Base model classes
-│   │   │       │   └── identity.py     # Identity hash utilities
-│   │   │       ├── auth/               # Auth utilities
-│   │   │       │   ├── __init__.py
-│   │   │       │   ├── jwt.py
-│   │   │       │   └── api_key.py
-│   │   │       └── config/             # Configuration utilities
-│   │   │           ├── __init__.py
-│   │   │           └── loader.py
-│   │   └── tests/
-│   │
-│   └── wip-ui-common/                  # Shared Vue components
-│       ├── package.json
-│       └── src/
-│           ├── components/
-│           ├── composables/
-│           └── utils/
+├── libs/                                  # Shared libraries
+│   └── wip-auth/                         # Authentication library
+│       ├── pyproject.toml
+│       ├── README.md
+│       ├── src/
+│       │   └── wip_auth/
+│       │       ├── __init__.py           # Main exports, setup_auth()
+│       │       ├── config.py             # AuthConfig from environment
+│       │       ├── models.py             # UserIdentity, APIKeyRecord
+│       │       ├── identity.py           # Request-scoped identity context
+│       │       ├── dependencies.py       # FastAPI dependencies
+│       │       ├── middleware.py         # AuthMiddleware
+│       │       └── providers/            # Auth provider implementations
+│       │           ├── base.py
+│       │           ├── none.py
+│       │           ├── api_key.py
+│       │           └── oidc.py
+│       └── tests/
 │
-├── components/                         # Individual components
+├── components/                            # Backend services
 │   │
-│   ├── registry/                       # ══════════════════════════════
-│   │   │                               # REGISTRY COMPONENT
-│   │   │                               # First component to implement
-│   │   │                               # ══════════════════════════════
+│   ├── registry/                         # ══════════════════════════════
+│   │   │                                 # REGISTRY SERVICE (Port 8001)
+│   │   │                                 # ID generation, namespaces
+│   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.yml          # Registry-specific compose
-│   │   ├── docker-compose.dev.yml      # Development overrides
+│   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
+│   │   ├── requirements.txt
 │   │   ├── config/
-│   │   │   ├── config.yaml             # Default configuration
-│   │   │   └── config.dev.yaml         # Development configuration
-│   │   ├── pyproject.toml
+│   │   ├── scripts/
+│   │   │   └── seed_data.py
 │   │   ├── src/
 │   │   │   └── registry/
 │   │   │       ├── __init__.py
-│   │   │       ├── main.py             # FastAPI application
+│   │   │       ├── main.py               # FastAPI application
 │   │   │       ├── api/
-│   │   │       │   ├── __init__.py
 │   │   │       │   ├── namespaces.py
 │   │   │       │   ├── entries.py
 │   │   │       │   ├── synonyms.py
-│   │   │       │   └── search.py
+│   │   │       │   └── auth.py
 │   │   │       ├── models/
-│   │   │       │   ├── __init__.py
-│   │   │       │   ├── namespace.py
-│   │   │       │   ├── entry.py
-│   │   │       │   └── synonym.py
-│   │   │       ├── services/
-│   │   │       │   ├── __init__.py
-│   │   │       │   ├── id_generator.py
-│   │   │       │   ├── hash.py
-│   │   │       │   └── search.py
-│   │   │       └── storage/
-│   │   │           ├── __init__.py
-│   │   │           ├── base.py
-│   │   │           ├── mongodb.py
-│   │   │           └── sqlite.py
+│   │   │       └── services/
 │   │   └── tests/
-│   │       ├── conftest.py
-│   │       ├── test_api/
-│   │       ├── test_services/
-│   │       └── test_storage/
 │   │
-│   ├── def-store/                      # ══════════════════════════════
-│   │   │                               # DEF-STORE COMPONENT
-│   │   │                               # Terminologies & Terms
-│   │   │                               # ══════════════════════════════
+│   ├── def-store/                        # ══════════════════════════════
+│   │   │                                 # DEF-STORE SERVICE (Port 8002)
+│   │   │                                 # Terminologies & Terms
+│   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.yml
 │   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
-│   │   ├── config/
-│   │   ├── pyproject.toml
+│   │   ├── requirements.txt
 │   │   ├── src/
 │   │   │   └── def_store/
 │   │   │       ├── __init__.py
 │   │   │       ├── main.py
 │   │   │       ├── api/
+│   │   │       │   ├── terminologies.py
+│   │   │       │   ├── terms.py
+│   │   │       │   ├── validation.py
+│   │   │       │   ├── import_export.py
+│   │   │       │   └── auth.py
 │   │   │       ├── models/
-│   │   │       ├── services/
-│   │   │       └── storage/
+│   │   │       │   ├── terminology.py
+│   │   │       │   ├── term.py
+│   │   │       │   └── audit_log.py
+│   │   │       └── services/
+│   │   │           ├── registry_client.py
+│   │   │           ├── terminology_service.py
+│   │   │           └── import_export.py
 │   │   └── tests/
 │   │
-│   ├── template-store/                 # ══════════════════════════════
-│   │   │                               # TEMPLATE STORE COMPONENT
-│   │   │                               # ══════════════════════════════
+│   ├── template-store/                   # ══════════════════════════════
+│   │   │                                 # TEMPLATE STORE SERVICE (Port 8003)
+│   │   │                                 # Document templates & validation
+│   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.yml
 │   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
-│   │   ├── config/
-│   │   ├── pyproject.toml
+│   │   ├── requirements.txt
 │   │   ├── src/
 │   │   │   └── template_store/
 │   │   │       ├── __init__.py
 │   │   │       ├── main.py
 │   │   │       ├── api/
+│   │   │       │   ├── templates.py
+│   │   │       │   └── auth.py
 │   │   │       ├── models/
-│   │   │       ├── services/
-│   │   │       │   ├── validation.py   # Template validation
-│   │   │       │   └── inheritance.py  # Template inheritance
-│   │   │       └── storage/
+│   │   │       │   ├── template.py
+│   │   │       │   ├── field.py
+│   │   │       │   └── rule.py
+│   │   │       └── services/
+│   │   │           ├── registry_client.py
+│   │   │           ├── def_store_client.py
+│   │   │           ├── template_service.py
+│   │   │           └── inheritance_service.py
 │   │   └── tests/
 │   │
-│   ├── document-store/                 # ══════════════════════════════
-│   │   │                               # DOCUMENT STORE COMPONENT
-│   │   │                               # ══════════════════════════════
+│   ├── document-store/                   # ══════════════════════════════
+│   │   │                                 # DOCUMENT STORE SERVICE (Port 8004)
+│   │   │                                 # Document storage & versioning
+│   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.yml
 │   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
-│   │   ├── config/
-│   │   ├── pyproject.toml
+│   │   ├── requirements.txt
 │   │   ├── src/
 │   │   │   └── document_store/
 │   │   │       ├── __init__.py
 │   │   │       ├── main.py
 │   │   │       ├── api/
+│   │   │       │   ├── documents.py
+│   │   │       │   ├── table.py
+│   │   │       │   └── auth.py
 │   │   │       ├── models/
-│   │   │       ├── services/
-│   │   │       │   ├── validation.py   # Document validation engine
-│   │   │       │   └── versioning.py   # Version management
-│   │   │       └── storage/
+│   │   │       │   └── document.py
+│   │   │       └── services/
+│   │   │           ├── registry_client.py
+│   │   │           ├── template_store_client.py
+│   │   │           ├── def_store_client.py
+│   │   │           ├── document_service.py
+│   │   │           ├── validation_service.py
+│   │   │           └── identity_service.py
 │   │   └── tests/
 │   │
-│   ├── reporting/                      # ══════════════════════════════
-│   │   │                               # REPORTING COMPONENT
-│   │   │                               # Sync & SQL projection
-│   │   │                               # ══════════════════════════════
+│   ├── reporting-sync/                   # ══════════════════════════════
+│   │   │                                 # REPORTING SYNC SERVICE (Port 8005)
+│   │   │                                 # MongoDB → PostgreSQL sync
+│   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.yml
+│   │   ├── docker-compose.dev.yml
 │   │   ├── Dockerfile
-│   │   ├── config/
-│   │   ├── pyproject.toml
+│   │   ├── requirements.txt
 │   │   ├── src/
-│   │   │   └── reporting/
+│   │   │   └── reporting_sync/
 │   │   │       ├── __init__.py
-│   │   │       ├── main.py
-│   │   │       ├── sync/
-│   │   │       │   ├── batch.py
-│   │   │       │   ├── event.py
-│   │   │       │   └── queue.py
-│   │   │       └── transform/
+│   │   │       ├── main.py               # FastAPI app + health/metrics
+│   │   │       ├── config.py
+│   │   │       ├── models.py
+│   │   │       ├── worker.py             # NATS consumer
+│   │   │       ├── transformer.py        # Document → row transformation
+│   │   │       ├── schema_manager.py     # PostgreSQL table management
+│   │   │       ├── batch_sync.py         # Batch/recovery sync
+│   │   │       └── metrics.py            # Metrics and alerts
 │   │   └── tests/
 │   │
-│   ├── gateway/                        # ══════════════════════════════
-│   │   │                               # API GATEWAY (optional)
-│   │   │                               # Unified entry point
-│   │   │                               # ══════════════════════════════
-│   │   ├── README.md
-│   │   ├── docker-compose.yml
-│   │   ├── Dockerfile
-│   │   └── config/
-│   │       └── traefik.yml
-│   │
-│   └── seed_data/                      # ══════════════════════════════
-│       │                               # SEED DATA MODULE
-│       │                               # Template-driven test data
-│       │                               # ══════════════════════════════
+│   └── seed_data/                        # ══════════════════════════════
+│       │                                 # SEED DATA MODULE
+│       │                                 # Template-driven test data
+│       │                                 # ══════════════════════════════
 │       ├── __init__.py
-│       ├── terminologies.py            # 15 terminology definitions
-│       ├── templates.py                # 24 template definitions
-│       ├── documents.py                # Document generation configs
-│       ├── generators.py               # Simple API for generation
-│       ├── document_generator.py       # Template-driven generator
-│       └── performance.py              # Large-scale data generation
+│       ├── requirements.txt
+│       ├── terminologies.py              # 15 terminology definitions
+│       ├── templates.py                  # 24 template definitions
+│       ├── documents.py                  # Document generation configs
+│       ├── generators.py                 # Simple API for generation
+│       ├── document_generator.py         # Template-driven generator
+│       └── performance.py                # Benchmarking utilities
 │
-├── ui/                                 # Frontend applications
+├── ui/                                   # Frontend applications
 │   │
-│   ├── admin/                          # Admin UI
-│   │   ├── README.md
-│   │   ├── package.json
-│   │   ├── vite.config.ts
-│   │   ├── Dockerfile
-│   │   └── src/
-│   │
-│   ├── ontology-editor/                # Ontology/Terminology Editor
-│   │   ├── README.md
-│   │   ├── package.json
-│   │   ├── vite.config.ts
-│   │   ├── Dockerfile
-│   │   └── src/
-│   │
-│   ├── template-editor/                # Template Editor
-│   │   ├── README.md
-│   │   ├── package.json
-│   │   ├── vite.config.ts
-│   │   ├── Dockerfile
-│   │   └── src/
-│   │
-│   └── query-builder/                  # Query Builder
+│   └── wip-console/                      # ══════════════════════════════
+│       │                                 # WIP CONSOLE (Port 3000)
+│       │                                 # Unified Web UI
+│       │                                 # ══════════════════════════════
 │       ├── README.md
 │       ├── package.json
 │       ├── vite.config.ts
+│       ├── docker-compose.dev.yml
 │       ├── Dockerfile
-│       └── src/
+│       ├── Dockerfile.dev
+│       ├── nginx.conf
+│       ├── src/
+│       │   ├── main.ts
+│       │   ├── App.vue
+│       │   ├── api/                      # API clients
+│       │   │   ├── defStoreClient.ts
+│       │   │   ├── templateStoreClient.ts
+│       │   │   └── documentStoreClient.ts
+│       │   ├── components/
+│       │   │   ├── layout/               # AppLayout, sidebar
+│       │   │   ├── terminologies/        # Terminology components
+│       │   │   ├── templates/            # Template components
+│       │   │   └── documents/            # Document components
+│       │   ├── router/
+│       │   ├── stores/                   # Pinia stores
+│       │   ├── types/                    # TypeScript interfaces
+│       │   └── views/
+│       │       ├── terminologies/
+│       │       ├── templates/
+│       │       └── documents/
+│       └── tests/
 │
-├── deploy/                             # Deployment configurations
-│   │
-│   ├── docker-compose/                 # Full stack compose files
-│   │   ├── docker-compose.yml          # Production stack
-│   │   ├── docker-compose.dev.yml      # Development stack
-│   │   ├── docker-compose.pi.yml       # Raspberry Pi stack
-│   │   ├── docker-compose.minimal.yml  # Minimal (SQLite) stack
-│   │   └── .env.example
-│   │
-│   ├── k8s/                            # Kubernetes manifests
-│   │   ├── namespace.yaml
-│   │   ├── configmaps/
-│   │   ├── secrets/
-│   │   ├── registry/
-│   │   ├── def-store/
-│   │   ├── template-store/
-│   │   ├── document-store/
-│   │   ├── reporting/
-│   │   └── ingress.yaml
-│   │
-│   └── scripts/                        # Deployment scripts
-│       ├── deploy.sh
-│       ├── backup.sh
-│       └── restore.sh
+├── config/                               # Configuration files
+│   ├── profiles/                         # Deployment profiles
+│   │   ├── mac.env
+│   │   ├── pi-minimal.env
+│   │   ├── pi-standard.env
+│   │   ├── pi-large.env
+│   │   └── dev-minimal.env
+│   ├── caddy/                            # Reverse proxy config
+│   │   ├── Caddyfile                     # Generated by setup.sh
+│   │   └── Caddyfile.template
+│   ├── dex/                              # OIDC provider config
+│   │   └── config.yaml                   # Generated by setup.sh
+│   └── api-keys.example.json             # Example API key config
 │
-├── tools/                              # Development tools
-│   ├── bootstrap/                      # Bootstrap scripts
-│   │   ├── seed-registry.py
-│   │   └── seed-definitions.py
-│   └── migration/                      # Migration tools
-│       └── migrate.py
+├── scripts/                              # Utility scripts
+│   ├── setup.sh                          # Unified setup script
+│   ├── seed_comprehensive.py             # Test data seeding
+│   ├── wipe-data.sh                      # Data cleanup
+│   └── nuke.sh                           # Complete reset
 │
-└── .github/                            # CI/CD
-    └── workflows/
-        ├── ci.yml
-        ├── build.yml
-        └── deploy.yml
+├── data/                                 # Persistent data (gitignored)
+│   ├── mongodb/                          # Document store
+│   ├── postgres/                         # Reporting database
+│   ├── nats/                             # Message queue
+│   ├── dex/                              # OIDC state
+│   └── caddy/                            # TLS certificates
+│
+├── docker-compose.infra.yml              # Full infrastructure
+├── docker-compose.infra.minimal.yml      # Without Dex/Caddy
+├── docker-compose.infra.pi.yml           # Pi-optimized full
+├── docker-compose.infra.pi.minimal.yml   # Pi minimal
+│
+└── .env                                  # Generated by setup.sh
 ```
 
 ---
 
-## Component Independence
+## Infrastructure vs Services
 
-Each component in `components/` is designed to be **independently deployable**:
-
-### Component docker-compose.yml Pattern
+### Shared Infrastructure (docker-compose.infra.yml)
 
 ```yaml
-# components/registry/docker-compose.yml
-version: "3.8"
-
 services:
-  registry:
-    build: .
-    ports:
-      - "8001:8000"
-    environment:
-      - WIP_CONFIG=/app/config/config.yaml
-    volumes:
-      - ./config:/app/config
-    depends_on:
-      - mongodb
-
-  mongodb:
-    image: mongo:7
-    volumes:
-      - registry-mongodb-data:/data/db
-
-volumes:
-  registry-mongodb-data:
+  mongodb:      # Document store - port 27017
+  postgres:     # Reporting database - port 5432
+  nats:         # Message queue - ports 4222, 8222
+  dex:          # OIDC provider - port 5556
+  caddy:        # Reverse proxy - ports 8080, 8443
+  mongo-express: # MongoDB UI - port 8081 (optional)
 ```
 
-### Development with Shared Services
+### Application Services (docker-compose.dev.yml per service)
 
-For development, components can share infrastructure:
+Each service has its own compose file that:
+- Builds the service container
+- Connects to shared `wip-network`
+- Uses environment from root `.env`
 
-```yaml
-# components/registry/docker-compose.dev.yml
-version: "3.8"
+---
 
-services:
-  registry:
-    build: .
-    ports:
-      - "8001:8000"
-    environment:
-      - WIP_MONGODB_URI=mongodb://shared-mongodb:27017/wip_registry
-    networks:
-      - wip-dev
+## Service Dependencies
 
-networks:
-  wip-dev:
-    external: true
+```
+Registry (8001)     ◄── First (generates IDs)
+    │
+Def-Store (8002)    ◄── Uses Registry for terminology/term IDs
+    │
+Template-Store (8003) ◄── Uses Registry for template IDs
+    │                    References Def-Store terminologies
+    │
+Document-Store (8004) ◄── Uses Registry for document IDs
+    │                     Validates against Template-Store
+    │                     Validates terms against Def-Store
+    │
+Reporting-Sync (8005) ◄── Consumes events from NATS
+                          Writes to PostgreSQL
 ```
 
 ---
 
-## Full Stack Deployment
+## Running the Project
 
-The `deploy/docker-compose/` directory contains compose files that orchestrate all components:
-
-```yaml
-# deploy/docker-compose/docker-compose.yml
-version: "3.8"
-
-services:
-  # Infrastructure
-  traefik:
-    image: traefik:v3.0
-    # ...
-
-  mongodb:
-    image: mongo:7
-    # ...
-
-  postgres:
-    image: postgres:16
-    # ...
-
-  nats:
-    image: nats:2.10
-    # ...
-
-  # Components
-  registry:
-    build: ../../components/registry
-    # ...
-
-  def-store:
-    build: ../../components/def-store
-    depends_on:
-      - registry
-    # ...
-
-  template-store:
-    build: ../../components/template-store
-    depends_on:
-      - registry
-      - def-store
-    # ...
-
-  document-store:
-    build: ../../components/document-store
-    depends_on:
-      - registry
-      - template-store
-    # ...
-
-  # UIs
-  admin-ui:
-    build: ../../ui/admin
-    # ...
-```
-
----
-
-## Implementation Order
-
-Based on dependencies, the recommended implementation order is:
-
-```
-1. Registry          ◄── First (generates IDs for everything)
-   │
-2. Def-Store         ◄── Depends on Registry for IDs
-   │
-3. Template-Store    ◄── Depends on Registry + Def-Store
-   │
-4. Document-Store    ◄── Depends on Registry + Template-Store
-   │
-5. Reporting         ◄── Depends on Document-Store
-   │
-6. UIs               ◄── Can be developed in parallel once APIs exist
-```
-
----
-
-## Shared Code
-
-### Python Package (wip-common)
-
-Installed as editable dependency in each component:
-
-```toml
-# components/registry/pyproject.toml
-[project]
-name = "wip-registry"
-dependencies = [
-    "wip-common @ file://../../shared/wip-common",
-    "fastapi>=0.100.0",
-    "motor>=3.0.0",
-    # ...
-]
-```
-
-### Vue Package (wip-ui-common)
-
-Shared UI components installed via npm workspace or local reference:
-
-```json
-// ui/admin/package.json
-{
-  "dependencies": {
-    "wip-ui-common": "file:../../shared/wip-ui-common"
-  }
-}
-```
-
----
-
-## Running Components
-
-### Individual Component (Development)
+### Automated Setup (Recommended)
 
 ```bash
-# Start just the Registry
+# Auto-detect platform and start everything
+./scripts/setup.sh
+
+# Or with specific profile
+./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
+```
+
+### Manual Setup
+
+```bash
+# 1. Start infrastructure
+podman-compose -f docker-compose.infra.yml up -d
+
+# 2. Start Registry and initialize
 cd components/registry
-docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+podman-compose -f docker-compose.dev.yml up -d
+curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
+  -H "X-API-Key: dev_master_key_for_testing"
+
+# 3. Start remaining services
+cd ../def-store && podman-compose -f docker-compose.dev.yml up -d
+cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
+cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
+cd ../reporting-sync && podman-compose -f docker-compose.dev.yml up -d
+
+# 4. Start WIP Console
+cd ../../ui/wip-console
+podman-compose -f docker-compose.dev.yml up -d
+# Or: npm install && npm run dev
 ```
 
-### Full Stack (Development)
+---
 
-```bash
-# Start everything
-cd deploy/docker-compose
-docker-compose -f docker-compose.dev.yml up
+## Shared Library: wip-auth
+
+All services use the shared authentication library:
+
+```python
+# Service main.py
+from wip_auth import setup_auth
+
+app = FastAPI()
+setup_auth(app)  # Reads WIP_AUTH_* environment variables
 ```
 
-### Production
+### Installation (in each service's requirements.txt)
 
-```bash
-cd deploy/docker-compose
-docker-compose -f docker-compose.yml up -d
+```
+-e ../../libs/wip-auth
 ```
 
-### Raspberry Pi
+### Features
+
+- Pluggable auth providers (none, api_key, oidc)
+- Dual mode: API keys + JWT
+- Named API keys with owner/groups
+- FastAPI dependencies: `require_identity()`, `require_admin()`
+
+---
+
+## Configuration System
+
+### Profile-Based Configuration
+
+Profiles in `config/profiles/` define:
+- `WIP_INCLUDE_DEX` - Enable OIDC
+- `WIP_INCLUDE_CADDY` - Enable reverse proxy
+- `WIP_INCLUDE_MONGO_EXPRESS` - Enable MongoDB UI
+- `WIP_AUTH_MODE` - Authentication mode
+
+### Generated Files
+
+`scripts/setup.sh` generates:
+- `.env` - Environment variables for all services
+- `config/dex/config.yaml` - Dex OIDC configuration
+- `config/caddy/Caddyfile` - Caddy routing configuration
+
+---
+
+## Test Data
+
+### Seed Module (components/seed_data/)
+
+Reusable test data definitions:
+- 15 terminologies (GENDER, COUNTRY, CURRENCY, etc.)
+- 24 templates (PERSON, EMPLOYEE, ORDER, etc.)
+- Template-driven document generators
+
+### Seeding Script
 
 ```bash
-cd deploy/docker-compose
-docker-compose -f docker-compose.yml -f docker-compose.pi.yml up -d
+python scripts/seed_comprehensive.py --profile standard
 ```
 
 ---
@@ -482,10 +420,9 @@ docker-compose -f docker-compose.yml -f docker-compose.pi.yml up -d
 
 | Benefit | Description |
 |---------|-------------|
-| **Isolation** | Each component can be developed and tested independently |
-| **Flexibility** | Deploy all components or just what you need |
-| **Clear ownership** | Each component directory is self-contained |
-| **No conflicts** | No docker-compose file collisions |
-| **Scalability** | Individual components can be scaled independently |
-| **Testability** | Each component has its own test suite |
-| **CI/CD friendly** | Build and deploy components separately |
+| **Isolation** | Each service developed and tested independently |
+| **Shared infrastructure** | Single MongoDB/PostgreSQL/NATS instance for all |
+| **Clear dependencies** | Service compose files declare dependencies |
+| **Flexible deployment** | From single Pi to distributed cloud |
+| **Easy testing** | Each service has its own test suite |
+| **Profile-based config** | Same code, different configurations |

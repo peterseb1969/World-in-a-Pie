@@ -2,7 +2,7 @@
 
 ## Overview
 
-World In a Pie (WIP) follows a layered architecture with clear separation of concerns. This document describes the system architecture, component interactions, and data flows.
+World In a Pie (WIP) follows a microservices architecture with clear separation of concerns. Each component is a standalone FastAPI service with its own API, communicating via REST and NATS message queue.
 
 ---
 
@@ -11,81 +11,101 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              PRESENTATION LAYER                             │
-├────────────────┬────────────────┬─────────────────┬────────────────────────┤
-│   Ontology     │    Template    │     Admin       │     Query              │
-│    Editor      │     Editor     │      UI         │    Builder             │
-│                │                │                 │                        │
-│  (Def-Store    │  (Template     │  (All stores    │  (Document Store       │
-│   management)  │   management)  │   curation)     │   queries)             │
-└───────┬────────┴───────┬────────┴────────┬────────┴───────────┬────────────┘
-        │                │                 │                    │
-        └────────────────┴────────┬────────┴────────────────────┘
-                                  │
-                                  ▼
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│                            WIP Console (Vue 3 + PrimeVue)                   │
+│                                                                             │
+│   ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐            │
+│   │  Terminology    │  │    Template     │  │    Document     │            │
+│   │   Management    │  │   Management    │  │   Management    │            │
+│   │                 │  │                 │  │                 │            │
+│   │  • List/CRUD    │  │  • List/CRUD    │  │  • List/CRUD    │            │
+│   │  • Import/Export│  │  • Fields/Rules │  │  • Validation   │            │
+│   │  • Validation   │  │  • Inheritance  │  │  • Versioning   │            │
+│   └─────────────────┘  └─────────────────┘  └─────────────────┘            │
+│                                                                             │
+│   Access: https://localhost:8443 (via Caddy reverse proxy)                 │
+│                                                                             │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                               API LAYER                                     │
+│                           REVERSE PROXY (Caddy)                             │
+├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│                         FastAPI Application                                 │
+│   :8443 (HTTPS with auto-generated TLS certificate)                        │
 │                                                                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │
-│  │  Def-Store  │  │  Template   │  │  Document   │  │  Registry   │       │
-│  │  Endpoints  │  │  Endpoints  │  │  Endpoints  │  │  Endpoints  │       │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘       │
-│         │                │                │                │               │
-│         └────────────────┴───────┬────────┴────────────────┘               │
-│                                  │                                          │
-│                                  ▼                                          │
-│                      ┌─────────────────────┐                               │
-│                      │  Validation Engine  │                               │
-│                      └─────────────────────┘                               │
+│   Route Mapping:                                                            │
+│   ├── /                      → WIP Console (:3000)                         │
+│   ├── /api/registry/         → Registry (:8001)                            │
+│   ├── /api/def-store/        → Def-Store (:8002)                           │
+│   ├── /api/template-store/   → Template Store (:8003)                      │
+│   ├── /api/document-store/   → Document Store (:8004)                      │
+│   ├── /api/reporting-sync/   → Reporting Sync (:8005)                      │
+│   └── /dex/                  → Dex OIDC Provider (:5556)                   │
 │                                                                             │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                             SERVICE LAYER                                   │
+│                           MICROSERVICES LAYER                               │
+├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐          │
-│  │   Auth Service   │  │  Version Service │  │  Archive Service │          │
-│  │                  │  │                  │  │                  │          │
-│  │  • JWT validate  │  │  • Version mgmt  │  │  • Policy engine │          │
-│  │  • API key auth  │  │  • History track │  │  • Age-based     │          │
-│  │  • RBAC enforce  │  │  • Deactivation  │  │  • Volume-based  │          │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘          │
+│   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │
+│   │  Registry   │  │  Def-Store  │  │  Template   │  │  Document   │       │
+│   │   :8001     │  │   :8002     │  │   Store     │  │   Store     │       │
+│   │             │  │             │  │   :8003     │  │   :8004     │       │
+│   │ • Namespaces│  │ • Terms     │  │ • Templates │  │ • Documents │       │
+│   │ • ID gen    │  │ • Aliases   │  │ • Fields    │  │ • Versions  │       │
+│   │ • Synonyms  │  │ • Hierarchy │  │ • Rules     │  │ • Validation│       │
+│   └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘       │
+│          │                │                │                │               │
+│          │         ◄──────┘                │                │               │
+│          │◄────────────────────────────────┘                │               │
+│          │◄─────────────────────────────────────────────────┘               │
+│          │                                                                  │
+│   ┌──────┴──────────────────────────────────────────────────────────┐      │
+│   │                    Reporting Sync :8005                          │      │
+│   │                                                                  │      │
+│   │  • NATS consumer (document/template events)                      │      │
+│   │  • PostgreSQL schema generation                                  │      │
+│   │  • Document transformation and sync                              │      │
+│   │  • Batch sync and recovery                                       │      │
+│   │  • Metrics and alerting                                          │      │
+│   └──────────────────────────────────────────────────────────────────┘      │
 │                                                                             │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐          │
-│  │  Identity Svc    │  │  Sync Service    │  │  Event Service   │          │
-│  │                  │  │                  │  │                  │          │
-│  │  • Hash compute  │  │  • Batch sync    │  │  • NATS publish  │          │
-│  │  • Key normalize │  │  • Event-driven  │  │  • Event consume │          │
-│  │  • Upsert logic  │  │  • Queue-based   │  │  • Notifications │          │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘          │
+│   All services use wip-auth library for pluggable authentication           │
 │                                                                             │
-└──────────────────────────────────┬──────────────────────────────────────────┘
-                                   │
-                                   ▼
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+                                    ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           PERSISTENCE LAYER                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │                     Storage Abstraction Layer                        │   │
-│  │                                                                      │   │
-│  │   DocumentStore interface    │    ReportingStore interface          │   │
-│  │   • save(doc) → ID           │    • sync(documents) → void          │   │
-│  │   • get(id) → Document       │    • query(sql) → ResultSet          │   │
-│  │   • query(filter) → []       │                                      │   │
-│  │   • getVersions(id) → []     │                                      │   │
-│  └──────────────┬───────────────┴──────────────────┬────────────────────┘   │
-│                 │                                  │                        │
-│                 ▼                                  ▼                        │
-│  ┌──────────────────────────────┐  ┌──────────────────────────────┐        │
-│  │      Document Stores         │  │      Reporting Stores        │        │
-│  │                              │  │                              │        │
-│  │  • MongoDB (default)         │  │  • PostgreSQL (default)      │        │
-│  │  • PostgreSQL JSONB          │  │  • MySQL                     │        │
-│  │  • SQLite + JSON             │  │  • SQLite                    │        │
-│  │  • CouchDB                   │  │                              │        │
-│  └──────────────────────────────┘  └──────────────────────────────┘        │
+│   ┌─────────────────────────┐  ┌─────────────────────────┐                 │
+│   │   MongoDB :27017        │  │   PostgreSQL :5432      │                 │
+│   │   (Document Store)      │  │   (Reporting Store)     │                 │
+│   │                         │  │                         │                 │
+│   │   Databases:            │  │   Database:             │                 │
+│   │   • wip_registry        │  │   • wip_reporting       │                 │
+│   │   • wip_def_store       │  │                         │                 │
+│   │   • wip_template_store  │  │   Tables auto-generated │                 │
+│   │   • wip_document_store  │  │   from templates:       │                 │
+│   │                         │  │   • doc_<template_code> │                 │
+│   └─────────────────────────┘  └─────────────────────────┘                 │
+│                                                                             │
+│   ┌─────────────────────────┐  ┌─────────────────────────┐                 │
+│   │   NATS :4222            │  │   Dex :5556             │                 │
+│   │   (Message Queue)       │  │   (OIDC Provider)       │                 │
+│   │                         │  │                         │                 │
+│   │   JetStream enabled     │  │   Static users:         │                 │
+│   │   for persistence       │  │   • admin@wip.local     │                 │
+│   │                         │  │   • editor@wip.local    │                 │
+│   │   Subjects:             │  │   • viewer@wip.local    │                 │
+│   │   • wip.documents.*     │  │                         │                 │
+│   │   • wip.templates.*     │  │   Groups for RBAC       │                 │
+│   └─────────────────────────┘  └─────────────────────────┘                 │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -107,30 +127,28 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
 │   ┌───────────┐ │   ┌───────────────┐ │   ┌─────────────────┐   │
 │   │Terminology│ │   │   Template    │ │   │    Document     │   │
 │   ├───────────┤ │   ├───────────────┤ │   ├─────────────────┤   │
-│   │• id       │ │   │• id           │ │   │• id             │   │
-│   │• name     │ │   │• name         │ │   │• template_id    │   │
-│   │• version  │ │   │• version      │ │   │• version        │   │
-│   │• terms[]  │ │   │• fields[]     │ │   │• identity_hash  │   │
-│   └───────────┘ │   │• rules[]      │ │   │• data{}         │   │
-│                 │   │• identity_flds│ │   │• status         │   │
-│   ┌───────────┐ │   │• extends      │ │   └─────────────────┘   │
-│   │   Term    │ │   └───────────────┘ │                         │
-│   ├───────────┤ │                     │                         │
-│   │• id       │ │   ┌───────────────┐ │                         │
-│   │• code     │ │   │ Template Field│ │                         │
-│   │• label    │ │   ├───────────────┤ │                         │
-│   │• parent   │ │   │• name         │ │                         │
-│   │• metadata │ │   │• term_ref     │ │                         │
-│   └───────────┘ │   │• mandatory    │ │                         │
-│                 │   │• conditions[] │ │                         │
-│                 │   └───────────────┘ │                         │
+│   │• id       │ │   │• id           │ │   │• document_id    │   │
+│   │• code     │ │   │• code         │ │   │• template_id    │   │
+│   │• name     │ │   │• name         │ │   │• version        │   │
+│   │• status   │ │   │• version      │ │   │• identity_hash  │   │
+│   └───────────┘ │   │• fields[]     │ │   │• data{}         │   │
+│                 │   │• rules[]      │ │   │• term_references│   │
+│   ┌───────────┐ │   │• identity_flds│ │   │• status         │   │
+│   │   Term    │ │   │• extends      │ │   └─────────────────┘   │
+│   ├───────────┤ │   │• reporting{}  │ │                         │
+│   │• term_id  │ │   └───────────────┘ │                         │
+│   │• code     │ │                     │                         │
+│   │• value    │ │                     │                         │
+│   │• aliases[]│ │                     │                         │
+│   │• parent   │ │                     │                         │
+│   └───────────┘ │                     │                         │
 │                 │                     │                         │
 ├─────────────────┴─────────────────────┴─────────────────────────┤
 │                                                                  │
 │  DEPENDENCY FLOW:  Def-Store ──► Template Store ──► Document    │
 │                                                      Store       │
 │                                                                  │
-│  • Templates MUST reference valid Def-Store entries             │
+│  • Templates MUST reference valid Def-Store terminologies       │
 │  • Documents MUST conform to valid Templates                    │
 │  • Each layer is versioned independently                        │
 │                                                                  │
@@ -141,9 +159,52 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
 
 | Store | Contains | Validates Against | Changed By |
 |-------|----------|-------------------|------------|
-| **Def-Store** | Ontologies, Terminologies, Terms | Bootstrap schema | Administrators |
+| **Def-Store** | Terminologies, Terms, Aliases | Bootstrap schema | Administrators |
 | **Template Store** | Templates, Fields, Rules | Def-Store | Data Architects |
-| **Document Store** | Documents, Data | Templates | Users/Systems |
+| **Document Store** | Documents, Data, Versions | Templates + Def-Store | Users/Systems |
+
+---
+
+## Service Communication
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         COMMUNICATION PATTERNS                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   SYNCHRONOUS (REST over HTTP)                                               │
+│   ════════════════════════════                                              │
+│                                                                              │
+│   Document Store ──► Template Store (fetch template for validation)         │
+│        :8004              :8003                                             │
+│                                                                              │
+│   Document Store ──► Def-Store (validate term values)                       │
+│        :8004            :8002                                               │
+│                                                                              │
+│   Template Store ──► Def-Store (validate terminology references)            │
+│        :8003            :8002                                               │
+│                                                                              │
+│   All Services ──► Registry (generate IDs)                                  │
+│                      :8001                                                   │
+│                                                                              │
+│   ────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│   ASYNCHRONOUS (NATS JetStream)                                              │
+│   ═════════════════════════════                                             │
+│                                                                              │
+│   Document Store ── publish ──► NATS ── subscribe ──► Reporting Sync        │
+│       :8004       "wip.documents.created"              :8005                 │
+│                   "wip.documents.updated"                  │                 │
+│                   "wip.documents.deleted"                  ▼                 │
+│                                                     PostgreSQL               │
+│   Template Store ── publish ──► NATS ── subscribe ──► Reporting Sync        │
+│       :8003       "wip.templates.created"              :8005                 │
+│                   "wip.templates.updated"                  │                 │
+│                                                            ▼                 │
+│                                                     Schema Creation          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -154,43 +215,47 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
                            │
                            ▼
               ┌────────────────────────┐
-              │   1. Parse Document    │
-              │   (JSON validation)    │
+              │  1. Structural Check   │
+              │  (JSON validation)     │
               └───────────┬────────────┘
                           │
                           ▼
               ┌────────────────────────┐
-              │  2. Resolve Template   │
-              │  (exists? active?)     │
+              │  2. Template Resolution│
+              │  (fetch from Template  │
+              │   Store, resolve       │
+              │   inheritance)         │
               └───────────┬────────────┘
                           │
                           ▼
               ┌────────────────────────┐
-              │  3. Validate Fields    │
+              │  3. Field Validation   │
               │  • Required present?   │
               │  • Types correct?      │
-              │  • Terms valid?        │
+              │  • Nested objects?     │
               └───────────┬────────────┘
                           │
                           ▼
               ┌────────────────────────┐
-              │   4. Evaluate Rules    │
-              │  • Conditional logic   │
-              │  • Cross-field rules   │
+              │  4. Term Validation    │
+              │  (bulk API call to     │
+              │   Def-Store)           │
               └───────────┬────────────┘
                           │
                           ▼
               ┌────────────────────────┐
-              │  5. Compute Identity   │
+              │  5. Rule Evaluation    │
+              │  • conditional_required│
+              │  • conditional_value   │
+              │  • mutual_exclusion    │
+              │  • dependency          │
+              └───────────┬────────────┘
+                          │
+                          ▼
+              ┌────────────────────────┐
+              │  6. Identity Compute   │
               │  • Extract ID fields   │
-              │  • Sort & hash         │
-              └───────────┬────────────┘
-                          │
-                          ▼
-              ┌────────────────────────┐
-              │   6. Check Existing    │
-              │  • Same identity?      │
-              │  • Update or Create?   │
+              │  • Sort & SHA-256 hash │
               └───────────┬────────────┘
                           │
               ┌───────────┴───────────┐
@@ -204,8 +269,9 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
                           │
                           ▼
               ┌────────────────────────┐
-              │    7. Emit Event       │
-              │  (for sync/reporting)  │
+              │  7. Publish Event      │
+              │  (NATS: wip.documents  │
+              │   .created/updated)    │
               └────────────────────────┘
 ```
 
@@ -213,79 +279,46 @@ World In a Pie (WIP) follows a layered architecture with clear separation of con
 
 ## Registry Architecture
 
-The Registry is a **standalone service** that provides federated identity management.
+The Registry is a **standalone service** that provides ID generation and namespace management.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              REGISTRY                                        │
+│                              REGISTRY :8001                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   REGISTRATION                                                               │
-│   ═══════════                                                               │
-│                                                                              │
-│   ┌─────────────────┐         ┌─────────────────┐                           │
-│   │ Composite Key   │         │   Registration  │                           │
-│   │                 │ ──────► │                 │                           │
-│   │ {name: "Alice", │         │ • Generate ID   │                           │
-│   │  city: "Berlin"}│         │ • Store mapping │                           │
-│   │                 │         │ • Record source │                           │
-│   │ Source: wip-eu  │         │                 │                           │
-│   └─────────────────┘         └────────┬────────┘                           │
-│                                        │                                     │
-│                                        ▼                                     │
-│                               ┌─────────────────┐                           │
-│                               │ Return: UUID    │                           │
-│                               │ 550e8400-e29b...│                           │
-│                               └─────────────────┘                           │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   LOOKUP                                                                     │
-│   ══════                                                                    │
-│                                                                              │
-│   Mode 1: Source Lookup                Mode 2: Proxy Query                  │
-│   ─────────────────────                ─────────────────────                │
-│                                                                              │
-│   ┌──────────┐    ┌──────────┐        ┌──────────┐    ┌──────────┐         │
-│   │  Query   │    │ Response │        │  Query   │    │ Response │         │
-│   │          │    │          │        │          │    │          │         │
-│   │ ID: xyz  │───►│ Source:  │        │ ID: xyz  │───►│ Document │         │
-│   │          │    │ wip-eu   │        │ proxy:   │    │ data     │         │
-│   └──────────┘    └──────────┘        │ true     │    │ from     │         │
-│                                       └──────────┘    │ source   │         │
-│   Client then queries                                 └──────────┘         │
-│   wip-eu directly                     Registry forwards                    │
-│                                       to source, returns result            │
-│                                                                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   STORAGE                                                                    │
-│   ═══════                                                                   │
+│   NAMESPACES                                                                 │
+│   ══════════                                                                │
 │                                                                              │
 │   ┌────────────────────────────────────────────────────────────────┐        │
-│   │  Registry Entry                                                 │        │
+│   │  WIP Internal Namespaces                                        │        │
 │   ├────────────────────────────────────────────────────────────────┤        │
-│   │  • id: UUID (or pluggable format)                              │        │
-│   │  • composite_key_hash: sha256 of normalized key                │        │
-│   │  • composite_key_values: {name: "Alice", city: "Berlin"}       │        │
-│   │  • source_system: "wip-eu"                                     │        │
-│   │  • source_endpoint: "https://eu.wip.example.com/api"           │        │
-│   │  • registered_at: timestamp                                    │        │
-│   │  • status: active | inactive                                   │        │
+│   │  • wip-terminologies  │  Prefix: TERM-  │  For Def-Store       │        │
+│   │  • wip-terms          │  Prefix: T-     │  For Def-Store       │        │
+│   │  • wip-templates      │  Prefix: TPL-   │  For Template Store  │        │
+│   │  • wip-documents      │  UUID7          │  For Document Store  │        │
+│   │  • default            │  UUID4          │  General use         │        │
 │   └────────────────────────────────────────────────────────────────┘        │
+│                                                                              │
+│   ID GENERATION                                                              │
+│   ═════════════                                                             │
+│                                                                              │
+│   POST /api/registry/ids                                                     │
+│   {                                                                          │
+│     "namespace": "wip-templates",                                            │
+│     "composite_key": {"code": "PERSON", "version": 1}                       │
+│   }                                                                          │
+│                                                                              │
+│   Response: {"id": "TPL-000001", "composite_key_hash": "abc123..."}         │
+│                                                                              │
+│   SYNONYMS (Federated Identity)                                              │
+│   ═════════════════════════════                                             │
+│                                                                              │
+│   Link external IDs to WIP IDs:                                              │
+│   • legacy_system:EMP-12345 → TPL-000042                                    │
+│   • external_api:user_abc   → DOC-0192abc...                                │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
-### Registry Use Cases
-
-| Scenario | Registry Role |
-|----------|---------------|
-| **Single WIP instance** | Optional; provides stable IDs |
-| **Multiple WIP instances** | Central identity resolution |
-| **System migration** | Update source mapping; IDs remain stable |
-| **System merger** | Point old sources to new combined system |
-| **Cross-system query** | Locate which system has a given entity |
 
 ---
 
@@ -296,58 +329,55 @@ The Registry is a **standalone service** that provides federated identity manage
 │                           VERSION MANAGEMENT                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   DOCUMENT LIFECYCLE                                                         │
+│   DOCUMENT VERSIONING (Identity-based)                                       │
+│   ═════════════════════════════════════                                     │
+│                                                                              │
+│   Same identity_hash = new version, old version deactivated                 │
 │                                                                              │
 │   ┌─────────┐   update    ┌─────────┐   update    ┌─────────┐              │
 │   │ Doc v1  │ ──────────► │ Doc v2  │ ──────────► │ Doc v3  │              │
 │   │ ACTIVE  │             │ ACTIVE  │             │ ACTIVE  │              │
+│   │ id: A   │             │ id: B   │             │ id: C   │              │
 │   └────┬────┘             └────┬────┘             └─────────┘              │
 │        │                       │                                            │
 │        ▼                       ▼                                            │
 │   ┌─────────┐             ┌─────────┐                                       │
 │   │ Doc v1  │             │ Doc v2  │                                       │
 │   │INACTIVE │             │INACTIVE │                                       │
-│   └────┬────┘             └─────────┘                                       │
-│        │                                                                     │
-│        ▼ (optional, policy-based)                                           │
-│   ┌─────────┐                                                               │
-│   │ Doc v1  │                                                               │
-│   │ARCHIVED │                                                               │
-│   └─────────┘                                                               │
+│   │ id: A   │             │ id: B   │                                       │
+│   └─────────┘             └─────────┘                                       │
+│                                                                              │
+│   All versions share same identity_hash                                     │
+│   Each version has unique document_id (UUID7)                               │
 │                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   VERSION RECORD                                                             │
+│   TEMPLATE VERSIONING (Multi-version active)                                 │
+│   ══════════════════════════════════════════                                │
 │                                                                              │
-│   ┌──────────────────────────────────────────────────────────────────┐      │
-│   │  Document Version                                                 │      │
-│   ├──────────────────────────────────────────────────────────────────┤      │
-│   │  • id: unique version ID                                         │      │
-│   │  • identity_hash: links all versions of same entity              │      │
-│   │  • version_number: sequential (1, 2, 3...)                       │      │
-│   │  • status: active | inactive | archived                          │      │
-│   │  • created_at: timestamp                                         │      │
-│   │  • created_by: user/system ID                                    │      │
-│   │  • template_id: template used (may differ across versions)       │      │
-│   │  • data: actual document content                                 │      │
-│   └──────────────────────────────────────────────────────────────────┘      │
+│   Multiple versions can be active simultaneously for gradual migration      │
+│                                                                              │
+│   ┌─────────┐   update    ┌─────────┐   update    ┌─────────┐              │
+│   │ TPL v1  │ ──────────► │ TPL v2  │ ──────────► │ TPL v3  │              │
+│   │ ACTIVE  │             │ ACTIVE  │             │ ACTIVE  │              │
+│   │TPL-0001 │             │TPL-0002 │             │TPL-0003 │              │
+│   └─────────┘             └─────────┘             └─────────┘              │
+│        │                       │                       │                    │
+│   Still active!           Still active!           Current                   │
+│   (legacy docs)           (migrating)                                       │
+│                                                                              │
+│   All versions share same code (e.g., "PERSON")                             │
+│   Each version has unique template_id                                       │
 │                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   ARCHIVE POLICIES                                                           │
+│   TERM TRACKING (No versioning, audit log instead)                          │
+│   ═════════════════════════════════════════════════                         │
 │                                                                              │
-│   ┌───────────────────────────────────────────────────────────────────┐     │
-│   │                                                                    │     │
-│   │  Age-based:     "Archive versions older than 2 years"             │     │
-│   │                                                                    │     │
-│   │  Volume-based:  "Archive when store exceeds 100GB"                │     │
-│   │                                                                    │     │
-│   │  Template-based: "Archive 'log-entry' versions after 30 days"    │     │
-│   │                                                                    │     │
-│   │  Combined:      "Archive 'audit-log' older than 1 year OR        │     │
-│   │                  when audit store exceeds 50GB"                   │     │
-│   │                                                                    │     │
-│   └───────────────────────────────────────────────────────────────────┘     │
+│   Terms represent concepts - changes tracked in audit log                   │
+│   term_id is stable; value/aliases can change                               │
+│                                                                              │
+│   Audit log records: created, updated, deprecated, deleted                  │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -362,97 +392,132 @@ The Registry is a **standalone service** that provides federated identity manage
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │   ┌─────────────────┐              ┌─────────────────────────┐              │
-│   │    Vue UI       │◄────────────►│   Authentik / Authelia  │              │
-│   │                 │    OIDC      │                         │              │
-│   └────────┬────────┘              │   • User authentication │              │
-│            │                       │   • Role management     │              │
-│            │ JWT                   │   • Group management    │              │
-│            │                       │   • Session management  │              │
+│   │   WIP Console   │◄────────────►│       Dex OIDC          │              │
+│   │   (Vue 3)       │    OIDC      │       :5556             │              │
+│   └────────┬────────┘   (PKCE)     │                         │              │
+│            │                       │   • Static users (YAML) │              │
+│            │ JWT (Authorization    │   • Groups for RBAC     │              │
+│            │      Bearer token)    │   • ~30MB RAM           │              │
+│            │                       │   • Works over HTTP     │              │
 │            ▼                       └─────────────────────────┘              │
 │   ┌─────────────────────────────────────────────────────────┐               │
-│   │                    FastAPI Backend                       │               │
+│   │                    wip-auth Library                      │               │
+│   │                 (shared by all services)                 │               │
 │   │                                                          │               │
-│   │  ┌──────────────────────────────────────────────────┐   │               │
-│   │  │              Auth Middleware                      │   │               │
-│   │  │                                                   │   │               │
-│   │  │  User requests:                                   │   │               │
-│   │  │  • Validate JWT signature                         │   │               │
-│   │  │  • Extract roles from claims                      │   │               │
-│   │  │  • Enforce RBAC on endpoints                      │   │               │
-│   │  │                                                   │   │               │
-│   │  │  System requests (Registry):                      │   │               │
-│   │  │  • Validate API key                               │   │               │
-│   │  │  • Map to system identity                         │   │               │
-│   │  └──────────────────────────────────────────────────┘   │               │
+│   │  Auth Modes:                                             │               │
+│   │  • none         - No auth (development)                  │               │
+│   │  • api_key_only - X-API-Key header                       │               │
+│   │  • jwt_only     - Bearer token from OIDC                 │               │
+│   │  • dual         - Both (default)                         │               │
+│   │                                                          │               │
+│   │  Providers:                                              │               │
+│   │  ┌──────────────────┐  ┌──────────────────┐             │               │
+│   │  │  APIKeyProvider  │  │   OIDCProvider   │             │               │
+│   │  │                  │  │                  │             │               │
+│   │  │  • Named keys    │  │  • JWT validate  │             │               │
+│   │  │  • Owner/groups  │  │  • JWKS fetch    │             │               │
+│   │  │  • Config-based  │  │  • Claims extract│             │               │
+│   │  └──────────────────┘  └──────────────────┘             │               │
+│   │                                                          │               │
+│   │  Dependencies:                                           │               │
+│   │  • require_identity()  - Any auth required               │               │
+│   │  • require_groups([])  - Specific group required         │               │
+│   │  • require_admin()     - wip-admins group required       │               │
+│   │  • optional_identity() - Auth optional                   │               │
 │   │                                                          │               │
 │   └─────────────────────────────────────────────────────────┘               │
 │                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   ROLE-BASED ACCESS CONTROL                                                  │
+│   TEST USERS (Dex static config)                                             │
 │                                                                              │
-│   ┌──────────────┬──────────────┬──────────────┬──────────────┐             │
-│   │    Role      │  Def-Store   │  Templates   │  Documents   │             │
-│   ├──────────────┼──────────────┼──────────────┼──────────────┤             │
-│   │ admin        │ CRUD         │ CRUD         │ CRUD         │             │
-│   │ architect    │ Read         │ CRUD         │ Read         │             │
-│   │ editor       │ Read         │ Read         │ CRUD         │             │
-│   │ viewer       │ Read         │ Read         │ Read         │             │
-│   │ system       │ Read         │ Read         │ CRUD (API)   │             │
-│   └──────────────┴──────────────┴──────────────┴──────────────┘             │
+│   ┌──────────────────┬──────────────┬──────────────┐                        │
+│   │    Email         │   Password   │    Group     │                        │
+│   ├──────────────────┼──────────────┼──────────────┤                        │
+│   │ admin@wip.local  │ admin123     │ wip-admins   │                        │
+│   │ editor@wip.local │ editor123    │ wip-editors  │                        │
+│   │ viewer@wip.local │ viewer123    │ wip-viewers  │                        │
+│   └──────────────────┴──────────────┴──────────────┘                        │
+│                                                                              │
+│   API Key: dev_master_key_for_testing (development)                         │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Reporting Layer Sync
+## Reporting Sync Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         REPORTING SYNC ARCHITECTURE                          │
+│                         REPORTING SYNC :8005                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   ┌─────────────────┐                              ┌─────────────────┐      │
-│   │  Document Store │                              │ Reporting Store │      │
-│   │    (MongoDB)    │ ────── SYNC MODES ─────────► │  (PostgreSQL)   │      │
-│   └─────────────────┘                              └─────────────────┘      │
+│   EVENT-DRIVEN SYNC (Primary)                                                │
+│   ═══════════════════════════                                               │
 │                                                                              │
-│   ══════════════════════════════════════════════════════════════════════    │
+│   Document Store                     Reporting Sync                          │
+│       :8004                             :8005                                │
+│         │                                 │                                  │
+│         │  save doc                       │                                  │
+│         ├──► MongoDB                      │                                  │
+│         │                                 │                                  │
+│         └──► NATS ────────────────────────┤                                  │
+│              wip.documents.created        │                                  │
+│              (full document in event)     │                                  │
+│                                           ▼                                  │
+│                                    ┌──────────────┐                          │
+│                                    │  Transform   │                          │
+│                                    │  • Flatten   │                          │
+│                                    │  • Type map  │                          │
+│                                    └──────┬───────┘                          │
+│                                           │                                  │
+│                                           ▼                                  │
+│                                    PostgreSQL                                │
+│                                    UPSERT with                               │
+│                                    version check                             │
 │                                                                              │
-│   MODE 1: BATCH                                                              │
-│   ─────────────────                                                         │
-│   ┌──────────┐     Scheduled      ┌──────────┐     Transform    ┌────────┐ │
-│   │  Source  │ ──────────────────►│  Extract │ ───────────────► │  Load  │ │
-│   └──────────┘     (cron)         └──────────┘                  └────────┘ │
+│   ────────────────────────────────────────────────────────────────────────  │
 │                                                                              │
-│   • Simple implementation                                                    │
-│   • Suitable for reporting that tolerates hours of lag                      │
-│   • Low resource usage                                                       │
+│   BATCH SYNC (Recovery/Initial Load)                                         │
+│   ══════════════════════════════════                                        │
 │                                                                              │
-│   ══════════════════════════════════════════════════════════════════════    │
+│   POST /sync/batch/{template_code}                                           │
+│   POST /sync/batch                    (all templates)                        │
 │                                                                              │
-│   MODE 2: EVENT-DRIVEN                                                       │
-│   ─────────────────────                                                     │
-│   ┌──────────┐     Document      ┌──────────┐     Sync         ┌────────┐  │
-│   │  Source  │ ── Created/   ───►│  Handler │ ───────────────► │  Load  │  │
-│   └──────────┘     Updated       └──────────┘                  └────────┘  │
+│   Reporting Sync ──► Document Store API ──► PostgreSQL                      │
+│        :8005              :8004                                              │
+│                    GET /documents?template_id=...                            │
 │                                                                              │
-│   • Moderate latency (seconds to minutes)                                   │
-│   • Good balance of freshness and resource usage                            │
+│   ────────────────────────────────────────────────────────────────────────  │
 │                                                                              │
-│   ══════════════════════════════════════════════════════════════════════    │
+│   SCHEMA MANAGEMENT                                                          │
+│   ═════════════════                                                         │
 │                                                                              │
-│   MODE 3: MESSAGE QUEUE (Near Real-Time)                                    │
-│   ──────────────────────────────────────                                    │
-│   ┌──────────┐                  ┌──────────┐                  ┌────────┐   │
-│   │  Source  │ ── publish ────► │   NATS   │ ── subscribe ──► │  Sync  │   │
-│   └──────────┘                  └──────────┘                  │  Worker│   │
-│                                                               └────────┘   │
+│   Template Store ──► NATS ──► Reporting Sync                                │
+│       :8003        wip.templates.created    :8005                           │
+│                                               │                              │
+│                                               ▼                              │
+│                                    CREATE TABLE doc_<code>                   │
+│                                    (columns from template fields)            │
 │                                                                              │
-│   • Lowest latency (sub-second possible)                                    │
-│   • Client responsible for choosing and configuring                         │
-│   • Higher resource usage                                                    │
+│   Per-template configuration in template.reporting:                          │
+│   • sync_enabled: true/false                                                 │
+│   • sync_strategy: latest_only | all_versions | disabled                    │
+│   • table_name: custom table name                                            │
+│   • flatten_arrays: true/false                                               │
+│                                                                              │
+│   ────────────────────────────────────────────────────────────────────────  │
+│                                                                              │
+│   MONITORING                                                                 │
+│   ══════════                                                                │
+│                                                                              │
+│   GET /metrics          - Latency, throughput, per-template stats           │
+│   GET /metrics/consumer - NATS queue depth, pending messages                │
+│   GET /alerts           - Active alerts and configuration                   │
+│   PUT /alerts/config    - Configure thresholds and webhooks                 │
+│                                                                              │
+│   Alert types: queue_lag, error_rate, processing_stalled, connection_lost   │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -461,119 +526,74 @@ The Registry is a **standalone service** that provides federated identity manage
 
 ## Deployment Architecture
 
-### Docker Compose (Raspberry Pi / Development)
+### Deployment Profiles
+
+| Profile | Target | Services | Auth | RAM |
+|---------|--------|----------|------|-----|
+| **mac** | Mac development | All + Mongo Express | Dex OIDC | ~1.2GB |
+| **dev-minimal** | Quick testing | Core only | API keys | ~800MB |
+| **pi-minimal** | Pi 4 (1-2GB) | Core only | API keys | ~800MB |
+| **pi-standard** | Pi 4 (2-4GB) | All services | Dex OIDC | ~1GB |
+| **pi-large** | Pi 5 (8GB+) | All + Mongo Express | Dex OIDC | ~1.2GB |
+
+### Docker/Podman Compose Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                              DOCKER COMPOSE                                  │
+│                         CONTAINER ARCHITECTURE                               │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
+│   Network: wip-network (bridge)                                              │
+│                                                                              │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                           docker-compose.yml                         │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
+│   │  Infrastructure (docker-compose.infra.yml)                          │   │
 │   │                                                                      │   │
-│   │   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │   │
-│   │   │  traefik  │  │    api    │  │    ui     │  │ authentik │       │   │
-│   │   │  (proxy)  │  │ (FastAPI) │  │  (Vue)    │  │  (auth)   │       │   │
-│   │   │  :80/:443 │  │  :8000    │  │  :3000    │  │  :9000    │       │   │
-│   │   └───────────┘  └───────────┘  └───────────┘  └───────────┘       │   │
+│   │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐        │   │
+│   │  │  mongodb  │  │ postgres  │  │   nats    │  │    dex    │        │   │
+│   │  │  :27017   │  │  :5432    │  │  :4222    │  │  :5556    │        │   │
+│   │  └───────────┘  └───────────┘  └───────────┘  └───────────┘        │   │
 │   │                                                                      │   │
-│   │   ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐       │   │
-│   │   │  mongodb  │  │ postgres  │  │   nats    │  │  registry │       │   │
-│   │   │ (docs)    │  │(reporting)│  │ (events)  │  │ (identity)│       │   │
-│   │   │  :27017   │  │  :5432    │  │  :4222    │  │  :8001    │       │   │
-│   │   └───────────┘  └───────────┘  └───────────┘  └───────────┘       │   │
-│   │                                                                      │   │
-│   │   Volumes:                                                           │   │
-│   │   • wip-mongodb-data                                                 │   │
-│   │   • wip-postgres-data                                                │   │
-│   │   • wip-authentik-data                                               │   │
+│   │  ┌───────────┐  ┌───────────┐                                       │   │
+│   │  │   caddy   │  │mongo-expr │ (optional)                            │   │
+│   │  │:8080/:8443│  │  :8081    │                                       │   │
+│   │  └───────────┘  └───────────┘                                       │   │
 │   │                                                                      │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   ┌─────────────────────────────────────────────────────────────────────┐   │
+│   │  Services (per-component docker-compose.dev.yml)                    │   │
+│   │                                                                      │   │
+│   │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐        │   │
+│   │  │ registry  │  │ def-store │  │ template- │  │ document- │        │   │
+│   │  │  :8001    │  │  :8002    │  │   store   │  │   store   │        │   │
+│   │  │           │  │           │  │  :8003    │  │  :8004    │        │   │
+│   │  └───────────┘  └───────────┘  └───────────┘  └───────────┘        │   │
+│   │                                                                      │   │
+│   │  ┌───────────┐  ┌───────────┐                                       │   │
+│   │  │ reporting │  │    wip    │                                       │   │
+│   │  │   -sync   │  │  console  │                                       │   │
+│   │  │  :8005    │  │  :3000    │                                       │   │
+│   │  └───────────┘  └───────────┘                                       │   │
+│   │                                                                      │   │
+│   └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+│   Volumes (configurable via WIP_DATA_DIR):                                  │
+│   • ${WIP_DATA_DIR}/mongodb    - Document store data                        │
+│   • ${WIP_DATA_DIR}/postgres   - Reporting database                         │
+│   • ${WIP_DATA_DIR}/nats       - Message queue persistence                  │
+│   • ${WIP_DATA_DIR}/dex        - OIDC token storage                         │
+│   • ${WIP_DATA_DIR}/caddy      - TLS certificates                           │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### MicroK8s (Demo / Production)
+### Network Modes
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                               MICROK8S                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   Namespace: wip                                                             │
-│                                                                              │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Deployments                                                         │   │
-│   │                                                                      │   │
-│   │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │   │
-│   │  │ wip-api     │  │ wip-ui      │  │ wip-registry│                  │   │
-│   │  │ replicas: 2 │  │ replicas: 2 │  │ replicas: 1 │                  │   │
-│   │  └─────────────┘  └─────────────┘  └─────────────┘                  │   │
-│   │                                                                      │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  StatefulSets                                                        │   │
-│   │                                                                      │   │
-│   │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │   │
-│   │  │ mongodb     │  │ postgresql  │  │ nats        │                  │   │
-│   │  │ replicas: 1 │  │ replicas: 1 │  │ replicas: 1 │                  │   │
-│   │  └─────────────┘  └─────────────┘  └─────────────┘                  │   │
-│   │                                                                      │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Services & Ingress                                                  │   │
-│   │                                                                      │   │
-│   │  Ingress: wip.local                                                  │   │
-│   │    /        → wip-ui                                                 │   │
-│   │    /api     → wip-api                                                │   │
-│   │    /auth    → authentik                                              │   │
-│   │                                                                      │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Component Communication
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         COMMUNICATION PATTERNS                               │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   SYNCHRONOUS (REST)                                                         │
-│   ══════════════════                                                        │
-│                                                                              │
-│   UI ──────► API ──────► Document Store                                     │
-│      HTTP        Driver                                                      │
-│                                                                              │
-│   API ──────► Registry (lookup/register)                                    │
-│       HTTP                                                                   │
-│                                                                              │
-│   Registry ──────► Source WIP (proxy queries)                               │
-│            HTTP                                                              │
-│                                                                              │
-│   ────────────────────────────────────────────────────────────────────────  │
-│                                                                              │
-│   ASYNCHRONOUS (NATS)                                                        │
-│   ═══════════════════                                                       │
-│                                                                              │
-│   API ── publish ──► NATS ── subscribe ──► Sync Worker                      │
-│      "doc.created"              │              │                            │
-│      "doc.updated"              │              ▼                            │
-│                                 │       Reporting Store                     │
-│                                 │                                            │
-│                                 └── subscribe ──► Notification Worker       │
-│                                                          │                  │
-│                                                          ▼                  │
-│                                                     External Systems        │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `localhost` | Only accessible from local machine | Mac development |
+| `remote` | Only accessible from network | Headless Pi |
+| `both` | Both localhost and network | Pi accessible anywhere |
 
 ---
 
@@ -587,30 +607,32 @@ The Registry is a **standalone service** that provides federated identity manage
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │                         PUBLIC ZONE                                  │   │
 │   │                                                                      │   │
-│   │   • UI (static assets)                                               │   │
-│   │   • Auth provider login page                                         │   │
+│   │   • Caddy reverse proxy (:8443 HTTPS)                               │   │
+│   │   • WIP Console static assets                                        │   │
+│   │   • Dex login page                                                   │   │
 │   │                                                                      │   │
 │   └───────────────────────────────┬─────────────────────────────────────┘   │
 │                                   │ Authenticated requests only             │
+│                                   │ (JWT or API Key)                        │
 │                                   ▼                                         │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │                         API ZONE                                     │   │
 │   │                                                                      │   │
-│   │   • FastAPI application                                              │   │
-│   │   • JWT validation                                                   │   │
-│   │   • RBAC enforcement                                                 │   │
-│   │   • API key validation (system-to-system)                            │   │
+│   │   • FastAPI microservices                                            │   │
+│   │   • wip-auth middleware on each service                              │   │
+│   │   • JWT validation via JWKS                                          │   │
+│   │   • API key validation                                               │   │
 │   │                                                                      │   │
 │   └───────────────────────────────┬─────────────────────────────────────┘   │
-│                                   │ Internal only                           │
+│                                   │ Internal only (wip-network)             │
 │                                   ▼                                         │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │                         DATA ZONE                                    │   │
 │   │                                                                      │   │
-│   │   • MongoDB                                                          │   │
-│   │   • PostgreSQL                                                       │   │
-│   │   • NATS                                                             │   │
-│   │   • No external access                                               │   │
+│   │   • MongoDB (no external port exposure in production)               │   │
+│   │   • PostgreSQL (no external port exposure in production)            │   │
+│   │   • NATS (internal message passing)                                 │   │
+│   │   • Dex (internal OIDC provider)                                    │   │
 │   │                                                                      │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
@@ -626,3 +648,4 @@ See related documentation:
 - [Technology Stack](technology-stack.md) — technology choices and rationale
 - [Deployment](deployment.md) — deployment configurations
 - [Data Models](data-models.md) — conceptual data structures
+- [Authentication](authentication.md) — auth configuration and security

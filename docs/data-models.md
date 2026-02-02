@@ -17,23 +17,27 @@ This document defines the conceptual data structures used throughout World In a 
 │   ┌──────────────┐            ┌──────────────┐            ┌──────────────┐  │
 │   │ Terminology  │            │   Template   │            │   Document   │  │
 │   │              │◄───────────│              │◄───────────│              │  │
-│   │ • id         │  references│ • id         │  conforms  │ • id         │  │
-│   │ • name       │            │ • name       │  to        │ • template_id│  │
-│   │ • version    │            │ • version    │            │ • version    │  │
-│   │ • terms[]    │            │ • fields[]   │            │ • data{}     │  │
-│   └──────────────┘            │ • rules[]    │            └──────────────┘  │
-│          │                    │ • extends    │                              │
+│   │ • term_id    │  references│ • template_id│  conforms  │ • document_id│  │
+│   │ • code       │            │ • code       │  to        │ • template_id│  │
+│   │ • name       │            │ • version    │            │ • version    │  │
+│   │              │            │ • fields[]   │            │ • data{}     │  │
+│   └──────────────┘            │ • rules[]    │            │ • term_refs{}│  │
+│          │                    │ • reporting{}│            └──────────────┘  │
 │          │ contains           └──────────────┘                              │
 │          ▼                           │                                      │
 │   ┌──────────────┐                   │ contains                             │
 │   │    Term      │                   ▼                                      │
 │   │              │            ┌──────────────┐                              │
-│   │ • id         │            │    Field     │                              │
+│   │ • term_id    │            │    Field     │                              │
 │   │ • code       │            │              │                              │
-│   │ • label      │◄───────────│ • name       │                              │
-│   │ • parent_id  │  references│ • type       │                              │
-│   └──────────────┘            │ • term_ref   │                              │
-│                               └──────────────┘                              │
+│   │ • value      │◄───────────│ • name       │                              │
+│   │ • aliases[]  │  references│ • type       │                              │
+│   │ • parent_id  │            │ • term_ref   │                              │
+│   └──────────────┘            └──────────────┘                              │
+│                                                                              │
+│   Note: Terms have NO versioning - changes tracked via audit log            │
+│   Note: Templates can have multiple active versions simultaneously          │
+│   Note: Documents store both original data AND resolved term_references     │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -44,16 +48,21 @@ This document defines the conceptual data structures used throughout World In a 
 
 ### Terminology
 
-A terminology is a controlled vocabulary containing related terms.
+A terminology is a controlled vocabulary containing related terms. **Terminologies do not have versioning.**
 
 ```python
 class Terminology(BaseModel):
     """A controlled vocabulary containing related terms."""
 
-    id: str = Field(
+    terminology_id: str = Field(
         ...,
-        description="Unique identifier",
-        examples=["terminology-gender"]
+        description="Unique identifier (format: TERM-XXXXXX)",
+        examples=["TERM-000001"]
+    )
+    code: str = Field(
+        ...,
+        description="Short code for the terminology",
+        examples=["GENDER", "COUNTRY", "DEPARTMENT"]
     )
     name: str = Field(
         ...,
@@ -64,67 +73,46 @@ class Terminology(BaseModel):
         None,
         description="Detailed description of the terminology"
     )
-    version: int = Field(
-        default=1,
-        description="Version number, incremented on updates"
-    )
-    status: Literal["active", "inactive", "archived"] = Field(
+    status: Literal["active", "deprecated", "inactive"] = Field(
         default="active",
         description="Lifecycle status"
     )
-    created_at: datetime = Field(
-        default_factory=datetime.utcnow,
-        description="Creation timestamp"
-    )
+    created_at: datetime
     created_by: str = Field(
         ...,
-        description="User or system that created this"
+        description="Identity string (e.g., 'apikey:legacy', 'user:admin-001')"
     )
-    updated_at: datetime | None = Field(
-        None,
-        description="Last update timestamp"
-    )
-    updated_by: str | None = Field(
-        None,
-        description="User or system that last updated this"
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional metadata"
-    )
+    updated_at: datetime | None = None
+    updated_by: str | None = None
 ```
 
 **Example:**
 ```json
 {
-  "id": "terminology-gender",
+  "terminology_id": "TERM-000001",
+  "code": "GENDER",
   "name": "Gender",
   "description": "Controlled vocabulary for gender identification",
-  "version": 2,
   "status": "active",
   "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "admin",
+  "created_by": "apikey:legacy",
   "updated_at": "2024-02-01T14:30:00Z",
-  "updated_by": "admin",
-  "metadata": {
-    "source": "ISO 5218",
-    "domain": "demographics"
-  }
+  "updated_by": "user:admin-001"
 }
 ```
 
 ### Term
 
-A single concept within a terminology.
+A single concept within a terminology. **Terms do not have versioning - all changes are tracked in an audit log.**
 
 ```python
 class Term(BaseModel):
     """An individual concept within a terminology."""
 
-    id: str = Field(
+    term_id: str = Field(
         ...,
-        description="Unique identifier",
-        examples=["term-gender-male"]
+        description="Unique identifier (format: T-XXXXXX)",
+        examples=["T-000001"]
     )
     terminology_id: str = Field(
         ...,
@@ -133,27 +121,28 @@ class Term(BaseModel):
     code: str = Field(
         ...,
         description="Short code for the term",
-        examples=["M", "F"]
+        examples=["M", "F", "OTHER"]
     )
-    label: str = Field(
+    value: str = Field(
         ...,
-        description="Human-readable label",
+        description="Primary display value",
         examples=["Male", "Female"]
+    )
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Alternative values that resolve to this term",
+        examples=[["MR", "Mr", "Mr.", "MALE"]]
     )
     description: str | None = Field(
         None,
         description="Detailed description"
     )
-    version: int = Field(
-        default=1,
-        description="Version number"
-    )
-    status: Literal["active", "inactive", "archived"] = Field(
+    status: Literal["active", "deprecated", "inactive"] = Field(
         default="active"
     )
     parent_id: str | None = Field(
         None,
-        description="Parent term for hierarchical taxonomies"
+        description="Parent term ID for hierarchical taxonomies"
     )
     sort_order: int = Field(
         default=0,
@@ -161,9 +150,14 @@ class Term(BaseModel):
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
-        description="Additional metadata (mappings, translations, etc.)"
+        description="Additional metadata (mappings, etc.)"
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    translations: dict[str, str] = Field(
+        default_factory=dict,
+        description="Translations by language code",
+        examples=[{"de": "Männlich", "fr": "Masculin"}]
+    )
+    created_at: datetime
     created_by: str
     updated_at: datetime | None = None
     updated_by: str | None = None
@@ -172,25 +166,84 @@ class Term(BaseModel):
 **Example:**
 ```json
 {
-  "id": "term-gender-male",
-  "terminology_id": "terminology-gender",
+  "term_id": "T-000001",
+  "terminology_id": "TERM-000001",
   "code": "M",
-  "label": "Male",
+  "value": "Male",
+  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"],
   "description": "Male gender identity",
-  "version": 1,
   "status": "active",
   "parent_id": null,
   "sort_order": 1,
   "metadata": {
     "iso_5218": "1",
-    "hl7_v3": "M",
-    "translations": {
-      "de": "Männlich",
-      "fr": "Masculin"
-    }
+    "hl7_v3": "M"
+  },
+  "translations": {
+    "de": "Männlich",
+    "fr": "Masculin"
   },
   "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "admin"
+  "created_by": "apikey:legacy"
+}
+```
+
+### Term Alias Resolution
+
+When validating a value against a terminology, the system checks in order:
+1. **code** - Exact match on term code
+2. **value** - Exact match on primary value
+3. **aliases** - Match against any alias
+
+The validation response indicates which match type was used:
+
+```json
+{
+  "terminology_code": "GENDER",
+  "input_value": "Mr.",
+  "valid": true,
+  "term_id": "T-000001",
+  "matched_via": "alias",
+  "normalized_value": "Male"
+}
+```
+
+### Term Audit Log
+
+Instead of versioning, term changes are recorded in an audit log:
+
+```python
+class TermAuditEntry(BaseModel):
+    """An audit log entry for term changes."""
+
+    term_id: str
+    terminology_id: str
+    action: Literal["created", "updated", "deprecated", "deleted"]
+    changed_at: datetime
+    changed_by: str
+    changed_fields: list[str] = Field(
+        default_factory=list,
+        description="Fields that were modified"
+    )
+    previous_values: dict[str, Any] = Field(
+        default_factory=dict
+    )
+    new_values: dict[str, Any] = Field(
+        default_factory=dict
+    )
+```
+
+**Example:**
+```json
+{
+  "term_id": "T-000001",
+  "terminology_id": "TERM-000001",
+  "action": "updated",
+  "changed_at": "2024-01-30T10:00:00Z",
+  "changed_by": "user:admin-001",
+  "changed_fields": ["aliases"],
+  "previous_values": {"aliases": ["MR", "MR."]},
+  "new_values": {"aliases": ["MR", "MR.", "Mr.", "mr"]}
 }
 ```
 
@@ -199,28 +252,28 @@ class Term(BaseModel):
 ```json
 [
   {
-    "id": "term-location-europe",
-    "terminology_id": "terminology-location",
-    "code": "EU",
-    "label": "Europe",
+    "term_id": "T-000010",
+    "terminology_id": "TERM-000005",
+    "code": "ENG",
+    "value": "Engineering",
     "parent_id": null,
     "sort_order": 1
   },
   {
-    "id": "term-location-germany",
-    "terminology_id": "terminology-location",
-    "code": "DE",
-    "label": "Germany",
-    "parent_id": "term-location-europe",
+    "term_id": "T-000011",
+    "terminology_id": "TERM-000005",
+    "code": "FE",
+    "value": "Frontend",
+    "parent_id": "T-000010",
     "sort_order": 1
   },
   {
-    "id": "term-location-berlin",
-    "terminology_id": "terminology-location",
-    "code": "DE-BE",
-    "label": "Berlin",
-    "parent_id": "term-location-germany",
-    "sort_order": 1
+    "term_id": "T-000012",
+    "terminology_id": "TERM-000005",
+    "code": "BE",
+    "value": "Backend",
+    "parent_id": "T-000010",
+    "sort_order": 2
   }
 ]
 ```
@@ -231,54 +284,57 @@ class Term(BaseModel):
 
 ### Template
 
-A schema definition for documents.
+A schema definition for documents. **Multiple template versions can be active simultaneously** for gradual migration scenarios.
 
 ```python
 class Template(BaseModel):
     """A schema definition that documents must conform to."""
 
-    id: str = Field(
+    template_id: str = Field(
         ...,
-        description="Unique identifier",
-        examples=["template-person"]
+        description="Unique identifier (format: TPL-XXXXXX)",
+        examples=["TPL-000001"]
+    )
+    code: str = Field(
+        ...,
+        description="Template code (shared across versions)",
+        examples=["PERSON", "EMPLOYEE"]
     )
     name: str = Field(
         ...,
         description="Human-readable name",
         examples=["Person"]
     )
-    description: str | None = Field(
-        None,
-        description="What this template represents"
-    )
+    description: str | None = None
     version: int = Field(
         default=1,
-        description="Version number"
+        description="Version number (incremented on updates)"
     )
-    status: Literal["active", "inactive", "archived"] = Field(
+    status: Literal["active", "deprecated", "inactive"] = Field(
         default="active"
     )
     extends: str | None = Field(
         None,
-        description="Parent template ID for inheritance"
+        description="Parent template code for inheritance"
     )
     identity_fields: list[str] = Field(
         ...,
         description="Fields that form the composite identity key"
     )
     fields: list[TemplateField] = Field(
-        default_factory=list,
-        description="Field definitions"
+        default_factory=list
     )
     rules: list[ValidationRule] = Field(
-        default_factory=list,
-        description="Cross-field validation rules"
+        default_factory=list
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    reporting: ReportingConfig | None = Field(
+        None,
+        description="PostgreSQL sync configuration"
+    )
+    created_at: datetime
     created_by: str
     updated_at: datetime | None = None
     updated_by: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
 ```
 
 ### TemplateField
@@ -296,6 +352,7 @@ class FieldType(str, Enum):
     TERM = "term"
     OBJECT = "object"
     ARRAY = "array"
+    REFERENCE = "reference"  # Cross-document reference
 
 
 class TemplateField(BaseModel):
@@ -303,74 +360,39 @@ class TemplateField(BaseModel):
 
     name: str = Field(
         ...,
-        description="Field name (used in data)",
-        examples=["first_name", "birth_date"]
+        description="Field name (used in document data)",
+        examples=["first_name", "birth_date", "gender"]
     )
-    label: str = Field(
-        ...,
-        description="Human-readable label",
-        examples=["First Name", "Date of Birth"]
-    )
-    type: FieldType = Field(
-        ...,
-        description="Data type"
-    )
-    mandatory: bool = Field(
-        default=False,
-        description="Whether field is required"
-    )
+    type: FieldType
+    mandatory: bool = Field(default=False)
+    description: str | None = None
+
+    # Type-specific configurations
     terminology_ref: str | None = Field(
         None,
-        description="Reference to terminology (for term type)"
+        description="Terminology code (for term type)"
     )
     template_ref: str | None = Field(
         None,
-        description="Reference to nested template (for object type)"
+        description="Template code (for object type)"
     )
-    array_item_type: FieldType | None = Field(
+    reference_template: str | None = Field(
         None,
-        description="Type of array items (for array type)"
+        description="Template code (for reference type)"
     )
-    array_item_template_ref: str | None = Field(
+    items: "TemplateField | None" = Field(
         None,
-        description="Template for array items if object type"
-    )
-    default_value: Any = Field(
-        None,
-        description="Default value if not provided"
-    )
-    validation: FieldValidation | None = Field(
-        None,
-        description="Field-level validation rules"
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional field metadata"
+        description="Item definition (for array type)"
     )
 
-
-class FieldValidation(BaseModel):
-    """Field-level validation constraints."""
-
+    # Validation constraints
+    min_length: int | None = None
+    max_length: int | None = None
+    minimum: float | None = None
+    maximum: float | None = None
     pattern: str | None = Field(
         None,
         description="Regex pattern for string fields"
-    )
-    min_length: int | None = Field(
-        None,
-        description="Minimum string length"
-    )
-    max_length: int | None = Field(
-        None,
-        description="Maximum string length"
-    )
-    minimum: float | None = Field(
-        None,
-        description="Minimum numeric value"
-    )
-    maximum: float | None = Field(
-        None,
-        description="Maximum numeric value"
     )
     enum: list[Any] | None = Field(
         None,
@@ -378,9 +400,30 @@ class FieldValidation(BaseModel):
     )
 ```
 
+### ReportingConfig
+
+Configuration for PostgreSQL sync:
+
+```python
+class ReportingConfig(BaseModel):
+    """Configuration for reporting sync to PostgreSQL."""
+
+    sync_enabled: bool = Field(default=True)
+    sync_strategy: Literal["latest_only", "all_versions", "disabled"] = Field(
+        default="latest_only"
+    )
+    table_name: str | None = Field(
+        None,
+        description="Custom table name (default: doc_{code})"
+    )
+    include_metadata: bool = Field(default=True)
+    flatten_arrays: bool = Field(default=True)
+    max_array_elements: int = Field(default=10)
+```
+
 ### ValidationRule
 
-Cross-field validation rules.
+Cross-field validation rules:
 
 ```python
 class RuleType(str, Enum):
@@ -388,15 +431,6 @@ class RuleType(str, Enum):
     CONDITIONAL_VALUE = "conditional_value"
     MUTUAL_EXCLUSION = "mutual_exclusion"
     DEPENDENCY = "dependency"
-    CUSTOM = "custom"
-
-
-class Condition(BaseModel):
-    """A condition for conditional rules."""
-
-    field: str = Field(..., description="Field to check")
-    operator: Literal["equals", "not_equals", "in", "not_in", "exists", "not_exists"]
-    value: Any = Field(None, description="Value to compare (not needed for exists operators)")
 
 
 class ValidationRule(BaseModel):
@@ -404,117 +438,111 @@ class ValidationRule(BaseModel):
 
     type: RuleType
     description: str | None = None
-    conditions: list[Condition] = Field(
-        default_factory=list,
-        description="Conditions that trigger the rule"
-    )
-    target_field: str | None = Field(
-        None,
-        description="Field affected by the rule"
-    )
-    target_fields: list[str] | None = Field(
-        None,
-        description="Fields affected (for mutual_exclusion)"
-    )
-    required: bool | None = Field(
-        None,
-        description="For conditional_required: is field required?"
-    )
-    allowed_values: list[Any] | None = Field(
-        None,
-        description="For conditional_value: allowed values"
-    )
-    error_message: str | None = Field(
-        None,
-        description="Custom error message"
-    )
+    condition: RuleCondition | None = None
+    target_field: str | None = None
+    target_fields: list[str] | None = None  # For mutual_exclusion
+    error_message: str | None = None
+
+
+class RuleCondition(BaseModel):
+    """A condition for conditional rules."""
+
+    field: str
+    operator: Literal["equals", "not_equals", "in", "not_in", "exists", "not_exists"]
+    value: Any = None
 ```
 
 **Template Example:**
 ```json
 {
-  "id": "template-person",
+  "template_id": "TPL-000001",
+  "code": "PERSON",
   "name": "Person",
   "description": "Template for person records",
   "version": 3,
   "status": "active",
   "extends": null,
-  "identity_fields": ["national_id"],
+  "identity_fields": ["email"],
   "fields": [
     {
       "name": "first_name",
-      "label": "First Name",
       "type": "string",
       "mandatory": true,
-      "validation": {
-        "min_length": 1,
-        "max_length": 100
-      }
+      "min_length": 1,
+      "max_length": 100
     },
     {
       "name": "last_name",
-      "label": "Last Name",
       "type": "string",
       "mandatory": true
+    },
+    {
+      "name": "email",
+      "type": "string",
+      "mandatory": true,
+      "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
     },
     {
       "name": "gender",
-      "label": "Gender",
       "type": "term",
       "mandatory": false,
-      "terminology_ref": "terminology-gender"
-    },
-    {
-      "name": "birth_date",
-      "label": "Date of Birth",
-      "type": "date",
-      "mandatory": true
-    },
-    {
-      "name": "national_id",
-      "label": "National ID",
-      "type": "string",
-      "mandatory": true,
-      "validation": {
-        "pattern": "^[A-Z0-9]{8,20}$"
-      }
+      "terminology_ref": "GENDER"
     },
     {
       "name": "country",
-      "label": "Country",
       "type": "term",
-      "terminology_ref": "terminology-country"
+      "terminology_ref": "COUNTRY"
     },
     {
       "name": "tax_id",
-      "label": "Tax ID",
       "type": "string",
       "mandatory": false
     },
     {
       "name": "addresses",
-      "label": "Addresses",
       "type": "array",
-      "array_item_type": "object",
-      "array_item_template_ref": "template-address"
+      "items": {
+        "name": "address",
+        "type": "object",
+        "template_ref": "ADDRESS"
+      }
     }
   ],
   "rules": [
     {
       "type": "conditional_required",
       "description": "Tax ID required for German residents",
-      "conditions": [
-        {"field": "country", "operator": "equals", "value": "term-country-de"}
-      ],
+      "condition": {
+        "field": "country",
+        "operator": "equals",
+        "value": "Germany"
+      },
       "target_field": "tax_id",
-      "required": true,
       "error_message": "Tax ID is required for German residents"
     }
   ],
+  "reporting": {
+    "sync_enabled": true,
+    "sync_strategy": "latest_only",
+    "table_name": "doc_person",
+    "flatten_arrays": true
+  },
   "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "architect"
+  "created_by": "apikey:legacy"
 }
 ```
+
+### Template Versioning
+
+When a template is updated, a **new document with a new template_id** is created. The original remains active.
+
+| Operation | Result |
+|-----------|--------|
+| Create template (code=PERSON) | TPL-000001, version=1 |
+| Update TPL-000001 | NEW TPL-000002, version=2, **TPL-000001 still active** |
+| Update TPL-000002 | NEW TPL-000003, version=3, **all still active** |
+
+All versions share the same `code` but have different `template_id` values.
 
 ---
 
@@ -522,19 +550,23 @@ class ValidationRule(BaseModel):
 
 ### Document
 
-The core data entity.
+The core data entity. Documents store both the original data and resolved term references.
 
 ```python
 class Document(BaseModel):
     """A validated document conforming to a template."""
 
-    id: str = Field(
+    document_id: str = Field(
         ...,
-        description="Unique document ID"
+        description="Unique document ID (UUID7 for time-ordering)"
     )
     template_id: str = Field(
         ...,
-        description="Template this document conforms to"
+        description="Template ID this document conforms to"
+    )
+    template_code: str = Field(
+        ...,
+        description="Template code (for easier querying)"
     )
     template_version: int = Field(
         ...,
@@ -551,56 +583,102 @@ class Document(BaseModel):
     status: Literal["active", "inactive", "archived"] = Field(
         default="active"
     )
+    is_latest_version: bool = Field(
+        ...,
+        description="Whether this is the current version"
+    )
+    latest_version: int = Field(
+        ...,
+        description="The highest version number for this identity"
+    )
+    latest_document_id: str = Field(
+        ...,
+        description="Document ID of the latest version"
+    )
     data: dict[str, Any] = Field(
         ...,
-        description="Actual document content"
+        description="Original submitted document content"
     )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    term_references: dict[str, str | list[str]] = Field(
+        default_factory=dict,
+        description="Resolved term IDs for term fields"
+    )
+    created_at: datetime
     created_by: str
     updated_at: datetime | None = None
     updated_by: str | None = None
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="System metadata (not user data)"
-    )
 ```
+
+**Key design decisions:**
+
+1. **`data`** stores the original submitted values (e.g., `"gender": "Female"`)
+2. **`term_references`** stores resolved term IDs (e.g., `"gender": "T-000002"`)
+3. Both are preserved for audit compliance - original values never migrated
+4. **`is_latest_version`** and **`latest_document_id`** enable navigation from old versions
 
 **Example:**
 ```json
 {
-  "id": "doc-550e8400-e29b-41d4-a716-446655440000",
-  "template_id": "template-person",
+  "document_id": "0192abc1-def2-7abc-8def-123456789abc",
+  "template_id": "TPL-000001",
+  "template_code": "PERSON",
   "template_version": 3,
   "identity_hash": "a1b2c3d4e5f6g7h8i9j0...",
   "version": 2,
   "status": "active",
+  "is_latest_version": true,
+  "latest_version": 2,
+  "latest_document_id": "0192abc1-def2-7abc-8def-123456789abc",
   "data": {
     "first_name": "Alice",
     "last_name": "Schmidt",
-    "gender": "term-gender-female",
-    "birth_date": "1990-05-15",
-    "national_id": "DE123456789",
-    "country": "term-country-de",
+    "email": "alice@example.com",
+    "gender": "Female",
+    "country": "Germany",
     "tax_id": "12345678901",
     "addresses": [
       {
-        "type": "term-address-type-home",
         "street": "Hauptstraße 1",
         "city": "Berlin",
         "postal_code": "10115",
-        "country": "term-country-de"
+        "country": "Germany"
       }
     ]
   },
+  "term_references": {
+    "gender": "T-000002",
+    "country": "T-000042",
+    "addresses.0.country": "T-000042"
+  },
   "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "user-123",
+  "created_by": "user:admin-001",
   "updated_at": "2024-02-20T14:30:00Z",
-  "updated_by": "user-456",
-  "metadata": {
-    "source_system": "hr-import",
-    "import_batch": "batch-2024-02-20"
-  }
+  "updated_by": "user:admin-001"
 }
+```
+
+### Document Versioning
+
+Documents use identity-based versioning. When a document with the same identity_hash is submitted:
+
+1. The existing active document is deactivated
+2. A new document is created with an incremented version number
+3. Both share the same `identity_hash`
+
+```
+Document v1 (identity_hash: abc123)
+    status: inactive
+    document_id: 0192aaa...
+    version: 1
+    is_latest_version: false
+    latest_document_id: 0192bbb...
+
+Document v2 (identity_hash: abc123)
+    status: active
+    document_id: 0192bbb...
+    version: 2
+    is_latest_version: true
+    latest_document_id: 0192bbb...
 ```
 
 ---
@@ -615,376 +693,93 @@ A logical partition for IDs to prevent collisions across systems.
 class IdGeneratorConfig(BaseModel):
     """Configuration for ID generation within a namespace."""
 
-    type: Literal["uuid4", "uuid7", "nanoid", "prefixed", "external", "custom"] = Field(
-        default="uuid4",
-        description="ID generation strategy"
+    type: Literal["uuid4", "uuid7", "prefixed", "external"] = Field(
+        default="uuid4"
     )
     prefix: str | None = Field(
         None,
         description="Prefix for prefixed generator (e.g., 'TERM-', 'TPL-')"
-    )
-    length: int | None = Field(
-        None,
-        description="Length for nanoid generator"
-    )
-    pattern: str | None = Field(
-        None,
-        description="Pattern for custom generator"
     )
 
 
 class Namespace(BaseModel):
     """A logical partition in the Registry for ID isolation."""
 
-    id: str = Field(
+    namespace_id: str = Field(
         ...,
         description="Unique namespace identifier",
-        examples=["default", "vendor1", "wip-terminologies"]
+        examples=["default", "wip-terminologies"]
     )
-    name: str = Field(
-        ...,
-        description="Human-readable name"
-    )
-    description: str | None = Field(
-        None,
-        description="Purpose of this namespace"
-    )
+    name: str
+    description: str | None = None
     id_generator: IdGeneratorConfig = Field(
-        default_factory=IdGeneratorConfig,
-        description="ID generation configuration for this namespace"
+        default_factory=IdGeneratorConfig
     )
-    source_endpoint: str | None = Field(
-        None,
-        description="API endpoint for external namespaces"
-    )
-    api_key_hash: str | None = Field(
-        None,
-        description="Hashed API key for authentication"
-    )
-    status: Literal["active", "inactive"] = Field(
-        default="active"
-    )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-```
-
-**Example:**
-```json
-{
-  "id": "vendor1",
-  "name": "Vendor 1 Product Catalog",
-  "description": "External vendor product identifiers",
-  "id_generator": {
-    "type": "external"
-  },
-  "source_endpoint": "https://vendor1.example.com/api",
-  "api_key_hash": "argon2:...",
-  "status": "active",
-  "created_at": "2024-01-01T00:00:00Z",
-  "metadata": {
-    "contact": "vendor1-support@example.com"
-  }
-}
-```
-
-### Synonym
-
-An alternative composite key that resolves to the same entity.
-
-```python
-class Synonym(BaseModel):
-    """A composite key in a specific namespace that resolves to the parent entry."""
-
-    namespace: str = Field(
-        ...,
-        description="Namespace this synonym belongs to"
-    )
-    composite_key_hash: str = Field(
-        ...,
-        description="Hash of the composite key"
-    )
-    composite_key_values: dict[str, Any] = Field(
-        ...,
-        description="The actual key values"
-    )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: str = Field(
-        ...,
-        description="User or system that created this synonym"
-    )
-```
-
-### RegistryEntry
-
-An identity mapping in the registry with support for namespaces and synonyms.
-
-```python
-class RegistryEntry(BaseModel):
-    """A registered identity in the central registry."""
-
-    id: str = Field(
-        ...,
-        description="Primary ID in this namespace"
-    )
-    namespace: str = Field(
-        ...,
-        description="Namespace this entry belongs to"
-    )
-    is_preferred: bool = Field(
-        default=True,
-        description="Whether this is the preferred ID for the entity"
-    )
-    composite_key_hash: str = Field(
-        ...,
-        description="Hash of the composite key"
-    )
-    composite_key_values: dict[str, Any] = Field(
-        ...,
-        description="The actual key values"
-    )
-    synonyms: list[Synonym] = Field(
-        default_factory=list,
-        description="Alternative composite keys that resolve to this entry"
-    )
-    additional_ids: list[str] = Field(
-        default_factory=list,
-        description="Other IDs that are synonyms (from ID-as-synonym merges)"
-    )
-    source_system: str = Field(
-        ...,
-        description="System that registered this identity"
-    )
-    status: Literal["active", "inactive"] = Field(
-        default="active"
-    )
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    created_by: str
-    updated_at: datetime | None = None
-    updated_by: str | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-```
-
-**Example:**
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "namespace": "default",
-  "is_preferred": true,
-  "composite_key_hash": "sha256:a1b2c3d4e5f6...",
-  "composite_key_values": {
-    "product_id": "PROD-001",
-    "region": "EU"
-  },
-  "synonyms": [
-    {
-      "namespace": "vendor1",
-      "composite_key_hash": "sha256:b2c3d4e5...",
-      "composite_key_values": {"vendor_sku": "AB-123"},
-      "created_at": "2024-01-20T10:00:00Z",
-      "created_by": "import-service"
-    },
-    {
-      "namespace": "vendor2",
-      "composite_key_hash": "sha256:c3d4e5f6...",
-      "composite_key_values": {"part_number": "CD-456", "revision": "2"},
-      "created_at": "2024-01-25T14:00:00Z",
-      "created_by": "admin"
-    }
-  ],
-  "additional_ids": ["661f9511-e29b-41d4-a716-446655440001"],
-  "source_system": "wip-main",
-  "status": "active",
-  "created_at": "2024-01-15T10:00:00Z",
-  "created_by": "product-import",
-  "updated_at": "2024-01-25T14:00:00Z",
-  "updated_by": "admin"
-}
-```
-
-### RegistryQueryResponse
-
-Response format for registry lookups (always returns all IDs).
-
-```python
-class RegistryQueryResponse(BaseModel):
-    """Response from a registry lookup - always includes all IDs."""
-
-    preferred_id: str = Field(
-        ...,
-        description="The canonical/preferred ID for this entity"
-    )
-    preferred_namespace: str = Field(
-        ...,
-        description="Namespace of the preferred ID"
-    )
-    additional_ids: list[dict] = Field(
-        default_factory=list,
-        description="Other IDs that resolve to this entity"
-    )
-    composite_key_values: dict[str, Any] = Field(
-        ...,
-        description="Key values for the preferred entry"
-    )
-    synonyms: list[Synonym] = Field(
-        default_factory=list,
-        description="All synonyms across namespaces"
-    )
-    source_system: str
-    status: str
-```
-
-**Example Response:**
-```json
-{
-  "preferred_id": "550e8400-e29b-41d4-a716-446655440000",
-  "preferred_namespace": "default",
-  "additional_ids": [
-    {"id": "661f9511-...", "namespace": "default"}
-  ],
-  "composite_key_values": {
-    "product_id": "PROD-001",
-    "region": "EU"
-  },
-  "synonyms": [
-    {
-      "namespace": "vendor1",
-      "composite_key_values": {"vendor_sku": "AB-123"}
-    },
-    {
-      "namespace": "vendor2",
-      "composite_key_values": {"part_number": "CD-456", "revision": "2"}
-    }
-  ],
-  "source_system": "wip-main",
-  "status": "active"
-}
+    status: Literal["active", "inactive"] = Field(default="active")
+    created_at: datetime
 ```
 
 ### WIP Internal Namespaces
 
 The Registry pre-configures namespaces for WIP components:
 
-```python
-WIP_NAMESPACES = {
-    "wip-terminologies": IdGeneratorConfig(type="prefixed", prefix="TERM-"),
-    "wip-terms": IdGeneratorConfig(type="prefixed", prefix="T-"),
-    "wip-templates": IdGeneratorConfig(type="prefixed", prefix="TPL-"),
-    "wip-documents": IdGeneratorConfig(type="uuid7"),  # Time-sortable
-}
-```
-
----
-
-## API Models
-
-### Request/Response Models
-
-```python
-# Document creation request
-class DocumentCreate(BaseModel):
-    template_id: str
-    data: dict[str, Any]
-
-
-# Document response (includes system fields)
-class DocumentResponse(BaseModel):
-    id: str
-    template_id: str
-    template_version: int
-    version: int
-    status: str
-    data: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime | None
-
-
-# Validation result
-class ValidationResult(BaseModel):
-    valid: bool
-    identity_hash: str | None = None
-    is_update: bool = False
-    errors: list[ValidationError] = []
-    warnings: list[ValidationWarning] = []
-
-
-class ValidationError(BaseModel):
-    field: str
-    code: str
-    message: str
-
-
-class ValidationWarning(BaseModel):
-    field: str
-    code: str
-    message: str
-
-
-# Query request
-class DocumentQuery(BaseModel):
-    template_id: str | None = None
-    filter: dict[str, Any] = {}
-    sort: list[SortField] = []
-    pagination: Pagination = Pagination()
-    include_inactive: bool = False
-
-
-class SortField(BaseModel):
-    field: str
-    order: Literal["asc", "desc"] = "asc"
-
-
-class Pagination(BaseModel):
-    offset: int = 0
-    limit: int = 50
-
-
-# Query response
-class DocumentQueryResponse(BaseModel):
-    documents: list[DocumentResponse]
-    total: int
-    offset: int
-    limit: int
-```
+| Namespace | ID Generator | Format | Used By |
+|-----------|--------------|--------|---------|
+| `wip-terminologies` | prefixed | `TERM-000001` | Def-Store |
+| `wip-terms` | prefixed | `T-000001` | Def-Store |
+| `wip-templates` | prefixed | `TPL-000001` | Template Store |
+| `wip-documents` | uuid7 | `0192abc1-def2-7abc-...` | Document Store |
+| `default` | uuid4 | `550e8400-e29b-41d4-...` | General use |
 
 ---
 
 ## Event Models
 
+Events are published to NATS and contain the **full document** (self-contained for reliable processing).
+
 ```python
 class EventType(str, Enum):
     DOCUMENT_CREATED = "document.created"
     DOCUMENT_UPDATED = "document.updated"
-    DOCUMENT_DEACTIVATED = "document.deactivated"
+    DOCUMENT_DELETED = "document.deleted"
     TEMPLATE_CREATED = "template.created"
     TEMPLATE_UPDATED = "template.updated"
-    TERMINOLOGY_CREATED = "terminology.created"
-    TERMINOLOGY_UPDATED = "terminology.updated"
 
 
-class Event(BaseModel):
-    """An event published to the message queue."""
+class DocumentEvent(BaseModel):
+    """An event published when a document changes."""
 
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    type: EventType
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    source: str = Field(..., description="System that generated the event")
-    payload: dict[str, Any]
+    event_id: str
+    event_type: EventType
+    timestamp: datetime
+    document: Document  # Full document included
+```
 
-
-# Example event
+**Example Event:**
+```json
 {
-    "id": "evt-123",
-    "type": "document.created",
-    "timestamp": "2024-01-15T10:00:00Z",
-    "source": "wip-api",
-    "payload": {
-        "document_id": "doc-456",
-        "template_id": "template-person",
-        "identity_hash": "a1b2c3...",
-        "version": 1
-    }
+  "event_id": "evt-123",
+  "event_type": "document.created",
+  "timestamp": "2024-01-15T10:00:00Z",
+  "document": {
+    "document_id": "0192abc...",
+    "template_id": "TPL-000001",
+    "template_code": "PERSON",
+    "version": 1,
+    "status": "active",
+    "data": {
+      "first_name": "Alice",
+      "email": "alice@example.com"
+    },
+    "term_references": {}
+  }
 }
 ```
+
+**Why full document in events:**
+- Self-contained: Sync worker doesn't need to fetch from source
+- No race conditions: Document state at event time is captured
+- Simpler processing: Just transform and upsert
 
 ---
 
@@ -992,8 +787,6 @@ class Event(BaseModel):
 
 ```python
 import hashlib
-import json
-
 
 def compute_identity_hash(
     data: dict[str, Any],
@@ -1008,20 +801,12 @@ def compute_identity_hash(
     3. Hash with SHA-256
     4. Return hex digest
     """
-    # Sort fields
     sorted_fields = sorted(identity_fields)
 
-    # Build normalized string
     parts = []
     for field in sorted_fields:
         value = data.get(field, "")
-        # Handle nested fields with dot notation
-        if "." in field:
-            value = get_nested_value(data, field)
-        # Normalize value to string
-        if isinstance(value, dict):
-            value = json.dumps(value, sort_keys=True)
-        elif value is None:
+        if value is None:
             value = ""
         else:
             value = str(value)
@@ -1029,32 +814,79 @@ def compute_identity_hash(
 
     normalized = "|".join(parts)
 
-    # Hash
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def get_nested_value(data: dict, path: str) -> Any:
-    """Get a value from a nested dict using dot notation."""
-    keys = path.split(".")
-    value = data
-    for key in keys:
-        if isinstance(value, dict):
-            value = value.get(key)
-        else:
-            return None
-    return value
 ```
 
 **Example:**
 ```python
 data = {
     "first_name": "Alice",
-    "last_name": "Schmidt",
-    "national_id": "DE123456789"
+    "email": "alice@example.com"
 }
-identity_fields = ["national_id"]
+identity_fields = ["email"]
 
-# Result: sha256("national_id=DE123456789")
+# Normalized: "email=alice@example.com"
+# Result: sha256("email=alice@example.com")
 hash = compute_identity_hash(data, identity_fields)
 # → "a1b2c3d4e5f6..."
 ```
+
+---
+
+## API Response Models
+
+### Paginated Response
+
+```python
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Paginated list response."""
+
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+    has_more: bool
+```
+
+### Validation Result
+
+```python
+class ValidationResult(BaseModel):
+    """Result of document validation."""
+
+    valid: bool
+    identity_hash: str | None = None
+    is_update: bool = False
+    existing_document_id: str | None = None
+    errors: list[ValidationError] = []
+    warnings: list[ValidationWarning] = []
+    term_references: dict[str, str] = {}
+
+
+class ValidationError(BaseModel):
+    field: str | None = None
+    code: str
+    message: str
+
+
+class ValidationWarning(BaseModel):
+    field: str | None = None
+    code: str
+    message: str
+```
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `INVALID_JSON` | Document is not valid JSON |
+| `MISSING_TEMPLATE_ID` | No template_id specified |
+| `TEMPLATE_NOT_FOUND` | Template does not exist |
+| `TEMPLATE_INACTIVE` | Template is deactivated |
+| `REQUIRED_FIELD_MISSING` | Mandatory field not provided |
+| `INVALID_TYPE` | Field value has wrong type |
+| `INVALID_TERM_REFERENCE` | Term value not found in terminology |
+| `INVALID_PATTERN` | Value doesn't match pattern |
+| `OUT_OF_RANGE` | Numeric value outside range |
+| `RULE_VIOLATION` | Cross-field rule violated |
+| `IDENTITY_FIELD_MISSING` | Identity field not provided |

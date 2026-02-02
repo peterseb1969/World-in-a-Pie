@@ -7,39 +7,36 @@ This glossary defines key terms and concepts used throughout the World In a Pie 
 ## A
 
 ### Active (Status)
-The default status for entities in WIP. Active items are visible in queries and available for use. Contrast with [Inactive](#inactive-status) and [Archived](#archived-status).
+The default status for entities in WIP. Active items are visible in queries and available for use. Contrast with [Inactive](#inactive-status).
+
+### Alias
+An alternative value that resolves to the same [term](#term). For example, "Mr", "MR", "Mr.", and "MR." can all be aliases resolving to the same salutation term. Aliases enable flexible input while maintaining data consistency.
 
 ### API Key
-A secret token used for system-to-system authentication, primarily by the [Registry](#registry). Format: `wip_sk_live_abc123...`
+A secret token used for system-to-system authentication. Services validate API keys via the [wip-auth](#wip-auth) library. Development key: `dev_master_key_for_testing`. Named API keys include owner and group information for audit trails.
 
-### Archive (Store)
-Optional secondary storage for old [versions](#version) of documents, terminologies, and templates. Enabled via configuration and governed by [archive policies](#archive-policy).
-
-### Archive Policy
-Rules that determine when inactive versions are moved to the archive store. Types:
-- **Age-based**: Move after N days
-- **Volume-based**: Move when storage exceeds threshold
-- **Template-based**: Different rules per template
-
-### Authentik
-The default self-hosted authentication provider for WIP. Python-based, full-featured OIDC/SAML provider. See also [Authelia](#authelia).
-
-### Authelia
-Lightweight alternative authentication provider for resource-constrained deployments (e.g., Raspberry Pi). Go-based, ~30MB RAM footprint.
+### Audit Log
+A record of all changes to an entity. [Terms](#term) use audit logs instead of versioning to track modifications while maintaining a stable [term_id](#term-reference).
 
 ---
 
 ## B
 
 ### Bootstrap
-The process of manually seeding the [Def-Store](#def-store) with foundational terminologies before the system can validate its own data. Required because the Def-Store cannot validate against templates that don't yet exist.
+The process of initializing the system with foundational data. The [Registry](#registry) must be initialized with WIP namespaces before other services can generate IDs.
+
+### Bulk Operation
+An API feature that allows multiple entities to be created, updated, or validated in a single request. Improves performance for batch processing.
 
 ---
 
 ## C
 
+### Caddy
+The reverse proxy used in WIP deployments. Provides automatic HTTPS via self-signed certificates and routes traffic to backend services. Enables secure OIDC login over network access.
+
 ### Composite Key
-A combination of multiple fields that together uniquely identify a document. Defined in the template's `identity_fields` array. Example: `["first_name", "last_name", "birth_date"]`.
+A combination of multiple fields that together uniquely identify a document. Defined in the template's `identity_fields` array. Example: `["email"]` or `["order_id", "line_number"]`.
 
 ### Conditional Rule
 A [validation rule](#validation-rule) that applies only when certain conditions are met. Example: "Tax ID is required if country is Germany."
@@ -49,46 +46,54 @@ A [validation rule](#validation-rule) that applies only when certain conditions 
 ## D
 
 ### Deactivate
-The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables recovery.
+The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution.
 
 ### Def-Store
-The foundational persistence layer containing [ontologies](#ontology) and [terminologies](#terminology). Provides the vocabulary that [templates](#template) reference. Must be [bootstrapped](#bootstrap) manually.
+The service managing [terminologies](#terminology) and [terms](#term). Provides controlled vocabularies that [templates](#template) reference for term-type fields. API: `http://localhost:8002/api/def-store/`.
+
+### Dex
+The OIDC provider used in WIP for user authentication. Lightweight (~30MB RAM), works over HTTP, and supports static user configuration via YAML. Provides JWT tokens for authenticated users.
 
 ### Document
 The primary data entity in WIP. A JSON object that:
-1. References a [template](#template)
-2. Contains data conforming to that template
-3. Has an [identity hash](#identity-hash) for versioning
-4. Is [validated](#validation) on ingestion
+1. References a [template](#template) via `template_id`
+2. Contains `data` conforming to that template
+3. Stores [term_references](#term-reference) with resolved term IDs
+4. Has an [identity hash](#identity-hash) for versioning
+5. Is [validated](#validation) on creation/update
 
 ### Document Store
-The persistence layer that holds [documents](#document). Default implementation uses MongoDB.
+The service that manages [documents](#document). Provides validation, versioning, and term reference resolution. Uses MongoDB for persistence. API: `http://localhost:8004/api/document-store/`.
+
+### Dual Auth Mode
+Authentication mode where both API keys and JWT tokens are accepted. Default mode for most deployments. See [wip-auth](#wip-auth).
 
 ---
 
 ## E
 
 ### Event
-A message published to the [message queue](#message-queue) when something happens in WIP. Types include `document.created`, `document.updated`, `template.created`, etc. Used for [sync](#sync) and notifications.
+A message published to [NATS](#nats) when something changes in WIP. Contains the full entity data (self-contained). Types include `document.created`, `document.updated`, `template.created`, etc. Used by [Reporting-Sync](#reporting-sync) for PostgreSQL synchronization.
 
 ### Extends
-Template inheritance. A template can extend another template, inheriting its fields and rules while adding or overriding its own.
+Template inheritance. A template can extend another template, inheriting its fields and rules while adding or overriding its own. Example: EMPLOYEE extends PERSON.
 
 ---
 
 ## F
 
 ### FastAPI
-The Python web framework used for WIP's backend. Provides automatic OpenAPI documentation, Pydantic validation, and async support.
+The Python web framework used for WIP's backend services. Provides automatic OpenAPI documentation (`/docs`), Pydantic validation, and async support.
 
 ### Field
-A single data element within a [template](#template). Has a name, type, and optional validation rules. Types include: `string`, `number`, `date`, `term`, `object`, `array`.
+A single data element within a [template](#template). Has a name, type, and optional validation rules. Types: `string`, `number`, `integer`, `boolean`, `date`, `datetime`, `term`, `object`, `array`.
 
 ---
 
 ## G
 
-### (No entries)
+### Groups
+User group memberships from OIDC tokens, used for authorization. Standard groups: `wip-admins`, `wip-editors`, `wip-viewers`. Named API keys can also specify groups.
 
 ---
 
@@ -97,6 +102,9 @@ A single data element within a [template](#template). Has a name, type, and opti
 ### Hash
 See [Identity Hash](#identity-hash).
 
+### Health Check
+An endpoint (`GET /health`) that reports service status. Used by the setup script and container orchestration to verify services are running.
+
 ---
 
 ## I
@@ -104,30 +112,27 @@ See [Identity Hash](#identity-hash).
 ### Identity
 The unique "fingerprint" of a document, computed from its [identity fields](#identity-fields). Two documents with the same identity are considered versions of the same entity.
 
-### ID-as-Synonym
-A technique for resolving duplicate registrations. When the same entity was accidentally registered twice with different [Registry](#registry) IDs, one ID can be made a synonym of the other. Both IDs continue to work, but all queries return the [preferred ID](#preferred-id). Avoids the need to fix downstream systems that propagated the duplicate.
-
 ### Identity Fields
-The template-defined fields that form the [composite key](#composite-key). Specified in the template's `identity_fields` array.
+The template-defined fields that form the [composite key](#composite-key). Specified in the template's `identity_fields` array. Must be mandatory fields.
 
 ### Identity Hash
-A SHA-256 hash computed from the [identity fields](#identity-fields). Algorithm:
+A SHA-256 hash computed from the [identity fields](#identity-fields). Used to detect if a document is new or an update to an existing entity. Algorithm:
 1. Sort field names alphanumerically
 2. Concatenate as `field1=value1|field2=value2|...`
 3. Hash with SHA-256
 
 ### Inactive (Status)
-Status of a deactivated entity. Inactive items are retained for history but excluded from normal queries. Can optionally be moved to [archive](#archive-store).
+Status of a deactivated entity. Inactive items are retained for historical reference resolution but excluded from normal queries. Previous document versions are automatically set to inactive when a new version is created.
 
 ---
 
 ## J
 
 ### JetStream
-NATS's persistence layer for guaranteed message delivery. Optionally enabled for critical events.
+NATS's persistence layer for guaranteed message delivery. Enabled by default in WIP. Ensures events are not lost if [Reporting-Sync](#reporting-sync) is temporarily unavailable.
 
 ### JWT
-JSON Web Token. Used for user authentication. Contains claims like user ID, email, and roles.
+JSON Web Token. Used for user authentication via [Dex](#dex). Contains claims like user ID, email, and [groups](#groups).
 
 ---
 
@@ -139,38 +144,42 @@ JSON Web Token. Used for user authentication. Contains claims like user ID, emai
 
 ## L
 
-### Lookup
-A [Registry](#registry) query mode that returns the [source system](#source-system) for a given ID, without fetching the actual document.
+### Latest Version
+For documents with multiple versions, the most recent active version. API responses include `is_latest_version` and `latest_document_id` to help clients work with version chains.
 
 ---
 
 ## M
 
 ### Mandatory
-A field property indicating the field must be present in a document. Validation fails if a mandatory field is missing.
+A field property indicating the field must be present in a document. Validation fails if a mandatory field is missing or null.
 
 ### Message Queue
-Asynchronous communication layer for events. WIP uses [NATS](#nats) by default.
-
-### MicroK8s
-Lightweight Kubernetes distribution used for demo and production deployments. Single-node capable.
+Asynchronous communication layer for events. WIP uses [NATS](#nats) with [JetStream](#jetstream).
 
 ### MongoDB
-Default [document store](#document-store) implementation. Native JSON storage, flexible queries.
+The document store database. Stores documents, templates, terminologies, and terms as native JSON documents.
 
 ---
 
 ## N
 
 ### Namespace
-A logical partition in the [Registry](#registry) that prevents ID collisions. The same ID value can exist in different namespaces as different entities. The **default namespace** is managed by the Registry (ID generation and uniqueness). **Custom namespaces** represent external systems (e.g., "vendor1", "vendor2") with their own ID formats.
+A logical partition in the [Registry](#registry) that enables different ID formats. WIP namespaces:
+- `wip-terminologies`: Prefixed IDs (TERM-XXXXXX)
+- `wip-terms`: Prefixed IDs (T-XXXXXX)
+- `wip-templates`: Prefixed IDs (TPL-XXXXXX)
+- `wip-documents`: UUID7 IDs (time-ordered)
 
 ### NATS
-Lightweight message queue used by WIP. ~10-20MB RAM footprint. Supports pub/sub and request/reply patterns.
+Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enabled. Handles event publishing between services.
 
 ---
 
 ## O
+
+### OIDC
+OpenID Connect. The authentication protocol used by [Dex](#dex). Provides secure user login with JWT tokens.
 
 ### Ontology
 A formal representation of knowledge as a set of concepts and relationships. In WIP, ontologies are implemented as collections of [terminologies](#terminology).
@@ -179,17 +188,14 @@ A formal representation of knowledge as a set of concepts and relationships. In 
 
 ## P
 
-### PostgreSQL
-Default [reporting store](#reporting-store) implementation. Provides SQL querying capabilities.
+### Podman
+Container runtime used by WIP. Compatible with Docker commands (`podman-compose`). Supports rootless containers on Linux.
 
-### Preferred ID
-When an entity has multiple IDs (due to [synonyms](#synonym) or [ID-as-synonym](#id-as-synonym)), the preferred ID is the canonical identifier returned in query results. Other IDs are returned as "additional IDs." Any ID can be promoted to preferred status.
+### PostgreSQL
+The reporting database. Receives document data via [Reporting-Sync](#reporting-sync) for SQL-based querying and analytics.
 
 ### PrimeVue
-Vue.js component library used for WIP's web UIs. Provides TreeTable, DataTable, and form components.
-
-### Proxy (Query Mode)
-A [Registry](#registry) query mode that forwards the request to the [source system](#source-system) and returns the actual document.
+Vue.js component library used for [WIP Console](#wip-console). Provides DataTable, Dialog, and form components.
 
 ### Pydantic
 Python data validation library used throughout WIP. Provides declarative schema definition and automatic validation.
@@ -198,46 +204,39 @@ Python data validation library used throughout WIP. Provides declarative schema 
 
 ## Q
 
-### Query Builder
-Web UI tool for constructing and executing ad-hoc queries against the [document store](#document-store).
+### (No entries)
 
 ---
 
 ## R
 
 ### RBAC
-Role-Based Access Control. WIP uses roles like `admin`, `architect`, `editor`, `viewer` to control access to different components.
+Role-Based Access Control. Authorization based on [groups](#groups) from JWT tokens or API key configuration.
 
 ### Registry
-Standalone service providing federated identity management. Maps [composite keys](#composite-key) to standardized IDs and tracks which [source system](#source-system) owns each identity.
+Service providing ID generation and namespace management. Maps [composite keys](#composite-key) to standardized IDs. Must be initialized before other services. API: `http://localhost:8001/api/registry/`.
 
 ### Reporting Layer
-Optional relational database ([PostgreSQL](#postgresql) by default) that mirrors document data for SQL-based querying. Not the source of truth—a projection for convenience.
+The PostgreSQL database that mirrors document data for SQL-based querying. Not the source of truth—a projection synchronized from MongoDB via events.
 
-### Reporting Store
-The database backing the [reporting layer](#reporting-layer). Receives data via [sync](#sync).
-
-### Rule
-See [Validation Rule](#validation-rule).
+### Reporting-Sync
+Service that consumes [events](#event) from NATS and synchronizes data to PostgreSQL. Provides metrics, alerts, and batch sync capabilities. API: `http://localhost:8005/`.
 
 ---
 
 ## S
 
-### Source System
-A WIP instance registered with the [Registry](#registry). Identified by a system ID and API endpoint.
+### Setup Script
+The `scripts/setup.sh` script that automates WIP deployment. Auto-detects platform, generates configuration, and starts all services.
 
 ### Status
-Lifecycle state of an entity. Values: `active`, `inactive`, `archived`.
+Lifecycle state of an entity. Values for documents: `active`, `inactive`. Values for terms: `active`, `deprecated`.
 
 ### Sync
-The process of copying document data to the [reporting store](#reporting-store). Modes:
-- **Batch**: Scheduled periodic sync
-- **Event**: React to document changes
-- **Queue**: Near real-time via message queue
+The process of copying document data to PostgreSQL. Driven by NATS events (real-time) or batch API calls (recovery).
 
 ### Synonym
-In the [Registry](#registry), a synonym is an alternative [composite key](#composite-key) that resolves to the same entity. Synonyms enable cross-system identity matching. Example: Product "XY" in your system, "AB" at Vendor 1, and "CD" at Vendor 2 can all be synonyms of the same Registry ID. Synonyms can span different [namespaces](#namespace) and have different key structures.
+In the [Registry](#registry), an alternative identifier that resolves to the same entity. Enables cross-system identity matching.
 
 ---
 
@@ -245,63 +244,75 @@ In the [Registry](#registry), a synonym is an alternative [composite key](#compo
 
 ### Template
 A schema definition that documents must conform to. Contains:
-- Field definitions
-- Validation rules
-- Identity field declarations
-- Optional inheritance (`extends`)
-
-### Template Editor
-Web UI for creating and managing templates.
+- `template_id`: Unique ID (TPL-XXXXXX)
+- `code`: Human-readable identifier shared across versions
+- `fields`: Field definitions with types and validation
+- `rules`: Cross-field validation rules
+- `identity_fields`: Fields forming the composite key
+- `extends`: Optional parent template for inheritance
+- `reporting`: Sync configuration for PostgreSQL
 
 ### Template Store
-Persistence layer for [templates](#template). Templates reference the [Def-Store](#def-store).
+Service managing [templates](#template). Validates references to terminologies and parent templates. API: `http://localhost:8003/api/template-store/`.
+
+### Template Version
+Templates support multiple active versions simultaneously. When updated, a new template with a new `template_id` is created while the original remains active. Documents reference specific template versions.
 
 ### Term
-A single concept within a [terminology](#terminology). Has a code (e.g., "M") and label (e.g., "Male"). Can be hierarchical via `parent_id`.
+A single concept within a [terminology](#terminology). Structure:
+- `term_id`: Unique ID (T-XXXXXX)
+- `code`: Short code (e.g., "M")
+- `value`: Display value (e.g., "Male")
+- `aliases`: Alternative values that resolve to this term
+- `parent_id`: Optional parent for hierarchical terms
 
 ### Terminology
-A controlled vocabulary containing related [terms](#term). Example: "Gender" terminology containing terms "Male", "Female", "Other".
+A controlled vocabulary containing related [terms](#term). Structure:
+- `terminology_id`: Unique ID (TERM-XXXXXX)
+- `code`: Short code (e.g., "GENDER")
+- `name`: Display name (e.g., "Gender")
 
 ### Terminology Reference
-A field property linking a [term](#term) type field to a specific [terminology](#terminology). Validation ensures the field value is a valid term from that terminology.
+A template field property linking a `term` type field to a specific [terminology](#terminology). Written as `terminology_ref` in field definitions.
 
-### Traefik
-Reverse proxy used in WIP deployments. Provides automatic HTTPS and service discovery.
+### Term Reference
+The `term_references` field in documents that stores resolved term IDs. When a document is saved, original values go in `data` and resolved `term_id` values go in `term_references`. This preserves both the submitted value and the canonical reference.
 
 ---
 
 ## U
 
 ### Upsert
-The combined create-or-update behavior based on [identity](#identity). If a document with the same identity hash exists, it's updated (new version created). Otherwise, a new document is created.
+The combined create-or-update behavior based on [identity](#identity). If an active document with the same identity hash exists, a new version is created and the old version is deactivated. Otherwise, a new document is created.
+
+### UUID7
+Time-ordered UUID format used for document IDs. Provides chronological ordering while maintaining uniqueness.
 
 ---
 
 ## V
 
 ### Validation
-The process of checking a document against its [template](#template) before storage. Includes:
-1. Structural validation (valid JSON)
-2. Template resolution
-3. Field validation (types, mandatory)
-4. Rule evaluation (conditional logic)
-5. Identity computation
-
-### Validation Engine
-Core component that performs [validation](#validation). Returns success/failure with detailed error messages.
+The process of checking a document against its [template](#template) before storage. Six-stage pipeline:
+1. Structural validation (valid JSON, required fields)
+2. Template resolution (fetch and validate template)
+3. Field validation (types, patterns, min/max)
+4. Term validation (verify against Def-Store)
+5. Rule evaluation (cross-field rules)
+6. Identity computation (generate hash)
 
 ### Validation Rule
 A constraint that spans multiple fields. Types:
 - `conditional_required`: Field required if condition met
-- `conditional_value`: Value constrained by condition
+- `conditional_value`: Value constrained by another field
 - `mutual_exclusion`: Only one of listed fields can have value
-- `dependency`: Field requires another field
+- `dependency`: Field requires another field to be present
 
 ### Version
-A snapshot of an entity at a point in time. When updated, a new version is created and the previous version is [deactivated](#deactivate). Versions share the same [identity hash](#identity-hash).
+A snapshot of a document at a point in time. When updated via [upsert](#upsert), a new version with a new `document_id` is created. Versions share the same [identity hash](#identity-hash). Version numbers increment automatically.
 
 ### Vue
-JavaScript framework used for WIP's frontend. Version 3 with Composition API.
+JavaScript framework used for [WIP Console](#wip-console). Version 3 with Composition API and TypeScript.
 
 ---
 
@@ -309,6 +320,12 @@ JavaScript framework used for WIP's frontend. Version 3 with Composition API.
 
 ### WIP
 Acronym for **W**orld **I**n a **P**ie. Also a happy coincidence with "Work In Progress."
+
+### WIP Console
+The unified web UI for managing terminologies, templates, and documents. Built with [Vue](#vue) and [PrimeVue](#primevue). Supports both OIDC login and API key authentication.
+
+### wip-auth
+Shared Python library providing pluggable authentication for all WIP services. Supports modes: `none`, `api_key_only`, `jwt_only`, `dual`. Located in `libs/wip-auth/`.
 
 ### World In a Pie
 The full name of this system. Reflects:
@@ -335,8 +352,8 @@ The full name of this system. Reflects:
 | OIDC | OpenID Connect |
 | RBAC | Role-Based Access Control |
 | REST | Representational State Transfer |
-| SAML | Security Assertion Markup Language |
 | SHA | Secure Hash Algorithm |
 | SQL | Structured Query Language |
+| TLS | Transport Layer Security |
 | UI | User Interface |
 | UUID | Universally Unique Identifier |

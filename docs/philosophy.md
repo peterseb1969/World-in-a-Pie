@@ -71,8 +71,7 @@ Nothing in WIP is ever truly deleted:
 | Action | What Happens |
 |--------|--------------|
 | Update | New version created; old version deactivated |
-| Delete | Item marked as deactivated |
-| Archive | Old versions moved to archive store (optional) |
+| Delete | Item marked as inactive (soft delete) |
 
 Benefits:
 - **Full audit trail** of all changes
@@ -127,9 +126,10 @@ WIP must run on a Raspberry Pi. This constraint drives design decisions:
 
 | Decision | Rationale |
 |----------|-----------|
-| Pluggable storage | SQLite for Pi, MongoDB for scale |
-| Lightweight auth option | Authelia as alternative to Authentik |
-| NATS over Kafka | 10MB vs 500MB+ footprint |
+| MongoDB 4.4 for Pi | Supports ARMv8.0 architecture on Pi 4 |
+| Dex for auth | ~30MB RAM vs Authentik's ~1.2GB |
+| NATS over Kafka | ~30MB vs 500MB+ footprint |
+| Caddy over nginx | Auto-TLS, simple config |
 | Vue over React | Slightly smaller bundle |
 | FastAPI over Django | Lighter, async by default |
 

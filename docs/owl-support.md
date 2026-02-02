@@ -91,14 +91,14 @@ The Registry already supports synonyms:
 
 ```bash
 # Register a term with synonyms
-POST /api/registry/namespaces/wip-terms/keys
+POST /api/registry/namespaces/wip-terms/entries
 {
   "composite_key": {"code": "Diabetes", "terminology": "SNOMED"},
   "synonyms": ["ICD10:E11", "LOCAL:diabetes-001"]
 }
 
 # Query synonyms
-GET /api/registry/namespaces/wip-terms/keys/{key_id}/synonyms
+GET /api/registry/namespaces/wip-terms/entries/{entry_id}/synonyms
 # Returns all equivalent term IDs
 ```
 
@@ -191,7 +191,7 @@ For synonym queries, downstream can fetch term details to get the terminology re
 
 ```bash
 # Get synonyms from Registry
-GET /api/registry/namespaces/wip-terms/keys/{key_id}/synonyms
+GET /api/registry/namespaces/wip-terms/entries/{entry_id}/synonyms
 # Returns: [T-001, T-100]
 
 # Fetch term details to get terminology
