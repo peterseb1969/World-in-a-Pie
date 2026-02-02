@@ -217,7 +217,7 @@ echo ""
 # Step 6: Remove WIP images
 log_step "Step 6: Removing WIP images..."
 
-WIP_IMAGES=$(podman images --format "{{.Repository}}:{{.Tag}}" | grep -E "wip-|worldinpie" || true)
+WIP_IMAGES=$(podman images --format "{{.Repository}}:{{.Tag}}" | grep -iE "wip[-_]|worldinpie" || true)
 if [ -n "$WIP_IMAGES" ]; then
     echo "$WIP_IMAGES" | while read image; do
         log_info "Removing image: $image"
