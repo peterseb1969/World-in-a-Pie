@@ -103,7 +103,7 @@ detect_data_dir() {
     return 1
 }
 
-WIP_DATA_DIR=$(detect_data_dir)
+WIP_DATA_DIR=$(detect_data_dir) || true
 if [ -n "$WIP_DATA_DIR" ]; then
     log_info "Detected data directory: $WIP_DATA_DIR"
 else
