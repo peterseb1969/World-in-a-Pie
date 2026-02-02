@@ -38,14 +38,14 @@ services:
       # Connect to reporting-sync container by name on shared network
       - VITE_REPORTING_SYNC_TARGET=http://wip-reporting-sync-dev:8005
       # Dex target for Vite proxy (container-to-container)
-      - VITE_DEX_TARGET=${VITE_DEX_TARGET:-http://wip-dex:5556}
+      - VITE_DEX_TARGET=http://wip-dex:5556
       # OIDC configuration - uses /dex proxy to avoid CORS issues
-      # Set VITE_OIDC_ENABLED=false for API-key-only deployments (no Caddy/Dex)
-      - VITE_OIDC_ENABLED=${VITE_OIDC_ENABLED:-true}
-      - VITE_OIDC_AUTHORITY=${VITE_OIDC_AUTHORITY:-/dex}
-      - VITE_OIDC_CLIENT_ID=${VITE_OIDC_CLIENT_ID:-wip-console}
-      - VITE_OIDC_CLIENT_SECRET=${VITE_OIDC_CLIENT_SECRET:-wip-console-secret}
-      - VITE_OIDC_PROVIDER_NAME=${VITE_OIDC_PROVIDER_NAME:-Dex}
+      # Override these in .env or environment if needed
+      - VITE_OIDC_ENABLED=true
+      - VITE_OIDC_AUTHORITY=/dex
+      - VITE_OIDC_CLIENT_ID=wip-console
+      - VITE_OIDC_CLIENT_SECRET=wip-console-secret
+      - VITE_OIDC_PROVIDER_NAME=Dex
     networks:
       - wip-network
 
