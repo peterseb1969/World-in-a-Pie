@@ -13,7 +13,7 @@ from typing import Any
 
 import asyncpg
 
-from .models import FieldType, ReportingConfig, TemplateField
+from .models import FieldType, FileFieldConfig, ReportingConfig, TemplateField
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,8 @@ TYPE_MAPPING: dict[FieldType, str] = {
     FieldType.DATE: "DATE",
     FieldType.DATETIME: "TIMESTAMP WITH TIME ZONE",
     FieldType.TERM: "TEXT",  # Store the value; term_id stored separately
+    FieldType.REFERENCE: "TEXT",  # Store the reference ID
+    FieldType.FILE: "TEXT",  # Store the file_id; additional columns for metadata
     FieldType.OBJECT: "JSONB",  # Fallback if not flattened
     FieldType.ARRAY: "JSONB",  # Fallback if not flattened
 }
@@ -55,6 +57,7 @@ class SchemaManager:
 
         Returns list of (column_name, column_type) tuples.
         For term fields, generates both value and term_id columns.
+        For file fields, generates file_id, filename, and content_type columns (or JSONB for multiple).
         For nested objects, flattens with prefix.
         """
         columns = []
@@ -64,6 +67,22 @@ class SchemaManager:
             # Term fields get two columns: value and term_id
             columns.append((col_name, "TEXT"))
             columns.append((f"{col_name}_term_id", "TEXT"))
+
+        elif field.type == FieldType.FILE:
+            # File fields: check if multiple files allowed
+            is_multiple = field.file_config and field.file_config.multiple
+            if is_multiple:
+                # Multiple files stored as JSONB array
+                columns.append((col_name, "JSONB"))
+            else:
+                # Single file gets three columns: file_id, filename, content_type
+                columns.append((f"{col_name}_file_id", "TEXT"))
+                columns.append((f"{col_name}_filename", "TEXT"))
+                columns.append((f"{col_name}_content_type", "TEXT"))
+
+        elif field.type == FieldType.REFERENCE:
+            # Reference fields store the referenced ID
+            columns.append((col_name, "TEXT"))
 
         elif field.type == FieldType.OBJECT:
             # Objects are stored as JSONB (flattening handled by transformer)
@@ -135,6 +154,7 @@ class SchemaManager:
         columns.extend([
             ("data_json", "JSONB"),
             ("term_references_json", "JSONB"),
+            ("file_references_json", "JSONB"),
         ])
 
         # Build the DDL
@@ -293,8 +313,17 @@ ON "{table_name}"(identity_hash) WHERE status = 'active';
         fields_data = template.get("fields", [])
 
         # Parse fields
-        fields = [
-            TemplateField(
+        fields = []
+        for f in fields_data:
+            # Parse file_config if present
+            file_config = None
+            if f.get("file_config"):
+                file_config = FileFieldConfig(**f["file_config"])
+            array_file_config = None
+            if f.get("array_file_config"):
+                array_file_config = FileFieldConfig(**f["array_file_config"])
+
+            fields.append(TemplateField(
                 name=f["name"],
                 label=f.get("label"),
                 type=FieldType(f["type"]),
@@ -304,9 +333,9 @@ ON "{table_name}"(identity_hash) WHERE status = 'active';
                 array_item_type=FieldType(f["array_item_type"]) if f.get("array_item_type") else None,
                 array_terminology_ref=f.get("array_terminology_ref"),
                 array_template_ref=f.get("array_template_ref"),
-            )
-            for f in fields_data
-        ]
+                file_config=file_config,
+                array_file_config=array_file_config,
+            ))
 
         # Parse reporting config if present
         reporting_data = template.get("reporting", {})

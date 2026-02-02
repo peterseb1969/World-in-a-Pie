@@ -72,8 +72,18 @@ class FieldType(str, Enum):
     DATE = "date"
     DATETIME = "datetime"
     TERM = "term"
+    REFERENCE = "reference"
+    FILE = "file"
     OBJECT = "object"
     ARRAY = "array"
+
+
+class FileFieldConfig(BaseModel):
+    """Configuration for file reference fields."""
+
+    allowed_types: list[str] = Field(default_factory=lambda: ["*/*"])
+    max_size_mb: float = 10.0
+    multiple: bool = False
 
 
 class TemplateField(BaseModel):
@@ -88,6 +98,8 @@ class TemplateField(BaseModel):
     array_item_type: FieldType | None = None
     array_terminology_ref: str | None = None
     array_template_ref: str | None = None
+    file_config: FileFieldConfig | None = None
+    array_file_config: FileFieldConfig | None = None
 
 
 class SyncStatus(BaseModel):

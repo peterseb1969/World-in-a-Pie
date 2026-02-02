@@ -62,6 +62,7 @@ class DocumentTransformer:
         "document_id", "template_id", "template_version", "version",
         "status", "identity_hash", "created_at", "created_by",
         "updated_at", "updated_by", "data_json", "term_references_json",
+        "file_references_json",
     }
 
     def __init__(self, config: ReportingConfig | None = None):
@@ -179,6 +180,7 @@ class DocumentTransformer:
                 - identity_hash
                 - data (the actual document content)
                 - term_references
+                - file_references
                 - created_at, created_by, updated_at, updated_by
 
         Returns:
@@ -186,6 +188,7 @@ class DocumentTransformer:
         """
         data = document.get("data", {})
         term_references_list = document.get("term_references", [])
+        file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
         # Array format: [{"field_path": "gender", "term_id": "T-001"}, ...]
@@ -203,6 +206,21 @@ class DocumentTransformer:
                     term_references[base_path].append(term_id)
                 else:
                     term_references[field_path] = term_id
+
+        # Convert file_references to dict for column mapping
+        # Array format: [{"field_path": "photo", "file_id": "FILE-001", "filename": "...", "content_type": "..."}, ...]
+        file_references = {}
+        for ref in file_references_list:
+            field_path = ref.get("field_path", "")
+            if field_path:
+                # Handle array indices in field path (e.g., "attachments[0]")
+                if "[" in field_path:
+                    base_path = field_path.split("[")[0]
+                    if base_path not in file_references:
+                        file_references[base_path] = []
+                    file_references[base_path].append(ref)
+                else:
+                    file_references[field_path] = ref
 
         # Base row with system columns
         base_row = {
@@ -235,9 +253,22 @@ class DocumentTransformer:
                 if col_name not in base_row:
                     base_row[col_name] = term_id
 
+        # Add file columns for file references
+        for field_path, file_ref in file_references.items():
+            safe_field = self._safe_column_name(field_path)
+            if isinstance(file_ref, list):
+                # Multiple files - store as JSON
+                base_row[safe_field] = json.dumps(file_ref)
+            else:
+                # Single file - separate columns
+                base_row[f"{safe_field}_file_id"] = file_ref.get("file_id")
+                base_row[f"{safe_field}_filename"] = file_ref.get("filename")
+                base_row[f"{safe_field}_content_type"] = file_ref.get("content_type")
+
         # Store original JSON
         base_row["data_json"] = json.dumps(data)
         base_row["term_references_json"] = json.dumps(term_references_list)
+        base_row["file_references_json"] = json.dumps(file_references_list)
 
         # Expand arrays if configured
         rows = self._expand_arrays(base_row, data, term_references)
