@@ -270,6 +270,7 @@ load_profile() {
     log_debug "Include Dex: $WIP_INCLUDE_DEX"
     log_debug "Include Caddy: $WIP_INCLUDE_CADDY"
     log_debug "Include Mongo Express: $WIP_INCLUDE_MONGO_EXPRESS"
+    log_debug "Include MinIO: $WIP_INCLUDE_MINIO"
 }
 
 # Generate Dex configuration from template
@@ -386,21 +387,23 @@ REDIRECTS
 
     # Add remaining static config
     cat >> "$output" << 'STATICCONFIG'
-    public: false
+    public: true
 
 enablePasswordDB: true
 
+# Password hashes for dev users (bcrypt, cost 10)
+# admin123, editor123, viewer123
 staticPasswords:
   - email: "admin@wip.local"
-    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    hash: "$2b$10$BQw2e6w70bAeuJOlxq25SOlGCao22TWXJlYjEqyiHh9ytdwh026cS"
     username: "admin"
     userID: "admin-001"
   - email: "editor@wip.local"
-    hash: "$2a$10$MKzlRw.m4/6mM8k1YQPB8.zv9KljBa8GxnGHmXCPU6p.T7P6VWDDK"
+    hash: "$2b$10$6VcSivBiArWgUxrT9e/rNuWB5.JMcN/ZYHazHo5EaCRr3ISO5KJou"
     username: "editor"
     userID: "editor-001"
   - email: "viewer@wip.local"
-    hash: "$2a$10$NKmhBnGn/nYDhRz.YHPvnOMfbLvKlMj8BHZJM8M4jVS6jOmQN3a.i"
+    hash: "$2b$10$e.WStasfitEUEEE5vzBY9uSgEpKIplzvzzieBNPXKu3TWSNxUxw2i"
     username: "viewer"
     userID: "viewer-001"
 
@@ -523,6 +526,30 @@ WIP_AUTH_JWT_AUDIENCE=wip-console
 EOF
     fi
 
+    # Add MinIO config if enabled
+    if [ "$WIP_INCLUDE_MINIO" = "true" ]; then
+        cat >> "$env_file" << EOF
+
+# ============================================
+# FILE STORAGE (MinIO)
+# ============================================
+WIP_FILE_STORAGE_ENABLED=true
+WIP_FILE_STORAGE_TYPE=minio
+WIP_FILE_STORAGE_ENDPOINT=http://wip-minio:9000
+WIP_FILE_STORAGE_ACCESS_KEY=wip-minio-root
+WIP_FILE_STORAGE_SECRET_KEY=\${MINIO_ROOT_PASSWORD:-wip-minio-password}
+WIP_FILE_STORAGE_BUCKET=wip-attachments
+EOF
+    else
+        cat >> "$env_file" << EOF
+
+# ============================================
+# FILE STORAGE (Disabled)
+# ============================================
+WIP_FILE_STORAGE_ENABLED=false
+EOF
+    fi
+
     # Add console config
     cat >> "$env_file" << EOF
 
@@ -638,8 +665,8 @@ setup_storage() {
     log_step "Setting up storage directories..."
     echo "  Data directory: $WIP_DATA_DIR"
 
-    mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config}
-    echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy"
+    mkdir -p "$WIP_DATA_DIR"/{mongodb,postgres,nats,dex,caddy/data,caddy/config,minio}
+    echo "  Created subdirectories: mongodb, postgres, nats, dex, caddy, minio"
 
     # Fix Dex directory ownership for rootless Podman on Linux
     if [[ "$(uname)" != "Darwin" ]] && [ "$WIP_INCLUDE_DEX" = "true" ]; then
@@ -697,6 +724,7 @@ start_infrastructure() {
     log_step "Starting infrastructure..."
 
     local services_desc="MongoDB, PostgreSQL, NATS"
+    [ "$WIP_INCLUDE_MINIO" = "true" ] && services_desc="$services_desc, MinIO"
     [ "$WIP_INCLUDE_DEX" = "true" ] && services_desc="$services_desc, Dex"
     [ "$WIP_INCLUDE_CADDY" = "true" ] && services_desc="$services_desc, Caddy"
     [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && services_desc="$services_desc, Mongo Express"
@@ -709,6 +737,7 @@ start_infrastructure() {
     log_info "Waiting for infrastructure containers..."
 
     local containers="wip-mongodb wip-postgres wip-nats"
+    [ "$WIP_INCLUDE_MINIO" = "true" ] && containers="$containers wip-minio"
     [ "$WIP_INCLUDE_DEX" = "true" ] && containers="$containers wip-dex"
     [ "$WIP_INCLUDE_CADDY" = "true" ] && containers="$containers wip-caddy"
     [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && containers="$containers wip-mongo-express"
@@ -723,6 +752,21 @@ start_infrastructure() {
     if [ "$all_healthy" = false ]; then
         log_error "Infrastructure failed to start. Cannot continue."
         exit 1
+    fi
+
+    # Initialize MinIO bucket if enabled
+    if [ "$WIP_INCLUDE_MINIO" = "true" ]; then
+        log_info "Initializing MinIO bucket..."
+        # Wait a bit for MinIO to be fully ready
+        sleep 2
+        # Create the bucket using mc (MinIO client) inside the container
+        podman exec wip-minio mc alias set local http://localhost:9000 wip-minio-root "${MINIO_ROOT_PASSWORD:-wip-minio-password}" 2>/dev/null || true
+        podman exec wip-minio mc mb local/wip-attachments --ignore-existing 2>/dev/null || true
+        if podman exec wip-minio mc ls local/wip-attachments >/dev/null 2>&1; then
+            log_info "  MinIO bucket 'wip-attachments' ready"
+        else
+            log_warn "  Could not verify MinIO bucket - may need manual setup"
+        fi
     fi
 
     echo ""
@@ -900,6 +944,7 @@ print_status() {
 
     echo "Database access:"
     [ "$WIP_INCLUDE_MONGO_EXPRESS" = "true" ] && echo "  Mongo Express:  http://localhost:8081 (admin/admin)"
+    [ "$WIP_INCLUDE_MINIO" = "true" ] && echo "  MinIO Console:  http://localhost:9001 (wip-minio-root/wip-minio-password)"
     echo "  MongoDB CLI:    podman exec -it wip-mongodb mongo"
     echo "  PostgreSQL:     podman exec -it wip-postgres psql -U wip -d wip_reporting"
     echo ""
