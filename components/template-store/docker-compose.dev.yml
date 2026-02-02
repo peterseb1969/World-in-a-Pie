@@ -2,6 +2,7 @@
 # Requires: docker-compose -f ../../docker-compose.infra.yml up -d
 #           Registry service running and WIP namespaces initialized
 #           Def-Store service running (optional, for terminology validation)
+#           Run setup.sh first to generate .env with auth configuration
 version: "3.8"
 
 services:
@@ -12,7 +13,10 @@ services:
     container_name: wip-template-store-dev
     ports:
       - "8003:8003"
+    env_file:
+      - ../../.env
     environment:
+      # Service-specific configuration
       - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_template_store_dev
       - REGISTRY_URL=http://wip-registry-dev:8001
@@ -24,14 +28,8 @@ services:
       - NATS_URL=nats://wip-nats:4222
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
-      # Authentication - dual mode allows both API keys and JWT tokens
-      - WIP_AUTH_MODE=dual
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
       - WIP_AUTH_API_KEYS_FILE=/app/config/api-keys.json
-      # Issuer URL matches what's in the token (override for Pi: https://hostname/dex)
-      - WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
-      # JWKS fetched via container network (wip-dex is on the same network)
-      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
-      - WIP_AUTH_JWT_AUDIENCE=wip-console
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro

@@ -3,6 +3,7 @@
 #           Registry service running and WIP namespaces initialized
 #           Template Store service running
 #           Def-Store service running (optional, for terminology validation)
+#           Run setup.sh first to generate .env with auth configuration
 version: "3.8"
 
 services:
@@ -13,7 +14,10 @@ services:
     container_name: wip-document-store-dev
     ports:
       - "8004:8004"
+    env_file:
+      - ../../.env
     environment:
+      # Service-specific configuration
       - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_document_store_dev
       - REGISTRY_URL=http://wip-registry-dev:8001
@@ -25,20 +29,9 @@ services:
       - NATS_URL=nats://wip-nats:4222
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
-      # Authentication - dual mode allows both API keys and JWT tokens
-      - WIP_AUTH_MODE=dual
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
       - WIP_AUTH_API_KEYS_FILE=/app/config/api-keys.json
-      # Issuer URL matches what's in the token (override for Pi: https://hostname/dex)
-      - WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
-      # JWKS fetched via container network (wip-dex is on the same network)
-      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
-      - WIP_AUTH_JWT_AUDIENCE=wip-console
-      # File Storage (MinIO)
-      - WIP_FILE_STORAGE_ENABLED=true
-      - WIP_FILE_STORAGE_ENDPOINT=http://wip-minio:9000
-      - WIP_FILE_STORAGE_ACCESS_KEY=wip-minio-root
-      - WIP_FILE_STORAGE_SECRET_KEY=wip-minio-password
-      - WIP_FILE_STORAGE_BUCKET=wip-files
+      # File storage config (WIP_FILE_STORAGE_*) comes from .env via env_file
     volumes:
       - ./src:/app/src:ro
       - ./tests:/app/tests:ro

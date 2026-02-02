@@ -1,5 +1,6 @@
 # Reporting Sync Service - Development
 # Requires: docker-compose.infra.yml (MongoDB, PostgreSQL, NATS)
+#           Run setup.sh first to generate .env with auth configuration
 version: "3.8"
 
 services:
@@ -10,7 +11,10 @@ services:
     container_name: wip-reporting-sync-dev
     ports:
       - "8005:8005"
+    env_file:
+      - ../../.env
     environment:
+      # Service-specific configuration
       - DEBUG=true
       # NATS - use container name from infra
       - NATS_URL=nats://wip-nats:4222
@@ -27,14 +31,8 @@ services:
       # Def-Store (for terminology/term search)
       - DEF_STORE_URL=http://wip-def-store-dev:8002
       - API_KEY=dev_master_key_for_testing
-      # Authentication - dual mode allows both API keys and JWT tokens
-      - WIP_AUTH_MODE=dual
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
       - WIP_AUTH_API_KEYS_FILE=/app/config/api-keys.json
-      # Issuer URL matches what's in the token (override for Pi: https://hostname/dex)
-      - WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
-      # JWKS fetched via container network (wip-dex is on the same network)
-      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
-      - WIP_AUTH_JWT_AUDIENCE=wip-console
     volumes:
       - ./src:/app/src:ro
       - ../../libs/wip-auth:/app/libs/wip-auth:ro

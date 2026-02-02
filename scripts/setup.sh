@@ -284,16 +284,27 @@ generate_dex_config() {
 
     local output="$PROJECT_ROOT/config/dex/config.yaml"
 
-    # Determine issuer URL based on network mode
+    # Determine issuer URL based on network mode and Caddy
+    # IMPORTANT: The issuer URL is what goes into JWT tokens and must match
+    # what the browser accesses. When Caddy is enabled, that's https://host:port/dex
+    #
+    # For "both" mode, we use the hostname because:
+    # - Network access is the primary use case
+    # - Localhost users can access via https://hostname:port (resolves to local machine)
     local issuer
-    case "$NETWORK" in
-        localhost)
-            issuer="http://localhost:5556/dex"
-            ;;
-        remote|both)
-            issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
-            ;;
-    esac
+    if [ "$WIP_INCLUDE_CADDY" = "true" ]; then
+        case "$NETWORK" in
+            localhost)
+                issuer="https://localhost:${HTTPS_PORT}/dex"
+                ;;
+            remote|both)
+                issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
+                ;;
+        esac
+    else
+        # No Caddy - direct HTTP access to Dex
+        issuer="http://localhost:5556/dex"
+    fi
 
     # Generate config directly using heredoc (avoids sed multi-line issues)
     cat > "$output" << DEXEOF
@@ -467,16 +478,25 @@ generate_env_file() {
     local env_file="$PROJECT_ROOT/.env"
 
     # Determine JWT issuer URL
+    # IMPORTANT: When Caddy is enabled, browser accesses Dex via Caddy at https://host:PORT/dex
+    # The issuer URL must match what the browser sees (and what goes into tokens)
+    # For "both" mode, we use the hostname so network access works
     local jwt_issuer
     if [ "$WIP_INCLUDE_DEX" = "true" ]; then
-        case "$NETWORK" in
-            localhost)
-                jwt_issuer="http://localhost:5556/dex"
-                ;;
-            remote|both)
-                jwt_issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
-                ;;
-        esac
+        if [ "$WIP_INCLUDE_CADDY" = "true" ]; then
+            # Caddy enabled - use HTTPS through Caddy
+            case "$NETWORK" in
+                localhost)
+                    jwt_issuer="https://localhost:${HTTPS_PORT}/dex"
+                    ;;
+                remote|both)
+                    jwt_issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
+                    ;;
+            esac
+        else
+            # No Caddy - access Dex directly via HTTP
+            jwt_issuer="http://localhost:5556/dex"
+        fi
     fi
 
     # Determine OIDC enabled state

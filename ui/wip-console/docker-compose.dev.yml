@@ -4,12 +4,13 @@ version: '3.8'
 # and want to join the same network.
 #
 # Usage:
-#   1. First start the WIP infrastructure (from WorldInPie root):
+#   1. First run setup.sh to generate .env with proper configuration
+#   2. Start the WIP infrastructure (from WorldInPie root):
 #      podman-compose -f docker-compose.infra.yml up -d
 #      cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
 #      cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
 #
-#   2. Then start this UI (creates/joins the shared network):
+#   3. Then start this UI (creates/joins the shared network):
 #      podman-compose -f docker-compose.dev.yml up -d
 #
 # The UI will connect to def-store and template-store via the shared network.
@@ -27,25 +28,16 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+    env_file:
+      - ../../.env
     environment:
       - NODE_ENV=development
-      # Connect to def-store container by name on shared network
+      # Connect to backend services via container names on shared network
       - VITE_DEF_STORE_TARGET=http://wip-def-store-dev:8002
-      # Connect to template-store container by name on shared network
       - VITE_TEMPLATE_STORE_TARGET=http://wip-template-store-dev:8003
-      # Connect to document-store container by name on shared network
       - VITE_DOCUMENT_STORE_TARGET=http://wip-document-store-dev:8004
-      # Connect to reporting-sync container by name on shared network
       - VITE_REPORTING_SYNC_TARGET=http://wip-reporting-sync-dev:8005
-      # Dex target for Vite proxy (container-to-container)
-      - VITE_DEX_TARGET=http://wip-dex:5556
-      # OIDC configuration - uses /dex proxy to avoid CORS issues
-      # Override these in .env or environment if needed
-      - VITE_OIDC_ENABLED=true
-      - VITE_OIDC_AUTHORITY=/dex
-      - VITE_OIDC_CLIENT_ID=wip-console
-      - VITE_OIDC_CLIENT_SECRET=wip-console-secret
-      - VITE_OIDC_PROVIDER_NAME=Dex
+      # OIDC config (VITE_OIDC_*, VITE_DEX_TARGET) comes from .env via env_file
     networks:
       - wip-network
 
