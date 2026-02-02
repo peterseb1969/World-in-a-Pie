@@ -1,5 +1,5 @@
-# WIP Shared Infrastructure - Raspberry Pi 4
-# Optimized for ARMv8.0 (Pi 4) with limited RAM
+# WIP Shared Infrastructure - Raspberry Pi
+# Optimized for Pi 4/5 deployments
 #
 # Key differences from standard infra:
 #   - MongoDB 4.4.18 (last version supporting ARMv8.0, Pi 4's Cortex-A72)
@@ -10,6 +10,7 @@
 #   - MongoDB (document store): localhost:27017
 #   - PostgreSQL (reporting store): localhost:5432 (wip/wip_dev_password)
 #   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
+#   - MinIO (file storage): S3 API localhost:9000, Console http://localhost:9001
 #   - Dex (OIDC provider): internal only (via Caddy)
 #   - Caddy (reverse proxy): https://localhost:8443, http://localhost:8080
 #
@@ -94,6 +95,31 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # ===================
+  # File Storage (S3-compatible)
+  # ===================
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: wip-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    environment:
+      MINIO_ROOT_USER: wip-minio-root
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-wip-minio-password}
+    volumes:
+      - ${WIP_DATA_DIR:-./data}/minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     networks:
       - wip-network
     restart: unless-stopped
