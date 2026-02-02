@@ -8,6 +8,7 @@ import DatePicker from 'primevue/datepicker'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
+import FileField from './FileField.vue'
 import { useDocumentStore } from '@/stores'
 import type { FieldDefinition, Term } from '@/types'
 
@@ -187,6 +188,7 @@ function getDefaultValueForType(type: string): unknown {
     case 'datetime': return null
     case 'term': return null
     case 'reference': return null
+    case 'file': return null
     case 'object': return {}
     case 'array': return []
     default: return null
@@ -206,6 +208,8 @@ const arrayItemField = computed((): FieldDefinition => ({
   target_templates: props.field.target_templates,
   target_terminologies: props.field.target_terminologies,
   version_strategy: props.field.version_strategy,
+  // Pass through file config for array items
+  file_config: props.field.array_file_config,
   metadata: {}
 }))
 
@@ -374,6 +378,17 @@ onMounted(() => {
           </small>
         </div>
       </div>
+    </template>
+
+    <!-- File field -->
+    <template v-else-if="field.type === 'file'">
+      <FileField
+        :field="field"
+        :modelValue="modelValue as string | string[] | null"
+        @update:modelValue="(v) => emit('update:modelValue', v)"
+        :disabled="disabled"
+        :errors="errors"
+      />
     </template>
 
     <!-- Object field (nested) -->

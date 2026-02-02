@@ -1,0 +1,221 @@
+# OIDC Configuration Guide
+
+This document describes the correct OIDC/Dex configuration for WIP deployments.
+
+## Key Learnings
+
+### 1. Podman-Compose Does NOT Expand `${VAR:-default}` Syntax
+
+Unlike docker-compose, podman-compose passes `${VAR:-default}` literally to containers instead of expanding them. **Always use explicit values in docker-compose files**, not shell variable substitution with defaults.
+
+```yaml
+# WRONG - podman-compose passes literal "${WIP_AUTH_MODE:-dual}"
+- WIP_AUTH_MODE=${WIP_AUTH_MODE:-dual}
+
+# CORRECT - explicit value
+- WIP_AUTH_MODE=dual
+```
+
+### 2. JWT Issuer URL Must Match Exactly
+
+The `iss` claim in the JWT token must **exactly match** what backend services validate against. Dex sets the `iss` claim based on its configured `issuer` value.
+
+| Access Method | Dex Issuer Config | Backend JWT Issuer |
+|---------------|-------------------|-------------------|
+| localhost via Caddy | `https://localhost:8443/dex` | `https://localhost:8443/dex` |
+| Remote via Caddy | `https://hostname:8443/dex` | `https://hostname:8443/dex` |
+| Direct to Dex (no Caddy) | `http://localhost:5556/dex` | `http://localhost:5556/dex` |
+
+### 3. JWKS URI Uses Internal Container Network
+
+While the issuer URL must match what the browser/token sees, the JWKS URI (for fetching public keys) should use the internal container network:
+
+```yaml
+# Issuer - must match token (browser-facing URL)
+WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
+
+# JWKS - internal container network (service-to-service)
+WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+```
+
+### 4. Password Hashes Must Be Valid bcrypt
+
+Dex static passwords use bcrypt hashes. The hashes must be generated correctly:
+
+```bash
+# Generate bcrypt hash (Python)
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'password123', bcrypt.gensalt(rounds=10)).decode())"
+```
+
+**Default dev users:**
+| Email | Password | bcrypt Hash |
+|-------|----------|-------------|
+| admin@wip.local | admin123 | `$2b$10$BQw2e6w70bAeuJOlxq25SOlGCao22TWXJlYjEqyiHh9ytdwh026cS` |
+| editor@wip.local | editor123 | `$2b$10$6VcSivBiArWgUxrT9e/rNuWB5.JMcN/ZYHazHo5EaCRr3ISO5KJou` |
+| viewer@wip.local | viewer123 | `$2b$10$e.WStasfitEUEEE5vzBY9uSgEpKIplzvzzieBNPXKu3TWSNxUxw2i` |
+
+### 5. Public Client for Browser OIDC
+
+For browser-based OIDC with PKCE, the client must be configured as public:
+
+```yaml
+staticClients:
+  - id: wip-console
+    public: true  # Required for authorization code flow with PKCE
+```
+
+---
+
+## Configuration by Deployment Type
+
+### Localhost Development (via Caddy)
+
+Access: `https://localhost:8443`
+
+**Dex config (`config/dex/config.yaml`):**
+```yaml
+issuer: https://localhost:8443/dex
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins:
+    - http://localhost:3000
+    - https://localhost:8443
+    - https://localhost
+
+staticClients:
+  - id: wip-console
+    name: WIP Console
+    secret: wip-console-secret
+    redirectURIs:
+      - http://localhost:3000/auth/callback
+      - https://localhost:8443/auth/callback
+      - https://localhost/auth/callback
+    public: true
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: "admin@wip.local"
+    hash: "$2b$10$BQw2e6w70bAeuJOlxq25SOlGCao22TWXJlYjEqyiHh9ytdwh026cS"
+    username: "admin"
+    userID: "admin-001"
+  # ... other users
+
+oauth2:
+  skipApprovalScreen: true
+```
+
+**Backend services:**
+```yaml
+environment:
+  - WIP_AUTH_MODE=dual
+  - WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
+  - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+  - WIP_AUTH_JWT_AUDIENCE=wip-console
+```
+
+**WIP Console:**
+```yaml
+environment:
+  - VITE_OIDC_ENABLED=true
+  - VITE_OIDC_AUTHORITY=/dex
+  - VITE_OIDC_CLIENT_ID=wip-console
+  - VITE_OIDC_CLIENT_SECRET=wip-console-secret
+  - VITE_OIDC_PROVIDER_NAME=Dex
+```
+
+---
+
+### Remote Deployment (Pi or Server via Caddy)
+
+Access: `https://hostname:8443` (e.g., `https://wip-pi.local:8443`)
+
+**Dex config (`config/dex/config.yaml`):**
+```yaml
+issuer: https://wip-pi.local:8443/dex  # Replace with actual hostname
+
+web:
+  http: 0.0.0.0:5556
+  allowedOrigins:
+    - https://wip-pi.local:8443
+
+staticClients:
+  - id: wip-console
+    name: WIP Console
+    secret: wip-console-secret
+    redirectURIs:
+      - https://wip-pi.local:8443/auth/callback
+    public: true
+
+# ... rest same as localhost
+```
+
+**Backend services:**
+```yaml
+environment:
+  - WIP_AUTH_MODE=dual
+  - WIP_AUTH_JWT_ISSUER_URL=https://wip-pi.local:8443/dex  # Match Dex issuer
+  - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+  - WIP_AUTH_JWT_AUDIENCE=wip-console
+```
+
+---
+
+### Minimal Deployment (No Caddy, API Keys Only)
+
+Access: `http://localhost:3000` (direct to services)
+
+**No Dex needed.** Backend services use API key authentication only:
+
+```yaml
+environment:
+  - WIP_AUTH_MODE=api_key_only
+  - WIP_AUTH_API_KEYS_FILE=/app/config/api-keys.json
+```
+
+**WIP Console:**
+```yaml
+environment:
+  - VITE_OIDC_ENABLED=false
+```
+
+---
+
+## Files That Should Be Generated (Not Committed)
+
+These files are deployment-specific and should be generated by `setup.sh`:
+
+| File | Reason |
+|------|--------|
+| `config/dex/config.yaml` | Contains hostname-specific issuer URL |
+| `config/caddy/Caddyfile` | Contains hostname-specific routes |
+| `.env` or `.env.local` | Contains deployment-specific overrides |
+
+These should be in `.gitignore` with templates committed instead:
+- `config/dex/config.yaml.template`
+- `config/caddy/Caddyfile.template`
+
+---
+
+## Troubleshooting
+
+### "Session expired" after login
+- Check JWT issuer URL matches between Dex config and backend services
+- Run: `podman exec wip-def-store-dev printenv | grep WIP_AUTH`
+
+### "Invalid email address and password"
+- Regenerate bcrypt hashes for static passwords
+- Restart Dex after config change: `podman restart wip-dex`
+
+### "unsupported_grant_type: password"
+- Use authorization code flow with PKCE, not password grant
+- Ensure UI calls `loginWithOidc()` (redirect), not `loginWithPassword()`
+
+### Login redirects to wrong hostname
+- Check Dex issuer URL matches how you access the app
+- Browser URL and Dex issuer must use same hostname
+
+### CORS errors
+- Add browser origin to Dex `allowedOrigins`
+- Ensure Caddy proxies `/dex/*` correctly

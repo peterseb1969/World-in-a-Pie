@@ -325,8 +325,8 @@ Even though we're implementing only the Standard profile initially, the architec
 
 | Priority | Task | Description |
 |----------|------|-------------|
-| 1 | **File Upload (CSV/XLSX)** | Upload documents via file instead of JSON API |
-| 2 | **Binary File Storage** | Store files (images, PDFs) with document manifests via MinIO |
+| 1 | **Binary File Storage** | 🔄 In Progress - Phase 1 complete, implementing file entities |
+| 2 | **File Upload (CSV/XLSX)** | Upload documents via file instead of JSON API |
 | 3 | **BI Dashboard Container** | Metabase for SQL analytics on PostgreSQL reporting data |
 | 4 | **Referential Integrity** | ✅ Complete (API, UI, startup validation, protection) |
 | 5 | **Cross-Entity Audit Dashboard** | Unified timeline + data quality section |
@@ -397,49 +397,135 @@ Response:
 - Dry-run mode to preview without committing
 - Progress tracking for large files
 
-#### 3. Binary File Storage (MinIO)
+#### 3. Binary File Storage (MinIO) - IN PROGRESS
 
-**Goal:** Store binary files (images, PDFs, attachments) alongside document metadata.
+**Status:** Phase 1 Complete (Infrastructure), Phase 2-9 Pending
+
+**Goal:** Store binary files (images, PDFs, attachments) as **first-class entities** with Registry IDs (FILE-XXXXXX), referenced by documents like any other reference type.
 
 **Architecture:**
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Document with Attachments                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│   Document Store (MongoDB)           MinIO (S3-compatible)       │
-│   ─────────────────────────         ──────────────────────       │
-│   {                                  bucket: wip-attachments     │
-│     "document_id": "...",            ├── doc-123/                │
-│     "data": {...},                   │   ├── photo.jpg           │
-│     "attachments": [                 │   └── report.pdf          │
-│       {                              └── doc-456/                │
-│         "name": "photo.jpg",             └── scan.png            │
-│         "content_type": "image/jpeg",                            │
-│         "size": 102400,                                          │
-│         "storage_key": "doc-123/photo.jpg"                       │
-│       }                                                          │
-│     ]                                                            │
-│   }                                                              │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        FILES AS FIRST-CLASS ENTITIES                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│   Registry                    Document Store           MinIO                 │
+│   ────────                    ──────────────           ─────                 │
+│   wip-files namespace         files collection         wip-attachments       │
+│   FILE-000001                 {                        bucket                │
+│   FILE-000002                   file_id: FILE-000001   ├── FILE-000001       │
+│   ...                           filename: scan.jpg     ├── FILE-000002       │
+│                                 content_type: ...      └── ...               │
+│                                 size_bytes: ...                              │
+│                                 storage_key: ...                             │
+│                                 status: active|orphan                        │
+│                                 metadata: {...}                              │
+│                               }                                              │
+│                                                                              │
+│   Document (references file like any other reference)                        │
+│   ─────────────────────────────────────────────────────                     │
+│   {                                                                          │
+│     document_id: "...",                                                      │
+│     data: { scan_image: "FILE-000001" },    ← Field value is file ID        │
+│     file_references: [                       ← Resolved reference metadata   │
+│       { field_path: "scan_image", file_id: "FILE-000001", ... }             │
+│     ]                                                                        │
+│   }                                                                          │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Infrastructure:**
-- Add MinIO container (~200MB RAM) to docker-compose.infra.yml
-- S3-compatible API for file operations
-- Pre-signed URLs for direct upload/download
+**Key Benefits:**
+- Files can be shared across documents (same logo for all employees)
+- Orphan detection: files not referenced by any active document
+- Consistent with WIP patterns (entities with IDs, never delete)
+- Bulk upload files first, then create documents referencing them
 
-**Template Configuration:**
+**Infrastructure (Phase 1 Complete):**
+- MinIO container added to docker-compose.infra.yml
+- S3 API: localhost:9000, Console: localhost:9001
+- Bucket: wip-attachments (auto-created on startup)
+- Registry namespace: wip-files (FILE-XXXXXX IDs)
+- Profile support: enabled for mac, pi-standard, pi-large; disabled for pi-minimal, dev-minimal
+
+**Environment Variables:**
+```bash
+WIP_FILE_STORAGE_ENABLED=true
+WIP_FILE_STORAGE_TYPE=minio
+WIP_FILE_STORAGE_ENDPOINT=http://wip-minio:9000
+WIP_FILE_STORAGE_ACCESS_KEY=wip-minio-root
+WIP_FILE_STORAGE_SECRET_KEY=wip-minio-password
+WIP_FILE_STORAGE_BUCKET=wip-attachments
+```
+
+**Template Configuration (Phase 3):**
 ```json
 {
   "code": "MEDICAL_RECORD",
   "fields": [
     {"name": "patient_id", "type": "string"},
-    {"name": "scan_image", "type": "attachment", "allowed_types": ["image/*", "application/pdf"]}
+    {
+      "name": "scan_image",
+      "type": "file",
+      "file_config": {
+        "allowed_types": ["image/*", "application/pdf"],
+        "max_size_mb": 10,
+        "multiple": false
+      }
+    }
   ]
 }
 ```
+
+**Implementation Phases:**
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Infrastructure (MinIO + Registry namespace) | ✅ Complete |
+| 2 | File Entity Model (Beanie document, Pydantic models) | Pending |
+| 3 | Template Field Type (add `file` to FieldType enum) | Pending |
+| 4 | File Storage Service (S3 client, FileService) | Pending |
+| 5 | File API Endpoints (upload, download, list, orphans) | Pending |
+| 6 | Document Validation Integration (validate file refs) | Pending |
+| 7 | UI Implementation (FileUpload component) | Pending |
+| 8 | Reporting Sync (file fields in PostgreSQL) | Pending |
+| 9 | Data Quality / Integrity (orphan detection, consistency) | Pending |
+
+**File Entity Model (Phase 2):**
+```python
+class FileStatus(str, Enum):
+    ORPHAN = "orphan"      # Uploaded but not referenced by any document
+    ACTIVE = "active"      # Referenced by at least one active document
+    INACTIVE = "inactive"  # Soft-deleted
+
+class File(Document):
+    file_id: str           # Registry ID (FILE-XXXXXX)
+    filename: str
+    content_type: str
+    size_bytes: int
+    checksum: str          # SHA-256 of content
+    storage_key: str       # Key in MinIO (= file_id)
+    metadata: FileMetadata # description, tags, category, custom
+    status: FileStatus
+    reference_count: int   # Number of active documents referencing
+    uploaded_at: datetime
+    uploaded_by: str
+```
+
+**API Endpoints (Phase 5):**
+```
+POST   /api/document-store/files              Upload file → FILE-XXXXXX
+GET    /api/document-store/files              List files (filter by status, tags, etc.)
+GET    /api/document-store/files/{file_id}    Get file metadata
+PATCH  /api/document-store/files/{file_id}    Update file metadata
+GET    /api/document-store/files/{file_id}/download   Get pre-signed download URL
+DELETE /api/document-store/files/{file_id}    Soft-delete file
+GET    /api/document-store/files/orphans      Find unreferenced files
+```
+
+**Two Upload Flows:**
+1. **Separate (flexible):** POST /files → FILE-000001, then POST /documents with file_id in data
+2. **Combined (convenient):** POST /files/with-document → upload + create document in one request
 
 #### 4. BI Dashboard Container
 
@@ -1757,6 +1843,7 @@ podman-compose -f docker-compose.infra.yml up -d
 #   CLI access: podman exec -it wip-postgres psql -U wip -d wip_reporting
 # NATS (message queue): localhost:4222
 # NATS Monitoring: http://localhost:8222
+# MinIO (file storage): S3 API localhost:9000, Console http://localhost:9001 (wip-minio-root/wip-minio-password)
 
 # 2. Start Registry service
 cd components/registry
@@ -2107,3 +2194,4 @@ The Registry service manages these WIP-internal namespaces:
 | `wip-terms` | Prefixed (T-) | Term IDs | Def-Store |
 | `wip-templates` | Prefixed (TPL-) | Template IDs | Template Store |
 | `wip-documents` | UUID7 | Document IDs | Document Store |
+| `wip-files` | Prefixed (FILE-) | File attachment IDs | Document Store |

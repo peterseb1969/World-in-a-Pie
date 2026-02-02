@@ -2,6 +2,7 @@
 export * from './terminology'
 export * from './template'
 export * from './document'
+export * from './file'
 
 // =============================================================================
 // SHARED TYPES

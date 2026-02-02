@@ -292,7 +292,7 @@ async def initialize_wip_namespaces(
     Initialize the WIP internal namespaces.
 
     This creates the default, wip-terminologies, wip-terms, wip-templates,
-    and wip-documents namespaces if they don't exist.
+    wip-documents, and wip-files namespaces if they don't exist.
     """
     responses = []
 

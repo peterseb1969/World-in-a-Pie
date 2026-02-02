@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { UserManager, User } from 'oidc-client-ts'
 import { oidcConfig, AUTH_STORAGE_KEYS, type AuthMode } from '@/config/auth'
-import { defStoreClient, templateStoreClient, documentStoreClient } from '@/api/client'
+import { defStoreClient, templateStoreClient, documentStoreClient, fileStoreClient } from '@/api/client'
 
 // Simple token storage for password grant flow
 interface PasswordGrantUser {
@@ -25,6 +25,7 @@ export const useAuthStore = defineStore('auth', () => {
   const oidcUser = ref<User | null>(null)
   const passwordGrantUser = ref<PasswordGrantUser | null>(null)
   const isLoading = ref(false)
+  const isInitialized = ref(false)
   const error = ref<string | null>(null)
 
   // OIDC UserManager (lazy initialized) - kept for redirect flow if needed
@@ -122,69 +123,77 @@ export const useAuthStore = defineStore('auth', () => {
       defStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       templateStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       documentStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
+      fileStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
     } else if (authMode.value === 'oidc') {
       const token = oidcUser.value?.access_token || passwordGrantUser.value?.access_token
       if (token) {
         defStoreClient.setAuth({ type: 'bearer', value: token })
         templateStoreClient.setAuth({ type: 'bearer', value: token })
         documentStoreClient.setAuth({ type: 'bearer', value: token })
+        fileStoreClient.setAuth({ type: 'bearer', value: token })
       } else {
         defStoreClient.setAuth(null)
         templateStoreClient.setAuth(null)
         documentStoreClient.setAuth(null)
+        fileStoreClient.setAuth(null)
       }
     } else {
       defStoreClient.setAuth(null)
       templateStoreClient.setAuth(null)
       documentStoreClient.setAuth(null)
+      fileStoreClient.setAuth(null)
     }
   }
 
   // Initialize from storage
   async function initialize() {
-    const storedMode = localStorage.getItem(AUTH_STORAGE_KEYS.AUTH_MODE) as AuthMode | null
-    const storedApiKey = localStorage.getItem(AUTH_STORAGE_KEYS.API_KEY)
-    const storedPasswordGrantUser = localStorage.getItem('wip-console-password-grant-user')
+    try {
+      const storedMode = localStorage.getItem(AUTH_STORAGE_KEYS.AUTH_MODE) as AuthMode | null
+      const storedApiKey = localStorage.getItem(AUTH_STORAGE_KEYS.API_KEY)
+      const storedPasswordGrantUser = localStorage.getItem('wip-console-password-grant-user')
 
-    if (storedMode === 'api_key' && storedApiKey) {
-      authMode.value = 'api_key'
-      apiKey.value = storedApiKey
-      updateClients()
-    } else if (storedMode === 'oidc') {
-      // Try to restore password grant session first
-      if (storedPasswordGrantUser) {
-        try {
-          const user = JSON.parse(storedPasswordGrantUser) as PasswordGrantUser
-          if (user.expires_at > Date.now() / 1000) {
-            authMode.value = 'oidc'
-            passwordGrantUser.value = user
-            updateClients()
-            return
-          } else {
-            // Token expired
+      if (storedMode === 'api_key' && storedApiKey) {
+        authMode.value = 'api_key'
+        apiKey.value = storedApiKey
+        updateClients()
+      } else if (storedMode === 'oidc') {
+        // Try to restore password grant session first
+        if (storedPasswordGrantUser) {
+          try {
+            const user = JSON.parse(storedPasswordGrantUser) as PasswordGrantUser
+            if (user.expires_at > Date.now() / 1000) {
+              authMode.value = 'oidc'
+              passwordGrantUser.value = user
+              updateClients()
+              return
+            } else {
+              // Token expired
+              localStorage.removeItem('wip-console-password-grant-user')
+            }
+          } catch (err) {
+            console.error('[Auth] Failed to restore password grant session:', err)
             localStorage.removeItem('wip-console-password-grant-user')
           }
-        } catch (err) {
-          console.error('[Auth] Failed to restore password grant session:', err)
-          localStorage.removeItem('wip-console-password-grant-user')
         }
-      }
 
-      // Try redirect flow session
-      try {
-        const user = await getUserManager().getUser()
-        if (user && !user.expired) {
-          authMode.value = 'oidc'
-          oidcUser.value = user
-          updateClients()
-        } else {
-          // Session expired, clear storage
+        // Try redirect flow session
+        try {
+          const user = await getUserManager().getUser()
+          if (user && !user.expired) {
+            authMode.value = 'oidc'
+            oidcUser.value = user
+            updateClients()
+          } else {
+            // Session expired, clear storage
+            localStorage.removeItem(AUTH_STORAGE_KEYS.AUTH_MODE)
+          }
+        } catch (err) {
+          console.error('[Auth] Failed to restore OIDC session:', err)
           localStorage.removeItem(AUTH_STORAGE_KEYS.AUTH_MODE)
         }
-      } catch (err) {
-        console.error('[Auth] Failed to restore OIDC session:', err)
-        localStorage.removeItem(AUTH_STORAGE_KEYS.AUTH_MODE)
       }
+    } finally {
+      isInitialized.value = true
     }
   }
 
@@ -369,6 +378,7 @@ export const useAuthStore = defineStore('auth', () => {
     oidcUser,
     passwordGrantUser,
     isLoading,
+    isInitialized,
     error,
 
     // Computed

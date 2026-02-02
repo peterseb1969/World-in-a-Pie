@@ -93,6 +93,13 @@ class Document(BeanieDocument):
         description="Resolved references for reference type fields"
     )
 
+    # File references - resolved file IDs for file fields
+    # Array format: [{"field_path": "scan_image", "file_id": "FILE-000001", "filename": "...", ...}, ...]
+    file_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved file references for file fields"
+    )
+
     # Lifecycle
     status: DocumentStatus = Field(
         default=DocumentStatus.ACTIVE,
@@ -167,6 +174,12 @@ class Document(BeanieDocument):
             IndexModel(
                 [("references.resolved.terminology_id", 1)],
                 name="references_terminology_id_idx",
+                sparse=True
+            ),
+            # File reference reverse lookups (find documents referencing a file)
+            IndexModel(
+                [("file_references.file_id", 1)],
+                name="file_references_file_id_idx",
                 sparse=True
             ),
         ]

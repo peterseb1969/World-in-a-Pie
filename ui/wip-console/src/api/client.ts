@@ -41,6 +41,15 @@ import type {
   DocumentBulkOperationResponse,
   TableViewResponse,
   TableViewParams,
+  // File types
+  FileEntity,
+  FileListResponse,
+  FileDownloadResponse,
+  UpdateFileMetadataRequest,
+  FileBulkDeleteRequest,
+  FileBulkDeleteResponse,
+  FileIntegrityResponse,
+  FileQueryParams,
   // Shared types
   ApiError
 } from '@/types'
@@ -97,13 +106,18 @@ abstract class BaseApiClient {
         // Handle auth errors (401 Unauthorized, 403 Forbidden)
         if (status === 401 || status === 403) {
           console.error(`[API] Auth error (${status}):`, message)
-          // Clear auth and trigger redirect via handler
-          this.auth = null
-          if (onAuthError) {
-            onAuthError()
+          // Only trigger auth error handler if we had auth configured
+          // (i.e., session expired, not just unauthenticated request)
+          if (this.auth !== null) {
+            this.auth = null
+            if (onAuthError) {
+              onAuthError()
+            }
+            // Return a user-friendly message
+            return Promise.reject(new Error('Session expired. Please log in again.'))
           }
-          // Return a user-friendly message without showing error toast
-          return Promise.reject(new Error('Session expired. Please log in again.'))
+          // If no auth was set, just return the error without triggering logout
+          return Promise.reject(new Error(message || 'Authentication required'))
         }
 
         return Promise.reject(new Error(message))
@@ -475,6 +489,142 @@ class DocumentStoreClient extends BaseApiClient {
 }
 
 // =============================================================================
+// FILE-STORE CLIENT (File Storage)
+// =============================================================================
+
+class FileStoreClient extends BaseApiClient {
+  constructor() {
+    super('/api/document-store/files')
+  }
+
+  // ===========================================================================
+  // FILE ENDPOINTS
+  // ===========================================================================
+
+  async uploadFile(
+    file: File,
+    metadata?: {
+      description?: string
+      tags?: string[]
+      category?: string
+      allowed_templates?: string[]
+    }
+  ): Promise<FileEntity> {
+    const formData = new FormData()
+    formData.append('file', file)
+
+    if (metadata?.description) {
+      formData.append('description', metadata.description)
+    }
+    if (metadata?.tags && metadata.tags.length > 0) {
+      formData.append('tags', metadata.tags.join(','))
+    }
+    if (metadata?.category) {
+      formData.append('category', metadata.category)
+    }
+    if (metadata?.allowed_templates && metadata.allowed_templates.length > 0) {
+      formData.append('allowed_templates', metadata.allowed_templates.join(','))
+    }
+
+    const response = await this.client.post<FileEntity>('', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+    return response.data
+  }
+
+  async listFiles(params?: FileQueryParams): Promise<FileListResponse> {
+    const response = await this.client.get<FileListResponse>('', { params })
+    return response.data
+  }
+
+  async getFile(fileId: string): Promise<FileEntity> {
+    const response = await this.client.get<FileEntity>(`/${fileId}`)
+    return response.data
+  }
+
+  async getDownloadUrl(fileId: string, expiresIn?: number): Promise<FileDownloadResponse> {
+    const params = expiresIn ? { expires_in: expiresIn } : undefined
+    const response = await this.client.get<FileDownloadResponse>(`/${fileId}/download`, { params })
+    return response.data
+  }
+
+  async downloadFileContent(fileId: string): Promise<Blob> {
+    const response = await this.client.get(`/${fileId}/content`, {
+      responseType: 'blob'
+    })
+    return response.data
+  }
+
+  async updateMetadata(fileId: string, data: UpdateFileMetadataRequest): Promise<FileEntity> {
+    const response = await this.client.patch<FileEntity>(`/${fileId}`, data)
+    return response.data
+  }
+
+  async deleteFile(fileId: string, force?: boolean): Promise<void> {
+    const params = force ? { force: true } : undefined
+    await this.client.delete(`/${fileId}`, { params })
+  }
+
+  async hardDeleteFile(fileId: string): Promise<void> {
+    await this.client.delete(`/${fileId}/hard`)
+  }
+
+  // ===========================================================================
+  // BULK ENDPOINTS
+  // ===========================================================================
+
+  async bulkDelete(request: FileBulkDeleteRequest): Promise<FileBulkDeleteResponse> {
+    const response = await this.client.post<FileBulkDeleteResponse>('/bulk/delete', request)
+    return response.data
+  }
+
+  // ===========================================================================
+  // UTILITY ENDPOINTS
+  // ===========================================================================
+
+  async listOrphans(params?: {
+    older_than_hours?: number
+    limit?: number
+  }): Promise<FileEntity[]> {
+    const response = await this.client.get<FileEntity[]>('/orphans/list', { params })
+    return response.data
+  }
+
+  async findByChecksum(checksum: string): Promise<FileEntity[]> {
+    const response = await this.client.get<FileEntity[]>(`/by-checksum/${checksum}`)
+    return response.data
+  }
+
+  async checkIntegrity(): Promise<FileIntegrityResponse> {
+    const response = await this.client.get<FileIntegrityResponse>('/health/integrity')
+    return response.data
+  }
+
+  // ===========================================================================
+  // STORAGE STATUS
+  // ===========================================================================
+
+  async isStorageEnabled(): Promise<boolean> {
+    try {
+      // Try listing files - if storage is disabled, this will return 503
+      await this.client.get('', { params: { page_size: 1 } })
+      return true
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        const status = error.response?.status
+        // 503 = storage disabled, 401/403 = auth error (treat as not enabled for this check)
+        if (status === 503 || status === 401 || status === 403) {
+          return false
+        }
+      }
+      throw error
+    }
+  }
+}
+
+// =============================================================================
 // REPORTING-SYNC CLIENT (Integrity & Metrics)
 // =============================================================================
 
@@ -698,6 +848,7 @@ class ReportingSyncClient extends BaseApiClient {
 export const defStoreClient = new DefStoreClient()
 export const templateStoreClient = new TemplateStoreClient()
 export const documentStoreClient = new DocumentStoreClient()
+export const fileStoreClient = new FileStoreClient()
 export const reportingSyncClient = new ReportingSyncClient()
 
 // Default export for backward compatibility

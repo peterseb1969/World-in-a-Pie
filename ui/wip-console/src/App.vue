@@ -48,14 +48,22 @@ watch(
   <Toast position="top-right" />
   <ConfirmDialog />
 
-  <!-- Routes with layout: 'none' render without AppLayout (e.g., auth callbacks) -->
-  <template v-if="showLayout">
-    <AppLayout>
+  <!-- Wait for auth initialization before rendering main content -->
+  <template v-if="authStore.isInitialized">
+    <!-- Routes with layout: 'none' render without AppLayout (e.g., auth callbacks) -->
+    <template v-if="showLayout">
+      <AppLayout>
+        <router-view />
+      </AppLayout>
+    </template>
+    <template v-else>
       <router-view />
-    </AppLayout>
+    </template>
   </template>
   <template v-else>
-    <router-view />
+    <div class="loading-screen">
+      <i class="pi pi-spin pi-spinner" style="font-size: 2rem"></i>
+    </div>
   </template>
 </template>
 
@@ -82,5 +90,13 @@ body {
 
 #app {
   min-height: 100vh;
+}
+
+.loading-screen {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  color: var(--p-primary-color);
 }
 </style>

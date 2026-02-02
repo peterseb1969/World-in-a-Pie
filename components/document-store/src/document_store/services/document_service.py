@@ -24,6 +24,7 @@ from ..models.api_models import (
 from .registry_client import get_registry_client, RegistryError
 from .validation_service import ValidationService
 from .nats_client import publish_document_event, EventType, is_nats_enabled
+from .file_storage_client import is_file_storage_enabled
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -185,6 +186,7 @@ class DocumentService:
                 data=request.data,
                 term_references=validation_result.term_references,
                 references=validation_result.references,
+                file_references=validation_result.file_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=actor,
@@ -210,6 +212,11 @@ class DocumentService:
                 changed_by=actor
             )
 
+            # Update file reference counts (increment for new document)
+            await self._update_file_reference_counts(
+                validation_result.file_references, delta=1
+            )
+
             return DocumentCreateResponse(
                 document_id=document_id,
                 template_id=request.template_id,
@@ -228,13 +235,14 @@ class DocumentService:
         existing: Document,
         new_data: dict[str, Any],
         new_term_references: list[dict[str, Any]],
-        new_references: list[dict[str, Any]]
+        new_references: list[dict[str, Any]],
+        new_file_references: list[dict[str, Any]] = None
     ) -> bool:
         """
         Check if document data has changed.
 
-        Compares the data, term_references, and references to determine
-        if a new version should be created.
+        Compares the data, term_references, references, and file_references
+        to determine if a new version should be created.
         """
         import json
 
@@ -259,6 +267,14 @@ class DocumentService:
         if existing_refs_json != new_refs_json:
             return True
 
+        # Compare file_references
+        if new_file_references is not None:
+            existing_file_refs_json = json.dumps(existing.file_references, sort_keys=True, default=str)
+            new_file_refs_json = json.dumps(new_file_references, sort_keys=True, default=str)
+
+            if existing_file_refs_json != new_file_refs_json:
+                return True
+
         return False
 
     async def _create_new_version(
@@ -273,7 +289,8 @@ class DocumentService:
             existing,
             request.data,
             validation_result.term_references,
-            validation_result.references
+            validation_result.references,
+            validation_result.file_references
         ):
             # No change - return existing document info without creating new version
             return DocumentCreateResponse(
@@ -321,6 +338,7 @@ class DocumentService:
                 data=request.data,
                 term_references=validation_result.term_references,
                 references=validation_result.references,
+                file_references=validation_result.file_references,
                 status=DocumentStatus.ACTIVE,
                 created_at=now,
                 created_by=actor,
@@ -336,6 +354,16 @@ class DocumentService:
                 EventType.DOCUMENT_UPDATED,
                 self._document_to_event_payload(document),
                 changed_by=actor
+            )
+
+            # Update file reference counts
+            # Decrement for old version (now inactive)
+            await self._update_file_reference_counts(
+                existing.file_references, delta=-1
+            )
+            # Increment for new version
+            await self._update_file_reference_counts(
+                validation_result.file_references, delta=1
             )
 
             return DocumentCreateResponse(
@@ -380,6 +408,7 @@ class DocumentService:
             "data": document.data,
             "term_references": document.term_references,
             "references": document.references,
+            "file_references": document.file_references,
             "status": document.status.value if hasattr(document.status, 'value') else document.status,
             "created_at": document.created_at.isoformat() if document.created_at else None,
             "created_by": document.created_by,
@@ -556,6 +585,11 @@ class DocumentService:
             changed_by=actor
         )
 
+        # Update file reference counts (decrement for deleted document)
+        await self._update_file_reference_counts(
+            document.file_references, delta=-1
+        )
+
         return True
 
     async def archive_document(
@@ -581,6 +615,11 @@ class DocumentService:
             EventType.DOCUMENT_ARCHIVED,
             self._document_to_event_payload(document),
             changed_by=actor
+        )
+
+        # Update file reference counts (decrement for archived document)
+        await self._update_file_reference_counts(
+            document.file_references, delta=-1
         )
 
         return True
@@ -819,7 +858,8 @@ class DocumentService:
                         existing,
                         item.data,
                         validation_result.term_references,
-                        validation_result.references
+                        validation_result.references,
+                        validation_result.file_references
                     ):
                         # No change - return existing document info without creating new version
                         unchanged += 1
@@ -859,6 +899,7 @@ class DocumentService:
                     data=item.data,
                     term_references=validation_result.term_references,
                     references=validation_result.references,
+                    file_references=validation_result.file_references,
                     status=DocumentStatus.ACTIVE,
                     created_at=now,
                     created_by=actor,
@@ -874,6 +915,17 @@ class DocumentService:
                     event_type,
                     self._document_to_event_payload(document),
                     changed_by=actor
+                )
+
+                # Update file reference counts
+                if not is_new and existing:
+                    # Decrement for old version
+                    await self._update_file_reference_counts(
+                        existing.file_references, delta=-1
+                    )
+                # Increment for new version
+                await self._update_file_reference_counts(
+                    validation_result.file_references, delta=1
                 )
 
                 if is_new:
@@ -944,7 +996,8 @@ class DocumentService:
             identity_hash=result.identity_hash,
             template_version=result.template_version,
             term_references=result.term_references,
-            references=result.references
+            references=result.references,
+            file_references=result.file_references
         )
 
     async def _to_response(self, document: Document) -> DocumentResponse:
@@ -974,6 +1027,7 @@ class DocumentService:
             data=document.data,
             term_references=document.term_references,
             references=document.references,
+            file_references=document.file_references,
             status=document.status,
             created_at=document.created_at,
             created_by=document.created_by,
@@ -984,6 +1038,36 @@ class DocumentService:
             latest_version=latest_version,
             latest_document_id=latest_document_id
         )
+
+    async def _update_file_reference_counts(
+        self,
+        file_references: list[dict[str, Any]],
+        delta: int
+    ):
+        """
+        Update reference counts for files.
+
+        Args:
+            file_references: List of file reference dicts with file_id
+            delta: Change in reference count (+1 for add, -1 for remove)
+        """
+        if not file_references or not is_file_storage_enabled():
+            return
+
+        from .file_service import get_file_service
+
+        file_service = get_file_service()
+        for ref in file_references:
+            file_id = ref.get("file_id")
+            if file_id:
+                try:
+                    await file_service.update_reference_count(file_id, delta)
+                except Exception as e:
+                    # Log but don't fail - reference count is best-effort
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Failed to update reference count for file {file_id}: {e}"
+                    )
 
 
 # Singleton instance

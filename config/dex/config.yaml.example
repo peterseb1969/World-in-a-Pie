@@ -40,18 +40,19 @@ web:
 enablePasswordDB: true
 
 # Static users (for development and minimal deployments)
-# Passwords are bcrypt hashed
+# Passwords are bcrypt hashed (cost 10)
+# Generate new hash: python3 -c "import bcrypt; print(bcrypt.hashpw(b'PASSWORD', bcrypt.gensalt(rounds=10)).decode())"
 staticPasswords:
   - email: admin@wip.local
-    hash: "$2b$12$FU5QNFECeqot7P1G/G9/GuBXQTLgXylqATk8iiIlTjWESVZVBKqzy"
+    hash: "$2b$10$BQw2e6w70bAeuJOlxq25SOlGCao22TWXJlYjEqyiHh9ytdwh026cS"
     username: admin
     userID: "admin-001"
   - email: editor@wip.local
-    hash: "$2b$12$KyDkUF9JjxL5joJbaNTz3eGiV/yZF/DrSuGPmN0iHicjd1DKLcLPK"
+    hash: "$2b$10$6VcSivBiArWgUxrT9e/rNuWB5.JMcN/ZYHazHo5EaCRr3ISO5KJou"
     username: editor
     userID: "editor-001"
   - email: viewer@wip.local
-    hash: "$2b$12$RBQB01brEKNINrWbCBkzlun8DaKzJVJH8PZ553.YLFYkU9kFlzq1a"
+    hash: "$2b$10$e.WStasfitEUEEE5vzBY9uSgEpKIplzvzzieBNPXKu3TWSNxUxw2i"
     username: viewer
     userID: "viewer-001"
 
@@ -69,8 +70,8 @@ staticClients:
       - https://localhost:8443/auth/silent-renew
       - https://localhost/auth/callback
       - https://localhost/auth/silent-renew
-    # Public client for SPA (PKCE flow)
-    public: false
+    # Public client for SPA (PKCE flow) - MUST be true for browser-based OIDC
+    public: true
 
   # CLI/testing client for password grant
   - id: wip-cli

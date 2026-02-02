@@ -82,6 +82,28 @@ const router = createRouter({
       component: () => import('@/views/documents/DocumentDetailView.vue'),
       props: true
     },
+    // File routes
+    {
+      path: '/files',
+      name: 'files',
+      component: () => import('@/views/files/FileListView.vue')
+    },
+    {
+      path: '/files/upload',
+      name: 'file-upload',
+      component: () => import('@/views/files/FileUploadView.vue')
+    },
+    {
+      path: '/files/orphans',
+      name: 'file-orphans',
+      component: () => import('@/views/files/OrphanFilesView.vue')
+    },
+    {
+      path: '/files/:id',
+      name: 'file-detail',
+      component: () => import('@/views/files/FileDetailView.vue'),
+      props: true
+    },
     // Audit Trail routes
     {
       path: '/audit',

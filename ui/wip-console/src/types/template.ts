@@ -11,6 +11,7 @@ export type FieldType =
   | 'datetime'
   | 'term'
   | 'reference'
+  | 'file'
   | 'object'
   | 'array'
 
@@ -26,6 +27,7 @@ export const FIELD_TYPES: { value: FieldType; label: string; description: string
   { value: 'datetime', label: 'DateTime', description: 'Date with time' },
   { value: 'term', label: 'Term (Controlled Vocabulary)', description: 'Value from a terminology - ensures data consistency' },
   { value: 'reference', label: 'Reference', description: 'Reference to another entity (document, term, terminology, or template)' },
+  { value: 'file', label: 'File', description: 'Reference to an uploaded file (image, PDF, etc.)' },
   { value: 'object', label: 'Object (Nested Template)', description: 'Structured data following another template' },
   { value: 'array', label: 'Array', description: 'List of values' }
 ]
@@ -51,6 +53,13 @@ export interface FieldValidation {
   enum?: unknown[]
 }
 
+export interface FileFieldConfig {
+  allowed_types: string[]
+  max_size_mb: number
+  multiple: boolean
+  max_files?: number
+}
+
 export interface FieldDefinition {
   name: string
   label: string
@@ -66,10 +75,13 @@ export interface FieldDefinition {
   target_templates?: string[]
   target_terminologies?: string[]
   version_strategy?: VersionStrategy
+  // For file type
+  file_config?: FileFieldConfig
   // For array type
   array_item_type?: FieldType
   array_terminology_ref?: string
   array_template_ref?: string
+  array_file_config?: FileFieldConfig
   validation?: FieldValidation
   metadata: Record<string, unknown>
 }

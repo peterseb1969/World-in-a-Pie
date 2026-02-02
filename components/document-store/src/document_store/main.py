@@ -16,11 +16,17 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from wip_auth import setup_auth
 
 from .models.document import Document
+from .models.file import File
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.template_store_client import configure_template_store_client, get_template_store_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
 from .services.nats_client import configure_nats_client, close_nats_client, health_check as nats_health_check
+from .services.file_storage_client import (
+    configure_file_storage_client,
+    get_file_storage_client,
+    is_file_storage_enabled,
+)
 from .services.integrity_service import check_all_documents, IntegrityCheckResult
 
 
@@ -39,6 +45,12 @@ class Settings:
     DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY", "dev_master_key_for_testing")
     NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    # File storage settings (MinIO/S3)
+    FILE_STORAGE_ENABLED: bool = os.getenv("WIP_FILE_STORAGE_ENABLED", "false").lower() == "true"
+    FILE_STORAGE_ENDPOINT: str = os.getenv("WIP_FILE_STORAGE_ENDPOINT", "http://localhost:9000")
+    FILE_STORAGE_ACCESS_KEY: str = os.getenv("WIP_FILE_STORAGE_ACCESS_KEY", "wip-minio-root")
+    FILE_STORAGE_SECRET_KEY: str = os.getenv("WIP_FILE_STORAGE_SECRET_KEY", "wip-minio-password")
+    FILE_STORAGE_BUCKET: str = os.getenv("WIP_FILE_STORAGE_BUCKET", "wip-attachments")
 
 
 settings = Settings()
@@ -57,7 +69,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Document]
+        document_models=[Document, File]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -115,6 +127,31 @@ async def lifespan(app: FastAPI):
             print("WARNING: NATS not available. Document events will not be published.")
     else:
         print("NATS_URL not configured. Document event publishing disabled.")
+
+    # Configure file storage client (optional - for binary file storage)
+    if settings.FILE_STORAGE_ENABLED:
+        configure_file_storage_client(
+            endpoint_url=settings.FILE_STORAGE_ENDPOINT,
+            access_key=settings.FILE_STORAGE_ACCESS_KEY,
+            secret_key=settings.FILE_STORAGE_SECRET_KEY,
+            bucket=settings.FILE_STORAGE_BUCKET,
+        )
+        print(f"File storage client configured for {settings.FILE_STORAGE_ENDPOINT}")
+
+        # Check file storage health
+        file_storage_client = get_file_storage_client()
+        if await file_storage_client.health_check():
+            print("File storage (MinIO) is healthy.")
+            # Ensure bucket exists
+            try:
+                await file_storage_client.ensure_bucket_exists()
+                print(f"File storage bucket '{settings.FILE_STORAGE_BUCKET}' is ready.")
+            except Exception as e:
+                print(f"WARNING: Failed to ensure bucket exists: {e}")
+        else:
+            print("WARNING: File storage (MinIO) is not reachable. File uploads will not work.")
+    else:
+        print("File storage not enabled. Set WIP_FILE_STORAGE_ENABLED=true to enable.")
 
     # Run startup integrity check (non-blocking, log warnings only)
     # Only check template refs, skip term refs for faster startup
@@ -256,6 +293,13 @@ async def health_check():
     # Check NATS (optional)
     nats_status = "connected" if await nats_health_check() else "disabled"
 
+    # Check file storage (optional)
+    if is_file_storage_enabled():
+        file_storage_client = get_file_storage_client()
+        file_storage_status = "connected" if await file_storage_client.health_check() else "error"
+    else:
+        file_storage_status = "disabled"
+
     status = "healthy" if mongo_status == "connected" else "unhealthy"
 
     return {
@@ -265,6 +309,7 @@ async def health_check():
         "template_store": template_store_status,
         "def_store": def_store_status,
         "nats": nats_status,
+        "file_storage": file_storage_status,
     }
 
 

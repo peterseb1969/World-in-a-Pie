@@ -27,6 +27,8 @@ class ValidationResult:
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
         self.references: list[dict[str, Any]] = []
+        # Array format: [{"field_path": "scan_image", "file_id": "FILE-000001", "filename": "...", ...}, ...]
+        self.file_references: list[dict[str, Any]] = []
         self.timing: dict[str, float] = {}  # stage -> milliseconds
 
     def add_error(
@@ -59,6 +61,7 @@ class ValidationResult:
             "template_version": self.template_version,
             "term_references": self.term_references,
             "references": self.references,
+            "file_references": self.file_references,
             "timing": self.timing
         }
 
@@ -89,6 +92,7 @@ class ValidationService:
         "datetime": "_validate_datetime",
         "term": "_validate_term",
         "reference": "_validate_reference",
+        "file": "_validate_file",
         "object": "_validate_object",
         "array": "_validate_array",
     }
@@ -195,6 +199,14 @@ class ValidationService:
         start = time.perf_counter()
         await self._validate_references(data, template, result)
         result.timing["5_reference_validation"] = (time.perf_counter() - start) * 1000
+        if not result.valid:
+            result.timing["total"] = (time.perf_counter() - total_start) * 1000
+            return result
+
+        # Stage 5b: File validation - validate file references
+        start = time.perf_counter()
+        await self._validate_files(data, template, result)
+        result.timing["5b_file_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
             return result
@@ -608,6 +620,50 @@ class ValidationService:
                 field=field_path
             )
 
+    async def _validate_file(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        template: dict[str, Any],
+        result: ValidationResult,
+        validation: dict[str, Any]
+    ):
+        """
+        Validate file field (basic type check - actual validation happens in _validate_files).
+
+        File values must be:
+        - A string (single file_id like FILE-000001)
+        - A list of strings if multiple=true in file_config
+        """
+        file_config = field.get("file_config") or {}
+        multiple = file_config.get("multiple", False)
+
+        if multiple:
+            # Array of file IDs
+            if not isinstance(value, list):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be an array of file IDs",
+                    field=field_path
+                )
+                return
+            for i, item in enumerate(value):
+                if not isinstance(item, str):
+                    result.add_error(
+                        code="invalid_type",
+                        message=f"Item at '{field_path}[{i}]' must be a string (file ID)",
+                        field=f"{field_path}[{i}]"
+                    )
+        else:
+            # Single file ID
+            if not isinstance(value, str):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Field '{field_path}' must be a string (file ID)",
+                    field=field_path
+                )
+
     async def _validate_object(
         self,
         value: Any,
@@ -907,6 +963,134 @@ class ValidationService:
 
             except Exception as e:
                 result.add_warning(f"Could not resolve reference for field '{field_path}': {str(e)}")
+
+    async def _validate_files(
+        self,
+        data: dict[str, Any],
+        template: dict[str, Any],
+        result: ValidationResult
+    ):
+        """
+        Stage 5b: File validation.
+
+        Validates all file fields by checking:
+        - File exists
+        - File meets field constraints (allowed_types, max_size_mb)
+        - Builds file_references array for storage
+        """
+        from .file_service import get_file_service, FileServiceError
+        from .file_storage_client import is_file_storage_enabled
+
+        # Collect all file values to validate
+        file_validations = self._collect_file_values(data, template.get("fields", []), "")
+
+        if not file_validations:
+            return
+
+        # Skip file validation if file storage is not enabled
+        if not is_file_storage_enabled():
+            result.add_warning("File storage not enabled. File references not validated.")
+            return
+
+        # Validate each file
+        file_service = get_file_service()
+
+        for file_val in file_validations:
+            field_path = file_val["field_path"]
+            file_id = file_val["file_id"]
+            file_config = file_val["file_config"]
+
+            allowed_types = file_config.get("allowed_types", ["*/*"])
+            max_size_mb = file_config.get("max_size_mb", 10.0)
+
+            try:
+                is_valid, error_msg, file_ref = await file_service.validate_file_for_field(
+                    file_id=file_id,
+                    allowed_types=allowed_types,
+                    max_size_mb=max_size_mb,
+                )
+
+                if not is_valid:
+                    result.add_error(
+                        code="invalid_file",
+                        message=error_msg or f"File validation failed for field '{field_path}'",
+                        field=field_path,
+                        details={"file_id": file_id}
+                    )
+                elif file_ref:
+                    # Add to file_references with field_path set
+                    result.file_references.append({
+                        "field_path": field_path,
+                        "file_id": file_ref.file_id,
+                        "filename": file_ref.filename,
+                        "content_type": file_ref.content_type,
+                        "size_bytes": file_ref.size_bytes,
+                        "description": file_ref.description,
+                    })
+
+            except FileServiceError as e:
+                result.add_error(
+                    code="file_validation_error",
+                    message=f"Failed to validate file for field '{field_path}': {str(e)}",
+                    field=field_path
+                )
+
+    def _collect_file_values(
+        self,
+        data: dict[str, Any],
+        fields: list[dict[str, Any]],
+        prefix: str
+    ) -> list[dict[str, Any]]:
+        """Recursively collect file field values for validation."""
+        file_values = []
+
+        for field in fields:
+            field_name = field["name"]
+            full_path = f"{prefix}{field_name}" if prefix else field_name
+
+            if field_name not in data:
+                continue
+
+            value = data[field_name]
+            if value is None:
+                continue
+
+            field_type = field.get("type", "string")
+            file_config = field.get("file_config") or {}
+
+            if field_type == "file":
+                multiple = file_config.get("multiple", False)
+
+                if multiple and isinstance(value, list):
+                    # Array of file IDs
+                    for i, file_id in enumerate(value):
+                        if isinstance(file_id, str):
+                            file_values.append({
+                                "field_path": f"{full_path}[{i}]",
+                                "file_id": file_id,
+                                "file_config": file_config
+                            })
+                elif isinstance(value, str):
+                    # Single file ID
+                    file_values.append({
+                        "field_path": full_path,
+                        "file_id": value,
+                        "file_config": file_config
+                    })
+
+            elif field_type == "array" and field.get("array_item_type") == "file":
+                # Array of file items
+                array_file_config = field.get("array_file_config") or {}
+                if isinstance(value, list):
+                    for i, file_id in enumerate(value):
+                        if isinstance(file_id, str):
+                            file_values.append({
+                                "field_path": f"{full_path}[{i}]",
+                                "file_id": file_id,
+                                "file_config": array_file_config
+                            })
+
+        return file_values
 
     async def _resolve_document_reference(
         self,

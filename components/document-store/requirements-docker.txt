@@ -15,6 +15,12 @@ httpx>=0.26.0,<0.28.0
 # NATS client for event publishing (reporting sync)
 nats-py>=2.6.0,<3.0.0
 
+# S3/MinIO client for file storage
+aiobotocore>=2.9.0,<3.0.0
+
+# Multipart form data support (file uploads)
+python-multipart>=0.0.9
+
 # Pydantic for data validation
 pydantic>=2.5.0,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0

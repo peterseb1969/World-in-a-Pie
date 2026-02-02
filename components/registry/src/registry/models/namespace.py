@@ -119,4 +119,9 @@ WIP_INTERNAL_NAMESPACES = {
         "description": "Namespace for document IDs",
         "id_generator": IdGeneratorConfig(type=IdGeneratorType.UUID7),
     },
+    "wip-files": {
+        "name": "WIP Files",
+        "description": "Namespace for file attachment IDs",
+        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="FILE-"),
+    },
 }

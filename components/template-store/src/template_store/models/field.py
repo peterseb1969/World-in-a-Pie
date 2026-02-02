@@ -17,6 +17,7 @@ class FieldType(str, Enum):
     DATETIME = "datetime"
     TERM = "term"  # Reference to Def-Store terminology (legacy, use REFERENCE instead)
     REFERENCE = "reference"  # Unified reference to any WIP entity
+    FILE = "file"  # Reference to a file entity (FILE-XXXXXX)
     OBJECT = "object"  # Nested template
     ARRAY = "array"  # Collection of items
 
@@ -63,6 +64,31 @@ class FieldValidation(BaseModel):
     enum: Optional[list[Any]] = Field(
         None,
         description="Allowed values (not term-based)"
+    )
+
+
+class FileFieldConfig(BaseModel):
+    """Configuration for file reference fields."""
+
+    allowed_types: list[str] = Field(
+        default=["*/*"],
+        description="Allowed MIME type patterns (e.g., 'image/*', 'application/pdf')"
+    )
+    max_size_mb: float = Field(
+        default=10.0,
+        gt=0,
+        le=100,
+        description="Maximum file size in MB (max 100MB)"
+    )
+    multiple: bool = Field(
+        default=False,
+        description="Allow multiple files (field value becomes array of file IDs)"
+    )
+    max_files: Optional[int] = Field(
+        None,
+        ge=1,
+        le=100,
+        description="Maximum number of files when multiple=true (default: unlimited)"
     )
 
 
@@ -122,6 +148,12 @@ class FieldDefinition(BaseModel):
         description="How to resolve reference versions (default: latest)"
     )
 
+    # For type=file: file configuration
+    file_config: Optional[FileFieldConfig] = Field(
+        None,
+        description="Configuration for file fields (allowed types, size limits)"
+    )
+
     # For type=array: item configuration
     array_item_type: Optional[FieldType] = Field(
         None,
@@ -134,6 +166,10 @@ class FieldDefinition(BaseModel):
     array_template_ref: Optional[str] = Field(
         None,
         description="Template reference for array items if object type"
+    )
+    array_file_config: Optional[FileFieldConfig] = Field(
+        None,
+        description="File configuration for array items if file type"
     )
 
     # Validation constraints

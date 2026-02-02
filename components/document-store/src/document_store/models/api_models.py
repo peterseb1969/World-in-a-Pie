@@ -6,6 +6,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from .document import DocumentStatus, DocumentMetadata
+from .file import FileStatus, FileMetadata
 
 
 # ============================================================================
@@ -49,6 +50,10 @@ class DocumentResponse(BaseModel):
     references: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Resolved references for reference type fields"
+    )
+    file_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved file references for file fields"
     )
     status: DocumentStatus
     created_at: datetime
@@ -313,4 +318,174 @@ class ValidationResponse(BaseModel):
     references: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Resolved references for reference type fields"
+    )
+    file_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved file references for file fields"
+    )
+
+
+# ============================================================================
+# File Management
+# ============================================================================
+
+class FileUploadMetadata(BaseModel):
+    """Metadata to include with file upload."""
+
+    description: Optional[str] = Field(
+        None,
+        description="Human-readable description of the file"
+    )
+    tags: list[str] = Field(
+        default_factory=list,
+        description="Searchable tags"
+    )
+    category: Optional[str] = Field(
+        None,
+        description="Classification category"
+    )
+    custom: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Additional custom metadata fields"
+    )
+    allowed_templates: Optional[list[str]] = Field(
+        None,
+        description="Template codes that can reference this file (None = all)"
+    )
+
+
+class UpdateFileMetadataRequest(BaseModel):
+    """Request to update file metadata."""
+
+    description: Optional[str] = Field(
+        None,
+        description="Human-readable description of the file"
+    )
+    tags: Optional[list[str]] = Field(
+        None,
+        description="Searchable tags (replaces existing)"
+    )
+    category: Optional[str] = Field(
+        None,
+        description="Classification category"
+    )
+    custom: Optional[dict[str, Any]] = Field(
+        None,
+        description="Additional custom metadata fields (merges with existing)"
+    )
+    allowed_templates: Optional[list[str]] = Field(
+        None,
+        description="Template codes that can reference this file"
+    )
+
+
+class FileResponse(BaseModel):
+    """Response containing a file entity."""
+
+    file_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    checksum: str
+    storage_key: str
+    metadata: FileMetadata
+    status: FileStatus
+    reference_count: int
+    allowed_templates: Optional[list[str]]
+    uploaded_at: datetime
+    uploaded_by: Optional[str]
+    updated_at: Optional[datetime]
+    updated_by: Optional[str]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FileListResponse(BaseModel):
+    """Response containing a list of files."""
+
+    items: list[FileResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+class FileDownloadResponse(BaseModel):
+    """Response containing a pre-signed download URL."""
+
+    file_id: str
+    filename: str
+    content_type: str
+    size_bytes: int
+    download_url: str
+    expires_in: int = Field(
+        ...,
+        description="URL expiration time in seconds"
+    )
+
+
+class FileBulkResult(BaseModel):
+    """Result for a single item in bulk file operations."""
+
+    index: int
+    status: str = Field(
+        ...,
+        description="success or error"
+    )
+    file_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class FileBulkDeleteRequest(BaseModel):
+    """Request for bulk file deletion."""
+
+    file_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        description="File IDs to delete (max 100)"
+    )
+
+
+class FileBulkDeleteResponse(BaseModel):
+    """Response for bulk file deletion."""
+
+    total: int
+    deleted: int
+    failed: int
+    results: list[FileBulkResult]
+
+
+class FileIntegrityIssue(BaseModel):
+    """A file integrity issue."""
+
+    type: str = Field(
+        ...,
+        description="Issue type: orphan_file, missing_storage, broken_reference"
+    )
+    severity: str = Field(
+        ...,
+        description="Issue severity: warning, error"
+    )
+    file_id: Optional[str] = None
+    document_id: Optional[str] = None
+    field_path: Optional[str] = None
+    message: str
+
+
+class FileIntegrityResponse(BaseModel):
+    """Response from file integrity check."""
+
+    status: str = Field(
+        ...,
+        description="healthy, warning, or error"
+    )
+    checked_at: datetime
+    summary: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of issues by type"
+    )
+    issues: list[FileIntegrityIssue] = Field(
+        default_factory=list,
+        description="List of integrity issues found"
     )

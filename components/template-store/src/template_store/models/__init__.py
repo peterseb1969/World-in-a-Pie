@@ -4,6 +4,7 @@ from .field import (
     FieldDefinition,
     FieldType,
     FieldValidation,
+    FileFieldConfig,
     ReferenceType,
     VersionStrategy,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "FieldDefinition",
     "FieldType",
     "FieldValidation",
+    "FileFieldConfig",
     "ReferenceType",
     "VersionStrategy",
     "ValidationRule",

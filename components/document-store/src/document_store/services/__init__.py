@@ -18,6 +18,18 @@ from .def_store_client import (
     get_def_store_client,
     configure_def_store_client,
 )
+from .file_storage_client import (
+    FileStorageClient,
+    FileStorageError,
+    get_file_storage_client,
+    configure_file_storage_client,
+    is_file_storage_enabled,
+)
+from .file_service import (
+    FileService,
+    FileServiceError,
+    get_file_service,
+)
 from .identity_service import IdentityService
 from .validation_service import ValidationService
 from .document_service import DocumentService
@@ -35,6 +47,14 @@ __all__ = [
     "DefStoreError",
     "get_def_store_client",
     "configure_def_store_client",
+    "FileStorageClient",
+    "FileStorageError",
+    "get_file_storage_client",
+    "configure_file_storage_client",
+    "is_file_storage_enabled",
+    "FileService",
+    "FileServiceError",
+    "get_file_service",
     "IdentityService",
     "ValidationService",
     "DocumentService",
