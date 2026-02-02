@@ -64,6 +64,15 @@ const menuItems: MenuItem[] = [
     ]
   },
   {
+    label: 'Files',
+    icon: 'pi pi-images',
+    children: [
+      { label: 'Browse', icon: 'pi pi-list', route: '/files' },
+      { label: 'Orphans', icon: 'pi pi-exclamation-triangle', route: '/files/orphans' },
+      { label: 'Upload', icon: 'pi pi-upload', route: '/files/upload' }
+    ]
+  },
+  {
     label: 'Audit Trail',
     icon: 'pi pi-history',
     children: [
@@ -77,6 +86,7 @@ const expandedMenus = ref<Record<string, boolean>>({
   'Terminologies': true,
   'Templates': true,
   'Documents': true,
+  'Files': true,
   'Audit Trail': true
 })
 
@@ -409,7 +419,7 @@ function toggleSidebar() {
               :label="`Login with ${oidcProviderName}`"
               icon="pi pi-sign-in"
               class="w-full login-btn"
-              @click="showOidcLoginForm"
+              @click="authStore.loginWithOidc()"
             />
 
             <Divider align="center">
