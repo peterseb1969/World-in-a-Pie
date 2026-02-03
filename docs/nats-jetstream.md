@@ -231,6 +231,368 @@ nats sub "wip.>" --headers
 nats stream purge WIP_EVENTS
 ```
 
+## Custom Subscriptions
+
+The WIP event stream is a powerful integration point. You can create your own consumers to:
+
+- Trigger external workflows (email notifications, webhooks)
+- Sync to external systems (Elasticsearch, data warehouses)
+- Build real-time dashboards
+- Audit logging to external systems
+- Custom ETL pipelines
+
+Multiple consumers can subscribe to the same stream independently - each gets its own copy of every message.
+
+### Event Payload Structure
+
+All events follow this structure:
+
+```json
+{
+  "event_id": "evt-019c20d4-1234-5678-9abc-def012345678",
+  "event_type": "document.created",
+  "timestamp": "2026-02-03T10:30:00.000Z",
+  "source": "document-store",
+  "document": {
+    "document_id": "019c20d4-67f1-7a8f-989e-74436577ce8d",
+    "template_id": "TPL-000001",
+    "template_code": "PERSON",
+    "version": 1,
+    "status": "active",
+    "identity_hash": "a1b2c3d4e5f6...",
+    "data": {
+      "first_name": "John",
+      "last_name": "Doe",
+      "email": "john.doe@example.com",
+      "country": "Germany"
+    },
+    "term_references": {
+      "country": "T-000042"
+    },
+    "created_at": "2026-02-03T10:30:00.000Z",
+    "created_by": "user:admin@wip.local"
+  }
+}
+```
+
+### Event Types
+
+| Subject | Event Type | Description |
+|---------|------------|-------------|
+| `wip.documents.created` | `document.created` | New document created |
+| `wip.documents.updated` | `document.updated` | Document updated (new version) |
+| `wip.documents.deleted` | `document.deleted` | Document soft-deleted |
+| `wip.templates.created` | `template.created` | New template created |
+| `wip.templates.updated` | `template.updated` | Template updated |
+
+### Quick Test with NATS CLI
+
+The fastest way to see events:
+
+```bash
+# Subscribe to all WIP events (ephemeral - won't persist position)
+nats sub "wip.>"
+
+# Subscribe to only document events
+nats sub "wip.documents.>"
+
+# Subscribe with headers visible
+nats sub "wip.>" --headers
+```
+
+### Python Consumer Example
+
+Create a durable consumer that survives restarts:
+
+```python
+#!/usr/bin/env python3
+"""
+Custom WIP Event Consumer
+
+Install: pip install nats-py
+
+Usage: python my_consumer.py
+"""
+
+import asyncio
+import json
+import signal
+from datetime import datetime
+from nats.aio.client import Client as NATS
+from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
+
+# Configuration
+NATS_URL = "nats://localhost:4222"  # Use wip-nats:4222 from inside container
+STREAM_NAME = "WIP_EVENTS"
+CONSUMER_NAME = "my-custom-consumer"  # Unique name for your consumer
+SUBJECT_FILTER = "wip.documents.>"    # Or "wip.>" for all events
+
+
+async def handle_message(msg):
+    """Process a single message."""
+    try:
+        event = json.loads(msg.data.decode())
+
+        event_type = event.get("event_type", "unknown")
+        doc = event.get("document", {})
+
+        print(f"[{datetime.now().isoformat()}] {event_type}")
+        print(f"  Document: {doc.get('document_id')}")
+        print(f"  Template: {doc.get('template_code')}")
+        print(f"  Data: {json.dumps(doc.get('data', {}), indent=4)}")
+        print()
+
+        # === YOUR CUSTOM LOGIC HERE ===
+        # Examples:
+        # - Send webhook: requests.post(webhook_url, json=event)
+        # - Send email: send_notification(event)
+        # - Index in Elasticsearch: es.index(index="wip", body=doc)
+        # - Write to file: append_to_log(event)
+
+        # Acknowledge successful processing
+        await msg.ack()
+
+    except Exception as e:
+        print(f"Error processing message: {e}")
+        # NAK to trigger redelivery
+        await msg.nak()
+
+
+async def main():
+    nc = NATS()
+
+    # Connect to NATS
+    await nc.connect(NATS_URL)
+    print(f"Connected to NATS at {NATS_URL}")
+
+    # Get JetStream context
+    js = nc.jetstream()
+
+    # Create or bind to durable consumer
+    # Using pull-based consumer for better control
+    try:
+        consumer = await js.pull_subscribe(
+            subject=SUBJECT_FILTER,
+            stream=STREAM_NAME,
+            durable=CONSUMER_NAME,
+            config=ConsumerConfig(
+                ack_policy=AckPolicy.EXPLICIT,
+                deliver_policy=DeliverPolicy.ALL,  # Start from beginning
+                # Or use DeliverPolicy.NEW for only new messages
+            ),
+        )
+        print(f"Subscribed to {SUBJECT_FILTER} as '{CONSUMER_NAME}'")
+    except Exception as e:
+        print(f"Error creating consumer: {e}")
+        return
+
+    # Handle graceful shutdown
+    running = True
+    def shutdown(sig, frame):
+        nonlocal running
+        print("\nShutting down...")
+        running = False
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
+
+    # Process messages
+    print("Waiting for messages... (Ctrl+C to exit)")
+    while running:
+        try:
+            # Fetch batch of messages (adjust batch size as needed)
+            messages = await consumer.fetch(batch=10, timeout=5)
+            for msg in messages:
+                await handle_message(msg)
+        except asyncio.TimeoutError:
+            # No messages available, continue waiting
+            pass
+        except Exception as e:
+            print(f"Error fetching messages: {e}")
+            await asyncio.sleep(1)
+
+    # Cleanup
+    await nc.close()
+    print("Disconnected")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### Node.js Consumer Example
+
+```javascript
+#!/usr/bin/env node
+/**
+ * Custom WIP Event Consumer
+ *
+ * Install: npm install nats
+ *
+ * Usage: node my_consumer.js
+ */
+
+const { connect, StringCodec, AckPolicy, DeliverPolicy } = require('nats');
+
+const NATS_URL = 'nats://localhost:4222';
+const STREAM_NAME = 'WIP_EVENTS';
+const CONSUMER_NAME = 'my-node-consumer';
+const SUBJECT_FILTER = 'wip.documents.>';
+
+const sc = StringCodec();
+
+async function handleMessage(msg) {
+    try {
+        const event = JSON.parse(sc.decode(msg.data));
+
+        const eventType = event.event_type || 'unknown';
+        const doc = event.document || {};
+
+        console.log(`[${new Date().toISOString()}] ${eventType}`);
+        console.log(`  Document: ${doc.document_id}`);
+        console.log(`  Template: ${doc.template_code}`);
+        console.log(`  Data: ${JSON.stringify(doc.data, null, 2)}`);
+        console.log();
+
+        // === YOUR CUSTOM LOGIC HERE ===
+
+        // Acknowledge
+        msg.ack();
+
+    } catch (e) {
+        console.error('Error processing message:', e);
+        msg.nak();
+    }
+}
+
+async function main() {
+    // Connect to NATS
+    const nc = await connect({ servers: NATS_URL });
+    console.log(`Connected to NATS at ${NATS_URL}`);
+
+    // Get JetStream
+    const js = nc.jetstream();
+
+    // Create durable consumer
+    const consumer = await js.consumers.get(STREAM_NAME, CONSUMER_NAME).catch(async () => {
+        // Consumer doesn't exist, create it
+        const jsm = await nc.jetstreamManager();
+        await jsm.consumers.add(STREAM_NAME, {
+            durable_name: CONSUMER_NAME,
+            ack_policy: AckPolicy.Explicit,
+            deliver_policy: DeliverPolicy.All,
+            filter_subject: SUBJECT_FILTER,
+        });
+        return js.consumers.get(STREAM_NAME, CONSUMER_NAME);
+    });
+
+    console.log(`Subscribed as '${CONSUMER_NAME}'`);
+    console.log('Waiting for messages... (Ctrl+C to exit)');
+
+    // Process messages
+    const iter = await consumer.consume();
+    for await (const msg of iter) {
+        await handleMessage(msg);
+    }
+}
+
+main().catch(console.error);
+```
+
+### Bash/Shell Webhook Forwarder
+
+For simple webhook forwarding without writing code:
+
+```bash
+#!/bin/bash
+# Forward WIP events to a webhook
+# Requires: nats CLI, jq, curl
+
+WEBHOOK_URL="https://your-webhook.example.com/wip-events"
+NATS_URL="nats://localhost:4222"
+
+nats sub "wip.documents.>" --server="$NATS_URL" | while read -r line; do
+    # Skip non-JSON lines
+    if echo "$line" | jq . >/dev/null 2>&1; then
+        echo "Forwarding event to webhook..."
+        curl -s -X POST "$WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$line"
+    fi
+done
+```
+
+### Consumer Best Practices
+
+1. **Use unique consumer names** - Each integration should have its own durable consumer name to track progress independently.
+
+2. **Choose the right deliver policy**:
+   - `DeliverPolicy.ALL` - Process all historical messages (good for initial sync)
+   - `DeliverPolicy.NEW` - Only new messages from now on
+   - `DeliverPolicy.LAST` - Start from the last message
+   - `DeliverPolicy.BY_START_TIME` - Start from a specific timestamp
+
+3. **Handle errors gracefully**:
+   - `ack()` - Message processed successfully
+   - `nak()` - Processing failed, redeliver
+   - `term()` - Don't redeliver (poison message)
+
+4. **Batch processing** - Fetch messages in batches for better throughput.
+
+5. **Idempotent processing** - Messages may be redelivered; use `document_id` + `version` to detect duplicates.
+
+6. **Monitor your consumer**:
+   ```bash
+   # Check consumer lag
+   nats consumer info WIP_EVENTS my-custom-consumer
+   ```
+
+### Filter by Template
+
+To process only specific document types:
+
+```python
+# In your message handler
+async def handle_message(msg):
+    event = json.loads(msg.data.decode())
+    doc = event.get("document", {})
+
+    # Only process PERSON documents
+    if doc.get("template_code") != "PERSON":
+        await msg.ack()  # Acknowledge but skip
+        return
+
+    # Process PERSON documents...
+```
+
+Or use subject filtering when subscribing:
+
+```python
+# Subscribe to specific template events (if published to template-specific subjects)
+# Note: Current implementation uses generic subjects, so filter in handler
+```
+
+### Running Inside Docker/Podman
+
+If running your consumer in a container on the WIP network:
+
+```yaml
+# docker-compose.yml for your consumer
+version: "3.8"
+
+services:
+  my-consumer:
+    build: .
+    environment:
+      - NATS_URL=nats://wip-nats:4222
+    networks:
+      - wip-network
+
+networks:
+  wip-network:
+    external: true
+```
+
 ## Configuration Reference
 
 Stream and consumer settings are defined in:
