@@ -2,6 +2,18 @@
 
 WIP uses NATS with JetStream for reliable message delivery between services. The primary use case is syncing document events from Document Store to the Reporting Sync service for PostgreSQL replication.
 
+## Security
+
+> **Current Status:** NATS runs **without authentication** in development mode. Anyone who can reach port 4222 can subscribe to events.
+
+| Profile | Port Exposure | Risk | Recommendation |
+|---------|---------------|------|----------------|
+| Mac (localhost) | localhost only | Low | OK for development |
+| Pi (network) | LAN accessible | Medium | Restrict network or add auth |
+| Production | Potentially internet | High | **Must enable authentication** |
+
+See [Securing NATS for Production](#securing-nats-for-production) below.
+
 ## Architecture
 
 ```
@@ -285,13 +297,29 @@ All events follow this structure:
 | `wip.templates.created` | `template.created` | New template created |
 | `wip.templates.updated` | `template.updated` | Template updated |
 
+### Authentication
+
+> **Development:** No authentication required (open access on localhost).
+>
+> **Production:** See [Securing NATS for Production](#securing-nats-for-production) for auth setup.
+
+If NATS authentication is enabled, you'll need credentials:
+
+```bash
+# Token auth
+export NATS_URL="nats://your-token@localhost:4222"
+
+# User/password auth
+export NATS_URL="nats://user:password@localhost:4222"
+```
+
 ### Quick Test with NATS CLI
 
 The fastest way to see events:
 
 ```bash
 # Subscribe to all WIP events (ephemeral - won't persist position)
-nats sub "wip.>"
+nats sub "wip.>" --server="$NATS_URL"
 
 # Subscribe to only document events
 nats sub "wip.documents.>"
@@ -322,7 +350,9 @@ from nats.aio.client import Client as NATS
 from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
 
 # Configuration
-NATS_URL = "nats://localhost:4222"  # Use wip-nats:4222 from inside container
+NATS_URL = os.environ.get("NATS_URL", "nats://localhost:4222")
+# With auth: "nats://user:password@localhost:4222" or "nats://token@localhost:4222"
+# From container: "nats://wip-nats:4222"
 STREAM_NAME = "WIP_EVENTS"
 CONSUMER_NAME = "my-custom-consumer"  # Unique name for your consumer
 SUBJECT_FILTER = "wip.documents.>"    # Or "wip.>" for all events
@@ -591,6 +621,143 @@ services:
 networks:
   wip-network:
     external: true
+```
+
+## Securing NATS for Production
+
+### Option 1: Token Authentication (Simple)
+
+Create `config/nats/nats.conf`:
+
+```conf
+# NATS Server Configuration with Token Auth
+port: 4222
+http_port: 8222
+
+# JetStream
+jetstream {
+    store_dir: /data
+}
+
+# Simple token authentication
+authorization {
+    token: "your-secret-token-here"
+}
+```
+
+Update `docker-compose.infra.yml`:
+
+```yaml
+nats:
+  image: docker.io/library/nats:2.10
+  container_name: wip-nats
+  command: ["--config", "/etc/nats/nats.conf"]
+  volumes:
+    - ./config/nats/nats.conf:/etc/nats/nats.conf:ro
+    - ${WIP_DATA_DIR:-./data}/nats:/data
+  # ... rest of config
+```
+
+Connect with token:
+
+```python
+# Python
+await nc.connect("nats://localhost:4222", token="your-secret-token-here")
+```
+
+```javascript
+// Node.js
+const nc = await connect({ servers: "nats://localhost:4222", token: "your-secret-token-here" });
+```
+
+```bash
+# NATS CLI
+nats sub "wip.>" --server="nats://localhost:4222" --creds-token="your-secret-token-here"
+```
+
+### Option 2: User/Password Authentication
+
+```conf
+# config/nats/nats.conf
+port: 4222
+http_port: 8222
+
+jetstream {
+    store_dir: /data
+}
+
+authorization {
+    users: [
+        # Internal services (full access)
+        { user: "wip-services", password: "$NATS_SERVICES_PASSWORD",
+          permissions: { publish: ">", subscribe: ">" } },
+
+        # External consumers (read-only)
+        { user: "wip-consumer", password: "$NATS_CONSUMER_PASSWORD",
+          permissions: { subscribe: "wip.>" } },
+
+        # Read-only monitoring
+        { user: "wip-monitor", password: "$NATS_MONITOR_PASSWORD",
+          permissions: { subscribe: "_INBOX.>" } }
+    ]
+}
+```
+
+### Option 3: NKey Authentication (Most Secure)
+
+NKeys use public-key cryptography (Ed25519). Generate keys:
+
+```bash
+# Install nk tool
+go install github.com/nats-io/nkeys/nk@latest
+
+# Generate operator, account, and user keys
+nk -gen operator -pubout > operator.pub
+nk -gen account -pubout > account.pub
+nk -gen user -pubout > user.pub
+```
+
+See [NATS Security Documentation](https://docs.nats.io/running-a-nats-service/configuration/securing_nats) for full NKey setup.
+
+### Environment Variables for Services
+
+When auth is enabled, update service configurations:
+
+```bash
+# .env
+NATS_URL=nats://wip-services:services-password@wip-nats:4222
+# Or with token:
+NATS_URL=nats://your-secret-token@wip-nats:4222
+```
+
+### Network-Level Security (Alternative)
+
+If NATS auth is not configured, restrict access at the network level:
+
+1. **Don't expose port 4222 externally** - Remove from docker-compose ports or bind to localhost only:
+   ```yaml
+   ports:
+     - "127.0.0.1:4222:4222"  # localhost only
+   ```
+
+2. **Use container network only** - Services on `wip-network` can reach NATS, external clients cannot.
+
+3. **Firewall rules** - Block port 4222 from external access:
+   ```bash
+   # UFW (Ubuntu)
+   sudo ufw deny 4222
+
+   # iptables
+   sudo iptables -A INPUT -p tcp --dport 4222 -j DROP
+   ```
+
+### Checking Current Security
+
+```bash
+# Test if NATS is open (should fail if secured)
+nats sub "wip.>" --server="nats://localhost:4222"
+
+# If this works without credentials, NATS is unsecured
 ```
 
 ## Configuration Reference
