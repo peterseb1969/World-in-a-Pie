@@ -10,16 +10,19 @@ services:
     container_name: wip-template-store
     ports:
       - "8003:8003"
+    env_file:
+      - ../../.env
     environment:
-      - MONGO_URI=${MONGO_URI:-mongodb://wip-mongodb:27017/}
-      - DATABASE_NAME=${DATABASE_NAME:-wip_template_store}
-      - API_KEY=${API_KEY}
-      - REGISTRY_URL=${REGISTRY_URL:-http://wip-registry:8001}
-      - REGISTRY_API_KEY=${REGISTRY_API_KEY}
-      - DEF_STORE_URL=${DEF_STORE_URL:-http://wip-def-store:8002}
-      - DEF_STORE_API_KEY=${DEF_STORE_API_KEY}
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # Database configuration
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_template_store
+      # Service URLs (internal network)
+      - REGISTRY_URL=http://wip-registry:8001
+      - DEF_STORE_URL=http://wip-def-store:8002
+      # CORS (allow all in production behind reverse proxy)
+      - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
     networks:
       - wip-network
     restart: unless-stopped

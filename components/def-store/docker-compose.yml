@@ -11,13 +11,17 @@ services:
     container_name: wip-def-store
     ports:
       - "8002:8002"
+    env_file:
+      - ../../.env
     environment:
-      - MONGO_URI=mongodb://mongoadmin:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@wip-mongodb:27017/
+      # Database configuration
+      - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_def_store
-      - API_KEY=${API_KEY:?API_KEY is required}
+      # Service URLs (internal network)
       - REGISTRY_URL=http://wip-registry:8001
-      - REGISTRY_API_KEY=${REGISTRY_API_KEY:?REGISTRY_API_KEY is required}
-      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # CORS (empty = no CORS restrictions in production behind reverse proxy)
+      - CORS_ORIGINS=
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
     networks:
       - wip-network
     restart: unless-stopped

@@ -17,10 +17,11 @@ services:
       dockerfile: Dockerfile
       args:
         # OIDC configuration - uses /dex proxy to avoid CORS issues
-        VITE_OIDC_AUTHORITY: ${VITE_OIDC_AUTHORITY:-/dex}
-        VITE_OIDC_CLIENT_ID: ${VITE_OIDC_CLIENT_ID:-wip-console}
-        VITE_OIDC_CLIENT_SECRET: ${VITE_OIDC_CLIENT_SECRET:-wip-console-secret}
-        VITE_OIDC_PROVIDER_NAME: ${VITE_OIDC_PROVIDER_NAME:-SSO}
+        # Note: podman-compose doesn't expand ${VAR:-default}, so use explicit values
+        VITE_OIDC_AUTHORITY: /dex
+        VITE_OIDC_CLIENT_ID: wip-console
+        VITE_OIDC_CLIENT_SECRET: wip-console-secret
+        VITE_OIDC_PROVIDER_NAME: Dex
     container_name: wip-console
     ports:
       - "80:80"

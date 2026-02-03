@@ -11,17 +11,20 @@ services:
     restart: unless-stopped
     ports:
       - "8004:8004"
+    env_file:
+      - ../../.env
     environment:
-      - MONGO_URI=${MONGO_URI:-mongodb://wip-mongodb:27017/}
-      - DATABASE_NAME=${DATABASE_NAME:-wip_document_store}
-      - API_KEY=${API_KEY:?API_KEY is required}
-      - REGISTRY_URL=${REGISTRY_URL:-http://wip-registry:8001}
-      - REGISTRY_API_KEY=${REGISTRY_API_KEY:?REGISTRY_API_KEY is required}
-      - TEMPLATE_STORE_URL=${TEMPLATE_STORE_URL:-http://wip-template-store:8003}
-      - TEMPLATE_STORE_API_KEY=${TEMPLATE_STORE_API_KEY:?TEMPLATE_STORE_API_KEY is required}
-      - DEF_STORE_URL=${DEF_STORE_URL:-http://wip-def-store:8002}
-      - DEF_STORE_API_KEY=${DEF_STORE_API_KEY:?DEF_STORE_API_KEY is required}
-      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      # Database configuration
+      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - DATABASE_NAME=wip_document_store
+      # Service URLs (internal network)
+      - REGISTRY_URL=http://wip-registry:8001
+      - TEMPLATE_STORE_URL=http://wip-template-store:8003
+      - DEF_STORE_URL=http://wip-def-store:8002
+      # CORS (allow all in production behind reverse proxy)
+      - CORS_ORIGINS=*
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
+      # API keys come from .env: WIP_AUTH_LEGACY_API_KEY, WIP_AUTH_API_KEYS_JSON
     networks:
       - wip-network
     depends_on:

@@ -10,13 +10,18 @@ services:
     container_name: wip-registry
     ports:
       - "8001:8001"
+    env_file:
+      - ../../.env
     environment:
       - PYTHONPATH=/app/src
-      - MONGO_URI=mongodb://mongoadmin:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@wip-mongodb:27017/
+      # Database configuration
+      - MONGO_URI=mongodb://wip-mongodb:27017/
       - DATABASE_NAME=wip_registry
-      - MASTER_API_KEY=${MASTER_API_KEY:?MASTER_API_KEY is required}
+      # Auth configuration
       - AUTH_ENABLED=true
-      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      # CORS (empty = no CORS restrictions in production behind reverse proxy)
+      - CORS_ORIGINS=
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
     volumes:
       - ./config:/app/config:ro
     networks:
