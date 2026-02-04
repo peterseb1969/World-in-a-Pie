@@ -1,32 +1,35 @@
-# Localhost Redirect in Both Mode
+# Localhost Redirect in Remote Mode
+
+> **History:** This feature was originally proposed as a fix for "both" mode. The "both" network mode has since been removed entirely. The localhost redirect is now built into "remote" mode.
 
 ## Problem
 
-When `setup.sh` is run with `--network both`, the Dex OIDC issuer is set to the hostname (e.g., `https://wip-pi.local:8443/dex`) because Dex can only have a single issuer URL. Previously, Caddy served both `localhost` and the hostname identically, so users could open `https://localhost:8443` and see the WIP Console. However, clicking "Login with Dex" would fail silently because:
+When `setup.sh` is run with `--network remote`, the Dex OIDC issuer is set to the hostname (e.g., `https://wip-pi.local:8443/dex`). If a user accesses the system via `https://localhost:8443` instead, the OIDC login fails silently because:
 
 1. The console's OIDC authority is configured as a relative path (`/dex`), so the browser constructs it from the current URL: `https://localhost:8443/dex`
-2. The OIDC discovery document at that URL returns the issuer as `https://wip-pi.local:8443/dex`
+2. The OIDC discovery document returns the issuer as `https://wip-pi.local:8443/dex`
 3. oidc-client-ts detects a mismatch between the authority (`localhost`) and the issuer (`wip-pi.local`) and rejects the response
 4. Login fails with no obvious error message
 
 ## Solution
 
-In `both` mode, `setup.sh` now generates a Caddyfile with two site blocks:
+In `remote` mode, `setup.sh` generates a Caddyfile with two site blocks:
 
-1. **Redirect block** for `localhost` and `127.0.0.1` -- sends a 301 permanent redirect to `https://{hostname}:{port}{uri}`
-2. **Main site block** for `*.local`, `192.168.*.*`, and the configured hostname -- serves the console and proxies all services
+1. **Redirect block** for `localhost` and `127.0.0.1` -- sends a 302 temporary redirect to `https://{hostname}:{port}{uri}`
+2. **Main site block** for the configured hostname -- serves the console and proxies all services
 
-### Generated Caddyfile (both mode)
+### Generated Caddyfile (remote mode)
 
 ```
-# Redirect localhost to hostname (required for OIDC issuer match)
+# Redirect localhost to hostname (convenience for local access)
+# Uses 302 (temporary) so browser doesn't cache if mode changes later
 localhost, 127.0.0.1 {
     tls internal
-    redir https://wip-pi.local:8443{uri} permanent
+    redir https://wip-pi.local:8443{uri} 302
 }
 
 # Main site block
-*.local, 192.168.*.*, wip-pi.local {
+wip-pi.local {
     tls internal
 
     handle /dex/* {
@@ -39,21 +42,24 @@ localhost, 127.0.0.1 {
 }
 ```
 
+### Why 302, not 301
+
+A 301 (permanent) redirect is cached aggressively by browsers. If the user later switches to `--network localhost` mode, their browser would still redirect localhost to the old hostname. A 302 (temporary) redirect avoids this caching issue.
+
 ### User Experience
 
 | Before | After |
 |--------|-------|
 | `https://localhost:8443` loads the console but Dex login fails silently | `https://localhost:8443` redirects to `https://wip-pi.local:8443` where login works |
 
-The redirect is transparent -- the browser follows it automatically. Since `hostname.local` resolves to the same machine on the local network, there is no difference in connectivity.
+The redirect is transparent -- the browser follows it automatically.
 
 ## Files Changed
 
 | File | Change |
 |------|--------|
-| `scripts/setup.sh` | Removed `localhost` and `127.0.0.1` from the main Caddy hosts in `both` mode. Added a redirect block that sends localhost traffic to the configured hostname. |
+| `scripts/setup.sh` | In remote mode, generates a Caddy redirect block for localhost/127.0.0.1 |
 
 ## Not Affected
 
-- **`localhost` mode** -- No redirect, Dex issuer is `https://localhost:8443/dex`, everything matches.
-- **`remote` mode** -- No localhost access at all, only the hostname is served.
+- **`localhost` mode** -- No redirect needed. Dex issuer is `https://localhost:8443/dex`, everything matches.

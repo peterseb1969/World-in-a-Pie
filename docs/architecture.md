@@ -592,8 +592,7 @@ The Registry is a **standalone service** that provides ID generation and namespa
 | Mode | Description | Use Case |
 |------|-------------|----------|
 | `localhost` | Only accessible from local machine | Mac development |
-| `remote` | Only accessible from network | Headless Pi |
-| `both` | Both localhost and network | Pi accessible anywhere |
+| `remote` | Accessible from network, localhost redirects to hostname | Pi, network access |
 
 ---
 

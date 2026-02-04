@@ -39,20 +39,21 @@ All profiles use:
 
 ## Network Modes
 
-The setup script supports three network modes:
+The setup script supports two network modes:
 
 | Mode | Description | Use Case |
 |------|-------------|----------|
 | `localhost` | Only accessible from local machine | Mac development (default) |
-| `remote` | Only accessible from network | Headless Pi |
-| `both` | Both localhost and network access | Pi accessible from anywhere (default for Pi) |
+| `remote` | Accessible from network, localhost redirects to hostname | Pi, network access (default for Pi) |
+
+In `remote` mode, accessing `https://localhost` is automatically redirected to `https://hostname` via Caddy. This ensures the OIDC issuer URL always matches, avoiding silent login failures.
 
 ```bash
 # Mac localhost (default)
 ./scripts/setup.sh
 
 # Mac with network access for mobile testing
-./scripts/setup.sh --network both --hostname dev-mac.local
+./scripts/setup.sh --network remote --hostname dev-mac.local
 
 # Pi standard with OIDC
 ./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
@@ -216,7 +217,7 @@ WIP_DATA_DIR=./data                # Storage directory
 ### Network Settings
 
 ```bash
-WIP_NETWORK_MODE=localhost         # localhost, remote, or both
+WIP_NETWORK_MODE=localhost         # localhost or remote
 WIP_HOSTNAME=localhost             # Hostname for remote access
 WIP_HTTPS_PORT=8443                # HTTPS port
 WIP_HTTP_PORT=8080                 # HTTP port

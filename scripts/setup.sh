@@ -8,14 +8,14 @@
 #
 # Usage:
 #   ./scripts/setup.sh --profile mac --network localhost
-#   ./scripts/setup.sh --profile pi-standard --network both --hostname wip-pi.local
+#   ./scripts/setup.sh --profile pi-standard --network remote --hostname wip-pi.local
 #   ./scripts/setup.sh --profile pi-minimal --network localhost
 #   ./scripts/setup.sh --help
 #
 # Network Modes:
 #   localhost - Only accessible from local machine (default for mac profile)
-#   remote    - Only accessible from network (requires --hostname)
-#   both      - Both localhost and network access (default for pi profiles)
+#   remote    - Accessible from network (requires --hostname, default for pi profiles)
+#              Localhost access is redirected to hostname automatically.
 #
 # Hardware Profiles:
 #   mac         - Mac development with full stack + Mongo Express
@@ -89,8 +89,8 @@ Usage: $(basename "$0") [OPTIONS]
 
 Network Modes (--network):
   localhost   Only accessible from local machine
-  remote      Only accessible from network (requires --hostname)
-  both        Both localhost and network access
+  remote      Accessible from network (requires --hostname)
+              Localhost access is redirected to hostname automatically.
 
 Hardware Profiles (--profile):
   mac         Mac development - full stack + Mongo Express
@@ -101,8 +101,8 @@ Hardware Profiles (--profile):
 
 Options:
   -p, --profile PROFILE    Hardware profile (auto-detected if not specified)
-  -n, --network MODE       Network mode: localhost, remote, both
-  -h, --hostname HOSTNAME  Hostname for remote/both network modes
+  -n, --network MODE       Network mode: localhost, remote
+  -h, --hostname HOSTNAME  Hostname for remote network mode
       --https-port PORT    HTTPS port (default: 8443)
       --http-port PORT     HTTP port (default: 8080)
       --data-dir DIR       Data storage directory (default: ./data)
@@ -114,7 +114,7 @@ Examples:
   $(basename "$0")
 
   # Mac with network access
-  $(basename "$0") --network both --hostname dev-mac.local
+  $(basename "$0") --network remote --hostname dev-mac.local
 
   # Pi standard deployment
   $(basename "$0") --profile pi-standard --hostname wip-pi.local
@@ -203,7 +203,7 @@ set_defaults() {
                 NETWORK="localhost"
                 ;;
             pi-*)
-                NETWORK="both"
+                NETWORK="remote"
                 ;;
             *)
                 NETWORK="localhost"
@@ -212,7 +212,7 @@ set_defaults() {
         log_info "Auto-selected network mode: $NETWORK"
     fi
 
-    # Auto-detect hostname for remote/both modes
+    # Auto-detect hostname for remote mode
     if [ -z "$HOSTNAME" ] && [ "$NETWORK" != "localhost" ]; then
         HOSTNAME="$(hostname).local"
         log_info "Auto-detected hostname: $HOSTNAME"
@@ -231,15 +231,20 @@ validate_config() {
 
     # Validate network mode
     case "$NETWORK" in
-        localhost|remote|both) ;;
+        localhost|remote) ;;
+        both)
+            log_warn "Network mode 'both' has been removed. Using 'remote' instead."
+            log_warn "In remote mode, localhost access is automatically redirected to hostname."
+            NETWORK="remote"
+            ;;
         *)
             log_error "Invalid network mode: $NETWORK"
-            echo "Valid modes: localhost, remote, both"
+            echo "Valid modes: localhost, remote"
             exit 1
             ;;
     esac
 
-    # Require hostname for remote/both modes
+    # Require hostname for remote mode
     if [ "$NETWORK" != "localhost" ] && [ -z "$HOSTNAME" ]; then
         log_error "Network mode '$NETWORK' requires --hostname"
         exit 1
@@ -287,17 +292,14 @@ generate_dex_config() {
     # Determine issuer URL based on network mode and Caddy
     # IMPORTANT: The issuer URL is what goes into JWT tokens and must match
     # what the browser accesses. When Caddy is enabled, that's https://host:port/dex
-    #
-    # For "both" mode, we use the hostname because:
-    # - Network access is the primary use case
-    # - Localhost users can access via https://hostname:port (resolves to local machine)
+    # In remote mode, localhost access is redirected to hostname by Caddy.
     local issuer
     if [ "$WIP_INCLUDE_CADDY" = "true" ]; then
         case "$NETWORK" in
             localhost)
                 issuer="https://localhost:${HTTPS_PORT}/dex"
                 ;;
-            remote|both)
+            remote)
                 issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
                 ;;
         esac
@@ -341,17 +343,6 @@ ORIGINS
     - https://${HOSTNAME}:${HTTPS_PORT}
 ORIGINS
             ;;
-        both)
-            cat >> "$output" << ORIGINS
-    - http://localhost:3000
-    - http://localhost:3001
-    - https://localhost:${HTTPS_PORT}
-    - https://localhost
-    - https://127.0.0.1:${HTTPS_PORT}
-    - https://127.0.0.1
-    - https://${HOSTNAME}:${HTTPS_PORT}
-ORIGINS
-            ;;
     esac
 
     # Add static clients section
@@ -378,18 +369,6 @@ REDIRECTS
             ;;
         remote)
             cat >> "$output" << REDIRECTS
-      - https://${HOSTNAME}:${HTTPS_PORT}/auth/callback
-      - https://${HOSTNAME}:${HTTPS_PORT}/auth/silent-renew
-REDIRECTS
-            ;;
-        both)
-            cat >> "$output" << REDIRECTS
-      - http://localhost:3000/auth/callback
-      - http://localhost:3000/auth/silent-renew
-      - https://localhost:${HTTPS_PORT}/auth/callback
-      - https://localhost:${HTTPS_PORT}/auth/silent-renew
-      - https://localhost/auth/callback
-      - https://localhost/auth/silent-renew
       - https://${HOSTNAME}:${HTTPS_PORT}/auth/callback
       - https://${HOSTNAME}:${HTTPS_PORT}/auth/silent-renew
 REDIRECTS
@@ -430,7 +409,7 @@ STATICCONFIG
     log_debug "Generated Dex config with issuer: $issuer"
 }
 
-# Generate Caddy configuration from template
+# Generate Caddy configuration
 generate_caddy_config() {
     if [ "$WIP_INCLUDE_CADDY" != "true" ]; then
         log_debug "Skipping Caddy config (not included in profile)"
@@ -439,7 +418,6 @@ generate_caddy_config() {
 
     log_info "Generating Caddy configuration..."
 
-    local template="$PROJECT_ROOT/config/caddy/Caddyfile.template"
     local output="$PROJECT_ROOT/config/caddy/Caddyfile"
 
     # Determine host patterns based on network mode
@@ -456,17 +434,79 @@ generate_caddy_config() {
                 hosts="${hosts}, ${ip}"
             fi
             ;;
-        both)
-            hosts="localhost, 127.0.0.1, *.local, 192.168.*.*"
-            if [ -n "$HOSTNAME" ]; then
-                hosts="${hosts}, ${HOSTNAME}"
-            fi
-            ;;
     esac
 
-    # Generate config using sed substitution
-    sed -e "s|\${WIP_CADDY_HOSTS}|${hosts}|g" \
-        "$template" > "$output"
+    # Write Caddy config directly
+    cat > "$output" << 'CADDYHEADER'
+# WIP Caddy Configuration
+#
+# THIS FILE IS GENERATED - DO NOT EDIT DIRECTLY
+# Regenerate with: scripts/setup.sh
+#
+# Uses self-signed certificate for local network access.
+# Browser will warn about self-signed cert - accept once.
+CADDYHEADER
+
+    # In remote mode, add a redirect block so localhost access goes to hostname
+    if [ "$NETWORK" = "remote" ]; then
+        cat >> "$output" << REDIRECT
+
+# Redirect localhost to hostname (convenience for local access)
+# Uses 302 (temporary) so browser doesn't cache if mode changes later
+localhost, 127.0.0.1 {
+    tls internal
+    redir https://${HOSTNAME}:${HTTPS_PORT}{uri} 302
+}
+REDIRECT
+    fi
+
+    # Main site block with reverse proxy rules
+    cat >> "$output" << SITEBLOCK
+
+# HTTPS server with internal TLS (self-signed)
+${hosts} {
+    tls internal
+
+    # Dex OIDC provider
+    handle /dex/* {
+        reverse_proxy wip-dex:5556
+    }
+
+    # API Services
+    handle /api/registry/* {
+        reverse_proxy wip-registry-dev:8001
+    }
+    handle /api/def-store/* {
+        reverse_proxy wip-def-store-dev:8002
+    }
+    handle /api/template-store/* {
+        reverse_proxy wip-template-store-dev:8003
+    }
+    handle /api/document-store/* {
+        reverse_proxy wip-document-store-dev:8004
+    }
+    handle /api/reporting-sync/* {
+        uri strip_prefix /api/reporting-sync
+        reverse_proxy wip-reporting-sync-dev:8005
+    }
+
+    # Console (catch-all)
+    handle {
+        reverse_proxy wip-console-dev:3000
+    }
+
+    log {
+        output stdout
+        format console
+        level WARN
+    }
+}
+
+# HTTP redirect to HTTPS
+http:// {
+    redir https://{host}{uri} permanent
+}
+SITEBLOCK
 
     log_debug "Generated Caddy config with hosts: $hosts"
 }
@@ -480,7 +520,6 @@ generate_env_file() {
     # Determine JWT issuer URL
     # IMPORTANT: When Caddy is enabled, browser accesses Dex via Caddy at https://host:PORT/dex
     # The issuer URL must match what the browser sees (and what goes into tokens)
-    # For "both" mode, we use the hostname so network access works
     local jwt_issuer
     if [ "$WIP_INCLUDE_DEX" = "true" ]; then
         if [ "$WIP_INCLUDE_CADDY" = "true" ]; then
@@ -489,7 +528,7 @@ generate_env_file() {
                 localhost)
                     jwt_issuer="https://localhost:${HTTPS_PORT}/dex"
                     ;;
-                remote|both)
+                remote)
                     jwt_issuer="https://${HOSTNAME}:${HTTPS_PORT}/dex"
                     ;;
             esac
@@ -932,11 +971,7 @@ print_status() {
             remote)
                 echo "  https://${HOSTNAME}:${HTTPS_PORT}"
                 [ -n "$ip" ] && echo "  https://${ip}:${HTTPS_PORT}"
-                ;;
-            both)
-                echo "  https://localhost:${HTTPS_PORT}"
-                echo "  https://${HOSTNAME}:${HTTPS_PORT}"
-                [ -n "$ip" ] && echo "  https://${ip}:${HTTPS_PORT}"
+                echo "  (localhost access redirects to hostname automatically)"
                 ;;
         esac
         echo ""

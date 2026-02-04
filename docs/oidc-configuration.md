@@ -248,7 +248,7 @@ grep issuer config/dex/config.yaml
 
 **Cause:** Browser origin not in Dex `allowedOrigins`.
 
-**Solution:** Re-run setup.sh with correct `--network` mode (localhost, remote, or both).
+**Solution:** Re-run setup.sh with correct `--network` mode (localhost or remote).
 
 ---
 

@@ -1776,8 +1776,7 @@ Use the unified setup script for automated deployment:
 | Mode | Description | Use Case |
 |------|-------------|----------|
 | `localhost` | Only accessible from local machine | Mac development |
-| `remote` | Only accessible from network | Headless Pi |
-| `both` | Both localhost and network (default for Pi) | Pi accessible anywhere |
+| `remote` | Accessible from network, localhost redirects to hostname | Pi, network access (default for Pi) |
 
 ### Hardware Profiles
 
@@ -1796,7 +1795,7 @@ Use the unified setup script for automated deployment:
 ./scripts/setup.sh
 
 # Mac with network access for mobile testing
-./scripts/setup.sh --network both --hostname dev-mac.local
+./scripts/setup.sh --network remote --hostname dev-mac.local
 
 # Pi standard with OIDC
 ./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
