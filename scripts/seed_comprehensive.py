@@ -808,8 +808,11 @@ def main():
     print(f"  Def-Store API:      http://localhost:8002/docs")
     print(f"  Template Store API: http://localhost:8003/docs")
     print(f"  Document Store API: http://localhost:8004/docs")
-    print(f"  WIP Console:        http://localhost:3000")
     print(f"  MongoDB Express:    http://localhost:8081")
+    print()
+    print("WIP Console (depends on your setup.sh --network mode):")
+    print(f"  localhost mode:     https://localhost:8443")
+    print(f"  remote mode:        https://<hostname>:8443")
     print("=" * 70)
 
 
