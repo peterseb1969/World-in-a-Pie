@@ -273,79 +273,37 @@ class ImportExportService:
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 
-        # Import terms
-        term_results = []
-        created_count = 0
-        skipped_count = 0
-        error_count = 0
-
+        # Build CreateTermRequest objects for batch operation
+        term_requests = []
         for i, term_data in enumerate(terms_data):
-            try:
-                # Check if term exists
-                existing_term = await Term.find_one({
-                    "terminology_id": terminology_id,
-                    "code": term_data["code"]
-                })
+            translations = [
+                TermTranslation(**tr)
+                for tr in term_data.get("translations", [])
+            ]
+            term_requests.append(CreateTermRequest(
+                code=term_data["code"],
+                value=term_data["value"],
+                aliases=term_data.get("aliases", []),
+                label=term_data.get("label", term_data["value"]),
+                description=term_data.get("description"),
+                sort_order=term_data.get("sort_order", i),
+                parent_term_id=term_data.get("parent_term_id"),
+                translations=translations,
+                metadata=term_data.get("metadata", {}),
+                created_by=created_by
+            ))
 
-                if existing_term:
-                    if skip_duplicates:
-                        term_results.append(BulkOperationResult(
-                            index=i,
-                            status="skipped",
-                            id=existing_term.term_id,
-                            code=term_data["code"]
-                        ))
-                        skipped_count += 1
-                        continue
-                    elif update_existing:
-                        # TODO: Implement update logic
-                        term_results.append(BulkOperationResult(
-                            index=i,
-                            status="updated",
-                            id=existing_term.term_id,
-                            code=term_data["code"]
-                        ))
-                        continue
+        # Delegate to batch method for efficient bulk import
+        term_results = await TerminologyService.create_terms_bulk(
+            terminology_id=terminology_id,
+            terms=term_requests,
+            skip_duplicates=skip_duplicates,
+            update_existing=update_existing,
+        )
 
-                # Create new term
-                translations = [
-                    TermTranslation(**tr)
-                    for tr in term_data.get("translations", [])
-                ]
-
-                create_term_req = CreateTermRequest(
-                    code=term_data["code"],
-                    value=term_data["value"],
-                    label=term_data.get("label", term_data["value"]),
-                    description=term_data.get("description"),
-                    sort_order=term_data.get("sort_order", i),
-                    parent_term_id=term_data.get("parent_term_id"),
-                    translations=translations,
-                    metadata=term_data.get("metadata", {}),
-                    created_by=created_by
-                )
-
-                term_response = await TerminologyService.create_term(
-                    terminology_id=terminology_id,
-                    request=create_term_req
-                )
-
-                term_results.append(BulkOperationResult(
-                    index=i,
-                    status="created",
-                    id=term_response.term_id,
-                    code=term_data["code"]
-                ))
-                created_count += 1
-
-            except Exception as e:
-                term_results.append(BulkOperationResult(
-                    index=i,
-                    status="error",
-                    code=term_data.get("code"),
-                    error=str(e)
-                ))
-                error_count += 1
+        created_count = sum(1 for r in term_results if r.status == "created")
+        skipped_count = sum(1 for r in term_results if r.status == "skipped")
+        error_count = sum(1 for r in term_results if r.status == "error")
 
         return {
             "terminology": {
