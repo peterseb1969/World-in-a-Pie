@@ -16,7 +16,7 @@ import type { ImportTerminologyRequest, CreateTerminologyRequest, CreateTermRequ
 const router = useRouter()
 const uiStore = useUiStore()
 
-const step = ref<'upload' | 'preview' | 'result'>('upload')
+const step = ref<'upload' | 'preview' | 'importing' | 'result'>('upload')
 const fileContent = ref<ImportTerminologyRequest | null>(null)
 const fileName = ref('')
 const importing = ref(false)
@@ -24,6 +24,16 @@ const importResult = ref<{
   terminology: { terminology_id: string; code: string; name: string }
   terms_result: BulkOperationResponse
 } | null>(null)
+
+// Progress tracking
+const BATCH_SIZE = 1000
+const progress = ref({
+  current: 0,
+  total: 0,
+  succeeded: 0,
+  failed: 0,
+  skipped: 0
+})
 
 const options = ref({
   skip_duplicates: true,
@@ -118,18 +128,74 @@ async function doImport() {
   if (!fileContent.value) return
 
   importing.value = true
+  const allTerms = fileContent.value.terms
+  progress.value = {
+    current: 0,
+    total: allTerms.length,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0
+  }
+  step.value = 'importing'
+
   try {
+    // Step 1: Create terminology with first batch of terms
+    const firstBatch = allTerms.slice(0, BATCH_SIZE)
     const request: ImportTerminologyRequest = {
-      ...fileContent.value,
+      terminology: fileContent.value.terminology,
+      terms: firstBatch,
       options: options.value
     }
 
     const result = await defStoreClient.importTerminology(request)
-    importResult.value = result
+    const terminologyId = result.terminology.terminology_id
+
+    // Update progress from first batch
+    progress.value.current = firstBatch.length
+    progress.value.succeeded = result.terms_result.succeeded
+    progress.value.failed = result.terms_result.failed
+    progress.value.skipped = result.terms_result.skipped || 0
+
+    // Collect all results
+    const allResults = [...result.terms_result.results]
+
+    // Step 2: Send remaining batches using bulk endpoint
+    for (let i = BATCH_SIZE; i < allTerms.length; i += BATCH_SIZE) {
+      const batch = allTerms.slice(i, i + BATCH_SIZE)
+
+      const batchResult = await defStoreClient.bulkCreateTerms(terminologyId, {
+        terms: batch
+      })
+
+      // Update progress
+      progress.value.current = Math.min(i + batch.length, allTerms.length)
+      progress.value.succeeded += batchResult.succeeded
+      progress.value.failed += batchResult.failed
+      progress.value.skipped += batchResult.skipped || 0
+
+      // Collect results (limit to avoid memory issues)
+      if (allResults.length < 1000) {
+        allResults.push(...batchResult.results.slice(0, 1000 - allResults.length))
+      }
+    }
+
+    // Build final result
+    importResult.value = {
+      terminology: result.terminology,
+      terms_result: {
+        results: allResults,
+        total: allTerms.length,
+        succeeded: progress.value.succeeded,
+        failed: progress.value.failed,
+        skipped: progress.value.skipped
+      }
+    }
+
     step.value = 'result'
-    uiStore.showSuccess('Import Complete', `Created ${result.terms_result.succeeded} terms`)
+    uiStore.showSuccess('Import Complete', `Created ${progress.value.succeeded} terms`)
   } catch (e) {
     uiStore.showError('Import Failed', (e as Error).message)
+    step.value = 'preview' // Go back to preview on error
   } finally {
     importing.value = false
   }
@@ -264,7 +330,31 @@ INACTIVE,inactive,Inactive,Not active</pre>
       </template>
     </Card>
 
-    <!-- Step 3: Result -->
+    <!-- Step 3: Importing Progress -->
+    <Card v-if="step === 'importing'" class="progress-card">
+      <template #title>Importing...</template>
+      <template #content>
+        <div class="progress-content">
+          <div class="progress-stats">
+            <span class="progress-main">{{ progress.current.toLocaleString() }} of {{ progress.total.toLocaleString() }}</span>
+            <span class="progress-percent">{{ Math.round((progress.current / progress.total) * 100) }}%</span>
+          </div>
+          <div class="progress-bar">
+            <div
+              class="progress-fill"
+              :style="{ width: `${(progress.current / progress.total) * 100}%` }"
+            ></div>
+          </div>
+          <div class="progress-details">
+            <span class="detail success">{{ progress.succeeded.toLocaleString() }} created</span>
+            <span class="detail" v-if="progress.skipped > 0">{{ progress.skipped.toLocaleString() }} skipped</span>
+            <span class="detail error" v-if="progress.failed > 0">{{ progress.failed.toLocaleString() }} failed</span>
+          </div>
+        </div>
+      </template>
+    </Card>
+
+    <!-- Step 4: Result -->
     <Card v-if="step === 'result' && importResult" class="result-card">
       <template #title>Import Complete</template>
       <template #content>
@@ -463,5 +553,60 @@ INACTIVE,inactive,Inactive,Not active</pre>
 .error-text {
   color: var(--p-red-500);
   font-size: 0.875rem;
+}
+
+.progress-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem 0;
+}
+
+.progress-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.progress-main {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.progress-percent {
+  font-size: 1.25rem;
+  color: var(--p-text-muted-color);
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--p-surface-200);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--p-primary-color);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.progress-details {
+  display: flex;
+  gap: 1.5rem;
+  font-size: 0.875rem;
+}
+
+.progress-details .detail {
+  color: var(--p-text-muted-color);
+}
+
+.progress-details .detail.success {
+  color: var(--p-green-500);
+}
+
+.progress-details .detail.error {
+  color: var(--p-red-500);
 }
 </style>
