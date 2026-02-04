@@ -305,18 +305,25 @@ class ImportExportService:
         skipped_count = sum(1 for r in term_results if r.status == "skipped")
         error_count = sum(1 for r in term_results if r.status == "error")
 
+        # Get terminology name (from existing or from import data)
+        terminology_name = (
+            existing_terminology.name if existing_terminology
+            else terminology_data.get("name")
+        )
+
         return {
             "terminology": {
-                "id": terminology_id,
+                "terminology_id": terminology_id,
                 "code": terminology_data.get("code"),
+                "name": terminology_name,
                 "status": terminology_status
             },
-            "terms": {
+            "terms_result": {
                 "results": [r.model_dump() for r in term_results],
                 "total": len(terms_data),
-                "created": created_count,
+                "succeeded": created_count,
                 "skipped": skipped_count,
-                "errors": error_count
+                "failed": error_count
             }
         }
 
