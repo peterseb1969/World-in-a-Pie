@@ -80,59 +80,83 @@ async def register_keys(
     For each key:
     - If the key already exists, returns the existing registry ID
     - If new, generates an ID based on namespace configuration and creates entry
+
+    Uses batch MongoDB operations for efficiency with large imports.
     """
-    results = []
+    if not items:
+        return RegisterBulkResponse(results=[], total=0, created=0, already_exists=0, errors=0)
+
+    results: List[RegisterKeyResponse | None] = [None] * len(items)
     created_count = 0
     exists_count = 0
     error_count = 0
 
-    for i, item in enumerate(items):
+    # Phase 1: Compute all hashes upfront
+    hashes = []
+    for item in items:
+        hashes.append(HashService.compute_composite_key_hash(item.composite_key))
+
+    # Phase 2: Batch check for existing entries (single query)
+    existing_entries = await RegistryEntry.find({
+        "$or": [
+            {"primary_composite_key_hash": {"$in": hashes}},
+            {"synonyms.composite_key_hash": {"$in": hashes}}
+        ]
+    }).to_list()
+
+    # Build lookup maps for existing entries
+    existing_by_hash = {}
+    for entry in existing_entries:
+        existing_by_hash[entry.primary_composite_key_hash] = entry
+        for syn in entry.synonyms:
+            existing_by_hash[syn.composite_key_hash] = entry
+
+    # Phase 3: Cache namespace configs (typically only 1-2 unique namespaces per batch)
+    namespace_configs: dict[str, Namespace | None] = {}
+
+    # Phase 4: Partition into exists/create/error and build entries to insert
+    entries_to_insert: List[RegistryEntry] = []
+    insert_indices: List[int] = []  # maps insert position -> original index
+
+    for i, (item, key_hash) in enumerate(zip(items, hashes)):
         try:
-            # Compute hash for the composite key
-            key_hash = HashService.compute_composite_key_hash(item.composite_key)
-
-            # Check if this exact key already exists
-            existing = await RegistryEntry.find_one({
-                "$or": [
-                    {"primary_composite_key_hash": key_hash},
-                    {"synonyms.composite_key_hash": key_hash}
-                ]
-            })
-
+            # Check if exists
+            existing = existing_by_hash.get(key_hash)
             if existing:
-                results.append(RegisterKeyResponse(
+                results[i] = RegisterKeyResponse(
                     input_index=i,
                     status="already_exists",
                     registry_id=existing.entry_id,
                     namespace=existing.primary_namespace,
-                ))
+                )
                 exists_count += 1
                 continue
 
-            # Get namespace configuration
-            ns_config = await get_namespace_config(item.namespace)
+            # Get namespace config (cached)
+            if item.namespace not in namespace_configs:
+                namespace_configs[item.namespace] = await get_namespace_config(item.namespace)
+            ns_config = namespace_configs[item.namespace]
+
             if not ns_config:
-                # Use default config if namespace not found
                 id_gen_config = IdGeneratorConfig()
             else:
                 id_gen_config = ns_config.id_generator
 
             # Generate ID based on namespace config
             if id_gen_config.type == IdGeneratorType.EXTERNAL:
-                # External IDs must be provided in metadata or composite key
                 entry_id = item.metadata.get("external_id") or item.composite_key.get("id")
                 if not entry_id:
-                    results.append(RegisterKeyResponse(
+                    results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="error",
                         error="External namespace requires 'external_id' in metadata or 'id' in composite_key"
-                    ))
+                    )
                     error_count += 1
                     continue
             else:
                 entry_id = IdGeneratorService.generate(id_gen_config, item.namespace)
 
-            # Create the registry entry
+            # Build entry for batch insert
             entry = RegistryEntry(
                 entry_id=entry_id,
                 primary_namespace=item.namespace,
@@ -142,23 +166,42 @@ async def register_keys(
                 created_by=item.created_by,
                 metadata=item.metadata,
             )
-            await entry.create()
-
-            results.append(RegisterKeyResponse(
-                input_index=i,
-                status="created",
-                registry_id=entry_id,
-                namespace=item.namespace,
-            ))
-            created_count += 1
+            entries_to_insert.append(entry)
+            insert_indices.append(i)
 
         except Exception as e:
-            results.append(RegisterKeyResponse(
+            results[i] = RegisterKeyResponse(
                 input_index=i,
                 status="error",
                 error=str(e)
-            ))
+            )
             error_count += 1
+
+    # Phase 5: Batch insert all new entries (single insert_many)
+    if entries_to_insert:
+        try:
+            await RegistryEntry.insert_many(entries_to_insert)
+            # All succeeded
+            for pos, idx in enumerate(insert_indices):
+                entry = entries_to_insert[pos]
+                results[idx] = RegisterKeyResponse(
+                    input_index=idx,
+                    status="created",
+                    registry_id=entry.entry_id,
+                    namespace=entry.primary_namespace,
+                )
+                created_count += 1
+        except Exception as e:
+            # If insert_many fails, mark all pending as errors
+            # (Could be enhanced to handle partial failures)
+            for pos, idx in enumerate(insert_indices):
+                if results[idx] is None:
+                    results[idx] = RegisterKeyResponse(
+                        input_index=idx,
+                        status="error",
+                        error=f"Batch insert failed: {str(e)}"
+                    )
+                    error_count += 1
 
     return RegisterBulkResponse(
         results=results,
