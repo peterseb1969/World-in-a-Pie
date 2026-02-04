@@ -155,7 +155,8 @@ class RegistryClient:
         self,
         terminology_id: str,
         terms: list[dict[str, Any]],
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        timeout: Optional[float] = None
     ) -> list[dict[str, Any]]:
         """
         Register multiple terms in the Registry.
@@ -164,6 +165,7 @@ class RegistryClient:
             terminology_id: Parent terminology ID
             terms: List of term dicts with 'code' and 'value'
             created_by: User or system creating these
+            timeout: Request timeout in seconds (default 60 for bulk ops)
 
         Returns:
             List of registration results with IDs
@@ -185,7 +187,9 @@ class RegistryClient:
             for term in terms
         ]
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        # Use longer timeout for bulk operations (60s default vs 10s normal)
+        bulk_timeout = timeout if timeout is not None else 60.0
+        async with httpx.AsyncClient(timeout=bulk_timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),

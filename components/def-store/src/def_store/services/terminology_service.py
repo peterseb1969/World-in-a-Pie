@@ -347,6 +347,7 @@ class TerminologyService:
         created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
         skip_duplicates: bool = True,
         update_existing: bool = False,
+        batch_size: int = 1000,
     ) -> list[BulkOperationResult]:
         """
         Create multiple terms in a terminology using batch operations.
@@ -354,12 +355,15 @@ class TerminologyService:
         Uses bulk MongoDB operations (insert_many) instead of per-term inserts
         for significantly better performance on large imports.
 
+        All operations are chunked to handle large imports (100k+ terms).
+
         Args:
             terminology_id: Parent terminology ID
             terms: Terms to create
             created_by: Deprecated - uses authenticated identity
             skip_duplicates: If True, skip terms whose code already exists
             update_existing: If True, placeholder for future update logic
+            batch_size: Number of terms to process per batch (default 1000)
 
         Returns:
             List of operation results
@@ -374,159 +378,171 @@ class TerminologyService:
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
-
-        # Phase B: Batch Registry call (1 HTTP call)
-        client = get_registry_client()
-        registry_results = await client.register_terms_bulk(
-            terminology_id=terminology_id,
-            terms=[{"code": t.code, "value": t.value} for t in terms],
-            created_by=actor
-        )
-
-        # Phase C: Batch duplicate check (2 queries instead of N)
-        non_error_ids = [
-            r["registry_id"] for r in registry_results
-            if r.get("status") != "error" and r.get("registry_id")
-        ]
-        all_codes = [t.code for t in terms]
-
-        existing_by_id = {}
-        existing_by_code = {}
-        if non_error_ids:
-            existing_terms = await Term.find(
-                {"term_id": {"$in": non_error_ids}}
-            ).to_list()
-            existing_by_id = {t.term_id: t for t in existing_terms}
-        if all_codes:
-            code_matches = await Term.find({
-                "terminology_id": terminology_id,
-                "code": {"$in": all_codes}
-            }).to_list()
-            existing_by_code = {t.code: t for t in code_matches}
-
-        # Phase D: Partition into create/skip/error buckets
-        results: list[BulkOperationResult | None] = [None] * len(terms)
-        terms_to_insert: list[Term] = []
-        insert_indices: list[int] = []  # maps insert position -> original index
         now = datetime.now(timezone.utc)
 
-        for i, (term_req, reg_result) in enumerate(zip(terms, registry_results)):
-            if reg_result.get("status") == "error":
-                results[i] = BulkOperationResult(
-                    index=i,
-                    status="error",
-                    code=term_req.code,
-                    error=reg_result.get("error")
-                )
-                continue
+        # Initialize results array
+        results: list[BulkOperationResult | None] = [None] * len(terms)
+        total_created = 0
+        client = get_registry_client()
 
-            term_id = reg_result["registry_id"]
+        # Process in batches to avoid MongoDB/HTTP limits
+        for batch_start in range(0, len(terms), batch_size):
+            batch_end = min(batch_start + batch_size, len(terms))
+            batch_terms = terms[batch_start:batch_end]
 
-            # Check duplicates by term_id or by code within terminology
-            existing = existing_by_id.get(term_id) or existing_by_code.get(term_req.code)
-            if existing:
-                if skip_duplicates or update_existing:
-                    results[i] = BulkOperationResult(
-                        index=i,
-                        status="skipped" if skip_duplicates else "updated",
-                        id=existing.term_id,
-                        code=term_req.code,
-                        error="Already exists" if skip_duplicates else None
-                    )
-                else:
-                    results[i] = BulkOperationResult(
-                        index=i,
+            # Phase B: Registry call for this batch
+            batch_registry_results = await client.register_terms_bulk(
+                terminology_id=terminology_id,
+                terms=[{"code": t.code, "value": t.value} for t in batch_terms],
+                created_by=actor
+            )
+
+            # Phase C: Duplicate check for this batch
+            batch_ids = [
+                r["registry_id"] for r in batch_registry_results
+                if r.get("status") != "error" and r.get("registry_id")
+            ]
+            batch_codes = [t.code for t in batch_terms]
+
+            existing_by_id = {}
+            existing_by_code = {}
+            if batch_ids:
+                existing_terms = await Term.find(
+                    {"term_id": {"$in": batch_ids}}
+                ).to_list()
+                existing_by_id = {t.term_id: t for t in existing_terms}
+            if batch_codes:
+                code_matches = await Term.find({
+                    "terminology_id": terminology_id,
+                    "code": {"$in": batch_codes}
+                }).to_list()
+                existing_by_code = {t.code: t for t in code_matches}
+
+            # Phase D: Partition this batch into create/skip/error
+            terms_to_insert: list[Term] = []
+            insert_indices: list[int] = []  # maps insert position -> global index
+
+            for i, (term_req, reg_result) in enumerate(zip(batch_terms, batch_registry_results)):
+                global_idx = batch_start + i
+
+                if reg_result.get("status") == "error":
+                    results[global_idx] = BulkOperationResult(
+                        index=global_idx,
                         status="error",
                         code=term_req.code,
-                        error=f"Term with code '{term_req.code}' already exists"
+                        error=reg_result.get("error")
                     )
-                continue
+                    continue
 
-            # Build Term document for batch insert
-            term = Term(
-                term_id=term_id,
-                terminology_id=terminology_id,
-                terminology_code=terminology.code,
-                code=term_req.code,
-                value=term_req.value,
-                aliases=term_req.aliases,
-                label=term_req.label,
-                description=term_req.description,
-                sort_order=term_req.sort_order,
-                parent_term_id=term_req.parent_term_id,
-                translations=term_req.translations,
-                metadata=term_req.metadata,
-                created_by=actor,
-            )
-            terms_to_insert.append(term)
-            insert_indices.append(i)
+                term_id = reg_result["registry_id"]
 
-        # Phase E: Batch insert terms (1 insert_many)
-        created_count = 0
-        if terms_to_insert:
-            try:
-                await Term.insert_many(terms_to_insert, ordered=False)
-                # All succeeded
-                for pos, idx in enumerate(insert_indices):
-                    term = terms_to_insert[pos]
-                    results[idx] = BulkOperationResult(
-                        index=idx,
-                        status="created",
-                        id=term.term_id,
-                        code=term.code,
-                    )
-                    created_count += 1
-            except BulkWriteError as bwe:
-                # Some inserts may have failed (e.g. race condition duplicates)
-                failed_indices = {
-                    err["index"] for err in bwe.details.get("writeErrors", [])
-                }
-                error_messages = {
-                    err["index"]: err.get("errmsg", "Insert failed")
-                    for err in bwe.details.get("writeErrors", [])
-                }
-                for pos, idx in enumerate(insert_indices):
-                    term = terms_to_insert[pos]
-                    if pos in failed_indices:
-                        results[idx] = BulkOperationResult(
-                            index=idx,
-                            status="error",
-                            code=term.code,
-                            error=error_messages.get(pos, "Insert failed"),
+                # Check duplicates by term_id or by code within terminology
+                existing = existing_by_id.get(term_id) or existing_by_code.get(term_req.code)
+                if existing:
+                    if skip_duplicates or update_existing:
+                        results[global_idx] = BulkOperationResult(
+                            index=global_idx,
+                            status="skipped" if skip_duplicates else "updated",
+                            id=existing.term_id,
+                            code=term_req.code,
+                            error="Already exists" if skip_duplicates else None
                         )
                     else:
+                        results[global_idx] = BulkOperationResult(
+                            index=global_idx,
+                            status="error",
+                            code=term_req.code,
+                            error=f"Term with code '{term_req.code}' already exists"
+                        )
+                    continue
+
+                # Build Term document for batch insert
+                term = Term(
+                    term_id=term_id,
+                    terminology_id=terminology_id,
+                    terminology_code=terminology.code,
+                    code=term_req.code,
+                    value=term_req.value,
+                    aliases=term_req.aliases,
+                    label=term_req.label,
+                    description=term_req.description,
+                    sort_order=term_req.sort_order,
+                    parent_term_id=term_req.parent_term_id,
+                    translations=term_req.translations,
+                    metadata=term_req.metadata,
+                    created_by=actor,
+                )
+                terms_to_insert.append(term)
+                insert_indices.append(global_idx)
+
+            # Phase E: Batch insert terms for this batch
+            batch_created = 0
+            if terms_to_insert:
+                try:
+                    await Term.insert_many(terms_to_insert, ordered=False)
+                    # All succeeded
+                    for pos, idx in enumerate(insert_indices):
+                        term = terms_to_insert[pos]
                         results[idx] = BulkOperationResult(
                             index=idx,
                             status="created",
                             id=term.term_id,
                             code=term.code,
                         )
-                        created_count += 1
+                        batch_created += 1
+                except BulkWriteError as bwe:
+                    # Some inserts may have failed (e.g. race condition duplicates)
+                    failed_indices = {
+                        err["index"] for err in bwe.details.get("writeErrors", [])
+                    }
+                    error_messages = {
+                        err["index"]: err.get("errmsg", "Insert failed")
+                        for err in bwe.details.get("writeErrors", [])
+                    }
+                    for pos, idx in enumerate(insert_indices):
+                        term = terms_to_insert[pos]
+                        if pos in failed_indices:
+                            results[idx] = BulkOperationResult(
+                                index=idx,
+                                status="error",
+                                code=term.code,
+                                error=error_messages.get(pos, "Insert failed"),
+                            )
+                        else:
+                            results[idx] = BulkOperationResult(
+                                index=idx,
+                                status="created",
+                                id=term.term_id,
+                                code=term.code,
+                            )
+                            batch_created += 1
 
-        # Phase F: Batch insert audit logs (1 insert_many)
-        audit_entries = [
-            TermAuditLog(
-                term_id=terms_to_insert[pos].term_id,
-                terminology_id=terminology_id,
-                action="created",
-                changed_by=actor,
-                changed_at=now,
-                new_values={
-                    "code": terms_to_insert[pos].code,
-                    "value": terms_to_insert[pos].value,
-                    "aliases": terms_to_insert[pos].aliases,
-                    "label": terms_to_insert[pos].label,
-                },
-            )
-            for pos, idx in enumerate(insert_indices)
-            if results[idx] is not None and results[idx].status == "created"
-        ]
-        if audit_entries:
-            await TermAuditLog.insert_many(audit_entries)
+            # Phase F: Batch insert audit logs for this batch
+            audit_entries = [
+                TermAuditLog(
+                    term_id=terms_to_insert[pos].term_id,
+                    terminology_id=terminology_id,
+                    action="created",
+                    changed_by=actor,
+                    changed_at=now,
+                    new_values={
+                        "code": terms_to_insert[pos].code,
+                        "value": terms_to_insert[pos].value,
+                        "aliases": terms_to_insert[pos].aliases,
+                        "label": terms_to_insert[pos].label,
+                    },
+                )
+                for pos, idx in enumerate(insert_indices)
+                if results[idx] is not None and results[idx].status == "created"
+            ]
+            if audit_entries:
+                await TermAuditLog.insert_many(audit_entries)
 
-        # Phase G: Update terminology term count (1 save)
-        if created_count > 0:
-            terminology.term_count += created_count
+            total_created += batch_created
+
+        # Phase G: Update terminology term count (1 save at the end)
+        if total_created > 0:
+            terminology.term_count += total_created
             terminology.updated_at = now
             await terminology.save()
 
