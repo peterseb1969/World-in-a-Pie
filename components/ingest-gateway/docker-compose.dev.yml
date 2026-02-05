@@ -1,0 +1,34 @@
+# Ingest Gateway Service - Development
+# Requires: docker-compose.infra.yml (NATS) and other WIP services
+version: "3.8"
+
+services:
+  ingest-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wip-ingest-gateway-dev
+    ports:
+      - "8006:8006"
+    env_file:
+      - ../../.env
+    environment:
+      - DEBUG=true
+      - NATS_URL=nats://wip-nats:4222
+      - DEF_STORE_URL=http://wip-def-store-dev:8002
+      - TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
+      - DOCUMENT_STORE_URL=http://wip-document-store-dev:8004
+      - API_KEY=dev_master_key_for_testing
+    volumes:
+      - ./src:/app/src:ro
+    command: uvicorn ingest_gateway.main:app --host 0.0.0.0 --port 8006 --reload
+    networks:
+      - wip-network
+    restart: unless-stopped
+    depends_on:
+      - nats
+
+networks:
+  wip-network:
+    external: true
+    name: wip-network

@@ -276,6 +276,7 @@ load_profile() {
     log_debug "Include Caddy: $WIP_INCLUDE_CADDY"
     log_debug "Include Mongo Express: $WIP_INCLUDE_MONGO_EXPRESS"
     log_debug "Include MinIO: $WIP_INCLUDE_MINIO"
+    log_debug "Include Ingest Gateway: $WIP_INCLUDE_INGEST_GATEWAY"
 }
 
 # Generate Dex configuration from template
@@ -489,6 +490,10 @@ ${hosts} {
         uri strip_prefix /api/reporting-sync
         reverse_proxy wip-reporting-sync-dev:8005
     }
+    handle /api/ingest-gateway/* {
+        uri strip_prefix /api/ingest-gateway
+        reverse_proxy wip-ingest-gateway-dev:8006
+    }
 
     # Console (catch-all)
     handle {
@@ -606,6 +611,26 @@ EOF
 # FILE STORAGE (Disabled)
 # ============================================
 WIP_FILE_STORAGE_ENABLED=false
+EOF
+    fi
+
+    # Add Ingest Gateway config if enabled
+    if [ "$WIP_INCLUDE_INGEST_GATEWAY" = "true" ]; then
+        cat >> "$env_file" << EOF
+
+# ============================================
+# INGEST GATEWAY
+# ============================================
+WIP_INGEST_GATEWAY_ENABLED=true
+WIP_INGEST_GATEWAY_URL=http://wip-ingest-gateway-dev:8006
+EOF
+    else
+        cat >> "$env_file" << EOF
+
+# ============================================
+# INGEST GATEWAY (Disabled)
+# ============================================
+WIP_INGEST_GATEWAY_ENABLED=false
 EOF
     fi
 
@@ -888,6 +913,9 @@ start_services() {
     start_service "Template-Store" "template-store" "8003"
     start_service "Document-Store" "document-store" "8004"
     start_service "Reporting-Sync" "reporting-sync" "8005"
+    if [ "$WIP_INCLUDE_INGEST_GATEWAY" = "true" ]; then
+        start_service "Ingest-Gateway" "ingest-gateway" "8006"
+    fi
     echo ""
 
     log_step "Starting WIP Console..."
@@ -909,6 +937,11 @@ final_health_checks() {
         "Document-Store:8004"
         "Reporting-Sync:8005"
     )
+
+    # Add optional services to health check
+    if [ "$WIP_INCLUDE_INGEST_GATEWAY" = "true" ]; then
+        services+=("Ingest-Gateway:8006")
+    fi
 
     local all_healthy=true
     for svc in "${services[@]}"; do
@@ -1008,6 +1041,7 @@ print_status() {
     echo "  Template-Store: http://localhost:8003/docs"
     echo "  Document-Store: http://localhost:8004/docs"
     echo "  Reporting-Sync: http://localhost:8005/docs"
+    [ "$WIP_INCLUDE_INGEST_GATEWAY" = "true" ] && echo "  Ingest-Gateway: http://localhost:8006/docs"
     echo ""
 
     echo "Database access:"
