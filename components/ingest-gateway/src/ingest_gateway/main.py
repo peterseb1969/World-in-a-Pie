@@ -85,13 +85,13 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
         )
     except nats.js.errors.NotFoundError:
         logger.info(f"Creating stream {settings.nats_results_stream_name}...")
+        # Note: max_age removed due to nats-py serialization issue
         await js.add_stream(
             name=settings.nats_results_stream_name,
             subjects=["wip.ingest.results.>"],
             retention="limits",
             max_msgs=settings.stream_max_msgs,
             max_bytes=settings.stream_max_bytes,
-            max_age=settings.results_max_age_seconds * 1_000_000_000,  # nanoseconds
         )
         logger.info(f"Stream {settings.nats_results_stream_name} created")
 
