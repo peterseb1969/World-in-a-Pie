@@ -31,7 +31,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:
     import nats
@@ -63,8 +63,8 @@ class TestResult:
     correlation_id: str
     category: str
     expected_status: str
-    actual_status: str | None = None
-    error: str | None = None
+    actual_status: Optional[str] = None
+    error: Optional[str] = None
     passed: bool = False
 
 
@@ -82,7 +82,7 @@ class TestStats:
 # Phase 1: Create Prerequisites via REST API
 # ============================================================
 
-async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str) -> str | None:
+async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str) -> Optional[str]:
     """Create a terminology via REST API, return terminology_id."""
     try:
         response = await client.post(
@@ -108,7 +108,7 @@ async def create_test_terminology(client: httpx.AsyncClient, code: str, name: st
 async def create_test_terms(
     client: httpx.AsyncClient,
     terminology_id: str,
-    terms: list[dict]
+    terms: List[dict]
 ) -> bool:
     """Create terms in a terminology via REST API."""
     try:
@@ -127,7 +127,7 @@ async def create_test_template(
     client: httpx.AsyncClient,
     code: str,
     terminology_id: str
-) -> str | None:
+) -> Optional[str]:
     """Create a template that references the test terminology."""
     try:
         response = await client.post(
@@ -276,9 +276,9 @@ def generate_duplicate_terminology(original_code: str, index: int) -> dict:
 
 async def publish_and_collect(
     js: JetStreamContext,
-    messages: list[tuple[str, dict | bytes, str, str]],
+    messages: List[Tuple[str, Union[dict, bytes], str, str]],
     timeout_seconds: float = 120.0
-) -> list[TestResult]:
+) -> List[TestResult]:
     """
     Publish all messages and collect results from results stream.
 
@@ -290,7 +290,7 @@ async def publish_and_collect(
     Returns:
         List of TestResult with pass/fail status
     """
-    results_by_correlation: dict[str, TestResult] = {}
+    results_by_correlation: Dict[str, TestResult] = {}
 
     # Create/get consumer for results
     try:
@@ -363,7 +363,7 @@ async def publish_and_collect(
     return list(results_by_correlation.values())
 
 
-def aggregate_stats(results: list[TestResult]) -> TestStats:
+def aggregate_stats(results: List[TestResult]) -> TestStats:
     """Aggregate test results into statistics."""
     stats = TestStats()
     stats.total = len(results)
@@ -471,7 +471,7 @@ async def run_stress_test(
 
     # Phase 2: Generate test messages
     print("[Phase 2] Generating test messages...")
-    messages: list[tuple[str, dict | bytes, str, str]] = []
+    messages: List[Tuple[str, Union[dict, bytes], str, str]] = []
 
     # Valid terminologies
     for i in range(terminology_count):
