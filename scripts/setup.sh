@@ -932,6 +932,9 @@ ensure_data_dirs() {
     log_step "Ensuring data directories..."
     mkdir -p "$WIP_DATA_DIR"/{mongodb,nats,dex,caddy/data,caddy/config}
 
+    # Dex runs as UID 1001 inside container, needs write access
+    chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || chmod 770 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+
     if has_module "reporting"; then
         mkdir -p "$WIP_DATA_DIR/postgres"
     fi
