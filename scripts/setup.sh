@@ -932,8 +932,13 @@ ensure_data_dirs() {
     log_step "Ensuring data directories..."
     mkdir -p "$WIP_DATA_DIR"/{mongodb,nats,dex,caddy/data,caddy/config}
 
-    # Dex runs as UID 1001 inside container, needs write access
-    chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || chmod 770 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+    # Fix Dex directory ownership for rootless Podman on Linux
+    # Dex runs as UID 1001 inside container; podman unshare sets ownership
+    # correctly within the user namespace mapping
+    if [[ "$(uname)" != "Darwin" ]] && has_module "oidc"; then
+        log_info "Setting Dex directory ownership for rootless Podman..."
+        podman unshare chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+    fi
 
     if has_module "reporting"; then
         mkdir -p "$WIP_DATA_DIR/postgres"
