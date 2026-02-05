@@ -1043,20 +1043,18 @@ verify_compose_files() {
 start_infrastructure() {
     log_step "Starting infrastructure..."
 
-    cd "$PROJECT_ROOT"
-
-    # Build compose command with base + modules
-    local compose_files="-f docker-compose/base.yml"
+    # Use absolute paths for all compose files (podman-compose resolves relative to cwd)
+    local compose_files="-f $PROJECT_ROOT/docker-compose/base.yml"
 
     # Add platform overlay
-    if [ -f "docker-compose/platforms/${PLATFORM}.yml" ]; then
-        compose_files="$compose_files -f docker-compose/platforms/${PLATFORM}.yml"
+    if [ -f "$PROJECT_ROOT/docker-compose/platforms/${PLATFORM}.yml" ]; then
+        compose_files="$compose_files -f $PROJECT_ROOT/docker-compose/platforms/${PLATFORM}.yml"
     fi
 
     # Add module overlays (only for modules that have infrastructure overlays)
     for mod in ${ACTIVE_MODULES//,/ }; do
-        local mod_file="docker-compose/modules/${mod}.yml"
-        if [ -f "$PROJECT_ROOT/$mod_file" ]; then
+        local mod_file="$PROJECT_ROOT/docker-compose/modules/${mod}.yml"
+        if [ -f "$mod_file" ]; then
             compose_files="$compose_files -f $mod_file"
         else
             log_debug "No overlay for module: $mod (started as service)"
@@ -1065,8 +1063,8 @@ start_infrastructure() {
 
     log_debug "Compose files: $compose_files"
 
-    # Start infrastructure
-    podman-compose --env-file .env $compose_files up -d
+    # Start infrastructure (use absolute path for env file too)
+    podman-compose --env-file "$PROJECT_ROOT/.env" $compose_files up -d
 
     # Wait for MongoDB
     log_info "Waiting for MongoDB..."
