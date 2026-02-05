@@ -60,9 +60,16 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
         )
     except nats.js.errors.NotFoundError:
         logger.info(f"Creating stream {settings.nats_ingest_stream_name}...")
+        # Use explicit subjects to avoid overlap with results stream
+        # (wip.ingest.> would also capture wip.ingest.results.>)
         await js.add_stream(
             name=settings.nats_ingest_stream_name,
-            subjects=["wip.ingest.>"],
+            subjects=[
+                "wip.ingest.terminologies.>",
+                "wip.ingest.terms.>",
+                "wip.ingest.templates.>",
+                "wip.ingest.documents.>",
+            ],
             retention="limits",
             max_msgs=settings.stream_max_msgs,
             max_bytes=settings.stream_max_bytes,
