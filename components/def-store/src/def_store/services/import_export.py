@@ -294,11 +294,17 @@ class ImportExportService:
             ))
 
         # Delegate to batch method for efficient bulk import
+        # Get batch size options (for large imports)
+        batch_size = options.get("batch_size", 1000)
+        registry_batch_size = options.get("registry_batch_size", 100)
+
         term_results = await TerminologyService.create_terms_bulk(
             terminology_id=terminology_id,
             terms=term_requests,
             skip_duplicates=skip_duplicates,
             update_existing=update_existing,
+            batch_size=batch_size,
+            registry_batch_size=registry_batch_size,
         )
 
         created_count = sum(1 for r in term_results if r.status == "created")

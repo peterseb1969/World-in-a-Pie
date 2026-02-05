@@ -63,18 +63,35 @@ async def create_term(
 async def create_terms_bulk(
     terminology_id: str,
     request: BulkCreateTermRequest,
+    batch_size: int = Query(
+        1000,
+        description="Number of terms per MongoDB batch (default 1000)"
+    ),
+    registry_batch_size: int = Query(
+        100,
+        description="Number of terms per registry HTTP call (default 100). "
+        "Reduce if experiencing timeouts on large imports."
+    ),
     api_key: str = Depends(require_api_key)
 ) -> BulkOperationResponse:
     """
     Create multiple terms in a terminology at once.
 
     Useful for importing terms or seeding data.
+
+    For very large imports (100k+ terms), you may need to tune the batch sizes:
+    - `batch_size`: Controls MongoDB batch size (default 1000)
+    - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
+
+    If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
     try:
         results = await TerminologyService.create_terms_bulk(
             terminology_id=terminology_id,
             terms=request.terms,
-            created_by=request.created_by
+            created_by=request.created_by,
+            batch_size=batch_size,
+            registry_batch_size=registry_batch_size,
         )
         succeeded = sum(1 for r in results if r.status in ("created", "updated"))
         failed = sum(1 for r in results if r.status == "error")

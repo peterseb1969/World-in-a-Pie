@@ -1,5 +1,7 @@
 """Terminology service for business logic."""
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -23,6 +25,8 @@ from .registry_client import get_registry_client, RegistryError
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
+
+logger = logging.getLogger(__name__)
 
 
 class TerminologyService:
@@ -348,6 +352,7 @@ class TerminologyService:
         skip_duplicates: bool = True,
         update_existing: bool = False,
         batch_size: int = 1000,
+        registry_batch_size: int = 100,
     ) -> list[BulkOperationResult]:
         """
         Create multiple terms in a terminology using batch operations.
@@ -363,13 +368,17 @@ class TerminologyService:
             created_by: Deprecated - uses authenticated identity
             skip_duplicates: If True, skip terms whose code already exists
             update_existing: If True, placeholder for future update logic
-            batch_size: Number of terms to process per batch (default 1000)
+            batch_size: Number of terms to process per MongoDB batch (default 1000)
+            registry_batch_size: Number of terms per registry HTTP call (default 100)
 
         Returns:
             List of operation results
         """
         if not terms:
             return []
+
+        total_terms = len(terms)
+        logger.info(f"Starting bulk import of {total_terms} terms to {terminology_id}")
 
         # Phase A: Verify terminology exists (1 query)
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
@@ -384,18 +393,26 @@ class TerminologyService:
         results: list[BulkOperationResult | None] = [None] * len(terms)
         total_created = 0
         client = get_registry_client()
+        num_batches = (total_terms + batch_size - 1) // batch_size
 
         # Process in batches to avoid MongoDB/HTTP limits
-        for batch_start in range(0, len(terms), batch_size):
+        for batch_num, batch_start in enumerate(range(0, len(terms), batch_size), 1):
             batch_end = min(batch_start + batch_size, len(terms))
             batch_terms = terms[batch_start:batch_end]
+            logger.info(
+                f"Processing batch {batch_num}/{num_batches}: "
+                f"terms {batch_start+1}-{batch_end} of {total_terms}"
+            )
 
-            # Phase B: Registry call for this batch
+            # Phase B: Registry call for this batch (with sub-batching)
+            logger.debug(f"Registering {len(batch_terms)} terms with registry...")
             batch_registry_results = await client.register_terms_bulk(
                 terminology_id=terminology_id,
                 terms=[{"code": t.code, "value": t.value} for t in batch_terms],
-                created_by=actor
+                created_by=actor,
+                registry_batch_size=registry_batch_size,
             )
+            logger.debug(f"Registry registration complete for batch {batch_num}")
 
             # Phase C: Duplicate check for this batch
             batch_ids = [
@@ -539,6 +556,15 @@ class TerminologyService:
                 await TermAuditLog.insert_many(audit_entries)
 
             total_created += batch_created
+            logger.info(
+                f"Batch {batch_num}/{num_batches} complete: "
+                f"{batch_created} created, {total_created} total so far"
+            )
+
+            # Pause between batches to allow memory cleanup and prevent resource exhaustion
+            # This is especially important on memory-constrained environments
+            if batch_end < len(terms):
+                await asyncio.sleep(0.1)  # 100ms pause between MongoDB batches
 
         # Phase G: Update terminology term count (1 save at the end)
         if total_created > 0:
@@ -546,6 +572,9 @@ class TerminologyService:
             terminology.updated_at = now
             await terminology.save()
 
+        logger.info(
+            f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
+        )
         return results
 
     @staticmethod

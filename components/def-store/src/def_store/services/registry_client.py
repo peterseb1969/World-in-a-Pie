@@ -1,5 +1,6 @@
 """Client for communicating with the WIP Registry service."""
 
+import asyncio
 import os
 from typing import Any, Optional
 
@@ -156,16 +157,21 @@ class RegistryClient:
         terminology_id: str,
         terms: list[dict[str, Any]],
         created_by: Optional[str] = None,
-        timeout: Optional[float] = None
+        timeout: Optional[float] = None,
+        registry_batch_size: int = 100
     ) -> list[dict[str, Any]]:
         """
         Register multiple terms in the Registry.
+
+        Uses sub-batching to avoid timeout issues with large batches.
+        Each sub-batch is sent as a separate HTTP request.
 
         Args:
             terminology_id: Parent terminology ID
             terms: List of term dicts with 'code' and 'value'
             created_by: User or system creating these
-            timeout: Request timeout in seconds (default 60 for bulk ops)
+            timeout: Request timeout in seconds per sub-batch (default 120)
+            registry_batch_size: Number of terms per registry HTTP call (default 100)
 
         Returns:
             List of registration results with IDs
@@ -173,36 +179,55 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
-        items = [
-            {
-                "namespace": "wip-terms",
-                "composite_key": {
-                    "terminology_id": terminology_id,
-                    "code": term["code"],
-                    "value": term["value"]
-                },
-                "created_by": created_by,
-                "metadata": {"type": "term"}
-            }
-            for term in terms
-        ]
+        if not terms:
+            return []
 
-        # Use longer timeout for bulk operations (60s default vs 10s normal)
-        bulk_timeout = timeout if timeout is not None else 60.0
+        # Use longer timeout for bulk operations (120s default per sub-batch)
+        bulk_timeout = timeout if timeout is not None else 120.0
+
+        all_results: list[dict[str, Any]] = []
+
+        # Process in sub-batches to avoid registry timeout
         async with httpx.AsyncClient(timeout=bulk_timeout) as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/register",
-                headers=self._get_headers(),
-                json=items
-            )
+            for batch_start in range(0, len(terms), registry_batch_size):
+                batch_end = min(batch_start + registry_batch_size, len(terms))
+                batch_terms = terms[batch_start:batch_end]
 
-            if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to register terms: {response.status_code} - {response.text}"
+                items = [
+                    {
+                        "namespace": "wip-terms",
+                        "composite_key": {
+                            "terminology_id": terminology_id,
+                            "code": term["code"],
+                            "value": term["value"]
+                        },
+                        "created_by": created_by,
+                        "metadata": {"type": "term"}
+                    }
+                    for term in batch_terms
+                ]
+
+                response = await client.post(
+                    f"{self.base_url}/api/registry/entries/register",
+                    headers=self._get_headers(),
+                    json=items
                 )
 
-            data = response.json()
-            return data["results"]
+                if response.status_code != 200:
+                    raise RegistryError(
+                        f"Failed to register terms (batch {batch_start}-{batch_end}): "
+                        f"{response.status_code} - {response.text}"
+                    )
+
+                data = response.json()
+                all_results.extend(data["results"])
+
+                # Small pause between sub-batches to prevent overwhelming the system
+                # This is especially important on resource-constrained environments
+                if batch_end < len(terms):
+                    await asyncio.sleep(0.05)  # 50ms pause
+
+        return all_results
 
     async def add_synonym(
         self,

@@ -82,6 +82,15 @@ async def import_terminology(
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: Optional[str] = Query(None, description="User performing import"),
+    batch_size: int = Query(
+        1000,
+        description="Number of terms per MongoDB batch (default 1000)"
+    ),
+    registry_batch_size: int = Query(
+        100,
+        description="Number of terms per registry HTTP call (default 100). "
+        "Reduce if experiencing timeouts on large imports."
+    ),
     api_key: str = Depends(require_api_key)
 ):
     """
@@ -105,12 +114,20 @@ async def import_terminology(
 
     CSV format requires terminology_code and terminology_name in the data,
     plus csv_content with columns: code, value, label, description, sort_order
+
+    For very large imports (100k+ terms), you may need to tune the batch sizes:
+    - `batch_size`: Controls MongoDB batch size (default 1000)
+    - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
+
+    If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
     try:
         options = {
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
-            "created_by": created_by
+            "created_by": created_by,
+            "batch_size": batch_size,
+            "registry_batch_size": registry_batch_size,
         }
 
         result = await ImportExportService.import_terminology(
@@ -139,12 +156,25 @@ async def import_from_url(
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: Optional[str] = Query(None, description="User performing import"),
+    batch_size: int = Query(
+        1000,
+        description="Number of terms per MongoDB batch (default 1000)"
+    ),
+    registry_batch_size: int = Query(
+        100,
+        description="Number of terms per registry HTTP call (default 100). "
+        "Reduce if experiencing timeouts on large imports."
+    ),
     api_key: str = Depends(require_api_key)
 ):
     """
     Import a terminology from a URL.
 
     Fetches the data from the URL and imports it.
+
+    For very large imports (100k+ terms), you may need to tune the batch sizes:
+    - `batch_size`: Controls MongoDB batch size (default 1000)
+    - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
     try:
         options = {
@@ -152,7 +182,9 @@ async def import_from_url(
             "update_existing": update_existing,
             "created_by": created_by,
             "terminology_code": terminology_code,
-            "terminology_name": terminology_name
+            "terminology_name": terminology_name,
+            "batch_size": batch_size,
+            "registry_batch_size": registry_batch_size,
         }
 
         result = await ImportExportService.import_from_url(
