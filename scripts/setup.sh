@@ -434,12 +434,6 @@ generate_caddy_config() {
                 hosts="${hosts}, ${ip}"
             fi
             ;;
-        both)
-            hosts="*.local, 192.168.*.*"
-            if [ -n "$HOSTNAME" ]; then
-                hosts="${hosts}, ${HOSTNAME}"
-            fi
-            ;;
     esac
 
     # Write Caddy config directly
@@ -517,7 +511,8 @@ SITEBLOCK
     # In "both" mode, add a redirect block so localhost sends users to the hostname.
     # This is required because Dex's OIDC issuer is set to the hostname - login via
     # localhost would fail due to issuer mismatch.
-    if [ "$NETWORK" = "both" ] && [ -n "$HOSTNAME" ]; then
+    #Update from human: Both is removed, but the redirect should be implemented for remote, to avoid confusion when accidentally logging into localhost
+    if [ "$NETWORK" = "remote" ] && [ -n "$HOSTNAME" ]; then
         local redirect_block
         redirect_block=$(cat << REDIR
 
