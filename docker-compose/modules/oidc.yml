@@ -22,8 +22,8 @@ services:
     ports:
       - "5556:5556"
     volumes:
-      - ./config/dex:/etc/dex:ro
-      - ${WIP_DATA_DIR:-./data}/dex:/data
+      - ../config/dex:/etc/dex:ro
+      - ${WIP_DATA_DIR:-../data}/dex:/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/healthz"]
       interval: 30s
@@ -44,9 +44,9 @@ services:
       - "8080:80"
       - "8443:443"
     volumes:
-      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ${WIP_DATA_DIR:-./data}/caddy/data:/data
-      - ${WIP_DATA_DIR:-./data}/caddy/config:/config
+      - ../config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${WIP_DATA_DIR:-../data}/caddy/data:/data
+      - ${WIP_DATA_DIR:-../data}/caddy/config:/config
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 30s
