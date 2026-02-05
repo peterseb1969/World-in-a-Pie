@@ -139,10 +139,11 @@ async def create_test_template(
                 "description": f"Test template for stress test {TEST_RUN_ID}",
                 "identity_fields": ["email"],
                 "fields": [
-                    {"name": "name", "type": "string", "required": True},
-                    {"name": "email", "type": "string", "required": True},
+                    {"name": "name", "label": "Name", "type": "string", "required": True},
+                    {"name": "email", "label": "Email", "type": "string", "required": True},
                     {
                         "name": "status",
+                        "label": "Status",
                         "type": "term",
                         "required": False,
                         "terminology_ref": terminology_id
@@ -210,10 +211,11 @@ def generate_valid_template(index: int, terminology_id: str) -> dict:
             "description": f"Created by stress test {TEST_RUN_ID}",
             "identity_fields": ["email"],
             "fields": [
-                {"name": "name", "type": "string", "required": True},
-                {"name": "email", "type": "string", "required": True},
+                {"name": "name", "label": "Name", "type": "string", "required": True},
+                {"name": "email", "label": "Email", "type": "string", "required": True},
                 {
                     "name": "status",
+                    "label": "Status",
                     "type": "term",
                     "required": False,
                     "terminology_ref": terminology_id
