@@ -849,28 +849,28 @@ $host_patterns {
         reverse_proxy wip-dex:5556
     }
 
-    # API services
-    handle_path /api/registry/* {
+    # API services (use handle, not handle_path - services expect full path)
+    handle /api/registry/* {
         reverse_proxy wip-registry-dev:8001
     }
 
-    handle_path /api/def-store/* {
+    handle /api/def-store/* {
         reverse_proxy wip-def-store-dev:8002
     }
 
-    handle_path /api/template-store/* {
+    handle /api/template-store/* {
         reverse_proxy wip-template-store-dev:8003
     }
 
-    handle_path /api/document-store/* {
+    handle /api/document-store/* {
         reverse_proxy wip-document-store-dev:8004
     }
 
-    handle_path /api/reporting-sync/* {
+    handle /api/reporting-sync/* {
         reverse_proxy wip-reporting-sync-dev:8005
     }
 
-    handle_path /api/ingest-gateway/* {
+    handle /api/ingest-gateway/* {
         reverse_proxy wip-ingest-gateway-dev:8006
     }
 
