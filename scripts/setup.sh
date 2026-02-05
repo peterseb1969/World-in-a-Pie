@@ -812,11 +812,13 @@ generate_caddy_config() {
     log_step "Generating Caddy configuration..."
     mkdir -p "$PROJECT_ROOT/config/caddy"
 
+    # Caddy listens on standard ports inside container (443 for HTTPS)
+    # Port mapping in docker-compose exposes 443 as HTTPS_PORT externally
     local host_patterns=""
     if [ "$LOCALHOST_MODE" = "true" ]; then
-        host_patterns="localhost:${HTTPS_PORT}"
+        host_patterns="localhost"
     else
-        host_patterns="${HOSTNAME}:${HTTPS_PORT}, localhost:${HTTPS_PORT}"
+        host_patterns="${HOSTNAME}, localhost"
     fi
 
     cat > "$PROJECT_ROOT/config/caddy/Caddyfile" << EOF
