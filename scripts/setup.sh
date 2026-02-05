@@ -508,25 +508,6 @@ http:// {
 }
 SITEBLOCK
 
-    # In "both" mode, add a redirect block so localhost sends users to the hostname.
-    # This is required because Dex's OIDC issuer is set to the hostname - login via
-    # localhost would fail due to issuer mismatch.
-    #Update from human: Both is removed, but the redirect should be implemented for remote, to avoid confusion when accidentally logging into localhost
-    if [ "$NETWORK" = "remote" ] && [ -n "$HOSTNAME" ]; then
-        local redirect_block
-        redirect_block=$(cat << REDIR
-
-# Redirect localhost to hostname (required for OIDC issuer match)
-localhost, 127.0.0.1 {
-    tls internal
-    redir https://${HOSTNAME}:${HTTPS_PORT}{uri} permanent
-}
-REDIR
-)
-        # Insert the redirect block before the main site block
-        printf '%s\n\n%s\n' "$redirect_block" "$(cat "$output")" > "$output"
-    fi
-
     log_debug "Generated Caddy config with hosts: $hosts"
 }
 
