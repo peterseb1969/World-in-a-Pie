@@ -201,7 +201,6 @@ onMounted(() => {
                 name="files"
                 mode="advanced"
                 :multiple="true"
-                accept="*"
                 :maxFileSize="100000000"
                 customUpload
                 :auto="false"
