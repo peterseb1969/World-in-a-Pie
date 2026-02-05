@@ -38,6 +38,26 @@ class VersionStrategy(str, Enum):
     PINNED = "pinned"  # Lock to specific version at creation time
 
 
+class SemanticType(str, Enum):
+    """
+    Universal semantic types that provide meaning beyond base types.
+
+    Semantic types add validation and transformation logic for commonly
+    needed data patterns. They work with base types:
+    - string: email, url
+    - number: latitude, longitude, percentage
+    - object: duration, geo_point
+    """
+
+    EMAIL = "email"  # RFC 5322 email address
+    URL = "url"  # Valid HTTP(S) URL
+    LATITUDE = "latitude"  # Geographic latitude (-90 to 90)
+    LONGITUDE = "longitude"  # Geographic longitude (-180 to 180)
+    PERCENTAGE = "percentage"  # Percentage value (0 to 100)
+    DURATION = "duration"  # Time duration with unit {value, unit}
+    GEO_POINT = "geo_point"  # Geographic point {latitude, longitude}
+
+
 class FieldValidation(BaseModel):
     """Field-level validation constraints."""
 
@@ -176,6 +196,12 @@ class FieldDefinition(BaseModel):
     validation: Optional[FieldValidation] = Field(
         None,
         description="Field-level validation rules"
+    )
+
+    # Semantic type for universal data patterns
+    semantic_type: Optional[SemanticType] = Field(
+        None,
+        description="Semantic type for additional validation (email, url, latitude, etc.)"
     )
 
     # Additional metadata

@@ -20,6 +20,7 @@ from .models.term import Term
 from .models.audit_log import TermAuditLog
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
+from .services.system_terminologies import ensure_system_terminologies
 
 
 # Application configuration
@@ -70,6 +71,21 @@ async def lifespan(app: FastAPI):
         print("Registry service is healthy.")
     else:
         print("WARNING: Registry service is not reachable. Some features may not work.")
+
+    # Bootstrap system terminologies
+    print("Ensuring system terminologies exist...")
+    try:
+        result = await ensure_system_terminologies()
+        if result["errors"]:
+            for err in result["errors"]:
+                print(f"  WARNING: {err}")
+        print(f"System terminologies: {result['terminologies_created']} created, "
+              f"{result['terminologies_existed']} existed, "
+              f"{result['terms_created']} terms created, "
+              f"{result['terms_existed']} terms existed")
+    except Exception as e:
+        print(f"WARNING: Failed to bootstrap system terminologies: {e}")
+        print("System terminologies may need to be created manually.")
 
     yield
 

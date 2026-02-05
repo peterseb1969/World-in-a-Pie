@@ -299,7 +299,7 @@ class BatchSyncService:
                 async with self.pool.acquire() as conn:
                     for document in documents:
                         try:
-                            rows = transformer.transform(document)
+                            rows = transformer.transform(document, template)
                             for row in rows:
                                 sql, values = transformer.generate_upsert_sql(
                                     table_name, row, strategy

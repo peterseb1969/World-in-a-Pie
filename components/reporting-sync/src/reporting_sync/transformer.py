@@ -5,6 +5,7 @@ Responsibilities:
 - Flatten nested objects into prefixed columns
 - Handle arrays (expand to multiple rows or store as JSON)
 - Map term fields to value + term_id columns
+- Handle semantic types (duration → _seconds, geo_point → _lat/_lon)
 - Preserve original JSON for complex queries
 """
 
@@ -13,9 +14,34 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from .models import ReportingConfig
+from .models import ReportingConfig, SemanticType
 
 logger = logging.getLogger(__name__)
+
+
+# Time unit factors for computing duration seconds
+# These match the _TIME_UNITS terminology in Def-Store
+TIME_UNIT_FACTORS = {
+    "seconds": 1,
+    "second": 1,
+    "sec": 1,
+    "s": 1,
+    "minutes": 60,
+    "minute": 60,
+    "min": 60,
+    "m": 60,
+    "hours": 3600,
+    "hour": 3600,
+    "hr": 3600,
+    "h": 3600,
+    "days": 86400,
+    "day": 86400,
+    "d": 86400,
+    "weeks": 604800,
+    "week": 604800,
+    "wk": 604800,
+    "w": 604800,
+}
 
 
 from datetime import date
@@ -167,7 +193,96 @@ class DocumentTransformer:
         # create the necessary columns (which requires knowing array structure ahead of time)
         return [base_row]
 
-    def transform(self, document: dict[str, Any]) -> list[dict[str, Any]]:
+    def _process_semantic_types(
+        self,
+        row: dict[str, Any],
+        data: dict[str, Any],
+        term_references: dict[str, Any],
+        semantic_types: dict[str, "SemanticType"],
+    ) -> None:
+        """
+        Process semantic types and populate additional columns.
+
+        For duration fields:
+        - Computes {name}_seconds from value * factor
+        - Sets {name}_unit_term_id from term_references
+
+        For geo_point fields:
+        - Extracts {name}_latitude and {name}_longitude
+        """
+        for field_name, semantic_type in semantic_types.items():
+            value = data.get(field_name)
+            if value is None:
+                continue
+
+            safe_name = self._safe_column_name(field_name)
+
+            if semantic_type == SemanticType.DURATION:
+                self._process_duration(row, safe_name, value, term_references)
+
+            elif semantic_type == SemanticType.GEO_POINT:
+                self._process_geo_point(row, safe_name, value)
+
+    def _process_duration(
+        self,
+        row: dict[str, Any],
+        col_name: str,
+        value: dict[str, Any],
+        term_references: dict[str, Any],
+    ) -> None:
+        """Process duration semantic type."""
+        if not isinstance(value, dict):
+            return
+
+        duration_value = value.get("value")
+        unit = value.get("unit")
+
+        # The base column is already set as JSONB by _flatten_object
+        # Just need to add _seconds and _unit_term_id columns
+
+        # Compute normalized seconds
+        if duration_value is not None and unit:
+            # Look up unit factor (case-insensitive)
+            factor = TIME_UNIT_FACTORS.get(str(unit).lower())
+            if factor:
+                row[f"{col_name}_seconds"] = duration_value * factor
+            else:
+                # Unknown unit - try to compute anyway using original value
+                logger.warning(f"Unknown duration unit: {unit}")
+                row[f"{col_name}_seconds"] = None
+        else:
+            row[f"{col_name}_seconds"] = None
+
+        # Get unit term_id from term_references
+        # The term reference path for duration unit is "{field_name}.unit"
+        unit_ref_path = f"{col_name}.unit"
+        unit_term_id = term_references.get(unit_ref_path)
+        row[f"{col_name}_unit_term_id"] = unit_term_id
+
+    def _process_geo_point(
+        self,
+        row: dict[str, Any],
+        col_name: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Process geo_point semantic type."""
+        if not isinstance(value, dict):
+            return
+
+        # The base column is already set as JSONB by _flatten_object
+        # Just need to add _latitude and _longitude columns
+
+        lat = value.get("latitude")
+        lon = value.get("longitude")
+
+        row[f"{col_name}_latitude"] = lat if isinstance(lat, (int, float)) else None
+        row[f"{col_name}_longitude"] = lon if isinstance(lon, (int, float)) else None
+
+    def transform(
+        self,
+        document: dict[str, Any],
+        template: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Transform a document into one or more flat rows.
 
@@ -182,12 +297,23 @@ class DocumentTransformer:
                 - term_references
                 - file_references
                 - created_at, created_by, updated_at, updated_by
+            template: Optional template definition for semantic type processing
 
         Returns:
             List of flat row dictionaries ready for PostgreSQL insert/upsert
         """
         data = document.get("data", {})
         term_references_list = document.get("term_references", [])
+
+        # Build semantic type map from template if provided
+        semantic_types: dict[str, SemanticType] = {}
+        if template:
+            for field in template.get("fields", []):
+                if field.get("semantic_type"):
+                    try:
+                        semantic_types[field["name"]] = SemanticType(field["semantic_type"])
+                    except ValueError:
+                        pass  # Unknown semantic type, skip
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
@@ -244,6 +370,10 @@ class DocumentTransformer:
         # Flatten the data
         flattened_data = self._flatten_object(data, "", term_references)
         base_row.update(flattened_data)
+
+        # Process semantic types if template is provided
+        if semantic_types:
+            self._process_semantic_types(base_row, data, term_references, semantic_types)
 
         # Add term_id columns for top-level term references
         for field_path, term_id in term_references.items():

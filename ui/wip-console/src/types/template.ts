@@ -44,6 +44,99 @@ export const VERSION_STRATEGIES: { value: VersionStrategy; label: string; descri
   { value: 'pinned', label: 'Pinned', description: 'Lock to the specific version at creation time' }
 ]
 
+// =============================================================================
+// SEMANTIC TYPES
+// =============================================================================
+
+/**
+ * Semantic types provide meaning and validation beyond base types.
+ * They are optional and can be applied to compatible base types.
+ */
+export type SemanticType =
+  | 'email'
+  | 'url'
+  | 'latitude'
+  | 'longitude'
+  | 'percentage'
+  | 'duration'
+  | 'geo_point'
+
+export interface SemanticTypeInfo {
+  value: SemanticType
+  label: string
+  description: string
+  baseType: FieldType | FieldType[]
+  icon: string
+}
+
+/**
+ * Configuration for semantic types including compatible base types.
+ * Used by the UI to show appropriate semantic types for each base type.
+ */
+export const SEMANTIC_TYPES: SemanticTypeInfo[] = [
+  {
+    value: 'email',
+    label: 'Email',
+    description: 'Valid email address (RFC 5322)',
+    baseType: 'string',
+    icon: 'pi pi-envelope'
+  },
+  {
+    value: 'url',
+    label: 'URL',
+    description: 'Valid HTTP(S) URL',
+    baseType: 'string',
+    icon: 'pi pi-link'
+  },
+  {
+    value: 'latitude',
+    label: 'Latitude',
+    description: 'Geographic latitude (-90 to 90)',
+    baseType: 'number',
+    icon: 'pi pi-map-marker'
+  },
+  {
+    value: 'longitude',
+    label: 'Longitude',
+    description: 'Geographic longitude (-180 to 180)',
+    baseType: 'number',
+    icon: 'pi pi-map-marker'
+  },
+  {
+    value: 'percentage',
+    label: 'Percentage',
+    description: 'Percentage value (0 to 100)',
+    baseType: 'number',
+    icon: 'pi pi-percentage'
+  },
+  {
+    value: 'duration',
+    label: 'Duration',
+    description: 'Time duration with unit (e.g., 7 days, -3 hours)',
+    baseType: 'object',
+    icon: 'pi pi-clock'
+  },
+  {
+    value: 'geo_point',
+    label: 'Geographic Point',
+    description: 'Location with latitude and longitude',
+    baseType: 'object',
+    icon: 'pi pi-map'
+  }
+]
+
+/**
+ * Get semantic types compatible with a given base type.
+ */
+export function getSemanticTypesForBaseType(baseType: FieldType): SemanticTypeInfo[] {
+  return SEMANTIC_TYPES.filter(st => {
+    if (Array.isArray(st.baseType)) {
+      return st.baseType.includes(baseType)
+    }
+    return st.baseType === baseType
+  })
+}
+
 export interface FieldValidation {
   pattern?: string
   min_length?: number
@@ -83,6 +176,8 @@ export interface FieldDefinition {
   array_template_ref?: string
   array_file_config?: FileFieldConfig
   validation?: FieldValidation
+  // Semantic type for additional validation
+  semantic_type?: SemanticType
   metadata: Record<string, unknown>
 }
 

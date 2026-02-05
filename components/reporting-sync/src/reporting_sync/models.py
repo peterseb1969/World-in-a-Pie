@@ -78,6 +78,18 @@ class FieldType(str, Enum):
     ARRAY = "array"
 
 
+class SemanticType(str, Enum):
+    """Semantic types that provide meaning beyond base types."""
+
+    EMAIL = "email"
+    URL = "url"
+    LATITUDE = "latitude"
+    LONGITUDE = "longitude"
+    PERCENTAGE = "percentage"
+    DURATION = "duration"
+    GEO_POINT = "geo_point"
+
+
 class FileFieldConfig(BaseModel):
     """Configuration for file reference fields."""
 
@@ -100,6 +112,7 @@ class TemplateField(BaseModel):
     array_template_ref: str | None = None
     file_config: FileFieldConfig | None = None
     array_file_config: FileFieldConfig | None = None
+    semantic_type: SemanticType | None = None
 
 
 class SyncStatus(BaseModel):

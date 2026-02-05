@@ -97,6 +97,20 @@ class ValidationService:
         "array": "_validate_array",
     }
 
+    # Semantic type validators (called after base type validation)
+    SEMANTIC_VALIDATORS = {
+        "email": "_validate_semantic_email",
+        "url": "_validate_semantic_url",
+        "latitude": "_validate_semantic_latitude",
+        "longitude": "_validate_semantic_longitude",
+        "percentage": "_validate_semantic_percentage",
+        "duration": "_validate_semantic_duration",
+        "geo_point": "_validate_semantic_geo_point",
+    }
+
+    # Time units terminology code (system-provided)
+    TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
+
     # Class-level timing statistics
     _timing_stats: dict[str, list[float]] = {}
     _validation_count: int = 0
@@ -357,6 +371,15 @@ class ValidationService:
         if validator_name:
             validator = getattr(self, validator_name)
             await validator(value, field, field_path, template, result, validation)
+
+        # If base type validation passed, run semantic type validation
+        if result.valid:
+            semantic_type = field.get("semantic_type")
+            if semantic_type:
+                semantic_validator_name = self.SEMANTIC_VALIDATORS.get(semantic_type)
+                if semantic_validator_name:
+                    semantic_validator = getattr(self, semantic_validator_name)
+                    await semantic_validator(value, field, field_path, result)
 
     async def _validate_string(
         self,
@@ -771,6 +794,294 @@ class ValidationService:
                         message=f"Item at '{item_path}' must be an integer",
                         field=item_path
                     )
+
+    # ========================================================================
+    # Semantic Type Validators
+    # ========================================================================
+
+    async def _validate_semantic_email(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """Validate email semantic type (RFC 5322 pattern)."""
+        if not isinstance(value, str):
+            return  # Base type validation will catch this
+
+        # RFC 5322 simplified pattern
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, value):
+            result.add_error(
+                code="invalid_email",
+                message=f"Field '{field_path}' must be a valid email address",
+                field=field_path,
+                details={"value": value}
+            )
+
+    async def _validate_semantic_url(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """Validate URL semantic type (valid HTTP/HTTPS URL)."""
+        if not isinstance(value, str):
+            return
+
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(value)
+            if parsed.scheme not in ('http', 'https'):
+                result.add_error(
+                    code="invalid_url",
+                    message=f"Field '{field_path}' must be a valid HTTP(S) URL",
+                    field=field_path,
+                    details={"value": value, "reason": "scheme must be http or https"}
+                )
+            elif not parsed.netloc:
+                result.add_error(
+                    code="invalid_url",
+                    message=f"Field '{field_path}' must be a valid HTTP(S) URL",
+                    field=field_path,
+                    details={"value": value, "reason": "missing host"}
+                )
+        except Exception:
+            result.add_error(
+                code="invalid_url",
+                message=f"Field '{field_path}' must be a valid HTTP(S) URL",
+                field=field_path,
+                details={"value": value}
+            )
+
+    async def _validate_semantic_latitude(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """Validate latitude semantic type (-90 to 90)."""
+        if not isinstance(value, (int, float)):
+            return
+
+        if value < -90 or value > 90:
+            result.add_error(
+                code="invalid_latitude",
+                message=f"Field '{field_path}' must be a valid latitude (-90 to 90)",
+                field=field_path,
+                details={"value": value, "min": -90, "max": 90}
+            )
+
+    async def _validate_semantic_longitude(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """Validate longitude semantic type (-180 to 180)."""
+        if not isinstance(value, (int, float)):
+            return
+
+        if value < -180 or value > 180:
+            result.add_error(
+                code="invalid_longitude",
+                message=f"Field '{field_path}' must be a valid longitude (-180 to 180)",
+                field=field_path,
+                details={"value": value, "min": -180, "max": 180}
+            )
+
+    async def _validate_semantic_percentage(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """Validate percentage semantic type (0 to 100)."""
+        if not isinstance(value, (int, float)):
+            return
+
+        if value < 0 or value > 100:
+            result.add_error(
+                code="invalid_percentage",
+                message=f"Field '{field_path}' must be a valid percentage (0 to 100)",
+                field=field_path,
+                details={"value": value, "min": 0, "max": 100}
+            )
+
+    async def _validate_semantic_duration(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """
+        Validate duration semantic type.
+
+        Expected structure: {"value": number, "unit": string}
+        Unit is validated against _TIME_UNITS terminology.
+        """
+        if not isinstance(value, dict):
+            result.add_error(
+                code="invalid_duration",
+                message=f"Field '{field_path}' must be an object with 'value' and 'unit'",
+                field=field_path,
+                details={"expected_structure": {"value": "number", "unit": "string"}}
+            )
+            return
+
+        # Check required keys
+        if "value" not in value:
+            result.add_error(
+                code="invalid_duration",
+                message=f"Field '{field_path}' is missing required key 'value'",
+                field=field_path
+            )
+            return
+
+        if "unit" not in value:
+            result.add_error(
+                code="invalid_duration",
+                message=f"Field '{field_path}' is missing required key 'unit'",
+                field=field_path
+            )
+            return
+
+        # Validate value is a number
+        duration_value = value.get("value")
+        if not isinstance(duration_value, (int, float)):
+            result.add_error(
+                code="invalid_duration",
+                message=f"Field '{field_path}.value' must be a number",
+                field=f"{field_path}.value",
+                details={"got": type(duration_value).__name__}
+            )
+            return
+
+        # Validate unit against _TIME_UNITS terminology
+        unit_value = value.get("unit")
+        if not isinstance(unit_value, str):
+            result.add_error(
+                code="invalid_duration",
+                message=f"Field '{field_path}.unit' must be a string",
+                field=f"{field_path}.unit"
+            )
+            return
+
+        # Validate unit via Def-Store
+        try:
+            client = get_def_store_client()
+            validation_result = await client.validate_value(
+                self.TIME_UNITS_TERMINOLOGY,
+                unit_value
+            )
+
+            if not validation_result.get("valid", False):
+                result.add_error(
+                    code="invalid_duration_unit",
+                    message=f"Field '{field_path}.unit' value '{unit_value}' is not a valid time unit",
+                    field=f"{field_path}.unit",
+                    details={
+                        "terminology": self.TIME_UNITS_TERMINOLOGY,
+                        "suggestion": validation_result.get("suggestion"),
+                        "valid_units": ["seconds", "minutes", "hours", "days", "weeks"]
+                    }
+                )
+            else:
+                # Store the unit's term_id in term_references
+                matched_term = validation_result.get("matched_term")
+                if matched_term and matched_term.get("term_id"):
+                    result.term_references.append({
+                        "field_path": f"{field_path}.unit",
+                        "term_id": matched_term["term_id"],
+                        "terminology_ref": self.TIME_UNITS_TERMINOLOGY,
+                        "matched_via": validation_result.get("matched_via"),
+                    })
+
+        except DefStoreError as e:
+            result.add_warning(
+                f"Could not validate duration unit for '{field_path}': {str(e)}"
+            )
+
+    async def _validate_semantic_geo_point(
+        self,
+        value: Any,
+        field: dict[str, Any],
+        field_path: str,
+        result: ValidationResult
+    ):
+        """
+        Validate geo_point semantic type.
+
+        Expected structure: {"latitude": number, "longitude": number}
+        """
+        if not isinstance(value, dict):
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}' must be an object with 'latitude' and 'longitude'",
+                field=field_path,
+                details={"expected_structure": {"latitude": "number", "longitude": "number"}}
+            )
+            return
+
+        # Check required keys
+        if "latitude" not in value:
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}' is missing required key 'latitude'",
+                field=field_path
+            )
+            return
+
+        if "longitude" not in value:
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}' is missing required key 'longitude'",
+                field=field_path
+            )
+            return
+
+        # Validate latitude
+        lat = value.get("latitude")
+        if not isinstance(lat, (int, float)):
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}.latitude' must be a number",
+                field=f"{field_path}.latitude"
+            )
+        elif lat < -90 or lat > 90:
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}.latitude' must be between -90 and 90",
+                field=f"{field_path}.latitude",
+                details={"value": lat, "min": -90, "max": 90}
+            )
+
+        # Validate longitude
+        lon = value.get("longitude")
+        if not isinstance(lon, (int, float)):
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}.longitude' must be a number",
+                field=f"{field_path}.longitude"
+            )
+        elif lon < -180 or lon > 180:
+            result.add_error(
+                code="invalid_geo_point",
+                message=f"Field '{field_path}.longitude' must be between -180 and 180",
+                field=f"{field_path}.longitude",
+                details={"value": lon, "min": -180, "max": 180}
+            )
+
+    # ========================================================================
+    # Term Validation (Stage 4)
+    # ========================================================================
 
     async def _validate_terms(
         self,

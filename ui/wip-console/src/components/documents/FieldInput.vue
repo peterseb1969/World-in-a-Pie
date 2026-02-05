@@ -10,7 +10,8 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 import FileField from './FileField.vue'
 import { useDocumentStore } from '@/stores'
-import type { FieldDefinition, Term } from '@/types'
+import type { FieldDefinition, Term, SemanticType } from '@/types'
+import { SEMANTIC_TYPES } from '@/types'
 
 const props = defineProps<{
   field: FieldDefinition
@@ -213,10 +214,43 @@ const arrayItemField = computed((): FieldDefinition => ({
   metadata: {}
 }))
 
+// Semantic type info
+const semanticTypeInfo = computed(() => {
+  if (!props.field.semantic_type) return null
+  return SEMANTIC_TYPES.find(st => st.value === props.field.semantic_type) || null
+})
+
+// Get semantic type constraint hints
+const semanticConstraintHints = computed(() => {
+  const hints: string[] = []
+  const st = props.field.semantic_type
+
+  if (st === 'email') {
+    hints.push('Valid email address required')
+  } else if (st === 'url') {
+    hints.push('Valid HTTP(S) URL required')
+  } else if (st === 'latitude') {
+    hints.push('Range: -90 to 90')
+  } else if (st === 'longitude') {
+    hints.push('Range: -180 to 180')
+  } else if (st === 'percentage') {
+    hints.push('Range: 0 to 100')
+  } else if (st === 'duration') {
+    hints.push('Format: {value, unit} where unit is seconds, minutes, hours, days, or weeks')
+  } else if (st === 'geo_point') {
+    hints.push('Format: {latitude, longitude}')
+  }
+
+  return hints
+})
+
 // Validation hints
 const validationHints = computed(() => {
   const hints: string[] = []
   const v = props.field.validation
+
+  // Add semantic type constraint hints first
+  hints.push(...semanticConstraintHints.value)
 
   if (v) {
     if (v.pattern) hints.push(`Pattern: ${v.pattern}`)
@@ -458,6 +492,12 @@ onMounted(() => {
       <small class="unknown-type">Unknown field type: {{ field.type }}</small>
     </template>
 
+    <!-- Semantic type indicator -->
+    <div v-if="semanticTypeInfo" class="semantic-type-badge">
+      <i :class="semanticTypeInfo.icon"></i>
+      <small>{{ semanticTypeInfo.label }}</small>
+    </div>
+
     <!-- Validation hints -->
     <div v-if="validationHints.length > 0" class="validation-hints">
       <small v-for="hint in validationHints" :key="hint">{{ hint }}</small>
@@ -593,5 +633,21 @@ onMounted(() => {
 .unknown-type {
   color: var(--p-orange-500);
   font-size: 0.75rem;
+}
+
+.semantic-type-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.125rem 0.5rem;
+  background-color: var(--p-primary-50);
+  color: var(--p-primary-700);
+  border-radius: 0.25rem;
+  font-size: 0.7rem;
+  width: fit-content;
+}
+
+.semantic-type-badge i {
+  font-size: 0.65rem;
 }
 </style>

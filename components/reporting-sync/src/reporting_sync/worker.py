@@ -118,9 +118,9 @@ class SyncWorker:
             metrics.record_event_skipped(template_code, "table_creation_skipped")
             return True  # Sync disabled
 
-        # Transform document to rows
+        # Transform document to rows (pass template for semantic type processing)
         transformer = DocumentTransformer(config)
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         # Determine sync strategy
         strategy = config.sync_strategy.value

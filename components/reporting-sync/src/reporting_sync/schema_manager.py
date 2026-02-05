@@ -13,7 +13,7 @@ from typing import Any
 
 import asyncpg
 
-from .models import FieldType, FileFieldConfig, ReportingConfig, TemplateField
+from .models import FieldType, FileFieldConfig, ReportingConfig, SemanticType, TemplateField
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,17 @@ TYPE_MAPPING: dict[FieldType, str] = {
     FieldType.FILE: "TEXT",  # Store the file_id; additional columns for metadata
     FieldType.OBJECT: "JSONB",  # Fallback if not flattened
     FieldType.ARRAY: "JSONB",  # Fallback if not flattened
+}
+
+
+# Map semantic types to PostgreSQL types (for simple types)
+SEMANTIC_TYPE_MAPPING: dict[SemanticType, str] = {
+    SemanticType.EMAIL: "TEXT",
+    SemanticType.URL: "TEXT",
+    SemanticType.LATITUDE: "NUMERIC(9,6)",  # Precision for 6 decimal places
+    SemanticType.LONGITUDE: "NUMERIC(10,6)",  # +/- 180 needs 3 digits before decimal
+    SemanticType.PERCENTAGE: "NUMERIC(6,3)",  # 0-100 with 3 decimal places
+    # DURATION and GEO_POINT are complex types handled separately
 }
 
 
@@ -58,10 +69,16 @@ class SchemaManager:
         Returns list of (column_name, column_type) tuples.
         For term fields, generates both value and term_id columns.
         For file fields, generates file_id, filename, and content_type columns (or JSONB for multiple).
+        For semantic types, generates appropriate columns with optimized PostgreSQL types.
         For nested objects, flattens with prefix.
         """
         columns = []
         col_name = f"{prefix}{field.name}" if prefix else field.name
+
+        # Check for semantic types first - they may override base type handling
+        if field.semantic_type:
+            columns.extend(self._generate_semantic_columns(col_name, field.semantic_type))
+            return columns
 
         if field.type == FieldType.TERM:
             # Term fields get two columns: value and term_id
@@ -96,6 +113,40 @@ class SchemaManager:
         else:
             # Simple types
             pg_type = TYPE_MAPPING.get(field.type, "TEXT")
+            columns.append((col_name, pg_type))
+
+        return columns
+
+    def _generate_semantic_columns(
+        self,
+        col_name: str,
+        semantic_type: SemanticType,
+    ) -> list[tuple[str, str]]:
+        """
+        Generate columns for semantic types.
+
+        Some semantic types need additional columns for optimized queries:
+        - duration: JSONB + normalized seconds + unit term_id
+        - geo_point: JSONB + separate lat/lon columns
+        - Others: Just use the semantic type mapping
+        """
+        columns = []
+
+        if semantic_type == SemanticType.DURATION:
+            # Duration needs 3 columns for optimal querying
+            columns.append((col_name, "JSONB"))  # Original {value, unit} object
+            columns.append((f"{col_name}_seconds", "NUMERIC"))  # Normalized to seconds
+            columns.append((f"{col_name}_unit_term_id", "TEXT"))  # Reference to time unit term
+
+        elif semantic_type == SemanticType.GEO_POINT:
+            # Geo point needs 3 columns for spatial queries
+            columns.append((col_name, "JSONB"))  # Original {latitude, longitude} object
+            columns.append((f"{col_name}_latitude", "NUMERIC(9,6)"))  # For spatial queries
+            columns.append((f"{col_name}_longitude", "NUMERIC(10,6)"))  # For spatial queries
+
+        else:
+            # Simple semantic types use the mapped PostgreSQL type
+            pg_type = SEMANTIC_TYPE_MAPPING.get(semantic_type, "TEXT")
             columns.append((col_name, pg_type))
 
         return columns
@@ -322,6 +373,10 @@ ON "{table_name}"(identity_hash) WHERE status = 'active';
             array_file_config = None
             if f.get("array_file_config"):
                 array_file_config = FileFieldConfig(**f["array_file_config"])
+            # Parse semantic_type if present
+            semantic_type = None
+            if f.get("semantic_type"):
+                semantic_type = SemanticType(f["semantic_type"])
 
             fields.append(TemplateField(
                 name=f["name"],
@@ -335,6 +390,7 @@ ON "{table_name}"(identity_hash) WHERE status = 'active';
                 array_template_ref=f.get("array_template_ref"),
                 file_config=file_config,
                 array_file_config=array_file_config,
+                semantic_type=semantic_type,
             ))
 
         # Parse reporting config if present
