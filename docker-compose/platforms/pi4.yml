@@ -1,0 +1,14 @@
+# WIP Platform: Raspberry Pi 4
+#
+# Uses MongoDB 4.4.18 - last version supporting ARMv8.0 (Cortex-A72).
+# Pi 4's CPU lacks the ARMv8.2 instructions required by MongoDB 5+.
+#
+# Note: MongoDB 4.4 uses 'mongo' shell, not 'mongosh'
+#
+version: "3.8"
+
+services:
+  mongodb:
+    image: docker.io/library/mongo:4.4.18
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet

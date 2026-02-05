@@ -232,6 +232,7 @@ onMounted(loadTemplates)
         :rows="20"
         :rowsPerPageOptions="[10, 20, 50]"
         stripedRows
+        size="small"
         class="templates-table"
         @row-click="(e) => viewTemplate(e.data)"
         rowHover

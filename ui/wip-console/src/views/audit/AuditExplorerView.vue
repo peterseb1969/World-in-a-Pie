@@ -536,6 +536,7 @@ watch(
             :value="searchResults"
             :paginator="searchResults.length > 20"
             :rows="20"
+            size="small"
             @row-click="(e) => selectSearchResult(e.data)"
             class="results-table"
             :pt="{ bodyRow: { style: 'cursor: pointer' } }"

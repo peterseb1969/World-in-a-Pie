@@ -1,0 +1,59 @@
+# WIP Infrastructure - Base
+#
+# Core services required for all deployments:
+#   - MongoDB (document store): localhost:27017
+#   - NATS (message queue): localhost:4222, monitoring: http://localhost:8222
+#
+# This file is combined with module overlays by setup.sh
+# Do not use directly - use: ./scripts/setup.sh --preset <preset>
+#
+# Storage: Set WIP_DATA_DIR to customize data location (default: ./data)
+#
+version: "3.8"
+
+services:
+  # ===================
+  # Document Store
+  # ===================
+  mongodb:
+    image: ${WIP_MONGODB_IMAGE:-docker.io/library/mongo:7}
+    container_name: wip-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - ${WIP_DATA_DIR:-./data}/mongodb:/data/db
+    healthcheck:
+      test: ${WIP_MONGODB_HEALTHCHECK:-echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet}
+      interval: ${WIP_HEALTH_CHECK_INTERVAL:-10}s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # ===================
+  # Message Queue
+  # ===================
+  nats:
+    image: docker.io/library/nats:2.10
+    container_name: wip-nats
+    command: ["--js", "--sd", "/data", "-m", "8222"]
+    ports:
+      - "4222:4222"   # Client connections
+      - "8222:8222"   # HTTP monitoring
+    volumes:
+      - ${WIP_DATA_DIR:-./data}/nats:/data
+    healthcheck:
+      test: ["CMD", "nats-server", "--help"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    name: wip-network
+    driver: bridge

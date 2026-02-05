@@ -9,6 +9,7 @@ import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 import { useDocumentStore, useTemplateStore, useAuthStore, useUiStore } from '@/stores'
 import type { Document } from '@/types'
 
@@ -260,13 +261,14 @@ onMounted(async () => {
         :rows="20"
         :rowsPerPageOptions="[10, 20, 50]"
         stripedRows
+        size="small"
         class="documents-table"
         @row-click="(e) => viewDocument(e.data)"
         rowHover
       >
-        <Column field="document_id" header="Document ID" sortable style="width: 300px">
+        <Column field="document_id" header="Document ID" sortable style="width: 140px">
           <template #body="{ data }">
-            <code class="document-id">{{ data.document_id }}</code>
+            <TruncatedId :id="data.document_id" />
           </template>
         </Column>
         <Column field="template_id" header="Template" sortable style="min-width: 200px">

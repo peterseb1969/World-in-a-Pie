@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import DataTable from 'primevue/datatable'
+import { ref, watch } from 'vue'
+import DataTable, { type DataTablePageEvent } from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
@@ -10,6 +10,7 @@ import { useTermStore, useUiStore } from '@/stores'
 import type { Term } from '@/types'
 import TermForm from './TermForm.vue'
 import DeprecateTermDialog from './DeprecateTermDialog.vue'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 
 const props = defineProps<{
   terminologyId: string
@@ -25,35 +26,48 @@ const showDeprecateDialog = ref(false)
 const editingTerm = ref<Term | null>(null)
 const deprecatingTerm = ref<Term | null>(null)
 const searchQuery = ref('')
+const currentPage = ref(0) // PrimeVue uses 0-based indexing
+const rowsPerPage = ref(50)
 
-const filteredTerms = computed(() => {
-  if (!searchQuery.value) return termStore.terms
-  const query = searchQuery.value.toLowerCase()
-  return termStore.terms.filter(t =>
-    t.code.toLowerCase().includes(query) ||
-    t.value.toLowerCase().includes(query) ||
-    t.label.toLowerCase().includes(query) ||
-    t.description?.toLowerCase().includes(query) ||
-    t.aliases?.some(alias => alias.toLowerCase().includes(query))
-  )
-})
+// Debounced search
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
 
 watch(
   () => props.terminologyId,
   async (newId) => {
     if (newId) {
+      currentPage.value = 0
       await loadTerms()
     }
   },
   { immediate: true }
 )
 
+watch(searchQuery, () => {
+  // Debounce search to avoid too many API calls
+  if (searchTimeout) clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => {
+    currentPage.value = 0
+    loadTerms()
+  }, 300)
+})
+
 async function loadTerms() {
   try {
-    await termStore.fetchTerms(props.terminologyId)
+    await termStore.fetchTerms(props.terminologyId, {
+      page: currentPage.value + 1, // API uses 1-based indexing
+      page_size: rowsPerPage.value,
+      search: searchQuery.value || undefined
+    })
   } catch (e) {
     uiStore.showError('Failed to load terms', (e as Error).message)
   }
+}
+
+function onPage(event: DataTablePageEvent) {
+  currentPage.value = event.page
+  rowsPerPage.value = event.rows
+  loadTerms()
 }
 
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'info' | 'secondary' | 'contrast' | undefined {
@@ -129,13 +143,18 @@ async function onDeprecated() {
     </div>
 
     <DataTable
-      :value="filteredTerms"
+      :value="termStore.terms"
       :loading="termStore.loading"
-      striped-rows
-      paginator
-      :rows="15"
-      :rows-per-page-options="[15, 30, 50]"
-      data-key="term_id"
+      :lazy="true"
+      :paginator="true"
+      :rows="rowsPerPage"
+      :totalRecords="termStore.total"
+      :rowsPerPageOptions="[25, 50, 100]"
+      :first="currentPage * rowsPerPage"
+      @page="onPage"
+      stripedRows
+      size="small"
+      dataKey="term_id"
       class="term-table"
     >
       <template #empty>
@@ -151,9 +170,9 @@ async function onDeprecated() {
         </template>
       </Column>
 
-      <Column field="term_id" header="ID" sortable style="width: 12%">
+      <Column field="term_id" header="ID" sortable style="width: 120px">
         <template #body="{ data }">
-          <span class="id-badge">{{ data.term_id }}</span>
+          <TruncatedId :id="data.term_id" :length="10" />
         </template>
       </Column>
 

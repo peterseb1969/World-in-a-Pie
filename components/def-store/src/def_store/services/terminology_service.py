@@ -612,28 +612,50 @@ class TerminologyService:
     async def list_terms(
         terminology_id: str,
         status: Optional[str] = None,
-        include_children: bool = True
-    ) -> list[TermResponse]:
+        include_children: bool = True,
+        page: int = 1,
+        page_size: int = 50,
+        search: Optional[str] = None
+    ) -> tuple[list[TermResponse], int]:
         """
-        List all terms in a terminology.
+        List terms in a terminology with pagination.
 
         Args:
             terminology_id: Terminology to list terms from
             status: Filter by status
             include_children: Include child terms in hierarchy
+            page: Page number (1-based)
+            page_size: Number of items per page
+            search: Search string for code, value, or aliases
 
         Returns:
-            List of terms, sorted by sort_order
+            Tuple of (list of terms, total count)
         """
-        query = {"terminology_id": terminology_id}
+        query: dict = {"terminology_id": terminology_id}
         if status:
             query["status"] = status
 
+        # Add search filter if provided
+        if search:
+            search_lower = search.lower()
+            query["$or"] = [
+                {"code": {"$regex": search, "$options": "i"}},
+                {"value": {"$regex": search, "$options": "i"}},
+                {"aliases": {"$regex": search, "$options": "i"}}
+            ]
+
+        # Get total count
+        total = await Term.find(query).count()
+
+        # Get paginated results
+        skip = (page - 1) * page_size
         terms = await Term.find(query) \
             .sort([("sort_order", 1), ("code", 1)]) \
+            .skip(skip) \
+            .limit(page_size) \
             .to_list()
 
-        return [TerminologyService._to_term_response(t) for t in terms]
+        return [TerminologyService._to_term_response(t) for t in terms], total
 
     @staticmethod
     async def update_term(

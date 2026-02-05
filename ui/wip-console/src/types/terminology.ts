@@ -122,6 +122,8 @@ export interface DeprecateTermRequest {
 export interface TermListResponse {
   items: Term[]
   total: number
+  page: number
+  page_size: number
   terminology_id: string
   terminology_code: string
 }

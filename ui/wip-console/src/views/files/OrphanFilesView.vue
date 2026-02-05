@@ -11,6 +11,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { fileStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 import type { FileEntity } from '@/types'
 
 const router = useRouter()
@@ -263,6 +264,7 @@ onMounted(async () => {
         :loading="loading"
         stripedRows
         showGridlines
+        size="small"
         dataKey="file_id"
         class="orphans-table"
       >
@@ -290,7 +292,7 @@ onMounted(async () => {
 
         <Column field="file_id" header="ID" style="width: 130px">
           <template #body="{ data }">
-            <code class="file-id">{{ data.file_id }}</code>
+            <TruncatedId :id="data.file_id" :length="11" />
           </template>
         </Column>
 

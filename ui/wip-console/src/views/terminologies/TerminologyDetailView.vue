@@ -327,6 +327,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
             <DataTable
               :value="templatesUsingTerminology"
               :loading="loadingUsage"
+              size="small"
               @row-click="(e) => navigateToTemplate(e.data)"
               class="usage-table"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"

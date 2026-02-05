@@ -1,0 +1,33 @@
+# WIP Module: Development Tools
+#
+# Adds tools for development and debugging:
+#   - Mongo Express: http://localhost:8081 (admin/admin)
+#
+# WARNING: Do not use in production deployments.
+# Mongo Express provides full database access with weak credentials.
+#
+version: "3.8"
+
+services:
+  # ===================
+  # MongoDB Web UI
+  # ===================
+  mongo-express:
+    image: docker.io/library/mongo-express
+    container_name: wip-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_BASICAUTH_USERNAME=${WIP_MONGO_EXPRESS_USER:-admin}
+      - ME_CONFIG_BASICAUTH_PASSWORD=${WIP_MONGO_EXPRESS_PASSWORD:-admin}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    external: true

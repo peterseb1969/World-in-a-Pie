@@ -1,0 +1,11 @@
+# WIP Platform: Default (Mac, Linux, Pi 5)
+#
+# Uses MongoDB 7 - latest version with full features.
+# Compatible with: macOS, Linux x86_64, Raspberry Pi 5 (ARMv8.2+)
+#
+version: "3.8"
+
+# No service overrides needed - base.yml uses MongoDB 7 by default
+# This file exists for consistency with the platform overlay pattern
+
+services: {}

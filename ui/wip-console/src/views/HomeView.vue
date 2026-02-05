@@ -398,6 +398,7 @@ watch(
             <DataTable
               :value="recentTerminologies"
               :loading="loading"
+              size="small"
               @row-click="(e) => navigateToTerminology(e.data)"
               class="clickable-rows"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
@@ -438,6 +439,7 @@ watch(
             <DataTable
               :value="recentTemplates"
               :loading="loading"
+              size="small"
               @row-click="(e) => navigateToTemplate(e.data)"
               class="clickable-rows"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"

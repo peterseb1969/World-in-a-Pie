@@ -1,0 +1,62 @@
+# WIP Module: OIDC Authentication
+#
+# Adds user authentication via OpenID Connect:
+#   - Dex (OIDC provider): internal, accessed via Caddy
+#   - Caddy (reverse proxy): https://localhost:8443
+#
+# Test users (password grant enabled for development):
+#   - admin@wip.local / admin123 (wip-admins group)
+#   - editor@wip.local / editor123 (wip-editors group)
+#   - viewer@wip.local / viewer123 (wip-viewers group)
+#
+version: "3.8"
+
+services:
+  # ===================
+  # Authentication (OIDC)
+  # ===================
+  dex:
+    image: ghcr.io/dexidp/dex:v2.38.0
+    container_name: wip-dex
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./config/dex:/etc/dex:ro
+      - ${WIP_DATA_DIR:-./data}/dex:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5556/dex/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+  # ===================
+  # Reverse Proxy (HTTPS)
+  # ===================
+  caddy:
+    image: docker.io/library/caddy:2-alpine
+    container_name: wip-caddy
+    ports:
+      - "8080:80"
+      - "8443:443"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${WIP_DATA_DIR:-./data}/caddy/data:/data
+      - ${WIP_DATA_DIR:-./data}/caddy/config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    external: true

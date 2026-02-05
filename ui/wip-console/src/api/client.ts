@@ -190,6 +190,8 @@ class DefStoreClient extends BaseApiClient {
   // ===========================================================================
 
   async listTerms(terminologyId: string, params?: {
+    page?: number
+    page_size?: number
     status?: string
     search?: string
   }): Promise<TermListResponse> {

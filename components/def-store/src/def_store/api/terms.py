@@ -115,10 +115,13 @@ async def create_terms_bulk(
 )
 async def list_terms(
     terminology_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    search: Optional[str] = Query(None, description="Search in code, value, aliases"),
     api_key: str = Depends(require_api_key)
 ) -> TermListResponse:
-    """List all terms in a terminology."""
+    """List terms in a terminology with pagination."""
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
@@ -127,14 +130,19 @@ async def list_terms(
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 
-    terms = await TerminologyService.list_terms(
+    terms, total = await TerminologyService.list_terms(
         terminology_id=terminology.terminology_id,
-        status=status
+        status=status,
+        page=page,
+        page_size=page_size,
+        search=search
     )
 
     return TermListResponse(
         items=terms,
-        total=len(terms),
+        total=total,
+        page=page,
+        page_size=page_size,
         terminology_id=terminology.terminology_id,
         terminology_code=terminology.code
     )

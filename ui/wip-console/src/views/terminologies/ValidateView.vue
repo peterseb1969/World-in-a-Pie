@@ -240,7 +240,7 @@ function clearBulk() {
                   </div>
                 </div>
 
-                <DataTable :value="bulkResult.results" striped-rows paginator :rows="10">
+                <DataTable :value="bulkResult.results" striped-rows size="small" paginator :rows="10">
                   <Column field="value" header="Value" style="width: 30%">
                     <template #body="{ data }">
                       <code>{{ data.value }}</code>

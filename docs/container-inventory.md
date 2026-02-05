@@ -11,46 +11,76 @@ This inventory is intended for:
 
 ---
 
-## Profile Overview
+## Modular Deployment System
 
-WIP supports multiple deployment profiles optimized for different hardware and use cases:
+WIP uses a modular deployment system with **presets** (sensible defaults) and **modules** (composable features).
 
-| Profile | Target Hardware | Auth Method | RAM Usage | Description |
-|---------|-----------------|-------------|-----------|-------------|
-| **mac** | Mac development | OIDC + API Key | ~2GB | Full stack with Mongo Express |
-| **pi-minimal** | Pi 4 (1-2GB) | API Key only | ~800MB | Minimal stack, no OIDC |
-| **pi-standard** | Pi 4 (2-4GB) | OIDC + API Key | ~1GB | Full stack, no Mongo Express |
-| **pi-large** | Pi 5 (8GB+) | OIDC + API Key | ~1.2GB | Full stack with Mongo Express |
-| **dev-minimal** | Any | API Key only | ~1GB | Quick dev, no OIDC |
+### Presets
+
+| Preset | Auth Method | Modules Included | Use Case |
+|--------|-------------|------------------|----------|
+| **core** | API Key only | none | Minimal footprint, single-user |
+| **standard** | OIDC + API Key | oidc | Most users, multi-user |
+| **analytics** | OIDC + API Key | oidc, reporting | SQL reporting, BI dashboards |
+| **full** | OIDC + API Key | oidc, reporting, files, ingest | All features |
+
+### Modules
+
+| Module | Services Added | Purpose |
+|--------|---------------|---------|
+| `oidc` | Dex, Caddy | User authentication via OpenID Connect |
+| `reporting` | PostgreSQL | SQL analytics, Reporting-Sync |
+| `files` | MinIO | Binary file attachments |
+| `ingest` | (Ingest Gateway service) | Streaming data ingestion via NATS |
+| `dev-tools` | Mongo Express | Database inspection (dev variant only) |
+
+### Variants
+
+| Variant | Description |
+|---------|-------------|
+| **dev** | Development mode, includes dev-tools module |
+| **prod** | Production mode, no dev-tools, stricter settings (planned) |
+
+### Platform Detection
+
+| Platform | MongoDB Version | Detection |
+|----------|-----------------|-----------|
+| default | mongo:7 | Mac, Linux x86_64, Pi 5 |
+| pi4 | mongo:4.4.18 | Raspberry Pi 4 (ARMv8.0) |
 
 ---
 
-## Container Matrix by Profile
+## Container Matrix by Module
 
-| Container | Container Name | mac | pi-minimal | pi-standard | pi-large | dev-minimal |
-|-----------|---------------|:---:|:----------:|:-----------:|:--------:|:-----------:|
+| Container | Container Name | Base | oidc | reporting | files | dev-tools |
+|-----------|---------------|:----:|:----:|:---------:|:-----:|:---------:|
 | **Infrastructure** |
-| MongoDB | wip-mongodb | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Mongo Express | wip-mongo-express | ✓ | - | - | ✓ | ✓ |
-| PostgreSQL | wip-postgres | ✓ | ✓ | ✓ | ✓ | ✓ |
-| NATS | wip-nats | ✓ | ✓ | ✓ | ✓ | ✓ |
-| MinIO | wip-minio | ✓ | - | ✓ | ✓ | - |
-| Dex | wip-dex | ✓ | - | ✓ | ✓ | - |
-| Caddy | wip-caddy | ✓ | - | ✓ | ✓ | - |
+| MongoDB | wip-mongodb | ✓ | | | | |
+| NATS | wip-nats | ✓ | | | | |
+| Dex | wip-dex | | ✓ | | | |
+| Caddy | wip-caddy | | ✓ | | | |
+| PostgreSQL | wip-postgres | | | ✓ | | |
+| MinIO | wip-minio | | | | ✓ | |
+| Mongo Express | wip-mongo-express | | | | | ✓ |
 | **Services** |
-| Registry | wip-registry-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Def-Store | wip-def-store-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Template Store | wip-template-store-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Document Store | wip-document-store-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Reporting Sync | wip-reporting-sync-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
-| WIP Console | wip-console-dev | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Registry | wip-registry-dev | ✓ | | | | |
+| Def-Store | wip-def-store-dev | ✓ | | | | |
+| Template Store | wip-template-store-dev | ✓ | | | | |
+| Document Store | wip-document-store-dev | ✓ | | | | |
+| Reporting Sync | wip-reporting-sync-dev | | | ✓ | | |
+| Ingest Gateway | wip-ingest-gateway-dev | | | | | |
+| WIP Console | wip-console-dev | ✓ | | | | |
 
-**Total containers by profile:**
-- mac: 13
-- pi-minimal: 9
-- pi-standard: 12
-- pi-large: 13
-- dev-minimal: 10
+**Note:** Ingest Gateway is started when the `ingest` module is active, but doesn't require additional infrastructure.
+
+### Container Counts by Preset
+
+| Preset | Dev Variant | Prod Variant |
+|--------|-------------|--------------|
+| core | 8 (base + dev-tools) | 7 |
+| standard | 10 (base + oidc + dev-tools) | 9 |
+| analytics | 12 (base + oidc + reporting + dev-tools) | 11 |
+| full | 14 (all modules) | 13 |
 
 ---
 
@@ -382,7 +412,73 @@ WIP supports multiple deployment profiles optimized for different hardware and u
 
 ---
 
-#### 13. WIP Console (wip-console-dev)
+#### 13. Ingest Gateway (wip-ingest-gateway-dev)
+
+| Attribute | Value |
+|-----------|-------|
+| **Image** | Built from `components/ingest-gateway/Dockerfile` |
+| **Purpose** | NATS-based streaming ingestion gateway |
+| **Port** | 8006 |
+| **Network** | wip-network |
+| **Profiles** | All |
+
+**Exposed Endpoints:**
+- `http://localhost:8006/` - REST API
+- `http://localhost:8006/docs` - Swagger UI
+
+**API Endpoints:**
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (NATS + worker status) |
+| GET | `/status` | Worker status and statistics |
+| GET | `/metrics` | Detailed processing metrics |
+| GET | `/` | Service info |
+
+**NATS Subjects (Inbound - WIP_INGEST stream):**
+| Subject | Action | Description |
+|---------|--------|-------------|
+| `wip.ingest.terminologies.create` | Create terminology | Forward to Def-Store |
+| `wip.ingest.terms.bulk` | Bulk create terms | Forward to Def-Store |
+| `wip.ingest.templates.create` | Create template | Forward to Template Store |
+| `wip.ingest.templates.bulk` | Bulk create templates | Forward to Template Store |
+| `wip.ingest.documents.create` | Create document | Forward to Document Store |
+| `wip.ingest.documents.bulk` | Bulk create documents | Forward to Document Store |
+
+**NATS Subjects (Outbound - WIP_INGEST_RESULTS stream):**
+| Subject | Description |
+|---------|-------------|
+| `wip.ingest.results.>` | Processing results with correlation_id |
+
+**Message Format (Inbound):**
+```json
+{
+  "correlation_id": "unique-tracking-id",
+  "payload": { ... }  // REST API request body
+}
+```
+
+**Result Format (Outbound):**
+```json
+{
+  "correlation_id": "unique-tracking-id",
+  "action": "documents.create",
+  "status": "success|partial|failed",
+  "http_status_code": 201,
+  "response": { ... },
+  "error": null,
+  "processed_at": "2024-01-30T10:00:00Z",
+  "duration_ms": 45.2
+}
+```
+
+**Security:**
+- Uses API key for forwarding requests to backend services
+- NATS streams have no authentication (relies on network isolation)
+- **Risk:** Any client with NATS access can publish ingest messages
+
+---
+
+#### 14. WIP Console (wip-console-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -412,44 +508,47 @@ WIP supports multiple deployment profiles optimized for different hardware and u
 │                                                                              │
 │   Browser ──────► https://localhost:8443 ──────► Caddy                      │
 │                                                   │                          │
-│                   ┌───────────────────────────────┼───────────────┐         │
-│                   │            wip-network        │               │         │
-│                   │                               ▼               │         │
-│                   │   ┌─────────┐    ┌─────────────────────────┐ │         │
-│                   │   │   Dex   │◄───│     WIP Console         │ │         │
-│                   │   └─────────┘    └───────────┬─────────────┘ │         │
-│                   │                              │               │         │
-│                   │   ┌──────────────────────────┼───────────┐   │         │
-│                   │   │                          ▼           │   │         │
-│                   │   │  ┌──────────┐  ┌──────────────────┐  │   │         │
-│                   │   │  │ Registry │  │ Def-Store        │  │   │         │
-│                   │   │  │  :8001   │  │  :8002           │  │   │         │
-│                   │   │  └────┬─────┘  └────────┬─────────┘  │   │         │
-│                   │   │       │                 │            │   │         │
-│                   │   │  ┌────┴─────┐  ┌────────┴─────────┐  │   │         │
-│                   │   │  │ Template │  │ Document Store   │  │   │         │
-│                   │   │  │  :8003   │  │  :8004           │  │   │         │
-│                   │   │  └────┬─────┘  └────────┬─────────┘  │   │         │
-│                   │   │       │                 │            │   │         │
-│                   │   │       └────────┬────────┘            │   │         │
-│                   │   │                │                     │   │         │
-│                   │   │  ┌─────────────▼─────────────────┐   │   │         │
-│                   │   │  │      Reporting Sync :8005     │   │   │         │
-│                   │   │  └───────────────────────────────┘   │   │         │
-│                   │   └──────────────────────────────────────┘   │         │
-│                   │                                              │         │
-│                   │   ┌──────────────────────────────────────┐   │         │
-│                   │   │          DATA STORES                 │   │         │
-│                   │   │  ┌─────────┐  ┌─────────┐  ┌──────┐  │   │         │
-│                   │   │  │ MongoDB │  │Postgres │  │ NATS │  │   │         │
-│                   │   │  │ :27017  │  │ :5432   │  │:4222 │  │   │         │
-│                   │   │  └─────────┘  └─────────┘  └──────┘  │   │         │
-│                   │   │  ┌─────────┐                         │   │         │
-│                   │   │  │ MinIO   │                         │   │         │
-│                   │   │  │ :9000   │                         │   │         │
-│                   │   │  └─────────┘                         │   │         │
-│                   │   └──────────────────────────────────────┘   │         │
-│                   └──────────────────────────────────────────────┘         │
+│   External ─────► NATS :4222 ──► Ingest Gateway ─┼──────────────┐           │
+│   Systems          (WIP_INGEST)     :8006        │              │           │
+│                                                   │              │           │
+│                   ┌───────────────────────────────┼──────────────┼─┐        │
+│                   │            wip-network        │              │ │        │
+│                   │                               ▼              │ │        │
+│                   │   ┌─────────┐    ┌─────────────────────────┐ │ │        │
+│                   │   │   Dex   │◄───│     WIP Console         │ │ │        │
+│                   │   └─────────┘    └───────────┬─────────────┘ │ │        │
+│                   │                              │               │ │        │
+│                   │   ┌──────────────────────────┼───────────────┼─┼──┐     │
+│                   │   │   WIP SERVICES           ▼               │ │  │     │
+│                   │   │  ┌──────────┐  ┌──────────────────┐  ◄───┘ │  │     │
+│                   │   │  │ Registry │  │ Def-Store        │        │  │     │
+│                   │   │  │  :8001   │  │  :8002           │  ◄─────┘  │     │
+│                   │   │  └────┬─────┘  └────────┬─────────┘           │     │
+│                   │   │       │                 │                     │     │
+│                   │   │  ┌────┴─────┐  ┌────────┴─────────┐           │     │
+│                   │   │  │ Template │  │ Document Store   │           │     │
+│                   │   │  │  :8003   │  │  :8004           │           │     │
+│                   │   │  └────┬─────┘  └────────┬─────────┘           │     │
+│                   │   │       │                 │                     │     │
+│                   │   │       └────────┬────────┘                     │     │
+│                   │   │                │                              │     │
+│                   │   │  ┌─────────────▼─────────────────┐            │     │
+│                   │   │  │      Reporting Sync :8005     │            │     │
+│                   │   │  └───────────────────────────────┘            │     │
+│                   │   └───────────────────────────────────────────────┘     │
+│                   │                                                         │
+│                   │   ┌─────────────────────────────────────────────────┐   │
+│                   │   │          DATA STORES                            │   │
+│                   │   │  ┌─────────┐  ┌─────────┐  ┌─────────────────┐  │   │
+│                   │   │  │ MongoDB │  │Postgres │  │ NATS            │  │   │
+│                   │   │  │ :27017  │  │ :5432   │  │ :4222           │  │   │
+│                   │   │  └─────────┘  └─────────┘  │ WIP_INGEST      │  │   │
+│                   │   │  ┌─────────┐               │ WIP_INGEST_RESULTS│ │   │
+│                   │   │  │ MinIO   │               │ WIP_DOCUMENTS   │  │   │
+│                   │   │  │ :9000   │               └─────────────────┘  │   │
+│                   │   │  └─────────┘                                    │   │
+│                   │   └─────────────────────────────────────────────────┘   │
+│                   └─────────────────────────────────────────────────────────┘
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -467,6 +566,7 @@ WIP supports multiple deployment profiles optimized for different hardware and u
 | 8003 | Template Store | HTTP | Template API |
 | 8004 | Document Store | HTTP | Document API |
 | 8005 | Reporting Sync | HTTP | Sync API |
+| 8006 | Ingest Gateway | HTTP | Streaming ingest API |
 | 27017 | MongoDB | TCP | MongoDB wire protocol |
 | 5432 | PostgreSQL | TCP | PostgreSQL wire protocol |
 | 4222 | NATS | TCP | NATS client connections |
@@ -514,6 +614,12 @@ WIP supports multiple deployment profiles optimized for different hardware and u
    - All infrastructure ports bound to host
    - Accessible from local network (not just localhost)
 
+5. **Unauthenticated NATS Ingestion**
+   - Ingest Gateway consumes from NATS without authentication
+   - Any client with NATS access can publish to `wip.ingest.>` subjects
+   - Can bypass REST API authentication entirely
+   - **Risk:** Network-level access to NATS allows unrestricted data injection
+
 ---
 
 ## Recommended Security Hardening
@@ -523,22 +629,43 @@ For production deployments:
 1. **Change all default credentials**
 2. **Enable MongoDB authentication**
 3. **Use strong PostgreSQL passwords**
-4. **Configure NATS authentication**
+4. **Configure NATS authentication** (critical for Ingest Gateway security)
 5. **Use proper TLS certificates (Let's Encrypt or CA-signed)**
 6. **Bind infrastructure ports to 127.0.0.1 only**
 7. **Remove Mongo Express in production**
 8. **Use network-level firewall rules**
 9. **Consider service mesh for mTLS between services**
+10. **Restrict NATS ingest subjects** to authorized publishers only
 
 ---
 
 ## Appendix: Compose Files
 
-| File | Profile(s) | Description |
-|------|------------|-------------|
-| `docker-compose.infra.yml` | mac | Full infrastructure for Mac |
-| `docker-compose.infra.pi.yml` | pi-standard, pi-large | Pi infrastructure with OIDC |
-| `docker-compose.infra.pi.minimal.yml` | pi-minimal | Pi minimal (no OIDC) |
-| `docker-compose.infra.minimal.yml` | dev-minimal | Minimal (no OIDC, has Mongo Express) |
-| `components/*/docker-compose.dev.yml` | All | Individual service development |
-| `ui/wip-console/docker-compose.dev.yml` | All | Web UI development |
+### Modular Infrastructure (used by setup.sh)
+
+| File | Purpose |
+|------|---------|
+| `docker-compose/base.yml` | Core infrastructure (MongoDB, NATS) |
+| `docker-compose/modules/oidc.yml` | OIDC module (Dex, Caddy) |
+| `docker-compose/modules/reporting.yml` | Reporting module (PostgreSQL) |
+| `docker-compose/modules/files.yml` | Files module (MinIO) |
+| `docker-compose/modules/dev-tools.yml` | Dev tools module (Mongo Express) |
+| `docker-compose/platforms/default.yml` | Default platform (MongoDB 7) |
+| `docker-compose/platforms/pi4.yml` | Pi 4 platform (MongoDB 4.4.18) |
+
+### Service Compose Files
+
+| File | Description |
+|------|-------------|
+| `components/*/docker-compose.dev.yml` | Individual service (development) |
+| `components/*/docker-compose.yml` | Individual service (production, not yet used) |
+| `ui/wip-console/docker-compose.dev.yml` | Web UI (development) |
+
+### Preset Configuration
+
+| File | Description |
+|------|-------------|
+| `config/presets/core.conf` | Core preset (API keys only) |
+| `config/presets/standard.conf` | Standard preset (OIDC) |
+| `config/presets/analytics.conf` | Analytics preset (OIDC + reporting) |
+| `config/presets/full.conf` | Full preset (all modules) |

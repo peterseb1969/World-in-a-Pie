@@ -11,6 +11,7 @@ import ProgressSpinner from 'primevue/progressspinner'
 import Message from 'primevue/message'
 import { useTemplateStore, useAuthStore, useUiStore } from '@/stores'
 import { documentStoreClient } from '@/api/client'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 import type { TableViewResponse, TableColumn, DocumentStatus } from '@/types'
 
 const router = useRouter()
@@ -58,7 +59,8 @@ const dataColumns = computed(() => {
 
 // Get column width based on type
 function getColumnWidth(col: TableColumn): string {
-  if (col.name === '_document_id' || col.name === '_identity_hash') return '280px'
+  if (col.name === '_document_id') return '150px'
+  if (col.name === '_identity_hash') return '150px'
   if (col.name === '_version') return '80px'
   if (col.name === '_status') return '100px'
   if (col.name === '_created_at' || col.name === '_updated_at') return '180px'
@@ -341,6 +343,7 @@ onMounted(async () => {
             :rows="pageSize"
             :rowsPerPageOptions="[25, 50, 100, 500]"
             stripedRows
+            size="small"
             scrollable
             scrollHeight="600px"
             class="data-table"
@@ -352,15 +355,14 @@ onMounted(async () => {
               field="_document_id"
               header="Document ID"
               frozen
-              style="min-width: 280px"
+              style="min-width: 150px"
             >
               <template #body="{ data }">
                 <a
                   class="document-link"
                   @click.stop="viewDocument(data)"
-                  :title="data._document_id"
                 >
-                  {{ data._document_id }}
+                  <TruncatedId :id="data._document_id" :show-copy="false" />
                 </a>
               </template>
             </Column>

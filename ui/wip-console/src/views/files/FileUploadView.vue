@@ -253,7 +253,7 @@ onMounted(() => {
               />
             </div>
 
-            <DataTable :value="uploadResults" stripedRows class="results-table">
+            <DataTable :value="uploadResults" stripedRows size="small" class="results-table">
               <Column field="file.name" header="Filename" style="min-width: 200px">
                 <template #body="{ data }">
                   <a

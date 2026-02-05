@@ -14,12 +14,16 @@ export const useTermStore = defineStore('term', () => {
   const terms = ref<Term[]>([])
   const currentTerm = ref<Term | null>(null)
   const total = ref(0)
+  const page = ref(1)
+  const pageSize = ref(50)
   const terminologyId = ref<string | null>(null)
   const terminologyCode = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
 
   async function fetchTerms(termId: string, params?: {
+    page?: number
+    page_size?: number
     status?: string
     search?: string
   }) {
@@ -29,6 +33,8 @@ export const useTermStore = defineStore('term', () => {
       const response = await defStoreClient.listTerms(termId, params)
       terms.value = response.items
       total.value = response.total
+      page.value = response.page
+      pageSize.value = response.page_size
       terminologyId.value = response.terminology_id
       terminologyCode.value = response.terminology_code
     } catch (e) {
@@ -163,6 +169,8 @@ export const useTermStore = defineStore('term', () => {
     terms,
     currentTerm,
     total,
+    page,
+    pageSize,
     terminologyId,
     terminologyCode,
     loading,

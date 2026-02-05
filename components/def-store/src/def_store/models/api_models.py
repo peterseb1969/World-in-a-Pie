@@ -255,6 +255,8 @@ class TermListResponse(BaseModel):
 
     items: list[TermResponse]
     total: int
+    page: int = 1
+    page_size: int = 50
     terminology_id: str
     terminology_code: str
 

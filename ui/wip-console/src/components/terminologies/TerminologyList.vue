@@ -113,6 +113,7 @@ async function onUpdated() {
       paginator
       :rows="10"
       :rows-per-page-options="[10, 25, 50]"
+      size="small"
       data-key="terminology_id"
       class="terminology-table"
     >

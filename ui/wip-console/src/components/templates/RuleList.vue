@@ -116,6 +116,7 @@ function formatTarget(rule: ValidationRule): string {
     <DataTable
       :value="localRules"
       stripedRows
+      size="small"
       class="rules-table"
     >
       <Column field="type" header="Type" style="width: 180px">

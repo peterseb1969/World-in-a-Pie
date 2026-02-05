@@ -127,6 +127,7 @@ function getTemplateName(id: string | undefined): string {
     <DataTable
       :value="localFields"
       stripedRows
+      size="small"
       class="fields-table"
     >
       <Column header="#" style="width: 60px" v-if="editable">

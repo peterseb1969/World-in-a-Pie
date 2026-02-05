@@ -1,0 +1,41 @@
+# WIP Module: SQL Reporting
+#
+# Adds PostgreSQL for SQL analytics and BI tool integration:
+#   - PostgreSQL: localhost:5432 (wip/wip_dev_password, db: wip_reporting)
+#
+# Enables:
+#   - Reporting-Sync service (MongoDB -> PostgreSQL sync)
+#   - Direct SQL queries for analytics
+#   - BI tool connections (Metabase, Grafana, etc.)
+#
+# Access: podman exec -it wip-postgres psql -U wip -d wip_reporting
+#
+version: "3.8"
+
+services:
+  # ===================
+  # Reporting Store
+  # ===================
+  postgres:
+    image: docker.io/library/postgres:16
+    container_name: wip-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: wip_reporting
+      POSTGRES_USER: ${WIP_POSTGRES_USER:-wip}
+      POSTGRES_PASSWORD: ${WIP_POSTGRES_PASSWORD:-wip_dev_password}
+    volumes:
+      - ${WIP_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wip -d wip_reporting"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - wip-network
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    external: true
