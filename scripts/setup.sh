@@ -835,8 +835,8 @@ generate_caddy_config() {
 $host_patterns {
     tls internal
 
-    # Dex OIDC provider
-    handle_path /dex/* {
+    # Dex OIDC provider (keep /dex prefix - Dex expects it)
+    handle /dex/* {
         reverse_proxy wip-dex:5556
     }
 
