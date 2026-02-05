@@ -83,6 +83,7 @@ LOCALHOST_MODE="false"
 SKIP_CONFIRM="false"
 CONFIG_FILE=""
 SAVE_CONFIG=""
+CLEAN_DATA="false"
 
 WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
 
@@ -159,6 +160,7 @@ OPTIONS:
   --data-dir DIR      Data storage directory (default: ./data)
   --config FILE       Load configuration from file (for unattended installs)
   --save-config FILE  Save configuration to file and exit (don't install)
+  --clean             Clean NATS/JetStream data before starting (fixes stream conflicts)
   -y, --yes           Skip confirmation prompt
   --debug             Enable debug output
   --help              Show this help
@@ -184,6 +186,9 @@ EXAMPLES:
 
   # Production deployment
   $(basename "$0") --preset standard --prod --hostname wip.example.com
+
+  # Clean start (fixes NATS stream conflicts)
+  $(basename "$0") --preset standard --hostname wip.local --clean
 
   # Save configuration for distribution
   $(basename "$0") --preset standard --hostname wip.local --save-config my-setup.conf
@@ -340,6 +345,10 @@ parse_args() {
             --save-config)
                 SAVE_CONFIG="$2"
                 shift 2
+                ;;
+            --clean)
+                CLEAN_DATA="true"
+                shift
                 ;;
             --debug)
                 DEBUG="true"
@@ -923,6 +932,114 @@ ensure_network() {
     fi
 }
 
+check_nats_conflicts() {
+    # Check for stale NATS JetStream data that could cause stream conflicts
+    local meta_file="$WIP_DATA_DIR/nats/jetstream/\$G/streams/WIP_EVENTS/meta.inf"
+
+    if [ -f "$meta_file" ]; then
+        # Check if WIP_EVENTS has the old wildcard subject "wip.>" (may be encoded as \u003e)
+        if grep -qE '"wip\.(>|\\u003e)"' "$meta_file" 2>/dev/null; then
+            log_warn "Detected stale NATS JetStream configuration!"
+            log_warn "WIP_EVENTS stream uses 'wip.>' which conflicts with new streams."
+
+            if [ "$CLEAN_DATA" = "true" ]; then
+                log_info "Will clean NATS data (--clean flag set)"
+            else
+                echo ""
+                echo "This will cause 'subjects overlap with an existing stream' errors."
+                echo "Either:"
+                echo "  1. Re-run with --clean flag to clear NATS data"
+                echo "  2. Manually remove: rm -rf $WIP_DATA_DIR/nats/jetstream"
+                echo ""
+                read -p "  Clean NATS data now? [Y/n] " -n 1 -r response
+                echo ""
+                if [ -z "$response" ] || [[ "$response" =~ ^[Yy]$ ]]; then
+                    CLEAN_DATA="true"
+                else
+                    log_error "Cannot proceed with stale NATS data. Aborting."
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+}
+
+clean_nats_data() {
+    if [ "$CLEAN_DATA" != "true" ]; then
+        return
+    fi
+
+    log_step "Cleaning NATS JetStream data (prevents stream conflicts)..."
+
+    # Stop NATS and dependent services if running
+    podman stop wip-ingest-gateway-dev wip-reporting-sync-dev wip-nats 2>/dev/null || true
+
+    # Remove JetStream data directory
+    if [ -d "$WIP_DATA_DIR/nats/jetstream" ]; then
+        rm -rf "$WIP_DATA_DIR/nats/jetstream"
+        log_info "Removed stale JetStream data"
+    fi
+
+    log_info "NATS data cleaned"
+}
+
+verify_compose_files() {
+    log_step "Verifying docker-compose files..."
+
+    local missing=()
+
+    # Check base.yml
+    if [ ! -f "$PROJECT_ROOT/docker-compose/base.yml" ]; then
+        missing+=("docker-compose/base.yml")
+    fi
+
+    # Modules with infrastructure overlays (not all modules have them)
+    # - oidc: adds Dex + Caddy
+    # - reporting: adds PostgreSQL
+    # - files: adds MinIO
+    # - dev-tools: adds Mongo Express
+    # - ingest: NO overlay (service started separately)
+    local overlay_modules="oidc reporting files dev-tools"
+
+    # Check module files only for those that have overlays
+    for mod in ${ACTIVE_MODULES//,/ }; do
+        if [[ " $overlay_modules " =~ " $mod " ]]; then
+            local mod_file="$PROJECT_ROOT/docker-compose/modules/${mod}.yml"
+            if [ ! -f "$mod_file" ]; then
+                missing+=("docker-compose/modules/${mod}.yml")
+            fi
+        fi
+    done
+
+    # Check platform file
+    if [ -n "$PLATFORM" ] && [ "$PLATFORM" != "default" ]; then
+        local platform_file="$PROJECT_ROOT/docker-compose/platforms/${PLATFORM}.yml"
+        if [ ! -f "$platform_file" ]; then
+            missing+=("docker-compose/platforms/${PLATFORM}.yml")
+        fi
+    fi
+
+    if [ ${#missing[@]} -gt 0 ]; then
+        log_error "Missing docker-compose files:"
+        for f in "${missing[@]}"; do
+            echo "  - $f"
+        done
+        echo ""
+        echo "Make sure you have the full repository cloned."
+        echo "Required directory structure:"
+        echo "  $PROJECT_ROOT/"
+        echo "    docker-compose/"
+        echo "      base.yml"
+        echo "      modules/"
+        echo "        oidc.yml, reporting.yml, files.yml, etc."
+        echo "      platforms/"
+        echo "        pi4.yml, etc."
+        exit 1
+    fi
+
+    log_info "All required compose files found"
+}
+
 start_infrastructure() {
     log_step "Starting infrastructure..."
 
@@ -936,11 +1053,13 @@ start_infrastructure() {
         compose_files="$compose_files -f docker-compose/platforms/${PLATFORM}.yml"
     fi
 
-    # Add module overlays
+    # Add module overlays (only for modules that have infrastructure overlays)
     for mod in ${ACTIVE_MODULES//,/ }; do
         local mod_file="docker-compose/modules/${mod}.yml"
-        if [ -f "$mod_file" ]; then
+        if [ -f "$PROJECT_ROOT/$mod_file" ]; then
             compose_files="$compose_files -f $mod_file"
+        else
+            log_debug "No overlay for module: $mod (started as service)"
         fi
     done
 
@@ -1214,6 +1333,9 @@ main() {
     check_dependencies
     ensure_data_dirs
     ensure_network
+    verify_compose_files
+    check_nats_conflicts
+    clean_nats_data
 
     generate_env_file
     generate_dex_config
