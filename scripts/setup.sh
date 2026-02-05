@@ -217,6 +217,11 @@ set_defaults() {
         HOSTNAME="$(hostname).local"
         log_info "Auto-detected hostname: $HOSTNAME"
     fi
+
+    # Normalize hostname to lowercase (DNS is case-insensitive but Dex redirect URIs are case-sensitive)
+    if [ -n "$HOSTNAME" ]; then
+        HOSTNAME="$(echo "$HOSTNAME" | tr '[:upper:]' '[:lower:]')"
+    fi
 }
 
 # Validate configuration
