@@ -69,6 +69,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 # Configuration defaults
 PRESET=""
 MODULES=""
+CMDLINE_MODULES=""  # Preserve command-line --modules separately
 ADD_MODULES=""
 REMOVE_MODULES=""
 VARIANT="dev"
@@ -148,8 +149,9 @@ MODULES (composable):
 
 OPTIONS:
   --preset NAME       Use a preset configuration
-  --modules LIST      Comma-separated list of modules (instead of preset)
-  --add LIST          Add modules to preset
+  --modules LIST      Comma-separated list of modules
+                      (with preset: extends preset; without: replaces preset)
+  --add LIST          Add modules to preset (same as --modules with preset)
   --remove LIST       Remove modules from preset
   --prod              Production variant (stricter settings)
   --localhost         Local-only access (default: remote/network)
@@ -181,8 +183,12 @@ EXAMPLES:
   # Custom module combination
   $(basename "$0") --modules oidc,files --hostname wip.local
 
-  # Preset with additional module
+  # Preset with additional modules (two equivalent ways)
   $(basename "$0") --preset standard --add reporting --hostname wip.local
+  $(basename "$0") --preset standard --modules reporting --hostname wip.local
+
+  # Minimal preset plus ingest gateway
+  $(basename "$0") --preset core --modules ingest --localhost
 
   # Production deployment
   $(basename "$0") --preset standard --prod --hostname wip.example.com
@@ -299,6 +305,7 @@ parse_args() {
                 ;;
             --modules)
                 MODULES="$2"
+                CMDLINE_MODULES="$2"  # Preserve for merging with preset
                 shift 2
                 ;;
             --add)
@@ -435,14 +442,24 @@ compute_modules() {
 
     if [ -n "$PRESET" ]; then
         final_modules="$MODULES"  # MODULES is set by preset file
+
+        # If --modules was also specified, treat it as additional modules
+        if [ -n "$CMDLINE_MODULES" ]; then
+            log_info "Extending preset '$PRESET' with additional modules: $CMDLINE_MODULES"
+            for mod in ${CMDLINE_MODULES//,/ }; do
+                if [[ ! ",$final_modules," =~ ",$mod," ]]; then
+                    final_modules="$final_modules,$mod"
+                fi
+            done
+        fi
     else
         final_modules="$MODULES"  # Use command-line modules
     fi
 
-    # Add additional modules
+    # Add additional modules (via --add)
     if [ -n "$ADD_MODULES" ]; then
         for mod in ${ADD_MODULES//,/ }; do
-            if [[ ! " $final_modules " =~ " $mod " ]]; then
+            if [[ ! ",$final_modules," =~ ",$mod," ]]; then
                 final_modules="$final_modules,$mod"
             fi
         done
