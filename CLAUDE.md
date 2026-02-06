@@ -52,12 +52,14 @@ All core services are implemented and working:
 | 2 | File Upload (CSV/XLSX) | Pending |
 | 3 | BI Dashboard (Metabase) | Pending |
 | 4 | Semantic Types | Planning complete, implementation pending |
+| 5 | Event Replay | Design complete, implementation pending |
 
 See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
 - `docs/reporting-layer.md` - Reporting sync details
 - `docs/authentication.md` - Auth configuration
 - `docs/data-models.md` - Document, template, term models
+- `docs/design/event-replay.md` - Event replay for consumer onboarding
 
 ---
 
