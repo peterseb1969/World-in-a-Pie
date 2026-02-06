@@ -33,6 +33,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | `files` | MinIO | Binary file attachments |
 | `ingest` | (Ingest Gateway service) | Streaming data ingestion via NATS |
 | `dev-tools` | Mongo Express | Database inspection (dev variant only) |
+| `bi` | Metabase | Self-service BI dashboards (optional, separate deployment) |
 
 ### Variants
 
@@ -52,24 +53,25 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ## Container Matrix by Module
 
-| Container | Container Name | Base | oidc | reporting | files | dev-tools |
-|-----------|---------------|:----:|:----:|:---------:|:-----:|:---------:|
+| Container | Container Name | Base | oidc | reporting | files | dev-tools | bi |
+|-----------|---------------|:----:|:----:|:---------:|:-----:|:---------:|:--:|
 | **Infrastructure** |
-| MongoDB | wip-mongodb | ✓ | | | | |
-| NATS | wip-nats | ✓ | | | | |
-| Dex | wip-dex | | ✓ | | | |
-| Caddy | wip-caddy | | ✓ | | | |
-| PostgreSQL | wip-postgres | | | ✓ | | |
-| MinIO | wip-minio | | | | ✓ | |
-| Mongo Express | wip-mongo-express | | | | | ✓ |
+| MongoDB | wip-mongodb | ✓ | | | | | |
+| NATS | wip-nats | ✓ | | | | | |
+| Dex | wip-dex | | ✓ | | | | |
+| Caddy | wip-caddy | | ✓ | | | | |
+| PostgreSQL | wip-postgres | | | ✓ | | | |
+| MinIO | wip-minio | | | | ✓ | | |
+| Mongo Express | wip-mongo-express | | | | | ✓ | |
+| Metabase | wip-metabase | | | | | | ✓ |
 | **Services** |
-| Registry | wip-registry-dev | ✓ | | | | |
-| Def-Store | wip-def-store-dev | ✓ | | | | |
-| Template Store | wip-template-store-dev | ✓ | | | | |
-| Document Store | wip-document-store-dev | ✓ | | | | |
-| Reporting Sync | wip-reporting-sync-dev | | | ✓ | | |
-| Ingest Gateway | wip-ingest-gateway-dev | | | | | |
-| WIP Console | wip-console-dev | ✓ | | | | |
+| Registry | wip-registry-dev | ✓ | | | | | |
+| Def-Store | wip-def-store-dev | ✓ | | | | | |
+| Template Store | wip-template-store-dev | ✓ | | | | | |
+| Document Store | wip-document-store-dev | ✓ | | | | | |
+| Reporting Sync | wip-reporting-sync-dev | | | ✓ | | | |
+| Ingest Gateway | wip-ingest-gateway-dev | | | | | | |
+| WIP Console | wip-console-dev | ✓ | | | | | |
 
 **Note:** Ingest Gateway is started when the `ingest` module is active, but doesn't require additional infrastructure.
 
@@ -241,9 +243,41 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
+#### 8. Metabase (wip-metabase)
+
+| Attribute | Value |
+|-----------|-------|
+| **Image** | `docker.io/metabase/metabase:latest` |
+| **Purpose** | Self-service BI dashboards |
+| **Port** | 3030 |
+| **Network** | wip-network |
+| **Volumes** | `./data:/metabase-data` |
+| **Deployment** | Optional, separate (`deploy/optional/metabase/`) |
+
+**Exposed Endpoints:**
+- `http://localhost:3030` - Metabase web UI
+
+**Database Connection:**
+- Connects to WIP PostgreSQL (`wip-postgres:5432`)
+- Database: `wip_reporting`
+- SSL must be disabled (WIP PostgreSQL doesn't use SSL)
+
+**Security:**
+- Web-based authentication (email/password, configured in Metabase)
+- No default credentials (setup wizard on first run)
+- Stores own data in H2 embedded database (or external PostgreSQL for production)
+- **Risk:** Direct read access to all WIP reporting data
+- **Risk:** No integration with WIP OIDC - separate user management
+
+**Resource Usage:**
+- ~500MB-1GB RAM (Java-based)
+- Configurable via `JAVA_OPTS` environment variable
+
+---
+
 ### Service Containers
 
-#### 8. Registry (wip-registry-dev)
+#### 9. Registry (wip-registry-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -277,7 +311,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 9. Def-Store (wip-def-store-dev)
+#### 10. Def-Store (wip-def-store-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -312,7 +346,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 10. Template Store (wip-template-store-dev)
+#### 11. Template Store (wip-template-store-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -343,7 +377,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 11. Document Store (wip-document-store-dev)
+#### 12. Document Store (wip-document-store-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -378,7 +412,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 12. Reporting Sync (wip-reporting-sync-dev)
+#### 13. Reporting Sync (wip-reporting-sync-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -412,7 +446,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 13. Ingest Gateway (wip-ingest-gateway-dev)
+#### 14. Ingest Gateway (wip-ingest-gateway-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -478,7 +512,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 14. WIP Console (wip-console-dev)
+#### 15. WIP Console (wip-console-dev)
 
 | Attribute | Value |
 |-----------|-------|
@@ -576,6 +610,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | 8081 | Mongo Express | HTTP | MongoDB admin UI |
 | 5556 | Dex | HTTP | OIDC provider (internal) |
 | 3000 | WIP Console | HTTP | Web UI (internal) |
+| 3030 | Metabase | HTTP | BI dashboards (optional) |
 
 ---
 
@@ -619,6 +654,11 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
    - Any client with NATS access can publish to `wip.ingest.>` subjects
    - Can bypass REST API authentication entirely
    - **Risk:** Network-level access to NATS allows unrestricted data injection
+
+6. **Metabase Separate Authentication** (if deployed)
+   - Metabase has its own user management, not integrated with WIP OIDC
+   - Direct read access to all PostgreSQL reporting data
+   - **Risk:** Users must be managed in two places (WIP + Metabase)
 
 ---
 
