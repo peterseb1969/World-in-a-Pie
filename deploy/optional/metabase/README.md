@@ -41,6 +41,7 @@ During Metabase setup (or via Admin > Databases > Add Database):
 | Database name | `wip_reporting` |
 | Username | `wip` |
 | Password | `wip_dev_password` (or your production password) |
+| Use secure connection (SSL) | **OFF** |
 
 ## Configuration
 
@@ -238,17 +239,19 @@ Common issues:
 
 ### Can't connect to WIP PostgreSQL
 
-1. Verify PostgreSQL is running:
+1. **Disable SSL:** Make sure "Use a secure connection (SSL)" is **OFF** in Metabase. WIP's PostgreSQL doesn't use SSL by default. Do not use `sslmode=disable` in connection options - just turn off the SSL toggle.
+
+2. Verify PostgreSQL is running:
    ```bash
    podman exec wip-postgres pg_isready
    ```
 
-2. Check network connectivity:
+3. Check network connectivity:
    ```bash
    podman exec wip-metabase ping wip-postgres
    ```
 
-3. Verify credentials in Metabase database settings
+4. Verify credentials in Metabase database settings
 
 ### Slow queries
 
