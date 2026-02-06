@@ -980,31 +980,59 @@ ensure_network() {
 
 check_nats_conflicts() {
     # Check for stale NATS JetStream data that could cause stream conflicts
-    local meta_file="$WIP_DATA_DIR/nats/jetstream/\$G/streams/WIP_EVENTS/meta.inf"
+    # The main issue is any stream with a broad wildcard like "wip.>" that
+    # overlaps with more specific streams like "wip.ingest.>" or "wip.documents.>"
 
-    if [ -f "$meta_file" ]; then
-        # Check if WIP_EVENTS has the old wildcard subject "wip.>" (may be encoded as \u003e)
-        if grep -qE '"wip\.(>|\\u003e)"' "$meta_file" 2>/dev/null; then
-            log_warn "Detected stale NATS JetStream configuration!"
-            log_warn "WIP_EVENTS stream uses 'wip.>' which conflicts with new streams."
+    local streams_dir="$WIP_DATA_DIR/nats/jetstream/\$G/streams"
+    local found_conflict=false
+    local conflict_streams=""
 
-            if [ "$CLEAN_DATA" = "true" ]; then
-                log_info "Will clean NATS data (--clean flag set)"
-            else
-                echo ""
-                echo "This will cause 'subjects overlap with an existing stream' errors."
-                echo "Either:"
-                echo "  1. Re-run with --clean flag to clear NATS data"
-                echo "  2. Manually remove: rm -rf $WIP_DATA_DIR/nats/jetstream"
-                echo ""
-                read -p "  Clean NATS data now? [Y/n] " -n 1 -r response
-                echo ""
-                if [ -z "$response" ] || [[ "$response" =~ ^[Yy]$ ]]; then
-                    CLEAN_DATA="true"
-                else
-                    log_error "Cannot proceed with stale NATS data. Aborting."
-                    exit 1
+    if [ -d "$streams_dir" ]; then
+        # Check all streams for wildcard subjects that could conflict
+        for stream_dir in "$streams_dir"/*/; do
+            [ -d "$stream_dir" ] || continue
+            local meta_file="${stream_dir}meta.inf"
+            local stream_name=$(basename "$stream_dir")
+
+            if [ -f "$meta_file" ]; then
+                # Check for broad wildcards: "wip.>" or "wip.\u003e" (JSON encoded >)
+                # These conflict with any more specific wip.* subjects
+                if grep -qE '"wip\.(>|\\u003e)"' "$meta_file" 2>/dev/null; then
+                    found_conflict=true
+                    conflict_streams="$conflict_streams $stream_name(wip.>)"
                 fi
+
+                # Also check for "ingest.>" pattern that might conflict
+                if grep -qE '"ingest\.(>|\\u003e)"' "$meta_file" 2>/dev/null; then
+                    found_conflict=true
+                    conflict_streams="$conflict_streams $stream_name(ingest.>)"
+                fi
+            fi
+        done
+    fi
+
+    if [ "$found_conflict" = "true" ]; then
+        log_warn "Detected NATS JetStream streams with conflicting wildcards!"
+        log_warn "Problematic streams:$conflict_streams"
+
+        if [ "$CLEAN_DATA" = "true" ]; then
+            log_info "Will clean NATS data (--clean flag set)"
+        else
+            echo ""
+            echo "These streams use broad wildcards that conflict with new streams."
+            echo "This causes 'subjects overlap with an existing stream' errors."
+            echo ""
+            echo "Either:"
+            echo "  1. Re-run with --clean flag to clear NATS data"
+            echo "  2. Manually remove: rm -rf $WIP_DATA_DIR/nats/jetstream"
+            echo ""
+            read -p "  Clean NATS data now? [Y/n] " -n 1 -r response
+            echo ""
+            if [ -z "$response" ] || [[ "$response" =~ ^[Yy]$ ]]; then
+                CLEAN_DATA="true"
+            else
+                log_error "Cannot proceed with conflicting NATS streams. Aborting."
+                exit 1
             fi
         fi
     fi
