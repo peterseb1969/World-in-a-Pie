@@ -9,6 +9,8 @@ Usage:
     python scripts/seed_comprehensive.py [options]
 
 Options:
+    --host HOSTNAME       WIP host (default: localhost). Sets all service URLs.
+    --via-proxy          Route through Caddy proxy (https://<host>:8443) instead of direct ports
     --profile PROFILE     Data profile: minimal, standard, full, performance (default: standard)
     --services SERVICES   Comma-separated services: all, def-store, template-store, document-store
     --clean              Clean existing data before seeding (USE WITH CAUTION)
@@ -19,8 +21,14 @@ Options:
     --dry-run            Show what would be created without making changes
 
 Examples:
-    # Seed everything with standard profile
+    # Seed everything with standard profile (localhost)
     python scripts/seed_comprehensive.py
+
+    # Seed a remote WIP instance via direct ports (requires port access)
+    python scripts/seed_comprehensive.py --host wip-pi.local
+
+    # Seed a remote WIP instance via Caddy proxy (only needs port 8443)
+    python scripts/seed_comprehensive.py --host wip-pi.local --via-proxy
 
     # Seed only def-store with minimal data
     python scripts/seed_comprehensive.py --profile minimal --services def-store
@@ -30,10 +38,15 @@ Examples:
 
     # Seed documents only (using existing terminologies and templates)
     python scripts/seed_comprehensive.py --skip-terminologies --skip-templates --services document-store
+
+Environment Variables:
+    WIP_HOST              Default host if --host not specified
+    WIP_API_KEY           API key for authentication
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import json
 import time
@@ -42,6 +55,10 @@ from typing import Any
 from datetime import datetime
 
 import requests
+import urllib3
+
+# Suppress InsecureRequestWarning when using --via-proxy with self-signed certs
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Add seed-data module to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "components"))
@@ -75,25 +92,45 @@ def process_template_fields(fields: list[dict]) -> list[dict]:
     return processed
 
 
-# Service URLs (can be overridden via environment or arguments)
-DEFAULT_URLS = {
-    "registry": "http://localhost:8001",
-    "def-store": "http://localhost:8002",
-    "template-store": "http://localhost:8003",
-    "document-store": "http://localhost:8004",
-}
+# Default host and API key (can be overridden via environment or arguments)
+DEFAULT_HOST = os.environ.get("WIP_HOST", "localhost")
+DEFAULT_API_KEY = os.environ.get("WIP_API_KEY", "dev_master_key_for_testing")
 
-DEFAULT_API_KEY = "dev_master_key_for_testing"
+
+def get_service_urls(host: str = DEFAULT_HOST, via_proxy: bool = False) -> dict[str, str]:
+    """Build service URLs for the given host.
+
+    Args:
+        host: The WIP host (e.g., localhost, wip-pi.local)
+        via_proxy: If True, route through Caddy proxy (https://<host>:8443)
+                   If False, connect directly to service ports (http://<host>:800x)
+    """
+    if via_proxy:
+        base = f"https://{host}:8443"
+        return {
+            "registry": base,
+            "def-store": base,
+            "template-store": base,
+            "document-store": base,
+        }
+    else:
+        return {
+            "registry": f"http://{host}:8001",
+            "def-store": f"http://{host}:8002",
+            "template-store": f"http://{host}:8003",
+            "document-store": f"http://{host}:8004",
+        }
 
 
 class ServiceClient:
     """Simple HTTP client for WIP services."""
 
-    def __init__(self, base_url: str, api_key: str):
+    def __init__(self, base_url: str, api_key: str, verify_ssl: bool = True):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.session = requests.Session()
         self.session.headers.update({"X-API-Key": api_key})
+        self.session.verify = verify_ssl
 
     def health_check(self) -> bool:
         """Check if service is healthy."""
@@ -137,19 +174,26 @@ class WIPSeeder:
         self,
         profile: str = "standard",
         api_key: str = DEFAULT_API_KEY,
+        host: str = DEFAULT_HOST,
+        via_proxy: bool = False,
         urls: dict[str, str] = None,
         dry_run: bool = False
     ):
         self.profile = profile
         self.api_key = api_key
-        self.urls = urls or DEFAULT_URLS
+        self.host = host
+        self.via_proxy = via_proxy
+        self.urls = urls or get_service_urls(host, via_proxy)
         self.dry_run = dry_run
 
+        # Disable SSL verification for self-signed certs when using proxy
+        verify_ssl = not via_proxy
+
         # Initialize clients
-        self.registry = ServiceClient(self.urls["registry"], api_key)
-        self.def_store = ServiceClient(self.urls["def-store"], api_key)
-        self.template_store = ServiceClient(self.urls["template-store"], api_key)
-        self.document_store = ServiceClient(self.urls["document-store"], api_key)
+        self.registry = ServiceClient(self.urls["registry"], api_key, verify_ssl)
+        self.def_store = ServiceClient(self.urls["def-store"], api_key, verify_ssl)
+        self.template_store = ServiceClient(self.urls["template-store"], api_key, verify_ssl)
+        self.document_store = ServiceClient(self.urls["document-store"], api_key, verify_ssl)
 
         # Track created resources
         self.created_terminologies: dict[str, str] = {}  # code -> id
@@ -643,6 +687,18 @@ def main():
     )
 
     parser.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help="WIP host for remote seeding (default: localhost or WIP_HOST env var)"
+    )
+
+    parser.add_argument(
+        "--via-proxy",
+        action="store_true",
+        help="Route requests through Caddy proxy (https://<host>:8443) instead of direct ports"
+    )
+
+    parser.add_argument(
         "--profile",
         choices=["minimal", "standard", "full", "performance"],
         default="standard",
@@ -707,9 +763,13 @@ def main():
     print("=" * 70)
     print("WIP Comprehensive Seed Script")
     print("=" * 70)
+    print(f"Host: {args.host}" + (" (via Caddy proxy)" if args.via_proxy else " (direct ports)"))
     print(f"Profile: {args.profile}")
     print(f"Services: {', '.join(services)}")
     print(f"Dry run: {args.dry_run}")
+
+    if args.via_proxy:
+        print("\nNote: Using Caddy proxy - SSL verification disabled for self-signed certs")
 
     if args.clean:
         print("\nWARNING: Clean mode is enabled. This will delete existing data!")
@@ -722,6 +782,8 @@ def main():
     seeder = WIPSeeder(
         profile=args.profile,
         api_key=args.api_key,
+        host=args.host,
+        via_proxy=args.via_proxy,
         dry_run=args.dry_run
     )
 
@@ -805,14 +867,11 @@ def main():
 
     print("\n" + "=" * 70)
     print("You can now explore the data at:")
-    print(f"  Def-Store API:      http://localhost:8002/docs")
-    print(f"  Template Store API: http://localhost:8003/docs")
-    print(f"  Document Store API: http://localhost:8004/docs")
-    print(f"  MongoDB Express:    http://localhost:8081")
-    print()
-    print("WIP Console (depends on your setup.sh --network mode):")
-    print(f"  localhost mode:     https://localhost:8443")
-    print(f"  remote mode:        https://<hostname>:8443")
+    print(f"  Def-Store API:      http://{args.host}:8002/docs")
+    print(f"  Template Store API: http://{args.host}:8003/docs")
+    print(f"  Document Store API: http://{args.host}:8004/docs")
+    print(f"  MongoDB Express:    http://{args.host}:8081")
+    print(f"  WIP Console:        https://{args.host}:8443")
     print("=" * 70)
 
 
