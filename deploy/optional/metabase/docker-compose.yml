@@ -20,7 +20,7 @@
 
 services:
   metabase:
-    image: metabase/metabase:latest
+    image: docker.io/metabase/metabase:latest
     container_name: wip-metabase
     ports:
       - "${METABASE_PORT:-3030}:3000"
