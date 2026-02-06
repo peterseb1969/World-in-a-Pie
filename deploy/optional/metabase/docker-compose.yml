@@ -1,0 +1,54 @@
+# Metabase BI Tool - Optional WIP Deployment
+#
+# This provides a self-service BI dashboard connected to WIP's PostgreSQL reporting database.
+#
+# Usage:
+#   # Start (connects to existing WIP PostgreSQL)
+#   cd deploy/optional/metabase
+#   podman-compose up -d
+#
+#   # Access: http://localhost:3030
+#
+# Prerequisites:
+#   - WIP must be running with reporting module (PostgreSQL)
+#   - WIP network must exist: podman network ls | grep wip-network
+#
+# For standalone deployment (not on same host as WIP):
+#   1. Set METABASE_DB_HOST to your WIP PostgreSQL host
+#   2. Ensure PostgreSQL port 5432 is accessible
+#   3. Run: podman-compose --env-file .env.standalone up -d
+
+services:
+  metabase:
+    image: metabase/metabase:latest
+    container_name: wip-metabase
+    ports:
+      - "${METABASE_PORT:-3030}:3000"
+    environment:
+      # Metabase's internal database (H2 embedded by default)
+      # For production, consider using PostgreSQL for Metabase's own data
+      MB_DB_TYPE: h2
+      MB_DB_FILE: /metabase-data/metabase.db
+
+      # Pre-configure connection to WIP PostgreSQL (optional)
+      # Users can also add connections via UI
+      MB_SETUP_TOKEN: ${METABASE_SETUP_TOKEN:-}
+
+      # Java memory settings (adjust for Pi)
+      JAVA_OPTS: ${METABASE_JAVA_OPTS:--Xmx512m}
+
+    volumes:
+      - ${METABASE_DATA_DIR:-./data}:/metabase-data
+    networks:
+      - wip-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s  # Metabase takes a while to start
+    restart: unless-stopped
+
+networks:
+  wip-network:
+    external: true

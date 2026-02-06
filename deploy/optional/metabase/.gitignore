@@ -1,0 +1,6 @@
+# Metabase data (H2 database, plugins, etc.)
+data/
+
+# Local environment overrides
+.env
+docker-compose.override.yml
