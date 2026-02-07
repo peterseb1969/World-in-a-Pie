@@ -6,6 +6,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Body, Depends
 
 from ..models.namespace import Namespace, IdGeneratorConfig, WIP_INTERNAL_NAMESPACES
+from ..models.namespace_group import NamespaceGroup
 from ..models.api_models import (
     NamespaceCreate,
     NamespaceUpdate,
@@ -328,5 +329,15 @@ async def initialize_wip_namespaces(
                 namespace_id=ns_id,
                 error=str(e)
             ))
+
+    # Also create the wip namespace group if it doesn't exist
+    existing_group = await NamespaceGroup.find_one({"prefix": "wip"})
+    if not existing_group:
+        group = NamespaceGroup(
+            prefix="wip",
+            description="Default World In a Pie namespace group",
+            isolation_mode="open",
+        )
+        await group.create()
 
     return responses
