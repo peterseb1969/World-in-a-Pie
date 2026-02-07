@@ -12,6 +12,9 @@ beanie>=1.25.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
+# File upload support
+python-multipart>=0.0.6
+
 # HTTP client (for proxy queries)
 httpx>=0.26.0
 
