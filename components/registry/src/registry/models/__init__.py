@@ -1,6 +1,7 @@
 """Data models for the Registry service."""
 
 from .namespace import Namespace, IdGeneratorConfig, IdGeneratorType
+from .namespace_group import NamespaceGroup
 from .entry import RegistryEntry, Synonym, SourceInfo
 from .api_models import (
     # Namespace API models
@@ -39,11 +40,17 @@ from .api_models import (
     # Delete API models
     DeleteItem,
     DeleteResponse,
+    # Namespace Group API models
+    NamespaceGroupCreate,
+    NamespaceGroupUpdate,
+    NamespaceGroupResponse,
+    NamespaceGroupStatsResponse,
 )
 
 __all__ = [
     # Core models
     "Namespace",
+    "NamespaceGroup",
     "IdGeneratorConfig",
     "IdGeneratorType",
     "RegistryEntry",
@@ -78,4 +85,8 @@ __all__ = [
     "SetPreferredResponse",
     "DeleteItem",
     "DeleteResponse",
+    "NamespaceGroupCreate",
+    "NamespaceGroupUpdate",
+    "NamespaceGroupResponse",
+    "NamespaceGroupStatsResponse",
 ]

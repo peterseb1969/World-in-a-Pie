@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from .models.namespace import Namespace, IdGeneratorType
+from .models.namespace_group import NamespaceGroup
 from .models.entry import RegistryEntry
 from .api import api_router
 from .services.auth import AuthService
@@ -84,7 +85,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry]
+        document_models=[Namespace, NamespaceGroup, RegistryEntry]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -119,6 +120,7 @@ The Registry service provides centralized identity management for the WIP ecosys
 
 ### Key Features
 
+- **Namespace Groups**: Manage related namespaces together (dev, staging, prod environments)
 - **Namespace Management**: Logical partitions for ID isolation
 - **Composite Key Registration**: Register any combination of fields as an identity
 - **Synonym Support**: Multiple keys can resolve to the same entity
@@ -132,7 +134,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 Admin operations (namespace management) require elevated privileges.
     """,
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -157,7 +159,7 @@ async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Registry",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "documentation": "/docs",
         "health": "/health",
     }

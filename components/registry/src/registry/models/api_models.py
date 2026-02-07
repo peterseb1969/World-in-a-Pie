@@ -353,3 +353,65 @@ class DeleteResponse(BaseModel):
     status: str  # deactivated, not_found, error
     registry_id: Optional[str] = None
     error: Optional[str] = None
+
+
+# =============================================================================
+# Namespace Group API Models
+# =============================================================================
+
+class NamespaceGroupCreate(BaseModel):
+    """Request model for creating a namespace group."""
+
+    prefix: str = Field(..., description="Unique prefix for the group (e.g., 'dev', 'staging')")
+    description: str = Field(default="", description="Human-readable description")
+    isolation_mode: str = Field(
+        default="open",
+        description="'open' allows cross-namespace refs; 'strict' requires same-group only"
+    )
+    allowed_external_refs: list[str] = Field(
+        default_factory=list,
+        description="For open mode, optional allowlist of external namespace prefixes"
+    )
+    created_by: Optional[str] = Field(None, description="User creating the group")
+
+
+class NamespaceGroupUpdate(BaseModel):
+    """Request model for updating a namespace group."""
+
+    description: Optional[str] = None
+    isolation_mode: Optional[str] = None
+    allowed_external_refs: Optional[list[str]] = None
+    updated_by: Optional[str] = None
+
+
+class NamespaceGroupResponse(BaseModel):
+    """Response model for a namespace group."""
+
+    prefix: str
+    description: str
+    isolation_mode: str
+    allowed_external_refs: list[str]
+    status: str
+    created_at: datetime
+    created_by: Optional[str]
+    updated_at: datetime
+    updated_by: Optional[str]
+    # Derived namespace names
+    terminologies_ns: str
+    terms_ns: str
+    templates_ns: str
+    documents_ns: str
+    files_ns: str
+
+
+class NamespaceGroupStatsResponse(BaseModel):
+    """Response model for namespace group with entity counts."""
+
+    prefix: str
+    description: str
+    isolation_mode: str
+    status: str
+    namespaces: dict[str, int] = Field(
+        default_factory=dict,
+        description="Map of namespace_id to entry count"
+    )
