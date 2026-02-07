@@ -6,30 +6,48 @@ import Column from 'primevue/column'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
+import Panel from 'primevue/panel'
 import { useConfirm } from 'primevue/useconfirm'
-import { useTerminologyStore, useUiStore } from '@/stores'
+import { useTerminologyStore, useUiStore, useNamespaceStore } from '@/stores'
 import type { Terminology } from '@/types'
 import TerminologyForm from './TerminologyForm.vue'
 
 const router = useRouter()
 const confirm = useConfirm()
 const terminologyStore = useTerminologyStore()
+const namespaceStore = useNamespaceStore()
 const uiStore = useUiStore()
 
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const editingTerminology = ref<Terminology | null>(null)
 const searchQuery = ref('')
+const wipCollapsed = ref(false)
 
-const filteredTerminologies = computed(() => {
-  if (!searchQuery.value) return terminologyStore.terminologies
+// Filter own terminologies
+const filteredOwnTerminologies = computed(() => {
+  if (!searchQuery.value) return terminologyStore.ownTerminologies
   const query = searchQuery.value.toLowerCase()
-  return terminologyStore.terminologies.filter(t =>
+  return terminologyStore.ownTerminologies.filter(t =>
     t.code.toLowerCase().includes(query) ||
     t.name.toLowerCase().includes(query) ||
     t.description?.toLowerCase().includes(query)
   )
 })
+
+// Filter WIP terminologies
+const filteredWipTerminologies = computed(() => {
+  if (!searchQuery.value) return terminologyStore.wipTerminologies
+  const query = searchQuery.value.toLowerCase()
+  return terminologyStore.wipTerminologies.filter(t =>
+    t.code.toLowerCase().includes(query) ||
+    t.name.toLowerCase().includes(query) ||
+    t.description?.toLowerCase().includes(query)
+  )
+})
+
+// Get namespace prefix for display
+const currentNamespacePrefix = computed(() => namespaceStore.currentGroup.toUpperCase())
 
 onMounted(async () => {
   try {
@@ -106,8 +124,15 @@ async function onUpdated() {
       </div>
     </div>
 
+    <!-- Own Namespace Terminologies -->
+    <div class="section-header">
+      <Tag :value="currentNamespacePrefix" severity="info" />
+      <span class="section-title">{{ currentNamespacePrefix }} Terminologies</span>
+      <span class="section-count">({{ terminologyStore.total }})</span>
+    </div>
+
     <DataTable
-      :value="filteredTerminologies"
+      :value="filteredOwnTerminologies"
       :loading="terminologyStore.loading"
       striped-rows
       paginator
@@ -119,8 +144,8 @@ async function onUpdated() {
     >
       <template #empty>
         <div class="empty-state">
-          <i class="pi pi-inbox" style="font-size: 3rem; opacity: 0.3"></i>
-          <p>No terminologies found</p>
+          <i class="pi pi-inbox" style="font-size: 2rem; opacity: 0.3"></i>
+          <p>No terminologies in this namespace</p>
         </div>
       </template>
 
@@ -192,6 +217,93 @@ async function onUpdated() {
       </Column>
     </DataTable>
 
+    <!-- WIP Terminologies (collapsible, read-only) -->
+    <Panel
+      v-if="terminologyStore.showWipSection"
+      :collapsed="wipCollapsed"
+      toggleable
+      class="wip-section"
+      @update:collapsed="wipCollapsed = $event"
+    >
+      <template #header>
+        <div class="wip-header">
+          <Tag value="WIP" severity="secondary" />
+          <span class="section-title">WIP Terminologies (Read-only)</span>
+          <span class="section-count">({{ terminologyStore.wipTotal }})</span>
+        </div>
+      </template>
+
+      <DataTable
+        :value="filteredWipTerminologies"
+        :loading="terminologyStore.loading"
+        striped-rows
+        paginator
+        :rows="10"
+        :rows-per-page-options="[10, 25, 50]"
+        size="small"
+        data-key="terminology_id"
+        class="terminology-table wip-table"
+      >
+        <template #empty>
+          <div class="empty-state">
+            <i class="pi pi-inbox" style="font-size: 2rem; opacity: 0.3"></i>
+            <p>No WIP terminologies available</p>
+          </div>
+        </template>
+
+        <Column field="code" header="Code" sortable style="width: 15%">
+          <template #body="{ data }">
+            <span class="code-badge">{{ data.code }}</span>
+          </template>
+        </Column>
+
+        <Column field="name" header="Name" sortable style="width: 30%">
+          <template #body="{ data }">
+            <a
+              href="#"
+              class="terminology-link"
+              @click.prevent="viewTerminology(data)"
+            >
+              {{ data.name }}
+            </a>
+          </template>
+        </Column>
+
+        <Column field="description" header="Description" style="width: 30%">
+          <template #body="{ data }">
+            <span class="description-text">{{ data.description || '-' }}</span>
+          </template>
+        </Column>
+
+        <Column field="term_count" header="Terms" sortable style="width: 10%">
+          <template #body="{ data }">
+            <span class="term-count">{{ data.term_count }}</span>
+          </template>
+        </Column>
+
+        <Column field="status" header="Status" sortable style="width: 10%">
+          <template #body="{ data }">
+            <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+          </template>
+        </Column>
+
+        <Column header="Actions" style="width: 5%">
+          <template #body="{ data }">
+            <div class="action-buttons">
+              <Button
+                icon="pi pi-eye"
+                severity="secondary"
+                text
+                rounded
+                title="View"
+                @click="viewTerminology(data)"
+              />
+            </div>
+          </template>
+        </Column>
+      </DataTable>
+    </Panel>
+
     <TerminologyForm
       v-model:visible="showCreateDialog"
       @created="onCreated"
@@ -229,6 +341,24 @@ async function onUpdated() {
   display: flex;
   gap: 1rem;
   align-items: center;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--p-surface-200);
+}
+
+.section-title {
+  font-weight: 600;
+  color: var(--p-text-color);
+}
+
+.section-count {
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
 }
 
 .code-badge {
@@ -270,8 +400,8 @@ async function onUpdated() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1rem;
-  padding: 3rem;
+  gap: 0.5rem;
+  padding: 2rem;
   color: var(--p-text-muted-color);
 }
 
@@ -289,5 +419,29 @@ async function onUpdated() {
 
 .p-input-icon-left > input {
   padding-left: 2.5rem;
+}
+
+/* WIP Section styling */
+.wip-section {
+  margin-top: 1rem;
+}
+
+.wip-section :deep(.p-panel-header) {
+  background: var(--p-surface-50);
+  border-color: var(--p-surface-200);
+}
+
+.wip-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wip-table {
+  opacity: 0.9;
+}
+
+.wip-table :deep(.p-datatable-tbody > tr) {
+  background: var(--p-surface-50);
 }
 </style>

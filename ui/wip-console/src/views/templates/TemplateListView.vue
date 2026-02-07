@@ -10,7 +10,8 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import ToggleSwitch from 'primevue/toggleswitch'
-import { useTemplateStore, useAuthStore, useUiStore } from '@/stores'
+import Panel from 'primevue/panel'
+import { useTemplateStore, useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import type { Template, CreateTemplateRequest } from '@/types'
 
 const router = useRouter()
@@ -18,11 +19,13 @@ const confirm = useConfirm()
 const templateStore = useTemplateStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const searchQuery = ref('')
 const statusFilter = ref<string | null>(null)
 const extendsFilter = ref<string | null>(null)
 const showAllVersions = ref(true)  // Show all versions by default (as per user requirement)
+const wipCollapsed = ref(false)
 
 const statusOptions = [
   { label: 'All Status', value: null },
@@ -39,9 +42,29 @@ const createForm = ref<CreateTemplateRequest>({
   description: ''
 })
 
-// Computed filtered templates
-const filteredTemplates = computed(() => {
-  let result = templateStore.templates
+// Get namespace prefix for display
+const currentNamespacePrefix = computed(() => namespaceStore.currentGroup.toUpperCase())
+
+// Computed filtered own templates
+const filteredOwnTemplates = computed(() => {
+  let result = templateStore.ownTemplates
+
+  if (searchQuery.value) {
+    const query = searchQuery.value.toLowerCase()
+    result = result.filter(
+      t =>
+        t.name.toLowerCase().includes(query) ||
+        t.code.toLowerCase().includes(query) ||
+        t.description?.toLowerCase().includes(query)
+    )
+  }
+
+  return result
+})
+
+// Computed filtered WIP templates
+const filteredWipTemplates = computed(() => {
+  let result = templateStore.wipTemplates
 
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
@@ -61,14 +84,14 @@ const extendsOptions = computed(() => {
   const options: { label: string; value: string | null }[] = [{ label: 'All Parents', value: null }]
   const parents = new Set<string>()
 
-  templateStore.templates.forEach(t => {
+  templateStore.ownTemplates.forEach(t => {
     if (t.extends) {
       parents.add(t.extends)
     }
   })
 
   parents.forEach(p => {
-    const parent = templateStore.templates.find(t => t.template_id === p)
+    const parent = templateStore.ownTemplates.find(t => t.template_id === p)
     options.push({
       label: parent ? parent.name : p,
       value: p
@@ -225,8 +248,15 @@ onMounted(loadTemplates)
         />
       </div>
 
+      <!-- Own Namespace Templates -->
+      <div class="section-header">
+        <Tag :value="currentNamespacePrefix" severity="info" />
+        <span class="section-title">{{ currentNamespacePrefix }} Templates</span>
+        <span class="section-count">({{ templateStore.total }})</span>
+      </div>
+
       <DataTable
-        :value="filteredTemplates"
+        :value="filteredOwnTemplates"
         :loading="templateStore.loading"
         paginator
         :rows="20"
@@ -256,27 +286,22 @@ onMounted(loadTemplates)
             </div>
           </template>
         </Column>
-        <Column field="fields" header="Fields" style="width: 100px">
+        <Column field="fields" header="Fields" style="width: 80px">
           <template #body="{ data }">
             <span class="field-count">{{ data.fields.length }}</span>
           </template>
         </Column>
-        <Column field="rules" header="Rules" style="width: 100px">
+        <Column field="rules" header="Rules" style="width: 80px">
           <template #body="{ data }">
             <span class="rule-count">{{ data.rules.length }}</span>
           </template>
         </Column>
-        <Column field="version" header="Version" sortable style="width: 100px">
-          <template #body="{ data }">
-            <span class="version">v{{ data.version }}</span>
-          </template>
-        </Column>
-        <Column field="status" header="Status" sortable style="width: 120px">
+        <Column field="status" header="Status" sortable style="width: 100px">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
           </template>
         </Column>
-        <Column field="updated_at" header="Updated" sortable style="width: 120px">
+        <Column field="updated_at" header="Updated" sortable style="width: 100px">
           <template #body="{ data }">
             {{ formatDate(data.updated_at) }}
           </template>
@@ -318,11 +343,98 @@ onMounted(loadTemplates)
         <template #empty>
           <div class="empty-state">
             <i class="pi pi-file-edit"></i>
-            <p>No templates found</p>
+            <p>No templates in this namespace</p>
             <Button label="Create your first template" icon="pi pi-plus" @click="openCreateDialog" />
           </div>
         </template>
       </DataTable>
+
+      <!-- WIP Templates (collapsible, read-only) -->
+      <Panel
+        v-if="templateStore.showWipSection"
+        :collapsed="wipCollapsed"
+        toggleable
+        class="wip-section"
+        @update:collapsed="wipCollapsed = $event"
+      >
+        <template #header>
+          <div class="wip-header">
+            <Tag value="WIP" severity="secondary" />
+            <span class="section-title">WIP Templates (Read-only)</span>
+            <span class="section-count">({{ templateStore.wipTotal }})</span>
+          </div>
+        </template>
+
+        <DataTable
+          :value="filteredWipTemplates"
+          :loading="templateStore.loading"
+          paginator
+          :rows="10"
+          :rowsPerPageOptions="[10, 20, 50]"
+          stripedRows
+          size="small"
+          class="templates-table wip-table"
+          @row-click="(e) => viewTemplate(e.data)"
+          rowHover
+        >
+          <Column field="code" header="Code" sortable style="width: 180px">
+            <template #body="{ data }">
+              <div class="template-code-cell">
+                <code class="template-code">{{ data.code }}</code>
+                <Tag v-if="showAllVersions" :value="`v${data.version}`" severity="secondary" class="version-tag" />
+              </div>
+            </template>
+          </Column>
+          <Column field="name" header="Name" sortable style="min-width: 200px">
+            <template #body="{ data }">
+              <div class="template-name-cell">
+                <span class="name">{{ data.name }}</span>
+                <span v-if="data.extends" class="extends-badge">
+                  <i class="pi pi-arrow-right"></i>
+                  {{ data.extends }}
+                </span>
+              </div>
+            </template>
+          </Column>
+          <Column field="fields" header="Fields" style="width: 80px">
+            <template #body="{ data }">
+              <span class="field-count">{{ data.fields.length }}</span>
+            </template>
+          </Column>
+          <Column field="rules" header="Rules" style="width: 80px">
+            <template #body="{ data }">
+              <span class="rule-count">{{ data.rules.length }}</span>
+            </template>
+          </Column>
+          <Column field="status" header="Status" sortable style="width: 100px">
+            <template #body="{ data }">
+              <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+            </template>
+          </Column>
+          <Column header="Actions" style="width: 80px">
+            <template #body="{ data }">
+              <div class="actions" @click.stop>
+                <Button
+                  icon="pi pi-eye"
+                  severity="secondary"
+                  text
+                  rounded
+                  size="small"
+                  @click="viewTemplate(data)"
+                  v-tooltip="'View'"
+                />
+              </div>
+            </template>
+          </Column>
+
+          <template #empty>
+            <div class="empty-state small">
+              <i class="pi pi-inbox"></i>
+              <p>No WIP templates available</p>
+            </div>
+          </template>
+        </DataTable>
+      </Panel>
     </div>
 
     <!-- Create Template Dialog -->
@@ -456,6 +568,25 @@ onMounted(loadTemplates)
   cursor: pointer;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--p-surface-200);
+  margin-top: 0.5rem;
+}
+
+.section-title {
+  font-weight: 600;
+  color: var(--p-text-color);
+}
+
+.section-count {
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
 .template-code-cell {
   display: flex;
   align-items: center;
@@ -521,6 +652,14 @@ onMounted(loadTemplates)
   color: var(--p-text-muted-color);
 }
 
+.empty-state.small {
+  padding: 2rem;
+}
+
+.empty-state.small i {
+  font-size: 2rem;
+}
+
 .empty-state i {
   font-size: 3rem;
 }
@@ -547,5 +686,29 @@ onMounted(loadTemplates)
 
 .w-full {
   width: 100%;
+}
+
+/* WIP Section styling */
+.wip-section {
+  margin-top: 1rem;
+}
+
+.wip-section :deep(.p-panel-header) {
+  background: var(--p-surface-50);
+  border-color: var(--p-surface-200);
+}
+
+.wip-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wip-table {
+  opacity: 0.9;
+}
+
+.wip-table :deep(.p-datatable-tbody > tr) {
+  background: var(--p-surface-50);
 }
 </style>

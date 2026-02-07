@@ -155,6 +155,7 @@ export interface DocumentQueryParams {
   template_id?: string
   status?: DocumentStatus
   search?: string
+  namespace?: string
 }
 
 // =============================================================================

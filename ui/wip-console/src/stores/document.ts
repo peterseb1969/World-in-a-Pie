@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { documentStoreClient, templateStoreClient, defStoreClient } from '@/api/client'
+import { useNamespaceStore } from './namespace'
 import type {
   Document,
   CreateDocumentRequest,
@@ -14,6 +15,7 @@ import type {
 } from '@/types'
 
 export const useDocumentStore = defineStore('document', () => {
+  const namespaceStore = useNamespaceStore()
   const documents = ref<Document[]>([])
   const currentDocument = ref<Document | null>(null)
   const currentTemplate = ref<Template | null>(null)
@@ -28,11 +30,21 @@ export const useDocumentStore = defineStore('document', () => {
   // Cache for terminology terms (keyed by terminology_id)
   const termsCache = ref<Record<string, Term[]>>({})
 
+  // Watch for namespace changes and refetch
+  watch(() => namespaceStore.documentsNs, () => {
+    fetchDocuments()
+    // Clear terms cache when namespace changes
+    termsCache.value = {}
+  })
+
   async function fetchDocuments(params?: DocumentQueryParams) {
     loading.value = true
     error.value = null
     try {
-      const response = await documentStoreClient.listDocuments(params)
+      const response = await documentStoreClient.listDocuments({
+        ...params,
+        namespace: namespaceStore.documentsNs
+      })
       documents.value = response.items
       total.value = response.total
       pages.value = response.pages

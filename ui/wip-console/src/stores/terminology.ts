@@ -1,18 +1,59 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { defStoreClient } from '@/api/client'
+import { useNamespaceStore } from './namespace'
 import type {
   Terminology,
   CreateTerminologyRequest,
   UpdateTerminologyRequest
 } from '@/types'
 
+// Extended terminology with namespace info for UI display
+export interface TerminologyWithNamespace extends Terminology {
+  _namespace: string
+  _isExternal: boolean
+}
+
 export const useTerminologyStore = defineStore('terminology', () => {
-  const terminologies = ref<Terminology[]>([])
+  const namespaceStore = useNamespaceStore()
+  const ownTerminologies = ref<Terminology[]>([])
+  const wipTerminologies = ref<Terminology[]>([])
   const currentTerminology = ref<Terminology | null>(null)
   const total = ref(0)
+  const wipTotal = ref(0)
   const loading = ref(false)
   const error = ref<string | null>(null)
+
+  // Combined list for backward compatibility
+  const terminologies = computed(() => ownTerminologies.value)
+
+  // All terminologies with namespace info (own first, then WIP)
+  const allTerminologies = computed<TerminologyWithNamespace[]>(() => {
+    const own = ownTerminologies.value.map(t => ({
+      ...t,
+      _namespace: namespaceStore.terminologiesNs,
+      _isExternal: false
+    }))
+    const wip = wipTerminologies.value.map(t => ({
+      ...t,
+      _namespace: 'wip-terminologies',
+      _isExternal: true
+    }))
+    return [...own, ...wip]
+  })
+
+  // Should we show WIP section? Only for open namespaces that are not WIP
+  const showWipSection = computed(() => {
+    const group = namespaceStore.currentGroupData
+    const isWip = namespaceStore.currentGroup === 'wip'
+    const isOpen = !group || group.isolation_mode === 'open'
+    return isOpen && !isWip
+  })
+
+  // Watch for namespace changes and refetch
+  watch(() => namespaceStore.terminologiesNs, () => {
+    fetchTerminologies()
+  })
 
   async function fetchTerminologies(params?: {
     page?: number
@@ -23,9 +64,32 @@ export const useTerminologyStore = defineStore('terminology', () => {
     loading.value = true
     error.value = null
     try {
-      const response = await defStoreClient.listTerminologies(params)
-      terminologies.value = response.items
-      total.value = response.total
+      // Fetch own namespace
+      const ownResponse = await defStoreClient.listTerminologies({
+        ...params,
+        namespace: namespaceStore.terminologiesNs
+      })
+      ownTerminologies.value = ownResponse.items
+      total.value = ownResponse.total
+
+      // If open mode and not already WIP, also fetch WIP terminologies
+      if (showWipSection.value) {
+        try {
+          const wipResponse = await defStoreClient.listTerminologies({
+            ...params,
+            namespace: 'wip-terminologies'
+          })
+          wipTerminologies.value = wipResponse.items
+          wipTotal.value = wipResponse.total
+        } catch {
+          // WIP fetch failed - not critical, continue with own data
+          wipTerminologies.value = []
+          wipTotal.value = 0
+        }
+      } else {
+        wipTerminologies.value = []
+        wipTotal.value = 0
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch terminologies'
       throw e
@@ -108,11 +172,19 @@ export const useTerminologyStore = defineStore('terminology', () => {
   }
 
   return {
+    // Data
     terminologies,
+    ownTerminologies,
+    wipTerminologies,
+    allTerminologies,
     currentTerminology,
     total,
+    wipTotal,
     loading,
     error,
+    // Computed
+    showWipSection,
+    // Actions
     fetchTerminologies,
     fetchTerminology,
     createTerminology,

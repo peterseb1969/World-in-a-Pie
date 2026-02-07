@@ -18,6 +18,7 @@ from .registry_client import get_registry_client, RegistryError
 from .def_store_client import get_def_store_client, DefStoreError
 from .inheritance_service import InheritanceService, InheritanceError
 from .nats_client import publish_template_event, EventType
+from .reference_validator import get_reference_validator, ReferenceValidationError
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -60,6 +61,7 @@ class TemplateService:
             raise ValueError(f"Template with code '{request.code}' already exists in namespace '{namespace}'")
 
         # Validate extends if provided
+        parent_namespace: str | None = None
         if request.extends:
             parent = await Template.find_one({"template_id": request.extends})
             if not parent:
@@ -69,6 +71,7 @@ class TemplateService:
                     request.extends = parent.template_id
                 else:
                     raise ValueError(f"Parent template '{request.extends}' not found")
+            parent_namespace = parent.namespace
 
         # Validate references if requested (default: True)
         if request.validate_references:
@@ -79,6 +82,19 @@ class TemplateService:
                 raise ValueError(
                     f"Invalid references: {'; '.join(validation_errors)}"
                 )
+
+        # Validate cross-namespace references (isolation mode check)
+        # Only validate extends reference - terminology refs are resolved by code at runtime
+        if parent_namespace:
+            try:
+                validator = get_reference_validator()
+                await validator.validate_template_references(
+                    template_namespace=namespace,
+                    extends_template_namespace=parent_namespace,
+                    terminology_namespaces=None,  # Terminology refs are by code, validated at doc creation
+                )
+            except ReferenceValidationError as e:
+                raise ValueError(f"Cross-namespace reference violation: {e.violations}")
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()

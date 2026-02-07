@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { templateStoreClient, defStoreClient } from '@/api/client'
+import { useNamespaceStore } from './namespace'
 import type {
   Template,
   CreateTemplateRequest,
@@ -11,16 +12,35 @@ import type {
 } from '@/types'
 
 export const useTemplateStore = defineStore('template', () => {
-  const templates = ref<Template[]>([])
+  const namespaceStore = useNamespaceStore()
+  const ownTemplates = ref<Template[]>([])
+  const wipTemplates = ref<Template[]>([])
   const currentTemplate = ref<Template | null>(null)
   const currentTemplateRaw = ref<Template | null>(null)
   const templateVersions = ref<Template[]>([])  // Version history for current template
   const total = ref(0)
+  const wipTotal = ref(0)
   const loading = ref(false)
   const error = ref<string | null>(null)
 
   // For terminology lookups (term field references)
   const terminologies = ref<Terminology[]>([])
+
+  // Combined list for backward compatibility
+  const templates = computed(() => ownTemplates.value)
+
+  // Should we show WIP section? Only for open namespaces that are not WIP
+  const showWipSection = computed(() => {
+    const group = namespaceStore.currentGroupData
+    const isWip = namespaceStore.currentGroup === 'wip'
+    const isOpen = !group || group.isolation_mode === 'open'
+    return isOpen && !isWip
+  })
+
+  // Watch for namespace changes and refetch
+  watch(() => namespaceStore.templatesNs, () => {
+    fetchTemplates()
+  })
 
   async function fetchTemplates(params?: {
     page?: number
@@ -33,9 +53,31 @@ export const useTemplateStore = defineStore('template', () => {
     loading.value = true
     error.value = null
     try {
-      const response = await templateStoreClient.listTemplates(params)
-      templates.value = response.items
-      total.value = response.total
+      // Fetch own namespace
+      const ownResponse = await templateStoreClient.listTemplates({
+        ...params,
+        namespace: namespaceStore.templatesNs
+      })
+      ownTemplates.value = ownResponse.items
+      total.value = ownResponse.total
+
+      // If open mode and not already WIP, also fetch WIP templates
+      if (showWipSection.value) {
+        try {
+          const wipResponse = await templateStoreClient.listTemplates({
+            ...params,
+            namespace: 'wip-templates'
+          })
+          wipTemplates.value = wipResponse.items
+          wipTotal.value = wipResponse.total
+        } catch {
+          wipTemplates.value = []
+          wipTotal.value = 0
+        }
+      } else {
+        wipTemplates.value = []
+        wipTotal.value = 0
+      }
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch templates'
       throw e
@@ -227,7 +269,11 @@ export const useTemplateStore = defineStore('template', () => {
   // Fetch terminologies from Def-Store for term field references
   async function fetchTerminologies() {
     try {
-      const response = await defStoreClient.listTerminologies({ status: 'active', page_size: 100 })
+      const response = await defStoreClient.listTerminologies({
+        status: 'active',
+        page_size: 100,
+        namespace: namespaceStore.terminologiesNs
+      })
       terminologies.value = response.items
     } catch (e) {
       console.warn('Failed to fetch terminologies:', e)
@@ -241,14 +287,21 @@ export const useTemplateStore = defineStore('template', () => {
   }
 
   return {
+    // Data
     templates,
+    ownTemplates,
+    wipTemplates,
     currentTemplate,
     currentTemplateRaw,
     templateVersions,
     total,
+    wipTotal,
     loading,
     error,
     terminologies,
+    // Computed
+    showWipSection,
+    // Actions
     fetchTemplates,
     fetchTemplate,
     fetchTemplateRaw,

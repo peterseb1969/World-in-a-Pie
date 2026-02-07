@@ -2,8 +2,8 @@
 Reference Validator - Validates cross-namespace references based on isolation mode.
 
 When a namespace group has isolation_mode="strict", references to entities
-in other namespace groups are not allowed. This service validates that
-all references in a document comply with the isolation rules.
+in other namespace groups are not allowed. For "open" mode, references to
+own namespace and "wip" namespace are allowed.
 """
 
 import logging
@@ -33,7 +33,7 @@ class ReferenceValidator:
 
     async def _get_namespace_group(self, namespace: str) -> dict[str, Any] | None:
         """Get namespace group info for a namespace ID."""
-        # Extract prefix from namespace (e.g., "dev-documents" -> "dev")
+        # Extract prefix from namespace (e.g., "dev-templates" -> "dev")
         if "-" not in namespace:
             return None
 
@@ -53,7 +53,7 @@ class ReferenceValidator:
                     self._group_cache[prefix] = group
                     return group
                 elif response.status_code == 404:
-                    # No group found - allow all references (open by default)
+                    # No group found - treat as open mode
                     self._group_cache[prefix] = {"isolation_mode": "open"}
                     return self._group_cache[prefix]
         except Exception as e:
@@ -67,96 +67,6 @@ class ReferenceValidator:
             return None
         return namespace.rsplit("-", 1)[0]
 
-    async def validate_document_references(
-        self,
-        document_namespace: str,
-        template_namespace: str,
-        term_references: list[dict[str, Any]] | None = None,
-        file_references: list[dict[str, Any]] | None = None,
-    ) -> None:
-        """
-        Validate that all references in a document comply with isolation rules.
-
-        Args:
-            document_namespace: Namespace of the document being created/updated
-            template_namespace: Namespace of the referenced template
-            term_references: List of term reference objects
-            file_references: List of file reference objects
-
-        Raises:
-            ReferenceValidationError: If any references violate isolation rules
-        """
-        # Get the document's namespace group
-        group = await self._get_namespace_group(document_namespace)
-
-        if not group:
-            # No group info - allow all
-            return
-
-        doc_prefix = self._get_prefix(document_namespace)
-        is_strict = group.get("isolation_mode") == "strict"
-        violations = []
-
-        # Check template reference
-        template_prefix = self._get_prefix(template_namespace)
-        if template_prefix and template_prefix != doc_prefix:
-            if not self._is_allowed_reference(template_prefix, group, is_strict):
-                violations.append({
-                    "type": "template",
-                    "namespace": template_namespace,
-                    "message": f"Template namespace '{template_namespace}' is not accessible from '{doc_prefix}' group",
-                })
-
-        # Check term references
-        if term_references:
-            # Get unique term namespaces
-            term_namespaces = set()
-            for ref in term_references:
-                # Term references may have a namespace field or we infer from term_id
-                term_ns = ref.get("namespace") or ref.get("term_namespace")
-                if term_ns:
-                    term_namespaces.add(term_ns)
-
-            for term_ns in term_namespaces:
-                term_prefix = self._get_prefix(term_ns)
-                if term_prefix and term_prefix != doc_prefix:
-                    if not self._is_allowed_reference(term_prefix, group, is_strict):
-                        violations.append({
-                            "type": "term",
-                            "namespace": term_ns,
-                            "message": f"Term namespace '{term_ns}' is not accessible from '{doc_prefix}' group",
-                        })
-
-        # Check file references
-        if file_references:
-            file_namespaces = set()
-            for ref in file_references:
-                file_ns = ref.get("namespace") or ref.get("file_namespace")
-                if file_ns:
-                    file_namespaces.add(file_ns)
-
-            for file_ns in file_namespaces:
-                file_prefix = self._get_prefix(file_ns)
-                if file_prefix and file_prefix != doc_prefix:
-                    if not self._is_allowed_reference(file_prefix, group, is_strict):
-                        violations.append({
-                            "type": "file",
-                            "namespace": file_ns,
-                            "message": f"File namespace '{file_ns}' is not accessible from '{doc_prefix}' group",
-                        })
-
-        if violations:
-            raise ReferenceValidationError(
-                f"Document references entities outside the '{doc_prefix}' namespace group "
-                f"(isolation_mode=strict): {len(violations)} violation(s)",
-                violations=violations,
-            )
-
-    def _is_allowed_external(self, prefix: str, group: dict[str, Any]) -> bool:
-        """Check if an external prefix is in the allowed list."""
-        allowed = group.get("allowed_external_refs", [])
-        return prefix in allowed
-
     def _is_allowed_reference(self, prefix: str, group: dict[str, Any], is_strict: bool) -> bool:
         """
         Check if a reference to the given prefix is allowed.
@@ -165,12 +75,11 @@ class ReferenceValidator:
         - Strict mode: Only own prefix + allowed_external_refs
         - Open mode: Own prefix + 'wip' (always) + allowed_external_refs
         """
-        # Always allow explicitly configured external refs
-        if self._is_allowed_external(prefix, group):
+        allowed = group.get("allowed_external_refs", [])
+        if prefix in allowed:
             return True
 
         if is_strict:
-            # Strict mode: only allowed_external_refs (already checked above)
             return False
         else:
             # Open mode: also allow 'wip' prefix
@@ -180,7 +89,7 @@ class ReferenceValidator:
         self,
         template_namespace: str,
         extends_template_namespace: str | None = None,
-        terminology_references: list[str] | None = None,
+        terminology_namespaces: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
@@ -188,7 +97,7 @@ class ReferenceValidator:
         Args:
             template_namespace: Namespace of the template being created/updated
             extends_template_namespace: Namespace of parent template (if any)
-            terminology_references: List of terminology namespace IDs referenced
+            terminology_namespaces: List of terminology namespace IDs referenced
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
@@ -214,8 +123,8 @@ class ReferenceValidator:
                     })
 
         # Check terminology references
-        if terminology_references:
-            for term_ns in terminology_references:
+        if terminology_namespaces:
+            for term_ns in terminology_namespaces:
                 term_prefix = self._get_prefix(term_ns)
                 if term_prefix and term_prefix != template_prefix:
                     if not self._is_allowed_reference(term_prefix, group, is_strict):
@@ -227,8 +136,8 @@ class ReferenceValidator:
 
         if violations:
             raise ReferenceValidationError(
-                f"Template references entities outside the '{template_prefix}' namespace group "
-                f"(isolation_mode=strict): {len(violations)} violation(s)",
+                f"Template references entities outside allowed namespaces "
+                f"(isolation_mode={'strict' if is_strict else 'open'}): {len(violations)} violation(s)",
                 violations=violations,
             )
 

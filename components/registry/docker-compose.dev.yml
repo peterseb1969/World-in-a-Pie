@@ -10,6 +10,8 @@ services:
     container_name: wip-registry-dev
     ports:
       - "8001:8001"
+    env_file:
+      - ../../.env
     environment:
       - PYTHONPATH=/app/src
       - MONGO_URI=mongodb://wip-mongodb:27017/
@@ -17,12 +19,7 @@ services:
       - MASTER_API_KEY=dev_master_key_for_testing
       - AUTH_ENABLED=true
       - CORS_ORIGINS=*
-      # wip-auth configuration
-      - WIP_AUTH_MODE=dual
-      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
-      - WIP_AUTH_JWT_ISSUER_URL=http://wip-dex:5556/dex
-      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
-      - WIP_AUTH_JWT_AUDIENCE=wip-console
+      # Auth config (WIP_AUTH_*) comes from .env via env_file
     volumes:
       - ./src:/app/src:ro
       - ./config:/app/config:ro
