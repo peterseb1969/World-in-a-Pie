@@ -844,6 +844,112 @@ class ReportingSyncClient extends BaseApiClient {
 }
 
 // =============================================================================
+// REGISTRY CLIENT (Namespace Groups)
+// =============================================================================
+
+export interface NamespaceGroup {
+  prefix: string
+  description: string
+  isolation_mode: 'open' | 'strict'
+  allowed_external_refs: string[]
+  status: 'active' | 'archived' | 'deleted'
+  created_at: string
+  created_by: string | null
+  updated_at: string
+  updated_by: string | null
+  terminologies_ns: string
+  terms_ns: string
+  templates_ns: string
+  documents_ns: string
+  files_ns: string
+}
+
+export interface NamespaceGroupStats {
+  prefix: string
+  description: string
+  isolation_mode: string
+  status: string
+  namespaces: Record<string, number>
+}
+
+export interface CreateNamespaceGroupRequest {
+  prefix: string
+  description?: string
+  isolation_mode?: 'open' | 'strict'
+  allowed_external_refs?: string[]
+  created_by?: string
+}
+
+class RegistryClient extends BaseApiClient {
+  constructor() {
+    super('/api/registry')
+  }
+
+  // ===========================================================================
+  // NAMESPACE GROUP ENDPOINTS
+  // ===========================================================================
+
+  async listNamespaceGroups(includeArchived: boolean = false): Promise<NamespaceGroup[]> {
+    const response = await this.client.get<NamespaceGroup[]>('/namespace-groups', {
+      params: { include_archived: includeArchived }
+    })
+    return response.data
+  }
+
+  async getNamespaceGroup(prefix: string): Promise<NamespaceGroup> {
+    const response = await this.client.get<NamespaceGroup>(`/namespace-groups/${prefix}`)
+    return response.data
+  }
+
+  async getNamespaceGroupStats(prefix: string): Promise<NamespaceGroupStats> {
+    const response = await this.client.get<NamespaceGroupStats>(`/namespace-groups/${prefix}/stats`)
+    return response.data
+  }
+
+  async createNamespaceGroup(data: CreateNamespaceGroupRequest): Promise<NamespaceGroup> {
+    const response = await this.client.post<NamespaceGroup>('/namespace-groups', data)
+    return response.data
+  }
+
+  async updateNamespaceGroup(
+    prefix: string,
+    data: { description?: string; isolation_mode?: 'open' | 'strict'; updated_by?: string }
+  ): Promise<NamespaceGroup> {
+    const response = await this.client.put<NamespaceGroup>(`/namespace-groups/${prefix}`, data)
+    return response.data
+  }
+
+  async archiveNamespaceGroup(prefix: string, archivedBy?: string): Promise<NamespaceGroup> {
+    const response = await this.client.post<NamespaceGroup>(
+      `/namespace-groups/${prefix}/archive`,
+      null,
+      { params: archivedBy ? { archived_by: archivedBy } : undefined }
+    )
+    return response.data
+  }
+
+  async restoreNamespaceGroup(prefix: string, restoredBy?: string): Promise<NamespaceGroup> {
+    const response = await this.client.post<NamespaceGroup>(
+      `/namespace-groups/${prefix}/restore`,
+      null,
+      { params: restoredBy ? { restored_by: restoredBy } : undefined }
+    )
+    return response.data
+  }
+
+  async deleteNamespaceGroup(prefix: string, deletedBy?: string): Promise<void> {
+    await this.client.delete(`/namespace-groups/${prefix}`, {
+      params: { confirm: true, deleted_by: deletedBy }
+    })
+  }
+
+  async initializeWipGroup(): Promise<NamespaceGroup> {
+    const response = await this.client.post<NamespaceGroup>('/namespace-groups/initialize-wip-group')
+    return response.data
+  }
+}
+
+// =============================================================================
 // EXPORTS
 // =============================================================================
 
@@ -852,6 +958,7 @@ export const templateStoreClient = new TemplateStoreClient()
 export const documentStoreClient = new DocumentStoreClient()
 export const fileStoreClient = new FileStoreClient()
 export const reportingSyncClient = new ReportingSyncClient()
+export const registryClient = new RegistryClient()
 
 // Default export for backward compatibility
 export default defStoreClient

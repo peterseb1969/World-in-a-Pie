@@ -114,6 +114,12 @@ const router = createRouter({
       path: '/audit/explorer',
       name: 'audit-explorer',
       component: () => import('@/views/audit/AuditExplorerView.vue')
+    },
+    // Admin routes
+    {
+      path: '/namespaces',
+      name: 'namespace-groups',
+      component: () => import('@/views/NamespaceGroupsView.vue')
     }
   ]
 })

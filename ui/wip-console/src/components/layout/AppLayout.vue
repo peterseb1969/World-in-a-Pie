@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Divider from 'primevue/divider'
-import { useAuthStore, useUiStore } from '@/stores'
+import Message from 'primevue/message'
+import { useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import { oidcProviderName, isOidcEnabled } from '@/config/auth'
+import NamespaceSelector from './NamespaceSelector.vue'
 
 const oidcEnabled = isOidcEnabled()
+const namespaceStore = useNamespaceStore()
+
+// Load namespace groups on mount
+onMounted(() => {
+  namespaceStore.loadGroups()
+})
 
 const router = useRouter()
 const route = useRoute()
@@ -79,6 +87,13 @@ const menuItems: MenuItem[] = [
       { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
       { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
     ]
+  },
+  {
+    label: 'Admin',
+    icon: 'pi pi-cog',
+    children: [
+      { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' }
+    ]
   }
 ]
 
@@ -87,7 +102,8 @@ const expandedMenus = ref<Record<string, boolean>>({
   'Templates': true,
   'Documents': true,
   'Files': true,
-  'Audit Trail': true
+  'Audit Trail': true,
+  'Admin': true
 })
 
 function toggleMenu(label: string) {
@@ -280,7 +296,7 @@ function toggleSidebar() {
     <main class="main-content" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
       <header class="main-header">
         <div class="header-title">
-          <!-- Breadcrumb or page title can go here -->
+          <NamespaceSelector />
         </div>
         <div class="header-actions">
           <Button
@@ -292,6 +308,15 @@ function toggleSidebar() {
           />
         </div>
       </header>
+      <!-- Non-production namespace warning -->
+      <Message
+        v-if="namespaceStore.isNonProduction"
+        severity="warn"
+        :closable="false"
+        class="namespace-warning"
+      >
+        You are viewing the <strong>{{ namespaceStore.currentGroup }}</strong> namespace (non-production data)
+      </Message>
       <div class="content-area">
         <slot />
       </div>
@@ -668,6 +693,15 @@ function toggleSidebar() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.namespace-warning {
+  margin: 0;
+  border-radius: 0;
+}
+
+.namespace-warning :deep(.p-message-text) {
+  font-size: 0.875rem;
 }
 
 .content-area {
