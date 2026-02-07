@@ -45,6 +45,9 @@ from .api_models import (
     NamespaceGroupUpdate,
     NamespaceGroupResponse,
     NamespaceGroupStatsResponse,
+    ExportResponse,
+    ImportRequest,
+    ImportResponse,
 )
 
 __all__ = [
@@ -89,4 +92,7 @@ __all__ = [
     "NamespaceGroupUpdate",
     "NamespaceGroupResponse",
     "NamespaceGroupStatsResponse",
+    "ExportResponse",
+    "ImportRequest",
+    "ImportResponse",
 ]

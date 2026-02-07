@@ -415,3 +415,47 @@ class NamespaceGroupStatsResponse(BaseModel):
         default_factory=dict,
         description="Map of namespace_id to entry count"
     )
+
+
+class ExportResponse(BaseModel):
+    """Response model for namespace group export."""
+
+    export_id: str
+    prefix: str
+    download_url: str
+    stats: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of exported entities by type"
+    )
+
+
+class ImportRequest(BaseModel):
+    """Request model for namespace group import."""
+
+    target_prefix: Optional[str] = Field(
+        None,
+        description="Optional new prefix for the imported namespace group"
+    )
+    mode: str = Field(
+        default="create",
+        description="Import mode: create (fail if exists), merge (add new), replace (overwrite)"
+    )
+    imported_by: Optional[str] = Field(
+        None,
+        description="User performing the import"
+    )
+
+
+class ImportResponse(BaseModel):
+    """Response model for namespace group import."""
+
+    prefix: str
+    mode: str
+    stats: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count of imported entities by type"
+    )
+    source_prefix: Optional[str] = Field(
+        None,
+        description="Original prefix from the export (if remapped)"
+    )

@@ -1,9 +1,11 @@
 """Namespace Group management API endpoints."""
 
+import os
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Literal
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
+from fastapi.responses import FileResponse
 
 from ..models.namespace import Namespace, IdGeneratorConfig, IdGeneratorType
 from ..models.namespace_group import NamespaceGroup
@@ -13,6 +15,9 @@ from ..models.api_models import (
     NamespaceGroupUpdate,
     NamespaceGroupResponse,
     NamespaceGroupStatsResponse,
+    ExportResponse,
+    ImportRequest,
+    ImportResponse,
 )
 from ..services.auth import require_api_key, require_admin_key
 
@@ -381,3 +386,173 @@ async def initialize_wip_group(
     await group.create()
 
     return group_to_response(group)
+
+
+# =============================================================================
+# Export/Import Endpoints
+# =============================================================================
+
+@router.post(
+    "/{prefix}/export",
+    response_model=ExportResponse,
+    summary="Export namespace group"
+)
+async def export_namespace_group(
+    prefix: str,
+    include_files: bool = Query(False, description="Include binary file content"),
+    api_key: str = Depends(require_admin_key)
+) -> ExportResponse:
+    """
+    Export a namespace group to a downloadable archive.
+
+    Creates a ZIP file containing all data from the namespace group:
+    - manifest.json - Export metadata
+    - terminologies.jsonl - Terminology definitions
+    - terms.jsonl - Term definitions
+    - templates.jsonl - Template definitions
+    - documents.jsonl - Document data
+    - files.jsonl - File metadata
+    - files/ - Binary file content (if include_files=true)
+    """
+    from ..services.export_service import ExportService
+
+    group = await NamespaceGroup.find_one({"prefix": prefix})
+    if not group:
+        raise HTTPException(status_code=404, detail=f"Namespace group not found: {prefix}")
+
+    # Get service URLs from environment
+    def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
+    template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
+    document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
+
+    export_service = ExportService(
+        def_store_url=def_store_url,
+        template_store_url=template_store_url,
+        document_store_url=document_store_url,
+        api_key=api_key,
+    )
+
+    try:
+        zip_path, stats = await export_service.export_namespace_group(
+            group=group,
+            include_files=include_files,
+        )
+
+        # Generate export ID from filename
+        export_id = os.path.basename(zip_path).replace(".zip", "")
+
+        return ExportResponse(
+            export_id=export_id,
+            prefix=prefix,
+            download_url=f"/api/registry/namespace-groups/exports/{export_id}",
+            stats=stats,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+
+
+@router.get(
+    "/exports/{export_id}",
+    summary="Download export file"
+)
+async def download_export(
+    export_id: str,
+    api_key: str = Depends(require_api_key)
+):
+    """Download an exported namespace group archive."""
+    import tempfile
+
+    zip_path = os.path.join(tempfile.gettempdir(), f"{export_id}.zip")
+
+    if not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="Export file not found or expired")
+
+    return FileResponse(
+        path=zip_path,
+        filename=f"{export_id}.zip",
+        media_type="application/zip",
+    )
+
+
+@router.post(
+    "/import",
+    response_model=ImportResponse,
+    summary="Import namespace group"
+)
+async def import_namespace_group(
+    file: UploadFile = File(..., description="Export ZIP file to import"),
+    target_prefix: str = Query(None, description="Optional new prefix"),
+    mode: str = Query("create", description="Import mode: create, merge, replace"),
+    imported_by: str = Query(None, description="User performing import"),
+    api_key: str = Depends(require_admin_key)
+) -> ImportResponse:
+    """
+    Import a namespace group from an exported archive.
+
+    Import modes:
+    - create: Fail if the namespace group already exists
+    - merge: Add new entities, skip existing ones
+    - replace: Archive existing group and import fresh
+
+    If target_prefix is provided, the namespace is renamed on import.
+    """
+    from ..services.import_service import ImportService
+    import tempfile
+    import shutil
+
+    # Validate mode
+    if mode not in ("create", "merge", "replace"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid mode. Must be one of: create, merge, replace"
+        )
+
+    # Save uploaded file to temp location
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    try:
+        shutil.copyfileobj(file.file, temp_file)
+        temp_file.close()
+
+        # Get service URLs from environment
+        def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
+        template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
+        document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
+
+        import_service = ImportService(
+            def_store_url=def_store_url,
+            template_store_url=template_store_url,
+            document_store_url=document_store_url,
+            api_key=api_key,
+        )
+
+        group, stats = await import_service.import_namespace_group(
+            zip_path=temp_file.name,
+            target_prefix=target_prefix,
+            mode=mode,
+            imported_by=imported_by,
+        )
+
+        # Read manifest to get source prefix
+        import zipfile
+        import json
+        source_prefix = None
+        with zipfile.ZipFile(temp_file.name, "r") as zf:
+            with zf.open("manifest.json") as mf:
+                manifest = json.load(mf)
+                source_prefix = manifest.get("prefix")
+
+        return ImportResponse(
+            prefix=group.prefix,
+            mode=mode,
+            stats=stats,
+            source_prefix=source_prefix if source_prefix != group.prefix else None,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+    finally:
+        # Cleanup temp file
+        os.unlink(temp_file.name)

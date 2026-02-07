@@ -25,6 +25,7 @@ from .registry_client import get_registry_client, RegistryError
 from .validation_service import ValidationService
 from .nats_client import publish_document_event, EventType, is_nats_enabled
 from .file_storage_client import is_file_storage_enabled
+from .reference_validator import get_reference_validator, ReferenceValidationError
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -127,6 +128,18 @@ class DocumentService:
         if not validation_result.valid:
             # Return validation errors
             return None, self._format_validation_errors(validation_result.errors)
+
+        # Validate cross-namespace references (isolation mode check)
+        try:
+            validator = get_reference_validator()
+            await validator.validate_document_references(
+                document_namespace=namespace,
+                template_namespace=template_namespace,
+                term_references=validation_result.term_references,
+                file_references=validation_result.file_references,
+            )
+        except ReferenceValidationError as e:
+            return None, f"Cross-namespace reference violation: {e.violations}"
 
         # Check for existing active document with same identity within namespace
         start = time.perf_counter()
