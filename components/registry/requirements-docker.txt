@@ -1,7 +1,5 @@
-# WIP Registry Service - Python Dependencies
-
-# Local shared libraries
--e ../../libs/wip-auth
+# WIP Registry Service Dependencies (Docker build)
+# Note: wip-auth is mounted and installed at runtime via docker-compose
 
 # Web framework
 fastapi>=0.109.0
@@ -25,9 +23,4 @@ httpx>=0.26.0
 python-dotenv>=1.0.0
 
 # Security
-python-jose[cryptography]>=3.3.0  # JWT handling if needed later
-
-# Development dependencies (comment out for production)
-# pytest>=7.4.0
-# pytest-asyncio>=0.23.0
-# httpx>=0.26.0  # Also used for testing
+python-jose[cryptography]>=3.3.0

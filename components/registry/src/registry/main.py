@@ -13,6 +13,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from wip_auth import setup_auth
+
 from .models.namespace import Namespace, IdGeneratorType
 from .models.namespace_group import NamespaceGroup
 from .models.entry import RegistryEntry
@@ -139,6 +141,9 @@ Admin operations (namespace management) require elevated privileges.
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Setup authentication (reads from WIP_AUTH_* env vars)
+setup_auth(app)
 
 # Add CORS middleware
 app.add_middleware(

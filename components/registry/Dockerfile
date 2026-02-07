@@ -17,10 +17,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt .
+# Note: wip-auth is mounted and installed at runtime via docker-compose
+COPY requirements-docker.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements-docker.txt
 
 # Copy application source code
 COPY ./src /app/src

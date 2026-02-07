@@ -17,11 +17,18 @@ services:
       - MASTER_API_KEY=dev_master_key_for_testing
       - AUTH_ENABLED=true
       - CORS_ORIGINS=*
+      # wip-auth configuration
+      - WIP_AUTH_MODE=dual
+      - WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
+      - WIP_AUTH_JWT_ISSUER_URL=http://wip-dex:5556/dex
+      - WIP_AUTH_JWT_JWKS_URI=http://wip-dex:5556/dex/keys
+      - WIP_AUTH_JWT_AUDIENCE=wip-console
     volumes:
       - ./src:/app/src:ro
       - ./config:/app/config:ro
       - ./tests:/app/tests:ro
-    command: uvicorn registry.main:app --host 0.0.0.0 --port 8001 --reload
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn registry.main:app --host 0.0.0.0 --port 8001 --reload"
     networks:
       - wip-network
 
