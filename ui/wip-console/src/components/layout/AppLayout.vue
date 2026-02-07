@@ -46,6 +46,11 @@ const menuItems: MenuItem[] = [
     route: '/'
   },
   {
+    label: 'Namespaces',
+    icon: 'pi pi-database',
+    route: '/namespaces'
+  },
+  {
     label: 'Terminologies',
     icon: 'pi pi-book',
     children: [
@@ -88,13 +93,6 @@ const menuItems: MenuItem[] = [
       { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
     ]
   },
-  {
-    label: 'Admin',
-    icon: 'pi pi-cog',
-    children: [
-      { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' }
-    ]
-  }
 ]
 
 const expandedMenus = ref<Record<string, boolean>>({
@@ -102,8 +100,7 @@ const expandedMenus = ref<Record<string, boolean>>({
   'Templates': true,
   'Documents': true,
   'Files': true,
-  'Audit Trail': true,
-  'Admin': true
+  'Audit Trail': true
 })
 
 function toggleMenu(label: string) {
