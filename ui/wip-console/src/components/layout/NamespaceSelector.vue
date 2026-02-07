@@ -11,10 +11,17 @@ onMounted(() => {
   namespaceStore.loadGroups()
 })
 
-// Filter to only active groups
-const activeGroups = computed(() =>
-  namespaceStore.groups.filter(g => g.status === 'active')
-)
+// Filter to only active groups, ensure wip is always first
+const activeGroups = computed(() => {
+  const groups = namespaceStore.groups.filter(g => g.status === 'active')
+
+  // Sort: wip first, then alphabetically (use slice to avoid mutating)
+  return [...groups].sort((a, b) => {
+    if (a.prefix === 'wip') return -1
+    if (b.prefix === 'wip') return 1
+    return a.prefix.localeCompare(b.prefix)
+  })
+})
 
 // Current group for v-model
 const selectedGroup = computed({

@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { UserManager, User } from 'oidc-client-ts'
 import { oidcConfig, AUTH_STORAGE_KEYS, type AuthMode } from '@/config/auth'
-import { defStoreClient, templateStoreClient, documentStoreClient, fileStoreClient } from '@/api/client'
+import { defStoreClient, templateStoreClient, documentStoreClient, fileStoreClient, registryClient } from '@/api/client'
 
 // Simple token storage for password grant flow
 interface PasswordGrantUser {
@@ -124,6 +124,7 @@ export const useAuthStore = defineStore('auth', () => {
       templateStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       documentStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
       fileStoreClient.setAuth({ type: 'api_key', value: apiKey.value })
+      registryClient.setAuth({ type: 'api_key', value: apiKey.value })
     } else if (authMode.value === 'oidc') {
       const token = oidcUser.value?.access_token || passwordGrantUser.value?.access_token
       if (token) {
@@ -131,17 +132,20 @@ export const useAuthStore = defineStore('auth', () => {
         templateStoreClient.setAuth({ type: 'bearer', value: token })
         documentStoreClient.setAuth({ type: 'bearer', value: token })
         fileStoreClient.setAuth({ type: 'bearer', value: token })
+        registryClient.setAuth({ type: 'bearer', value: token })
       } else {
         defStoreClient.setAuth(null)
         templateStoreClient.setAuth(null)
         documentStoreClient.setAuth(null)
         fileStoreClient.setAuth(null)
+        registryClient.setAuth(null)
       }
     } else {
       defStoreClient.setAuth(null)
       templateStoreClient.setAuth(null)
       documentStoreClient.setAuth(null)
       fileStoreClient.setAuth(null)
+      registryClient.setAuth(null)
     }
   }
 

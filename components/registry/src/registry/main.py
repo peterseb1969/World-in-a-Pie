@@ -143,7 +143,8 @@ Admin operations (namespace management) require elevated privileges.
 )
 
 # Setup authentication (reads from WIP_AUTH_* env vars)
-setup_auth(app)
+providers = setup_auth(app)
+print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
 # Add CORS middleware
 app.add_middleware(

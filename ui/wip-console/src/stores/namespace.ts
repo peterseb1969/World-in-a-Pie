@@ -81,7 +81,8 @@ export const useNamespaceStore = defineStore('namespace', () => {
     error.value = null
     try {
       const group = await registryClient.createNamespaceGroup(data)
-      groups.value.push(group)
+      // Reload all groups to ensure consistency
+      await loadGroups()
       return group
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to create namespace group'
