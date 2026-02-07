@@ -53,6 +53,7 @@ Metadata can be provided as form fields:
 )
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
+    namespace: str = Form(default="wip-files", description="Namespace for the file"),
     description: Optional[str] = Form(None, description="File description"),
     tags: Optional[str] = Form(None, description="Comma-separated tags"),
     category: Optional[str] = Form(None, description="Classification category"),
@@ -81,6 +82,7 @@ async def upload_file(
             filename=file.filename or "unnamed",
             content_type=file.content_type or "application/octet-stream",
             metadata=metadata,
+            namespace=namespace,
         )
     except FileServiceError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -94,6 +96,7 @@ async def upload_file(
     dependencies=[Depends(require_file_storage)]
 )
 async def list_files(
+    namespace: str = Query(default="wip-files", description="Namespace to query"),
     status: Optional[FileStatus] = Query(None, description="Filter by status"),
     content_type: Optional[str] = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
     category: Optional[str] = Query(None, description="Filter by category"),
@@ -116,6 +119,7 @@ async def list_files(
         uploaded_by=uploaded_by,
         page=page,
         page_size=page_size,
+        namespace=namespace,
     )
 
 

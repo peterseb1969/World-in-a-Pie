@@ -30,7 +30,10 @@ router = APIRouter(
 
 
 @router.post("", response_model=TemplateResponse)
-async def create_template(request: CreateTemplateRequest):
+async def create_template(
+    request: CreateTemplateRequest,
+    namespace: str = Query(default="wip-templates", description="Namespace for the template")
+):
     """
     Create a new template.
 
@@ -38,7 +41,7 @@ async def create_template(request: CreateTemplateRequest):
     (TPL-XXXXXX format).
     """
     try:
-        return await TemplateService.create_template(request)
+        return await TemplateService.create_template(request, namespace=namespace)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -47,6 +50,7 @@ async def create_template(request: CreateTemplateRequest):
 
 @router.get("", response_model=TemplateListResponse)
 async def list_templates(
+    namespace: str = Query(default="wip-templates", description="Namespace to query"),
     status: Optional[str] = Query(None, description="Filter by status"),
     extends: Optional[str] = Query(None, description="Filter by parent template"),
     code: Optional[str] = Query(None, description="Filter by template code (shows all versions)"),
@@ -66,7 +70,8 @@ async def list_templates(
         code=code,
         latest_only=latest_only,
         page=page,
-        page_size=page_size
+        page_size=page_size,
+        namespace=namespace
     )
     return TemplateListResponse(
         items=templates,
@@ -105,14 +110,17 @@ async def get_template_raw(template_id: str):
 
 
 @router.get("/by-code/{code}", response_model=TemplateResponse)
-async def get_template_by_code(code: str):
+async def get_template_by_code(
+    code: str,
+    namespace: str = Query(default="wip-templates", description="Namespace to search in")
+):
     """
     Get the latest version of a template by code.
 
     Returns the template with inheritance resolved.
     To get a specific version, use /by-code/{code}/versions/{version}.
     """
-    versions = await TemplateService.get_template_versions(code)
+    versions = await TemplateService.get_template_versions(code, namespace=namespace)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     # Return the first one (highest version since sorted descending)

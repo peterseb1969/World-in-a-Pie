@@ -85,10 +85,10 @@ class DocumentTransformer:
 
     # System column names that data fields should not conflict with
     SYSTEM_COLUMNS = {
-        "document_id", "template_id", "template_version", "version",
-        "status", "identity_hash", "created_at", "created_by",
-        "updated_at", "updated_by", "data_json", "term_references_json",
-        "file_references_json",
+        "document_id", "namespace", "template_id", "template_namespace",
+        "template_version", "version", "status", "identity_hash",
+        "created_at", "created_by", "updated_at", "updated_by",
+        "data_json", "term_references_json", "file_references_json",
     }
 
     def __init__(self, config: ReportingConfig | None = None):
@@ -351,7 +351,9 @@ class DocumentTransformer:
         # Base row with system columns
         base_row = {
             "document_id": document["document_id"],
+            "namespace": document.get("namespace", "wip-documents"),
             "template_id": document["template_id"],
+            "template_namespace": document.get("template_namespace", "wip-templates"),
             "template_version": document.get("template_version", 1),
             "version": document.get("version", 1),
             "status": document.get("status", "active"),

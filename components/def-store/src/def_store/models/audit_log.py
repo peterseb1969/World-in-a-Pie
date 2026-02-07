@@ -17,6 +17,12 @@ class TermAuditLog(Document):
     this provides the audit trail for what changed and when.
     """
 
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip-terms",
+        description="Namespace of the term (e.g., wip-terms, dev-terms)"
+    )
+
     # Reference to the term
     term_id: str = Field(
         ...,
@@ -64,8 +70,12 @@ class TermAuditLog(Document):
     class Settings:
         name = "term_audit_log"
         indexes = [
-            IndexModel([("term_id", 1), ("changed_at", DESCENDING)], name="term_time_idx"),
-            IndexModel([("terminology_id", 1), ("changed_at", DESCENDING)], name="terminology_time_idx"),
+            # Time-based queries within namespace
+            IndexModel([("namespace", 1), ("term_id", 1), ("changed_at", DESCENDING)], name="ns_term_time_idx"),
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("changed_at", DESCENDING)], name="ns_terminology_time_idx"),
+            IndexModel([("namespace", 1), ("changed_at", DESCENDING)], name="ns_time_idx"),
+            # Action filter
+            IndexModel([("namespace", 1), ("action", 1)], name="ns_action_idx"),
+            # Global time index for admin queries
             IndexModel([("changed_at", DESCENDING)], name="time_idx"),
-            IndexModel([("action", 1)], name="action_idx"),
         ]

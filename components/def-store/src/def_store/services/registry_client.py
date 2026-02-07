@@ -50,7 +50,8 @@ class RegistryClient:
         self,
         code: str,
         name: str,
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        namespace: str = "wip-terminologies"
     ) -> str:
         """
         Register a new terminology in the Registry.
@@ -59,6 +60,7 @@ class RegistryClient:
             code: Terminology code (e.g., 'DOC_STATUS')
             name: Terminology name
             created_by: User or system creating this
+            namespace: Namespace for the terminology (default: wip-terminologies)
 
         Returns:
             Generated terminology ID (e.g., 'TERM-000001')
@@ -71,7 +73,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": "wip-terminologies",
+                    "namespace": namespace,
                     "composite_key": {
                         "code": code,
                         "name": name
@@ -103,7 +105,8 @@ class RegistryClient:
         terminology_id: str,
         code: str,
         value: str,
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        namespace: str = "wip-terms"
     ) -> str:
         """
         Register a new term in the Registry.
@@ -113,6 +116,7 @@ class RegistryClient:
             code: Term code (e.g., 'APPROVED')
             value: Term value
             created_by: User or system creating this
+            namespace: Namespace for the term (default: wip-terms)
 
         Returns:
             Generated term ID (e.g., 'T-000042')
@@ -125,7 +129,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": "wip-terms",
+                    "namespace": namespace,
                     "composite_key": {
                         "terminology_id": terminology_id,
                         "code": code,
@@ -158,7 +162,8 @@ class RegistryClient:
         terms: list[dict[str, Any]],
         created_by: Optional[str] = None,
         timeout: Optional[float] = None,
-        registry_batch_size: int = 100
+        registry_batch_size: int = 100,
+        namespace: str = "wip-terms"
     ) -> list[dict[str, Any]]:
         """
         Register multiple terms in the Registry.
@@ -172,6 +177,7 @@ class RegistryClient:
             created_by: User or system creating these
             timeout: Request timeout in seconds per sub-batch (default 120)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
+            namespace: Namespace for the terms (default: wip-terms)
 
         Returns:
             List of registration results with IDs
@@ -195,7 +201,7 @@ class RegistryClient:
 
                 items = [
                     {
-                        "namespace": "wip-terms",
+                        "namespace": namespace,
                         "composite_key": {
                             "terminology_id": terminology_id,
                             "code": term["code"],

@@ -45,6 +45,12 @@ class Document(BeanieDocument):
     (new version) rather than created as a new entity.
     """
 
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip-documents",
+        description="Namespace for data isolation (e.g., wip-documents, dev-documents)"
+    )
+
     # Identity (from Registry - UUID7 for time-ordering)
     document_id: str = Field(
         ...,
@@ -55,6 +61,10 @@ class Document(BeanieDocument):
     template_id: str = Field(
         ...,
         description="Reference to Template Store template ID"
+    )
+    template_namespace: str = Field(
+        default="wip-templates",
+        description="Namespace of the template"
     )
     template_version: int = Field(
         ...,
@@ -129,21 +139,23 @@ class Document(BeanieDocument):
     class Settings:
         name = "documents"
         indexes = [
-            # Unique document ID
-            IndexModel([("document_id", 1)], unique=True, name="document_id_unique_idx"),
-            # Version lookup by identity
-            IndexModel([("identity_hash", 1), ("version", 1)], name="identity_version_idx"),
-            # Active document lookup by identity
-            IndexModel([("identity_hash", 1), ("status", 1)], name="identity_status_idx"),
-            # Template queries
-            IndexModel([("template_id", 1), ("status", 1)], name="template_status_idx"),
-            # Time-based queries (UUID7 provides ordering, but created_at is useful too)
-            IndexModel([("created_at", DESCENDING)], name="created_at_idx"),
-            # Composite for common queries
+            # Unique document ID within namespace
+            IndexModel([("namespace", 1), ("document_id", 1)], unique=True, name="ns_document_id_unique_idx"),
+            # Version lookup by identity within namespace
+            IndexModel([("namespace", 1), ("identity_hash", 1), ("version", 1)], name="ns_identity_version_idx"),
+            # Active document lookup by identity within namespace
+            IndexModel([("namespace", 1), ("identity_hash", 1), ("status", 1)], name="ns_identity_status_idx"),
+            # Template queries within namespace
+            IndexModel([("namespace", 1), ("template_id", 1), ("status", 1)], name="ns_template_status_idx"),
+            # Time-based queries within namespace
+            IndexModel([("namespace", 1), ("created_at", DESCENDING)], name="ns_created_at_idx"),
+            # Composite for common queries within namespace
             IndexModel(
-                [("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
-                name="template_status_time_idx"
+                [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
+                name="ns_template_status_time_idx"
             ),
+            # Global document_id lookup (for cross-namespace refs in open mode)
+            IndexModel([("document_id", 1)], unique=True, name="document_id_unique_idx"),
             # Term reference reverse lookups (find documents referencing a term)
             IndexModel(
                 [("term_references.term_id", 1)],

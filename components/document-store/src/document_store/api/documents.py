@@ -36,11 +36,12 @@ is created and the previous version is marked as inactive.
 )
 async def create_document(
     request: DocumentCreateRequest,
+    namespace: str = Query(default="wip-documents", description="Namespace for the document"),
     _: str = Depends(require_api_key)
 ):
     """Create or update a document."""
     service = get_document_service()
-    response, error = await service.create_document(request)
+    response, error = await service.create_document(request, namespace=namespace)
 
     if error:
         raise HTTPException(status_code=400, detail=error)
@@ -55,6 +56,7 @@ async def create_document(
     description="List documents with optional filtering and pagination."
 )
 async def list_documents(
+    namespace: str = Query(default="wip-documents", description="Namespace to query"),
     template_id: Optional[str] = Query(None, description="Filter by template ID"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -67,7 +69,8 @@ async def list_documents(
         template_id=template_id,
         status=status,
         page=page,
-        page_size=page_size
+        page_size=page_size,
+        namespace=namespace
     )
 
 

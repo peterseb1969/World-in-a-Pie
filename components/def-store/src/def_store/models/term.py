@@ -37,6 +37,12 @@ class Term(Document):
     - In "PRIORITY" terminology: critical, high, medium, low
     """
 
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip-terms",
+        description="Namespace for data isolation (e.g., wip-terms, dev-terms)"
+    )
+
     # Identity (from Registry)
     term_id: str = Field(
         ...,
@@ -47,6 +53,10 @@ class Term(Document):
     terminology_id: str = Field(
         ...,
         description="ID of the parent terminology (e.g., TERM-000001)"
+    )
+    terminology_namespace: str = Field(
+        default="wip-terminologies",
+        description="Namespace of the parent terminology"
     )
     terminology_code: Optional[str] = Field(
         None,
@@ -134,12 +144,22 @@ class Term(Document):
     class Settings:
         name = "terms"
         indexes = [
+            # Unique ID within namespace
+            IndexModel([("namespace", 1), ("term_id", 1)], unique=True, name="ns_term_id_unique_idx"),
+            # Unique code within terminology within namespace
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("code", 1)], unique=True, name="ns_terminology_code_unique_idx"),
+            # Value lookup within terminology
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], name="ns_terminology_value_idx"),
+            # Alias lookup within terminology
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("aliases", 1)], name="ns_terminology_aliases_idx"),
+            # Sort order within terminology
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
+            # Status filter within terminology
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("status", 1)], name="ns_terminology_status_idx"),
+            # Global term_id lookup (for cross-namespace refs in open mode)
             IndexModel([("term_id", 1)], unique=True, name="term_id_unique_idx"),
-            IndexModel([("terminology_id", 1), ("code", 1)], unique=True, name="terminology_code_unique_idx"),
-            IndexModel([("terminology_id", 1), ("value", 1)], name="terminology_value_idx"),
-            IndexModel([("terminology_id", 1), ("aliases", 1)], name="terminology_aliases_idx"),
-            IndexModel([("terminology_id", 1), ("sort_order", 1)], name="terminology_sort_idx"),
-            IndexModel([("terminology_id", 1), ("status", 1)], name="terminology_status_idx"),
+            # Parent term lookup
             IndexModel([("parent_term_id", 1)], name="parent_term_idx"),
+            # Text search (global)
             IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

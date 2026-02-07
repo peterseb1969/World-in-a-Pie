@@ -77,6 +77,12 @@ class Template(Document):
     - Address template: street, city, postal_code, country
     """
 
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip-templates",
+        description="Namespace for data isolation (e.g., wip-templates, dev-templates)"
+    )
+
     # Identity (from Registry)
     template_id: str = Field(
         ...,
@@ -164,11 +170,18 @@ class Template(Document):
     class Settings:
         name = "templates"
         indexes = [
+            # Unique ID within namespace
+            IndexModel([("namespace", 1), ("template_id", 1)], unique=True, name="ns_template_id_unique_idx"),
+            # Unique code+version within namespace
+            IndexModel([("namespace", 1), ("code", 1), ("version", 1)], unique=True, name="ns_code_version_unique_idx"),
+            # Code lookup within namespace
+            IndexModel([("namespace", 1), ("code", 1)], name="ns_code_idx"),
+            # Status filter within namespace
+            IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
+            # Extends lookup within namespace
+            IndexModel([("namespace", 1), ("extends", 1)], name="ns_extends_idx"),
+            # Global template_id lookup (for cross-namespace refs in open mode)
             IndexModel([("template_id", 1)], unique=True, name="template_id_unique_idx"),
-            # Changed from unique on code alone to (code, version) to support multi-version
-            IndexModel([("code", 1), ("version", 1)], unique=True, name="code_version_unique_idx"),
-            IndexModel([("code", 1)], name="code_idx"),  # For listing versions by code
-            IndexModel([("status", 1)], name="status_idx"),
-            IndexModel([("extends", 1)], name="extends_idx"),
+            # Text search (global)
             IndexModel([("name", "text"), ("description", "text")], name="text_search_idx"),
         ]

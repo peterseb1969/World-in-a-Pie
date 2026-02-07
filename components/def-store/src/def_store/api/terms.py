@@ -38,6 +38,7 @@ router = APIRouter(tags=["Terms"])
 async def create_term(
     terminology_id: str,
     request: CreateTermRequest,
+    namespace: str = Query(default="wip-terms", description="Namespace for the term"),
     api_key: str = Depends(require_api_key)
 ) -> TermResponse:
     """
@@ -47,7 +48,7 @@ async def create_term(
     a unique ID (e.g., T-000042).
     """
     try:
-        return await TerminologyService.create_term(terminology_id, request)
+        return await TerminologyService.create_term(terminology_id, request, namespace=namespace)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -63,6 +64,10 @@ async def create_term(
 async def create_terms_bulk(
     terminology_id: str,
     request: BulkCreateTermRequest,
+    namespace: str = Query(
+        default="wip-terms",
+        description="Namespace for the terms"
+    ),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -92,6 +97,7 @@ async def create_terms_bulk(
             created_by=request.created_by,
             batch_size=batch_size,
             registry_batch_size=registry_batch_size,
+            namespace=namespace,
         )
         succeeded = sum(1 for r in results if r.status in ("created", "updated"))
         failed = sum(1 for r in results if r.status == "error")
@@ -115,6 +121,7 @@ async def create_terms_bulk(
 )
 async def list_terms(
     terminology_id: str,
+    namespace: str = Query(default="wip-terms", description="Namespace to query"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -125,8 +132,10 @@ async def list_terms(
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        # Try by code
-        terminology = await Terminology.find_one({"code": terminology_id})
+        # Try by code (within the corresponding terminology namespace)
+        term_ns_prefix = namespace.rsplit("-", 1)[0] if "-" in namespace else "wip"
+        terminology_ns = f"{term_ns_prefix}-terminologies"
+        terminology = await Terminology.find_one({"namespace": terminology_ns, "code": terminology_id})
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 
@@ -135,7 +144,8 @@ async def list_terms(
         status=status,
         page=page,
         page_size=page_size,
-        search=search
+        search=search,
+        namespace=namespace
     )
 
     return TermListResponse(

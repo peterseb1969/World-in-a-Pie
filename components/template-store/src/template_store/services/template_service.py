@@ -33,7 +33,8 @@ class TemplateService:
 
     @staticmethod
     async def create_template(
-        request: CreateTemplateRequest
+        request: CreateTemplateRequest,
+        namespace: str = "wip-templates"
     ) -> TemplateResponse:
         """
         Create a new template.
@@ -44,6 +45,7 @@ class TemplateService:
 
         Args:
             request: Creation request
+            namespace: Namespace for the template (default: wip-templates)
 
         Returns:
             Created template
@@ -52,17 +54,17 @@ class TemplateService:
             ValueError: If code already exists or extends invalid
             RegistryError: If Registry communication fails
         """
-        # Check if code already exists
-        existing = await Template.find_one({"code": request.code})
+        # Check if code already exists within namespace
+        existing = await Template.find_one({"namespace": namespace, "code": request.code})
         if existing:
-            raise ValueError(f"Template with code '{request.code}' already exists")
+            raise ValueError(f"Template with code '{request.code}' already exists in namespace '{namespace}'")
 
         # Validate extends if provided
         if request.extends:
             parent = await Template.find_one({"template_id": request.extends})
             if not parent:
-                # Try by code
-                parent = await Template.find_one({"code": request.extends})
+                # Try by code within same namespace
+                parent = await Template.find_one({"namespace": namespace, "code": request.extends})
                 if parent:
                     request.extends = parent.template_id
                 else:
@@ -86,11 +88,13 @@ class TemplateService:
         template_id = await client.register_template(
             code=request.code,
             name=request.name,
-            created_by=actor
+            created_by=actor,
+            namespace=namespace
         )
 
         # Create template document
         template = Template(
+            namespace=namespace,
             template_id=template_id,
             code=request.code,
             name=request.name,
@@ -118,7 +122,8 @@ class TemplateService:
     async def get_template(
         template_id: Optional[str] = None,
         code: Optional[str] = None,
-        resolve_inheritance: bool = True
+        resolve_inheritance: bool = True,
+        namespace: Optional[str] = None
     ) -> Optional[TemplateResponse]:
         """
         Get a template by ID or code.
@@ -127,14 +132,21 @@ class TemplateService:
             template_id: Template ID (e.g., 'TPL-000001')
             code: Template code (e.g., 'PERSON')
             resolve_inheritance: Whether to resolve inheritance
+            namespace: Namespace to search in (if None, searches globally by ID)
 
         Returns:
             Template if found, None otherwise
         """
         if template_id:
-            template = await Template.find_one({"template_id": template_id})
+            # ID lookups can be global (for cross-namespace refs in open mode)
+            query = {"template_id": template_id}
+            if namespace:
+                query["namespace"] = namespace
+            template = await Template.find_one(query)
         elif code:
-            template = await Template.find_one({"code": code})
+            # Code lookups require namespace (defaults to wip-templates)
+            ns = namespace or "wip-templates"
+            template = await Template.find_one({"namespace": ns, "code": code})
         else:
             return None
 
@@ -178,7 +190,8 @@ class TemplateService:
         code: Optional[str] = None,
         latest_only: bool = False,
         page: int = 1,
-        page_size: int = 50
+        page_size: int = 50,
+        namespace: str = "wip-templates"
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -190,11 +203,12 @@ class TemplateService:
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
+            namespace: Namespace to query (default: wip-templates)
 
         Returns:
             Tuple of (templates, total_count)
         """
-        query = {}
+        query = {"namespace": namespace}
         if status:
             query["status"] = status
         if extends:
@@ -244,18 +258,20 @@ class TemplateService:
 
     @staticmethod
     async def get_template_versions(
-        code: str
+        code: str,
+        namespace: str = "wip-templates"
     ) -> list[TemplateResponse]:
         """
         Get all versions of a template by code.
 
         Args:
             code: Template code
+            namespace: Namespace to search in (default: wip-templates)
 
         Returns:
             List of all versions, sorted by version descending (newest first)
         """
-        templates = await Template.find({"code": code}) \
+        templates = await Template.find({"namespace": namespace, "code": code}) \
             .sort([("version", -1)]) \
             .to_list()
 

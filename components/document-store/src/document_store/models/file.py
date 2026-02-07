@@ -52,6 +52,12 @@ class File(BeanieDocument):
     The storage_key in MinIO is simply the file_id for easy mapping.
     """
 
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip-files",
+        description="Namespace for data isolation (e.g., wip-files, dev-files)"
+    )
+
     # Identity (from Registry - FILE-XXXXXX)
     file_id: str = Field(
         ...,
@@ -125,25 +131,27 @@ class File(BeanieDocument):
     class Settings:
         name = "files"
         indexes = [
-            # Unique file ID
+            # Unique file ID within namespace
+            IndexModel([("namespace", 1), ("file_id", 1)], unique=True, name="ns_file_id_unique_idx"),
+            # Status queries within namespace
+            IndexModel([("namespace", 1), ("status", 1)], name="ns_file_status_idx"),
+            # Duplicate detection by checksum within namespace
+            IndexModel([("namespace", 1), ("checksum", 1)], name="ns_file_checksum_idx"),
+            # Content type filter within namespace
+            IndexModel([("namespace", 1), ("content_type", 1)], name="ns_file_content_type_idx"),
+            # Orphan detection within namespace
+            IndexModel(
+                [("namespace", 1), ("status", 1), ("reference_count", 1)],
+                name="ns_file_orphan_idx"
+            ),
+            # Time-based queries within namespace
+            IndexModel([("namespace", 1), ("uploaded_at", DESCENDING)], name="ns_file_uploaded_at_idx"),
+            # Global file_id lookup (for cross-namespace refs in open mode)
             IndexModel([("file_id", 1)], unique=True, name="file_id_unique_idx"),
-            # Status queries
-            IndexModel([("status", 1)], name="file_status_idx"),
-            # Duplicate detection by checksum
-            IndexModel([("checksum", 1)], name="file_checksum_idx"),
-            # Tag search
+            # Tag search (global - typically tags are namespace-agnostic)
             IndexModel([("metadata.tags", 1)], name="file_tags_idx", sparse=True),
             # Category filter
             IndexModel([("metadata.category", 1)], name="file_category_idx", sparse=True),
-            # Content type filter
-            IndexModel([("content_type", 1)], name="file_content_type_idx"),
-            # Orphan detection (status + reference_count)
-            IndexModel(
-                [("status", 1), ("reference_count", 1)],
-                name="file_orphan_idx"
-            ),
-            # Time-based queries
-            IndexModel([("uploaded_at", DESCENDING)], name="file_uploaded_at_idx"),
             # Uploader queries
             IndexModel([("uploaded_by", 1)], name="file_uploaded_by_idx", sparse=True),
         ]

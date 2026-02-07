@@ -93,7 +93,9 @@ class DocumentService:
 
     async def create_document(
         self,
-        request: DocumentCreateRequest
+        request: DocumentCreateRequest,
+        namespace: str = "wip-documents",
+        template_namespace: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """
         Create or update a document.
@@ -105,6 +107,8 @@ class DocumentService:
 
         Args:
             request: Document creation request
+            namespace: Namespace for the document (default: wip-documents)
+            template_namespace: Namespace of the template (default: wip-templates)
 
         Returns:
             Tuple of (response, error_message)
@@ -124,24 +128,24 @@ class DocumentService:
             # Return validation errors
             return None, self._format_validation_errors(validation_result.errors)
 
-        # Check for existing active document with same identity
+        # Check for existing active document with same identity within namespace
         start = time.perf_counter()
         identity_hash = validation_result.identity_hash
-        existing = await self._find_active_by_identity(identity_hash)
+        existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
         timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
         if existing:
             # Upsert: deactivate old, create new version
             start = time.perf_counter()
             result = await self._create_new_version(
-                request, existing, validation_result
+                request, existing, validation_result, namespace=namespace, template_namespace=template_namespace
             )
             timing["3_create_version"] = (time.perf_counter() - start) * 1000
         else:
             # Create new document
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result
+                request, validation_result, namespace=namespace, template_namespace=template_namespace
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
 
@@ -153,7 +157,9 @@ class DocumentService:
     async def _create_new_document(
         self,
         request: DocumentCreateRequest,
-        validation_result: Any
+        validation_result: Any,
+        namespace: str = "wip-documents",
+        template_namespace: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document."""
         try:
@@ -166,7 +172,8 @@ class DocumentService:
             document_id = await registry.generate_document_id(
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
-                created_by=actor
+                created_by=actor,
+                namespace=namespace
             )
             registry_ms = (time.perf_counter() - start) * 1000
 
@@ -178,8 +185,10 @@ class DocumentService:
             )
 
             document = Document(
+                namespace=namespace,
                 document_id=document_id,
                 template_id=request.template_id,
+                template_namespace=template_namespace,
                 template_version=validation_result.template_version,
                 identity_hash=validation_result.identity_hash,
                 version=1,
@@ -281,7 +290,9 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         existing: Document,
-        validation_result: Any
+        validation_result: Any,
+        namespace: str = "wip-documents",
+        template_namespace: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a new version of an existing document."""
         # Check if data has actually changed
@@ -312,7 +323,8 @@ class DocumentService:
             document_id = await registry.generate_document_id(
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
-                created_by=actor
+                created_by=actor,
+                namespace=namespace
             )
 
             # Deactivate old version
@@ -330,8 +342,10 @@ class DocumentService:
             )
 
             document = Document(
+                namespace=namespace,
                 document_id=document_id,
                 template_id=request.template_id,
+                template_namespace=template_namespace,
                 template_version=validation_result.template_version,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
@@ -381,10 +395,12 @@ class DocumentService:
 
     async def _find_active_by_identity(
         self,
-        identity_hash: str
+        identity_hash: str,
+        namespace: str = "wip-documents"
     ) -> Optional[Document]:
-        """Find the active document with the given identity hash."""
+        """Find the active document with the given identity hash within namespace."""
         return await Document.find_one({
+            "namespace": namespace,
             "identity_hash": identity_hash,
             "status": DocumentStatus.ACTIVE.value
         })
@@ -446,10 +462,11 @@ class DocumentService:
         template_id: Optional[str] = None,
         status: Optional[DocumentStatus] = None,
         page: int = 1,
-        page_size: int = 20
+        page_size: int = 20,
+        namespace: str = "wip-documents"
     ) -> DocumentListResponse:
         """List documents with pagination."""
-        query = {}
+        query = {"namespace": namespace}
         if template_id:
             query["template_id"] = template_id
         if status:

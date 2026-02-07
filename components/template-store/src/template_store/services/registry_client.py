@@ -49,7 +49,8 @@ class RegistryClient:
         code: str,
         name: str,
         version: int = 1,
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        namespace: str = "wip-templates"
     ) -> str:
         """
         Register a new template in the Registry.
@@ -59,6 +60,7 @@ class RegistryClient:
             name: Template name
             version: Template version (included in composite key for versioning)
             created_by: User or system creating this
+            namespace: Namespace for the template (default: wip-templates)
 
         Returns:
             Generated template ID (e.g., 'TPL-000001')
@@ -71,7 +73,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": "wip-templates",
+                    "namespace": namespace,
                     "composite_key": {
                         "code": code,
                         "name": name,
@@ -102,7 +104,8 @@ class RegistryClient:
     async def register_templates_bulk(
         self,
         templates: list[dict[str, Any]],
-        created_by: Optional[str] = None
+        created_by: Optional[str] = None,
+        namespace: str = "wip-templates"
     ) -> list[dict[str, Any]]:
         """
         Register multiple templates in the Registry.
@@ -110,6 +113,7 @@ class RegistryClient:
         Args:
             templates: List of template dicts with 'code', 'name', and optional 'version'
             created_by: User or system creating these
+            namespace: Namespace for the templates (default: wip-templates)
 
         Returns:
             List of registration results with IDs
@@ -119,7 +123,7 @@ class RegistryClient:
         """
         items = [
             {
-                "namespace": "wip-templates",
+                "namespace": namespace,
                 "composite_key": {
                     "code": template["code"],
                     "name": template["name"],
