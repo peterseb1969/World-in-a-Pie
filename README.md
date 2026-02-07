@@ -72,31 +72,51 @@ WIP is built on three principles:
 
 | Document | Description |
 |----------|-------------|
-| [Philosophy & Vision](docs/philosophy.md) | Core principles and design rationale |
 | [Architecture](docs/architecture.md) | Detailed system architecture |
-| [Components](docs/components.md) | Deep dive into each component |
-| [Technology Stack](docs/technology-stack.md) | Technology choices and rationale |
-| [Project Structure](docs/project-structure.md) | Directory layout and component isolation |
-| [Deployment](docs/deployment.md) | Deployment configurations and options |
+| [Authentication](docs/authentication.md) | API keys, JWT/OIDC, Dex configuration |
+| [Production Deployment](docs/security/production-deployment.md) | Secure production setup guide |
+| [FAQ](docs/faq.md) | Common issues and solutions |
 | [Data Models](docs/data-models.md) | Conceptual data structures |
-| [Glossary](docs/glossary.md) | Terms and definitions |
+| [Reporting Layer](docs/reporting-layer.md) | PostgreSQL sync for analytics |
 
 ---
 
 ## Quick Start
 
-*Coming soon — implementation in progress.*
+### Development Setup (Mac/Linux)
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/world-in-a-pie.git
+git clone https://github.com/peterseb1969/World-in-a-Pie.git
+cd World-in-a-Pie
 
-# Start with Docker Compose
-docker-compose up -d
+# Run setup (auto-detects platform)
+./scripts/setup.sh --preset standard --hostname localhost --localhost
 
 # Access the UI
-open http://localhost:8080
+open https://localhost:8443
 ```
+
+### Production Deployment
+
+```bash
+# Deploy with production security (generates random secrets, enables auth)
+./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
+
+# Validate production readiness
+./scripts/security/production-check.sh
+
+# View generated credentials (store securely, then delete)
+cat data/secrets/credentials.txt
+```
+
+For internet-exposed deployments with Let's Encrypt TLS:
+```bash
+./scripts/setup.sh --preset standard --hostname wip.example.com --prod \
+  --email admin@example.com -y
+```
+
+See [Production Deployment Guide](docs/security/production-deployment.md) for complete instructions.
 
 ---
 
@@ -116,7 +136,9 @@ open http://localhost:8080
 
 ## Project Status
 
-🚧 **Work In Progress** — Architecture defined, implementation starting.
+**Core functionality complete** — All services operational with OIDC authentication, bulk operations, and PostgreSQL reporting sync.
+
+Current focus: Binary file storage, semantic types, and BI dashboard integration.
 
 ---
 

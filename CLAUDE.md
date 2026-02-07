@@ -58,6 +58,7 @@ See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
 - `docs/reporting-layer.md` - Reporting sync details
 - `docs/authentication.md` - Auth configuration
+- `docs/security/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
 - `docs/design/event-replay.md` - Event replay for consumer onboarding
 
@@ -68,12 +69,17 @@ See `docs/` for detailed specifications:
 ### Automated Setup (Recommended)
 
 ```bash
-# Auto-detect platform and deploy
-./scripts/setup.sh
+# Development (localhost, default passwords)
+./scripts/setup.sh --preset standard --localhost
 
-# Or specify profile
-./scripts/setup.sh --profile mac --network localhost
-./scripts/setup.sh --profile pi-standard --hostname wip-pi.local
+# Network deployment (self-signed TLS)
+./scripts/setup.sh --preset standard --hostname wip-pi.local
+
+# Production (random secrets, auth enabled)
+./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
+
+# Validate production security
+./scripts/security/production-check.sh
 ```
 
 ### Manual Development
