@@ -1,0 +1,15 @@
+# NATS Authentication Module
+#
+# Enables token-based authentication for NATS.
+# Only included when WIP_NATS_TOKEN is set (production mode).
+#
+# Usage: Automatically included by setup.sh when --prod is specified
+
+version: "3.8"
+
+services:
+  nats:
+    command: ["-c", "/etc/nats/nats.conf"]
+    volumes:
+      - ${WIP_DATA_DIR:-./data}/nats:/data
+      - ./config/nats/nats.conf:/etc/nats/nats.conf:ro

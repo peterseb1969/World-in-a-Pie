@@ -68,6 +68,7 @@ class APIKeyRecord(BaseModel):
     description: str | None = Field(None, description="Description of what this key is for")
     created_at: datetime | None = Field(None, description="When the key was created")
     last_used_at: datetime | None = Field(None, description="When the key was last used")
+    expires_at: datetime | None = Field(None, description="When the key expires (None = never)")
     enabled: bool = Field(default=True, description="Whether the key is active")
 
     # Optional: namespace-scoped permissions (for Registry compatibility)
@@ -75,6 +76,12 @@ class APIKeyRecord(BaseModel):
         None,
         description="If set, limits key to these namespaces only"
     )
+
+    def is_expired(self) -> bool:
+        """Check if the key has expired."""
+        if self.expires_at is None:
+            return False
+        return datetime.now(self.expires_at.tzinfo) > self.expires_at
 
 
 class AuthResult(BaseModel):

@@ -1,0 +1,16 @@
+# NATS Configuration Template
+# Generated from this template by setup.sh when --prod is used
+#
+# Token authentication is enabled when WIP_NATS_TOKEN is set.
+
+port: 4222
+http_port: 8222
+
+jetstream {
+    store_dir: /data
+}
+
+# Token-based authorization (production mode)
+authorization {
+    token: "${WIP_NATS_TOKEN}"
+}

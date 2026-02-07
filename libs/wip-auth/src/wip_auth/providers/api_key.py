@@ -107,17 +107,25 @@ class APIKeyProvider:
         """
         return request.headers.get(self.header_name)
 
-    def _validate_key(self, api_key: str) -> APIKeyRecord | None:
+    def _validate_key(self, api_key: str) -> tuple[APIKeyRecord | None, str | None]:
         """Validate an API key and return its record if valid.
 
         Args:
             api_key: The plain-text API key
 
         Returns:
-            The APIKeyRecord if valid, None otherwise
+            Tuple of (APIKeyRecord if valid, error message if invalid)
         """
         key_hash = hash_api_key(api_key, self.hash_salt)
-        return self._keys_by_hash.get(key_hash)
+        record = self._keys_by_hash.get(key_hash)
+
+        if record is None:
+            return None, "Invalid API key"
+
+        if record.is_expired():
+            return None, "API key has expired"
+
+        return record, None
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate the request using API key.
@@ -129,7 +137,7 @@ class APIKeyProvider:
             UserIdentity if authenticated, None if no API key header
 
         Raises:
-            HTTPException: If API key is present but invalid
+            HTTPException: If API key is present but invalid or expired
         """
         api_key = self._get_key_from_header(request)
 
@@ -137,12 +145,12 @@ class APIKeyProvider:
             # No API key header - let other providers try
             return None
 
-        key_record = self._validate_key(api_key)
+        key_record, error = self._validate_key(api_key)
 
-        if key_record is None:
+        if error is not None:
             raise HTTPException(
                 status_code=401,
-                detail="Invalid API key",
+                detail=error,
                 headers={"WWW-Authenticate": "ApiKey"},
             )
 

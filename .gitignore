@@ -30,7 +30,11 @@ Thumbs.db
 # Generated config files (created by scripts/setup.sh)
 config/dex/config.yaml
 config/caddy/Caddyfile
+config/nats/nats.conf
 .env
+
+# Secrets (production mode)
+data/secrets/
 
 # Testing
 .pytest_cache/

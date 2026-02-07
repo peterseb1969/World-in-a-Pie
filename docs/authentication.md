@@ -938,3 +938,54 @@ Note: Authelia requires HTTPS and a proper domain.
 | Add a new API key | Add to `WIP_AUTH_API_KEYS_JSON` or JSON file, restart services |
 | Add a new OAuth2 client | Edit `config/dex/config.yaml`, add to `staticClients`, restart Dex |
 | Switch OIDC providers | Change `WIP_AUTH_JWT_ISSUER_URL` and `WIP_AUTH_JWT_JWKS_URI` |
+
+---
+
+## Production Deployment
+
+For production deployments, use the `--prod` flag with setup.sh to:
+- Generate strong random secrets for all services
+- Enable MongoDB and NATS authentication
+- Add security headers to Caddy configuration
+
+```bash
+# Home network deployment (self-signed TLS)
+./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
+
+# Internet-exposed deployment (Let's Encrypt TLS)
+./scripts/setup.sh --preset standard --hostname wip.example.com --prod \
+  --email admin@example.com -y
+```
+
+### Validating Production Readiness
+
+Run the production check script:
+```bash
+./scripts/security/production-check.sh
+```
+
+### API Key Management
+
+Generate additional API keys:
+```bash
+./scripts/security/generate-api-key.sh --name backup-service --groups wip-services
+```
+
+### API Key Expiration
+
+API keys can optionally have an expiration date:
+```json
+{
+  "name": "temp-access",
+  "key_hash": "...",
+  "expires_at": "2024-12-31T23:59:59Z"
+}
+```
+
+Expired keys will receive a 401 response with the message "API key has expired".
+
+### Further Reading
+
+- [Production Deployment Guide](security/production-deployment.md) - Complete deployment walkthrough
+- [Encryption at Rest](security/encryption-at-rest.md) - Data encryption options
+- [Key Rotation](security/key-rotation.md) - Secret rotation procedures

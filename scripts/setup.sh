@@ -88,6 +88,18 @@ CLEAN_DATA="false"
 
 WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
 
+# Secret generation (populated when --prod or --generate-secrets)
+GENERATE_SECRETS="false"
+ADMIN_EMAIL=""
+ACME_STAGING="false"
+WIP_API_KEY=""
+WIP_POSTGRES_PASSWORD=""
+WIP_MINIO_PASSWORD=""
+WIP_MONGO_USER=""
+WIP_MONGO_PASSWORD=""
+WIP_DEX_CLIENT_SECRET=""
+WIP_NATS_TOKEN=""
+
 # Available modules
 AVAILABLE_MODULES="oidc reporting files ingest dev-tools"
 
@@ -112,6 +124,86 @@ get_preset_desc() {
         full)      echo "All features enabled - complete deployment" ;;
         *)         echo "" ;;
     esac
+}
+
+# Generate a random hex string
+generate_secret() {
+    local length=${1:-32}
+    openssl rand -hex "$length"
+}
+
+# Generate all production secrets
+generate_prod_secrets() {
+    log_step "Generating production secrets..."
+
+    WIP_API_KEY=$(generate_secret 32)
+    WIP_POSTGRES_PASSWORD=$(generate_secret 24)
+    WIP_MINIO_PASSWORD=$(generate_secret 24)
+    WIP_MONGO_USER="wip_admin"
+    WIP_MONGO_PASSWORD=$(generate_secret 24)
+    WIP_DEX_CLIENT_SECRET=$(generate_secret 32)
+    WIP_NATS_TOKEN=$(generate_secret 32)
+
+    log_info "Generated 6 secrets (API key, Postgres, MinIO, MongoDB, Dex, NATS)"
+}
+
+# Save secrets to files with restrictive permissions
+save_secrets() {
+    local secrets_dir="$WIP_DATA_DIR/secrets"
+
+    log_step "Saving secrets to $secrets_dir..."
+    mkdir -p "$secrets_dir"
+    chmod 700 "$secrets_dir"
+
+    # Write individual secret files
+    echo -n "$WIP_API_KEY" > "$secrets_dir/api_key"
+    echo -n "$WIP_POSTGRES_PASSWORD" > "$secrets_dir/postgres_password"
+    echo -n "$WIP_MINIO_PASSWORD" > "$secrets_dir/minio_password"
+    echo -n "$WIP_MONGO_PASSWORD" > "$secrets_dir/mongo_password"
+    echo -n "$WIP_DEX_CLIENT_SECRET" > "$secrets_dir/dex_client_secret"
+    echo -n "$WIP_NATS_TOKEN" > "$secrets_dir/nats_token"
+
+    # Set restrictive permissions
+    chmod 600 "$secrets_dir"/*
+
+    # Create human-readable summary (for initial viewing only)
+    cat > "$secrets_dir/credentials.txt" << EOF
+# WIP Production Credentials
+# Generated: $(date '+%Y-%m-%d %H:%M:%S')
+#
+# IMPORTANT: This file contains sensitive secrets.
+# - Store securely or delete after saving to a password manager
+# - Never commit to version control
+# - Consider encrypting at rest (see docs/security/encryption-at-rest.md)
+
+API Key (X-API-Key header):
+  $WIP_API_KEY
+
+MongoDB:
+  Username: $WIP_MONGO_USER
+  Password: $WIP_MONGO_PASSWORD
+  URI: mongodb://$WIP_MONGO_USER:$WIP_MONGO_PASSWORD@wip-mongodb:27017/
+
+PostgreSQL:
+  Username: wip
+  Password: $WIP_POSTGRES_PASSWORD
+
+MinIO (S3):
+  Access Key: wip-minio-root
+  Secret Key: $WIP_MINIO_PASSWORD
+
+Dex (OIDC):
+  Client ID: wip-console
+  Client Secret: $WIP_DEX_CLIENT_SECRET
+
+NATS:
+  Token: $WIP_NATS_TOKEN
+  URL: nats://TOKEN@wip-nats:4222
+EOF
+    chmod 600 "$secrets_dir/credentials.txt"
+
+    log_info "Secrets saved with 600 permissions"
+    log_warn "Review $secrets_dir/credentials.txt and store securely"
 }
 
 # Detect platform
@@ -163,6 +255,9 @@ OPTIONS:
   --config FILE       Load configuration from file (for unattended installs)
   --save-config FILE  Save configuration to file and exit (don't install)
   --clean             Clean NATS/JetStream data before starting (fixes stream conflicts)
+  --generate-secrets  Generate random production secrets (implied by --prod)
+  --email EMAIL       Admin email for Let's Encrypt certificates
+  --acme-staging      Use Let's Encrypt staging (for testing certificates)
   -y, --yes           Skip confirmation prompt
   --debug             Enable debug output
   --help              Show this help
@@ -357,6 +452,18 @@ parse_args() {
                 CLEAN_DATA="true"
                 shift
                 ;;
+            --generate-secrets)
+                GENERATE_SECRETS="true"
+                shift
+                ;;
+            --email)
+                ADMIN_EMAIL="$2"
+                shift 2
+                ;;
+            --acme-staging)
+                ACME_STAGING="true"
+                shift
+                ;;
             --debug)
                 DEBUG="true"
                 shift
@@ -384,6 +491,20 @@ validate_config() {
         log_error "Must specify either --preset or --modules"
         echo "Available presets: core, standard, analytics, full"
         exit 1
+    fi
+
+    # --prod implies --generate-secrets
+    if [ "$VARIANT" = "prod" ]; then
+        GENERATE_SECRETS="true"
+        log_info "Production mode: will generate random secrets"
+    fi
+
+    # --email implies Let's Encrypt (not internal TLS)
+    if [ -n "$ADMIN_EMAIL" ]; then
+        log_info "Let's Encrypt mode: certificates for $HOSTNAME (email: $ADMIN_EMAIL)"
+        if [ "$ACME_STAGING" = "true" ]; then
+            log_warn "Using Let's Encrypt staging environment (certificates won't be trusted)"
+        fi
     fi
 
     # Validate preset
@@ -544,6 +665,12 @@ show_confirmation() {
     # Variant and platform
     echo -e "  ${BOLD}Variant:${NC}   $VARIANT"
     echo -e "  ${BOLD}Platform:${NC}  $PLATFORM (MongoDB $([ "$PLATFORM" = "pi4" ] && echo "4.4" || echo "7"))"
+    if [ "$GENERATE_SECRETS" = "true" ]; then
+        echo -e "  ${BOLD}Secrets:${NC}   ${GREEN}Random production secrets will be generated${NC}"
+    fi
+    if [ -n "$ADMIN_EMAIL" ]; then
+        echo -e "  ${BOLD}TLS:${NC}       Let's Encrypt (email: $ADMIN_EMAIL)"
+    fi
     echo ""
 
     # Network
@@ -672,6 +799,27 @@ generate_env_file() {
         file_storage_enabled="true"
     fi
 
+    # Use generated secrets or defaults
+    local api_key="${WIP_API_KEY:-$API_KEY}"
+    local mongo_user="${WIP_MONGO_USER:-}"
+    local mongo_password="${WIP_MONGO_PASSWORD:-}"
+    local minio_password="${WIP_MINIO_PASSWORD:-wip-minio-password}"
+    local dex_client_secret="${WIP_DEX_CLIENT_SECRET:-wip-console-secret}"
+    local nats_token="${WIP_NATS_TOKEN:-}"
+    local postgres_password="${WIP_POSTGRES_PASSWORD:-wip}"
+
+    # Build MongoDB URI
+    local mongo_uri="mongodb://wip-mongodb:27017/"
+    if [ -n "$mongo_user" ] && [ -n "$mongo_password" ]; then
+        mongo_uri="mongodb://${mongo_user}:${mongo_password}@wip-mongodb:27017/"
+    fi
+
+    # Build NATS URL
+    local nats_url="nats://wip-nats:4222"
+    if [ -n "$nats_token" ]; then
+        nats_url="nats://${nats_token}@wip-nats:4222"
+    fi
+
     cat > "$PROJECT_ROOT/.env" << EOF
 # WIP Environment Configuration
 # Generated by setup.sh - $(date)
@@ -697,19 +845,23 @@ WIP_DATA_DIR=$WIP_DATA_DIR
 # =============================================================================
 WIP_MONGODB_IMAGE=$mongodb_image
 WIP_MONGODB_HEALTHCHECK=$mongodb_healthcheck
+WIP_MONGO_USER=$mongo_user
+WIP_MONGO_PASSWORD=$mongo_password
+WIP_MONGO_URI=$mongo_uri
 
 # =============================================================================
 # AUTHENTICATION
 # =============================================================================
 WIP_AUTH_MODE=$auth_mode
-WIP_AUTH_LEGACY_API_KEY=$API_KEY
-API_KEY=$API_KEY
-MASTER_API_KEY=$API_KEY
+WIP_AUTH_LEGACY_API_KEY=$api_key
+API_KEY=$api_key
+MASTER_API_KEY=$api_key
 
 # OIDC Settings
 WIP_AUTH_JWT_ISSUER_URL=$issuer_url
 WIP_AUTH_JWT_JWKS_URI=$jwks_uri
 WIP_AUTH_JWT_AUDIENCE=wip-console
+WIP_DEX_CLIENT_SECRET=$dex_client_secret
 
 # =============================================================================
 # CONSOLE SETTINGS
@@ -728,8 +880,19 @@ WIP_FILE_STORAGE_ENABLED=$file_storage_enabled
 WIP_FILE_STORAGE_TYPE=minio
 WIP_FILE_STORAGE_ENDPOINT=http://wip-minio:9000
 WIP_FILE_STORAGE_ACCESS_KEY=wip-minio-root
-WIP_FILE_STORAGE_SECRET_KEY=wip-minio-password
+WIP_FILE_STORAGE_SECRET_KEY=$minio_password
 WIP_FILE_STORAGE_BUCKET=wip-attachments
+
+# =============================================================================
+# POSTGRESQL
+# =============================================================================
+WIP_POSTGRES_PASSWORD=$postgres_password
+
+# =============================================================================
+# NATS
+# =============================================================================
+WIP_NATS_TOKEN=$nats_token
+NATS_URL=$nats_url
 
 # =============================================================================
 # SERVICE URLs (for inter-service communication)
@@ -738,13 +901,18 @@ REGISTRY_URL=http://wip-registry-dev:8001
 DEF_STORE_URL=http://wip-def-store-dev:8002
 TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
 DOCUMENT_STORE_URL=http://wip-document-store-dev:8004
-NATS_URL=nats://wip-nats:4222
 
 # =============================================================================
 # HEALTH CHECK SETTINGS
 # =============================================================================
 WIP_HEALTH_CHECK_INTERVAL=10
 WIP_HEALTH_CHECK_TIMEOUT=60
+
+# =============================================================================
+# TLS / ACME SETTINGS
+# =============================================================================
+WIP_ADMIN_EMAIL=$ADMIN_EMAIL
+WIP_ACME_STAGING=$ACME_STAGING
 EOF
 
     log_info "Generated .env file"
@@ -868,19 +1036,54 @@ generate_caddy_config() {
         host_patterns="${HOSTNAME}, localhost"
     fi
 
+    # Determine TLS mode
+    local tls_config="tls internal"
+    local global_options="{
+    auto_https disable_redirects
+}"
+    if [ -n "$ADMIN_EMAIL" ]; then
+        # Use Let's Encrypt
+        tls_config=""  # Let Caddy auto-obtain certificate
+        if [ "$ACME_STAGING" = "true" ]; then
+            global_options="{
+    email $ADMIN_EMAIL
+    acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}"
+        else
+            global_options="{
+    email $ADMIN_EMAIL
+}"
+        fi
+        log_info "TLS: Let's Encrypt (email: $ADMIN_EMAIL)"
+    else
+        log_info "TLS: Self-signed internal certificates"
+    fi
+
+    # Build security headers
+    local security_headers=""
+    if [ "$VARIANT" = "prod" ]; then
+        security_headers="
+    # Security headers (production)
+    header {
+        Strict-Transport-Security \"max-age=31536000; includeSubDomains\"
+        X-Content-Type-Options \"nosniff\"
+        X-Frame-Options \"SAMEORIGIN\"
+        Referrer-Policy \"strict-origin-when-cross-origin\"
+    }"
+    fi
+
     cat > "$PROJECT_ROOT/config/caddy/Caddyfile" << EOF
 # Caddy Configuration
 # Generated by setup.sh - $(date)
 #
 # Provides HTTPS termination and reverse proxy for WIP services.
-# Uses self-signed certificate for local network access.
+$([ -n "$ADMIN_EMAIL" ] && echo "# TLS: Let's Encrypt" || echo "# TLS: Self-signed internal certificates")
 
-{
-    auto_https disable_redirects
-}
+$global_options
 
 $host_patterns {
-    tls internal
+    $tls_config
+$security_headers
 
     # Dex OIDC provider (keep /dex prefix - Dex expects it)
     handle /dex/* {
@@ -920,6 +1123,37 @@ $host_patterns {
 EOF
 
     log_info "Generated Caddy config"
+}
+
+generate_nats_config() {
+    # Only generate NATS config with auth when token is set
+    if [ -z "$WIP_NATS_TOKEN" ]; then
+        log_debug "Skipping NATS config (no token - using default config)"
+        return
+    fi
+
+    log_step "Generating NATS configuration with token auth..."
+    mkdir -p "$PROJECT_ROOT/config/nats"
+
+    cat > "$PROJECT_ROOT/config/nats/nats.conf" << EOF
+# NATS Configuration
+# Generated by setup.sh - $(date)
+#
+# Token-based authorization enabled for production mode.
+
+port: 4222
+http_port: 8222
+
+jetstream {
+    store_dir: /data
+}
+
+authorization {
+    token: "$WIP_NATS_TOKEN"
+}
+EOF
+
+    log_info "Generated NATS config with token authentication"
 }
 
 check_dependencies() {
@@ -1134,6 +1368,15 @@ start_infrastructure() {
             log_debug "No overlay for module: $mod (started as service)"
         fi
     done
+
+    # Add NATS auth overlay when token is configured (production mode)
+    if [ -n "$WIP_NATS_TOKEN" ]; then
+        local nats_auth_file="$PROJECT_ROOT/docker-compose/modules/nats-auth.yml"
+        if [ -f "$nats_auth_file" ]; then
+            compose_files="$compose_files -f $nats_auth_file"
+            log_info "NATS token authentication enabled"
+        fi
+    fi
 
     log_debug "Compose files: $compose_files"
 
@@ -1359,6 +1602,12 @@ print_status() {
     echo "=========================================="
     echo "  Config saved:   config/last-install.conf"
     [ -n "$LOG_FILE" ] && echo "  Install log:    ${LOG_FILE#$PROJECT_ROOT/}"
+    if [ "$GENERATE_SECRETS" = "true" ]; then
+        echo ""
+        echo "  PRODUCTION SECRETS:"
+        echo "  ${YELLOW}Credentials:  ${WIP_DATA_DIR#$PROJECT_ROOT/}/secrets/credentials.txt${NC}"
+        echo "  ${YELLOW}Store this file securely and consider deleting it!${NC}"
+    fi
     echo ""
     echo "  Re-run this installation:"
     echo "    ./scripts/setup.sh --config config/last-install.conf -y"
@@ -1409,9 +1658,16 @@ main() {
     check_nats_conflicts
     clean_nats_data
 
+    # Generate secrets for production mode
+    if [ "$GENERATE_SECRETS" = "true" ]; then
+        generate_prod_secrets
+        save_secrets
+    fi
+
     generate_env_file
     generate_dex_config
     generate_caddy_config
+    generate_nats_config
 
     start_infrastructure
     start_services

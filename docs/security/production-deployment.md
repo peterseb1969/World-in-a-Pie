@@ -1,0 +1,271 @@
+# WIP Production Deployment Guide
+
+This guide covers deploying WIP securely for production use.
+
+---
+
+## Security Tiers
+
+WIP supports three security tiers depending on your deployment context:
+
+| Tier | Use Case | Features |
+|------|----------|----------|
+| **Tier 1 (Home Pi)** | Local network, trusted users | Random passwords, self-signed TLS, single API key |
+| **Tier 2 (Internet-exposed)** | Public access, multiple users | Let's Encrypt, per-service API keys, DB auth, NATS auth |
+| **Tier 3 (Enterprise)** | High security requirements | External secrets manager, mTLS, Authentik/Keycloak |
+
+This guide focuses on **Tier 1 and Tier 2** deployments using the built-in security features.
+
+---
+
+## Quick Start: Production Deployment
+
+### Tier 1: Home Network Deployment
+
+```bash
+# Generate random secrets, use self-signed TLS
+./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
+```
+
+This command:
+- Generates random 256-bit secrets for all services
+- Enables MongoDB and NATS authentication
+- Uses self-signed TLS certificates (trusted within your network)
+- Saves credentials to `data/secrets/credentials.txt`
+
+### Tier 2: Internet-Exposed Deployment
+
+```bash
+# Use Let's Encrypt for trusted TLS
+./scripts/setup.sh --preset standard --hostname wip.example.com --prod \
+  --email admin@example.com -y
+```
+
+This command adds:
+- Automatic Let's Encrypt certificate provisioning
+- HSTS and security headers
+
+For testing Let's Encrypt without rate limits:
+```bash
+./scripts/setup.sh ... --acme-staging
+```
+
+---
+
+## Generated Secrets
+
+When using `--prod`, setup.sh generates:
+
+| Secret | Location | Used For |
+|--------|----------|----------|
+| `api_key` | `data/secrets/api_key` | API authentication |
+| `postgres_password` | `data/secrets/postgres_password` | PostgreSQL access |
+| `minio_password` | `data/secrets/minio_password` | MinIO S3 access |
+| `mongo_password` | `data/secrets/mongo_password` | MongoDB access |
+| `dex_client_secret` | `data/secrets/dex_client_secret` | OIDC client |
+| `nats_token` | `data/secrets/nats_token` | NATS messaging |
+| `credentials.txt` | `data/secrets/credentials.txt` | Human-readable summary |
+
+### Storing Secrets Securely
+
+After deployment:
+1. Copy `credentials.txt` to a password manager
+2. Delete the file: `rm data/secrets/credentials.txt`
+3. Keep individual secret files for automation (permissions are 600)
+
+```bash
+# View credentials once
+cat data/secrets/credentials.txt
+
+# Store in password manager, then delete
+rm data/secrets/credentials.txt
+```
+
+---
+
+## Validating Production Readiness
+
+Run the production check script:
+
+```bash
+./scripts/security/production-check.sh
+```
+
+Expected output for a properly configured production deployment:
+```
+  [PASS] API key is strong (64 characters)
+  [PASS] MongoDB authentication configured
+  [PASS] NATS token authentication configured
+  [PASS] Secrets directory has correct permissions (700)
+  [PASS] All secret files have correct permissions (600)
+  [PASS] TLS configured (Let's Encrypt)
+  [PASS] Production variant configured
+
+  All checks passed!
+```
+
+To automatically fix permission issues:
+```bash
+./scripts/security/production-check.sh --fix
+```
+
+---
+
+## API Key Management
+
+### Generating Additional API Keys
+
+Use the key generator script:
+
+```bash
+# Generate a service key with specific permissions
+./scripts/security/generate-api-key.sh \
+  --name backup-service \
+  --groups wip-services \
+  --description "Automated backup service"
+
+# Generate a temporary key that expires in 30 days
+./scripts/security/generate-api-key.sh \
+  --name temp-access \
+  --expires 30d
+```
+
+### Key Rotation
+
+1. Generate a new key:
+   ```bash
+   ./scripts/security/generate-api-key.sh --name master-key-v2
+   ```
+
+2. Add the new key to `config/api-keys.json`
+
+3. Update services to use the new key
+
+4. Remove the old key from `config/api-keys.json`
+
+5. Restart affected services
+
+---
+
+## Database Security
+
+### MongoDB
+
+In production mode, MongoDB runs with authentication:
+- Root user: `wip_admin`
+- Password: Generated randomly (in `data/secrets/mongo_password`)
+- Connection string: `mongodb://wip_admin:<password>@wip-mongodb:27017/`
+
+To connect manually:
+```bash
+# Read password
+MONGO_PASS=$(cat data/secrets/mongo_password)
+
+# Connect
+podman exec -it wip-mongodb mongosh -u wip_admin -p "$MONGO_PASS"
+```
+
+### PostgreSQL (Reporting Module)
+
+Password is generated and stored in `data/secrets/postgres_password`.
+
+```bash
+# Connect
+PGPASSWORD=$(cat data/secrets/postgres_password) \
+  podman exec -it wip-postgres psql -U wip -d wip_reporting
+```
+
+### NATS
+
+Token authentication is enabled when using `--prod`:
+- Token: Generated randomly (in `data/secrets/nats_token`)
+- Connection URL: `nats://TOKEN@wip-nats:4222`
+
+---
+
+## TLS Configuration
+
+### Self-Signed Certificates (Tier 1)
+
+Default behavior with `--prod`. Certificates are generated by Caddy and stored in `data/caddy/`.
+
+To trust the certificate on clients:
+1. Browse to `https://your-hostname:8443`
+2. Accept the security warning (one-time per browser)
+3. Or import the CA certificate from `data/caddy/pki/authorities/local/`
+
+### Let's Encrypt (Tier 2)
+
+Requires:
+- A publicly accessible hostname
+- Port 443 (HTTPS) accessible from the internet
+- A valid email for Let's Encrypt notifications
+
+```bash
+./scripts/setup.sh ... --email admin@example.com
+```
+
+Security headers are automatically added:
+- `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: SAMEORIGIN`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+
+---
+
+## Encryption at Rest
+
+See [Encryption at Rest](encryption-at-rest.md) for recommendations on encrypting stored data.
+
+---
+
+## Backup Security
+
+When backing up production data:
+1. **Encrypt backups** before storing offsite
+2. **Include secrets** from `data/secrets/` (or your secrets manager)
+3. **Test restores** regularly
+
+Example encrypted backup:
+```bash
+tar czf - data/ | gpg --symmetric --cipher-algo AES256 > wip-backup-$(date +%Y%m%d).tar.gz.gpg
+```
+
+---
+
+## Checklist
+
+Before going to production:
+
+- [ ] Run `./scripts/security/production-check.sh` - all passes
+- [ ] Saved `credentials.txt` to password manager
+- [ ] Deleted `data/secrets/credentials.txt`
+- [ ] TLS configured (self-signed or Let's Encrypt)
+- [ ] Firewall configured (only expose ports 8443, or 443 for Let's Encrypt)
+- [ ] Backup procedure tested
+- [ ] Monitoring/alerting configured (optional)
+
+---
+
+## Upgrading from Development
+
+If you initially deployed in dev mode and want to upgrade:
+
+1. **Stop all services:**
+   ```bash
+   podman stop $(podman ps -q --filter name=wip-)
+   ```
+
+2. **Backup existing data:**
+   ```bash
+   cp -r data/ data-backup-$(date +%Y%m%d)/
+   ```
+
+3. **Re-run setup with --prod:**
+   ```bash
+   ./scripts/setup.sh --preset standard --hostname your-host --prod -y
+   ```
+
+4. **Restart services**
+
+Note: MongoDB will require manual migration to add authentication to existing databases. Contact support for guidance.
