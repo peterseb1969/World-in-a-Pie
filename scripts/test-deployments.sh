@@ -12,6 +12,7 @@
 #   ./scripts/test-deployments.sh --list             # List all tests without running
 #   ./scripts/test-deployments.sh --continue-from 3  # Resume from test #3
 #   ./scripts/test-deployments.sh --keep             # Keep deployment running after tests
+#   ./scripts/test-deployments.sh --no-fail-fast     # Continue after test failures
 #   ./scripts/test-deployments.sh --remote wip-pi.local  # Run remote host tests
 #
 # Requirements:
@@ -44,6 +45,7 @@ STARTUP_TIMEOUT=180      # Max seconds to wait for services to start
 HEALTH_CHECK_INTERVAL=5  # Seconds between health checks
 API_KEY="dev_master_key_for_testing"
 KEEP_DEPLOYMENT=false    # Keep deployment running after tests (for debugging)
+FAIL_FAST=true           # Exit on first test failure (default: true)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Test Definitions
@@ -686,6 +688,7 @@ show_usage() {
     echo "  --continue-from N     Resume from test #N"
     echo "  --remote HOSTNAME     Run remote deployment tests against HOSTNAME"
     echo "  --keep                Keep deployment running after tests (for debugging)"
+    echo "  --no-fail-fast        Continue running tests after a failure"
     echo "  --help                Show this help"
     echo ""
     echo "Examples:"
@@ -727,6 +730,10 @@ main() {
                 ;;
             --keep)
                 KEEP_DEPLOYMENT=true
+                shift
+                ;;
+            --no-fail-fast)
+                FAIL_FAST=false
                 shift
                 ;;
             --help)
@@ -814,6 +821,11 @@ main() {
             pass=$((pass + 1))
         else
             fail=$((fail + 1))
+            if $FAIL_FAST; then
+                log_error "Test failed - exiting (use --no-fail-fast to continue)"
+                total=$((total + 1))
+                break
+            fi
         fi
         total=$((total + 1))
     done
