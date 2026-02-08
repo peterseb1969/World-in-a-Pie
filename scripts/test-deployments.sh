@@ -381,11 +381,14 @@ run_test_framework() {
     suites="$suites,integration"
 
     # Run the test framework with appropriate suites
+    # Convert comma-separated to space-separated for positional args
+    local suite_args="${suites//,/ }"
+
     local test_exit=0
     if "$PROJECT_ROOT/scripts/tests/run-tests.sh" \
-        --suites "$suites" \
         --skip-seed \
         --output "$test_output" \
+        $suite_args \
         2>&1 | tee "$test_log"; then
         test_exit=0
     else
