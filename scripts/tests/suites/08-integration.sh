@@ -139,9 +139,10 @@ test_update_document() {
     local first_field
     first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "name"')
 
-    local body='{"data": {"'$first_field'": "Updated Integration Test '$(date +%s)'"}}'
+    # Document updates are done via POST (upsert based on identity hash)
+    local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "Updated Integration Test '$(date +%s)'"}}'
 
-    api_put "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents/$INTEGRATION_DOCUMENT_ID" "$body"
+    api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
     assert_status 200 || assert_status 201
 }
 
