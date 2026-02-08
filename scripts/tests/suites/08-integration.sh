@@ -29,7 +29,7 @@ test_create_document_with_terms() {
     # Get a template_id first (API requires template_id, not template_code)
     api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
 
-    local template_id
+    local template_id=""
     if [[ "$RESPONSE_CODE" == "200" ]]; then
         template_id=$(json_field "template_id")
     fi
@@ -118,7 +118,7 @@ test_update_document() {
 
     # Get a template (prefer MINIMAL which has simple structure)
     api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
-    local template_id
+    local template_id=""
     if [[ "$RESPONSE_CODE" == "200" ]]; then
         template_id=$(json_field "template_id")
     fi
