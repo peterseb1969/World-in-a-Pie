@@ -17,7 +17,7 @@ services:
       - ../../.env
     environment:
       # Service-specific configuration
-      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - MONGO_URI=${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       - DATABASE_NAME=wip_template_store_dev
       - REGISTRY_URL=http://wip-registry-dev:8001
       - REGISTRY_API_KEY=dev_master_key_for_testing
@@ -25,7 +25,7 @@ services:
       - DEF_STORE_API_KEY=dev_master_key_for_testing
       - DOCUMENT_STORE_URL=http://wip-document-store-dev:8004
       - DOCUMENT_STORE_API_KEY=dev_master_key_for_testing
-      - NATS_URL=nats://wip-nats:4222
+      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
       # Auth config (WIP_AUTH_*) comes from .env via env_file

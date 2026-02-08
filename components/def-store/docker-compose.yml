@@ -15,7 +15,7 @@ services:
       - ../../.env
     environment:
       # Database configuration
-      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - MONGO_URI=${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       - DATABASE_NAME=wip_def_store
       # Service URLs (internal network)
       - REGISTRY_URL=http://wip-registry:8001

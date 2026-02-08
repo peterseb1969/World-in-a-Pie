@@ -14,7 +14,7 @@ services:
       - ../../.env
     environment:
       - DEBUG=true
-      - NATS_URL=nats://wip-nats:4222
+      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
       - DEF_STORE_URL=http://wip-def-store-dev:8002
       - TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
       - DOCUMENT_STORE_URL=http://wip-document-store-dev:8004

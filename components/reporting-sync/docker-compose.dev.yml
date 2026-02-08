@@ -17,7 +17,7 @@ services:
       # Service-specific configuration
       - DEBUG=true
       # NATS - use container name from infra
-      - NATS_URL=nats://wip-nats:4222
+      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
       # PostgreSQL - use container name from infra
       - POSTGRES_HOST=wip-postgres
       - POSTGRES_PORT=5432

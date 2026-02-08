@@ -15,7 +15,7 @@ services:
     environment:
       - PYTHONPATH=/app/src
       # Database configuration
-      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - MONGO_URI=${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       - DATABASE_NAME=wip_registry
       # Auth configuration
       - AUTH_ENABLED=true

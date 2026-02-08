@@ -12,4 +12,4 @@ services:
     command: ["-c", "/etc/nats/nats.conf"]
     volumes:
       - ${WIP_DATA_DIR:-./data}/nats:/data
-      - ./config/nats/nats.conf:/etc/nats/nats.conf:ro
+      - ${WIP_PROJECT_ROOT:-.}/config/nats/nats.conf:/etc/nats/nats.conf:ro

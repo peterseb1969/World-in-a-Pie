@@ -14,7 +14,7 @@ services:
       - ../../.env
     environment:
       - PYTHONPATH=/app/src
-      - MONGO_URI=mongodb://wip-mongodb:27017/
+      - MONGO_URI=${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       - DATABASE_NAME=wip_registry_dev
       - MASTER_API_KEY=dev_master_key_for_testing
       - AUTH_ENABLED=true
