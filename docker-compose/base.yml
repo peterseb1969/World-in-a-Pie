@@ -33,7 +33,10 @@ services:
       timeout: 5s
       retries: 5
     networks:
-      - wip-network
+      wip-network:
+        # Alias 'mongo' needed for mongo-express startup script which checks /dev/tcp/mongo/27017
+        aliases:
+          - mongo
     restart: unless-stopped
 
   # ===================
