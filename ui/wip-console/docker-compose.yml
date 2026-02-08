@@ -23,8 +23,10 @@ services:
         VITE_OIDC_CLIENT_SECRET: wip-console-secret
         VITE_OIDC_PROVIDER_NAME: Dex
     container_name: wip-console
-    ports:
-      - "80:80"
+    # No host ports - accessed via Caddy reverse proxy at :8443
+    volumes:
+      # Mount dynamically generated nginx config (handles OIDC on/off)
+      - ../../config/console/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     environment:
       # These are passed to nginx for proxying (runtime config)
       - DEF_STORE_HOST=wip-def-store:8002
@@ -35,5 +37,4 @@ services:
 
 networks:
   wip-network:
-    name: wip-network
-    driver: bridge
+    external: true

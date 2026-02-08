@@ -31,14 +31,14 @@ export const useTemplateStore = defineStore('template', () => {
 
   // Should we show WIP section? Only for open namespaces that are not WIP
   const showWipSection = computed(() => {
-    const group = namespaceStore.currentData
+    const group = namespaceStore.currentNamespace
     const isWip = namespaceStore.current === 'wip'
     const isOpen = !group || group.isolation_mode === 'open'
     return isOpen && !isWip
   })
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.templatesNs, () => {
+  watch(() => namespaceStore.templatesPool, () => {
     fetchTemplates()
   })
 
@@ -56,7 +56,7 @@ export const useTemplateStore = defineStore('template', () => {
       // Fetch own namespace
       const ownResponse = await templateStoreClient.listTemplates({
         ...params,
-        namespace: namespaceStore.templatesNs
+        namespace: namespaceStore.templatesPool
       })
       ownTemplates.value = ownResponse.items
       total.value = ownResponse.total
@@ -180,7 +180,7 @@ export const useTemplateStore = defineStore('template', () => {
     error.value = null
     try {
       await templateStoreClient.deleteTemplate(id)
-      templates.value = templates.value.filter(t => t.template_id !== id)
+      ownTemplates.value = ownTemplates.value.filter(t => t.template_id !== id)
       total.value--
       if (currentTemplate.value?.template_id === id) {
         currentTemplate.value = null
@@ -272,7 +272,7 @@ export const useTemplateStore = defineStore('template', () => {
       const response = await defStoreClient.listTerminologies({
         status: 'active',
         page_size: 100,
-        namespace: namespaceStore.terminologiesNs
+        namespace: namespaceStore.terminologiesPool
       })
       terminologies.value = response.items
     } catch (e) {

@@ -24,6 +24,8 @@ services:
       # Auth config (WIP_AUTH_*) comes from .env via env_file
     volumes:
       - ./config:/app/config:ro
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn registry.main:app --host 0.0.0.0 --port 8001"
     networks:
       - wip-network
     restart: unless-stopped

@@ -473,7 +473,7 @@ onMounted(async () => {
               </div>
 
               <h4>Term References</h4>
-              <div v-if="!isCreateMode && documentStore.currentDocument?.term_references?.length > 0" class="term-references">
+              <div v-if="!isCreateMode && (documentStore.currentDocument?.term_references?.length ?? 0) > 0" class="term-references">
                 <p class="term-references-description">
                   Resolved term IDs for terminology fields. Original values are preserved in the data, these are the canonical term identifiers.
                 </p>
@@ -487,7 +487,7 @@ onMounted(async () => {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="ref in documentStore.currentDocument.term_references" :key="ref.field_path">
+                    <tr v-for="ref in documentStore.currentDocument?.term_references" :key="ref.field_path">
                       <td><code>{{ ref.field_path }}</code></td>
                       <td>{{ getFieldValue(ref.field_path) }}</td>
                       <td><code>{{ ref.term_id }}</code></td>
@@ -501,7 +501,7 @@ onMounted(async () => {
               </div>
 
               <h4>References</h4>
-              <div v-if="!isCreateMode && documentStore.currentDocument?.references?.length > 0" class="references">
+              <div v-if="!isCreateMode && (documentStore.currentDocument?.references?.length ?? 0) > 0" class="references">
                 <p class="references-description">
                   Resolved references to other entities (documents, terms, terminologies, templates).
                 </p>
@@ -515,7 +515,7 @@ onMounted(async () => {
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="ref in documentStore.currentDocument.references" :key="ref.field_path">
+                    <tr v-for="ref in documentStore.currentDocument?.references" :key="ref.field_path">
                       <td><code>{{ ref.field_path }}</code></td>
                       <td>{{ ref.reference_type }}</td>
                       <td>{{ ref.lookup_value }}</td>

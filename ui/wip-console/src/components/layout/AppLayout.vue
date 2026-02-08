@@ -138,10 +138,6 @@ function closeAuthDialog() {
   oidcPassword.value = ''
 }
 
-function showOidcLoginForm() {
-  showOidcForm.value = true
-}
-
 async function loginWithOidcPassword() {
   if (!oidcUsername.value.trim() || !oidcPassword.value) {
     uiStore.showError('Login Failed', 'Please enter username and password')

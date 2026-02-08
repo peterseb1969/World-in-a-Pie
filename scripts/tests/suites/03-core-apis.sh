@@ -28,7 +28,6 @@ TEST_DOCUMENT_ID=""
 
 test_registry_list_pools() {
     api_get "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
-    # Returns a list directly (not wrapped in items)
     assert_status 200 && assert_body_contains "pool_id"
 }
 

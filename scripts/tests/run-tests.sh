@@ -56,10 +56,10 @@ SUITE_ORDER="deployment auth core-apis seeding reporting files ingest integratio
 # Quick test suites (fast validation)
 QUICK_SUITES="deployment auth core-apis"
 
-# Global state
-TOTAL_PASSED=0
-TOTAL_FAILED=0
-TOTAL_SKIPPED=0
+# Global state (use := to avoid resetting if already set by common.sh)
+: ${TOTAL_PASSED:=0}
+: ${TOTAL_FAILED:=0}
+: ${TOTAL_SKIPPED:=0}
 SUITES_RUN=0
 SUITES_FAILED=0
 START_TIME=""
@@ -255,10 +255,7 @@ run_suite_file() {
         run_suite
         local result=$?
 
-        # Collect stats from suite
-        TOTAL_PASSED=$((TOTAL_PASSED + TEST_SUITE_PASSED))
-        TOTAL_FAILED=$((TOTAL_FAILED + TEST_SUITE_FAILED))
-        TOTAL_SKIPPED=$((TOTAL_SKIPPED + TEST_SUITE_SKIPPED))
+        # suite_end() already updates TOTAL_* counters
         SUITES_RUN=$((SUITES_RUN + 1))
 
         if [[ $TEST_SUITE_FAILED -gt 0 ]]; then

@@ -31,7 +31,7 @@ export const useDocumentStore = defineStore('document', () => {
   const termsCache = ref<Record<string, Term[]>>({})
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.documentsNs, () => {
+  watch(() => namespaceStore.documentsPool, () => {
     fetchDocuments()
     // Clear terms cache when namespace changes
     termsCache.value = {}
@@ -43,7 +43,7 @@ export const useDocumentStore = defineStore('document', () => {
     try {
       const response = await documentStoreClient.listDocuments({
         ...params,
-        namespace: namespaceStore.documentsNs
+        namespace: namespaceStore.documentsPool
       })
       documents.value = response.items
       total.value = response.total

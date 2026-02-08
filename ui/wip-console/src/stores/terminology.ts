@@ -31,7 +31,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
   const allTerminologies = computed<TerminologyWithNamespace[]>(() => {
     const own = ownTerminologies.value.map(t => ({
       ...t,
-      _namespace: namespaceStore.terminologiesNs,
+      _namespace: namespaceStore.terminologiesPool,
       _isExternal: false
     }))
     const wip = wipTerminologies.value.map(t => ({
@@ -44,14 +44,14 @@ export const useTerminologyStore = defineStore('terminology', () => {
 
   // Should we show WIP section? Only for open namespaces that are not WIP
   const showWipSection = computed(() => {
-    const group = namespaceStore.currentData
+    const group = namespaceStore.currentNamespace
     const isWip = namespaceStore.current === 'wip'
     const isOpen = !group || group.isolation_mode === 'open'
     return isOpen && !isWip
   })
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.terminologiesNs, () => {
+  watch(() => namespaceStore.terminologiesPool, () => {
     fetchTerminologies()
   })
 
@@ -67,7 +67,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
       // Fetch own namespace
       const ownResponse = await defStoreClient.listTerminologies({
         ...params,
-        namespace: namespaceStore.terminologiesNs
+        namespace: namespaceStore.terminologiesPool
       })
       ownTerminologies.value = ownResponse.items
       total.value = ownResponse.total
@@ -154,7 +154,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
     error.value = null
     try {
       await defStoreClient.deleteTerminology(id)
-      terminologies.value = terminologies.value.filter(t => t.terminology_id !== id)
+      ownTerminologies.value = ownTerminologies.value.filter(t => t.terminology_id !== id)
       total.value--
       if (currentTerminology.value?.terminology_id === id) {
         currentTerminology.value = null

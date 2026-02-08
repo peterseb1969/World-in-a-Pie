@@ -1024,6 +1024,88 @@ EOF
     log_info "Test users: admin@wip.local/admin123, editor@wip.local/editor123, viewer@wip.local/viewer123"
 }
 
+generate_console_nginx_config() {
+    log_step "Generating Console nginx configuration..."
+    mkdir -p "$PROJECT_ROOT/config/console"
+
+    # Base nginx config
+    cat > "$PROJECT_ROOT/config/console/nginx.conf" << 'EOF'
+server {
+    listen 80;
+    server_name localhost;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Gzip compression
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript;
+
+    # Handle SPA routing - serve index.html for all routes
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy API requests to Def-Store backend
+    location /api/def-store/ {
+        proxy_pass http://wip-def-store:8002/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Proxy API requests to Template-Store backend
+    location /api/template-store/ {
+        proxy_pass http://wip-template-store:8003/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Proxy API requests to Document-Store backend
+    location /api/document-store/ {
+        proxy_pass http://wip-document-store:8004/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+EOF
+
+    # Add Dex proxy only if OIDC is enabled
+    if has_module "oidc"; then
+        cat >> "$PROJECT_ROOT/config/console/nginx.conf" << 'EOF'
+
+    # Proxy Dex OIDC requests to avoid CORS issues
+    location /dex/ {
+        proxy_pass http://wip-dex:5556/dex/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+EOF
+    fi
+
+    # Close config with cache settings
+    cat >> "$PROJECT_ROOT/config/console/nginx.conf" << 'EOF'
+
+    # Cache static assets
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+}
+EOF
+
+    log_info "Generated console nginx config (OIDC: $(has_module oidc && echo 'enabled' || echo 'disabled'))"
+}
+
 generate_caddy_config() {
     if ! has_module "oidc"; then
         log_debug "Skipping Caddy config (oidc module not active)"
@@ -1036,6 +1118,10 @@ generate_caddy_config() {
     # Service name suffix based on variant (dev containers have -dev suffix)
     local svc_suffix=""
     [ "$VARIANT" = "dev" ] && svc_suffix="-dev"
+
+    # Console port: dev uses 3000 (Vite), prod uses 80 (nginx)
+    local console_port=80
+    [ "$VARIANT" = "dev" ] && console_port=3000
 
     # Caddy listens on standard ports inside container (443 for HTTPS)
     # Port mapping in docker-compose exposes 443 as HTTPS_PORT externally
@@ -1126,8 +1212,9 @@ $security_headers
     }
 
     # WIP Console (default)
+    # Dev mode uses port 3000 (Vite), prod mode uses port 80 (nginx)
     handle {
-        reverse_proxy wip-console${svc_suffix}:3000
+        reverse_proxy wip-console${svc_suffix}:${console_port}
     }
 }
 EOF
@@ -1508,8 +1595,12 @@ start_service() {
     log_info "Starting $name..."
     cd "$PROJECT_ROOT/components/$dir"
     local compose_file="docker-compose.dev.yml"
-    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
+    local build_flag=""
+    if [ "$VARIANT" = "prod" ]; then
+        compose_file="docker-compose.yml"
+        build_flag="--build"  # Rebuild to pick up latest source code
+    fi
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag
 
     # Wait for health
     local retries=30
@@ -1529,8 +1620,12 @@ start_services() {
 
     cd "$PROJECT_ROOT/components/registry"
     local compose_file="docker-compose.dev.yml"
-    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
+    local build_flag=""
+    if [ "$VARIANT" = "prod" ]; then
+        compose_file="docker-compose.yml"
+        build_flag="--build"  # Rebuild to pick up latest source code
+    fi
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag
 
     # Wait for Registry
     local retries=30
@@ -1573,8 +1668,12 @@ start_services() {
     log_step "Starting WIP Console..."
     cd "$PROJECT_ROOT/ui/wip-console"
     local compose_file="docker-compose.dev.yml"
-    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
+    local build_flag=""
+    if [ "$VARIANT" = "prod" ]; then
+        compose_file="docker-compose.yml"
+        build_flag="--build"  # Rebuild to pick up latest source code
+    fi
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag
     log_info "Waiting for Console to start..."
     sleep 8
 }
@@ -1715,6 +1814,7 @@ main() {
 
     generate_env_file
     generate_dex_config
+    generate_console_nginx_config
     generate_caddy_config
     generate_nats_config
 

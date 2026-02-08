@@ -40,9 +40,10 @@ FAIL_FAST="${FAIL_FAST:-false}"
 VERBOSE="${VERBOSE:-false}"
 
 # Global counters (across all suites)
-TOTAL_PASSED=0
-TOTAL_FAILED=0
-TOTAL_SKIPPED=0
+# Use := to avoid resetting when sourced multiple times
+: ${TOTAL_PASSED:=0}
+: ${TOTAL_FAILED:=0}
+: ${TOTAL_SKIPPED:=0}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Logging

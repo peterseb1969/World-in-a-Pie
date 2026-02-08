@@ -19,16 +19,20 @@ services:
       - DATABASE_NAME=wip_document_store
       # Service URLs (internal network)
       - REGISTRY_URL=http://wip-registry:8001
+      - REGISTRY_API_KEY=${API_KEY}
       - TEMPLATE_STORE_URL=http://wip-template-store:8003
+      - TEMPLATE_STORE_API_KEY=${API_KEY}
       - DEF_STORE_URL=http://wip-def-store:8002
+      - DEF_STORE_API_KEY=${API_KEY}
       # CORS (allow all in production behind reverse proxy)
       - CORS_ORIGINS=*
       # Auth config (WIP_AUTH_*) comes from .env via env_file
       # API keys come from .env: WIP_AUTH_LEGACY_API_KEY, WIP_AUTH_API_KEYS_JSON
+    volumes:
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn document_store.main:app --host 0.0.0.0 --port 8004"
     networks:
       - wip-network
-    depends_on:
-      - wip-mongodb
 
 networks:
   wip-network:

@@ -15,8 +15,7 @@ import {
   type SearchResult,
   type EntityDetails,
   type EntityReference,
-  type IncomingReference,
-  type ReferencedByResponse
+  type IncomingReference
 } from '@/api/client'
 
 const router = useRouter()

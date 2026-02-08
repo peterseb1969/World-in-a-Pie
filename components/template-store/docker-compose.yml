@@ -18,11 +18,16 @@ services:
       - DATABASE_NAME=wip_template_store
       # Service URLs (internal network)
       - REGISTRY_URL=http://wip-registry:8001
+      - REGISTRY_API_KEY=${API_KEY}
       - DEF_STORE_URL=http://wip-def-store:8002
+      - DEF_STORE_API_KEY=${API_KEY}
       # CORS (allow all in production behind reverse proxy)
       - CORS_ORIGINS=*
       - PYTHONPATH=/app/src
       # Auth config (WIP_AUTH_*) comes from .env via env_file
+    volumes:
+      - ../../libs/wip-auth:/app/libs/wip-auth:ro
+    command: bash -c "pip install -q /app/libs/wip-auth && uvicorn template_store.main:app --host 0.0.0.0 --port 8003"
     networks:
       - wip-network
     restart: unless-stopped

@@ -10,7 +10,7 @@ import Button from 'primevue/button'
 import Message from 'primevue/message'
 import FileField from './FileField.vue'
 import { useDocumentStore } from '@/stores'
-import type { FieldDefinition, Term, SemanticType } from '@/types'
+import type { FieldDefinition, Term } from '@/types'
 import { SEMANTIC_TYPES } from '@/types'
 
 const props = defineProps<{

@@ -150,6 +150,7 @@ export interface BulkOperationResponse {
   total: number
   succeeded: number
   failed: number
+  skipped?: number
 }
 
 // =============================================================================
