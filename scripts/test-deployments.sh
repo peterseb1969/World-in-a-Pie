@@ -11,6 +11,7 @@
 #   ./scripts/test-deployments.sh --quick            # Run quick subset (core + standard)
 #   ./scripts/test-deployments.sh --list             # List all tests without running
 #   ./scripts/test-deployments.sh --continue-from 3  # Resume from test #3
+#   ./scripts/test-deployments.sh --keep             # Keep deployment running after tests
 #   ./scripts/test-deployments.sh --remote wip-pi.local  # Run remote host tests
 #
 # Requirements:
@@ -42,6 +43,7 @@ RESULTS_FILE="$RESULTS_DIR/results_$TIMESTAMP.md"
 STARTUP_TIMEOUT=180      # Max seconds to wait for services to start
 HEALTH_CHECK_INTERVAL=5  # Seconds between health checks
 API_KEY="dev_master_key_for_testing"
+KEEP_DEPLOYMENT=false    # Keep deployment running after tests (for debugging)
 
 # ────────────────────────────────────────────────────────────────────────────
 # Test Definitions
@@ -683,11 +685,13 @@ show_usage() {
     echo "  --list                List all tests without running"
     echo "  --continue-from N     Resume from test #N"
     echo "  --remote HOSTNAME     Run remote deployment tests against HOSTNAME"
+    echo "  --keep                Keep deployment running after tests (for debugging)"
     echo "  --help                Show this help"
     echo ""
     echo "Examples:"
     echo "  $0                    # Run all localhost tests"
     echo "  $0 --quick            # Run quick localhost tests"
+    echo "  $0 --test 4 --keep    # Run test #4 and keep containers running"
     echo "  $0 --remote wip-pi.local  # Run remote tests against wip-pi.local"
     echo ""
 }
@@ -720,6 +724,10 @@ main() {
             --remote)
                 REMOTE_HOSTNAME="$2"
                 shift 2
+                ;;
+            --keep)
+                KEEP_DEPLOYMENT=true
+                shift
                 ;;
             --help)
                 show_usage
@@ -834,9 +842,19 @@ main() {
     echo -e "Full results: ${CYAN}$RESULTS_FILE${NC}"
     echo ""
 
-    # Cleanup after all tests
-    log "Final cleanup..."
-    cleanup_all
+    # Cleanup after all tests (unless --keep was specified)
+    if $KEEP_DEPLOYMENT; then
+        log "Keeping deployment running (--keep specified)"
+        echo ""
+        echo -e "${CYAN}Containers still running:${NC}"
+        podman ps --filter "name=wip-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | head -20
+        echo ""
+        echo -e "${DIM}To clean up manually: podman rm -f --depend \$(podman ps -aq --filter name=wip-)${NC}"
+        echo ""
+    else
+        log "Final cleanup..."
+        cleanup_all
+    fi
 
     exit $fail
 }
