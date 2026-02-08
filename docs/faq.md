@@ -103,6 +103,29 @@ Common causes:
 podman restart <container-name>
 ```
 
+### All containers die after SSH disconnect / logout
+
+**Symptom:** Containers run fine while you're connected, but stop when you disconnect SSH or log out.
+
+**Cause:** Rootless Podman runs containers in your user session. Without "linger" enabled, systemd kills all user processes when you log out.
+
+**Check:**
+```bash
+loginctl show-user $USER | grep Linger
+# Linger=no  <- Problem!
+```
+
+**Fix:**
+```bash
+sudo loginctl enable-linger $USER
+```
+
+After this, containers will persist across logouts, SSH disconnects, and client machine sleep cycles.
+
+**Note:** The setup script now enables linger automatically on Linux.
+
+See: [Containers Die After Logout](troubleshooting/containers-die-after-logout.md)
+
 ---
 
 ## Development

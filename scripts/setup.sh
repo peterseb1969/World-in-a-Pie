@@ -1212,6 +1212,36 @@ ensure_network() {
     fi
 }
 
+ensure_linger() {
+    # Enable systemd linger for rootless Podman on Linux
+    # Without linger, containers die when user logs out (SSH disconnect, etc.)
+    # See: docs/troubleshooting/containers-die-after-logout.md
+
+    if [[ "$(uname)" == "Darwin" ]]; then
+        return  # Not needed on macOS
+    fi
+
+    local current_user
+    current_user=$(whoami)
+
+    if command -v loginctl &>/dev/null; then
+        local linger_status
+        linger_status=$(loginctl show-user "$current_user" 2>/dev/null | grep -oP 'Linger=\K.*' || echo "unknown")
+
+        if [[ "$linger_status" == "no" ]]; then
+            log_warn "Linger not enabled - containers will die on logout!"
+            log_info "Enabling linger for user $current_user..."
+            if sudo loginctl enable-linger "$current_user"; then
+                log_info "Linger enabled - containers will persist across logouts"
+            else
+                log_warn "Failed to enable linger. Run manually: sudo loginctl enable-linger $current_user"
+            fi
+        elif [[ "$linger_status" == "yes" ]]; then
+            log_info "Linger already enabled for $current_user"
+        fi
+    fi
+}
+
 check_nats_conflicts() {
     # Check for stale NATS JetStream data that could cause stream conflicts
     # The main issue is any stream with a broad wildcard like "wip.>" that
@@ -1654,6 +1684,7 @@ main() {
     check_dependencies
     ensure_data_dirs
     ensure_network
+    ensure_linger
     verify_compose_files
     check_nats_conflicts
     clean_nats_data
