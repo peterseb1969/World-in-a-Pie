@@ -157,7 +157,7 @@ For each service:
 
 **Goal:** Single docker-compose.yml and Dockerfile for console
 
-**Option A: Nginx for both (Recommended)**
+**Decision: Nginx for both**
 
 1. **Create unified Dockerfile**
    ```dockerfile
@@ -209,12 +209,6 @@ For each service:
    - Run `npm run dev` locally (or in separate container)
    - Nginx serves the `dist/` directory
    - Changes reflected on refresh (not HMR)
-
-**Option B: Keep Vite for dev (More complex)**
-
-1. Use build target to switch between Vite and Nginx base images
-2. Different ports (3000 vs 80)
-3. Caddy config must handle both
 
 **Verification:**
 - [ ] Console loads in browser
@@ -363,22 +357,20 @@ For simplicity, recommend fresh deployment:
 
 ---
 
-## Open Questions
+## Decisions (Confirmed)
 
-1. **Console: Vite or Nginx for dev?**
-   - Nginx is simpler but loses HMR
-   - Vite provides better DX but adds complexity
-   - **Recommendation:** Nginx, with local `npm run dev` for active development
+1. **Console: Nginx for both dev and prod**
+   - Simpler configuration, same behavior everywhere
+   - For active UI development, run `npm run dev` locally for HMR
 
-2. **Database names: unify or keep separate?**
-   - Unified is simpler
-   - Separate prevents accidental prod data modification
-   - **Recommendation:** Unify - the container isolation already prevents accidents
+2. **Database names: Drop `_dev` suffix**
+   - Always use `wip_registry`, `wip_def_store`, etc.
+   - Container isolation prevents accidents
 
-3. **Override files: auto-generate or check in?**
-   - Auto-generate: cleaner repo, but magic
-   - Check in: explicit, but another file to maintain
-   - **Recommendation:** Auto-generate in setup.sh, document clearly
+3. **Override files: Auto-generate**
+   - setup.sh creates `docker-compose.override.yml` for dev
+   - setup.sh removes it for prod
+   - Clear header comment explaining the file is auto-generated
 
 ---
 
