@@ -397,16 +397,16 @@ run_test_framework() {
     # Convert comma-separated to space-separated for positional args
     local suite_args="${suites//,/ }"
 
+    # Run tests and capture exit code properly (pipe to tee loses it)
+    set -o pipefail
     local test_exit=0
-    if "$PROJECT_ROOT/scripts/tests/run-tests.sh" \
+    "$PROJECT_ROOT/scripts/tests/run-tests.sh" \
         --skip-seed \
         --output "$test_output" \
         $suite_args \
-        2>&1 | tee "$test_log"; then
-        test_exit=0
-    else
-        test_exit=$?
-    fi
+        2>&1 | tee "$test_log"
+    test_exit=$?
+    set +o pipefail
 
     # Parse results from JSON output
     if [[ -f "$test_output" ]]; then
