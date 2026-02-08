@@ -1033,6 +1033,10 @@ generate_caddy_config() {
     log_step "Generating Caddy configuration..."
     mkdir -p "$PROJECT_ROOT/config/caddy"
 
+    # Service name suffix based on variant (dev containers have -dev suffix)
+    local svc_suffix=""
+    [ "$VARIANT" = "dev" ] && svc_suffix="-dev"
+
     # Caddy listens on standard ports inside container (443 for HTTPS)
     # Port mapping in docker-compose exposes 443 as HTTPS_PORT externally
     local host_patterns=""
@@ -1098,32 +1102,32 @@ $security_headers
 
     # API services (use handle, not handle_path - services expect full path)
     handle /api/registry/* {
-        reverse_proxy wip-registry-dev:8001
+        reverse_proxy wip-registry${svc_suffix}:8001
     }
 
     handle /api/def-store/* {
-        reverse_proxy wip-def-store-dev:8002
+        reverse_proxy wip-def-store${svc_suffix}:8002
     }
 
     handle /api/template-store/* {
-        reverse_proxy wip-template-store-dev:8003
+        reverse_proxy wip-template-store${svc_suffix}:8003
     }
 
     handle /api/document-store/* {
-        reverse_proxy wip-document-store-dev:8004
+        reverse_proxy wip-document-store${svc_suffix}:8004
     }
 
     handle /api/reporting-sync/* {
-        reverse_proxy wip-reporting-sync-dev:8005
+        reverse_proxy wip-reporting-sync${svc_suffix}:8005
     }
 
     handle /api/ingest-gateway/* {
-        reverse_proxy wip-ingest-gateway-dev:8006
+        reverse_proxy wip-ingest-gateway${svc_suffix}:8006
     }
 
     # WIP Console (default)
     handle {
-        reverse_proxy wip-console-dev:3000
+        reverse_proxy wip-console${svc_suffix}:3000
     }
 }
 EOF
@@ -1503,7 +1507,9 @@ start_service() {
 
     log_info "Starting $name..."
     cd "$PROJECT_ROOT/components/$dir"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+    local compose_file="docker-compose.dev.yml"
+    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
 
     # Wait for health
     local retries=30
@@ -1522,7 +1528,9 @@ start_services() {
     log_step "Starting Registry and initializing namespaces..."
 
     cd "$PROJECT_ROOT/components/registry"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+    local compose_file="docker-compose.dev.yml"
+    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
 
     # Wait for Registry
     local retries=30
@@ -1564,7 +1572,9 @@ start_services() {
 
     log_step "Starting WIP Console..."
     cd "$PROJECT_ROOT/ui/wip-console"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.dev.yml up -d
+    local compose_file="docker-compose.dev.yml"
+    [ "$VARIANT" = "prod" ] && compose_file="docker-compose.yml"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d
     log_info "Waiting for Console to start..."
     sleep 8
 }
