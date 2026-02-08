@@ -39,9 +39,6 @@ All core services are implemented and working:
 
 ### Recently Added
 
-- Namespace isolation with "Own + WIP" visibility for open mode
-- Vitest frontend testing (11 tests for stores)
-- NATS healthcheck fix (removed - image has no shell)
 - Bulk import tuning for 200k+ terms (sub-batching, throttling)
 - MinIO file storage infrastructure (Phase 1)
 
@@ -56,7 +53,8 @@ All core services are implemented and working:
 | 3 | BI Dashboard (Metabase) | Pending |
 | 4 | Semantic Types | Planning complete, implementation pending |
 | 5 | Event Replay | Design complete, implementation pending |
-| 6 | GitHub Actions CI | Vitest ready, workflow file needs manual upload (PAT lacks `workflow` scope) |
+| 6 | Docker support | Test/document running with standard Docker |
+| 7 | Rootful Podman | Test/document running with `sudo podman` |
 
 See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
