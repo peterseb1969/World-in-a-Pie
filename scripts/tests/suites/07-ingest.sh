@@ -181,15 +181,26 @@ test_consumer_lag_acceptable() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_services_publish_events() {
-    # Get an existing document to verify events work (avoid template validation issues)
-    # Or try to create a simple document
-    local body='{"template_code": "MINIMAL", "data": {"name": "NATS Test Event '$(date +%s)'"}}'
+    # Get a template_id first (API requires template_id, not template_code)
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+    local template_id
+    template_id=$(json_field "items[0].template_id")
 
-    api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
+    if [[ -n "$template_id" && "$template_id" != "null" ]]; then
+        # Get first field name from template
+        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id"
+        local first_field
+        first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "name"')
 
-    # If document creation fails, check if we can at least see stream activity
-    if [[ "$RESPONSE_CODE" != "200" && "$RESPONSE_CODE" != "201" ]]; then
-        echo "Document creation returned $RESPONSE_CODE (checking stream activity instead)"
+        local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "NATS Test '$(date +%s)'"}}'
+        api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
+
+        # If document creation fails, still check stream activity
+        if [[ "$RESPONSE_CODE" != "200" && "$RESPONSE_CODE" != "201" ]]; then
+            echo "Document creation returned $RESPONSE_CODE (checking stream activity instead)"
+        fi
+    else
+        echo "No template found (checking stream activity instead)"
     fi
 
     # Give NATS a moment to process

@@ -26,14 +26,32 @@ INTEGRATION_DOCUMENT_ID=""
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_create_document_with_terms() {
-    # Create a document using MINIMAL template (simpler, more reliable)
+    # Get a template_id first (API requires template_id, not template_code)
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+
+    local template_id
+    if [[ "$RESPONSE_CODE" == "200" ]]; then
+        template_id=$(json_field "template_id")
+    fi
+
+    if [[ -z "$template_id" || "$template_id" == "null" ]]; then
+        # Fall back to any available template
+        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+        template_id=$(json_field "items[0].template_id")
+    fi
+
+    if [[ -z "$template_id" || "$template_id" == "null" ]]; then
+        echo "No template found to create document"
+        return 1
+    fi
+
+    # Get first field name from template
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id"
+    local first_field
+    first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "name"')
+
     local timestamp=$(date +%s)
-    local body='{
-        "template_code": "MINIMAL",
-        "data": {
-            "name": "Integration Test '$timestamp'"
-        }
-    }'
+    local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "Integration Test '$timestamp'"}}'
 
     api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
 
@@ -88,11 +106,22 @@ test_update_document() {
         return 1
     fi
 
-    local body='{
-        "data": {
-            "name": "Updated Integration Test '$(date +%s)'"
-        }
-    }'
+    # Get the existing document to find its template and field structure
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents/$INTEGRATION_DOCUMENT_ID"
+    if [[ "$RESPONSE_CODE" != "200" ]]; then
+        echo "Could not retrieve document to update"
+        return 1
+    fi
+
+    # Get template_id and first field name
+    local template_id
+    template_id=$(json_field "template_id")
+
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id"
+    local first_field
+    first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "name"')
+
+    local body='{"data": {"'$first_field'": "Updated Integration Test '$(date +%s)'"}}'
 
     api_put "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents/$INTEGRATION_DOCUMENT_ID" "$body"
     assert_status 200 || assert_status 201
