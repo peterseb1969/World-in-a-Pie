@@ -48,12 +48,9 @@ services:
       - "8222:8222"   # HTTP monitoring
     volumes:
       - ${WIP_DATA_DIR:-./data}/nats:/data
-    healthcheck:
-      test: ["CMD", "nats-server", "--help"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 5s
+    # Note: NATS image is minimal (no shell/curl/wget), so healthcheck
+    # is disabled. Container will still restart on crash via restart policy.
+    # Monitor via: curl http://localhost:8222/healthz
     networks:
       - wip-network
     restart: unless-stopped
