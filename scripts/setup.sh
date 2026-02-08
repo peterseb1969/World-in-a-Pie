@@ -1699,6 +1699,8 @@ main() {
     if [ "$GENERATE_SECRETS" = "true" ]; then
         generate_prod_secrets
         save_secrets
+        # Update global API_KEY for namespace initialization
+        API_KEY="$WIP_API_KEY"
     fi
 
     generate_env_file

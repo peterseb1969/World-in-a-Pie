@@ -189,6 +189,15 @@ run_setup() {
     # shellcheck disable=SC2086
     if "$PROJECT_ROOT/scripts/setup.sh" --preset "$preset" $flags --clean -y; then
         log "Setup completed successfully"
+        # Read the actual API key from .env (may differ in prod mode)
+        if [ -f "$PROJECT_ROOT/.env" ]; then
+            local env_api_key
+            env_api_key=$(grep "^API_KEY=" "$PROJECT_ROOT/.env" | cut -d= -f2)
+            if [ -n "$env_api_key" ]; then
+                API_KEY="$env_api_key"
+                log_dim "Using API key from .env"
+            fi
+        fi
         return 0
     else
         log_error "Setup failed!"
@@ -326,7 +335,7 @@ run_seed() {
 
     # Capture seed output for reporting
     local seed_log="$RESULTS_DIR/${test_name}_seed.log"
-    if python3 "$PROJECT_ROOT/scripts/seed_comprehensive.py" --profile "$profile" 2>&1 | tee "$seed_log"; then
+    if python3 "$PROJECT_ROOT/scripts/seed_comprehensive.py" --profile "$profile" --api-key "$API_KEY" 2>&1 | tee "$seed_log"; then
         log "Seeding completed successfully"
         # Extract summary stats from seed output
         SEED_OUTPUT=$(grep -E "(created|SEEDING COMPLETE|Terminologies:|Templates:|Documents:)" "$seed_log" | tail -20)
