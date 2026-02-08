@@ -60,6 +60,7 @@ See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
 - `docs/reporting-layer.md` - Reporting sync details
 - `docs/authentication.md` - Auth configuration
+- `docs/network-configuration.md` - **Network & OIDC setup (4 deployment scenarios)**
 - `docs/security/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
 - `docs/design/event-replay.md` - Event replay for consumer onboarding
@@ -254,3 +255,28 @@ WIP_AUTH_JWT_JWKS_URI=...             # JWKS endpoint
 ```
 
 See `config/profiles/*.env` for profile-specific settings.
+
+---
+
+## OIDC Configuration (Critical)
+
+**When OIDC is enabled, these THREE values MUST be identical:**
+
+| Config File | Variable | Example Value |
+|-------------|----------|---------------|
+| `config/dex/config.yaml` | `issuer` | `https://localhost:8443/dex` |
+| `.env` | `WIP_AUTH_JWT_ISSUER_URL` | `https://localhost:8443/dex` |
+| `.env` | `VITE_OIDC_AUTHORITY` | `https://localhost:8443/dex` |
+
+**Mismatch causes 401 "Invalid token issuer" errors.**
+
+**After changing `.env`, recreate containers (not just restart):**
+```bash
+# WRONG - env vars not reloaded
+podman-compose restart
+
+# CORRECT - containers pick up new env
+podman-compose down && podman-compose up -d
+```
+
+See `docs/network-configuration.md` for all 4 deployment scenarios.

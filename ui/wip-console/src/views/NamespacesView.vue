@@ -10,7 +10,7 @@ import Textarea from 'primevue/textarea'
 import Tag from 'primevue/tag'
 import Card from 'primevue/card'
 import { useNamespaceStore, useUiStore, useAuthStore } from '@/stores'
-import type { NamespaceGroup, NamespaceGroupStats } from '@/stores/namespace'
+import type { Namespace, NamespaceStats } from '@/stores/namespace'
 
 const namespaceStore = useNamespaceStore()
 const uiStore = useUiStore()
@@ -19,7 +19,7 @@ const authStore = useAuthStore()
 // Dialog state
 const showCreateDialog = ref(false)
 const showStatsDialog = ref(false)
-const selectedStats = ref<NamespaceGroupStats | null>(null)
+const selectedStats = ref<NamespaceStats | null>(null)
 const loadingStats = ref(false)
 
 // Create form
@@ -31,16 +31,16 @@ const createForm = ref({
 
 const isolationModeOptions = [
   { label: 'Open (allow cross-namespace refs)', value: 'open' },
-  { label: 'Strict (same group only)', value: 'strict' }
+  { label: 'Strict (same namespace only)', value: 'strict' }
 ]
 
 // Load on mount
 onMounted(() => {
-  namespaceStore.loadGroups()
+  namespaceStore.loadNamespaces()
 })
 
 // Computed
-const groups = computed(() => namespaceStore.groups)
+const namespaces = computed(() => namespaceStore.namespaces)
 
 function getSeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
   switch (status) {
@@ -61,7 +61,7 @@ function openCreateDialog() {
   showCreateDialog.value = true
 }
 
-async function createGroup() {
+async function createNamespace() {
   if (!createForm.value.prefix.trim()) {
     uiStore.showError('Validation Error', 'Prefix is required')
     return
@@ -74,25 +74,25 @@ async function createGroup() {
   }
 
   try {
-    await namespaceStore.createGroup({
+    await namespaceStore.createNamespace({
       prefix: createForm.value.prefix,
       description: createForm.value.description,
       isolation_mode: createForm.value.isolation_mode,
       created_by: authStore.currentUser?.email || undefined
     })
-    uiStore.showSuccess('Success', `Namespace group "${createForm.value.prefix}" created`)
+    uiStore.showSuccess('Success', `Namespace "${createForm.value.prefix}" created`)
     showCreateDialog.value = false
   } catch (e) {
-    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to create group')
+    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to create namespace')
   }
 }
 
-async function viewStats(group: NamespaceGroup) {
+async function viewStats(ns: Namespace) {
   loadingStats.value = true
   selectedStats.value = null
   showStatsDialog.value = true
   try {
-    selectedStats.value = await namespaceStore.getGroupStats(group.prefix)
+    selectedStats.value = await namespaceStore.getNamespaceStats(ns.prefix)
   } catch (e) {
     uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to load stats')
     showStatsDialog.value = false
@@ -101,36 +101,36 @@ async function viewStats(group: NamespaceGroup) {
   }
 }
 
-async function archiveGroup(group: NamespaceGroup) {
-  if (group.prefix === 'wip') {
-    uiStore.showError('Error', 'Cannot archive the default wip namespace group')
+async function archiveNamespace(ns: Namespace) {
+  if (ns.prefix === 'wip') {
+    uiStore.showError('Error', 'Cannot archive the default wip namespace')
     return
   }
 
   try {
-    await namespaceStore.archiveGroup(group.prefix, authStore.currentUser?.email)
-    uiStore.showSuccess('Success', `Namespace group "${group.prefix}" archived`)
+    await namespaceStore.archiveNamespace(ns.prefix, authStore.currentUser?.email)
+    uiStore.showSuccess('Success', `Namespace "${ns.prefix}" archived`)
   } catch (e) {
-    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to archive group')
+    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to archive namespace')
   }
 }
 
-async function restoreGroup(group: NamespaceGroup) {
+async function restoreNamespace(ns: Namespace) {
   try {
-    await namespaceStore.restoreGroup(group.prefix, authStore.currentUser?.email)
-    uiStore.showSuccess('Success', `Namespace group "${group.prefix}" restored`)
+    await namespaceStore.restoreNamespace(ns.prefix, authStore.currentUser?.email)
+    uiStore.showSuccess('Success', `Namespace "${ns.prefix}" restored`)
   } catch (e) {
-    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to restore group')
+    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to restore namespace')
   }
 }
 
-function selectGroup(group: NamespaceGroup) {
-  if (group.status !== 'active') {
-    uiStore.showError('Error', 'Cannot select an archived or deleted namespace group')
+function selectNamespace(ns: Namespace) {
+  if (ns.status !== 'active') {
+    uiStore.showError('Error', 'Cannot select an archived or deleted namespace')
     return
   }
-  namespaceStore.setCurrentGroup(group.prefix)
-  uiStore.showSuccess('Namespace Changed', `Now viewing "${group.prefix}" namespace`)
+  namespaceStore.setCurrent(ns.prefix)
+  uiStore.showSuccess('Namespace Changed', `Now viewing "${ns.prefix}" namespace`)
 }
 
 function formatDate(dateStr: string): string {
@@ -138,20 +138,20 @@ function formatDate(dateStr: string): string {
 }
 
 // Total entity count for stats
-function getTotalEntities(stats: NamespaceGroupStats): number {
-  return Object.values(stats.namespaces).reduce((a, b) => a + b, 0)
+function getTotalEntities(stats: NamespaceStats): number {
+  return Object.values(stats.pools).reduce((a, b) => a + b, 0)
 }
 </script>
 
 <template>
-  <div class="namespace-groups-view">
+  <div class="namespaces-view">
     <div class="page-header">
       <div>
-        <h1>Namespace Groups</h1>
-        <p class="subtitle">Manage namespace groups for data isolation and environment separation</p>
+        <h1>Namespaces</h1>
+        <p class="subtitle">Manage namespaces for data isolation and environment separation</p>
       </div>
       <Button
-        label="Create Group"
+        label="Create Namespace"
         icon="pi pi-plus"
         @click="openCreateDialog"
       />
@@ -160,17 +160,17 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
     <Card>
       <template #content>
         <DataTable
-          :value="groups"
+          :value="namespaces"
           :loading="namespaceStore.loading"
           stripedRows
-          class="groups-table"
+          class="namespaces-table"
         >
           <Column field="prefix" header="Prefix" sortable>
             <template #body="{ data }">
               <div class="prefix-cell">
                 <strong>{{ data.prefix }}</strong>
                 <Tag
-                  v-if="data.prefix === namespaceStore.currentGroup"
+                  v-if="data.prefix === namespaceStore.current"
                   value="CURRENT"
                   severity="success"
                   class="current-tag"
@@ -212,14 +212,14 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
                   @click="viewStats(data)"
                 />
                 <Button
-                  v-if="data.status === 'active' && data.prefix !== namespaceStore.currentGroup"
+                  v-if="data.status === 'active' && data.prefix !== namespaceStore.current"
                   icon="pi pi-check"
                   text
                   rounded
                   size="small"
                   severity="success"
                   v-tooltip.top="'Select'"
-                  @click="selectGroup(data)"
+                  @click="selectNamespace(data)"
                 />
                 <Button
                   v-if="data.status === 'active' && data.prefix !== 'wip'"
@@ -229,7 +229,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
                   size="small"
                   severity="warn"
                   v-tooltip.top="'Archive'"
-                  @click="archiveGroup(data)"
+                  @click="archiveNamespace(data)"
                 />
                 <Button
                   v-if="data.status === 'archived'"
@@ -239,7 +239,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
                   size="small"
                   severity="info"
                   v-tooltip.top="'Restore'"
-                  @click="restoreGroup(data)"
+                  @click="restoreNamespace(data)"
                 />
               </div>
             </template>
@@ -251,7 +251,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
     <!-- Create Dialog -->
     <Dialog
       v-model:visible="showCreateDialog"
-      header="Create Namespace Group"
+      header="Create Namespace"
       :modal="true"
       :style="{ width: '500px' }"
     >
@@ -265,7 +265,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
             class="w-full"
           />
           <small class="help-text">
-            Creates 5 namespaces: {prefix}-terminologies, -terms, -templates, -documents, -files
+            Creates 5 ID pools: {prefix}-terminologies, -terms, -templates, -documents, -files
           </small>
         </div>
 
@@ -276,7 +276,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
             v-model="createForm.description"
             rows="2"
             class="w-full"
-            placeholder="Purpose of this namespace group"
+            placeholder="Purpose of this namespace"
           />
         </div>
 
@@ -302,7 +302,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
         />
         <Button
           label="Create"
-          @click="createGroup"
+          @click="createNamespace"
           :loading="namespaceStore.loading"
         />
       </template>
@@ -311,7 +311,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
     <!-- Stats Dialog -->
     <Dialog
       v-model:visible="showStatsDialog"
-      header="Namespace Group Statistics"
+      header="Namespace Statistics"
       :modal="true"
       :style="{ width: '500px' }"
     >
@@ -336,14 +336,14 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
           </div>
         </div>
 
-        <div class="namespace-stats">
+        <div class="pool-stats">
           <div
-            v-for="(count, ns) in selectedStats.namespaces"
-            :key="ns"
-            class="namespace-stat"
+            v-for="(count, pool) in selectedStats.pools"
+            :key="pool"
+            class="pool-stat"
           >
-            <span class="ns-name">{{ ns }}</span>
-            <span class="ns-count">{{ count }}</span>
+            <span class="pool-name">{{ pool }}</span>
+            <span class="pool-count">{{ count }}</span>
           </div>
         </div>
       </div>
@@ -361,7 +361,7 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
 </template>
 
 <style scoped>
-.namespace-groups-view {
+.namespaces-view {
   padding: 0;
 }
 
@@ -481,13 +481,13 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
   color: var(--p-text-muted-color);
 }
 
-.namespace-stats {
+.pool-stats {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.namespace-stat {
+.pool-stat {
   display: flex;
   justify-content: space-between;
   padding: 0.5rem 0.75rem;
@@ -495,12 +495,12 @@ function getTotalEntities(stats: NamespaceGroupStats): number {
   border-radius: 4px;
 }
 
-.ns-name {
+.pool-name {
   font-family: monospace;
   font-size: 0.875rem;
 }
 
-.ns-count {
+.pool-count {
   font-weight: 600;
 }
 </style>

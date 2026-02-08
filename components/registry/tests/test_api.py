@@ -25,18 +25,18 @@ class TestHealthEndpoints:
         assert data["status"] == "healthy"
 
 
-class TestNamespaceAPI:
-    """Tests for namespace management API."""
+class TestIdPoolAPI:
+    """Tests for ID pool management API."""
 
     @pytest.mark.asyncio
-    async def test_create_namespace(self, client: AsyncClient, auth_headers: dict):
-        """Test creating a namespace."""
+    async def test_create_id_pool(self, client: AsyncClient, auth_headers: dict):
+        """Test creating an ID pool."""
         response = await client.post(
-            "/api/registry/namespaces",
+            "/api/registry/id-pools",
             json=[{
-                "namespace_id": "test-namespace",
-                "name": "Test Namespace",
-                "description": "A test namespace"
+                "pool_id": "test-pool",
+                "name": "Test Pool",
+                "description": "A test ID pool"
             }],
             headers=auth_headers
         )
@@ -44,20 +44,20 @@ class TestNamespaceAPI:
         data = response.json()
         assert len(data) == 1
         assert data[0]["status"] == "created"
-        assert data[0]["namespace_id"] == "test-namespace"
+        assert data[0]["pool_id"] == "test-pool"
 
     @pytest.mark.asyncio
-    async def test_list_namespaces(self, client: AsyncClient, auth_headers: dict):
-        """Test listing namespaces."""
-        # First create a namespace
+    async def test_list_id_pools(self, client: AsyncClient, auth_headers: dict):
+        """Test listing ID pools."""
+        # First create an ID pool
         await client.post(
-            "/api/registry/namespaces",
-            json=[{"namespace_id": "list-test", "name": "List Test"}],
+            "/api/registry/id-pools",
+            json=[{"pool_id": "list-test", "name": "List Test"}],
             headers=auth_headers
         )
 
         response = await client.get(
-            "/api/registry/namespaces",
+            "/api/registry/id-pools",
             headers=auth_headers
         )
         assert response.status_code == 200
@@ -74,7 +74,7 @@ class TestRegistrationAPI:
         response = await client.post(
             "/api/registry/entries/register",
             json=[{
-                "namespace": "default",
+                "pool_id": "default",
                 "composite_key": {"product_id": "PROD-001", "region": "EU"}
             }],
             headers=auth_headers
@@ -93,7 +93,7 @@ class TestRegistrationAPI:
         # Register first time
         response1 = await client.post(
             "/api/registry/entries/register",
-            json=[{"namespace": "default", "composite_key": key}],
+            json=[{"pool_id": "default", "composite_key": key}],
             headers=auth_headers
         )
         assert response1.json()["results"][0]["status"] == "created"
@@ -101,7 +101,7 @@ class TestRegistrationAPI:
         # Try to register again
         response2 = await client.post(
             "/api/registry/entries/register",
-            json=[{"namespace": "default", "composite_key": key}],
+            json=[{"pool_id": "default", "composite_key": key}],
             headers=auth_headers
         )
         assert response2.json()["results"][0]["status"] == "already_exists"
@@ -118,7 +118,7 @@ class TestLookupAPI:
         # Register
         reg_response = await client.post(
             "/api/registry/entries/register",
-            json=[{"namespace": "default", "composite_key": key}],
+            json=[{"pool_id": "default", "composite_key": key}],
             headers=auth_headers
         )
         registry_id = reg_response.json()["results"][0]["registry_id"]
@@ -126,7 +126,7 @@ class TestLookupAPI:
         # Lookup
         response = await client.post(
             "/api/registry/entries/lookup/by-key",
-            json=[{"namespace": "default", "composite_key": key}],
+            json=[{"pool_id": "default", "composite_key": key}],
             headers=auth_headers
         )
         assert response.status_code == 200
@@ -145,7 +145,7 @@ class TestSynonymAPI:
         reg_response = await client.post(
             "/api/registry/entries/register",
             json=[{
-                "namespace": "default",
+                "pool_id": "default",
                 "composite_key": {"internal_id": "INT-001"}
             }],
             headers=auth_headers
@@ -156,9 +156,9 @@ class TestSynonymAPI:
         response = await client.post(
             "/api/registry/synonyms/add",
             json=[{
-                "target_namespace": "default",
+                "target_pool_id": "default",
                 "target_id": registry_id,
-                "synonym_namespace": "vendor1",
+                "synonym_pool_id": "vendor1",
                 "synonym_composite_key": {"vendor_code": "V1-001"}
             }],
             headers=auth_headers
@@ -170,7 +170,7 @@ class TestSynonymAPI:
         lookup_response = await client.post(
             "/api/registry/entries/lookup/by-key",
             json=[{
-                "namespace": "vendor1",
+                "pool_id": "vendor1",
                 "composite_key": {"vendor_code": "V1-001"}
             }],
             headers=auth_headers
@@ -183,12 +183,12 @@ class TestSearchAPI:
 
     @pytest.mark.asyncio
     async def test_search_by_field(self, client: AsyncClient, auth_headers: dict):
-        """Test searching by field value across namespaces."""
+        """Test searching by field value across pools."""
         # Register entry with synonym
         reg_response = await client.post(
             "/api/registry/entries/register",
             json=[{
-                "namespace": "default",
+                "pool_id": "default",
                 "composite_key": {"city": "Berlin", "type": "office"}
             }],
             headers=auth_headers
@@ -209,32 +209,32 @@ class TestSearchAPI:
         assert any(r["registry_id"] == registry_id for r in results)
 
     @pytest.mark.asyncio
-    async def test_search_across_namespaces(self, client: AsyncClient, auth_headers: dict):
-        """Test that search finds entries across all namespaces."""
-        # Register and add synonym in different namespace
+    async def test_search_across_pools(self, client: AsyncClient, auth_headers: dict):
+        """Test that search finds entries across all ID pools."""
+        # Register and add synonym in different pool
         reg_response = await client.post(
             "/api/registry/entries/register",
             json=[{
-                "namespace": "default",
+                "pool_id": "default",
                 "composite_key": {"product": "Widget", "sku": "W-100"}
             }],
             headers=auth_headers
         )
         registry_id = reg_response.json()["results"][0]["registry_id"]
 
-        # Add synonym in vendor namespace
+        # Add synonym in vendor pool
         await client.post(
             "/api/registry/synonyms/add",
             json=[{
-                "target_namespace": "default",
+                "target_pool_id": "default",
                 "target_id": registry_id,
-                "synonym_namespace": "vendor2",
+                "synonym_pool_id": "vendor2",
                 "synonym_composite_key": {"part": "Widget", "code": "WDG"}
             }],
             headers=auth_headers
         )
 
-        # Search for "Widget" across all namespaces
+        # Search for "Widget" across all pools
         response = await client.post(
             "/api/registry/search/across-namespaces",
             json=[{

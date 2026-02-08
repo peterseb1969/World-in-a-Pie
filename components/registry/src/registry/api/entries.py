@@ -6,7 +6,7 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Body, Depends
 
-from ..models.namespace import Namespace, IdGeneratorConfig, IdGeneratorType
+from ..models.id_pool import IdPool, IdGeneratorConfig, IdGeneratorType
 from ..models.entry import RegistryEntry, Synonym, SourceInfo
 from ..models.api_models import (
     RegisterKeyItem,
@@ -28,16 +28,16 @@ from ..services.auth import require_api_key
 router = APIRouter()
 
 
-async def get_namespace_config(namespace_id: str) -> Optional[Namespace]:
-    """Get namespace configuration, returning None if not found."""
-    return await Namespace.find_one({"namespace_id": namespace_id, "status": "active"})
+async def get_pool_config(pool_id: str) -> Optional[IdPool]:
+    """Get ID pool configuration, returning None if not found."""
+    return await IdPool.find_one({"pool_id": pool_id, "status": "active"})
 
 
 def build_lookup_response(
     input_index: int,
     entry: Optional[RegistryEntry],
     status: str = "found",
-    matched_namespace: Optional[str] = None,
+    matched_pool_id: Optional[str] = None,
     matched_composite_key: Optional[dict] = None,
     source_data: Optional[dict] = None,
     error: Optional[str] = None
@@ -54,9 +54,9 @@ def build_lookup_response(
         input_index=input_index,
         status=status,
         preferred_id=entry.entry_id,
-        preferred_namespace=entry.primary_namespace,
+        preferred_pool_id=entry.primary_namespace,
         additional_ids=entry.additional_ids,
-        matched_namespace=matched_namespace or entry.primary_namespace,
+        matched_pool_id=matched_pool_id or entry.primary_namespace,
         matched_composite_key=matched_composite_key or entry.primary_composite_key,
         synonyms=entry.synonyms,
         source_info=entry.source_info,
@@ -111,8 +111,8 @@ async def register_keys(
         for syn in entry.synonyms:
             existing_by_hash[syn.composite_key_hash] = entry
 
-    # Phase 3: Cache namespace configs (typically only 1-2 unique namespaces per batch)
-    namespace_configs: dict[str, Namespace | None] = {}
+    # Phase 3: Cache pool configs (typically only 1-2 unique pools per batch)
+    pool_configs: dict[str, IdPool | None] = {}
 
     # Phase 4: Partition into exists/create/error and build entries to insert
     entries_to_insert: List[RegistryEntry] = []
@@ -127,39 +127,39 @@ async def register_keys(
                     input_index=i,
                     status="already_exists",
                     registry_id=existing.entry_id,
-                    namespace=existing.primary_namespace,
+                    pool_id=existing.primary_namespace,
                 )
                 exists_count += 1
                 continue
 
-            # Get namespace config (cached)
-            if item.namespace not in namespace_configs:
-                namespace_configs[item.namespace] = await get_namespace_config(item.namespace)
-            ns_config = namespace_configs[item.namespace]
+            # Get pool config (cached)
+            if item.pool_id not in pool_configs:
+                pool_configs[item.pool_id] = await get_pool_config(item.pool_id)
+            pool_config = pool_configs[item.pool_id]
 
-            if not ns_config:
+            if not pool_config:
                 id_gen_config = IdGeneratorConfig()
             else:
-                id_gen_config = ns_config.id_generator
+                id_gen_config = pool_config.id_generator
 
-            # Generate ID based on namespace config
+            # Generate ID based on pool config
             if id_gen_config.type == IdGeneratorType.EXTERNAL:
                 entry_id = item.metadata.get("external_id") or item.composite_key.get("id")
                 if not entry_id:
                     results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="error",
-                        error="External namespace requires 'external_id' in metadata or 'id' in composite_key"
+                        error="External pool requires 'external_id' in metadata or 'id' in composite_key"
                     )
                     error_count += 1
                     continue
             else:
-                entry_id = IdGeneratorService.generate(id_gen_config, item.namespace)
+                entry_id = IdGeneratorService.generate(id_gen_config, item.pool_id)
 
             # Build entry for batch insert
             entry = RegistryEntry(
                 entry_id=entry_id,
-                primary_namespace=item.namespace,
+                primary_namespace=item.pool_id,
                 primary_composite_key=item.composite_key,
                 primary_composite_key_hash=key_hash,
                 source_info=item.source_info,
@@ -188,7 +188,7 @@ async def register_keys(
                     input_index=idx,
                     status="created",
                     registry_id=entry.entry_id,
-                    namespace=entry.primary_namespace,
+                    pool_id=entry.primary_namespace,
                 )
                 created_count += 1
         except Exception as e:
@@ -236,7 +236,7 @@ async def lookup_by_ids(
             try:
                 # Find by entry_id and namespace
                 entry = await RegistryEntry.find_one({
-                    "primary_namespace": item.namespace,
+                    "primary_namespace": item.pool_id,
                     "entry_id": item.entry_id,
                     "status": "active"
                 })
@@ -246,7 +246,7 @@ async def lookup_by_ids(
                     entry = await RegistryEntry.find_one({
                         "additional_ids": {
                             "$elemMatch": {
-                                "namespace": item.namespace,
+                                "pool_id": item.pool_id,
                                 "id": item.entry_id
                             }
                         },
@@ -326,13 +326,13 @@ async def lookup_by_keys(
                     query = {
                         "$or": [
                             {
-                                "primary_namespace": item.namespace,
+                                "primary_namespace": item.pool_id,
                                 "primary_composite_key_hash": key_hash
                             },
                             {
                                 "synonyms": {
                                     "$elemMatch": {
-                                        "namespace": item.namespace,
+                                        "pool_id": item.pool_id,
                                         "composite_key_hash": key_hash
                                     }
                                 }
@@ -343,7 +343,7 @@ async def lookup_by_keys(
                 else:
                     # Search primary only
                     query = {
-                        "primary_namespace": item.namespace,
+                        "primary_namespace": item.pool_id,
                         "primary_composite_key_hash": key_hash,
                         "status": "active"
                     }
@@ -359,13 +359,13 @@ async def lookup_by_keys(
                     continue
 
                 # Determine where the match was found
-                matched_namespace = item.namespace
+                matched_pool_id = item.pool_id
                 matched_composite_key = item.composite_key
                 if entry.primary_composite_key_hash != key_hash:
                     # Match was in a synonym
                     for syn in entry.synonyms:
                         if syn.composite_key_hash == key_hash:
-                            matched_namespace = syn.namespace
+                            matched_pool_id = syn.namespace
                             matched_composite_key = syn.composite_key
                             break
 
@@ -382,7 +382,7 @@ async def lookup_by_keys(
                 results.append(build_lookup_response(
                     input_index=i,
                     entry=entry,
-                    matched_namespace=matched_namespace,
+                    matched_pool_id=matched_pool_id,
                     matched_composite_key=matched_composite_key,
                     source_data=source_data
                 ))
@@ -420,7 +420,7 @@ async def update_entries(
     for i, item in enumerate(items):
         try:
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.namespace,
+                "primary_namespace": item.pool_id,
                 "entry_id": item.entry_id,
                 "status": "active"
             })
@@ -475,7 +475,7 @@ async def delete_entries(
     for i, item in enumerate(items):
         try:
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.namespace,
+                "primary_namespace": item.pool_id,
                 "entry_id": item.entry_id,
             })
 

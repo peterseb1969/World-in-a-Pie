@@ -846,10 +846,13 @@ class ReportingSyncClient extends BaseApiClient {
 }
 
 // =============================================================================
-// REGISTRY CLIENT (Namespace Groups)
+// REGISTRY CLIENT (Namespaces & ID Pools)
 // =============================================================================
 
-export interface NamespaceGroup {
+/**
+ * User-facing namespace for organizing data.
+ */
+export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
@@ -859,22 +862,22 @@ export interface NamespaceGroup {
   created_by: string | null
   updated_at: string
   updated_by: string | null
-  terminologies_ns: string
-  terms_ns: string
-  templates_ns: string
-  documents_ns: string
-  files_ns: string
+  terminologies_pool: string
+  terms_pool: string
+  templates_pool: string
+  documents_pool: string
+  files_pool: string
 }
 
-export interface NamespaceGroupStats {
+export interface NamespaceStats {
   prefix: string
   description: string
   isolation_mode: string
   status: string
-  namespaces: Record<string, number>
+  pools: Record<string, number>
 }
 
-export interface CreateNamespaceGroupRequest {
+export interface CreateNamespaceRequest {
   prefix: string
   description?: string
   isolation_mode?: 'open' | 'strict'
@@ -888,65 +891,65 @@ class RegistryClient extends BaseApiClient {
   }
 
   // ===========================================================================
-  // NAMESPACE GROUP ENDPOINTS
+  // NAMESPACE ENDPOINTS (Primary - new naming)
   // ===========================================================================
 
-  async listNamespaceGroups(includeArchived: boolean = false): Promise<NamespaceGroup[]> {
-    const response = await this.client.get<NamespaceGroup[]>('/namespace-groups', {
+  async listNamespaces(includeArchived: boolean = false): Promise<Namespace[]> {
+    const response = await this.client.get<Namespace[]>('/namespaces', {
       params: { include_archived: includeArchived }
     })
     return response.data
   }
 
-  async getNamespaceGroup(prefix: string): Promise<NamespaceGroup> {
-    const response = await this.client.get<NamespaceGroup>(`/namespace-groups/${prefix}`)
+  async getNamespace(prefix: string): Promise<Namespace> {
+    const response = await this.client.get<Namespace>(`/namespaces/${prefix}`)
     return response.data
   }
 
-  async getNamespaceGroupStats(prefix: string): Promise<NamespaceGroupStats> {
-    const response = await this.client.get<NamespaceGroupStats>(`/namespace-groups/${prefix}/stats`)
+  async getNamespaceStats(prefix: string): Promise<NamespaceStats> {
+    const response = await this.client.get<NamespaceStats>(`/namespaces/${prefix}/stats`)
     return response.data
   }
 
-  async createNamespaceGroup(data: CreateNamespaceGroupRequest): Promise<NamespaceGroup> {
-    const response = await this.client.post<NamespaceGroup>('/namespace-groups', data)
+  async createNamespace(data: CreateNamespaceRequest): Promise<Namespace> {
+    const response = await this.client.post<Namespace>('/namespaces', data)
     return response.data
   }
 
-  async updateNamespaceGroup(
+  async updateNamespace(
     prefix: string,
     data: { description?: string; isolation_mode?: 'open' | 'strict'; updated_by?: string }
-  ): Promise<NamespaceGroup> {
-    const response = await this.client.put<NamespaceGroup>(`/namespace-groups/${prefix}`, data)
+  ): Promise<Namespace> {
+    const response = await this.client.put<Namespace>(`/namespaces/${prefix}`, data)
     return response.data
   }
 
-  async archiveNamespaceGroup(prefix: string, archivedBy?: string): Promise<NamespaceGroup> {
-    const response = await this.client.post<NamespaceGroup>(
-      `/namespace-groups/${prefix}/archive`,
+  async archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace> {
+    const response = await this.client.post<Namespace>(
+      `/namespaces/${prefix}/archive`,
       null,
       { params: archivedBy ? { archived_by: archivedBy } : undefined }
     )
     return response.data
   }
 
-  async restoreNamespaceGroup(prefix: string, restoredBy?: string): Promise<NamespaceGroup> {
-    const response = await this.client.post<NamespaceGroup>(
-      `/namespace-groups/${prefix}/restore`,
+  async restoreNamespace(prefix: string, restoredBy?: string): Promise<Namespace> {
+    const response = await this.client.post<Namespace>(
+      `/namespaces/${prefix}/restore`,
       null,
       { params: restoredBy ? { restored_by: restoredBy } : undefined }
     )
     return response.data
   }
 
-  async deleteNamespaceGroup(prefix: string, deletedBy?: string): Promise<void> {
-    await this.client.delete(`/namespace-groups/${prefix}`, {
+  async deleteNamespace(prefix: string, deletedBy?: string): Promise<void> {
+    await this.client.delete(`/namespaces/${prefix}`, {
       params: { confirm: true, deleted_by: deletedBy }
     })
   }
 
-  async initializeWipGroup(): Promise<NamespaceGroup> {
-    const response = await this.client.post<NamespaceGroup>('/namespace-groups/initialize-wip-group')
+  async initializeWipNamespace(): Promise<Namespace> {
+    const response = await this.client.post<Namespace>('/namespaces/initialize-wip')
     return response.data
   }
 }

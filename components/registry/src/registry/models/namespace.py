@@ -1,127 +1,115 @@
-"""Namespace model for the Registry service."""
+"""Namespace model for user-facing namespace management.
+
+A Namespace (e.g., "wip", "dev", "prod") is a user-facing container for
+organizing data. Each Namespace automatically creates 5 ID Pools for
+ID generation:
+- {prefix}-terminologies
+- {prefix}-terms
+- {prefix}-templates
+- {prefix}-documents
+- {prefix}-files
+"""
 
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any, Optional
+from typing import Literal, Optional
 
 from beanie import Document
-from pydantic import BaseModel, Field
+from pydantic import Field, computed_field
 from pymongo import IndexModel
 
 
-class IdGeneratorType(str, Enum):
-    """Supported ID generation strategies."""
-    UUID4 = "uuid4"
-    UUID7 = "uuid7"
-    NANOID = "nanoid"
-    PREFIXED = "prefixed"
-    EXTERNAL = "external"
-    CUSTOM = "custom"
-
-
-class IdGeneratorConfig(BaseModel):
-    """Configuration for ID generation within a namespace."""
-
-    model_config = {"use_enum_values": True}
-
-    type: IdGeneratorType = Field(
-        default=IdGeneratorType.UUID4,
-        description="ID generation strategy"
-    )
-    prefix: Optional[str] = Field(
-        None,
-        description="Prefix for prefixed generator (e.g., 'TERM-', 'TPL-')"
-    )
-    length: int = Field(
-        default=21,
-        description="Length for nanoid generator"
-    )
-    pattern: Optional[str] = Field(
-        None,
-        description="Pattern for custom generator"
-    )
-
-
 class Namespace(Document):
-    """A logical partition in the Registry for ID isolation."""
+    """
+    A user-facing namespace for organizing data.
 
-    namespace_id: str = Field(
+    Users work with Namespaces (e.g., "wip", "dev", "prod"). Each Namespace
+    automatically creates 5 ID Pools for ID generation per entity type.
+
+    This enables:
+    - Backup/restore of entire namespaces
+    - Dev/test environment isolation
+    - Data migration between instances
+    """
+
+    prefix: str = Field(
         ...,
-        description="Unique namespace identifier"
+        description="Unique prefix for this namespace (e.g., 'wip', 'dev', 'customer-abc')"
     )
-    name: str = Field(
-        ...,
-        description="Human-readable name"
+    description: str = Field(
+        default="",
+        description="Human-readable description of this namespace"
     )
-    description: Optional[str] = Field(
-        None,
-        description="Purpose of this namespace"
+    isolation_mode: Literal["open", "strict"] = Field(
+        default="open",
+        description="'open' allows cross-namespace refs; 'strict' requires same-namespace only"
     )
-    id_generator: IdGeneratorConfig = Field(
-        default_factory=IdGeneratorConfig,
-        description="ID generation configuration for this namespace"
+    allowed_external_refs: list[str] = Field(
+        default_factory=list,
+        description="For open mode, optional allowlist of external namespace prefixes"
     )
-    source_endpoint: Optional[str] = Field(
-        None,
-        description="API endpoint for external namespaces"
-    )
-    api_key_hash: Optional[str] = Field(
-        None,
-        description="Hashed API key for this namespace"
-    )
-    status: str = Field(
+    status: Literal["active", "archived", "deleted"] = Field(
         default="active",
-        description="Status: active or inactive"
+        description="Namespace status"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    created_by: Optional[str] = Field(
+        None,
+        description="User who created this namespace"
+    )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Additional metadata"
+    updated_by: Optional[str] = Field(
+        None,
+        description="User who last updated this namespace"
     )
+
+    # Computed properties for ID pool names
+    @computed_field
+    @property
+    def terminologies_pool(self) -> str:
+        """ID pool for terminologies in this namespace."""
+        return f"{self.prefix}-terminologies"
+
+    @computed_field
+    @property
+    def terms_pool(self) -> str:
+        """ID pool for terms in this namespace."""
+        return f"{self.prefix}-terms"
+
+    @computed_field
+    @property
+    def templates_pool(self) -> str:
+        """ID pool for templates in this namespace."""
+        return f"{self.prefix}-templates"
+
+    @computed_field
+    @property
+    def documents_pool(self) -> str:
+        """ID pool for documents in this namespace."""
+        return f"{self.prefix}-documents"
+
+    @computed_field
+    @property
+    def files_pool(self) -> str:
+        """ID pool for files in this namespace."""
+        return f"{self.prefix}-files"
+
+    def get_all_pools(self) -> list[str]:
+        """Get all ID pool names in this namespace."""
+        return [
+            self.terminologies_pool,
+            self.terms_pool,
+            self.templates_pool,
+            self.documents_pool,
+            self.files_pool,
+        ]
 
     class Settings:
         name = "namespaces"
         indexes = [
-            IndexModel([("namespace_id", 1)], unique=True, name="namespace_id_unique_idx"),
-            IndexModel([("status", 1)], name="namespace_status_idx"),
+            IndexModel([("prefix", 1)], unique=True, name="prefix_unique_idx"),
+            IndexModel([("status", 1)], name="status_idx"),
         ]
-
-
-# Pre-configured WIP internal namespaces
-WIP_INTERNAL_NAMESPACES = {
-    "default": {
-        "name": "Default Namespace",
-        "description": "Default namespace for general use",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.UUID4),
-    },
-    "wip-terminologies": {
-        "name": "WIP Terminologies",
-        "description": "Namespace for terminology IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TERM-"),
-    },
-    "wip-terms": {
-        "name": "WIP Terms",
-        "description": "Namespace for individual term IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="T-"),
-    },
-    "wip-templates": {
-        "name": "WIP Templates",
-        "description": "Namespace for template IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TPL-"),
-    },
-    "wip-documents": {
-        "name": "WIP Documents",
-        "description": "Namespace for document IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.UUID7),
-    },
-    "wip-files": {
-        "name": "WIP Files",
-        "description": "Namespace for file attachment IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="FILE-"),
-    },
-}

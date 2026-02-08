@@ -44,8 +44,8 @@ export const useTerminologyStore = defineStore('terminology', () => {
 
   // Should we show WIP section? Only for open namespaces that are not WIP
   const showWipSection = computed(() => {
-    const group = namespaceStore.currentGroupData
-    const isWip = namespaceStore.currentGroup === 'wip'
+    const group = namespaceStore.currentData
+    const isWip = namespaceStore.current === 'wip'
     const isOpen = !group || group.isolation_mode === 'open'
     return isOpen && !isWip
   })

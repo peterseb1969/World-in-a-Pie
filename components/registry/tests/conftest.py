@@ -17,6 +17,7 @@ os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
 from registry.main import app
+from registry.models.id_pool import IdPool
 from registry.models.namespace import Namespace
 from registry.models.entry import RegistryEntry
 from registry.services.auth import AuthService
@@ -37,7 +38,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry]
+        document_models=[IdPool, Namespace, RegistryEntry]
     )
 
     # Store client in app state (needed by health check)
@@ -46,8 +47,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Initialize auth service
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
-    # Create test namespaces
-    await _create_test_namespaces()
+    # Create test ID pools
+    await _create_test_id_pools()
 
     # Create test HTTP client
     transport = ASGITransport(app=app)
@@ -56,35 +57,36 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Cleanup
     await RegistryEntry.delete_all()
+    await IdPool.delete_all()
     await Namespace.delete_all()
     await mongo_client.drop_database(os.environ["DATABASE_NAME"])
     mongo_client.close()
 
 
-async def _create_test_namespaces():
-    """Create namespaces needed for tests."""
-    namespaces = [
-        Namespace(
-            namespace_id="default",
-            name="Default Namespace",
-            description="Default namespace for testing"
+async def _create_test_id_pools():
+    """Create ID pools needed for tests."""
+    pools = [
+        IdPool(
+            pool_id="default",
+            name="Default Pool",
+            description="Default ID pool for testing"
         ),
-        Namespace(
-            namespace_id="vendor1",
+        IdPool(
+            pool_id="vendor1",
             name="Vendor 1",
-            description="Vendor 1 namespace for testing"
+            description="Vendor 1 ID pool for testing"
         ),
-        Namespace(
-            namespace_id="vendor2",
+        IdPool(
+            pool_id="vendor2",
             name="Vendor 2",
-            description="Vendor 2 namespace for testing"
+            description="Vendor 2 ID pool for testing"
         ),
     ]
 
-    for ns in namespaces:
-        existing = await Namespace.find_one(Namespace.namespace_id == ns.namespace_id)
+    for pool in pools:
+        existing = await IdPool.find_one(IdPool.pool_id == pool.pool_id)
         if not existing:
-            await ns.insert()
+            await pool.insert()
 
 
 @pytest.fixture

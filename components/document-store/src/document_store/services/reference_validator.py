@@ -1,8 +1,8 @@
 """
 Reference Validator - Validates cross-namespace references based on isolation mode.
 
-When a namespace group has isolation_mode="strict", references to entities
-in other namespace groups are not allowed. This service validates that
+When a namespace has isolation_mode="strict", references to entities
+in other namespaces are not allowed. This service validates that
 all references in a document comply with the isolation rules.
 """
 
@@ -29,43 +29,43 @@ class ReferenceValidator:
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
         self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
         self.api_key = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
-        self._group_cache: dict[str, dict[str, Any]] = {}
+        self._namespace_cache: dict[str, dict[str, Any]] = {}
 
-    async def _get_namespace_group(self, namespace: str) -> dict[str, Any] | None:
-        """Get namespace group info for a namespace ID."""
-        # Extract prefix from namespace (e.g., "dev-documents" -> "dev")
-        if "-" not in namespace:
+    async def _get_namespace(self, pool_id: str) -> dict[str, Any] | None:
+        """Get namespace info for an ID pool."""
+        # Extract prefix from pool_id (e.g., "dev-documents" -> "dev")
+        if "-" not in pool_id:
             return None
 
-        prefix = namespace.rsplit("-", 1)[0]
+        prefix = pool_id.rsplit("-", 1)[0]
 
-        if prefix in self._group_cache:
-            return self._group_cache[prefix]
+        if prefix in self._namespace_cache:
+            return self._namespace_cache[prefix]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{self.registry_url}/api/registry/namespace-groups/{prefix}",
+                    f"{self.registry_url}/api/registry/namespaces/{prefix}",
                     headers={"X-API-Key": self.api_key},
                 )
                 if response.status_code == 200:
-                    group = response.json()
-                    self._group_cache[prefix] = group
-                    return group
+                    namespace = response.json()
+                    self._namespace_cache[prefix] = namespace
+                    return namespace
                 elif response.status_code == 404:
-                    # No group found - allow all references (open by default)
-                    self._group_cache[prefix] = {"isolation_mode": "open"}
-                    return self._group_cache[prefix]
+                    # No namespace found - allow all references (open by default)
+                    self._namespace_cache[prefix] = {"isolation_mode": "open"}
+                    return self._namespace_cache[prefix]
         except Exception as e:
-            logger.warning(f"Failed to fetch namespace group for {namespace}: {e}")
+            logger.warning(f"Failed to fetch namespace for {pool_id}: {e}")
 
         return None
 
-    def _get_prefix(self, namespace: str) -> str | None:
-        """Extract prefix from namespace ID."""
-        if "-" not in namespace:
+    def _get_prefix(self, pool_id: str) -> str | None:
+        """Extract prefix from pool ID."""
+        if "-" not in pool_id:
             return None
-        return namespace.rsplit("-", 1)[0]
+        return pool_id.rsplit("-", 1)[0]
 
     async def validate_document_references(
         self,
@@ -86,25 +86,25 @@ class ReferenceValidator:
         Raises:
             ReferenceValidationError: If any references violate isolation rules
         """
-        # Get the document's namespace group
-        group = await self._get_namespace_group(document_namespace)
+        # Get the document's namespace
+        namespace = await self._get_namespace(document_namespace)
 
-        if not group:
-            # No group info - allow all
+        if not namespace:
+            # No namespace info - allow all
             return
 
         doc_prefix = self._get_prefix(document_namespace)
-        is_strict = group.get("isolation_mode") == "strict"
+        is_strict = namespace.get("isolation_mode") == "strict"
         violations = []
 
         # Check template reference
         template_prefix = self._get_prefix(template_namespace)
         if template_prefix and template_prefix != doc_prefix:
-            if not self._is_allowed_reference(template_prefix, group, is_strict):
+            if not self._is_allowed_reference(template_prefix, namespace, is_strict):
                 violations.append({
                     "type": "template",
                     "namespace": template_namespace,
-                    "message": f"Template namespace '{template_namespace}' is not accessible from '{doc_prefix}' group",
+                    "message": f"Template namespace '{template_namespace}' is not accessible from '{doc_prefix}' namespace",
                 })
 
         # Check term references
@@ -120,11 +120,11 @@ class ReferenceValidator:
             for term_ns in term_namespaces:
                 term_prefix = self._get_prefix(term_ns)
                 if term_prefix and term_prefix != doc_prefix:
-                    if not self._is_allowed_reference(term_prefix, group, is_strict):
+                    if not self._is_allowed_reference(term_prefix, namespace, is_strict):
                         violations.append({
                             "type": "term",
                             "namespace": term_ns,
-                            "message": f"Term namespace '{term_ns}' is not accessible from '{doc_prefix}' group",
+                            "message": f"Term namespace '{term_ns}' is not accessible from '{doc_prefix}' namespace",
                         })
 
         # Check file references
@@ -138,26 +138,26 @@ class ReferenceValidator:
             for file_ns in file_namespaces:
                 file_prefix = self._get_prefix(file_ns)
                 if file_prefix and file_prefix != doc_prefix:
-                    if not self._is_allowed_reference(file_prefix, group, is_strict):
+                    if not self._is_allowed_reference(file_prefix, namespace, is_strict):
                         violations.append({
                             "type": "file",
                             "namespace": file_ns,
-                            "message": f"File namespace '{file_ns}' is not accessible from '{doc_prefix}' group",
+                            "message": f"File namespace '{file_ns}' is not accessible from '{doc_prefix}' namespace",
                         })
 
         if violations:
             raise ReferenceValidationError(
-                f"Document references entities outside the '{doc_prefix}' namespace group "
+                f"Document references entities outside the '{doc_prefix}' namespace "
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
             )
 
-    def _is_allowed_external(self, prefix: str, group: dict[str, Any]) -> bool:
+    def _is_allowed_external(self, prefix: str, namespace: dict[str, Any]) -> bool:
         """Check if an external prefix is in the allowed list."""
-        allowed = group.get("allowed_external_refs", [])
+        allowed = namespace.get("allowed_external_refs", [])
         return prefix in allowed
 
-    def _is_allowed_reference(self, prefix: str, group: dict[str, Any], is_strict: bool) -> bool:
+    def _is_allowed_reference(self, prefix: str, namespace: dict[str, Any], is_strict: bool) -> bool:
         """
         Check if a reference to the given prefix is allowed.
 
@@ -166,7 +166,7 @@ class ReferenceValidator:
         - Open mode: Own prefix + 'wip' (always) + allowed_external_refs
         """
         # Always allow explicitly configured external refs
-        if self._is_allowed_external(prefix, group):
+        if self._is_allowed_external(prefix, namespace):
             return True
 
         if is_strict:
@@ -193,24 +193,24 @@ class ReferenceValidator:
         Raises:
             ReferenceValidationError: If any references violate isolation rules
         """
-        group = await self._get_namespace_group(template_namespace)
+        namespace = await self._get_namespace(template_namespace)
 
-        if not group:
+        if not namespace:
             return
 
         template_prefix = self._get_prefix(template_namespace)
-        is_strict = group.get("isolation_mode") == "strict"
+        is_strict = namespace.get("isolation_mode") == "strict"
         violations = []
 
         # Check extends reference
         if extends_template_namespace:
             extends_prefix = self._get_prefix(extends_template_namespace)
             if extends_prefix and extends_prefix != template_prefix:
-                if not self._is_allowed_reference(extends_prefix, group, is_strict):
+                if not self._is_allowed_reference(extends_prefix, namespace, is_strict):
                     violations.append({
                         "type": "extends",
                         "namespace": extends_template_namespace,
-                        "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_prefix}' group",
+                        "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_prefix}' namespace",
                     })
 
         # Check terminology references
@@ -218,16 +218,16 @@ class ReferenceValidator:
             for term_ns in terminology_references:
                 term_prefix = self._get_prefix(term_ns)
                 if term_prefix and term_prefix != template_prefix:
-                    if not self._is_allowed_reference(term_prefix, group, is_strict):
+                    if not self._is_allowed_reference(term_prefix, namespace, is_strict):
                         violations.append({
                             "type": "terminology",
                             "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_prefix}' group",
+                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_prefix}' namespace",
                         })
 
         if violations:
             raise ReferenceValidationError(
-                f"Template references entities outside the '{template_prefix}' namespace group "
+                f"Template references entities outside the '{template_prefix}' namespace "
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
             )

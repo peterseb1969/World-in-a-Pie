@@ -1,7 +1,7 @@
 """
-Export Service - Export namespace group data to portable format.
+Export Service - Export namespace data to portable format.
 
-Exports all data from a namespace group into JSONL files that can be
+Exports all data from a namespace into JSONL files that can be
 imported into another WIP instance or used for backup/restore.
 """
 
@@ -15,14 +15,14 @@ from typing import Any
 
 import httpx
 
-from ..models.namespace_group import NamespaceGroup
+from ..models.namespace import Namespace
 from ..models.entry import RegistryEntry
 
 logger = logging.getLogger(__name__)
 
 
 class ExportService:
-    """Service for exporting namespace group data."""
+    """Service for exporting namespace data."""
 
     def __init__(
         self,
@@ -36,16 +36,16 @@ class ExportService:
         self.document_store_url = document_store_url
         self.api_key = api_key
 
-    async def export_namespace_group(
+    async def export_namespace(
         self,
-        group: NamespaceGroup,
+        namespace: Namespace,
         include_files: bool = False,
     ) -> tuple[str, dict[str, int]]:
         """
-        Export a namespace group to a zip file.
+        Export a namespace to a zip file.
 
         Args:
-            group: The namespace group to export
+            namespace: The namespace to export
             include_files: Whether to include binary file content
 
         Returns:
@@ -61,26 +61,26 @@ class ExportService:
         }
 
         # Create temp directory for export
-        export_dir = tempfile.mkdtemp(prefix=f"wip-export-{group.prefix}-")
+        export_dir = tempfile.mkdtemp(prefix=f"wip-export-{namespace.prefix}-")
 
         try:
             # Export manifest
             manifest = {
                 "version": "1.0",
                 "exported_at": datetime.now(timezone.utc).isoformat(),
-                "prefix": group.prefix,
-                "description": group.description,
-                "isolation_mode": group.isolation_mode,
-                "allowed_external_refs": group.allowed_external_refs,
-                "namespaces": group.get_all_namespaces(),
+                "prefix": namespace.prefix,
+                "description": namespace.description,
+                "isolation_mode": namespace.isolation_mode,
+                "allowed_external_refs": namespace.allowed_external_refs,
+                "pools": namespace.get_all_pools(),
             }
             with open(os.path.join(export_dir, "manifest.json"), "w") as f:
                 json.dump(manifest, f, indent=2)
 
-            # Export registry entries for all namespaces in the group
+            # Export registry entries for all pools in the namespace
             registry_path = os.path.join(export_dir, "registry-entries.jsonl")
             async for entry in RegistryEntry.find(
-                {"primary_namespace": {"$in": group.get_all_namespaces()}}
+                {"primary_namespace": {"$in": namespace.get_all_pools()}}
             ):
                 with open(registry_path, "a") as f:
                     f.write(entry.model_dump_json() + "\n")
@@ -89,7 +89,7 @@ class ExportService:
             # Export terminologies
             terminologies = await self._fetch_all_paginated(
                 f"{self.def_store_url}/api/def-store/terminologies",
-                {"namespace": group.terminologies_ns},
+                {"namespace": namespace.terminologies_pool},
             )
             terms_path = os.path.join(export_dir, "terminologies.jsonl")
             for term in terminologies:
@@ -102,7 +102,7 @@ class ExportService:
             for terminology in terminologies:
                 terms = await self._fetch_all_paginated(
                     f"{self.def_store_url}/api/def-store/terminologies/{terminology['terminology_id']}/terms",
-                    {"namespace": group.terms_ns},
+                    {"namespace": namespace.terms_pool},
                 )
                 all_terms.extend(terms)
 
@@ -115,7 +115,7 @@ class ExportService:
             # Export templates
             templates = await self._fetch_all_paginated(
                 f"{self.template_store_url}/api/template-store/templates",
-                {"namespace": group.templates_ns},
+                {"namespace": namespace.templates_pool},
             )
             templates_path = os.path.join(export_dir, "templates.jsonl")
             for template in templates:
@@ -126,7 +126,7 @@ class ExportService:
             # Export documents
             documents = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/documents",
-                {"namespace": group.documents_ns},
+                {"namespace": namespace.documents_pool},
             )
             documents_path = os.path.join(export_dir, "documents.jsonl")
             for doc in documents:
@@ -137,7 +137,7 @@ class ExportService:
             # Export file metadata (and optionally content)
             files = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/files",
-                {"namespace": group.files_ns},
+                {"namespace": namespace.files_pool},
             )
             files_path = os.path.join(export_dir, "files.jsonl")
             for file_meta in files:
@@ -160,7 +160,7 @@ class ExportService:
                 json.dump(manifest, f, indent=2)
 
             # Create zip file
-            zip_filename = f"namespace-export-{group.prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
+            zip_filename = f"namespace-export-{namespace.prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.zip"
             zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
 
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:

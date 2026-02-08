@@ -6,27 +6,28 @@ import { useNamespaceStore } from '@/stores'
 
 const namespaceStore = useNamespaceStore()
 
-// Load groups on mount
+// Load namespaces on mount
 onMounted(() => {
-  namespaceStore.loadGroups()
+  namespaceStore.loadNamespaces()
 })
 
-// Filter to only active groups, ensure wip is always first
+// Filter to only active namespaces, ensure wip is always first
 const activeGroups = computed(() => {
-  const groups = namespaceStore.groups.filter(g => g.status === 'active')
+  const namespaces = namespaceStore.namespaces || []
+  const active = namespaces.filter(ns => ns.status === 'active')
 
-  // Sort: wip first, then alphabetically (use slice to avoid mutating)
-  return [...groups].sort((a, b) => {
+  // Sort: wip first, then alphabetically
+  return [...active].sort((a, b) => {
     if (a.prefix === 'wip') return -1
     if (b.prefix === 'wip') return 1
     return a.prefix.localeCompare(b.prefix)
   })
 })
 
-// Current group for v-model
+// Current namespace for v-model
 const selectedGroup = computed({
-  get: () => namespaceStore.currentGroup,
-  set: (value: string) => namespaceStore.setCurrentGroup(value)
+  get: () => namespaceStore.current,
+  set: (value: string) => namespaceStore.setCurrent(value)
 })
 
 // Severity for non-production namespaces

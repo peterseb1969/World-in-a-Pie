@@ -11,6 +11,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Checkbox from 'primevue/checkbox'
 import { useAuthStore, useUiStore } from '@/stores'
+import { isReportingEnabled } from '@/config/modules'
 import {
   reportingSyncClient,
   type ActivityItem,
@@ -21,6 +22,9 @@ import {
 const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+
+// Check if reporting module is enabled
+const reportingEnabled = isReportingEnabled()
 
 // Loading states
 const loading = ref(true)
@@ -219,15 +223,17 @@ function getIssueSeverity(severity: string): 'success' | 'warn' | 'danger' | 'se
 }
 
 onMounted(() => {
-  loadActivity()
-  loadIntegrityCheck()
+  if (reportingEnabled) {
+    loadActivity()
+    loadIntegrityCheck()
+  }
 })
 
 // Reload when auth changes
 watch(
   () => authStore.isAuthenticated,
   (isAuth, wasAuth) => {
-    if (isAuth && !wasAuth) {
+    if (reportingEnabled && isAuth && !wasAuth) {
       loadActivity()
       loadIntegrityCheck()
     }
@@ -242,8 +248,24 @@ watch(
       <p class="subtitle">Monitor changes and data quality across all entities</p>
     </div>
 
+    <!-- Reporting module not enabled -->
+    <div v-if="!reportingEnabled" class="module-warning">
+      <Card>
+        <template #content>
+          <div class="warning-content">
+            <i class="pi pi-info-circle"></i>
+            <div>
+              <h3>Reporting Module Not Enabled</h3>
+              <p>The audit trail requires the reporting module to be enabled.</p>
+              <p class="hint">Add <code>reporting</code> to WIP_MODULES in your .env file and restart the stack.</p>
+            </div>
+          </div>
+        </template>
+      </Card>
+    </div>
+
     <!-- Auth warning -->
-    <div v-if="!authStore.isAuthenticated" class="auth-warning">
+    <div v-else-if="!authStore.isAuthenticated" class="auth-warning">
       <Card>
         <template #content>
           <div class="warning-content">
@@ -550,9 +572,26 @@ watch(
   color: var(--p-text-muted-color);
 }
 
-/* Auth warning */
+/* Module/Auth warning */
+.module-warning,
 .auth-warning {
   margin-bottom: 2rem;
+}
+
+.warning-content .hint {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.warning-content code {
+  background: var(--p-surface-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+}
+
+.module-warning .warning-content i {
+  color: var(--p-blue-500);
 }
 
 .warning-content {

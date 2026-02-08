@@ -2,7 +2,13 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { registryClient } from '@/api/client'
 
-export interface NamespaceGroup {
+/**
+ * User-facing namespace for organizing data.
+ *
+ * Users work with Namespaces (e.g., "wip", "dev", "prod"). Each namespace
+ * automatically creates 5 ID pools for ID generation per entity type.
+ */
+export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
@@ -12,150 +18,147 @@ export interface NamespaceGroup {
   created_by: string | null
   updated_at: string
   updated_by: string | null
-  terminologies_ns: string
-  terms_ns: string
-  templates_ns: string
-  documents_ns: string
-  files_ns: string
+  terminologies_pool: string
+  terms_pool: string
+  templates_pool: string
+  documents_pool: string
+  files_pool: string
 }
 
-export interface NamespaceGroupStats {
+export interface NamespaceStats {
   prefix: string
   description: string
   isolation_mode: string
   status: string
-  namespaces: Record<string, number>
+  pools: Record<string, number>
 }
 
-const STORAGE_KEY = 'wip-namespace-group'
+const STORAGE_KEY = 'wip-namespace'
 
 export const useNamespaceStore = defineStore('namespace', () => {
   // State
-  const groups = ref<NamespaceGroup[]>([])
-  const currentGroup = ref<string>(localStorage.getItem(STORAGE_KEY) || 'wip')
+  const namespaces = ref<Namespace[]>([])
+  const current = ref<string>(localStorage.getItem(STORAGE_KEY) || 'wip')
   const loading = ref(false)
   const error = ref<string | null>(null)
 
-  // Computed - derive namespace IDs from current group
-  const terminologiesNs = computed(() => `${currentGroup.value}-terminologies`)
-  const termsNs = computed(() => `${currentGroup.value}-terms`)
-  const templatesNs = computed(() => `${currentGroup.value}-templates`)
-  const documentsNs = computed(() => `${currentGroup.value}-documents`)
-  const filesNs = computed(() => `${currentGroup.value}-files`)
+  // Computed - derive ID pool names from current namespace
+  const terminologiesPool = computed(() => `${current.value}-terminologies`)
+  const termsPool = computed(() => `${current.value}-terms`)
+  const templatesPool = computed(() => `${current.value}-templates`)
+  const documentsPool = computed(() => `${current.value}-documents`)
+  const filesPool = computed(() => `${current.value}-files`)
 
-  // Current group object
-  const currentGroupData = computed(() =>
-    groups.value.find(g => g.prefix === currentGroup.value) || null
+  // Current namespace object
+  const currentNamespace = computed(() =>
+    namespaces.value.find(ns => ns.prefix === current.value) || null
   )
 
   // Is non-production namespace?
-  const isNonProduction = computed(() => currentGroup.value !== 'wip')
+  const isNonProduction = computed(() => current.value !== 'wip')
 
   // Actions
-  async function loadGroups() {
+  async function loadNamespaces() {
     loading.value = true
     error.value = null
     try {
-      groups.value = await registryClient.listNamespaceGroups()
+      namespaces.value = await registryClient.listNamespaces()
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to load namespace groups'
-      // Don't throw - just log and continue with empty groups
-      console.error('Failed to load namespace groups:', e)
+      error.value = e instanceof Error ? e.message : 'Failed to load namespaces'
+      console.error('Failed to load namespaces:', e)
     } finally {
       loading.value = false
     }
   }
 
-  function setCurrentGroup(prefix: string) {
-    currentGroup.value = prefix
+  function setCurrent(prefix: string) {
+    current.value = prefix
     localStorage.setItem(STORAGE_KEY, prefix)
   }
 
-  async function createGroup(data: {
+  async function createNamespace(data: {
     prefix: string
     description?: string
     isolation_mode?: 'open' | 'strict'
     created_by?: string
-  }): Promise<NamespaceGroup> {
+  }): Promise<Namespace> {
     loading.value = true
     error.value = null
     try {
-      const group = await registryClient.createNamespaceGroup(data)
-      // Reload all groups to ensure consistency
-      await loadGroups()
-      return group
+      const ns = await registryClient.createNamespace(data)
+      await loadNamespaces()
+      return ns
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to create namespace group'
+      error.value = e instanceof Error ? e.message : 'Failed to create namespace'
       throw e
     } finally {
       loading.value = false
     }
   }
 
-  async function archiveGroup(prefix: string, archivedBy?: string): Promise<NamespaceGroup> {
+  async function archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace> {
     loading.value = true
     error.value = null
     try {
-      const group = await registryClient.archiveNamespaceGroup(prefix, archivedBy)
-      const index = groups.value.findIndex(g => g.prefix === prefix)
+      const ns = await registryClient.archiveNamespace(prefix, archivedBy)
+      const index = namespaces.value.findIndex(n => n.prefix === prefix)
       if (index !== -1) {
-        groups.value[index] = group
+        namespaces.value[index] = ns
       }
-      // If archived group is current, switch to wip
-      if (currentGroup.value === prefix) {
-        setCurrentGroup('wip')
+      if (current.value === prefix) {
+        setCurrent('wip')
       }
-      return group
+      return ns
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to archive namespace group'
+      error.value = e instanceof Error ? e.message : 'Failed to archive namespace'
       throw e
     } finally {
       loading.value = false
     }
   }
 
-  async function restoreGroup(prefix: string, restoredBy?: string): Promise<NamespaceGroup> {
+  async function restoreNamespace(prefix: string, restoredBy?: string): Promise<Namespace> {
     loading.value = true
     error.value = null
     try {
-      const group = await registryClient.restoreNamespaceGroup(prefix, restoredBy)
-      const index = groups.value.findIndex(g => g.prefix === prefix)
+      const ns = await registryClient.restoreNamespace(prefix, restoredBy)
+      const index = namespaces.value.findIndex(n => n.prefix === prefix)
       if (index !== -1) {
-        groups.value[index] = group
+        namespaces.value[index] = ns
       }
-      return group
+      return ns
     } catch (e) {
-      error.value = e instanceof Error ? e.message : 'Failed to restore namespace group'
+      error.value = e instanceof Error ? e.message : 'Failed to restore namespace'
       throw e
     } finally {
       loading.value = false
     }
   }
 
-  async function getGroupStats(prefix: string): Promise<NamespaceGroupStats> {
-    return await registryClient.getNamespaceGroupStats(prefix)
+  async function getNamespaceStats(prefix: string): Promise<NamespaceStats> {
+    return await registryClient.getNamespaceStats(prefix)
   }
 
   return {
     // State
-    groups,
-    currentGroup,
+    namespaces,
+    current,
     loading,
     error,
     // Computed
-    terminologiesNs,
-    termsNs,
-    templatesNs,
-    documentsNs,
-    filesNs,
-    currentGroupData,
+    terminologiesPool,
+    termsPool,
+    templatesPool,
+    documentsPool,
+    filesPool,
+    currentNamespace,
     isNonProduction,
     // Actions
-    loadGroups,
-    setCurrentGroup,
-    createGroup,
-    archiveGroup,
-    restoreGroup,
-    getGroupStats
+    loadNamespaces,
+    setCurrent,
+    createNamespace,
+    archiveNamespace,
+    restoreNamespace,
+    getNamespaceStats,
   }
 })

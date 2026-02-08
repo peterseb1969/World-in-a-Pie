@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from ..models.namespace import IdGeneratorConfig, IdGeneratorType
+from ..models.id_pool import IdGeneratorConfig, IdGeneratorType
 
 
 class IdGeneratorService:

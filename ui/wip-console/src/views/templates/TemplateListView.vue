@@ -43,7 +43,7 @@ const createForm = ref<CreateTemplateRequest>({
 })
 
 // Get namespace prefix for display
-const currentNamespacePrefix = computed(() => namespaceStore.currentGroup.toUpperCase())
+const currentNamespacePrefix = computed(() => namespaceStore.current.toUpperCase())
 
 // Computed filtered own templates
 const filteredOwnTemplates = computed(() => {

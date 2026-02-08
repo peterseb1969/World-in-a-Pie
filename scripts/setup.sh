@@ -873,6 +873,11 @@ VITE_OIDC_REDIRECT_URI=https://${HOSTNAME:-localhost}:${HTTPS_PORT}/auth/callbac
 VITE_OIDC_PROVIDER_NAME=Dex
 VITE_API_BASE_URL=
 
+# Optional module feature flags (must match WIP_MODULES)
+VITE_REPORTING_ENABLED=$(has_module "reporting" && echo "true" || echo "false")
+VITE_FILES_ENABLED=$(has_module "files" && echo "true" || echo "false")
+VITE_INGEST_ENABLED=$(has_module "ingest" && echo "true" || echo "false")
+
 # =============================================================================
 # FILE STORAGE (MinIO)
 # =============================================================================

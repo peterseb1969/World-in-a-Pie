@@ -9,6 +9,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore } from '@/stores'
+import { isReportingEnabled } from '@/config/modules'
 import { reportingSyncClient, type IntegrityCheckResult } from '@/api/client'
 import type { Terminology, Template } from '@/types'
 
@@ -17,6 +18,9 @@ const authStore = useAuthStore()
 const terminologyStore = useTerminologyStore()
 const templateStore = useTemplateStore()
 const uiStore = useUiStore()
+
+// Check if reporting module is enabled
+const reportingEnabled = isReportingEnabled()
 
 const loading = ref(true)
 
@@ -87,7 +91,9 @@ async function loadDashboard() {
   }
 
   // Load integrity check separately (don't block dashboard)
-  loadIntegrityCheck()
+  if (reportingEnabled) {
+    loadIntegrityCheck()
+  }
 }
 
 async function loadIntegrityCheck() {
@@ -290,8 +296,8 @@ watch(
         </Card>
       </div>
 
-      <!-- Data Quality Section -->
-      <div class="data-quality-section">
+      <!-- Data Quality Section (only shown when reporting module is enabled) -->
+      <div v-if="reportingEnabled" class="data-quality-section">
         <Card class="quality-card">
           <template #title>
             <div class="card-title">

@@ -37,7 +37,7 @@ async def search_by_fields(
     ```json
     {
         "field_criteria": {"vendor_sku": "AB-123"},
-        "restrict_to_namespaces": ["vendor1", "vendor2"]
+        "restrict_to_pools": ["vendor1", "vendor2"]
     }
     ```
 
@@ -52,7 +52,7 @@ async def search_by_fields(
             # Build the properly structured MongoDB query
             query = SearchService.build_field_query(
                 field_criteria=item.field_criteria,
-                restrict_to_namespaces=item.restrict_to_namespaces,
+                restrict_to_pools=item.restrict_to_pools,
                 include_inactive=item.include_inactive
             )
 
@@ -67,9 +67,9 @@ async def search_by_fields(
                 )
                 search_results.append(SearchResult(
                     registry_id=entry.entry_id,
-                    namespace=entry.primary_namespace,
+                    pool_id=entry.primary_namespace,
                     matched_in=matched_in,
-                    matched_namespace=matched_ns,
+                    matched_pool_id=matched_ns,
                     matched_composite_key=matched_key,
                     all_synonyms=entry.synonyms,
                     additional_ids=entry.additional_ids,
@@ -119,7 +119,7 @@ async def search_by_term(
     ```json
     {
         "term": "Berlin",
-        "restrict_to_namespaces": null
+        "restrict_to_pools": null
     }
     ```
 
@@ -134,7 +134,7 @@ async def search_by_term(
             try:
                 query = SearchService.build_text_search_query(
                     term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
+                    restrict_to_pools=item.restrict_to_pools,
                     include_inactive=item.include_inactive
                 )
                 entries = await RegistryEntry.find(query).to_list()
@@ -142,7 +142,7 @@ async def search_by_term(
                 # Fall back to regex search if text index not available
                 query = SearchService.build_regex_search_query(
                     term=item.term,
-                    restrict_to_namespaces=item.restrict_to_namespaces,
+                    restrict_to_pools=item.restrict_to_pools,
                     include_inactive=item.include_inactive
                 )
                 entries = await RegistryEntry.find(query).to_list()
@@ -177,9 +177,9 @@ async def search_by_term(
 
                 search_results.append(SearchResult(
                     registry_id=entry.entry_id,
-                    namespace=entry.primary_namespace,
+                    pool_id=entry.primary_namespace,
                     matched_in=matched_in,
-                    matched_namespace=matched_ns,
+                    matched_pool_id=matched_ns,
                     matched_composite_key=matched_key,
                     all_synonyms=entry.synonyms,
                     additional_ids=entry.additional_ids,
@@ -215,7 +215,7 @@ async def search_across_namespaces(
 
     This is a convenience endpoint that explicitly searches without
     namespace restriction. It's equivalent to calling /by-fields
-    with restrict_to_namespaces=null.
+    with restrict_to_pools=null.
 
     Use this when you have a value (like a vendor SKU) and want to
     find it regardless of which namespace it was registered in.
@@ -225,7 +225,7 @@ async def search_across_namespaces(
     for item in items:
         modified_items.append(SearchItem(
             field_criteria=item.field_criteria,
-            restrict_to_namespaces=None,  # Force search all namespaces
+            restrict_to_pools=None,  # Force search all namespaces
             include_inactive=item.include_inactive,
         ))
 

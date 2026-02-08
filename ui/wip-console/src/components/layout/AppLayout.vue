@@ -13,9 +13,11 @@ import NamespaceSelector from './NamespaceSelector.vue'
 const oidcEnabled = isOidcEnabled()
 const namespaceStore = useNamespaceStore()
 
-// Load namespace groups on mount
+// Load namespaces on mount (if authenticated)
 onMounted(() => {
-  namespaceStore.loadGroups()
+  if (authStore.isAuthenticated) {
+    namespaceStore.loadNamespaces()
+  }
 })
 
 const router = useRouter()
@@ -312,7 +314,7 @@ function toggleSidebar() {
         :closable="false"
         class="namespace-warning"
       >
-        You are viewing the <strong>{{ namespaceStore.currentGroup }}</strong> namespace (non-production data)
+        You are viewing the <strong>{{ namespaceStore.current }}</strong> namespace (non-production data)
       </Message>
       <div class="content-area">
         <slot />

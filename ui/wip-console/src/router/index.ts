@@ -118,8 +118,8 @@ const router = createRouter({
     // Admin routes
     {
       path: '/namespaces',
-      name: 'namespace-groups',
-      component: () => import('@/views/NamespaceGroupsView.vue')
+      name: 'namespaces',
+      component: () => import('@/views/NamespacesView.vue')
     }
   ]
 })

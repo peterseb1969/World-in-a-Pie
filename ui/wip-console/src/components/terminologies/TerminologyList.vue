@@ -47,7 +47,7 @@ const filteredWipTerminologies = computed(() => {
 })
 
 // Get namespace prefix for display
-const currentNamespacePrefix = computed(() => namespaceStore.currentGroup.toUpperCase())
+const currentNamespacePrefix = computed(() => namespaceStore.current.toUpperCase())
 
 onMounted(async () => {
   try {

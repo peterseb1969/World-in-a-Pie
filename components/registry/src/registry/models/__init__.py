@@ -1,14 +1,22 @@
 """Data models for the Registry service."""
 
-from .namespace import Namespace, IdGeneratorConfig, IdGeneratorType
-from .namespace_group import NamespaceGroup
+# Core models
+from .id_pool import IdPool, IdGeneratorConfig, IdGeneratorType, WIP_ID_POOLS
+from .namespace import Namespace
 from .entry import RegistryEntry, Synonym, SourceInfo
+
+# API models
 from .api_models import (
-    # Namespace API models
+    # ID Pool API models (internal)
+    IdPoolCreate,
+    IdPoolUpdate,
+    IdPoolResponse,
+    IdPoolBulkResponse,
+    # User-facing Namespace API models
     NamespaceCreate,
     NamespaceUpdate,
     NamespaceResponse,
-    NamespaceBulkResponse,
+    NamespaceStatsResponse,
     # Registration API models
     RegisterKeyItem,
     RegisterKeyResponse,
@@ -40,11 +48,7 @@ from .api_models import (
     # Delete API models
     DeleteItem,
     DeleteResponse,
-    # Namespace Group API models
-    NamespaceGroupCreate,
-    NamespaceGroupUpdate,
-    NamespaceGroupResponse,
-    NamespaceGroupStatsResponse,
+    # Export/Import API models
     ExportResponse,
     ImportRequest,
     ImportResponse,
@@ -52,21 +56,29 @@ from .api_models import (
 
 __all__ = [
     # Core models
+    "IdPool",
     "Namespace",
-    "NamespaceGroup",
     "IdGeneratorConfig",
     "IdGeneratorType",
+    "WIP_ID_POOLS",
     "RegistryEntry",
     "Synonym",
     "SourceInfo",
-    # API models
+    # ID Pool API models
+    "IdPoolCreate",
+    "IdPoolUpdate",
+    "IdPoolResponse",
+    "IdPoolBulkResponse",
+    # Namespace API models
     "NamespaceCreate",
     "NamespaceUpdate",
     "NamespaceResponse",
-    "NamespaceBulkResponse",
+    "NamespaceStatsResponse",
+    # Registration API models
     "RegisterKeyItem",
     "RegisterKeyResponse",
     "RegisterBulkResponse",
+    # Other API models
     "AddSynonymItem",
     "AddSynonymResponse",
     "RemoveSynonymItem",
@@ -88,10 +100,6 @@ __all__ = [
     "SetPreferredResponse",
     "DeleteItem",
     "DeleteResponse",
-    "NamespaceGroupCreate",
-    "NamespaceGroupUpdate",
-    "NamespaceGroupResponse",
-    "NamespaceGroupStatsResponse",
     "ExportResponse",
     "ImportRequest",
     "ImportResponse",

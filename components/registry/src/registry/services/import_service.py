@@ -1,5 +1,5 @@
 """
-Import Service - Import namespace group data from exported archive.
+Import Service - Import namespace data from exported archive.
 
 Imports data from a namespace export archive into a WIP instance,
 optionally remapping to a different namespace prefix.
@@ -15,14 +15,14 @@ from typing import Any, Literal
 
 import httpx
 
-from ..models.namespace import Namespace, IdGeneratorConfig, IdGeneratorType
-from ..models.namespace_group import NamespaceGroup
+from ..models.id_pool import IdPool, IdGeneratorConfig, IdGeneratorType
+from ..models.namespace import Namespace
 
 logger = logging.getLogger(__name__)
 
 
-# Namespace type configurations (same as in namespace_groups.py)
-NAMESPACE_CONFIGS = {
+# ID pool type configurations
+ID_POOL_CONFIGS = {
     "terminologies": {
         "name_suffix": "Terminologies",
         "description_suffix": "terminology IDs",
@@ -52,7 +52,7 @@ NAMESPACE_CONFIGS = {
 
 
 class ImportService:
-    """Service for importing namespace group data."""
+    """Service for importing namespace data."""
 
     def __init__(
         self,
@@ -66,15 +66,15 @@ class ImportService:
         self.document_store_url = document_store_url
         self.api_key = api_key
 
-    async def import_namespace_group(
+    async def import_namespace(
         self,
         zip_path: str,
         target_prefix: str | None = None,
         mode: Literal["create", "merge", "replace"] = "create",
         imported_by: str | None = None,
-    ) -> tuple[NamespaceGroup, dict[str, int]]:
+    ) -> tuple[Namespace, dict[str, int]]:
         """
-        Import a namespace group from a zip archive.
+        Import a namespace from a zip archive.
 
         Args:
             zip_path: Path to the export zip file
@@ -83,7 +83,7 @@ class ImportService:
             imported_by: User performing the import
 
         Returns:
-            Tuple of (created/updated NamespaceGroup, stats_dict)
+            Tuple of (created/updated Namespace, stats_dict)
         """
         stats = {
             "terminologies": 0,
@@ -113,49 +113,49 @@ class ImportService:
             source_prefix = manifest["prefix"]
             prefix = target_prefix or source_prefix
 
-            # Check if group exists
-            existing_group = await NamespaceGroup.find_one({"prefix": prefix})
+            # Check if namespace exists
+            existing_ns = await Namespace.find_one({"prefix": prefix})
 
-            if mode == "create" and existing_group:
-                raise ValueError(f"Namespace group '{prefix}' already exists. Use mode='merge' or 'replace'.")
+            if mode == "create" and existing_ns:
+                raise ValueError(f"Namespace '{prefix}' already exists. Use mode='merge' or 'replace'.")
 
-            if mode == "replace" and existing_group:
+            if mode == "replace" and existing_ns:
                 # Archive existing data (soft delete)
-                existing_group.status = "archived"
-                existing_group.updated_at = datetime.now(timezone.utc)
-                await existing_group.save()
+                existing_ns.status = "archived"
+                existing_ns.updated_at = datetime.now(timezone.utc)
+                await existing_ns.save()
 
-            # Create or get group
-            if not existing_group or mode == "replace":
-                group = NamespaceGroup(
+            # Create or get namespace
+            if not existing_ns or mode == "replace":
+                namespace = Namespace(
                     prefix=prefix,
                     description=manifest.get("description", f"Imported from {source_prefix}"),
                     isolation_mode=manifest.get("isolation_mode", "open"),
                     allowed_external_refs=manifest.get("allowed_external_refs", []),
                     created_by=imported_by,
                 )
-                await group.create()
+                await namespace.create()
 
-                # Create namespaces
-                for ns_type, config in NAMESPACE_CONFIGS.items():
-                    ns_id = f"{prefix}-{ns_type}"
-                    existing_ns = await Namespace.find_one({"namespace_id": ns_id})
-                    if not existing_ns:
-                        ns = Namespace(
-                            namespace_id=ns_id,
+                # Create ID pools
+                for pool_type, config in ID_POOL_CONFIGS.items():
+                    pool_id = f"{prefix}-{pool_type}"
+                    existing_pool = await IdPool.find_one({"pool_id": pool_id})
+                    if not existing_pool:
+                        pool = IdPool(
+                            pool_id=pool_id,
                             name=f"{prefix.upper()} {config['name_suffix']}",
-                            description=f"Namespace for {config['description_suffix']} in {prefix} group",
+                            description=f"ID pool for {config['description_suffix']} in {prefix} namespace",
                             id_generator=config["id_generator"],
                         )
-                        await ns.create()
+                        await pool.create()
             else:
-                group = existing_group
+                namespace = existing_ns
 
-            # Build namespace mapping (for prefix remapping)
-            ns_map = {}
+            # Build pool mapping (for prefix remapping)
+            pool_map = {}
             if target_prefix and target_prefix != source_prefix:
-                for ns_type in ["terminologies", "terms", "templates", "documents", "files"]:
-                    ns_map[f"{source_prefix}-{ns_type}"] = f"{target_prefix}-{ns_type}"
+                for pool_type in ["terminologies", "terms", "templates", "documents", "files"]:
+                    pool_map[f"{source_prefix}-{pool_type}"] = f"{target_prefix}-{pool_type}"
 
             # Import terminologies
             terminologies_path = os.path.join(extract_dir, "terminologies.jsonl")
@@ -163,7 +163,7 @@ class ImportService:
                 stats["terminologies"] = await self._import_jsonl(
                     terminologies_path,
                     f"{self.def_store_url}/api/def-store/terminologies",
-                    ns_map,
+                    pool_map,
                     mode,
                 )
 
@@ -172,7 +172,7 @@ class ImportService:
             if os.path.exists(terms_path):
                 stats["terms"] = await self._import_terms(
                     terms_path,
-                    ns_map,
+                    pool_map,
                     mode,
                 )
 
@@ -182,7 +182,7 @@ class ImportService:
                 stats["templates"] = await self._import_jsonl(
                     templates_path,
                     f"{self.template_store_url}/api/template-store/templates",
-                    ns_map,
+                    pool_map,
                     mode,
                 )
 
@@ -192,7 +192,7 @@ class ImportService:
                 stats["documents"] = await self._import_jsonl(
                     documents_path,
                     f"{self.document_store_url}/api/document-store/documents",
-                    ns_map,
+                    pool_map,
                     mode,
                 )
 
@@ -206,7 +206,7 @@ class ImportService:
                         if line.strip():
                             stats["files"] += 1
 
-            return group, stats
+            return namespace, stats
 
         finally:
             # Cleanup
@@ -217,7 +217,7 @@ class ImportService:
         self,
         file_path: str,
         endpoint: str,
-        ns_map: dict[str, str],
+        pool_map: dict[str, str],
         mode: str,
     ) -> int:
         """Import items from a JSONL file to an API endpoint."""
@@ -233,8 +233,8 @@ class ImportService:
                         item = json.loads(line)
 
                         # Remap namespace if needed
-                        if ns_map:
-                            item = self._remap_namespaces(item, ns_map)
+                        if pool_map:
+                            item = self._remap_pools(item, pool_map)
 
                         # Remove read-only fields
                         item.pop("created_at", None)
@@ -264,7 +264,7 @@ class ImportService:
     async def _import_terms(
         self,
         file_path: str,
-        ns_map: dict[str, str],
+        pool_map: dict[str, str],
         mode: str,
     ) -> int:
         """Import terms, grouping by terminology."""
@@ -290,8 +290,8 @@ class ImportService:
         async with httpx.AsyncClient(timeout=120.0) as client:
             for terminology_id, terms in terms_by_terminology.items():
                 # Remap namespaces if needed
-                if ns_map:
-                    terms = [self._remap_namespaces(t, ns_map) for t in terms]
+                if pool_map:
+                    terms = [self._remap_pools(t, pool_map) for t in terms]
 
                 # Prepare bulk request
                 bulk_items = []
@@ -324,18 +324,18 @@ class ImportService:
 
         return count
 
-    def _remap_namespaces(self, item: dict[str, Any], ns_map: dict[str, str]) -> dict[str, Any]:
+    def _remap_pools(self, item: dict[str, Any], pool_map: dict[str, str]) -> dict[str, Any]:
         """Recursively remap namespace fields in an item."""
         result = {}
         for key, value in item.items():
-            if isinstance(value, str) and value in ns_map:
-                result[key] = ns_map[value]
+            if isinstance(value, str) and value in pool_map:
+                result[key] = pool_map[value]
             elif isinstance(value, dict):
-                result[key] = self._remap_namespaces(value, ns_map)
+                result[key] = self._remap_pools(value, pool_map)
             elif isinstance(value, list):
                 result[key] = [
-                    self._remap_namespaces(v, ns_map) if isinstance(v, dict)
-                    else ns_map.get(v, v) if isinstance(v, str)
+                    self._remap_pools(v, pool_map) if isinstance(v, dict)
+                    else pool_map.get(v, v) if isinstance(v, str)
                     else v
                     for v in value
                 ]

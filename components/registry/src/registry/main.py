@@ -15,8 +15,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import setup_auth
 
-from .models.namespace import Namespace, IdGeneratorType
-from .models.namespace_group import NamespaceGroup
+from .models.id_pool import IdPool, IdGeneratorType
+from .models.namespace import Namespace  # User-facing namespace
 from .models.entry import RegistryEntry
 from .api import api_router
 from .services.auth import AuthService
@@ -43,20 +43,20 @@ async def initialize_prefixed_counters():
 
     This ensures that after a restart, new IDs don't collide with existing ones.
     """
-    # Find all namespaces with prefixed generators
-    namespaces = await Namespace.find(
+    # Find all ID pools with prefixed generators
+    pools = await IdPool.find(
         {"id_generator.type": IdGeneratorType.PREFIXED}
     ).to_list()
 
-    for ns in namespaces:
-        prefix = ns.id_generator.prefix or ""
-        namespace_id = ns.namespace_id
-        counter_key = f"{namespace_id}:{prefix}"
+    for pool in pools:
+        prefix = pool.id_generator.prefix or ""
+        pool_id = pool.pool_id
+        counter_key = f"{pool_id}:{prefix}"
 
-        # Find the highest entry_id for this namespace
+        # Find the highest entry_id for this ID pool
         # Use find with sort and limit instead of aggregate
         result = await RegistryEntry.find(
-            {"primary_namespace": namespace_id}
+            {"primary_namespace": pool_id}  # Field name kept for backward compat
         ).sort("-entry_id").limit(1).to_list()
 
         if result:
@@ -67,11 +67,11 @@ async def initialize_prefixed_counters():
                 number_str = entry_id[len(prefix):]
                 max_number = int(number_str)
                 IdGeneratorService._counters[counter_key] = max_number
-                print(f"Initialized counter for {namespace_id}: {entry_id} (counter={max_number})")
+                print(f"Initialized counter for {pool_id}: {entry_id} (counter={max_number})")
             except (ValueError, IndexError) as e:
-                print(f"Warning: Could not parse entry_id {entry_id} for {namespace_id}: {e}")
+                print(f"Warning: Could not parse entry_id {entry_id} for {pool_id}: {e}")
         else:
-            print(f"No existing entries for {namespace_id}, counter starts at 0")
+            print(f"No existing entries for {pool_id}, counter starts at 0")
 
 
 @asynccontextmanager
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, NamespaceGroup, RegistryEntry]
+        document_models=[IdPool, Namespace, RegistryEntry]
     )
     print("MongoDB connection and Beanie initialization successful.")
 

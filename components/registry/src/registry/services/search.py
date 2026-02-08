@@ -14,7 +14,7 @@ class SearchService:
     @staticmethod
     def build_field_query(
         field_criteria: dict[str, Any],
-        restrict_to_namespaces: Optional[list[str]] = None,
+        restrict_to_pools: Optional[list[str]] = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """
@@ -25,7 +25,7 @@ class SearchService:
 
         Args:
             field_criteria: Field-value pairs to search for
-            restrict_to_namespaces: Optional list of namespaces to restrict search
+            restrict_to_pools: Optional list of namespaces to restrict search
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -53,9 +53,9 @@ class SearchService:
             }
 
             # Add namespace restriction to synonym search if specified
-            if restrict_to_namespaces:
+            if restrict_to_pools:
                 synonym_condition["synonyms"]["$elemMatch"]["namespace"] = {
-                    "$in": restrict_to_namespaces
+                    "$in": restrict_to_pools
                 }
 
             or_conditions.append(primary_condition)
@@ -65,15 +65,15 @@ class SearchService:
         query: dict[str, Any] = {"$or": or_conditions}
 
         # Add namespace restriction for primary key
-        if restrict_to_namespaces:
+        if restrict_to_pools:
             # Either primary namespace matches OR a synonym namespace matches
             query = {
                 "$and": [
                     query,
                     {
                         "$or": [
-                            {"primary_namespace": {"$in": restrict_to_namespaces}},
-                            {"synonyms.namespace": {"$in": restrict_to_namespaces}}
+                            {"primary_namespace": {"$in": restrict_to_pools}},
+                            {"synonyms.namespace": {"$in": restrict_to_pools}}
                         ]
                     }
                 ]
@@ -91,7 +91,7 @@ class SearchService:
     @staticmethod
     def build_text_search_query(
         term: str,
-        restrict_to_namespaces: Optional[list[str]] = None,
+        restrict_to_pools: Optional[list[str]] = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """
@@ -101,7 +101,7 @@ class SearchService:
 
         Args:
             term: Search term
-            restrict_to_namespaces: Optional list of namespaces to restrict search
+            restrict_to_pools: Optional list of namespaces to restrict search
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -113,10 +113,10 @@ class SearchService:
         }
 
         # Add namespace restriction
-        if restrict_to_namespaces:
+        if restrict_to_pools:
             query["$or"] = [
-                {"primary_namespace": {"$in": restrict_to_namespaces}},
-                {"synonyms.namespace": {"$in": restrict_to_namespaces}}
+                {"primary_namespace": {"$in": restrict_to_pools}},
+                {"synonyms.namespace": {"$in": restrict_to_pools}}
             ]
 
         # Filter by status
@@ -128,7 +128,7 @@ class SearchService:
     @staticmethod
     def build_regex_search_query(
         term: str,
-        restrict_to_namespaces: Optional[list[str]] = None,
+        restrict_to_pools: Optional[list[str]] = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """
@@ -138,7 +138,7 @@ class SearchService:
 
         Args:
             term: Search term (will be escaped for regex safety)
-            restrict_to_namespaces: Optional list of namespaces
+            restrict_to_pools: Optional list of namespaces
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -170,14 +170,14 @@ class SearchService:
         }
 
         # Add namespace restriction
-        if restrict_to_namespaces:
+        if restrict_to_pools:
             query = {
                 "$and": [
                     query,
                     {
                         "$or": [
-                            {"primary_namespace": {"$in": restrict_to_namespaces}},
-                            {"synonyms.namespace": {"$in": restrict_to_namespaces}}
+                            {"primary_namespace": {"$in": restrict_to_pools}},
+                            {"synonyms.namespace": {"$in": restrict_to_pools}}
                         ]
                     }
                 ]
@@ -213,7 +213,7 @@ class SearchService:
     def entry_to_search_result(
         entry: RegistryEntry,
         matched_in: str,
-        matched_namespace: str,
+        matched_pool_id: str,
         matched_composite_key: dict[str, Any]
     ) -> SearchResult:
         """
@@ -222,7 +222,7 @@ class SearchService:
         Args:
             entry: The registry entry
             matched_in: Where the match was found ("primary" or "synonym")
-            matched_namespace: Namespace where match was found
+            matched_pool_id: ID pool where match was found
             matched_composite_key: The matching composite key
 
         Returns:
@@ -230,9 +230,9 @@ class SearchService:
         """
         return SearchResult(
             registry_id=entry.entry_id,
-            namespace=entry.primary_namespace,
+            pool_id=entry.primary_namespace,
             matched_in=matched_in,
-            matched_namespace=matched_namespace,
+            matched_pool_id=matched_pool_id,
             matched_composite_key=matched_composite_key,
             all_synonyms=entry.synonyms,
             additional_ids=entry.additional_ids
