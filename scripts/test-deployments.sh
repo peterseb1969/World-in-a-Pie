@@ -58,25 +58,42 @@ FAIL_FAST=true           # Exit on first test failure (default: true)
 # - analytics: OIDC + reporting (PostgreSQL)
 # - full: Everything (OIDC + reporting + files + ingest)
 #
-# Remote tests (--remote hostname):
-# - Same presets but with --hostname instead of --localhost
+# Localhost tests: 8 tests (4 presets × 2 variants)
+# Remote tests: 8 tests (4 presets × 2 variants) with --hostname
+# Total: 16 tests for complete module × variant × mode coverage
 #
-# We test both dev and prod variants for key presets.
+# Format: "name|preset|flags|expected_services|seed_profile|modules"
 
 LOCALHOST_TESTS=(
+    # Core preset (no OIDC, no optional modules)
     "core-dev|core|--localhost|registry,def-store,template-store,document-store|minimal|dev-tools"
     "core-prod|core|--localhost --prod|registry,def-store,template-store,document-store|minimal|"
+    # Standard preset (+ OIDC)
     "standard-dev|standard|--localhost|registry,def-store,template-store,document-store,console|standard|oidc dev-tools"
     "standard-prod|standard|--localhost --prod|registry,def-store,template-store,document-store,console|standard|oidc"
+    # Analytics preset (+ reporting)
     "analytics-dev|analytics|--localhost|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting dev-tools"
-    "full-dev|full|--localhost|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting files ingest dev-tools"
+    "analytics-prod|analytics|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting"
+    # Full preset (+ files + ingest)
+    "full-dev|full|--localhost|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest dev-tools"
+    "full-prod|full|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest"
 )
 
-# Remote tests use the same presets but with --hostname
+# Remote test presets - converted to full test definitions with --hostname at runtime
+# Format: "name|preset|variant|services|seed_profile|modules"
 REMOTE_TEST_PRESETS=(
-    "core-remote|core|registry,def-store,template-store,document-store|minimal|dev-tools"
-    "standard-remote|standard|registry,def-store,template-store,document-store,console|standard|oidc dev-tools"
-    "analytics-remote|analytics|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting dev-tools"
+    # Core preset
+    "core-remote-dev|core|dev|registry,def-store,template-store,document-store|minimal|dev-tools"
+    "core-remote-prod|core|prod|registry,def-store,template-store,document-store|minimal|"
+    # Standard preset
+    "standard-remote-dev|standard|dev|registry,def-store,template-store,document-store,console|standard|oidc dev-tools"
+    "standard-remote-prod|standard|prod|registry,def-store,template-store,document-store,console|standard|oidc"
+    # Analytics preset
+    "analytics-remote-dev|analytics|dev|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting dev-tools"
+    "analytics-remote-prod|analytics|prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting"
+    # Full preset
+    "full-remote-dev|full|dev|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest dev-tools"
+    "full-remote-prod|full|prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest"
 )
 
 # Active test set (populated based on mode)
@@ -416,8 +433,8 @@ run_test_framework() {
         log_dim "Test results: $passed passed, $failed failed"
     fi
 
-    # Clean up env vars
-    unset TEST_API_KEY TEST_MODULES TEST_HOSTNAME TEST_LOCALHOST_MODE
+    # Clean up env vars (keep TEST_MODULES for write_result)
+    unset TEST_API_KEY TEST_HOSTNAME TEST_LOCALHOST_MODE
 
     return $test_exit
 }
@@ -660,8 +677,10 @@ list_tests() {
     if [[ ${#TESTS[@]} -eq 0 ]]; then
         if [[ -n "$REMOTE_HOSTNAME" ]]; then
             for preset in "${REMOTE_TEST_PRESETS[@]}"; do
-                IFS='|' read -r name preset_name services seed_profile modules <<< "$preset"
-                TESTS+=("${name}|${preset_name}|--hostname $REMOTE_HOSTNAME|${services}|${seed_profile}|${modules}")
+                IFS='|' read -r name preset_name variant services seed_profile modules <<< "$preset"
+                local flags="--hostname $REMOTE_HOSTNAME"
+                [[ "$variant" == "prod" ]] && flags="$flags --prod"
+                TESTS+=("${name}|${preset_name}|${flags}|${services}|${seed_profile}|${modules}")
             done
         else
             TESTS=("${LOCALHOST_TESTS[@]}")
@@ -761,10 +780,12 @@ main() {
     if [[ -n "$REMOTE_HOSTNAME" ]]; then
         # Remote tests: convert presets to full test definitions with --hostname
         for preset in "${REMOTE_TEST_PRESETS[@]}"; do
-            IFS='|' read -r name preset_name services seed_profile modules <<< "$preset"
-            TESTS+=("${name}|${preset_name}|--hostname $REMOTE_HOSTNAME|${services}|${seed_profile}|${modules}")
+            IFS='|' read -r name preset_name variant services seed_profile modules <<< "$preset"
+            local flags="--hostname $REMOTE_HOSTNAME"
+            [[ "$variant" == "prod" ]] && flags="$flags --prod"
+            TESTS+=("${name}|${preset_name}|${flags}|${services}|${seed_profile}|${modules}")
         done
-        log "Remote mode: testing against $REMOTE_HOSTNAME"
+        log "Remote mode: testing against $REMOTE_HOSTNAME (8 tests: 4 presets × 2 variants)"
     else
         # Localhost tests
         TESTS=("${LOCALHOST_TESTS[@]}")
