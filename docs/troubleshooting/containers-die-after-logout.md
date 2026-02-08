@@ -42,11 +42,46 @@ loginctl show-user $USER | grep Linger
 
 This is a **one-time fix** that persists across reboots. Your containers will now run 24/7 regardless of SSH sessions.
 
-## Why Docker Doesn't Have This Problem
+## Container Runtime Comparison
+
+### Why Docker Doesn't Have This Problem
 
 Standard Docker runs as a **system daemon** (`dockerd`) under root. Containers are managed by the daemon, not user sessions. The daemon runs as a systemd system service, independent of user logins.
 
-**Rootless Docker** would have the same linger issue as rootless Podman.
+### Podman: Rootless vs Rootful
+
+Podman supports two modes:
+
+| Mode | How to run | Linger needed | UID mapping issues | Security |
+|------|------------|---------------|-------------------|----------|
+| **Rootless** (default) | `podman ...` | Yes | Yes (e.g., Dex chown) | Best (user namespace isolation) |
+| **Rootful** | `sudo podman ...` | No | No | Standard (runs as root) |
+
+**Rootful Podman** behaves like Docker:
+- Containers managed by system-level systemd services
+- Data stored in `/var/lib/containers/` instead of `~/.local/share/containers/`
+- No linger configuration needed
+- No user namespace UID mapping headaches
+
+To run rootful: prefix all `podman` and `podman-compose` commands with `sudo`.
+
+### Full Comparison
+
+| | Rootless Podman | Rootful Podman | Docker |
+|---|---|---|---|
+| Linger required | Yes | No | No |
+| UID mapping issues | Yes | No | No |
+| Runs as root | No | Yes | Yes |
+| Security isolation | Best | Standard | Standard |
+| Daemon required | No | No | Yes |
+
+### Which Should I Use?
+
+- **Rootless Podman** (WIP default): Best security, but requires linger. Good for multi-user or exposed systems.
+- **Rootful Podman**: Simpler setup, no linger/UID issues. Good for dedicated appliances like a Pi.
+- **Docker**: Industry standard, well-documented. Requires daemon. Good if you're already familiar with Docker.
+
+For a Raspberry Pi running as a dedicated WIP server, rootful Podman or Docker would be simpler to manage. The security benefit of rootless matters more in multi-tenant or exposed environments.
 
 ## Prevention
 
