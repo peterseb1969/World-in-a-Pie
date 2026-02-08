@@ -23,7 +23,7 @@ services:
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wip_reporting
       - POSTGRES_USER=wip
-      - POSTGRES_PASSWORD=wip_dev_password
+      - POSTGRES_PASSWORD=${WIP_POSTGRES_PASSWORD:-wip}
       # Template Store
       - TEMPLATE_STORE_URL=http://wip-template-store-dev:8003
       # Document Store (for batch sync)

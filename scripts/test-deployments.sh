@@ -361,10 +361,29 @@ run_test_framework() {
     # Clear old log file before test run
     : > "$test_log"
 
-    # Run the test framework with quick mode (skip seeding, we already did it)
+    # Build suite list based on active modules
+    # Always run: deployment, auth, core-apis, seeding
+    local suites="deployment,auth,core-apis,seeding"
+
+    # Add module-specific suites based on what's deployed
+    # This ensures every deployed module gets tested
+    if [[ "$TEST_MODULES" == *"reporting"* ]]; then
+        suites="$suites,reporting"
+    fi
+    if [[ "$TEST_MODULES" == *"files"* ]]; then
+        suites="$suites,files"
+    fi
+    if [[ "$TEST_MODULES" == *"ingest"* ]]; then
+        suites="$suites,ingest"
+    fi
+
+    # Always run integration tests at the end
+    suites="$suites,integration"
+
+    # Run the test framework with appropriate suites
     local test_exit=0
     if "$PROJECT_ROOT/scripts/tests/run-tests.sh" \
-        --quick \
+        --suites "$suites" \
         --skip-seed \
         --output "$test_output" \
         2>&1 | tee "$test_log"; then

@@ -58,7 +58,8 @@ async def configure_nats_client(nats_url: str) -> bool:
             # Stream doesn't exist, create it
             stream_config = StreamConfig(
                 name="WIP_EVENTS",
-                subjects=["wip.>"],
+                # Use specific subjects to avoid overlap with WIP_INGEST stream
+                subjects=["wip.documents.>", "wip.templates.>", "wip.files.>"],
                 retention=RetentionPolicy.LIMITS,
                 max_msgs=1000000,
                 max_bytes=1024 * 1024 * 1024,  # 1GB
