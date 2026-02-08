@@ -787,10 +787,10 @@ generate_env_file() {
 
     # MongoDB settings based on platform
     local mongodb_image="docker.io/library/mongo:7"
-    local mongodb_healthcheck='echo '"'"'db.runCommand("ping").ok'"'"' | mongosh localhost:27017/test --quiet'
+    local mongodb_healthcheck='mongosh --quiet --eval "db.runCommand({ping:1}).ok"'
     if [ "$PLATFORM" = "pi4" ]; then
         mongodb_image="docker.io/library/mongo:4.4.18"
-        mongodb_healthcheck='echo '"'"'db.runCommand("ping").ok'"'"' | mongo localhost:27017/test --quiet'
+        mongodb_healthcheck='mongo --quiet --eval "db.runCommand({ping:1}).ok"'
     fi
 
     # File storage settings
@@ -845,7 +845,7 @@ WIP_DATA_DIR=$WIP_DATA_DIR
 # MONGODB
 # =============================================================================
 WIP_MONGODB_IMAGE=$mongodb_image
-WIP_MONGODB_HEALTHCHECK=$mongodb_healthcheck
+WIP_MONGODB_HEALTHCHECK="$mongodb_healthcheck"
 WIP_MONGO_USER=$mongo_user
 WIP_MONGO_PASSWORD=$mongo_password
 WIP_MONGO_URI=$mongo_uri
@@ -1280,12 +1280,19 @@ ensure_data_dirs() {
     log_step "Ensuring data directories..."
     mkdir -p "$WIP_DATA_DIR"/{mongodb,nats,dex,caddy/data,caddy/config}
 
-    # Fix Dex directory ownership for rootless Podman on Linux
-    # Dex runs as UID 1001 inside container; podman unshare sets ownership
+    # Fix directory ownership for rootless Podman on Linux
+    # Containers run as specific UIDs; podman unshare sets ownership
     # correctly within the user namespace mapping
-    if [[ "$(uname)" != "Darwin" ]] && has_module "oidc"; then
-        log_info "Setting Dex directory ownership for rootless Podman..."
-        podman unshare chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+    if [[ "$(uname)" != "Darwin" ]]; then
+        # MongoDB runs as UID 999 inside container
+        log_info "Setting MongoDB directory ownership for rootless Podman..."
+        podman unshare chown 999:999 "$WIP_DATA_DIR/mongodb" 2>/dev/null || true
+
+        # Dex runs as UID 1001 inside container
+        if has_module "oidc"; then
+            log_info "Setting Dex directory ownership for rootless Podman..."
+            podman unshare chown 1001:1001 "$WIP_DATA_DIR/dex" 2>/dev/null || true
+        fi
     fi
 
     if has_module "reporting"; then

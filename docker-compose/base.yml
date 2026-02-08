@@ -28,7 +28,7 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${WIP_MONGO_USER:-}
       MONGO_INITDB_ROOT_PASSWORD: ${WIP_MONGO_PASSWORD:-}
     healthcheck:
-      test: ${WIP_MONGODB_HEALTHCHECK:-echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet}
+      test: ${WIP_MONGODB_HEALTHCHECK:-mongosh --quiet --eval "db.runCommand({ping:1}).ok"}
       interval: ${WIP_HEALTH_CHECK_INTERVAL:-10}s
       timeout: 5s
       retries: 5
