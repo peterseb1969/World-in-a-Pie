@@ -359,6 +359,12 @@ function getFieldsUsingTerminology(template: Template): string[] {
             </DataTable>
           </div>
         </TabPanel>
+
+        <TabPanel value="3" header="Raw JSON">
+          <div class="raw-json">
+            <pre>{{ JSON.stringify(terminologyStore.currentTerminology, null, 2) }}</pre>
+          </div>
+        </TabPanel>
       </TabView>
     </template>
 
@@ -596,5 +602,15 @@ function getFieldsUsingTerminology(template: Template): string[] {
 .empty-usage i {
   font-size: 1.5rem;
   opacity: 0.5;
+}
+
+.raw-json pre {
+  background-color: var(--p-surface-100);
+  padding: 1rem;
+  border-radius: var(--p-border-radius);
+  font-size: 0.75rem;
+  overflow-x: auto;
+  margin: 0;
+  max-height: 600px;
 }
 </style>

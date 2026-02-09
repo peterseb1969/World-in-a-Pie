@@ -343,6 +343,12 @@ onMounted(async () => {
       </div>
       <div class="header-actions">
         <Button
+          label="Cancel"
+          severity="secondary"
+          text
+          @click="cancel"
+        />
+        <Button
           label="Validate"
           icon="pi pi-check-circle"
           severity="secondary"

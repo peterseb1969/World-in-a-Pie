@@ -649,9 +649,12 @@ onMounted(async () => {
               </div>
             </div>
 
-            <!-- Right column: Metadata -->
+            <!-- Right column: Metadata (user-defined, not part of schema) -->
             <div class="meta-column">
-              <h4 class="column-subheading">Metadata</h4>
+              <h4 class="column-subheading">
+                Metadata
+                <Tag value="Not part of template schema" severity="secondary" class="non-schema-badge" />
+              </h4>
               <div class="form-grid single-col">
                 <div class="form-field">
                   <label for="domain">Domain</label>
@@ -811,11 +814,11 @@ onMounted(async () => {
           />
         </TabPanel>
 
-        <TabPanel value="preview" header="Preview">
+        <TabPanel value="json" header="Raw JSON">
           <template #header>
             <span class="tab-header">
-              <i class="pi pi-eye"></i>
-              Preview
+              <i class="pi pi-code"></i>
+              Raw JSON
             </span>
           </template>
           <TemplatePreview
@@ -959,6 +962,14 @@ onMounted(async () => {
   font-size: 0.9375rem;
   font-weight: 600;
   color: var(--p-text-muted-color);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.non-schema-badge {
+  font-size: 0.625rem;
+  font-weight: 400;
 }
 
 .form-grid {
@@ -1005,6 +1016,16 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.raw-json pre {
+  background-color: var(--p-surface-100);
+  padding: 1rem;
+  border-radius: var(--p-border-radius);
+  font-size: 0.75rem;
+  overflow-x: auto;
+  margin: 0;
+  max-height: 600px;
 }
 
 .audit-card :deep(.p-card-body) {

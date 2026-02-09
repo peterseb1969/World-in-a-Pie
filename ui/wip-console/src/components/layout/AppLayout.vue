@@ -53,7 +53,6 @@ const menuSections: MenuSection[] = [
     ]
   },
   {
-    header: 'Data',
     items: [
       {
         label: 'Terminologies',
@@ -94,7 +93,6 @@ const menuSections: MenuSection[] = [
     ]
   },
   {
-    header: 'Registry',
     items: [
       { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' },
       {

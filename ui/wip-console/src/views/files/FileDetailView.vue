@@ -10,6 +10,7 @@ import Textarea from 'primevue/textarea'
 import Chips from 'primevue/chips'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
+import Panel from 'primevue/panel'
 import { fileStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
 import type { FileEntity } from '@/types'
@@ -306,7 +307,9 @@ onMounted(async () => {
 
         <!-- Metadata card -->
         <Card class="metadata-card">
-          <template #title>Metadata</template>
+          <template #title>
+            <span class="metadata-title">Metadata <Tag value="User-defined" severity="secondary" class="non-schema-badge" /></span>
+          </template>
           <template #content>
             <div v-if="!editMode" class="metadata-view">
               <div class="metadata-item">
@@ -371,6 +374,13 @@ onMounted(async () => {
             </div>
           </template>
         </Card>
+
+        <!-- Raw JSON -->
+        <Panel header="Raw JSON" toggleable :collapsed="true" class="raw-json-panel">
+          <div class="raw-json">
+            <pre>{{ JSON.stringify(file, null, 2) }}</pre>
+          </div>
+        </Panel>
 
         <!-- Danger zone -->
         <Card class="danger-card">
@@ -471,8 +481,19 @@ onMounted(async () => {
 }
 
 .preview-card,
-.danger-card {
+.danger-card,
+.raw-json-panel {
   grid-column: span 2;
+}
+
+.raw-json pre {
+  background-color: var(--p-surface-100);
+  padding: 1rem;
+  border-radius: var(--p-border-radius);
+  font-size: 0.75rem;
+  overflow-x: auto;
+  margin: 0;
+  max-height: 600px;
 }
 
 .info-grid {
@@ -542,6 +563,17 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
+}
+
+.metadata-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.non-schema-badge {
+  font-size: 0.625rem;
+  font-weight: 400;
 }
 
 .metadata-edit {

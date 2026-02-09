@@ -6,6 +6,10 @@ import InputText from 'primevue/inputtext'
 import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
+import Dialog from 'primevue/dialog'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Select from 'primevue/select'
 import { fileStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
 import type { FileEntity, FieldDefinition, FileFieldConfig } from '@/types'
@@ -30,9 +34,12 @@ const uploading = ref(false)
 const uploadProgress = ref(0)
 const storageEnabled = ref<boolean | null>(null)
 
-// Manual file ID entry
-const manualFileId = ref('')
-const linkingFile = ref(false)
+// File browse dialog
+const showFileBrowser = ref(false)
+const fileBrowseResults = ref<FileEntity[]>([])
+const fileBrowseLoading = ref(false)
+const fileBrowseSearch = ref('')
+const fileBrowseType = ref<string | null>(null)
 
 // Get file field config from metadata
 const fileConfig = computed(() => {
@@ -159,49 +166,58 @@ function removeFile(fileId: string) {
   }
 }
 
-// Link an existing file by ID
-async function linkExistingFile() {
-  const fileId = manualFileId.value.trim()
-  if (!fileId) return
+// Open file browse dialog
+async function openFileBrowser() {
+  fileBrowseSearch.value = ''
+  fileBrowseType.value = null
+  fileBrowseResults.value = []
+  showFileBrowser.value = true
+  await browseFiles()
+}
 
-  // Validate format
-  if (!/^FILE-[A-Z0-9]{6,}$/i.test(fileId)) {
-    uiStore.showError('Invalid File ID', 'File ID must be in the format FILE-XXXXXX')
-    return
-  }
-
-  // Check if already linked
-  if (currentFileIds.value.includes(fileId)) {
-    uiStore.showError('Already Linked', 'This file is already attached to this field')
-    return
-  }
-
-  // Check single-file constraint
-  if (!isMultiple.value && currentFileIds.value.length > 0) {
-    uiStore.showError('Link Error', 'This field only allows a single file')
-    return
-  }
-
-  linkingFile.value = true
+// Search/browse files
+async function browseFiles() {
+  fileBrowseLoading.value = true
   try {
-    // Verify the file exists
-    const file = await fileStoreClient.getFile(fileId)
-    const newFileIds = [...currentFileIds.value, file.file_id]
-    uploadedFiles.value.push(file)
-
-    if (isMultiple.value) {
-      emit('update:modelValue', newFileIds)
-    } else {
-      emit('update:modelValue', newFileIds[0] || null)
+    const params: Record<string, unknown> = {
+      page_size: 50
     }
-
-    manualFileId.value = ''
-    uiStore.showSuccess('File Linked', `Linked existing file: ${file.filename}`)
+    if (fileBrowseType.value) {
+      params.content_type = fileBrowseType.value
+    }
+    const result = await fileStoreClient.listFiles(params as Parameters<typeof fileStoreClient.listFiles>[0])
+    // Client-side search filter (API doesn't support filename search)
+    let files = result.items
+    if (fileBrowseSearch.value.trim()) {
+      const q = fileBrowseSearch.value.toLowerCase()
+      files = files.filter(f =>
+        f.filename.toLowerCase().includes(q) ||
+        f.file_id.toLowerCase().includes(q) ||
+        (f.metadata?.description || '').toLowerCase().includes(q)
+      )
+    }
+    // Exclude already-linked files
+    fileBrowseResults.value = files.filter(f => !currentFileIds.value.includes(f.file_id))
   } catch {
-    uiStore.showError('File Not Found', `No file found with ID "${fileId}"`)
+    fileBrowseResults.value = []
   } finally {
-    linkingFile.value = false
+    fileBrowseLoading.value = false
   }
+}
+
+// Select a file from the browse dialog
+function selectBrowseFile(file: FileEntity) {
+  const newFileIds = [...currentFileIds.value, file.file_id]
+  uploadedFiles.value.push(file)
+
+  if (isMultiple.value) {
+    emit('update:modelValue', newFileIds)
+  } else {
+    emit('update:modelValue', newFileIds[0] || null)
+  }
+
+  showFileBrowser.value = false
+  uiStore.showSuccess('File Linked', `Linked: ${file.filename}`)
 }
 
 // Download a file
@@ -340,27 +356,17 @@ checkStorageEnabled()
         </div>
 
         <div class="link-divider">
-          <span>or link an existing file</span>
+          <span>or browse existing files</span>
         </div>
 
-        <div class="link-existing">
-          <InputText
-            v-model="manualFileId"
-            placeholder="FILE-XXXXXX"
-            size="small"
-            :disabled="linkingFile"
-            @keydown.enter="linkExistingFile"
-          />
-          <Button
-            label="Link"
-            icon="pi pi-link"
-            size="small"
-            severity="secondary"
-            :loading="linkingFile"
-            :disabled="!manualFileId.trim()"
-            @click="linkExistingFile"
-          />
-        </div>
+        <Button
+          label="Browse Files"
+          icon="pi pi-folder-open"
+          severity="secondary"
+          outlined
+          size="small"
+          @click="openFileBrowser"
+        />
       </div>
 
       <!-- Empty state -->
@@ -374,6 +380,83 @@ checkStorageEnabled()
     <div v-if="errors && errors.length > 0" class="field-errors">
       <small v-for="err in errors" :key="err" class="error-text">{{ err }}</small>
     </div>
+
+    <!-- File Browse Dialog -->
+    <Dialog
+      v-model:visible="showFileBrowser"
+      header="Browse Files"
+      :style="{ width: '750px' }"
+      modal
+    >
+      <div class="file-browse">
+        <div class="file-browse-filters">
+          <InputText
+            v-model="fileBrowseSearch"
+            placeholder="Search by filename..."
+            class="file-browse-search"
+            @keyup.enter="browseFiles"
+          />
+          <Select
+            v-model="fileBrowseType"
+            :options="[
+              { label: 'All types', value: null },
+              { label: 'Images', value: 'image/' },
+              { label: 'PDFs', value: 'application/pdf' },
+              { label: 'Documents', value: 'application/' },
+              { label: 'Text', value: 'text/' }
+            ]"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="File type"
+            class="file-browse-type"
+            @change="browseFiles"
+          />
+          <Button icon="pi pi-search" @click="browseFiles" :loading="fileBrowseLoading" />
+        </div>
+        <small class="file-browse-hint">Click a row to select the file</small>
+        <DataTable
+          :value="fileBrowseResults"
+          :loading="fileBrowseLoading"
+          size="small"
+          @row-click="(e: any) => selectBrowseFile(e.data)"
+          :pt="{ bodyRow: { style: 'cursor: pointer' } }"
+          scrollable
+          scrollHeight="350px"
+        >
+          <Column header="File">
+            <template #body="{ data }">
+              <div class="file-browse-name">
+                <i :class="['pi', getFileIcon(data.content_type)]"></i>
+                <div>
+                  <span class="fb-filename">{{ data.filename }}</span>
+                  <span class="fb-desc" v-if="data.metadata?.description">{{ data.metadata.description }}</span>
+                </div>
+              </div>
+            </template>
+          </Column>
+          <Column field="content_type" header="Type" style="width: 120px">
+            <template #body="{ data }">
+              <span class="fb-type">{{ data.content_type }}</span>
+            </template>
+          </Column>
+          <Column header="Size" style="width: 80px">
+            <template #body="{ data }">
+              <span class="fb-size">{{ formatFileSize(data.size_bytes) }}</span>
+            </template>
+          </Column>
+          <Column field="file_id" header="ID" style="width: 110px">
+            <template #body="{ data }">
+              <code class="fb-id">{{ data.file_id.slice(0, 12) }}</code>
+            </template>
+          </Column>
+          <template #empty>
+            <div style="text-align: center; padding: 1rem; color: var(--p-text-muted-color)">
+              {{ fileBrowseLoading ? 'Loading...' : 'No files found' }}
+            </div>
+          </template>
+        </DataTable>
+      </div>
+    </Dialog>
   </div>
 </template>
 
@@ -482,15 +565,67 @@ checkStorageEnabled()
   background-color: var(--p-surface-200);
 }
 
-.link-existing {
+.file-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.file-browse-filters {
   display: flex;
   gap: 0.5rem;
   align-items: center;
 }
 
-.link-existing :deep(.p-inputtext) {
+.file-browse-search {
   flex: 1;
-  font-family: monospace;
+}
+
+.file-browse-type {
+  width: 160px;
+}
+
+.file-browse-hint {
+  color: var(--p-text-muted-color);
+}
+
+.file-browse-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.file-browse-name i {
+  font-size: 1.1rem;
+  color: var(--p-primary-600);
+}
+
+.file-browse-name div {
+  display: flex;
+  flex-direction: column;
+}
+
+.fb-filename {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.fb-desc {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.fb-type {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+}
+
+.fb-size {
+  font-size: 0.8rem;
+}
+
+.fb-id {
+  font-size: 0.75rem;
 }
 
 .empty-state {

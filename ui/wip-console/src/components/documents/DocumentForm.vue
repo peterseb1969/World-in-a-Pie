@@ -98,7 +98,7 @@ function isIdentityField(fieldName: string): boolean {
         :errors="getFieldErrors(field.name)"
       />
 
-      <small v-if="field.default_value !== undefined" class="default-value">
+      <small v-if="field.default_value !== undefined && field.default_value !== null" class="default-value">
         Default: {{ field.default_value }}
       </small>
     </div>

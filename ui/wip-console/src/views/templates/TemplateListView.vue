@@ -8,11 +8,11 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
-// Dialog removed - template creation now uses /templates/new route
 import ToggleSwitch from 'primevue/toggleswitch'
 import Panel from 'primevue/panel'
 import { useTemplateStore, useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import type { Template } from '@/types'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 
 const router = useRouter()
 const confirm = useConfirm()
@@ -240,6 +240,11 @@ onMounted(loadTemplates)
         @row-click="(e) => viewTemplate(e.data)"
         rowHover
       >
+        <Column field="template_id" header="ID" sortable style="width: 120px">
+          <template #body="{ data }">
+            <TruncatedId :id="data.template_id" :length="12" />
+          </template>
+        </Column>
         <Column field="code" header="Code" sortable style="width: 180px">
           <template #body="{ data }">
             <div class="template-code-cell">
@@ -350,6 +355,11 @@ onMounted(loadTemplates)
           @row-click="(e) => viewTemplate(e.data)"
           rowHover
         >
+          <Column field="template_id" header="ID" sortable style="width: 120px">
+            <template #body="{ data }">
+              <TruncatedId :id="data.template_id" :length="12" />
+            </template>
+          </Column>
           <Column field="code" header="Code" sortable style="width: 180px">
             <template #body="{ data }">
               <div class="template-code-cell">

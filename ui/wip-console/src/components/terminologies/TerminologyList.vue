@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -11,6 +11,7 @@ import { useConfirm } from 'primevue/useconfirm'
 import { useTerminologyStore, useUiStore, useNamespaceStore } from '@/stores'
 import type { Terminology } from '@/types'
 import TerminologyForm from './TerminologyForm.vue'
+import TruncatedId from '@/components/common/TruncatedId.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -58,6 +59,14 @@ onMounted(async () => {
   }
   // Auto-open create dialog if ?create=true
   if (route.query.create === 'true') {
+    showCreateDialog.value = true
+    router.replace({ query: {} })
+  }
+})
+
+// Also watch for query changes (same-route navigation from sidebar)
+watch(() => route.query.create, (val) => {
+  if (val === 'true') {
     showCreateDialog.value = true
     router.replace({ query: {} })
   }
@@ -155,13 +164,19 @@ async function onUpdated() {
         </div>
       </template>
 
+      <Column field="terminology_id" header="ID" sortable style="width: 120px">
+        <template #body="{ data }">
+          <TruncatedId :id="data.terminology_id" :length="12" />
+        </template>
+      </Column>
+
       <Column field="code" header="Code" sortable style="width: 15%">
         <template #body="{ data }">
           <span class="code-badge">{{ data.code }}</span>
         </template>
       </Column>
 
-      <Column field="name" header="Name" sortable style="width: 25%">
+      <Column field="name" header="Name" sortable style="width: 20%">
         <template #body="{ data }">
           <a
             href="#"

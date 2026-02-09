@@ -109,7 +109,8 @@ async function loadTemplates() {
 }
 
 function openCreateDialog() {
-  selectedTemplateId.value = null
+  // Pre-select the currently filtered template if one is active
+  selectedTemplateId.value = templateFilter.value || null
   showCreateDialog.value = true
 }
 

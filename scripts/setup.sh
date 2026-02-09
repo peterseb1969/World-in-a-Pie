@@ -882,6 +882,8 @@ VITE_INGEST_ENABLED=$(has_module "ingest" && echo "true" || echo "false")
 # =============================================================================
 # FILE STORAGE (MinIO)
 # =============================================================================
+WIP_MINIO_USER=wip-minio-root
+WIP_MINIO_PASSWORD=$minio_password
 WIP_FILE_STORAGE_ENABLED=$file_storage_enabled
 WIP_FILE_STORAGE_TYPE=minio
 WIP_FILE_STORAGE_ENDPOINT=http://wip-minio:9000

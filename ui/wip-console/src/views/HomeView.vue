@@ -10,7 +10,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore } from '@/stores'
 import { isReportingEnabled } from '@/config/modules'
-import { reportingSyncClient, registryClient, documentStoreClient, type IntegrityCheckResult } from '@/api/client'
+import { reportingSyncClient, documentStoreClient, type IntegrityCheckResult } from '@/api/client'
 import type { Terminology, Template, Document } from '@/types'
 
 const router = useRouter()
@@ -52,49 +52,29 @@ async function loadDashboard() {
 
   loading.value = true
   try {
-    // Get real counts from registry stats API
-    try {
-      const stats = await registryClient.getNamespaceStats(namespaceStore.current)
-      if (stats.pools) {
-        for (const [poolName, count] of Object.entries(stats.pools)) {
-          if (poolName.endsWith('-terminologies')) entityCounts.value.terminologies = count
-          else if (poolName.endsWith('-terms')) entityCounts.value.terms = count
-          else if (poolName.endsWith('-templates')) entityCounts.value.templates = count
-          else if (poolName.endsWith('-documents')) entityCounts.value.documents = count
-          else if (poolName.endsWith('-files')) entityCounts.value.files = count
-        }
-      }
-    } catch {
-      // Registry stats not available, fall back to list counts
-    }
-
-    // Fetch terminologies for recent items and status breakdown
+    // Fetch terminologies — use API total as authoritative count
     await terminologyStore.fetchTerminologies({ page_size: 100 })
-    const terms = terminologyStore.terminologies
-    if (entityCounts.value.terminologies === 0) {
-      entityCounts.value.terminologies = terms.length
-    }
-    recentTerminologies.value = [...terms]
+    const allTerms = terminologyStore.terminologies
+    entityCounts.value.terminologies = terminologyStore.total
+    // Sum term_count across all terminologies for total terms
+    entityCounts.value.terms = allTerms.reduce((sum, t) => sum + (t.term_count || 0), 0)
+    recentTerminologies.value = [...allTerms]
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 5)
 
-    // Fetch templates for recent items and status breakdown
+    // Fetch templates — use API total as authoritative count
     await templateStore.fetchTemplates({ page_size: 100 })
     const templates = templateStore.templates
-    if (entityCounts.value.templates === 0) {
-      entityCounts.value.templates = templates.length
-    }
+    entityCounts.value.templates = templateStore.total
     recentTemplates.value = [...templates]
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 5)
 
-    // Fetch recent documents
+    // Fetch recent documents — use API total as authoritative count
     try {
       const docResponse = await documentStoreClient.listDocuments({ page_size: 5 })
       recentDocuments.value = docResponse.items
-      if (entityCounts.value.documents === 0) {
-        entityCounts.value.documents = docResponse.total
-      }
+      entityCounts.value.documents = docResponse.total
     } catch {
       // Document store may not be available
     }

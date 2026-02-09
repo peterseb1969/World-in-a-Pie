@@ -12,7 +12,7 @@ import FileField from './FileField.vue'
 import Dialog from 'primevue/dialog'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
-import { useDocumentStore } from '@/stores'
+import { useDocumentStore, useTemplateStore } from '@/stores'
 import { templateStoreClient, documentStoreClient } from '@/api/client'
 import type { FieldDefinition, Term, Template } from '@/types'
 import { SEMANTIC_TYPES } from '@/types'
@@ -177,32 +177,96 @@ const showRefSearch = ref(false)
 const refSearchResults = ref<Array<Record<string, unknown>>>([])
 const refSearchLoading = ref(false)
 const refSearchQuery = ref('')
+const refTemplateFilter = ref<string | null>(null)
+const templateStore = useTemplateStore()
+
+// Template options for reference search filter
+const refTemplateOptions = computed(() => {
+  // If target_templates is specified, only show those
+  if (props.field.target_templates?.length) {
+    return templateStore.templates
+      .filter(t => props.field.target_templates!.includes(t.template_id) || props.field.target_templates!.includes(t.code))
+      .map(t => ({ label: `${t.name} (${t.code})`, value: t.template_id }))
+  }
+  return templateStore.templates
+    .filter(t => t.status === 'active')
+    .map(t => ({ label: `${t.name} (${t.code})`, value: t.template_id }))
+})
+
+// Whether template filter should be locked (single target template)
+const refTemplateLocked = ref(false)
+
+// Resolve a template code to a template_id
+function resolveTemplateId(codeOrId: string): string {
+  const tpl = templateStore.templates.find(t => t.code === codeOrId || t.template_id === codeOrId)
+  return tpl ? tpl.template_id : codeOrId
+}
 
 async function openRefSearch() {
   refSearchQuery.value = ''
   refSearchResults.value = []
   showRefSearch.value = true
-  // Auto-search with target templates filter
+  // Ensure templates are loaded for filter dropdown
+  if (templateStore.templates.length === 0) {
+    await templateStore.fetchTemplates({ page_size: 100 })
+  }
+  // Pre-set and lock template filter when field restricts to one template
+  if (props.field.target_templates?.length === 1) {
+    refTemplateFilter.value = resolveTemplateId(props.field.target_templates[0])
+    refTemplateLocked.value = true
+  } else {
+    refTemplateFilter.value = null
+    refTemplateLocked.value = false
+  }
   await searchDocuments()
 }
 
 async function searchDocuments() {
   refSearchLoading.value = true
   try {
-    const params: Record<string, unknown> = { page_size: 20 }
-    if (props.field.target_templates?.length === 1) {
-      params.template_id = props.field.target_templates[0]
-    }
-    if (refSearchQuery.value) {
-      params.search = refSearchQuery.value
+    const params: Record<string, unknown> = { page_size: 50 }
+    if (refTemplateFilter.value) {
+      params.template_id = refTemplateFilter.value
     }
     const result = await documentStoreClient.listDocuments(params as Parameters<typeof documentStoreClient.listDocuments>[0])
-    refSearchResults.value = result.items as unknown as Array<Record<string, unknown>>
+    let items = result.items as unknown as Array<Record<string, unknown>>
+    // Client-side search filter (API doesn't support text search)
+    if (refSearchQuery.value.trim()) {
+      const q = refSearchQuery.value.toLowerCase()
+      items = items.filter(doc => {
+        const id = (doc.document_id as string || '').toLowerCase()
+        const data = JSON.stringify(doc.data || {}).toLowerCase()
+        return id.includes(q) || data.includes(q)
+      })
+    }
+    refSearchResults.value = items
   } catch {
     refSearchResults.value = []
   } finally {
     refSearchLoading.value = false
   }
+}
+
+// Get template name for a document
+function getDocTemplateName(doc: Record<string, unknown>): string {
+  const tplId = doc.template_id as string
+  if (!tplId) return '-'
+  const tpl = templateStore.templates.find(t => t.template_id === tplId)
+  return tpl ? tpl.name : tplId.slice(0, 12)
+}
+
+// Get a readable preview of document data (first few key-value pairs)
+function getDocDataPreview(doc: Record<string, unknown>): string {
+  const data = doc.data as Record<string, unknown> | undefined
+  if (!data) return '-'
+  const entries = Object.entries(data)
+    .filter(([, v]) => v !== null && v !== undefined && v !== '')
+    .slice(0, 3)
+    .map(([k, v]) => {
+      const val = typeof v === 'object' ? JSON.stringify(v) : String(v)
+      return `${k}: ${val.length > 30 ? val.slice(0, 30) + '...' : val}`
+    })
+  return entries.join(' | ') || '-'
 }
 
 function selectRefDocument(doc: Record<string, unknown>) {
@@ -337,14 +401,25 @@ const validationHints = computed(() => {
 
   if (v) {
     if (v.pattern) hints.push(`Pattern: ${v.pattern}`)
-    if (v.min_length !== undefined) hints.push(`Min length: ${v.min_length}`)
-    if (v.max_length !== undefined) hints.push(`Max length: ${v.max_length}`)
-    if (v.minimum !== undefined) hints.push(`Min: ${v.minimum}`)
-    if (v.maximum !== undefined) hints.push(`Max: ${v.maximum}`)
+    // Skip min_length <= 1 (redundant with mandatory indicator)
+    if (v.min_length && v.min_length > 1) hints.push(`Min length: ${v.min_length}`)
+    if (v.max_length && v.max_length > 0) hints.push(`Max length: ${v.max_length}`)
+    if (v.minimum !== undefined && v.minimum !== null) hints.push(`Min: ${v.minimum}`)
+    if (v.maximum !== undefined && v.maximum !== null) hints.push(`Max: ${v.maximum}`)
     if (v.enum && v.enum.length > 0) hints.push(`Allowed: ${v.enum.join(', ')}`)
   }
 
   return hints
+})
+
+// Combined tooltip for all constraints (HTML with escape:false)
+const constraintTooltip = computed(() => {
+  const parts: string[] = []
+  if (semanticTypeInfo.value) {
+    parts.push(`<strong>${semanticTypeInfo.value.label}</strong>`)
+  }
+  parts.push(...validationHints.value)
+  return { value: parts.join('<br>'), escape: false }
 })
 
 // Watch for terminology changes and reload terms
@@ -510,37 +585,62 @@ onMounted(() => {
         <!-- Reference Search Dialog -->
         <Dialog
           v-model:visible="showRefSearch"
-          header="Search Documents"
-          :style="{ width: '600px' }"
+          header="Select Document"
+          :style="{ width: '800px' }"
           modal
         >
           <div class="ref-search">
-            <div class="ref-search-bar">
-              <InputText
-                v-model="refSearchQuery"
-                placeholder="Search..."
-                class="w-full"
-                @keyup.enter="searchDocuments"
+            <div class="ref-search-filters">
+              <Select
+                v-model="refTemplateFilter"
+                :options="refTemplateOptions"
+                optionLabel="label"
+                optionValue="value"
+                placeholder="All templates"
+                :showClear="!refTemplateLocked"
+                :disabled="refTemplateLocked"
+                class="ref-template-filter"
+                @change="searchDocuments"
               />
-              <Button icon="pi pi-search" @click="searchDocuments" :loading="refSearchLoading" />
+              <div class="ref-search-bar">
+                <InputText
+                  v-model="refSearchQuery"
+                  placeholder="Search by ID or data..."
+                  class="w-full"
+                  @keyup.enter="searchDocuments"
+                />
+                <Button icon="pi pi-search" @click="searchDocuments" :loading="refSearchLoading" />
+              </div>
             </div>
+            <small class="ref-search-hint">Click a row to select the document</small>
             <DataTable
               :value="refSearchResults"
               :loading="refSearchLoading"
               size="small"
-              @row-click="(e) => selectRefDocument(e.data)"
+              @row-click="(e: any) => selectRefDocument(e.data)"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
+              scrollable
+              scrollHeight="350px"
             >
-              <Column field="document_id" header="ID" style="width: 120px">
+              <Column header="Template" style="width: 130px">
                 <template #body="{ data }">
-                  <code>{{ (data.document_id as string)?.slice(0, 12) }}...</code>
+                  <span class="ref-template-name">{{ getDocTemplateName(data) }}</span>
                 </template>
               </Column>
-              <Column field="template_id" header="Template" />
+              <Column header="Data">
+                <template #body="{ data }">
+                  <span class="ref-data-preview">{{ getDocDataPreview(data) }}</span>
+                </template>
+              </Column>
               <Column field="version" header="Ver" style="width: 50px" />
+              <Column field="document_id" header="ID" style="width: 110px">
+                <template #body="{ data }">
+                  <code class="ref-doc-id">{{ (data.document_id as string)?.slice(0, 10) }}</code>
+                </template>
+              </Column>
               <template #empty>
                 <div style="text-align: center; padding: 1rem; color: var(--p-text-muted-color)">
-                  {{ refSearchLoading ? 'Searching...' : 'No documents found' }}
+                  {{ refSearchLoading ? 'Searching...' : 'No documents found. Try a different search or template filter.' }}
                 </div>
               </template>
             </DataTable>
@@ -666,15 +766,15 @@ onMounted(() => {
       <small class="unknown-type">Unknown field type: {{ field.type }}</small>
     </template>
 
-    <!-- Semantic type indicator -->
-    <div v-if="semanticTypeInfo" class="semantic-type-badge">
-      <i :class="semanticTypeInfo.icon"></i>
-      <small>{{ semanticTypeInfo.label }}</small>
-    </div>
-
-    <!-- Validation hints -->
-    <div v-if="validationHints.length > 0" class="validation-hints">
-      <small v-for="hint in validationHints" :key="hint">{{ hint }}</small>
+    <!-- Compact constraint info — tooltip only -->
+    <div v-if="validationHints.length > 0 || semanticTypeInfo" class="constraint-info">
+      <span
+        class="constraint-icon"
+        v-tooltip.bottom="constraintTooltip"
+      >
+        <i :class="semanticTypeInfo?.icon || 'pi pi-info-circle'"></i>
+        <small v-if="semanticTypeInfo">{{ semanticTypeInfo.label }}</small>
+      </span>
     </div>
 
     <!-- Errors -->
@@ -727,9 +827,46 @@ onMounted(() => {
   gap: 0.75rem;
 }
 
+.ref-search-filters {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ref-template-filter {
+  min-width: 200px;
+}
+
 .ref-search-bar {
   display: flex;
   gap: 0.5rem;
+  flex: 1;
+}
+
+.ref-search-hint {
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+}
+
+.ref-template-name {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.ref-doc-id {
+  font-size: 0.7rem;
+  background: var(--p-surface-100);
+  padding: 0.125rem 0.25rem;
+  border-radius: 3px;
+}
+
+.ref-data-preview {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+  max-width: 350px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
 }
 
 .reference-info {
@@ -846,15 +983,22 @@ onMounted(() => {
   flex: 1;
 }
 
-.validation-hints {
+.constraint-info {
   display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
+  align-items: center;
 }
 
-.validation-hints small {
+.constraint-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
   color: var(--p-text-muted-color);
   font-size: 0.75rem;
+  cursor: help;
+}
+
+.constraint-icon i {
+  font-size: 0.7rem;
 }
 
 .field-errors {
@@ -873,19 +1017,4 @@ onMounted(() => {
   font-size: 0.75rem;
 }
 
-.semantic-type-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.125rem 0.5rem;
-  background-color: var(--p-primary-50);
-  color: var(--p-primary-700);
-  border-radius: 0.25rem;
-  font-size: 0.7rem;
-  width: fit-content;
-}
-
-.semantic-type-badge i {
-  font-size: 0.65rem;
-}
 </style>
