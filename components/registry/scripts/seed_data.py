@@ -303,7 +303,7 @@ def main():
     except requests.exceptions.ConnectionError:
         print(f"Cannot connect to {args.base_url}")
         print("Make sure the registry is running:")
-        print("  podman-compose -f docker-compose.dev.yml up -d")
+        print("  podman-compose -f docker-compose.yml up -d --build")
         return
 
     # Create data

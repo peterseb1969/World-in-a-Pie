@@ -23,8 +23,8 @@ This guide covers rotating secrets and keys in a WIP deployment.
 
 3. **Restart services:**
    ```bash
-   podman restart wip-registry-dev wip-def-store-dev \
-     wip-template-store-dev wip-document-store-dev
+   podman restart wip-registry wip-def-store \
+     wip-template-store wip-document-store
    ```
 
 4. **Update clients** using the old key
@@ -79,8 +79,8 @@ For deployments using `api-keys.json`:
 
 5. **Restart services:**
    ```bash
-   podman restart wip-registry-dev wip-def-store-dev \
-     wip-template-store-dev wip-document-store-dev
+   podman restart wip-registry wip-def-store \
+     wip-template-store wip-document-store
    ```
 
 ### PostgreSQL
@@ -100,7 +100,7 @@ For deployments using `api-keys.json`:
 
 4. **Restart reporting-sync:**
    ```bash
-   podman restart wip-reporting-sync-dev
+   podman restart wip-reporting-sync
    ```
 
 ---
@@ -134,7 +134,7 @@ For deployments using `api-keys.json`:
 
 5. **Restart NATS and dependent services:**
    ```bash
-   podman restart wip-nats wip-reporting-sync-dev wip-ingest-gateway-dev
+   podman restart wip-nats wip-reporting-sync wip-ingest-gateway
    ```
 
 ---

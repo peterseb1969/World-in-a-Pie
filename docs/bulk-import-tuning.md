@@ -124,7 +124,7 @@ If the system freezes or Podman stops responding:
 Watch the def-store logs during import:
 
 ```bash
-podman logs -f wip-def-store-dev
+podman logs -f wip-def-store
 ```
 
 You'll see progress like:
@@ -163,7 +163,7 @@ Current throttling:
 
 1. Check Podman VM memory: `podman machine inspect`
 2. Check container memory: `podman stats`
-3. Restart def-store: `podman restart wip-def-store-dev`
+3. Restart def-store: `podman restart wip-def-store`
 
 ### Out of Memory
 

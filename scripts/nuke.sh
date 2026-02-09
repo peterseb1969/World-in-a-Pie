@@ -138,12 +138,12 @@ cd "$INSTALL_DIR"
 
 # List of compose files to stop (in reverse order of startup)
 COMPOSE_FILES=(
-    "ui/wip-console/docker-compose.dev.yml"
-    "components/reporting-sync/docker-compose.dev.yml"
-    "components/document-store/docker-compose.dev.yml"
-    "components/template-store/docker-compose.dev.yml"
-    "components/def-store/docker-compose.dev.yml"
-    "components/registry/docker-compose.dev.yml"
+    "ui/wip-console/docker-compose.yml"
+    "components/reporting-sync/docker-compose.yml"
+    "components/document-store/docker-compose.yml"
+    "components/template-store/docker-compose.yml"
+    "components/def-store/docker-compose.yml"
+    "components/registry/docker-compose.yml"
     "docker-compose.infra.yml"
 )
 

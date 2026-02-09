@@ -4,7 +4,7 @@
 # MongoDB connection
 database:
   uri: mongodb://mongoadmin:secret@mongodb:27017/
-  name: wip_registry_dev
+  name: wip_registry
 
 # Authentication
 auth:

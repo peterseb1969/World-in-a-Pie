@@ -172,7 +172,7 @@ assert_response_time() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Assert container is running
-# Usage: assert_container_running "wip-registry-dev"
+# Usage: assert_container_running "wip-registry"
 assert_container_running() {
     local name="$1"
     # Use podman inspect for more reliable check (handles partial names, etc.)
@@ -230,14 +230,22 @@ assert_pg_has_rows() {
 }
 
 # Assert MongoDB collection has documents
-# Usage: assert_mongo_has_docs "wip_registry_dev" "id_pools" 5
+# Usage: assert_mongo_has_docs "wip_registry" "id_pools" 5
 assert_mongo_has_docs() {
     local db="$1"
     local collection="$2"
     local min_docs="${3:-1}"
 
+    local mongo_auth=""
+    local mongo_user mongo_pass
+    mongo_user=$(grep "^WIP_MONGO_USER=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)
+    mongo_pass=$(grep "^WIP_MONGO_PASSWORD=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)
+    if [[ -n "$mongo_user" && -n "$mongo_pass" ]]; then
+        mongo_auth="--username $mongo_user --password $mongo_pass --authenticationDatabase admin"
+    fi
+
     local count
-    count=$(podman exec wip-mongodb mongosh --quiet --eval \
+    count=$(podman exec wip-mongodb mongosh --quiet $mongo_auth --eval \
         "db.getSiblingDB('$db').$collection.countDocuments()" 2>/dev/null)
 
     if [[ -z "$count" || "$count" -lt "$min_docs" ]]; then

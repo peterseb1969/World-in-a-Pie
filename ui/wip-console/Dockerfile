@@ -36,8 +36,8 @@ ENV VITE_INGEST_ENABLED=$VITE_INGEST_ENABLED
 # Build the application
 RUN npm run build
 
-# Production stage
-FROM docker.io/library/nginx:alpine
+# Production stage — dist baked into image
+FROM docker.io/library/nginx:alpine AS production
 
 # Copy the built application
 COPY --from=builder /app/dist /usr/share/nginx/html
@@ -45,7 +45,16 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Copy nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Expose port 80
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+
+# Development stage — dist/ mounted as volume from host
+FROM docker.io/library/nginx:alpine AS development
+
+# Copy nginx configuration (dist/ mounted via docker-compose override)
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
 EXPOSE 80
 
 CMD ["nginx", "-g", "daemon off;"]

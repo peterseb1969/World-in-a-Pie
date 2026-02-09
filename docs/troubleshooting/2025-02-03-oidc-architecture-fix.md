@@ -65,7 +65,7 @@ grep issuer config/dex/config.yaml
 # Output: issuer: https://localhost:8443/dex
 
 # Check backend service
-podman exec wip-def-store-dev printenv | grep WIP_AUTH_JWT_ISSUER_URL
+podman exec wip-def-store printenv | grep WIP_AUTH_JWT_ISSUER_URL
 # Output: WIP_AUTH_JWT_ISSUER_URL=https://localhost:8443/dex
 ```
 

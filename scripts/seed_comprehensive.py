@@ -792,9 +792,9 @@ def main():
     if not seeder.check_services(services):
         print("\nSome services are not responding. Please ensure all services are running:")
         print("  podman-compose -f docker-compose.infra.yml up -d")
-        print("  cd components/def-store && podman-compose -f docker-compose.dev.yml up -d")
-        print("  cd components/template-store && podman-compose -f docker-compose.dev.yml up -d")
-        print("  cd components/document-store && podman-compose -f docker-compose.dev.yml up -d")
+        print("  cd components/def-store && podman-compose -f docker-compose.yml up -d --build")
+        print("  cd components/template-store && podman-compose -f docker-compose.yml up -d --build")
+        print("  cd components/document-store && podman-compose -f docker-compose.yml up -d --build")
         return
 
     start_time = time.time()

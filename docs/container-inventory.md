@@ -65,13 +65,13 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | Mongo Express | wip-mongo-express | | | | | ✓ | |
 | Metabase | wip-metabase | | | | | | ✓ |
 | **Services** |
-| Registry | wip-registry-dev | ✓ | | | | | |
-| Def-Store | wip-def-store-dev | ✓ | | | | | |
-| Template Store | wip-template-store-dev | ✓ | | | | | |
-| Document Store | wip-document-store-dev | ✓ | | | | | |
-| Reporting Sync | wip-reporting-sync-dev | | | ✓ | | | |
-| Ingest Gateway | wip-ingest-gateway-dev | | | | | | |
-| WIP Console | wip-console-dev | ✓ | | | | | |
+| Registry | wip-registry | ✓ | | | | | |
+| Def-Store | wip-def-store | ✓ | | | | | |
+| Template Store | wip-template-store | ✓ | | | | | |
+| Document Store | wip-document-store | ✓ | | | | | |
+| Reporting Sync | wip-reporting-sync | | | ✓ | | | |
+| Ingest Gateway | wip-ingest-gateway | | | | | | |
+| WIP Console | wip-console | ✓ | | | | | |
 
 **Note:** Ingest Gateway is started when the `ingest` module is active, but doesn't require additional infrastructure.
 
@@ -277,7 +277,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ### Service Containers
 
-#### 9. Registry (wip-registry-dev)
+#### 9. Registry (wip-registry)
 
 | Attribute | Value |
 |-----------|-------|
@@ -311,7 +311,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 10. Def-Store (wip-def-store-dev)
+#### 10. Def-Store (wip-def-store)
 
 | Attribute | Value |
 |-----------|-------|
@@ -346,7 +346,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 11. Template Store (wip-template-store-dev)
+#### 11. Template Store (wip-template-store)
 
 | Attribute | Value |
 |-----------|-------|
@@ -377,7 +377,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 12. Document Store (wip-document-store-dev)
+#### 12. Document Store (wip-document-store)
 
 | Attribute | Value |
 |-----------|-------|
@@ -412,7 +412,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 13. Reporting Sync (wip-reporting-sync-dev)
+#### 13. Reporting Sync (wip-reporting-sync)
 
 | Attribute | Value |
 |-----------|-------|
@@ -446,7 +446,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 14. Ingest Gateway (wip-ingest-gateway-dev)
+#### 14. Ingest Gateway (wip-ingest-gateway)
 
 | Attribute | Value |
 |-----------|-------|
@@ -512,18 +512,18 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
-#### 15. WIP Console (wip-console-dev)
+#### 15. WIP Console (wip-console)
 
 | Attribute | Value |
 |-----------|-------|
-| **Image** | Built from `ui/wip-console/Dockerfile.dev` |
+| **Image** | Built from `ui/wip-console/Dockerfile` |
 | **Purpose** | Web UI for all WIP operations |
-| **Port** | 3000 (internal, via Caddy) |
+| **Port** | 80 (internal, via Caddy) |
 | **Network** | wip-network |
 | **Profiles** | All |
 
 **Exposed Endpoints:**
-- Internal: `http://wip-console-dev:3000` (via Caddy)
+- Internal: `http://wip-console:80` (via Caddy)
 - External: `https://localhost:8443/` (via Caddy)
 
 **Security:**
@@ -609,7 +609,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | 9001 | MinIO | HTTP | MinIO Console |
 | 8081 | Mongo Express | HTTP | MongoDB admin UI |
 | 5556 | Dex | HTTP | OIDC provider (internal) |
-| 3000 | WIP Console | HTTP | Web UI (internal) |
+| 80 | WIP Console | HTTP | Web UI (internal) |
 | 3030 | Metabase | HTTP | BI dashboards (optional) |
 
 ---
@@ -697,9 +697,9 @@ For production deployments:
 
 | File | Description |
 |------|-------------|
-| `components/*/docker-compose.dev.yml` | Individual service (development) |
-| `components/*/docker-compose.yml` | Individual service (production, not yet used) |
-| `ui/wip-console/docker-compose.dev.yml` | Web UI (development) |
+| `components/*/docker-compose.yml` | Individual service configuration |
+| `components/*/docker-compose.override.yml` | Dev overrides (auto-generated) |
+| `ui/wip-console/docker-compose.yml` | Web UI configuration |
 
 ### Preset Configuration
 

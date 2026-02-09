@@ -445,7 +445,7 @@ Restart Dex to apply changes.
 
 ### Current Configuration (All Services)
 
-All WIP services are configured for **dual mode** in their `docker-compose.dev.yml`:
+All WIP services are configured for **dual mode** in their `docker-compose.yml`:
 
 ```yaml
 environment:
@@ -703,7 +703,7 @@ curl -s http://localhost:8002/api/def-store/terminologies | jq '.total'
 
 1. Check the environment variable is set correctly:
    ```bash
-   podman exec wip-def-store-dev env | grep -E "(API_KEY|WIP_AUTH)"
+   podman exec wip-def-store env | grep -E "(API_KEY|WIP_AUTH)"
    ```
 
 2. Verify the key matches what you're sending in the header
@@ -732,15 +732,15 @@ The service can't reach Dex to get the signing keys.
 
 2. From inside a container, check `host.containers.internal` resolves:
    ```bash
-   podman exec wip-def-store-dev curl http://host.containers.internal:5556/dex/keys
+   podman exec wip-def-store curl http://host.containers.internal:5556/dex/keys
    ```
 
 ### Services Not Picking Up New Environment Variables
 
 Restart the service after changing docker-compose.yml:
 ```bash
-podman-compose -f docker-compose.dev.yml down
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml down
+podman-compose -f docker-compose.yml up -d --build
 ```
 
 ### Dex Not Starting

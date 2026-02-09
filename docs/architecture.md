@@ -561,7 +561,7 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │  Services (per-component docker-compose.dev.yml)                    │   │
+│   │  Services (per-component docker-compose.yml)                        │   │
 │   │                                                                      │   │
 │   │  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐        │   │
 │   │  │ registry  │  │ def-store │  │ template- │  │ document- │        │   │

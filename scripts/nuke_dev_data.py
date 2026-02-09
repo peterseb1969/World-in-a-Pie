@@ -36,12 +36,12 @@ from pymongo import MongoClient
 # Default MongoDB URI
 DEFAULT_MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 
-# Database names (with _dev suffix for development)
+# Database names
 DATABASES = {
-    "document-store": "wip_document_store_dev",
-    "template-store": "wip_template_store_dev",
-    "def-store": "wip_def_store_dev",
-    "registry": "wip_registry_dev",
+    "document-store": "wip_document_store",
+    "template-store": "wip_template_store",
+    "def-store": "wip_def_store",
+    "registry": "wip_registry",
 }
 
 # Collections to drop per service

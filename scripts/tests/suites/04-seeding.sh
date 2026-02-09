@@ -122,19 +122,19 @@ test_documents_seeded() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_mongodb_terminologies() {
-    assert_mongo_has_docs "wip_def_store_dev" "terminologies" 3
+    assert_mongo_has_docs "wip_def_store" "terminologies" 3
 }
 
 test_mongodb_terms() {
-    assert_mongo_has_docs "wip_def_store_dev" "terms" 10
+    assert_mongo_has_docs "wip_def_store" "terms" 10
 }
 
 test_mongodb_templates() {
-    assert_mongo_has_docs "wip_template_store_dev" "templates" 2
+    assert_mongo_has_docs "wip_template_store" "templates" 2
 }
 
 test_mongodb_documents() {
-    assert_mongo_has_docs "wip_document_store_dev" "documents" 10
+    assert_mongo_has_docs "wip_document_store" "documents" 10
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

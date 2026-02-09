@@ -422,7 +422,7 @@ Monitor consumer lag and adjust throttle:
 
 ```bash
 # 1. Deploy reporting-sync (connects to existing WIP)
-podman-compose -f reporting-sync/docker-compose.dev.yml up -d
+podman-compose -f reporting-sync/docker-compose.yml up -d --build
 
 # 2. Reporting-sync on startup:
 #    - Checks if PostgreSQL tables are empty

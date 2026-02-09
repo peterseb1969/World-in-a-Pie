@@ -88,18 +88,18 @@ wip/
 ├── docker-compose.infra.pi.minimal.yml  # Pi minimal
 ├── components/
 │   ├── registry/
-│   │   └── docker-compose.dev.yml
+│   │   └── docker-compose.override.yml
 │   ├── def-store/
-│   │   └── docker-compose.dev.yml
+│   │   └── docker-compose.override.yml
 │   ├── template-store/
-│   │   └── docker-compose.dev.yml
+│   │   └── docker-compose.override.yml
 │   ├── document-store/
-│   │   └── docker-compose.dev.yml
+│   │   └── docker-compose.override.yml
 │   └── reporting-sync/
-│       └── docker-compose.dev.yml
+│       └── docker-compose.override.yml
 ├── ui/
 │   └── wip-console/
-│       └── docker-compose.dev.yml
+│       └── docker-compose.override.yml
 └── data/                                # Persistent volumes (configurable)
     ├── mongodb/
     ├── postgres/
@@ -155,20 +155,20 @@ podman-compose -f docker-compose.infra.yml up -d
 
 # 2. Start Registry and initialize namespaces
 cd components/registry
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
   -H "X-API-Key: dev_master_key_for_testing"
 
 # 3. Start remaining services
-cd ../def-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../reporting-sync && podman-compose -f docker-compose.dev.yml up -d
+cd ../def-store && podman-compose -f docker-compose.yml up -d --build
+cd ../template-store && podman-compose -f docker-compose.yml up -d --build
+cd ../document-store && podman-compose -f docker-compose.yml up -d --build
+cd ../reporting-sync && podman-compose -f docker-compose.yml up -d --build
 
 # 4. Start WIP Console
 cd ../../ui/wip-console
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 
 # Or run Console locally for development
 npm install && npm run dev

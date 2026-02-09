@@ -22,12 +22,12 @@ This document describes all 4 deployment scenarios and how networking, Caddy, an
 ```
 Browser
    │
-   └──► https://localhost:8443 ──► Caddy ──┬──► wip-console-dev:3000
+   └──► https://localhost:8443 ──► Caddy ──┬──► wip-console:80
                                            ├──► wip-dex:5556 (/dex/*)
-                                           ├──► wip-registry-dev:8001 (/api/registry/*)
-                                           ├──► wip-def-store-dev:8002 (/api/def-store/*)
-                                           ├──► wip-template-store-dev:8003 (/api/template-store/*)
-                                           └──► wip-document-store-dev:8004 (/api/document-store/*)
+                                           ├──► wip-registry:8001 (/api/registry/*)
+                                           ├──► wip-def-store:8002 (/api/def-store/*)
+                                           ├──► wip-template-store:8003 (/api/template-store/*)
+                                           └──► wip-document-store:8004 (/api/document-store/*)
 ```
 
 ### Caddy Configuration
@@ -47,24 +47,24 @@ localhost {
 
     # API services (use handle, NOT handle_path)
     handle /api/registry/* {
-        reverse_proxy wip-registry-dev:8001
+        reverse_proxy wip-registry:8001
     }
 
     handle /api/def-store/* {
-        reverse_proxy wip-def-store-dev:8002
+        reverse_proxy wip-def-store:8002
     }
 
     handle /api/template-store/* {
-        reverse_proxy wip-template-store-dev:8003
+        reverse_proxy wip-template-store:8003
     }
 
     handle /api/document-store/* {
-        reverse_proxy wip-document-store-dev:8004
+        reverse_proxy wip-document-store:8004
     }
 
     # Console (default)
     handle {
-        reverse_proxy wip-console-dev:3000
+        reverse_proxy wip-console:80
     }
 }
 ```
@@ -118,7 +118,7 @@ staticClients:
 ```
 Browser
    │
-   ├──► http://localhost:3000 ──► wip-console-dev (direct)
+   ├──► http://localhost:3000 ──► wip-console (direct)
    │
    └──► http://localhost:800X ──► Services (direct)
         8001 = Registry
@@ -178,9 +178,9 @@ server: {
 ```
 Browser (any device on network)
    │
-   └──► https://wip-pi.local:8443 ──► Caddy ──┬──► wip-console-dev:3000
+   └──► https://wip-pi.local:8443 ──► Caddy ──┬──► wip-console:80
                                               ├──► wip-dex:5556 (/dex/*)
-                                              └──► wip-*-dev:800X (/api/*/*)
+                                              └──► wip-*:800X (/api/*/*)
 ```
 
 ### Caddy Configuration
@@ -198,13 +198,13 @@ wip-pi.local {
     }
 
     handle /api/registry/* {
-        reverse_proxy wip-registry-dev:8001
+        reverse_proxy wip-registry:8001
     }
 
     # ... other services ...
 
     handle {
-        reverse_proxy wip-console-dev:3000
+        reverse_proxy wip-console:80
     }
 }
 ```
@@ -258,7 +258,7 @@ staticClients:
 ```
 Browser (any device on network)
    │
-   ├──► http://wip-pi.local:3000 ──► wip-console-dev
+   ├──► http://wip-pi.local:3000 ──► wip-console
    │
    └──► http://wip-pi.local:800X ──► Services
 ```
@@ -283,7 +283,7 @@ Services must bind to `0.0.0.0` not just `127.0.0.1`:
 
 ```yaml
 ports:
-  - "0.0.0.0:3000:3000"   # Console
+  - "0.0.0.0:3000:80"     # Console
   - "0.0.0.0:8001:8001"   # Registry
   # etc.
 ```
@@ -350,12 +350,12 @@ podman-compose down && podman-compose up -d
 ```caddyfile
 # CORRECT - path preserved
 handle /api/def-store/* {
-    reverse_proxy wip-def-store-dev:8002
+    reverse_proxy wip-def-store:8002
 }
 
 # WRONG - path stripped, service gets /terminologies instead of /api/def-store/terminologies
 handle_path /api/def-store/* {
-    reverse_proxy wip-def-store-dev:8002
+    reverse_proxy wip-def-store:8002
 }
 ```
 
@@ -365,7 +365,7 @@ handle_path /api/def-store/* {
 
 ### Check JWT issuer in running container
 ```bash
-podman exec wip-def-store-dev printenv WIP_AUTH_JWT_ISSUER_URL
+podman exec wip-def-store printenv WIP_AUTH_JWT_ISSUER_URL
 ```
 
 ### Test Dex OIDC discovery

@@ -18,10 +18,10 @@ Terminology and ontology management service for the World In a Pie ecosystem.
 
 ```bash
 # Ensure Registry service is running first
-cd ../registry && docker-compose -f docker-compose.dev.yml up -d
+cd ../registry && docker-compose -f docker-compose.yml up -d --build
 
 # Start Def-Store with hot reload
-docker-compose -f docker-compose.dev.yml up
+docker-compose -f docker-compose.yml up --build
 
 # Access the API
 curl http://localhost:8002/health
@@ -52,7 +52,7 @@ For local development, the default API key is:
 dev_master_key_for_testing
 ```
 
-This is configured in `docker-compose.dev.yml` via the `API_KEY` environment variable.
+This is configured in `docker-compose.yml` via the `API_KEY` environment variable.
 
 ### Using the Swagger UI
 
@@ -220,8 +220,8 @@ def-store/
 │   │   └── import_export.py
 │   └── main.py               # FastAPI application
 ├── tests/                    # Test suite
-├── docker-compose.yml        # Production compose
-├── docker-compose.dev.yml    # Development compose
+├── docker-compose.yml        # Compose configuration
+├── docker-compose.override.yml  # Dev overrides (auto-generated)
 ├── Dockerfile
 └── requirements.txt
 ```

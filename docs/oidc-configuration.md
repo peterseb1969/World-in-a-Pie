@@ -20,7 +20,7 @@ Generates .env with:
     ↓
 Also generates config/dex/config.yaml with matching issuer URL
     ↓
-All docker-compose.dev.yml files use env_file: ../../.env
+All docker-compose.yml files use env_file: ../../.env
     ↓
 Services read auth config from .env (no hardcoded values in compose files)
 ```
@@ -137,7 +137,7 @@ These files are in `.gitignore`. Templates are committed for reference:
 
 ### How docker-compose Files Use .env
 
-All service docker-compose.dev.yml files include:
+All service docker-compose.yml files include:
 
 ```yaml
 services:
@@ -217,7 +217,7 @@ VITE_OIDC_ENABLED=false
 **Debug:**
 ```bash
 # Check what backend sees
-podman exec wip-def-store-dev printenv | grep WIP_AUTH
+podman exec wip-def-store printenv | grep WIP_AUTH
 
 # Check Dex issuer
 grep issuer config/dex/config.yaml

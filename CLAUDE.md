@@ -91,26 +91,26 @@ See `docs/` for detailed specifications:
 # 1. Start infrastructure
 podman-compose -f docker-compose.infra.yml up -d
 
-# 2. Start services (in order)
-cd components/registry && podman-compose -f docker-compose.dev.yml up -d
-cd ../def-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../reporting-sync && podman-compose -f docker-compose.dev.yml up -d
+# 2. Start services (in order — uses docker-compose.yml + auto-generated override)
+cd components/registry && podman-compose -f docker-compose.yml up -d --build
+cd ../def-store && podman-compose -f docker-compose.yml up -d --build
+cd ../template-store && podman-compose -f docker-compose.yml up -d --build
+cd ../document-store && podman-compose -f docker-compose.yml up -d --build
+cd ../reporting-sync && podman-compose -f docker-compose.yml up -d --build
 
 # 3. Initialize namespaces (one-time)
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
   -H "X-API-Key: dev_master_key_for_testing"
 
 # 4. Start UI
-cd ui/wip-console && podman-compose -f docker-compose.dev.yml up -d
+cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
 ```
 
 ### Access Points
 
 | Service | URL |
 |---------|-----|
-| WIP Console | https://localhost:8443 or http://localhost:3000 |
+| WIP Console | https://localhost:8443 |
 | API Docs | http://localhost:{port}/docs |
 | Mongo Express | http://localhost:8081 (admin/admin) |
 | MinIO Console | http://localhost:9001 |
@@ -214,7 +214,7 @@ WorldInPie/
 
 ```bash
 # Run tests inside container
-podman exec -it wip-{service}-dev bash -c \
+podman exec -it wip-{service} bash -c \
   "pip install pytest pytest-asyncio httpx && pytest /app/tests -v"
 ```
 

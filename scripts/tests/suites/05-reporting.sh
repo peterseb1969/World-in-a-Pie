@@ -90,9 +90,17 @@ test_sync_status_tracking() {
 
 test_sync_data_consistency() {
     # Compare document count between MongoDB and PostgreSQL (summing all doc_* tables)
+    local mongo_auth=""
+    local mongo_user mongo_pass
+    mongo_user=$(grep "^WIP_MONGO_USER=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)
+    mongo_pass=$(grep "^WIP_MONGO_PASSWORD=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2)
+    if [[ -n "$mongo_user" && -n "$mongo_pass" ]]; then
+        mongo_auth="--username $mongo_user --password $mongo_pass --authenticationDatabase admin"
+    fi
+
     local mongo_count
-    mongo_count=$(podman exec wip-mongodb mongosh --quiet --eval \
-        "db.getSiblingDB('wip_document_store_dev').documents.countDocuments({status: 'active'})" 2>/dev/null)
+    mongo_count=$(podman exec wip-mongodb mongosh --quiet $mongo_auth --eval \
+        "db.getSiblingDB('wip_document_store').documents.countDocuments({status: 'active'})" 2>/dev/null)
 
     # Sum counts across all doc_* tables
     local pg_count

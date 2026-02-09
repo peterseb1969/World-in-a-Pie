@@ -19,14 +19,9 @@ source "$SUITE_DIR/../lib/assertions.sh"
 # Container Name Helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Get service container name with correct suffix based on variant
+# Get service container name (unified — no variant suffix)
 get_service_container() {
-    local service="$1"
-    if [[ "$DEPLOYMENT_VARIANT" == "prod" ]]; then
-        echo "wip-$service"
-    else
-        echo "wip-$service-dev"
-    fi
+    echo "wip-$1"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -98,25 +93,17 @@ test_console_responding() {
         fi
     else
         # Without OIDC/Caddy, console port is not exposed to host
-        # Check internally via wget/curl - dev uses port 3000, prod uses port 80
+        # Check internally — always nginx on port 80
         local container
         container="$(get_service_container console)"
 
-        # Try prod port first (nginx on 80), then dev port (vite on 3000)
         if podman exec "$container" wget -qO- --timeout=5 http://localhost:80 >/dev/null 2>&1; then
             return 0
         fi
-        if podman exec "$container" wget -qO- --timeout=5 http://localhost:3000 >/dev/null 2>&1; then
-            return 0
-        fi
-        # Fallback: check if nginx or vite is running
         if podman exec "$container" pgrep -f "nginx" >/dev/null 2>&1; then
             return 0
-        fi
-        if podman exec "$container" pgrep -f "vite" >/dev/null 2>&1; then
-            return 0
         else
-            echo "Console not responding (neither nginx nor vite running)"
+            echo "Console not responding (nginx not running)"
             return 1
         fi
     fi

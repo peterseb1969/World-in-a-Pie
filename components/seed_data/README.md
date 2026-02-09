@@ -296,7 +296,7 @@ Before running, ensure these services are running:
 podman-compose -f docker-compose.infra.yml up -d
 
 # Start services
-cd components/def-store && podman-compose -f docker-compose.dev.yml up -d
-cd components/template-store && podman-compose -f docker-compose.dev.yml up -d
-cd components/document-store && podman-compose -f docker-compose.dev.yml up -d
+cd components/def-store && podman-compose -f docker-compose.yml up -d --build
+cd components/template-store && podman-compose -f docker-compose.yml up -d --build
+cd components/document-store && podman-compose -f docker-compose.yml up -d --build
 ```

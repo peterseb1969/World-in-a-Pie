@@ -43,7 +43,7 @@ podman-compose -f docker-compose.infra.yml up -d
 
 # Start Registry service
 cd components/registry
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 
 # Initialize WIP namespaces
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
@@ -51,15 +51,15 @@ curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
 
 # Start Def-Store service
 cd ../def-store
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 
 # Start Template Store service
 cd ../template-store
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 
 # Start Document Store service
 cd ../document-store
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 ```
 
 ### API Documentation
@@ -154,7 +154,7 @@ version=1  - Deactivate old
 
 ```bash
 # Inside the container
-podman exec -it wip-document-store-dev bash -c \
+podman exec -it wip-document-store bash -c \
   "pip install pytest pytest-asyncio httpx && pytest /app/tests -v"
 
 # Or locally with virtual environment
@@ -185,4 +185,4 @@ pytest tests/ -v
 ## Port
 
 - Development: `8004`
-- Container name: `wip-document-store-dev`
+- Container name: `wip-document-store`

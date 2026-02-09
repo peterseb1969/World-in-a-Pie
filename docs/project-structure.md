@@ -67,7 +67,7 @@ world-in-a-pie/
 │   │   │                                 # ID generation, namespaces
 │   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.dev.yml
+│   │   ├── docker-compose.override.yml
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── config/
@@ -91,7 +91,7 @@ world-in-a-pie/
 │   │   │                                 # Terminologies & Terms
 │   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.dev.yml
+│   │   ├── docker-compose.override.yml
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── src/
@@ -119,7 +119,7 @@ world-in-a-pie/
 │   │   │                                 # Document templates & validation
 │   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.dev.yml
+│   │   ├── docker-compose.override.yml
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── src/
@@ -145,7 +145,7 @@ world-in-a-pie/
 │   │   │                                 # Document storage & versioning
 │   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.dev.yml
+│   │   ├── docker-compose.override.yml
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── src/
@@ -172,7 +172,7 @@ world-in-a-pie/
 │   │   │                                 # MongoDB → PostgreSQL sync
 │   │   │                                 # ══════════════════════════════
 │   │   ├── README.md
-│   │   ├── docker-compose.dev.yml
+│   │   ├── docker-compose.override.yml
 │   │   ├── Dockerfile
 │   │   ├── requirements.txt
 │   │   ├── src/
@@ -210,7 +210,7 @@ world-in-a-pie/
 │       ├── README.md
 │       ├── package.json
 │       ├── vite.config.ts
-│       ├── docker-compose.dev.yml
+│       ├── docker-compose.override.yml
 │       ├── Dockerfile
 │       ├── Dockerfile.dev
 │       ├── nginx.conf
@@ -286,7 +286,7 @@ services:
   mongo-express: # MongoDB UI - port 8081 (optional)
 ```
 
-### Application Services (docker-compose.dev.yml per service)
+### Application Services (docker-compose.yml per service)
 
 Each service has its own compose file that:
 - Builds the service container
@@ -335,19 +335,19 @@ podman-compose -f docker-compose.infra.yml up -d
 
 # 2. Start Registry and initialize
 cd components/registry
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
   -H "X-API-Key: dev_master_key_for_testing"
 
 # 3. Start remaining services
-cd ../def-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../template-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../document-store && podman-compose -f docker-compose.dev.yml up -d
-cd ../reporting-sync && podman-compose -f docker-compose.dev.yml up -d
+cd ../def-store && podman-compose -f docker-compose.yml up -d --build
+cd ../template-store && podman-compose -f docker-compose.yml up -d --build
+cd ../document-store && podman-compose -f docker-compose.yml up -d --build
+cd ../reporting-sync && podman-compose -f docker-compose.yml up -d --build
 
 # 4. Start WIP Console
 cd ../../ui/wip-console
-podman-compose -f docker-compose.dev.yml up -d
+podman-compose -f docker-compose.yml up -d --build
 # Or: npm install && npm run dev
 ```
 

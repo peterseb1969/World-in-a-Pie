@@ -185,7 +185,7 @@ The 601 redelivered messages typically seen after restarts are normal - these ar
 
 3. Check for errors in logs:
    ```bash
-   podman logs wip-reporting-sync-dev 2>&1 | grep -i error
+   podman logs wip-reporting-sync 2>&1 | grep -i error
    ```
 
 ### High Redelivery Count
