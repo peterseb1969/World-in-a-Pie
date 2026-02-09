@@ -1,0 +1,26 @@
+{
+  "status": "pass",
+  "timestamp": "2026-02-09T18:27:52Z",
+  "duration_seconds": 13,
+  "hostname": "localhost",
+  "localhost_mode": true,
+  "modules": "oidc reporting files ingest",
+  "variant": "prod",
+  "suites": {
+    "run": 7,
+    "failed": 0
+  },
+  "tests": {
+    "total": 99,
+    "passed": 98,
+    "failed": 0,
+    "skipped": 1
+  },
+  "data_stats": {
+    "namespaces": 1,
+    "terminologies": 17,
+    "terms": 220,
+    "templates": 25,
+    "documents": 498
+  }
+}

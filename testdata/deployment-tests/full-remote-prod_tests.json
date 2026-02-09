@@ -1,0 +1,26 @@
+{
+  "status": "pass",
+  "timestamp": "2026-02-09T18:49:08Z",
+  "duration_seconds": 12,
+  "hostname": "Peters-Mac-mini-M4-Pro.local",
+  "localhost_mode": false,
+  "modules": "oidc reporting files ingest",
+  "variant": "prod",
+  "suites": {
+    "run": 7,
+    "failed": 0
+  },
+  "tests": {
+    "total": 99,
+    "passed": 98,
+    "failed": 0,
+    "skipped": 1
+  },
+  "data_stats": {
+    "namespaces": 1,
+    "terminologies": 17,
+    "terms": 220,
+    "templates": 25,
+    "documents": 499
+  }
+}
