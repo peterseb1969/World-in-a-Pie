@@ -787,10 +787,10 @@ generate_env_file() {
 
     # MongoDB settings based on platform
     local mongodb_image="docker.io/library/mongo:7"
-    local mongodb_healthcheck='mongosh --quiet --eval "db.runCommand({ping:1}).ok"'
+    local mongodb_healthcheck="mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
     if [ "$PLATFORM" = "pi4" ]; then
         mongodb_image="docker.io/library/mongo:4.4.18"
-        mongodb_healthcheck='mongo --quiet --eval "db.runCommand({ping:1}).ok"'
+        mongodb_healthcheck="mongo --quiet --eval 'db.runCommand({ping:1}).ok'"
     fi
 
     # File storage settings
@@ -845,7 +845,7 @@ WIP_DATA_DIR=$WIP_DATA_DIR
 # MONGODB
 # =============================================================================
 WIP_MONGODB_IMAGE=$mongodb_image
-WIP_MONGODB_HEALTHCHECK="$mongodb_healthcheck"
+WIP_MONGODB_HEALTHCHECK=$mongodb_healthcheck
 WIP_MONGO_USER=$mongo_user
 WIP_MONGO_PASSWORD=$mongo_password
 WIP_MONGO_URI=$mongo_uri
