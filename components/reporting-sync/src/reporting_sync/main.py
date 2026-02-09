@@ -14,7 +14,7 @@ from typing import Any
 import asyncpg
 import httpx
 import nats
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import APIRouter, FastAPI, HTTPException, Query
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
@@ -307,6 +307,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+router = APIRouter(prefix="/api/reporting-sync")
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
@@ -343,7 +345,7 @@ async def health_check() -> HealthResponse:
     )
 
 
-@app.get("/status", response_model=SyncStatus)
+@router.get("/status", response_model=SyncStatus)
 async def get_sync_status() -> SyncStatus:
     """Get current sync worker status."""
     return state.sync_status
@@ -354,7 +356,7 @@ async def get_sync_status() -> SyncStatus:
 # =============================================================================
 
 
-@app.get("/metrics", response_model=MetricsResponse)
+@router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
     """
     Get comprehensive metrics for the sync service.
@@ -387,7 +389,7 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@app.get("/metrics/consumer", response_model=ConsumerInfo | None)
+@router.get("/metrics/consumer", response_model=ConsumerInfo | None)
 async def get_consumer_metrics() -> ConsumerInfo | None:
     """
     Get NATS consumer information.
@@ -401,7 +403,7 @@ async def get_consumer_metrics() -> ConsumerInfo | None:
     return await get_consumer_info()
 
 
-@app.get("/alerts", response_model=AlertsResponse)
+@router.get("/alerts", response_model=AlertsResponse)
 async def get_alerts() -> AlertsResponse:
     """
     Get current alerts and alert configuration.
@@ -418,7 +420,7 @@ async def get_alerts() -> AlertsResponse:
     )
 
 
-@app.put("/alerts/config", response_model=AlertConfig)
+@router.put("/alerts/config", response_model=AlertConfig)
 async def update_alert_config(config: AlertConfig) -> AlertConfig:
     """
     Update alert configuration.
@@ -434,7 +436,7 @@ async def update_alert_config(config: AlertConfig) -> AlertConfig:
     return metrics.get_alert_config()
 
 
-@app.post("/alerts/test")
+@router.post("/alerts/test")
 async def test_alerts() -> dict[str, Any]:
     """
     Manually trigger an alert check and return results.
@@ -464,7 +466,7 @@ async def test_alerts() -> dict[str, Any]:
     }
 
 
-@app.get("/schema/{template_code}")
+@router.get("/schema/{template_code}")
 async def get_schema(template_code: str) -> dict[str, Any]:
     """Get the PostgreSQL schema for a template."""
     if not state.postgres_pool:
@@ -521,7 +523,7 @@ async def get_schema(template_code: str) -> dict[str, Any]:
         }
 
 
-@app.post("/sync/batch/{template_code}", response_model=BatchSyncResponse)
+@router.post("/sync/batch/{template_code}", response_model=BatchSyncResponse)
 async def trigger_batch_sync(
     template_code: str,
     force: bool = False,
@@ -558,7 +560,7 @@ async def trigger_batch_sync(
     )
 
 
-@app.post("/sync/batch", response_model=list[BatchSyncResponse])
+@router.post("/sync/batch", response_model=list[BatchSyncResponse])
 async def trigger_batch_sync_all(
     force: bool = False,
     page_size: int = 100,
@@ -588,7 +590,7 @@ async def trigger_batch_sync_all(
     ]
 
 
-@app.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
+@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
 async def list_batch_jobs() -> list[BatchSyncJob]:
     """List all batch sync jobs."""
     if not state.batch_sync_service:
@@ -597,7 +599,7 @@ async def list_batch_jobs() -> list[BatchSyncJob]:
     return state.batch_sync_service.list_jobs()
 
 
-@app.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
+@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
 async def get_batch_job(job_id: str) -> BatchSyncJob:
     """Get a specific batch sync job by ID."""
     if not state.batch_sync_service:
@@ -610,7 +612,7 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
     return job
 
 
-@app.delete("/sync/batch/jobs/{job_id}")
+@router.delete("/sync/batch/jobs/{job_id}")
 async def cancel_batch_job(job_id: str) -> dict[str, Any]:
     """Cancel a running batch sync job."""
     if not state.batch_sync_service:
@@ -623,7 +625,7 @@ async def cancel_batch_job(job_id: str) -> dict[str, Any]:
         return {"status": "not_running", "job_id": job_id}
 
 
-@app.delete("/sync/batch/jobs")
+@router.delete("/sync/batch/jobs")
 async def clear_completed_jobs() -> dict[str, Any]:
     """Clear all completed/failed/cancelled jobs from memory."""
     if not state.batch_sync_service:
@@ -680,7 +682,7 @@ class AggregatedIntegrityResult(BaseModel):
     issues: list[IntegrityIssue] = Field(default_factory=list)
 
 
-@app.get("/health/integrity", response_model=AggregatedIntegrityResult)
+@router.get("/health/integrity", response_model=AggregatedIntegrityResult)
 async def aggregated_integrity_check(
     template_status: str = None,
     document_status: str = None,
@@ -836,7 +838,7 @@ async def aggregated_integrity_check(
 # =============================================================================
 
 
-@app.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse)
 async def unified_search(request: SearchRequest) -> SearchResponse:
     """
     Unified search across all WIP entity types.
@@ -860,7 +862,7 @@ async def unified_search(request: SearchRequest) -> SearchResponse:
     return await state.search_service.search(request)
 
 
-@app.get("/activity/recent", response_model=ActivityResponse)
+@router.get("/activity/recent", response_model=ActivityResponse)
 async def get_recent_activity(
     types: str | None = None,
     limit: int = 50
@@ -889,7 +891,7 @@ async def get_recent_activity(
     return await state.search_service.get_recent_activity(types=type_list, limit=limit)
 
 
-@app.get("/references/term/{term_id}/documents", response_model=TermDocumentsResponse)
+@router.get("/references/term/{term_id}/documents", response_model=TermDocumentsResponse)
 async def get_term_documents(
     term_id: str,
     limit: int = 100
@@ -916,7 +918,7 @@ async def get_term_documents(
     return await state.search_service.get_term_documents(term_id=term_id, limit=limit)
 
 
-@app.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
+@router.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
 async def get_entity_references(
     entity_type: str,
     entity_id: str
@@ -950,7 +952,7 @@ async def get_entity_references(
     )
 
 
-@app.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
+@router.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
 async def get_referenced_by(
     entity_type: str,
     entity_id: str,
@@ -992,19 +994,22 @@ async def get_referenced_by(
     )
 
 
-@app.get("/")
+@router.get("/")
 async def root():
     """Root endpoint."""
     return {
         "service": settings.service_name,
         "version": __version__,
-        "docs": "/docs",
-        "health": "/health",
-        "status": "/status",
-        "integrity": "/health/integrity",
-        "search": "/search",
-        "activity": "/activity/recent",
+        "docs": "/api/reporting-sync/docs",
+        "health": "/api/reporting-sync/health",
+        "status": "/api/reporting-sync/status",
+        "integrity": "/api/reporting-sync/health/integrity",
+        "search": "/api/reporting-sync/search",
+        "activity": "/api/reporting-sync/activity/recent",
     }
+
+
+app.include_router(router)
 
 
 if __name__ == "__main__":
