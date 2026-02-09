@@ -89,19 +89,19 @@ function deprecateTerm(term: Term) {
   showDeprecateDialog.value = true
 }
 
-function confirmDelete(term: Term) {
+function confirmDeactivate(term: Term) {
   confirm.require({
-    message: `Are you sure you want to delete the term "${term.label}"?`,
-    header: 'Delete Term',
+    message: `Are you sure you want to deactivate the term "${term.label}"? It can be restored later.`,
+    header: 'Deactivate Term',
     icon: 'pi pi-exclamation-triangle',
     rejectClass: 'p-button-secondary p-button-text',
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
         await termStore.deleteTerm(term.term_id)
-        uiStore.showSuccess('Term Deleted', `"${term.label}" has been deleted`)
+        uiStore.showSuccess('Term Deactivated', `"${term.label}" has been deactivated`)
       } catch (e) {
-        uiStore.showError('Delete Failed', (e as Error).message)
+        uiStore.showError('Deactivation Failed', (e as Error).message)
       }
     }
   })
@@ -216,9 +216,18 @@ async function onDeprecated() {
         </template>
       </Column>
 
-      <Column field="status" header="Status" sortable style="width: 10%">
+      <Column field="status" header="Status" sortable style="width: 14%">
         <template #body="{ data }">
-          <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+          <div class="status-cell">
+            <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+            <span v-if="data.status === 'deprecated' && data.replaced_by_term_id" class="replaced-by">
+              <i class="pi pi-arrow-right"></i>
+              <TruncatedId :id="data.replaced_by_term_id" :length="10" :show-copy="false" />
+            </span>
+            <span v-if="data.status === 'deprecated' && data.deprecated_reason" class="deprecated-reason" v-tooltip.top="data.deprecated_reason">
+              <i class="pi pi-info-circle"></i>
+            </span>
+          </div>
         </template>
       </Column>
 
@@ -245,13 +254,13 @@ async function onDeprecated() {
               @click="deprecateTerm(data)"
             />
             <Button
-              icon="pi pi-trash"
+              icon="pi pi-ban"
               severity="danger"
               text
               rounded
               size="small"
-              title="Delete"
-              @click="confirmDelete(data)"
+              title="Deactivate"
+              @click="confirmDeactivate(data)"
             />
           </div>
         </template>
@@ -366,6 +375,31 @@ async function onDeprecated() {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+
+.status-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+
+.replaced-by {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+}
+
+.replaced-by i {
+  font-size: 0.625rem;
+}
+
+.deprecated-reason {
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+  cursor: help;
 }
 
 .action-buttons {

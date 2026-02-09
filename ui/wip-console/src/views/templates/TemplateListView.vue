@@ -8,11 +8,11 @@ import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
-import Dialog from 'primevue/dialog'
+// Dialog removed - template creation now uses /templates/new route
 import ToggleSwitch from 'primevue/toggleswitch'
 import Panel from 'primevue/panel'
 import { useTemplateStore, useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
-import type { Template, CreateTemplateRequest } from '@/types'
+import type { Template } from '@/types'
 
 const router = useRouter()
 const confirm = useConfirm()
@@ -30,17 +30,11 @@ const wipCollapsed = ref(false)
 const statusOptions = [
   { label: 'All Status', value: null },
   { label: 'Active', value: 'active' },
-  { label: 'Deprecated', value: 'deprecated' },
-  { label: 'Inactive', value: 'inactive' }
+  { label: 'Deprecated (superseded)', value: 'deprecated' },
+  { label: 'Inactive (deactivated)', value: 'inactive' }
 ]
 
-// Create dialog
-const showCreateDialog = ref(false)
-const createForm = ref<CreateTemplateRequest>({
-  code: '',
-  name: '',
-  description: ''
-})
+// Create dialog removed — now navigates to /templates/new
 
 // Get namespace prefix for display
 const currentNamespacePrefix = computed(() => namespaceStore.current.toUpperCase())
@@ -118,49 +112,28 @@ async function loadTemplates() {
   }
 }
 
-function openCreateDialog() {
-  createForm.value = {
-    code: '',
-    name: '',
-    description: ''
-  }
-  showCreateDialog.value = true
-}
-
-async function createTemplate() {
-  if (!createForm.value.code || !createForm.value.name) {
-    uiStore.showWarn('Validation Error', 'Code and Name are required')
-    return
-  }
-
-  try {
-    const created = await templateStore.createTemplate(createForm.value)
-    showCreateDialog.value = false
-    uiStore.showSuccess('Template Created', `Template "${created.name}" has been created`)
-    router.push(`/templates/${created.template_id}`)
-  } catch (e) {
-    uiStore.showError('Failed to create template', e instanceof Error ? e.message : 'Unknown error')
-  }
+function createNewTemplate() {
+  router.push('/templates/new')
 }
 
 function viewTemplate(template: Template) {
   router.push(`/templates/${template.template_id}`)
 }
 
-function confirmDelete(template: Template) {
+function confirmDeactivate(template: Template) {
   confirm.require({
-    message: `Are you sure you want to delete "${template.name}"?`,
-    header: 'Delete Template',
+    message: `Are you sure you want to deactivate "${template.name}"? It can be restored later.`,
+    header: 'Deactivate Template',
     icon: 'pi pi-exclamation-triangle',
     rejectLabel: 'Cancel',
-    acceptLabel: 'Delete',
+    acceptLabel: 'Deactivate',
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
         await templateStore.deleteTemplate(template.template_id)
-        uiStore.showSuccess('Template Deleted', `Template "${template.name}" has been deleted`)
+        uiStore.showSuccess('Template Deactivated', `Template "${template.name}" has been deactivated`)
       } catch (e) {
-        uiStore.showError('Failed to delete', e instanceof Error ? e.message : 'Unknown error')
+        uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
       }
     }
   })
@@ -196,7 +169,7 @@ onMounted(loadTemplates)
       <Button
         label="Create Template"
         icon="pi pi-plus"
-        @click="openCreateDialog"
+        @click="createNewTemplate"
         :disabled="!authStore.isAuthenticated"
       />
     </div>
@@ -316,7 +289,7 @@ onMounted(loadTemplates)
                 rounded
                 size="small"
                 @click="router.push({ path: '/documents/table', query: { template: data.template_id } })"
-                v-tooltip="'View as Table'"
+                v-tooltip="'Browse Documents'"
               />
               <Button
                 icon="pi pi-pencil"
@@ -328,13 +301,13 @@ onMounted(loadTemplates)
                 v-tooltip="'Edit'"
               />
               <Button
-                icon="pi pi-trash"
+                icon="pi pi-ban"
                 severity="danger"
                 text
                 rounded
                 size="small"
-                @click="confirmDelete(data)"
-                v-tooltip="'Delete'"
+                @click="confirmDeactivate(data)"
+                v-tooltip="'Deactivate'"
               />
             </div>
           </template>
@@ -344,7 +317,7 @@ onMounted(loadTemplates)
           <div class="empty-state">
             <i class="pi pi-file-edit"></i>
             <p>No templates in this namespace</p>
-            <Button label="Create your first template" icon="pi pi-plus" @click="openCreateDialog" />
+            <Button label="Create your first template" icon="pi pi-plus" @click="createNewTemplate" />
           </div>
         </template>
       </DataTable>
@@ -437,56 +410,6 @@ onMounted(loadTemplates)
       </Panel>
     </div>
 
-    <!-- Create Template Dialog -->
-    <Dialog
-      v-model:visible="showCreateDialog"
-      header="Create Template"
-      :style="{ width: '500px' }"
-      modal
-    >
-      <div class="create-form">
-        <div class="form-field">
-          <label for="code">Code *</label>
-          <InputText
-            id="code"
-            v-model="createForm.code"
-            placeholder="e.g., PERSON, ADDRESS"
-            class="w-full"
-          />
-          <small>Unique identifier for the template</small>
-        </div>
-
-        <div class="form-field">
-          <label for="name">Name *</label>
-          <InputText
-            id="name"
-            v-model="createForm.name"
-            placeholder="e.g., Person Template"
-            class="w-full"
-          />
-        </div>
-
-        <div class="form-field">
-          <label for="description">Description</label>
-          <InputText
-            id="description"
-            v-model="createForm.description"
-            placeholder="Brief description of the template"
-            class="w-full"
-          />
-        </div>
-      </div>
-
-      <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="showCreateDialog = false" />
-        <Button
-          label="Create"
-          icon="pi pi-plus"
-          @click="createTemplate"
-          :loading="templateStore.loading"
-        />
-      </template>
-    </Dialog>
   </div>
 </template>
 

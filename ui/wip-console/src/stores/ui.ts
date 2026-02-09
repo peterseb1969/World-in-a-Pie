@@ -25,6 +25,10 @@ export const useUiStore = defineStore('ui', () => {
   }
 
   function showError(summary: string, detail?: string) {
+    // Suppress error toasts for auth-related errors (handled by session expired toast)
+    if (detail && (detail === 'Session expired. Please log in again.' || detail === 'Authentication required')) {
+      return
+    }
     showToast({ severity: 'error', summary, detail, life: 5000 })
   }
 

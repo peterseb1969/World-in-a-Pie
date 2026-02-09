@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
@@ -13,6 +13,7 @@ import type { Terminology } from '@/types'
 import TerminologyForm from './TerminologyForm.vue'
 
 const router = useRouter()
+const route = useRoute()
 const confirm = useConfirm()
 const terminologyStore = useTerminologyStore()
 const namespaceStore = useNamespaceStore()
@@ -55,6 +56,11 @@ onMounted(async () => {
   } catch (e) {
     uiStore.showError('Failed to load terminologies', (e as Error).message)
   }
+  // Auto-open create dialog if ?create=true
+  if (route.query.create === 'true') {
+    showCreateDialog.value = true
+    router.replace({ query: {} })
+  }
 })
 
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'info' | 'secondary' | 'contrast' | undefined {
@@ -75,19 +81,19 @@ function editTerminology(terminology: Terminology) {
   showEditDialog.value = true
 }
 
-function confirmDelete(terminology: Terminology) {
+function confirmDeactivate(terminology: Terminology) {
   confirm.require({
-    message: `Are you sure you want to delete "${terminology.name}"? This will also delete all terms in this terminology.`,
-    header: 'Delete Terminology',
+    message: `Are you sure you want to deactivate "${terminology.name}"? This will also deactivate all terms. It can be restored later.`,
+    header: 'Deactivate Terminology',
     icon: 'pi pi-exclamation-triangle',
     rejectClass: 'p-button-secondary p-button-text',
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
         await terminologyStore.deleteTerminology(terminology.terminology_id)
-        uiStore.showSuccess('Terminology Deleted', `"${terminology.name}" has been deleted`)
+        uiStore.showSuccess('Terminology Deactivated', `"${terminology.name}" has been deactivated`)
       } catch (e) {
-        uiStore.showError('Delete Failed', (e as Error).message)
+        uiStore.showError('Deactivation Failed', (e as Error).message)
       }
     }
   })
@@ -205,12 +211,12 @@ async function onUpdated() {
               @click="editTerminology(data)"
             />
             <Button
-              icon="pi pi-trash"
+              icon="pi pi-ban"
               severity="danger"
               text
               rounded
-              title="Delete"
-              @click="confirmDelete(data)"
+              title="Deactivate"
+              @click="confirmDeactivate(data)"
             />
           </div>
         </template>

@@ -41,60 +41,72 @@ interface MenuItem {
   children?: MenuItem[]
 }
 
-const menuItems: MenuItem[] = [
+interface MenuSection {
+  header?: string
+  items: MenuItem[]
+}
+
+const menuSections: MenuSection[] = [
   {
-    label: 'Dashboard',
-    icon: 'pi pi-home',
-    route: '/'
-  },
-  {
-    label: 'Namespaces',
-    icon: 'pi pi-database',
-    route: '/namespaces'
-  },
-  {
-    label: 'Terminologies',
-    icon: 'pi pi-book',
-    children: [
-      { label: 'Browse', icon: 'pi pi-list', route: '/terminologies' },
-      { label: 'Import', icon: 'pi pi-upload', route: '/terminologies/import' },
-      { label: 'Validate', icon: 'pi pi-check-circle', route: '/terminologies/validate' }
+    items: [
+      { label: 'Dashboard', icon: 'pi pi-home', route: '/' }
     ]
   },
   {
-    label: 'Templates',
-    icon: 'pi pi-file',
-    children: [
-      { label: 'Browse', icon: 'pi pi-list', route: '/templates' },
-      { label: 'New Template', icon: 'pi pi-plus', route: '/templates/new' }
+    header: 'Data',
+    items: [
+      {
+        label: 'Terminologies',
+        icon: 'pi pi-book',
+        children: [
+          { label: 'Browse', icon: 'pi pi-list', route: '/terminologies' },
+          { label: 'New Terminology', icon: 'pi pi-plus', route: '/terminologies?create=true' },
+          { label: 'Import', icon: 'pi pi-upload', route: '/terminologies/import' },
+          { label: 'Validate', icon: 'pi pi-check-circle', route: '/terminologies/validate' }
+        ]
+      },
+      {
+        label: 'Templates',
+        icon: 'pi pi-file',
+        children: [
+          { label: 'Browse', icon: 'pi pi-list', route: '/templates' },
+          { label: 'New Template', icon: 'pi pi-plus', route: '/templates/new' }
+        ]
+      },
+      {
+        label: 'Documents',
+        icon: 'pi pi-folder',
+        children: [
+          { label: 'Browse', icon: 'pi pi-list', route: '/documents' },
+          { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
+          { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
+        ]
+      },
+      {
+        label: 'Files',
+        icon: 'pi pi-images',
+        children: [
+          { label: 'Browse', icon: 'pi pi-list', route: '/files' },
+          { label: 'Orphans', icon: 'pi pi-exclamation-triangle', route: '/files/orphans' },
+          { label: 'Upload', icon: 'pi pi-upload', route: '/files/upload' }
+        ]
+      }
     ]
   },
   {
-    label: 'Documents',
-    icon: 'pi pi-folder',
-    children: [
-      { label: 'Browse', icon: 'pi pi-list', route: '/documents' },
-      { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
-      { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
+    header: 'Registry',
+    items: [
+      { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' },
+      {
+        label: 'Audit Trail',
+        icon: 'pi pi-history',
+        children: [
+          { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
+          { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
+        ]
+      }
     ]
-  },
-  {
-    label: 'Files',
-    icon: 'pi pi-images',
-    children: [
-      { label: 'Browse', icon: 'pi pi-list', route: '/files' },
-      { label: 'Orphans', icon: 'pi pi-exclamation-triangle', route: '/files/orphans' },
-      { label: 'Upload', icon: 'pi pi-upload', route: '/files/upload' }
-    ]
-  },
-  {
-    label: 'Audit Trail',
-    icon: 'pi pi-history',
-    children: [
-      { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
-      { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
-    ]
-  },
+  }
 ]
 
 const expandedMenus = ref<Record<string, boolean>>({
@@ -223,50 +235,56 @@ function toggleSidebar() {
       </div>
 
       <nav class="sidebar-nav">
-        <ul class="menu-list">
-          <template v-for="item in menuItems" :key="item.label">
-            <!-- Simple menu item -->
-            <li v-if="!item.children" class="menu-item">
-              <a
-                class="menu-link"
-                :class="{ active: isActiveRoute(item.route) }"
-                @click="navigate(item.route)"
-              >
-                <i :class="item.icon"></i>
-                <span v-if="!sidebarCollapsed" class="menu-label">{{ item.label }}</span>
-              </a>
-            </li>
+        <template v-for="section in menuSections" :key="section.header || 'main'">
+          <div v-if="section.header && !sidebarCollapsed" class="section-header">
+            {{ section.header }}
+          </div>
+          <div v-else-if="section.header && sidebarCollapsed" class="section-divider"></div>
+          <ul class="menu-list">
+            <template v-for="item in section.items" :key="item.label">
+              <!-- Simple menu item -->
+              <li v-if="!item.children" class="menu-item">
+                <a
+                  class="menu-link"
+                  :class="{ active: isActiveRoute(item.route) }"
+                  @click="navigate(item.route)"
+                >
+                  <i :class="item.icon"></i>
+                  <span v-if="!sidebarCollapsed" class="menu-label">{{ item.label }}</span>
+                </a>
+              </li>
 
-            <!-- Menu item with children -->
-            <li v-else class="menu-item has-children">
-              <a
-                class="menu-link parent"
-                :class="{ expanded: expandedMenus[item.label] }"
-                @click="toggleMenu(item.label)"
-              >
-                <i :class="item.icon"></i>
-                <span v-if="!sidebarCollapsed" class="menu-label">{{ item.label }}</span>
-                <i
-                  v-if="!sidebarCollapsed"
-                  class="pi expand-icon"
-                  :class="expandedMenus[item.label] ? 'pi-chevron-down' : 'pi-chevron-right'"
-                ></i>
-              </a>
-              <ul v-if="!sidebarCollapsed && expandedMenus[item.label]" class="submenu">
-                <li v-for="child in item.children" :key="child.label" class="menu-item">
-                  <a
-                    class="menu-link"
-                    :class="{ active: isActiveRoute(child.route) }"
-                    @click="navigate(child.route)"
-                  >
-                    <i :class="child.icon"></i>
-                    <span class="menu-label">{{ child.label }}</span>
-                  </a>
-                </li>
-              </ul>
-            </li>
-          </template>
-        </ul>
+              <!-- Menu item with children -->
+              <li v-else class="menu-item has-children">
+                <a
+                  class="menu-link parent"
+                  :class="{ expanded: expandedMenus[item.label] }"
+                  @click="toggleMenu(item.label)"
+                >
+                  <i :class="item.icon"></i>
+                  <span v-if="!sidebarCollapsed" class="menu-label">{{ item.label }}</span>
+                  <i
+                    v-if="!sidebarCollapsed"
+                    class="pi expand-icon"
+                    :class="expandedMenus[item.label] ? 'pi-chevron-down' : 'pi-chevron-right'"
+                  ></i>
+                </a>
+                <ul v-if="!sidebarCollapsed && expandedMenus[item.label]" class="submenu">
+                  <li v-for="child in item.children" :key="child.label" class="menu-item">
+                    <a
+                      class="menu-link"
+                      :class="{ active: isActiveRoute(child.route) }"
+                      @click="navigate(child.route)"
+                    >
+                      <i :class="child.icon"></i>
+                      <span class="menu-label">{{ child.label }}</span>
+                    </a>
+                  </li>
+                </ul>
+              </li>
+            </template>
+          </ul>
+        </template>
       </nav>
 
       <!-- Sidebar footer -->
@@ -546,6 +564,21 @@ function toggleSidebar() {
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem 0;
+}
+
+.section-header {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--p-text-muted-color);
+  padding: 0.75rem 1rem 0.25rem;
+}
+
+.section-divider {
+  height: 1px;
+  background: var(--p-surface-200);
+  margin: 0.5rem 0.75rem;
 }
 
 .menu-list {

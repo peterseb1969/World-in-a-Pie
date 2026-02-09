@@ -18,9 +18,14 @@ const authStore = useAuthStore()
 
 // Dialog state
 const showCreateDialog = ref(false)
+const showEditDialog = ref(false)
 const showStatsDialog = ref(false)
 const selectedStats = ref<NamespaceStats | null>(null)
 const loadingStats = ref(false)
+
+// Inline stats per namespace
+const inlineStats = ref<Record<string, Record<string, number>>>({})
+const loadingInlineStats = ref(false)
 
 // Create form
 const createForm = ref({
@@ -29,15 +34,42 @@ const createForm = ref({
   isolation_mode: 'open' as 'open' | 'strict'
 })
 
+// Edit form
+const editForm = ref({
+  prefix: '',
+  description: '',
+  isolation_mode: 'open' as 'open' | 'strict'
+})
+
 const isolationModeOptions = [
-  { label: 'Open (allow cross-namespace refs)', value: 'open' },
-  { label: 'Strict (same namespace only)', value: 'strict' }
+  { label: 'Open — Templates can reference terminologies from any namespace', value: 'open' },
+  { label: 'Strict — Only this namespace\'s terminologies', value: 'strict' }
 ]
 
 // Load on mount
-onMounted(() => {
-  namespaceStore.loadNamespaces()
+onMounted(async () => {
+  await namespaceStore.loadNamespaces()
+  loadAllInlineStats()
 })
+
+async function loadAllInlineStats() {
+  loadingInlineStats.value = true
+  for (const ns of namespaceStore.namespaces) {
+    try {
+      const stats = await namespaceStore.getNamespaceStats(ns.prefix)
+      inlineStats.value[ns.prefix] = stats.pools
+    } catch {
+      // Skip if stats unavailable
+    }
+  }
+  loadingInlineStats.value = false
+}
+
+function getInlineTotal(prefix: string): number {
+  const pools = inlineStats.value[prefix]
+  if (!pools) return 0
+  return Object.values(pools).reduce((a, b) => a + b, 0)
+}
 
 // Computed
 const namespaces = computed(() => namespaceStore.namespaces)
@@ -84,6 +116,29 @@ async function createNamespace() {
     showCreateDialog.value = false
   } catch (e) {
     uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to create namespace')
+  }
+}
+
+function openEditDialog(ns: Namespace) {
+  editForm.value = {
+    prefix: ns.prefix,
+    description: ns.description,
+    isolation_mode: ns.isolation_mode
+  }
+  showEditDialog.value = true
+}
+
+async function updateNamespace() {
+  try {
+    await namespaceStore.updateNamespace(editForm.value.prefix, {
+      description: editForm.value.description,
+      isolation_mode: editForm.value.isolation_mode,
+      updated_by: authStore.currentUser?.email || undefined
+    })
+    uiStore.showSuccess('Success', `Namespace "${editForm.value.prefix}" updated`)
+    showEditDialog.value = false
+  } catch (e) {
+    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to update namespace')
   }
 }
 
@@ -195,6 +250,15 @@ function getTotalEntities(stats: NamespaceStats): number {
               />
             </template>
           </Column>
+          <Column header="Entities" style="width: 100px">
+            <template #body="{ data }">
+              <span v-if="inlineStats[data.prefix]" class="entity-count">
+                {{ getInlineTotal(data.prefix) }}
+              </span>
+              <i v-else-if="loadingInlineStats" class="pi pi-spin pi-spinner" style="font-size: 0.75rem; color: var(--p-text-muted-color)"></i>
+              <span v-else class="entity-count">-</span>
+            </template>
+          </Column>
           <Column field="created_at" header="Created" sortable>
             <template #body="{ data }">
               {{ formatDate(data.created_at) }}
@@ -203,6 +267,14 @@ function getTotalEntities(stats: NamespaceStats): number {
           <Column header="Actions" style="width: 200px">
             <template #body="{ data }">
               <div class="action-buttons">
+                <Button
+                  icon="pi pi-pencil"
+                  text
+                  rounded
+                  size="small"
+                  v-tooltip.top="'Edit'"
+                  @click="openEditDialog(data)"
+                />
                 <Button
                   icon="pi pi-chart-bar"
                   text
@@ -308,6 +380,61 @@ function getTotalEntities(stats: NamespaceStats): number {
       </template>
     </Dialog>
 
+    <!-- Edit Dialog -->
+    <Dialog
+      v-model:visible="showEditDialog"
+      header="Edit Namespace"
+      :modal="true"
+      :style="{ width: '500px' }"
+    >
+      <div class="create-form">
+        <div class="field">
+          <label>Prefix</label>
+          <InputText
+            :model-value="editForm.prefix"
+            disabled
+            class="w-full"
+          />
+        </div>
+
+        <div class="field">
+          <label for="edit-description">Description</label>
+          <Textarea
+            id="edit-description"
+            v-model="editForm.description"
+            rows="2"
+            class="w-full"
+          />
+        </div>
+
+        <div class="field">
+          <label for="edit-isolation">Isolation Mode</label>
+          <Dropdown
+            id="edit-isolation"
+            v-model="editForm.isolation_mode"
+            :options="isolationModeOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="w-full"
+          />
+        </div>
+      </div>
+
+      <template #footer>
+        <Button
+          label="Cancel"
+          severity="secondary"
+          text
+          @click="showEditDialog = false"
+        />
+        <Button
+          label="Save"
+          @click="updateNamespace"
+          :loading="namespaceStore.loading"
+        />
+      </template>
+    </Dialog>
+
     <!-- Stats Dialog -->
     <Dialog
       v-model:visible="showStatsDialog"
@@ -392,6 +519,11 @@ function getTotalEntities(stats: NamespaceStats): number {
 
 .current-tag {
   font-size: 0.625rem;
+}
+
+.entity-count {
+  font-weight: 600;
+  color: var(--p-primary-color);
 }
 
 .action-buttons {

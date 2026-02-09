@@ -12,6 +12,8 @@ const props = defineProps<{
   editable: boolean
   terminologies: Terminology[]
   templates: Template[]
+  inheritedFields?: FieldDefinition[]
+  parentName?: string
 }>()
 
 const emit = defineEmits<{
@@ -124,6 +126,48 @@ function getTemplateName(id: string | undefined): string {
       />
     </div>
 
+    <!-- Inherited fields (read-only) -->
+    <div v-if="inheritedFields && inheritedFields.length > 0" class="inherited-section">
+      <div class="inherited-header">
+        <i class="pi pi-share-alt"></i>
+        <span>Inherited from <strong>{{ parentName || 'parent' }}</strong> (read-only)</span>
+      </div>
+      <DataTable
+        :value="inheritedFields"
+        size="small"
+        class="fields-table inherited-table"
+      >
+        <Column field="name" header="Name" style="min-width: 150px">
+          <template #body="{ data }">
+            <div class="field-name">
+              <code>{{ data.name }}</code>
+              <Tag v-if="data.mandatory" value="Required" severity="danger" />
+            </div>
+          </template>
+        </Column>
+        <Column field="label" header="Label" style="min-width: 150px" />
+        <Column field="type" header="Type" style="width: 120px">
+          <template #body="{ data }">
+            <Tag :value="data.type" :severity="getTypeSeverity(data.type)" />
+          </template>
+        </Column>
+        <Column header="Reference" style="min-width: 150px">
+          <template #body="{ data }">
+            <div class="reference-info" v-if="data.type === 'term' && data.terminology_ref">
+              <i class="pi pi-book"></i>
+              {{ getTerminologyName(data.terminology_ref) }}
+            </div>
+            <div class="reference-info" v-else-if="data.type === 'object' && data.template_ref">
+              <i class="pi pi-file-edit"></i>
+              {{ getTemplateName(data.template_ref) }}
+            </div>
+            <span v-else class="no-reference">-</span>
+          </template>
+        </Column>
+      </DataTable>
+    </div>
+
+    <!-- Own fields -->
     <DataTable
       :value="localFields"
       stripedRows
@@ -394,5 +438,27 @@ function getTemplateName(id: string | undefined): string {
 
 .empty-hint strong {
   color: var(--p-primary-color);
+}
+
+.inherited-section {
+  border: 1px solid var(--p-surface-200);
+  border-radius: var(--p-border-radius);
+  overflow: hidden;
+  opacity: 0.7;
+}
+
+.inherited-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--p-surface-50);
+  border-bottom: 1px solid var(--p-surface-200);
+  font-size: 0.8125rem;
+  color: var(--p-text-muted-color);
+}
+
+.inherited-table :deep(.p-datatable-tbody > tr) {
+  background: var(--p-surface-50);
 }
 </style>

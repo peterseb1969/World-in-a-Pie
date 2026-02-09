@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import Card from 'primevue/card'
+import Panel from 'primevue/panel'
 import Button from 'primevue/button'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
@@ -96,6 +97,22 @@ const templateOptions = computed(() => {
 // Field names for identity fields dropdown
 const fieldNames = computed(() => form.value.fields.map(f => f.name))
 
+// Inherited fields from parent template (resolved minus raw)
+const inheritedFields = computed(() => {
+  if (!form.value.extends) return []
+  const resolved = templateStore.currentTemplate
+  const raw = templateStore.currentTemplateRaw
+  if (!resolved || !raw) return []
+  const ownFieldNames = new Set(raw.fields.map(f => f.name))
+  return resolved.fields.filter(f => !ownFieldNames.has(f.name))
+})
+
+const parentTemplateName = computed(() => {
+  if (!form.value.extends) return ''
+  const parent = templateStore.templates.find(t => t.template_id === form.value.extends)
+  return parent ? parent.name : ''
+})
+
 // Current template being viewed
 const template = computed(() =>
   showRawView.value ? templateStore.currentTemplateRaw : templateStore.currentTemplate
@@ -184,6 +201,7 @@ async function saveTemplate() {
         },
         reporting: reportingConfig
       })
+      clearDraft()
       uiStore.showSuccess('Template Created', `Template "${created.name}" has been created`)
       router.push(`/templates/${created.template_id}`)
     } else if (props.id) {
@@ -205,8 +223,29 @@ async function saveTemplate() {
       }
       const result = await templateStore.updateTemplate(props.id, updateData)
 
+      clearDraft()
       if (result.is_new_version) {
-        uiStore.showSuccess('Template Updated', `New version ${result.version} created`)
+        uiStore.showSuccess('Template Updated', `New version v${result.version} created`)
+        // Offer to deactivate previous version
+        const previousId = props.id
+        confirm.require({
+          message: `Deactivate previous version (v${(result.version || 1) - 1})? Documents using it will still reference it, but no new documents can be created with it.`,
+          header: 'Deactivate Previous Version?',
+          icon: 'pi pi-question-circle',
+          rejectLabel: 'Keep Active',
+          acceptLabel: 'Deactivate',
+          rejectClass: 'p-button-secondary p-button-text',
+          accept: async () => {
+            try {
+              if (previousId) {
+                await templateStore.deleteTemplate(previousId)
+                uiStore.showSuccess('Previous Version Deactivated', 'The old version has been deactivated')
+              }
+            } catch (e) {
+              uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
+            }
+          }
+        })
         // Navigate to the new template version
         router.push(`/templates/${result.template_id}`)
       } else {
@@ -235,23 +274,23 @@ function cancelEdit() {
   }
 }
 
-function confirmDelete() {
+function confirmDeactivate() {
   if (!template.value) return
 
   confirm.require({
-    message: `Are you sure you want to delete "${template.value.name}"?`,
-    header: 'Delete Template',
+    message: `Are you sure you want to deactivate "${template.value.name}"? It can be restored later.`,
+    header: 'Deactivate Template',
     icon: 'pi pi-exclamation-triangle',
     rejectLabel: 'Cancel',
-    acceptLabel: 'Delete',
+    acceptLabel: 'Deactivate',
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
         await templateStore.deleteTemplate(template.value!.template_id)
-        uiStore.showSuccess('Template Deleted', `Template has been deleted`)
+        uiStore.showSuccess('Template Deactivated', `Template has been deactivated`)
         router.push('/templates')
       } catch (e) {
-        uiStore.showError('Failed to delete', e instanceof Error ? e.message : 'Unknown error')
+        uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
       }
     }
   })
@@ -300,6 +339,80 @@ function onRulesUpdate(rules: ValidationRule[]) {
   form.value.rules = rules
 }
 
+// --- Draft auto-save (Item 30) ---
+const DRAFT_KEY_PREFIX = 'wip-template-draft-'
+const showDraftResume = ref(false)
+
+function getDraftKey(): string {
+  return `${DRAFT_KEY_PREFIX}${props.id || 'new'}`
+}
+
+function saveDraft() {
+  try {
+    localStorage.setItem(getDraftKey(), JSON.stringify(form.value))
+  } catch {
+    // localStorage full or unavailable - ignore
+  }
+}
+
+function loadDraft(): boolean {
+  try {
+    const saved = localStorage.getItem(getDraftKey())
+    if (saved) {
+      form.value = JSON.parse(saved)
+      return true
+    }
+  } catch {
+    // Corrupted draft - ignore
+  }
+  return false
+}
+
+function clearDraft() {
+  localStorage.removeItem(getDraftKey())
+}
+
+function dismissDraft() {
+  showDraftResume.value = false
+  clearDraft()
+}
+
+function resumeDraft() {
+  loadDraft()
+  showDraftResume.value = false
+  isEditing.value = true
+}
+
+// Auto-save when editing
+watch(form, () => {
+  if (isEditing.value || isNew.value) {
+    saveDraft()
+  }
+}, { deep: true })
+
+// --- Live validation (Item 31) ---
+const validationErrors = computed(() => {
+  const errs: string[] = []
+  if ((isEditing.value || isNew.value) && form.value.code) {
+    // Check field name uniqueness
+    const names = form.value.fields.map(f => f.name)
+    const dupes = names.filter((n, i) => names.indexOf(n) !== i)
+    if (dupes.length > 0) {
+      errs.push(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`)
+    }
+    // Check required fields
+    if (!form.value.code.trim()) errs.push('Code is required')
+    if (!form.value.name.trim()) errs.push('Name is required')
+    // Check term refs exist
+    for (const f of form.value.fields) {
+      if (f.type === 'term' && !f.terminology_ref) {
+        errs.push(`Field "${f.name}" (term type) has no terminology reference`)
+      }
+    }
+  }
+  return errs
+})
+
 // Watch for route changes (when navigating between templates)
 watch(() => props.id, loadTemplate)
 
@@ -314,6 +427,10 @@ onMounted(async () => {
 
   if (isNew.value) {
     isEditing.value = true
+    // Check for existing draft
+    if (localStorage.getItem(getDraftKey())) {
+      showDraftResume.value = true
+    }
     form.value = {
       code: '',
       name: '',
@@ -338,6 +455,10 @@ onMounted(async () => {
     }
   } else {
     await loadTemplate()
+    // Check for existing draft
+    if (localStorage.getItem(getDraftKey())) {
+      showDraftResume.value = true
+    }
   }
 })
 </script>
@@ -376,7 +497,7 @@ onMounted(async () => {
         </template>
         <template v-else>
           <Button
-            label="View as Table"
+            label="Browse Documents"
             icon="pi pi-table"
             severity="secondary"
             @click="router.push({ path: '/documents/table', query: { template: template?.template_id } })"
@@ -393,11 +514,12 @@ onMounted(async () => {
             @click="isEditing = true"
           />
           <Button
-            icon="pi pi-trash"
+            icon="pi pi-ban"
             severity="danger"
             text
             rounded
-            @click="confirmDelete"
+            @click="confirmDeactivate"
+            v-tooltip="'Deactivate'"
           />
         </template>
       </div>
@@ -414,6 +536,24 @@ onMounted(async () => {
     </div>
 
     <div v-else class="detail-content">
+      <!-- Draft resume banner -->
+      <Message v-if="showDraftResume" severity="info" :closable="false" class="draft-banner">
+        <div class="draft-message">
+          <span>You have an unsaved draft for this template.</span>
+          <div class="draft-actions">
+            <Button label="Resume Editing" icon="pi pi-replay" size="small" @click="resumeDraft" />
+            <Button label="Discard" severity="secondary" text size="small" @click="dismissDraft" />
+          </div>
+        </div>
+      </Message>
+
+      <!-- Live validation warnings -->
+      <Message v-if="validationErrors.length > 0 && (isEditing || isNew)" severity="warn" :closable="false" class="validation-banner">
+        <ul class="validation-list">
+          <li v-for="err in validationErrors" :key="err">{{ err }}</li>
+        </ul>
+      </Message>
+
       <!-- Warning when no terminologies available -->
       <div v-if="templateStore.terminologies.length === 0 && (isEditing || isNew)" class="terminology-warning">
         <i class="pi pi-info-circle"></i>
@@ -430,127 +570,130 @@ onMounted(async () => {
         <span>{{ showRawView ? 'Raw (own fields only)' : 'Resolved (with inherited)' }}</span>
       </div>
 
-      <!-- Basic Info Card -->
+      <!-- Template Info & Metadata (combined) -->
       <Card class="info-card">
         <template #title>Template Information</template>
         <template #content>
-          <div class="form-grid">
-            <div class="form-field">
-              <label for="code">Code *</label>
-              <InputText
-                id="code"
-                v-model="form.code"
-                :disabled="!isEditing && !isNew"
-                placeholder="e.g., PERSON"
-                class="w-full"
-              />
+          <div class="info-meta-grid">
+            <!-- Left column: Core info -->
+            <div class="info-column">
+              <div class="form-grid single-col">
+                <div class="form-field">
+                  <label for="code">Code *</label>
+                  <InputText
+                    id="code"
+                    v-model="form.code"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="e.g., PERSON"
+                    class="w-full"
+                  />
+                </div>
+
+                <div class="form-field">
+                  <label for="name">Name *</label>
+                  <InputText
+                    id="name"
+                    v-model="form.name"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="e.g., Person Template"
+                    class="w-full"
+                  />
+                </div>
+
+                <div class="form-field">
+                  <label for="description">Description</label>
+                  <Textarea
+                    id="description"
+                    v-model="form.description"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="Describe the purpose of this template"
+                    rows="2"
+                    class="w-full"
+                  />
+                </div>
+
+                <div class="form-field">
+                  <label for="extends">Extends <small class="label-hint">Inherit fields from parent template</small></label>
+                  <Select
+                    id="extends"
+                    v-model="form.extends"
+                    :options="templateOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="Select parent template"
+                    showClear
+                    class="w-full"
+                  />
+                  <small v-if="form.extends">This template inherits fields from the parent</small>
+                </div>
+
+                <div class="form-field">
+                  <label for="identity">Identity Fields <small class="label-hint">Fields determining document uniqueness for versioning</small></label>
+                  <MultiSelect
+                    id="identity"
+                    v-model="form.identity_fields"
+                    :options="fieldNames"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="Select fields for document identity"
+                    display="chip"
+                    class="w-full"
+                  />
+                  <small v-if="form.identity_fields.length > 0" class="identity-hint">
+                    Documents will be identified by: {{ form.identity_fields.join(' + ') }}
+                  </small>
+                  <Message v-else severity="warn" :closable="false" class="identity-warning">
+                    No identity fields selected. Document versioning (upsert) will not work - each save creates a new document.
+                  </Message>
+                </div>
+              </div>
             </div>
 
-            <div class="form-field">
-              <label for="name">Name *</label>
-              <InputText
-                id="name"
-                v-model="form.name"
-                :disabled="!isEditing && !isNew"
-                placeholder="e.g., Person Template"
-                class="w-full"
-              />
-            </div>
+            <!-- Right column: Metadata -->
+            <div class="meta-column">
+              <h4 class="column-subheading">Metadata</h4>
+              <div class="form-grid single-col">
+                <div class="form-field">
+                  <label for="domain">Domain</label>
+                  <InputText
+                    id="domain"
+                    v-model="form.metadata.domain"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="e.g., hr, finance"
+                    class="w-full"
+                  />
+                </div>
 
-            <div class="form-field full-width">
-              <label for="description">Description</label>
-              <Textarea
-                id="description"
-                v-model="form.description"
-                :disabled="!isEditing && !isNew"
-                placeholder="Describe the purpose of this template"
-                rows="2"
-                class="w-full"
-              />
-            </div>
+                <div class="form-field">
+                  <label for="category">Category</label>
+                  <InputText
+                    id="category"
+                    v-model="form.metadata.category"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="e.g., master_data, transaction"
+                    class="w-full"
+                  />
+                </div>
 
-            <div class="form-field">
-              <label for="extends">Extends (Parent Template)</label>
-              <Select
-                id="extends"
-                v-model="form.extends"
-                :options="templateOptions"
-                optionLabel="label"
-                optionValue="value"
-                :disabled="!isEditing && !isNew"
-                placeholder="Select parent template"
-                showClear
-                class="w-full"
-              />
-              <small v-if="form.extends">This template inherits fields from the parent</small>
-            </div>
-
-            <div class="form-field">
-              <label for="identity">Identity Fields</label>
-              <MultiSelect
-                id="identity"
-                v-model="form.identity_fields"
-                :options="fieldNames"
-                :disabled="!isEditing && !isNew"
-                placeholder="Select fields for document identity"
-                display="chip"
-                class="w-full"
-              />
-              <small v-if="form.identity_fields.length > 0" class="identity-hint">
-                Documents will be identified by: {{ form.identity_fields.join(' + ') }}
-              </small>
-              <Message v-else severity="warn" :closable="false" class="identity-warning">
-                No identity fields selected. Document versioning (upsert) will not work - each save creates a new document.
-              </Message>
+                <div class="form-field">
+                  <label for="tags">Tags</label>
+                  <Chips
+                    id="tags"
+                    v-model="form.metadata.tags"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="Add tags"
+                    class="w-full"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </template>
       </Card>
 
-      <!-- Metadata Card -->
-      <Card class="metadata-card">
-        <template #title>Metadata</template>
-        <template #content>
-          <div class="form-grid">
-            <div class="form-field">
-              <label for="domain">Domain</label>
-              <InputText
-                id="domain"
-                v-model="form.metadata.domain"
-                :disabled="!isEditing && !isNew"
-                placeholder="e.g., hr, finance"
-                class="w-full"
-              />
-            </div>
-
-            <div class="form-field">
-              <label for="category">Category</label>
-              <InputText
-                id="category"
-                v-model="form.metadata.category"
-                :disabled="!isEditing && !isNew"
-                placeholder="e.g., master_data, transaction"
-                class="w-full"
-              />
-            </div>
-
-            <div class="form-field full-width">
-              <label for="tags">Tags</label>
-              <Chips
-                id="tags"
-                v-model="form.metadata.tags"
-                :disabled="!isEditing && !isNew"
-                placeholder="Add tags"
-                class="w-full"
-              />
-            </div>
-          </div>
-        </template>
-      </Card>
-
-      <!-- Reporting Card -->
-      <Card class="reporting-card">
-        <template #title>
+      <!-- Reporting Panel (collapsible) -->
+      <Panel class="reporting-panel" toggleable :collapsed="!form.reporting.sync_enabled">
+        <template #header>
           <div class="card-title-with-toggle">
             <span>Reporting / Analytics</span>
             <div class="sync-toggle" v-if="isEditing || isNew">
@@ -561,7 +704,6 @@ onMounted(async () => {
                  :severity="form.reporting.sync_enabled ? 'success' : 'secondary'" />
           </div>
         </template>
-        <template #content>
           <div v-if="form.reporting.sync_enabled" class="form-grid">
             <div class="form-field">
               <label for="sync_strategy">Sync Strategy</label>
@@ -578,7 +720,7 @@ onMounted(async () => {
             </div>
 
             <div class="form-field">
-              <label for="table_name">Custom Table Name</label>
+              <label for="table_name">Reporting Table Name <small class="label-hint">PostgreSQL table for reporting sync</small></label>
               <InputText
                 id="table_name"
                 v-model="form.reporting.table_name"
@@ -630,8 +772,7 @@ onMounted(async () => {
             <i class="pi pi-info-circle"></i>
             <span>Documents of this template will not be synced to PostgreSQL for reporting.</span>
           </div>
-        </template>
-      </Card>
+      </Panel>
 
       <!-- Tabs for Fields, Rules, Preview -->
       <TabView>
@@ -648,6 +789,8 @@ onMounted(async () => {
             :editable="isEditing || isNew"
             :terminologies="templateStore.terminologies"
             :templates="templateStore.templates"
+            :inherited-fields="inheritedFields"
+            :parent-name="parentTemplateName"
             @update="onFieldsUpdate"
           />
         </TabPanel>
@@ -805,10 +948,27 @@ onMounted(async () => {
   font-size: 0.875rem;
 }
 
+.info-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
+
+.column-subheading {
+  margin: 0 0 0.75rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--p-text-muted-color);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 1rem;
+}
+
+.form-grid.single-col {
+  grid-template-columns: 1fr;
 }
 
 .form-field {
@@ -827,6 +987,12 @@ onMounted(async () => {
 }
 
 .form-field small {
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+}
+
+.label-hint {
+  font-weight: 400;
   color: var(--p-text-muted-color);
   font-size: 0.75rem;
 }
@@ -853,6 +1019,10 @@ onMounted(async () => {
 }
 
 @media (max-width: 768px) {
+  .info-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
   .form-grid {
     grid-template-columns: 1fr;
   }
@@ -920,7 +1090,39 @@ onMounted(async () => {
   font-size: 1rem;
 }
 
-.reporting-card :deep(.p-card-title) {
+.draft-banner :deep(.p-message-text),
+.validation-banner :deep(.p-message-text) {
   width: 100%;
+}
+
+.draft-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 1rem;
+}
+
+.draft-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.validation-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.8125rem;
+}
+
+.validation-list li {
+  margin: 0.125rem 0;
+}
+
+.reporting-panel :deep(.p-panel-header) {
+  width: 100%;
+}
+
+.reporting-panel .card-title-with-toggle {
+  flex: 1;
 }
 </style>

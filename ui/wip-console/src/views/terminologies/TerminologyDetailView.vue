@@ -111,22 +111,22 @@ async function onUpdated() {
   await loadTerminology()
 }
 
-function confirmDelete() {
+function confirmDeactivate() {
   if (!terminologyStore.currentTerminology) return
 
   confirm.require({
-    message: `Are you sure you want to delete "${terminologyStore.currentTerminology.name}"? This will also delete all terms.`,
-    header: 'Delete Terminology',
+    message: `Are you sure you want to deactivate "${terminologyStore.currentTerminology.name}"? This will also deactivate all terms. It can be restored later.`,
+    header: 'Deactivate Terminology',
     icon: 'pi pi-exclamation-triangle',
     rejectClass: 'p-button-secondary p-button-text',
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
         await terminologyStore.deleteTerminology(props.id)
-        uiStore.showSuccess('Terminology Deleted')
+        uiStore.showSuccess('Terminology Deactivated')
         router.push('/terminologies')
       } catch (e) {
-        uiStore.showError('Delete Failed', (e as Error).message)
+        uiStore.showError('Deactivation Failed', (e as Error).message)
       }
     }
   })
@@ -230,10 +230,10 @@ function getFieldsUsingTerminology(template: Template): string[] {
             @click="exportTerminology('json')"
           />
           <Button
-            icon="pi pi-trash"
+            icon="pi pi-ban"
             severity="danger"
-            title="Delete"
-            @click="confirmDelete"
+            title="Deactivate"
+            @click="confirmDeactivate"
           />
         </div>
       </div>
@@ -244,24 +244,6 @@ function getFieldsUsingTerminology(template: Template): string[] {
             <div class="info-item">
               <span class="info-label">Terms</span>
               <span class="info-value">{{ terminologyStore.currentTerminology.term_count }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Case Sensitive</span>
-              <span class="info-value">
-                <i :class="terminologyStore.currentTerminology.case_sensitive ? 'pi pi-check' : 'pi pi-times'" />
-              </span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Allow Multiple</span>
-              <span class="info-value">
-                <i :class="terminologyStore.currentTerminology.allow_multiple ? 'pi pi-check' : 'pi pi-times'" />
-              </span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">Extensible</span>
-              <span class="info-value">
-                <i :class="terminologyStore.currentTerminology.extensible ? 'pi pi-check' : 'pi pi-times'" />
-              </span>
             </div>
             <div class="info-item">
               <span class="info-label">Language</span>

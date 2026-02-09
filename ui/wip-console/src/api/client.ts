@@ -113,11 +113,16 @@ abstract class BaseApiClient {
             if (onAuthError) {
               onAuthError()
             }
-            // Return a user-friendly message
-            return Promise.reject(new Error('Session expired. Please log in again.'))
+            // Return a quiet rejection — the auth error handler already redirects
+            // Using a custom property to suppress toast display
+            const err = new Error('Session expired. Please log in again.')
+            ;(err as any).isAuthError = true
+            return Promise.reject(err)
           }
           // If no auth was set, just return the error without triggering logout
-          return Promise.reject(new Error(message || 'Authentication required'))
+          const err = new Error(message || 'Authentication required')
+          ;(err as any).isAuthError = true
+          return Promise.reject(err)
         }
 
         return Promise.reject(new Error(message))

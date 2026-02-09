@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import Button from 'primevue/button'
 import FileUpload from 'primevue/fileupload'
+import InputText from 'primevue/inputtext'
 import ProgressBar from 'primevue/progressbar'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
@@ -28,6 +29,10 @@ const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const storageEnabled = ref<boolean | null>(null)
+
+// Manual file ID entry
+const manualFileId = ref('')
+const linkingFile = ref(false)
 
 // Get file field config from metadata
 const fileConfig = computed(() => {
@@ -154,6 +159,51 @@ function removeFile(fileId: string) {
   }
 }
 
+// Link an existing file by ID
+async function linkExistingFile() {
+  const fileId = manualFileId.value.trim()
+  if (!fileId) return
+
+  // Validate format
+  if (!/^FILE-[A-Z0-9]{6,}$/i.test(fileId)) {
+    uiStore.showError('Invalid File ID', 'File ID must be in the format FILE-XXXXXX')
+    return
+  }
+
+  // Check if already linked
+  if (currentFileIds.value.includes(fileId)) {
+    uiStore.showError('Already Linked', 'This file is already attached to this field')
+    return
+  }
+
+  // Check single-file constraint
+  if (!isMultiple.value && currentFileIds.value.length > 0) {
+    uiStore.showError('Link Error', 'This field only allows a single file')
+    return
+  }
+
+  linkingFile.value = true
+  try {
+    // Verify the file exists
+    const file = await fileStoreClient.getFile(fileId)
+    const newFileIds = [...currentFileIds.value, file.file_id]
+    uploadedFiles.value.push(file)
+
+    if (isMultiple.value) {
+      emit('update:modelValue', newFileIds)
+    } else {
+      emit('update:modelValue', newFileIds[0] || null)
+    }
+
+    manualFileId.value = ''
+    uiStore.showSuccess('File Linked', `Linked existing file: ${file.filename}`)
+  } catch {
+    uiStore.showError('File Not Found', `No file found with ID "${fileId}"`)
+  } finally {
+    linkingFile.value = false
+  }
+}
+
 // Download a file
 async function downloadFile(file: FileEntity) {
   try {
@@ -269,7 +319,7 @@ checkStorageEnabled()
         class="upload-progress"
       />
 
-      <!-- Upload button -->
+      <!-- Upload / Link section -->
       <div v-if="!disabled && (isMultiple || currentFileIds.length === 0)" class="upload-section">
         <FileUpload
           mode="basic"
@@ -287,6 +337,29 @@ checkStorageEnabled()
             Allowed types: {{ fileConfig.allowedTypes.join(', ') }}
           </small>
           <small>Max size: {{ fileConfig.maxSizeMb }} MB</small>
+        </div>
+
+        <div class="link-divider">
+          <span>or link an existing file</span>
+        </div>
+
+        <div class="link-existing">
+          <InputText
+            v-model="manualFileId"
+            placeholder="FILE-XXXXXX"
+            size="small"
+            :disabled="linkingFile"
+            @keydown.enter="linkExistingFile"
+          />
+          <Button
+            label="Link"
+            icon="pi pi-link"
+            size="small"
+            severity="secondary"
+            :loading="linkingFile"
+            :disabled="!manualFileId.trim()"
+            @click="linkExistingFile"
+          />
         </div>
       </div>
 
@@ -391,6 +464,33 @@ checkStorageEnabled()
   gap: 1rem;
   color: var(--p-text-muted-color);
   font-size: 0.75rem;
+}
+
+.link-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.75rem;
+}
+
+.link-divider::before,
+.link-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background-color: var(--p-surface-200);
+}
+
+.link-existing {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.link-existing :deep(.p-inputtext) {
+  flex: 1;
+  font-family: monospace;
 }
 
 .empty-state {

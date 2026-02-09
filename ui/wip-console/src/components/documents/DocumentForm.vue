@@ -14,6 +14,17 @@ const emit = defineEmits<{
   'update:modelValue': [value: Record<string, unknown>]
 }>()
 
+// Field types that should span full width (2 columns)
+const fullWidthTypes = new Set(['object', 'array', 'file', 'reference'])
+
+// Check if a field should span full width
+function isFullWidth(field: typeof props.template.fields[0]): boolean {
+  if (fullWidthTypes.has(field.type)) return true
+  // Textarea fields (string with long max_length)
+  if (field.type === 'string' && field.validation?.max_length && field.validation.max_length > 200) return true
+  return false
+}
+
 // Get sorted fields (mandatory first, then alphabetically)
 const sortedFields = computed(() => {
   return [...props.template.fields].sort((a, b) => {
@@ -69,7 +80,7 @@ function isIdentityField(fieldName: string): boolean {
       v-for="field in sortedFields"
       :key="field.name"
       class="form-field"
-      :class="{ 'has-error': hasFieldError(field.name) }"
+      :class="{ 'has-error': hasFieldError(field.name), 'full-width': isFullWidth(field) }"
     >
       <label :for="field.name" class="field-label">
         {{ field.label }}
@@ -100,9 +111,9 @@ function isIdentityField(fieldName: string): boolean {
 
 <style scoped>
 .document-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
 }
 
 .form-field {
@@ -111,10 +122,23 @@ function isIdentityField(fieldName: string): boolean {
   gap: 0.5rem;
 }
 
+.form-field.full-width {
+  grid-column: span 2;
+}
+
 .form-field.has-error {
   border-left: 3px solid var(--p-red-500);
   padding-left: 0.75rem;
-  margin-left: -0.75rem;
+}
+
+@media (max-width: 768px) {
+  .document-form {
+    grid-template-columns: 1fr;
+  }
+
+  .form-field.full-width {
+    grid-column: span 1;
+  }
 }
 
 .field-label {

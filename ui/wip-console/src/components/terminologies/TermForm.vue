@@ -170,7 +170,7 @@ function onCodeChange() {
             @blur="onCodeChange"
           />
           <small v-if="errors.code" class="p-error">{{ errors.code }}</small>
-          <small v-else class="help-text">Uppercase letters, numbers, underscores</small>
+          <small v-else class="help-text">Machine identifier (e.g., APPROVED). Uppercase letters, numbers, underscores.</small>
         </div>
       </div>
 
@@ -184,7 +184,7 @@ function onCodeChange() {
             placeholder="e.g., approved"
           />
           <small v-if="errors.value" class="p-error">{{ errors.value }}</small>
-          <small v-else class="help-text">Stored in documents</small>
+          <small v-else class="help-text">The value stored in document data fields</small>
         </div>
 
         <div class="form-field">
@@ -208,7 +208,7 @@ function onCodeChange() {
             placeholder="e.g., Approved"
           />
           <small v-if="errors.label" class="p-error">{{ errors.label }}</small>
-          <small v-else class="help-text">Display text in UI</small>
+          <small v-else class="help-text">Human-readable display text shown in dropdowns and forms</small>
         </div>
       </div>
 

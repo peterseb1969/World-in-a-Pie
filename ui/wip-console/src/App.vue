@@ -27,6 +27,12 @@ onMounted(async () => {
   // When a 401/403 is received, clear auth and redirect to home
   setAuthErrorHandler(() => {
     authStore.logout()
+    toast.add({
+      severity: 'warn',
+      summary: 'Session Expired',
+      detail: 'Your session has expired. Please log in again.',
+      life: 5000
+    })
     router.push('/')
   })
 })

@@ -9,8 +9,12 @@ import Select from 'primevue/select'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import FileField from './FileField.vue'
+import Dialog from 'primevue/dialog'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
 import { useDocumentStore } from '@/stores'
-import type { FieldDefinition, Term } from '@/types'
+import { templateStoreClient, documentStoreClient } from '@/api/client'
+import type { FieldDefinition, Term, Template } from '@/types'
 import { SEMANTIC_TYPES } from '@/types'
 
 const props = defineProps<{
@@ -30,10 +34,51 @@ const documentStore = useDocumentStore()
 const terms = ref<Term[]>([])
 const loadingTerms = ref(false)
 
+// For object fields with template_ref
+const nestedTemplate = ref<Template | null>(null)
+const loadingNestedTemplate = ref(false)
+
 // For array fields
 const arrayValue = computed(() => {
   return (props.modelValue as unknown[]) || []
 })
+
+// Load nested template for object-type fields
+async function loadNestedTemplate() {
+  if (props.field.type !== 'object' || !props.field.template_ref) {
+    return
+  }
+
+  loadingNestedTemplate.value = true
+  try {
+    nestedTemplate.value = await templateStoreClient.getTemplate(props.field.template_ref)
+  } catch (e) {
+    console.warn('Failed to load nested template:', e)
+    nestedTemplate.value = null
+  } finally {
+    loadingNestedTemplate.value = false
+  }
+}
+
+// Handle nested object field updates
+function handleObjectFieldUpdate(fieldName: string, value: unknown) {
+  const current = (props.modelValue as Record<string, unknown>) || {}
+  const updated = { ...current }
+
+  if (value === null || value === undefined || value === '') {
+    delete updated[fieldName]
+  } else {
+    updated[fieldName] = value
+  }
+
+  emit('update:modelValue', updated)
+}
+
+// Get value of a nested object field
+function getObjectFieldValue(fieldName: string): unknown {
+  const current = (props.modelValue as Record<string, unknown>) || {}
+  return current[fieldName] ?? null
+}
 
 // Load terms for term-type fields
 async function loadTerms() {
@@ -125,6 +170,44 @@ function handleTermInput(value: string | null) {
 
 function handleReferenceInput(value: string | undefined) {
   emit('update:modelValue', value || null)
+}
+
+// Document reference search
+const showRefSearch = ref(false)
+const refSearchResults = ref<Array<Record<string, unknown>>>([])
+const refSearchLoading = ref(false)
+const refSearchQuery = ref('')
+
+async function openRefSearch() {
+  refSearchQuery.value = ''
+  refSearchResults.value = []
+  showRefSearch.value = true
+  // Auto-search with target templates filter
+  await searchDocuments()
+}
+
+async function searchDocuments() {
+  refSearchLoading.value = true
+  try {
+    const params: Record<string, unknown> = { page_size: 20 }
+    if (props.field.target_templates?.length === 1) {
+      params.template_id = props.field.target_templates[0]
+    }
+    if (refSearchQuery.value) {
+      params.search = refSearchQuery.value
+    }
+    const result = await documentStoreClient.listDocuments(params as Parameters<typeof documentStoreClient.listDocuments>[0])
+    refSearchResults.value = result.items as unknown as Array<Record<string, unknown>>
+  } catch {
+    refSearchResults.value = []
+  } finally {
+    refSearchLoading.value = false
+  }
+}
+
+function selectRefDocument(doc: Record<string, unknown>) {
+  emit('update:modelValue', doc.document_id)
+  showRefSearch.value = false
 }
 
 // Reference field helper text
@@ -275,6 +358,9 @@ onMounted(() => {
   if (props.field.type === 'term') {
     loadTerms()
   }
+  if (props.field.type === 'object' && props.field.template_ref) {
+    loadNestedTemplate()
+  }
 })
 </script>
 
@@ -392,13 +478,22 @@ onMounted(() => {
     <!-- Reference field -->
     <template v-else-if="field.type === 'reference'">
       <div class="reference-field">
-        <InputText
-          :modelValue="(modelValue as string) || ''"
-          @update:modelValue="handleReferenceInput"
-          :disabled="disabled"
-          :placeholder="referenceHelpText"
-          class="w-full"
-        />
+        <div class="reference-input-row">
+          <InputText
+            :modelValue="(modelValue as string) || ''"
+            @update:modelValue="handleReferenceInput"
+            :disabled="disabled"
+            :placeholder="referenceHelpText"
+            class="w-full"
+          />
+          <Button
+            v-if="field.reference_type === 'document' && !disabled"
+            icon="pi pi-search"
+            severity="secondary"
+            @click="openRefSearch"
+            v-tooltip="'Search documents'"
+          />
+        </div>
         <div class="reference-info">
           <small class="reference-type">
             <i class="pi pi-link"></i>
@@ -411,6 +506,46 @@ onMounted(() => {
             Strategy: {{ field.version_strategy }}
           </small>
         </div>
+
+        <!-- Reference Search Dialog -->
+        <Dialog
+          v-model:visible="showRefSearch"
+          header="Search Documents"
+          :style="{ width: '600px' }"
+          modal
+        >
+          <div class="ref-search">
+            <div class="ref-search-bar">
+              <InputText
+                v-model="refSearchQuery"
+                placeholder="Search..."
+                class="w-full"
+                @keyup.enter="searchDocuments"
+              />
+              <Button icon="pi pi-search" @click="searchDocuments" :loading="refSearchLoading" />
+            </div>
+            <DataTable
+              :value="refSearchResults"
+              :loading="refSearchLoading"
+              size="small"
+              @row-click="(e) => selectRefDocument(e.data)"
+              :pt="{ bodyRow: { style: 'cursor: pointer' } }"
+            >
+              <Column field="document_id" header="ID" style="width: 120px">
+                <template #body="{ data }">
+                  <code>{{ (data.document_id as string)?.slice(0, 12) }}...</code>
+                </template>
+              </Column>
+              <Column field="template_id" header="Template" />
+              <Column field="version" header="Ver" style="width: 50px" />
+              <template #empty>
+                <div style="text-align: center; padding: 1rem; color: var(--p-text-muted-color)">
+                  {{ refSearchLoading ? 'Searching...' : 'No documents found' }}
+                </div>
+              </template>
+            </DataTable>
+          </div>
+        </Dialog>
       </div>
     </template>
 
@@ -428,19 +563,58 @@ onMounted(() => {
     <!-- Object field (nested) -->
     <template v-else-if="field.type === 'object'">
       <div class="object-field">
-        <div v-if="field.template_ref" class="object-notice">
-          <Message severity="info" :closable="false">
-            Nested object from template: {{ field.template_ref }}
-          </Message>
-          <p class="template-ref-note">
-            Object fields with template references require the nested template's fields to be loaded.
-            This feature is not fully implemented yet.
-          </p>
+        <!-- Loading nested template -->
+        <div v-if="loadingNestedTemplate" class="object-loading">
+          <i class="pi pi-spin pi-spinner"></i>
+          <span>Loading nested template...</span>
         </div>
-        <div v-else class="object-placeholder">
+
+        <!-- Nested template fields -->
+        <div v-else-if="field.template_ref && nestedTemplate" class="object-nested">
+          <div class="object-nested-header">
+            <small class="nested-template-ref">
+              <i class="pi pi-sitemap"></i>
+              {{ nestedTemplate.name }} ({{ nestedTemplate.code }})
+            </small>
+          </div>
+          <div class="object-nested-fields">
+            <div
+              v-for="nestedField in nestedTemplate.fields"
+              :key="nestedField.name"
+              class="nested-field"
+            >
+              <label class="nested-field-label">
+                {{ nestedField.label }}
+                <span v-if="nestedField.mandatory" class="required-indicator">*</span>
+              </label>
+              <FieldInput
+                :field="nestedField"
+                :modelValue="getObjectFieldValue(nestedField.name)"
+                @update:modelValue="(v) => handleObjectFieldUpdate(nestedField.name, v)"
+                :disabled="disabled"
+              />
+            </div>
+          </div>
+        </div>
+
+        <!-- Template ref but failed to load -->
+        <div v-else-if="field.template_ref && !nestedTemplate" class="object-notice">
           <Message severity="warn" :closable="false">
-            Object field without template reference. Add fields manually via JSON.
+            Could not load nested template: {{ field.template_ref }}
           </Message>
+        </div>
+
+        <!-- Plain object without template ref -->
+        <div v-else class="object-placeholder">
+          <Textarea
+            :modelValue="modelValue ? JSON.stringify(modelValue, null, 2) : '{}'"
+            @update:modelValue="(v) => { try { emit('update:modelValue', JSON.parse(v || '{}')); } catch {} }"
+            :disabled="disabled"
+            placeholder='{"key": "value"}'
+            rows="4"
+            class="w-full object-json-editor"
+          />
+          <small class="object-hint">Enter structured data as JSON</small>
         </div>
       </div>
     </template>
@@ -542,6 +716,22 @@ onMounted(() => {
   gap: 0.25rem;
 }
 
+.reference-input-row {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.ref-search {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ref-search-bar {
+  display: flex;
+  gap: 0.5rem;
+}
+
 .reference-info {
   display: flex;
   flex-wrap: wrap;
@@ -579,6 +769,14 @@ onMounted(() => {
   background-color: var(--p-surface-50);
 }
 
+.object-loading {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
 .object-notice,
 .object-placeholder {
   display: flex;
@@ -586,10 +784,50 @@ onMounted(() => {
   gap: 0.5rem;
 }
 
-.template-ref-note {
+.object-nested-header {
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--p-surface-200);
+}
+
+.nested-template-ref {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--p-primary-600);
+  font-size: 0.8rem;
+}
+
+.object-nested-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.nested-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.nested-field-label {
+  font-weight: 500;
+  font-size: 0.8rem;
+  color: var(--p-text-color);
+}
+
+.nested-field-label .required-indicator {
+  color: var(--p-red-500);
+}
+
+.object-json-editor {
+  font-family: monospace;
+  font-size: 0.85rem;
+}
+
+.object-hint {
   color: var(--p-text-muted-color);
-  font-size: 0.875rem;
-  margin: 0;
+  font-size: 0.75rem;
 }
 
 .array-field {

@@ -135,6 +135,27 @@ export const useNamespaceStore = defineStore('namespace', () => {
     }
   }
 
+  async function updateNamespace(
+    prefix: string,
+    data: { description?: string; isolation_mode?: 'open' | 'strict'; updated_by?: string }
+  ): Promise<Namespace> {
+    loading.value = true
+    error.value = null
+    try {
+      const ns = await registryClient.updateNamespace(prefix, data)
+      const index = namespaces.value.findIndex(n => n.prefix === prefix)
+      if (index !== -1) {
+        namespaces.value[index] = ns
+      }
+      return ns
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update namespace'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function getNamespaceStats(prefix: string): Promise<NamespaceStats> {
     return await registryClient.getNamespaceStats(prefix)
   }
@@ -157,6 +178,7 @@ export const useNamespaceStore = defineStore('namespace', () => {
     loadNamespaces,
     setCurrent,
     createNamespace,
+    updateNamespace,
     archiveNamespace,
     restoreNamespace,
     getNamespaceStats,

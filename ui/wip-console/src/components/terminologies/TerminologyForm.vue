@@ -3,7 +3,6 @@ import { ref, watch, computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
-import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import { useTerminologyStore, useUiStore } from '@/stores'
 import type { Terminology, CreateTerminologyRequest, UpdateTerminologyRequest } from '@/types'
@@ -172,7 +171,7 @@ function cancel() {
             :disabled="isEdit"
           />
           <small v-if="errors.code" class="p-error">{{ errors.code }}</small>
-          <small v-else class="help-text">Uppercase letters, numbers, underscores</small>
+          <small v-else class="help-text">Machine identifier (e.g., DOC_STATUS). Uppercase letters, numbers, underscores.</small>
         </div>
       </div>
 
@@ -186,6 +185,7 @@ function cancel() {
             placeholder="e.g., Document Status"
           />
           <small v-if="errors.name" class="p-error">{{ errors.name }}</small>
+          <small v-else class="help-text">Human-readable display name</small>
         </div>
       </div>
 
@@ -201,32 +201,7 @@ function cancel() {
         </div>
       </div>
 
-      <div class="form-row checkboxes">
-        <div class="checkbox-item">
-          <Checkbox
-            id="case_sensitive"
-            v-model="form.case_sensitive"
-            binary
-          />
-          <label for="case_sensitive">Case Sensitive</label>
-        </div>
-        <div class="checkbox-item">
-          <Checkbox
-            id="allow_multiple"
-            v-model="form.allow_multiple"
-            binary
-          />
-          <label for="allow_multiple">Allow Multiple</label>
-        </div>
-        <div class="checkbox-item">
-          <Checkbox
-            id="extensible"
-            v-model="form.extensible"
-            binary
-          />
-          <label for="extensible">Extensible</label>
-        </div>
-      </div>
+      <!-- case_sensitive, allow_multiple, extensible flags removed — not enforced by API -->
 
       <div class="form-section">
         <h4>Metadata</h4>
@@ -246,6 +221,7 @@ function cancel() {
               v-model="form.version"
               placeholder="e.g., 2024.1"
             />
+            <small class="help-text">User-supplied version label (e.g., ISO edition). Not system-managed.</small>
           </div>
         </div>
 

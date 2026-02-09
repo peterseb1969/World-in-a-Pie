@@ -8,40 +8,36 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
-import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore } from '@/stores'
+import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore } from '@/stores'
 import { isReportingEnabled } from '@/config/modules'
-import { reportingSyncClient, type IntegrityCheckResult } from '@/api/client'
-import type { Terminology, Template } from '@/types'
+import { reportingSyncClient, registryClient, documentStoreClient, type IntegrityCheckResult } from '@/api/client'
+import type { Terminology, Template, Document } from '@/types'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const terminologyStore = useTerminologyStore()
 const templateStore = useTemplateStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // Check if reporting module is enabled
 const reportingEnabled = isReportingEnabled()
 
 const loading = ref(true)
 
-// Stats
-const terminologyStats = ref({
-  total: 0,
-  active: 0,
-  deprecated: 0,
-  inactive: 0
-})
-
-const templateStats = ref({
-  total: 0,
-  active: 0,
-  deprecated: 0,
-  inactive: 0
+// Compact stats for all 5 entity types
+const entityCounts = ref<Record<string, number>>({
+  terminologies: 0,
+  terms: 0,
+  templates: 0,
+  documents: 0,
+  files: 0
 })
 
 // Recent items
 const recentTerminologies = ref<Terminology[]>([])
 const recentTemplates = ref<Template[]>([])
+const recentDocuments = ref<Document[]>([])
 
 // Data quality / integrity check
 const integrityLoading = ref(false)
@@ -56,33 +52,52 @@ async function loadDashboard() {
 
   loading.value = true
   try {
-    // Fetch terminologies
+    // Get real counts from registry stats API
+    try {
+      const stats = await registryClient.getNamespaceStats(namespaceStore.current)
+      if (stats.pools) {
+        for (const [poolName, count] of Object.entries(stats.pools)) {
+          if (poolName.endsWith('-terminologies')) entityCounts.value.terminologies = count
+          else if (poolName.endsWith('-terms')) entityCounts.value.terms = count
+          else if (poolName.endsWith('-templates')) entityCounts.value.templates = count
+          else if (poolName.endsWith('-documents')) entityCounts.value.documents = count
+          else if (poolName.endsWith('-files')) entityCounts.value.files = count
+        }
+      }
+    } catch {
+      // Registry stats not available, fall back to list counts
+    }
+
+    // Fetch terminologies for recent items and status breakdown
     await terminologyStore.fetchTerminologies({ page_size: 100 })
     const terms = terminologyStore.terminologies
-    terminologyStats.value = {
-      total: terms.length,
-      active: terms.filter(t => t.status === 'active').length,
-      deprecated: terms.filter(t => t.status === 'deprecated').length,
-      inactive: terms.filter(t => t.status === 'inactive').length
+    if (entityCounts.value.terminologies === 0) {
+      entityCounts.value.terminologies = terms.length
     }
-    // Get 5 most recent
     recentTerminologies.value = [...terms]
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 5)
 
-    // Fetch templates
+    // Fetch templates for recent items and status breakdown
     await templateStore.fetchTemplates({ page_size: 100 })
     const templates = templateStore.templates
-    templateStats.value = {
-      total: templates.length,
-      active: templates.filter(t => t.status === 'active').length,
-      deprecated: templates.filter(t => t.status === 'deprecated').length,
-      inactive: templates.filter(t => t.status === 'inactive').length
+    if (entityCounts.value.templates === 0) {
+      entityCounts.value.templates = templates.length
     }
-    // Get 5 most recent
     recentTemplates.value = [...templates]
       .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
       .slice(0, 5)
+
+    // Fetch recent documents
+    try {
+      const docResponse = await documentStoreClient.listDocuments({ page_size: 5 })
+      recentDocuments.value = docResponse.items
+      if (entityCounts.value.documents === 0) {
+        entityCounts.value.documents = docResponse.total
+      }
+    } catch {
+      // Document store may not be available
+    }
 
   } catch (error) {
     uiStore.showError('Failed to load dashboard', error instanceof Error ? error.message : 'Unknown error')
@@ -128,20 +143,16 @@ function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'sec
   }
 }
 
-function formatDate(dateString: string): string {
-  return new Date(dateString).toLocaleDateString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric'
-  })
-}
-
 function navigateToTerminology(terminology: Terminology) {
   router.push(`/terminologies/${terminology.terminology_id}`)
 }
 
 function navigateToTemplate(template: Template) {
   router.push(`/templates/${template.template_id}`)
+}
+
+function navigateToDocument(doc: Document) {
+  router.push(`/documents/${doc.document_id}`)
 }
 
 function getIntegritySeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
@@ -154,6 +165,14 @@ function getIntegritySeverity(status: string): 'success' | 'warn' | 'danger' | '
   }
 }
 
+const statItems = [
+  { key: 'terminologies', label: 'Terminologies', icon: 'pi pi-book', route: '/terminologies' },
+  { key: 'terms', label: 'Terms', icon: 'pi pi-tag', route: '/terminologies' },
+  { key: 'templates', label: 'Templates', icon: 'pi pi-file', route: '/templates' },
+  { key: 'documents', label: 'Documents', icon: 'pi pi-folder', route: '/documents' },
+  { key: 'files', label: 'Files', icon: 'pi pi-paperclip', route: '/files' }
+]
+
 onMounted(() => {
   loadDashboard()
 })
@@ -162,7 +181,6 @@ onMounted(() => {
 watch(
   () => authStore.isAuthenticated,
   (isAuth, wasAuth) => {
-    // Only reload when transitioning from not authenticated to authenticated
     if (isAuth && !wasAuth) {
       loadDashboard()
     }
@@ -174,7 +192,7 @@ watch(
   <div class="home-view">
     <div class="page-header">
       <h1>Dashboard</h1>
-      <p class="subtitle">Welcome to WIP Console - Manage your terminologies and templates</p>
+      <p class="subtitle">Namespace: <strong>{{ namespaceStore.current }}</strong></p>
     </div>
 
     <!-- Auth warning -->
@@ -193,107 +211,64 @@ watch(
     </div>
 
     <template v-else>
-      <!-- Statistics Cards -->
-      <div class="stats-grid">
-        <!-- Terminology Stats -->
-        <Card class="stat-card">
-          <template #title>
-            <div class="card-title">
-              <i class="pi pi-book"></i>
-              <span>Terminologies</span>
-            </div>
-          </template>
-          <template #content>
-            <div class="stat-content">
-              <div class="stat-number">{{ terminologyStats.total }}</div>
-              <div class="stat-breakdown">
-                <span class="stat-item active">
-                  <span class="dot"></span>
-                  {{ terminologyStats.active }} active
-                </span>
-                <span class="stat-item deprecated">
-                  <span class="dot"></span>
-                  {{ terminologyStats.deprecated }} deprecated
-                </span>
-              </div>
-            </div>
-          </template>
-          <template #footer>
-            <Button
-              label="Browse Terminologies"
-              icon="pi pi-arrow-right"
-              iconPos="right"
-              text
-              @click="router.push('/terminologies')"
-            />
-          </template>
-        </Card>
+      <!-- Compact stat bar -->
+      <div class="stat-bar">
+        <div
+          v-for="item in statItems"
+          :key="item.key"
+          class="stat-chip"
+          @click="router.push(item.route)"
+        >
+          <i :class="item.icon"></i>
+          <span class="stat-chip-count">{{ entityCounts[item.key] }}</span>
+          <span class="stat-chip-label">{{ item.label }}</span>
+        </div>
+      </div>
 
-        <!-- Template Stats -->
-        <Card class="stat-card">
-          <template #title>
-            <div class="card-title">
-              <i class="pi pi-file"></i>
-              <span>Templates</span>
-            </div>
-          </template>
-          <template #content>
-            <div class="stat-content">
-              <div class="stat-number">{{ templateStats.total }}</div>
-              <div class="stat-breakdown">
-                <span class="stat-item active">
-                  <span class="dot"></span>
-                  {{ templateStats.active }} active
-                </span>
-                <span class="stat-item deprecated">
-                  <span class="dot"></span>
-                  {{ templateStats.deprecated }} deprecated
-                </span>
-              </div>
-            </div>
-          </template>
-          <template #footer>
-            <Button
-              label="Browse Templates"
-              icon="pi pi-arrow-right"
-              iconPos="right"
-              text
-              @click="router.push('/templates')"
-            />
-          </template>
-        </Card>
-
-        <!-- Quick Actions -->
-        <Card class="stat-card quick-actions">
-          <template #title>
-            <div class="card-title">
-              <i class="pi pi-bolt"></i>
-              <span>Quick Actions</span>
-            </div>
-          </template>
-          <template #content>
-            <div class="action-buttons">
-              <Button
-                label="Import Terminology"
-                icon="pi pi-upload"
-                severity="secondary"
-                @click="router.push('/terminologies/import')"
-              />
-              <Button
-                label="Validate Values"
-                icon="pi pi-check-circle"
-                severity="secondary"
-                @click="router.push('/terminologies/validate')"
-              />
-              <Button
-                label="New Template"
-                icon="pi pi-plus"
-                severity="secondary"
-                @click="router.push('/templates/new')"
-              />
-            </div>
-          </template>
-        </Card>
+      <!-- Quick Actions Row -->
+      <div class="quick-actions-row">
+        <Button
+          label="New Terminology"
+          icon="pi pi-plus"
+          severity="secondary"
+          size="small"
+          @click="router.push('/terminologies?create=true')"
+        />
+        <Button
+          label="Import Terminology"
+          icon="pi pi-upload"
+          severity="secondary"
+          size="small"
+          @click="router.push('/terminologies/import')"
+        />
+        <Button
+          label="New Template"
+          icon="pi pi-plus"
+          severity="secondary"
+          size="small"
+          @click="router.push('/templates/new')"
+        />
+        <Button
+          label="New Document"
+          icon="pi pi-plus"
+          severity="secondary"
+          size="small"
+          @click="router.push('/documents/new')"
+        />
+        <Button
+          label="Upload File"
+          icon="pi pi-cloud-upload"
+          severity="secondary"
+          size="small"
+          @click="router.push('/files/upload')"
+        />
+        <Button
+          label="Validate Values"
+          icon="pi pi-check-circle"
+          severity="secondary"
+          size="small"
+          @click="router.push('/terminologies/validate')"
+        />
       </div>
 
       <!-- Data Quality Section (only shown when reporting module is enabled) -->
@@ -313,40 +288,35 @@ watch(
             </div>
           </template>
           <template #content>
-            <!-- Loading state -->
             <div v-if="integrityLoading" class="quality-loading">
               <ProgressSpinner style="width: 30px; height: 30px" />
               <span>Checking data integrity...</span>
             </div>
 
-            <!-- Error state -->
             <Message v-else-if="integrityError" severity="warn" :closable="false">
               Could not check data integrity: {{ integrityError }}
             </Message>
 
-            <!-- Results -->
             <div v-else-if="integrityResult" class="quality-content">
-              <!-- Summary stats -->
               <div class="quality-summary">
                 <div class="quality-stat">
-                  <span class="stat-label">Templates Checked</span>
-                  <span class="stat-value">{{ integrityResult.summary.total_templates }}</span>
+                  <span class="quality-label">Templates Checked</span>
+                  <span class="quality-value">{{ integrityResult.summary.total_templates }}</span>
                 </div>
                 <div class="quality-stat">
-                  <span class="stat-label">Documents Checked</span>
-                  <span class="stat-value">{{ integrityResult.summary.total_documents }}</span>
+                  <span class="quality-label">Documents Checked</span>
+                  <span class="quality-value">{{ integrityResult.summary.total_documents }}</span>
                 </div>
                 <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.templates_with_issues > 0 }">
-                  <span class="stat-label">Templates with Issues</span>
-                  <span class="stat-value">{{ integrityResult.summary.templates_with_issues }}</span>
+                  <span class="quality-label">Templates with Issues</span>
+                  <span class="quality-value">{{ integrityResult.summary.templates_with_issues }}</span>
                 </div>
                 <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.documents_with_issues > 0 }">
-                  <span class="stat-label">Documents with Issues</span>
-                  <span class="stat-value">{{ integrityResult.summary.documents_with_issues }}</span>
+                  <span class="quality-label">Documents with Issues</span>
+                  <span class="quality-value">{{ integrityResult.summary.documents_with_issues }}</span>
                 </div>
               </div>
 
-              <!-- Issue summary with link to Audit Trail -->
               <div v-if="integrityResult.issues.length > 0" class="quality-issues-summary">
                 <Message severity="warn" :closable="false">
                   <div class="issues-message">
@@ -363,13 +333,11 @@ watch(
                 </Message>
               </div>
 
-              <!-- All healthy -->
               <div v-else class="quality-healthy">
                 <i class="pi pi-check-circle"></i>
                 <span>All references are valid. No integrity issues found.</span>
               </div>
 
-              <!-- Services status -->
               <div v-if="integrityResult.services_unavailable.length > 0" class="services-warning">
                 <Message severity="warn" :closable="false">
                   Some services were unavailable: {{ integrityResult.services_unavailable.join(', ') }}
@@ -390,13 +358,13 @@ watch(
         </Card>
       </div>
 
-      <!-- Recent Items -->
+      <!-- Recent Items — 3-column grid -->
       <div class="recent-grid">
         <!-- Recent Terminologies -->
         <Card class="recent-card">
           <template #title>
             <div class="card-title">
-              <i class="pi pi-clock"></i>
+              <i class="pi pi-book"></i>
               <span>Recent Terminologies</span>
             </div>
           </template>
@@ -410,26 +378,23 @@ watch(
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
               <Column field="name" header="Name" />
-              <Column field="code" header="Code" />
-              <Column field="term_count" header="Terms" style="width: 80px">
+              <Column field="term_count" header="Terms" style="width: 60px">
                 <template #body="{ data }">
                   <Tag severity="info">{{ data.term_count }}</Tag>
                 </template>
               </Column>
-              <Column field="status" header="Status" style="width: 100px">
+              <Column field="status" header="Status" style="width: 80px">
                 <template #body="{ data }">
                   <Tag :severity="getStatusSeverity(data.status)">{{ data.status }}</Tag>
                 </template>
               </Column>
-              <Column field="updated_at" header="Updated" style="width: 120px">
-                <template #body="{ data }">
-                  {{ formatDate(data.updated_at) }}
-                </template>
-              </Column>
               <template #empty>
-                <div class="empty-state">No terminologies found</div>
+                <div class="empty-state">No terminologies</div>
               </template>
             </DataTable>
+          </template>
+          <template #footer>
+            <Button label="All Terminologies" icon="pi pi-arrow-right" iconPos="right" text size="small" @click="router.push('/terminologies')" />
           </template>
         </Card>
 
@@ -437,7 +402,7 @@ watch(
         <Card class="recent-card">
           <template #title>
             <div class="card-title">
-              <i class="pi pi-clock"></i>
+              <i class="pi pi-file"></i>
               <span>Recent Templates</span>
             </div>
           </template>
@@ -451,26 +416,65 @@ watch(
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
               <Column field="name" header="Name" />
-              <Column field="code" header="Code" />
-              <Column header="Fields" style="width: 80px">
+              <Column header="Fields" style="width: 60px">
                 <template #body="{ data }">
                   <Tag severity="info">{{ data.fields?.length || 0 }}</Tag>
                 </template>
               </Column>
-              <Column field="status" header="Status" style="width: 100px">
+              <Column field="status" header="Status" style="width: 80px">
                 <template #body="{ data }">
                   <Tag :severity="getStatusSeverity(data.status)">{{ data.status }}</Tag>
                 </template>
               </Column>
-              <Column field="updated_at" header="Updated" style="width: 120px">
+              <template #empty>
+                <div class="empty-state">No templates</div>
+              </template>
+            </DataTable>
+          </template>
+          <template #footer>
+            <Button label="All Templates" icon="pi pi-arrow-right" iconPos="right" text size="small" @click="router.push('/templates')" />
+          </template>
+        </Card>
+
+        <!-- Recent Documents -->
+        <Card class="recent-card">
+          <template #title>
+            <div class="card-title">
+              <i class="pi pi-folder"></i>
+              <span>Recent Documents</span>
+            </div>
+          </template>
+          <template #content>
+            <DataTable
+              :value="recentDocuments"
+              :loading="loading"
+              size="small"
+              @row-click="(e) => navigateToDocument(e.data)"
+              class="clickable-rows"
+              :pt="{ bodyRow: { style: 'cursor: pointer' } }"
+            >
+              <Column field="document_id" header="ID" style="width: 100px">
                 <template #body="{ data }">
-                  {{ formatDate(data.updated_at) }}
+                  <code class="doc-id">{{ data.document_id?.slice(0, 8) }}...</code>
+                </template>
+              </Column>
+              <Column field="template_id" header="Template">
+                <template #body="{ data }">
+                  {{ data.template_id }}
+                </template>
+              </Column>
+              <Column field="status" header="Status" style="width: 80px">
+                <template #body="{ data }">
+                  <Tag :severity="getStatusSeverity(data.status)">{{ data.status }}</Tag>
                 </template>
               </Column>
               <template #empty>
-                <div class="empty-state">No templates found</div>
+                <div class="empty-state">No documents</div>
               </template>
             </DataTable>
+          </template>
+          <template #footer>
+            <Button label="All Documents" icon="pi pi-arrow-right" iconPos="right" text size="small" @click="router.push('/documents')" />
           </template>
         </Card>
       </div>
@@ -485,7 +489,7 @@ watch(
 }
 
 .page-header {
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
 }
 
 .page-header h1 {
@@ -496,6 +500,7 @@ watch(
 
 .subtitle {
   color: var(--p-text-muted-color);
+  font-size: 0.875rem;
 }
 
 /* Auth warning */
@@ -524,16 +529,60 @@ watch(
   color: var(--p-text-muted-color);
 }
 
-/* Stats grid */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
-  margin-bottom: 2rem;
+/* Compact stat bar */
+.stat-bar {
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
 }
 
-.stat-card :deep(.p-card-title) {
+.stat-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: var(--p-surface-0);
+  border: 1px solid var(--p-surface-200);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  flex: 1;
+  min-width: 140px;
+}
+
+.stat-chip:hover {
+  border-color: var(--p-primary-color);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.stat-chip i {
+  color: var(--p-primary-color);
   font-size: 1rem;
+}
+
+.stat-chip-count {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--p-text-color);
+}
+
+.stat-chip-label {
+  font-size: 0.8125rem;
+  color: var(--p-text-muted-color);
+}
+
+/* Quick actions row */
+.quick-actions-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+
+/* Data quality */
+.data-quality-section {
+  margin-bottom: 1.5rem;
 }
 
 .card-title {
@@ -544,92 +593,6 @@ watch(
 
 .card-title i {
   color: var(--p-primary-color);
-}
-
-.stat-content {
-  text-align: center;
-  padding: 1rem 0;
-}
-
-.stat-number {
-  font-size: 3rem;
-  font-weight: 600;
-  color: var(--p-primary-color);
-  line-height: 1;
-  margin-bottom: 0.75rem;
-}
-
-.stat-breakdown {
-  display: flex;
-  justify-content: center;
-  gap: 1.5rem;
-  font-size: 0.875rem;
-  color: var(--p-text-muted-color);
-}
-
-.stat-item {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.stat-item .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.stat-item.active .dot {
-  background-color: var(--p-green-500);
-}
-
-.stat-item.deprecated .dot {
-  background-color: var(--p-orange-500);
-}
-
-/* Quick actions */
-.quick-actions .action-buttons {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.quick-actions .action-buttons :deep(.p-button) {
-  justify-content: flex-start;
-}
-
-/* Recent grid */
-.recent-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
-  gap: 1.5rem;
-}
-
-.recent-card :deep(.p-card-title) {
-  font-size: 1rem;
-}
-
-.recent-card :deep(.p-card-content) {
-  padding: 0;
-}
-
-.recent-card :deep(.p-datatable) {
-  border: none;
-}
-
-.clickable-rows :deep(.p-datatable-tbody > tr:hover) {
-  background-color: var(--p-surface-100);
-}
-
-.empty-state {
-  text-align: center;
-  padding: 2rem;
-  color: var(--p-text-muted-color);
-}
-
-/* Data Quality section */
-.data-quality-section {
-  margin-bottom: 2rem;
 }
 
 .quality-card :deep(.p-card-title) {
@@ -671,20 +634,20 @@ watch(
   background: var(--p-red-50);
 }
 
-.quality-stat .stat-label {
+.quality-label {
   display: block;
   font-size: 0.75rem;
   color: var(--p-text-muted-color);
   margin-bottom: 0.25rem;
 }
 
-.quality-stat .stat-value {
+.quality-value {
   display: block;
   font-size: 1.25rem;
   font-weight: 600;
 }
 
-.quality-stat.has-issues .stat-value {
+.quality-stat.has-issues .quality-value {
   color: var(--p-red-500);
 }
 
@@ -717,9 +680,60 @@ watch(
   margin-top: 0.5rem;
 }
 
-@media (max-width: 1024px) {
+/* Recent grid — 3 columns */
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.recent-card :deep(.p-card-title) {
+  font-size: 0.9375rem;
+}
+
+.recent-card :deep(.p-card-content) {
+  padding: 0;
+}
+
+.recent-card :deep(.p-datatable) {
+  border: none;
+}
+
+.clickable-rows :deep(.p-datatable-tbody > tr:hover) {
+  background-color: var(--p-surface-100);
+}
+
+.doc-id {
+  font-size: 0.75rem;
+  background: var(--p-surface-100);
+  padding: 0.125rem 0.25rem;
+  border-radius: 3px;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 1.5rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+@media (max-width: 1200px) {
+  .recent-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 768px) {
   .recent-grid {
     grid-template-columns: 1fr;
+  }
+
+  .stat-bar {
+    gap: 0.5rem;
+  }
+
+  .stat-chip {
+    min-width: calc(50% - 0.25rem);
   }
 }
 </style>
