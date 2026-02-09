@@ -18,8 +18,8 @@ services:
       - API_KEY=${API_KEY}
       - CORS_ORIGINS=${WIP_CORS_ORIGINS:-}
     command: >
-      uvicorn ingest_gateway.main:app --host 0.0.0.0 --port 8006
-      ${WIP_DEV_RELOAD:+--reload}
+      bash -c "uvicorn ingest_gateway.main:app --host 0.0.0.0 --port 8006
+      ${WIP_DEV_RELOAD:+--reload}"
     networks:
       - wip-network
     restart: ${WIP_RESTART_POLICY:-unless-stopped}

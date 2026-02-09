@@ -44,6 +44,7 @@ data/secrets/
 .pytest_cache/
 .coverage
 htmlcov/
+testdata/
 
 # MongoDB data (local dev)
 data/
