@@ -22,6 +22,10 @@ services:
         VITE_OIDC_CLIENT_ID: wip-console
         VITE_OIDC_CLIENT_SECRET: wip-console-secret
         VITE_OIDC_PROVIDER_NAME: Dex
+        # Optional module feature flags (from .env, default false)
+        VITE_REPORTING_ENABLED: ${VITE_REPORTING_ENABLED}
+        VITE_FILES_ENABLED: ${VITE_FILES_ENABLED}
+        VITE_INGEST_ENABLED: ${VITE_INGEST_ENABLED}
     container_name: wip-console
     # No host ports - accessed via Caddy reverse proxy at :8443
     volumes:
