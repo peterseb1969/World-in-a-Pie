@@ -223,7 +223,7 @@ async def check_document_integrity(document: Document) -> list[IntegrityIssue]:
 async def check_all_documents(
     status_filter: Optional[str] = None,
     template_id_filter: Optional[str] = None,
-    limit: int = 1000,
+    limit: int = 0,
     check_term_refs: bool = True
 ) -> IntegrityCheckResult:
     """
@@ -232,7 +232,7 @@ async def check_all_documents(
     Args:
         status_filter: Optional filter by document status ('active', 'inactive', 'archived')
         template_id_filter: Optional filter by template_id
-        limit: Maximum number of documents to check
+        limit: Maximum number of documents to check (0 = all)
         check_term_refs: Whether to check term references (can be slow for many documents)
 
     Returns:
@@ -256,11 +256,11 @@ async def check_all_documents(
     else:
         query = {}
 
-    # Get total count (unaffected by limit)
-    total_count = await Document.find(query).count()
-
-    # Get sampled documents for integrity checking
-    documents = await Document.find(query).limit(limit).to_list()
+    # Get all documents (or limited subset if explicitly requested)
+    find_query = Document.find(query)
+    if limit > 0:
+        find_query = find_query.limit(limit)
+    documents = await find_query.to_list()
 
     all_issues: list[IntegrityIssue] = []
     documents_with_issues: set[str] = set()
@@ -283,7 +283,7 @@ async def check_all_documents(
 
     # Build summary
     summary = IntegritySummary(
-        total_documents=total_count,
+        total_documents=len(documents),
         documents_checked=len(documents),
         documents_with_issues=len(documents_with_issues),
         orphaned_template_refs=sum(

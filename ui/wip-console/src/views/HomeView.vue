@@ -101,8 +101,6 @@ async function loadIntegrityCheck() {
 
   try {
     integrityResult.value = await reportingSyncClient.getIntegrityCheck({
-      template_limit: 500,
-      document_limit: 500,
       check_term_refs: true
     })
   } catch (error) {
@@ -284,7 +282,7 @@ watch(
                   <span class="quality-value">{{ integrityResult.summary.total_templates }}</span>
                 </div>
                 <div class="quality-stat">
-                  <span class="quality-label">Total Documents</span>
+                  <span class="quality-label">Documents Checked</span>
                   <span class="quality-value">{{ integrityResult.summary.total_documents }}</span>
                 </div>
                 <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.templates_with_issues > 0 }">
@@ -293,7 +291,7 @@ watch(
                 </div>
                 <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.documents_with_issues > 0 }">
                   <span class="quality-label">Documents with Issues</span>
-                  <span class="quality-value">{{ integrityResult.summary.documents_with_issues }}<span v-if="integrityResult.summary.documents_checked" class="quality-sample"> / {{ integrityResult.summary.documents_checked }} checked</span></span>
+                  <span class="quality-value">{{ integrityResult.summary.documents_with_issues }}</span>
                 </div>
               </div>
 

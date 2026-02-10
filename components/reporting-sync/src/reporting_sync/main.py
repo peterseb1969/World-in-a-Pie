@@ -687,8 +687,8 @@ class AggregatedIntegrityResult(BaseModel):
 async def aggregated_integrity_check(
     template_status: str = None,
     document_status: str = None,
-    template_limit: int = 1000,
-    document_limit: int = 1000,
+    template_limit: int = 0,
+    document_limit: int = 0,
     check_term_refs: bool = True,
 ) -> AggregatedIntegrityResult:
     """

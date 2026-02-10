@@ -104,8 +104,6 @@ async function loadIntegrityCheck() {
 
   try {
     integrityResult.value = await reportingSyncClient.getIntegrityCheck({
-      template_limit: 500,
-      document_limit: 500,
       check_term_refs: true
     })
   } catch (error) {

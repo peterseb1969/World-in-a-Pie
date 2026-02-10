@@ -423,7 +423,7 @@ async def clear_caches():
 async def integrity_check(
     status: str = None,
     template_id: str = None,
-    limit: int = 1000,
+    limit: int = 0,
     check_term_refs: bool = True
 ):
     """
@@ -437,7 +437,7 @@ async def integrity_check(
     Args:
         status: Filter documents by status ('active', 'inactive', 'archived')
         template_id: Filter documents by template_id
-        limit: Maximum number of documents to check (default 1000)
+        limit: Maximum number of documents to check (0 = all, default: all)
         check_term_refs: Whether to check term references (default true, can be slow)
 
     Returns:
