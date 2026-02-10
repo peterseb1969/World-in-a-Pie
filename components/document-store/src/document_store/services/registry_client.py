@@ -81,7 +81,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": {
                         "identity_hash": identity_hash,
                         "template_id": template_id,
@@ -131,7 +131,7 @@ class RegistryClient:
         # We use a UUID for each to guarantee uniqueness in the batch
         registry_items = [
             {
-                "namespace": namespace,
+                "pool_id": namespace,
                 "composite_key": {
                     "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],

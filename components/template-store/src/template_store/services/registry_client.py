@@ -73,7 +73,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": {
                         "code": code,
                         "name": name,
@@ -123,7 +123,7 @@ class RegistryClient:
         """
         items = [
             {
-                "namespace": namespace,
+                "pool_id": namespace,
                 "composite_key": {
                     "code": template["code"],
                     "name": template["name"],
@@ -181,9 +181,9 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "target_namespace": "wip-templates",
+                    "target_pool_id": "wip-templates",
                     "target_id": target_id,
-                    "synonym_namespace": "wip-templates",
+                    "synonym_pool_id": "wip-templates",
                     "synonym_composite_key": composite_key
                 }]
             )
@@ -220,7 +220,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/lookup/by-key",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": "wip-templates",
+                    "pool_id": "wip-templates",
                     "composite_key": composite_key,
                     "search_synonyms": True
                 }]

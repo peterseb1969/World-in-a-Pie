@@ -154,7 +154,7 @@ class FileService:
                 f"{registry.base_url}/api/registry/entries/register",
                 headers=registry._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": {
                         "checksum": checksum,
                         "upload_uuid": str(uuid.uuid4()),

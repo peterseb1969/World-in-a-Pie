@@ -73,7 +73,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": {
                         "code": code,
                         "name": name
@@ -129,7 +129,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": {
                         "terminology_id": terminology_id,
                         "code": code,
@@ -201,7 +201,7 @@ class RegistryClient:
 
                 items = [
                     {
-                        "namespace": namespace,
+                        "pool_id": namespace,
                         "composite_key": {
                             "terminology_id": terminology_id,
                             "code": term["code"],
@@ -268,9 +268,9 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "target_namespace": namespace,
+                    "target_pool_id": namespace,
                     "target_id": target_id,
-                    "synonym_namespace": namespace,
+                    "synonym_pool_id": namespace,
                     "synonym_composite_key": composite_key
                 }]
             )
@@ -309,7 +309,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/lookup/by-key",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
+                    "pool_id": namespace,
                     "composite_key": composite_key,
                     "search_synonyms": True
                 }]
