@@ -40,7 +40,9 @@ All core services are implemented and working:
 ### Recently Added
 
 - Bulk import tuning for 200k+ terms (sub-batching, throttling)
-- MinIO file storage infrastructure (Phase 1)
+- Binary file storage via MinIO — full API, UI upload/list, reference tracking, orphan detection
+- Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point) with validation, reporting sync, UI
+- Metabase optional deployment (`deploy/optional/metabase/`) with PostgreSQL reporting infrastructure
 
 ---
 
@@ -48,10 +50,10 @@ All core services are implemented and working:
 
 | Priority | Task | Status |
 |----------|------|--------|
-| 1 | Binary File Storage | Phase 1 ✅, Phases 2-9 pending |
-| 2 | File Upload (CSV/XLSX) | Pending |
-| 3 | BI Dashboard (Metabase) | Pending |
-| 4 | Semantic Types | Planning complete, implementation pending |
+| 1 | Binary File Storage (MinIO) | ✅ Complete — Full CRUD API, UI, reference tracking, orphan detection |
+| 2 | Semantic Types | ✅ Complete — 7 types, validation, reporting sync, UI hints |
+| 3 | BI Dashboard (Metabase) | ✅ Optional deployment ready (`deploy/optional/metabase/`), pre-built dashboards pending |
+| 4 | File Upload (CSV/XLSX) | Pending |
 | 5 | Event Replay | Design complete, implementation pending |
 | 6 | Docker support | Test/document running with standard Docker |
 | 7 | Rootful Podman | Test/document running with `sudo podman` |

@@ -94,7 +94,28 @@ def process_template_fields(fields: list[dict]) -> list[dict]:
 
 # Default host and API key (can be overridden via environment or arguments)
 DEFAULT_HOST = os.environ.get("WIP_HOST", "localhost")
-DEFAULT_API_KEY = os.environ.get("WIP_API_KEY", "dev_master_key_for_testing")
+
+
+def _resolve_api_key() -> str:
+    """Resolve API key from environment or .env file."""
+    # 1. Explicit env var takes priority
+    key = os.environ.get("WIP_API_KEY")
+    if key:
+        return key
+    # 2. Try reading from .env in project root
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if line.startswith("WIP_AUTH_LEGACY_API_KEY=") and not line.startswith("#"):
+                val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if val:
+                    return val
+    # 3. Fallback for dev
+    return "dev_master_key_for_testing"
+
+
+DEFAULT_API_KEY = _resolve_api_key()
 
 
 def get_service_urls(host: str = DEFAULT_HOST, via_proxy: bool = False) -> dict[str, str]:
@@ -132,13 +153,20 @@ class ServiceClient:
         self.session.headers.update({"X-API-Key": api_key})
         self.session.verify = verify_ssl
 
-    def health_check(self) -> bool:
-        """Check if service is healthy."""
+    def health_check(self) -> tuple[bool, str]:
+        """Check if service is healthy. Returns (ok, status_message)."""
         try:
             resp = self.session.get(f"{self.base_url}/health", timeout=5)
-            return resp.status_code == 200
-        except Exception:
-            return False
+            if resp.status_code == 200:
+                return True, "healthy"
+            elif resp.status_code == 401:
+                return False, "AUTH REJECTED (wrong API key?)"
+            else:
+                return False, f"HTTP {resp.status_code}"
+        except requests.exceptions.ConnectionError:
+            return False, "NOT RESPONDING (connection refused)"
+        except Exception as e:
+            return False, f"ERROR ({e})"
 
     def get(self, path: str, params: dict = None) -> dict:
         """HTTP GET request."""
@@ -213,10 +241,9 @@ class WIPSeeder:
         for service in services:
             if service in service_map:
                 client = service_map[service]
-                if client.health_check():
-                    print(f"  {service}: healthy")
-                else:
-                    print(f"  {service}: NOT RESPONDING")
+                ok, status = client.health_check()
+                print(f"  {service}: {status}")
+                if not ok:
                     all_healthy = False
 
         return all_healthy
