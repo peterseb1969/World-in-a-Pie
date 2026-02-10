@@ -908,7 +908,7 @@ NATS_URL=$nats_url
 WIP_DEV_RELOAD=$( [ "$VARIANT" = "dev" ] && echo "true" || echo "" )
 WIP_RESTART_POLICY=$( [ "$VARIANT" = "dev" ] && echo "no" || echo "unless-stopped" )
 WIP_CORS_ORIGINS=$( [ "$VARIANT" = "dev" ] && echo "*" || echo "" )
-WIP_CONSOLE_TARGET=$( [ "$VARIANT" = "dev" ] && echo "development" || echo "production" )
+WIP_CONSOLE_TARGET=production  # Always build dist into image (development target requires local npm run build)
 
 # =============================================================================
 # SERVICE URLs (for inter-service communication)
@@ -1167,18 +1167,9 @@ EOF
             log_debug "  Created override: $override_file"
         done
 
-        # Console: mount dist for development target
-        local console_dir="$PROJECT_ROOT/ui/wip-console"
-        if [ -d "$console_dir" ]; then
-            cat > "$console_dir/docker-compose.override.yml" << EOF
-$override_header
-services:
-  wip-console:
-    volumes:
-      - ./dist:/usr/share/nginx/html:ro
-EOF
-            log_debug "  Created override: $console_dir/docker-compose.override.yml"
-        fi
+        # Console always uses production target (dist baked into image)
+        # Remove any stale dev override that would shadow the built-in dist
+        rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
 
         log_info "Generated dev override files (source mounts enabled)"
     else
