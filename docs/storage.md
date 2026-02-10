@@ -11,6 +11,7 @@ WIP stores data for several services:
 | MongoDB | Documents, templates, terminologies | `./data/mongodb` |
 | PostgreSQL | Reporting data (SQL tables) | `./data/postgres` |
 | NATS | Message queue persistence (JetStream) | `./data/nats` |
+| MinIO | Binary file storage (S3-compatible) | `./data/minio` |
 | Dex | OIDC tokens and sessions | `./data/dex` |
 | Caddy | TLS certificates and config | `./data/caddy` |
 
@@ -22,9 +23,8 @@ By default, data is stored in `./data/` relative to the project root. To use a d
 # Set storage location before running setup
 export WIP_DATA_DIR=/path/to/storage
 
-# Run setup script
-./scripts/setup.sh   # Mac
-./scripts/setup.sh    # Raspberry Pi
+# Run setup script (same on all platforms)
+./scripts/setup.sh
 ```
 
 ## Storage Options
@@ -179,6 +179,7 @@ $WIP_DATA_DIR/
 ├── mongodb/          # MongoDB data files
 ├── postgres/         # PostgreSQL data files
 ├── nats/             # NATS JetStream data
+├── minio/            # MinIO file storage (if files module enabled)
 ├── dex/              # Dex SQLite database
 └── caddy/
     ├── data/         # Caddy TLS certificates
@@ -225,7 +226,7 @@ podman stop -a
 tar -czvf wip-backup-$(date +%Y%m%d).tar.gz $WIP_DATA_DIR
 
 # Restart services
-./scripts/setup.sh  # or pi-setup.sh
+./scripts/setup.sh
 ```
 
 ### MongoDB Backup (Hot)
