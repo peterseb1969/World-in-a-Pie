@@ -658,6 +658,7 @@ class IntegritySummary(BaseModel):
 
     total_templates: int = 0
     total_documents: int = 0
+    documents_checked: int = 0
     templates_with_issues: int = 0
     documents_with_issues: int = 0
     orphaned_terminology_refs: int = 0
@@ -782,6 +783,7 @@ async def aggregated_integrity_check(
                 # Extract summary
                 ds_summary = data.get("summary", {})
                 summary.total_documents = ds_summary.get("total_documents", 0)
+                summary.documents_checked = ds_summary.get("documents_checked", 0)
                 summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
                 summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
                 summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)

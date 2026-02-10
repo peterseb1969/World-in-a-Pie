@@ -42,6 +42,7 @@ class IntegritySummary(BaseModel):
     """Summary of integrity check results."""
 
     total_documents: int = 0
+    documents_checked: int = 0
     documents_with_issues: int = 0
     orphaned_template_refs: int = 0
     orphaned_term_refs: int = 0
@@ -255,7 +256,10 @@ async def check_all_documents(
     else:
         query = {}
 
-    # Get documents
+    # Get total count (unaffected by limit)
+    total_count = await Document.find(query).count()
+
+    # Get sampled documents for integrity checking
     documents = await Document.find(query).limit(limit).to_list()
 
     all_issues: list[IntegrityIssue] = []
@@ -279,7 +283,8 @@ async def check_all_documents(
 
     # Build summary
     summary = IntegritySummary(
-        total_documents=len(documents),
+        total_documents=total_count,
+        documents_checked=len(documents),
         documents_with_issues=len(documents_with_issues),
         orphaned_template_refs=sum(
             1 for i in all_issues if i.type == "orphaned_template_ref"
