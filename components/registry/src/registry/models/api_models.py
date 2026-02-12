@@ -3,17 +3,22 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .id_pool import IdGeneratorConfig
 from .entry import Synonym, SourceInfo
+
+
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
 
 
 # =============================================================================
 # ID Pool API Models (Internal - for ID generation pools)
 # =============================================================================
 
-class IdPoolCreate(BaseModel):
+class IdPoolCreate(StrictModel):
     """Request model for creating an ID pool."""
 
     pool_id: str = Field(..., description="Unique ID pool identifier")
@@ -26,7 +31,7 @@ class IdPoolCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class IdPoolUpdate(BaseModel):
+class IdPoolUpdate(StrictModel):
     """Request model for updating an ID pool."""
 
     name: Optional[str] = None
@@ -64,7 +69,7 @@ class IdPoolBulkResponse(BaseModel):
 # Namespace API Models (User-facing - for organizing data)
 # =============================================================================
 
-class NamespaceCreate(BaseModel):
+class NamespaceCreate(StrictModel):
     """Request model for creating a user-facing namespace."""
 
     prefix: str = Field(..., description="Unique prefix (e.g., 'dev', 'staging', 'prod')")
@@ -80,7 +85,7 @@ class NamespaceCreate(BaseModel):
     created_by: Optional[str] = Field(None, description="User creating the namespace")
 
 
-class NamespaceUpdate(BaseModel):
+class NamespaceUpdate(StrictModel):
     """Request model for updating a user-facing namespace."""
 
     description: Optional[str] = None
@@ -126,7 +131,7 @@ class NamespaceStatsResponse(BaseModel):
 # Registration API Models
 # =============================================================================
 
-class RegisterKeyItem(BaseModel):
+class RegisterKeyItem(StrictModel):
     """Request model for registering a composite key."""
 
     pool_id: str = Field(default="default", description="ID pool for the key")
@@ -160,7 +165,7 @@ class RegisterBulkResponse(BaseModel):
 # Synonym API Models
 # =============================================================================
 
-class AddSynonymItem(BaseModel):
+class AddSynonymItem(StrictModel):
     """Request model for adding a synonym to an existing entry."""
 
     # Target entry identification (either by ID or by existing key)
@@ -186,7 +191,7 @@ class AddSynonymResponse(BaseModel):
     error: Optional[str] = None
 
 
-class RemoveSynonymItem(BaseModel):
+class RemoveSynonymItem(StrictModel):
     """Request model for removing a synonym from an entry."""
 
     target_pool_id: str = Field(..., description="ID pool of the target entry")
@@ -209,7 +214,7 @@ class RemoveSynonymResponse(BaseModel):
 # Merge API Models (ID-as-Synonym)
 # =============================================================================
 
-class MergeItem(BaseModel):
+class MergeItem(StrictModel):
     """Request model for merging two entries (making one a synonym of the other)."""
 
     # The entry that will become the preferred/primary
@@ -237,7 +242,7 @@ class MergeResponse(BaseModel):
 # Lookup API Models
 # =============================================================================
 
-class LookupByIdItem(BaseModel):
+class LookupByIdItem(StrictModel):
     """Request model for looking up by ID."""
 
     pool_id: Optional[str] = Field(default=None, description="ID pool to search in (None = search all pools)")
@@ -245,7 +250,7 @@ class LookupByIdItem(BaseModel):
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
-class LookupByKeyItem(BaseModel):
+class LookupByKeyItem(StrictModel):
     """Request model for looking up by composite key."""
 
     pool_id: str = Field(default="default", description="ID pool to search in")
@@ -302,7 +307,7 @@ class LookupBulkResponse(BaseModel):
 # Search API Models
 # =============================================================================
 
-class SearchItem(BaseModel):
+class SearchItem(StrictModel):
     """Request model for structured search."""
 
     # Field-value search criteria within composite keys
@@ -319,7 +324,7 @@ class SearchItem(BaseModel):
     include_inactive: bool = Field(default=False)
 
 
-class SearchByTermItem(BaseModel):
+class SearchByTermItem(StrictModel):
     """Request model for free-text term search."""
 
     term: str = Field(..., description="Term to search for across all composite key values")
@@ -360,7 +365,7 @@ class SearchBulkResponse(BaseModel):
 # Update API Models
 # =============================================================================
 
-class UpdateEntryItem(BaseModel):
+class UpdateEntryItem(StrictModel):
     """Request model for updating an entry."""
 
     pool_id: str
@@ -379,7 +384,7 @@ class UpdateEntryResponse(BaseModel):
     error: Optional[str] = None
 
 
-class SetPreferredItem(BaseModel):
+class SetPreferredItem(StrictModel):
     """Request model for setting the preferred ID."""
 
     # Current entry
@@ -406,7 +411,7 @@ class SetPreferredResponse(BaseModel):
 # Delete API Models
 # =============================================================================
 
-class DeleteItem(BaseModel):
+class DeleteItem(StrictModel):
     """Request model for deleting (deactivating) an entry."""
 
     pool_id: str
@@ -439,7 +444,7 @@ class ExportResponse(BaseModel):
     )
 
 
-class ImportRequest(BaseModel):
+class ImportRequest(StrictModel):
     """Request model for namespace import."""
 
     target_prefix: Optional[str] = Field(

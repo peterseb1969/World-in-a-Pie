@@ -9,11 +9,16 @@ from .document import DocumentStatus, DocumentMetadata
 from .file import FileStatus, FileMetadata
 
 
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
+
+
 # ============================================================================
 # Document Creation
 # ============================================================================
 
-class DocumentCreateRequest(BaseModel):
+class DocumentCreateRequest(StrictModel):
     """Request to create or update a document."""
 
     template_id: str = Field(
@@ -144,7 +149,7 @@ class DocumentVersionResponse(BaseModel):
 # Document Query
 # ============================================================================
 
-class QueryFilter(BaseModel):
+class QueryFilter(StrictModel):
     """A filter condition for document queries."""
 
     field: str = Field(
@@ -161,7 +166,7 @@ class QueryFilter(BaseModel):
     )
 
 
-class DocumentQueryRequest(BaseModel):
+class DocumentQueryRequest(StrictModel):
     """Request for complex document queries."""
 
     filters: list[QueryFilter] = Field(
@@ -228,7 +233,7 @@ class BulkCreateResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class BulkCreateRequest(BaseModel):
+class BulkCreateRequest(StrictModel):
     """Request for bulk document creation."""
 
     items: list[DocumentCreateRequest] = Field(
@@ -279,7 +284,7 @@ class ValidationError(BaseModel):
     )
 
 
-class ValidationRequest(BaseModel):
+class ValidationRequest(StrictModel):
     """Request to validate document data without saving."""
 
     template_id: str = Field(
@@ -333,7 +338,7 @@ class ValidationResponse(BaseModel):
 # File Management
 # ============================================================================
 
-class FileUploadMetadata(BaseModel):
+class FileUploadMetadata(StrictModel):
     """Metadata to include with file upload."""
 
     description: Optional[str] = Field(
@@ -358,7 +363,7 @@ class FileUploadMetadata(BaseModel):
     )
 
 
-class UpdateFileMetadataRequest(BaseModel):
+class UpdateFileMetadataRequest(StrictModel):
     """Request to update file metadata."""
 
     description: Optional[str] = Field(
@@ -440,7 +445,7 @@ class FileBulkResult(BaseModel):
     error: Optional[str] = None
 
 
-class FileBulkDeleteRequest(BaseModel):
+class FileBulkDeleteRequest(StrictModel):
     """Request for bulk file deletion."""
 
     file_ids: list[str] = Field(

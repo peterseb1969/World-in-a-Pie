@@ -3,17 +3,22 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .terminology import TerminologyMetadata
 from .term import TermTranslation
+
+
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
 
 
 # =============================================================================
 # TERMINOLOGY API MODELS
 # =============================================================================
 
-class CreateTerminologyRequest(BaseModel):
+class CreateTerminologyRequest(StrictModel):
     """Request to create a new terminology."""
 
     code: str = Field(
@@ -50,7 +55,7 @@ class CreateTerminologyRequest(BaseModel):
     )
 
 
-class UpdateTerminologyRequest(BaseModel):
+class UpdateTerminologyRequest(StrictModel):
     """Request to update an existing terminology."""
 
     code: Optional[str] = Field(
@@ -119,7 +124,7 @@ class TerminologyListResponse(BaseModel):
 # TERM API MODELS
 # =============================================================================
 
-class CreateTermRequest(BaseModel):
+class CreateTermRequest(StrictModel):
     """Request to create a new term."""
 
     code: str = Field(
@@ -164,7 +169,7 @@ class CreateTermRequest(BaseModel):
     )
 
 
-class UpdateTermRequest(BaseModel):
+class UpdateTermRequest(StrictModel):
     """Request to update an existing term."""
 
     code: Optional[str] = Field(
@@ -209,7 +214,7 @@ class UpdateTermRequest(BaseModel):
     )
 
 
-class DeprecateTermRequest(BaseModel):
+class DeprecateTermRequest(StrictModel):
     """Request to deprecate a term."""
 
     reason: str = Field(
@@ -265,7 +270,7 @@ class TermListResponse(BaseModel):
 # BULK OPERATION MODELS
 # =============================================================================
 
-class BulkCreateTermRequest(BaseModel):
+class BulkCreateTermRequest(StrictModel):
     """Request to create multiple terms at once."""
 
     terms: list[CreateTermRequest] = Field(
@@ -301,7 +306,7 @@ class BulkOperationResponse(BaseModel):
 # IMPORT/EXPORT MODELS
 # =============================================================================
 
-class ImportTerminologyRequest(BaseModel):
+class ImportTerminologyRequest(StrictModel):
     """Request to import a terminology with terms."""
 
     terminology: CreateTerminologyRequest
@@ -349,7 +354,7 @@ class ExportTerminologyResponse(BaseModel):
 # VALIDATION MODELS
 # =============================================================================
 
-class ValidateValueRequest(BaseModel):
+class ValidateValueRequest(StrictModel):
     """Request to validate a value against a terminology."""
 
     terminology_id: Optional[str] = Field(
@@ -385,7 +390,7 @@ class ValidateValueResponse(BaseModel):
     error: Optional[str] = None
 
 
-class BulkValidateRequest(BaseModel):
+class BulkValidateRequest(StrictModel):
     """Request to validate multiple values."""
 
     items: list[ValidateValueRequest]

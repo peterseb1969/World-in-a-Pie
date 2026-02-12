@@ -11,11 +11,16 @@ from typing import Any, Optional
 
 import asyncpg
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
 
 
 # =============================================================================
@@ -44,7 +49,7 @@ class SearchResponse(BaseModel):
     total: int = 0
 
 
-class SearchRequest(BaseModel):
+class SearchRequest(StrictModel):
     """Request for unified search."""
 
     query: str = Field(..., min_length=1, description="Search string")

@@ -3,18 +3,23 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .field import FieldDefinition
 from .rule import ValidationRule
 from .template import TemplateMetadata, ReportingConfig
 
 
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
+
+
 # =============================================================================
 # TEMPLATE API MODELS
 # =============================================================================
 
-class CreateTemplateRequest(BaseModel):
+class CreateTemplateRequest(StrictModel):
     """Request to create a new template."""
 
     code: str = Field(
@@ -63,7 +68,7 @@ class CreateTemplateRequest(BaseModel):
     )
 
 
-class UpdateTemplateRequest(BaseModel):
+class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
     code: Optional[str] = Field(
@@ -158,7 +163,7 @@ class TemplateUpdateResponse(BaseModel):
 # BULK OPERATION MODELS
 # =============================================================================
 
-class BulkCreateTemplateRequest(BaseModel):
+class BulkCreateTemplateRequest(StrictModel):
     """Request to create multiple templates at once."""
 
     templates: list[CreateTemplateRequest] = Field(
@@ -210,7 +215,7 @@ class ValidationWarning(BaseModel):
     message: str
 
 
-class ValidateTemplateRequest(BaseModel):
+class ValidateTemplateRequest(StrictModel):
     """Request to validate a template's references."""
 
     check_terminologies: bool = Field(
@@ -232,7 +237,7 @@ class ValidateTemplateResponse(BaseModel):
     warnings: list[ValidationWarning] = []
 
 
-class ValidateDocumentRequest(BaseModel):
+class ValidateDocumentRequest(StrictModel):
     """Request to validate a document against a template."""
 
     data: dict[str, Any] = Field(

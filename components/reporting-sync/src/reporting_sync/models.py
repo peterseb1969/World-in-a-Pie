@@ -6,7 +6,12 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class StrictModel(BaseModel):
+    """Base for API request models — rejects unknown fields."""
+    model_config = ConfigDict(extra='forbid')
 
 
 class EventType(str, Enum):
@@ -168,7 +173,7 @@ class BatchSyncJob(BaseModel):
     error_message: str | None = None
 
 
-class BatchSyncRequest(BaseModel):
+class BatchSyncRequest(StrictModel):
     """Request to start a batch sync."""
 
     template_code: str | None = None  # None = all templates

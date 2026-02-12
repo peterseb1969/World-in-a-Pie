@@ -116,7 +116,7 @@ class FileStorageClient:
 
     async def download(self, storage_key: str) -> bytes:
         """
-        Download a file from storage.
+        Download a file from storage (loads entire file into memory).
 
         Args:
             storage_key: Key of the file to download
@@ -135,6 +135,46 @@ class FileStorageClient:
                 )
                 async with response["Body"] as stream:
                     return await stream.read()
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            if error_code == "NoSuchKey":
+                raise FileStorageError(f"File not found: {storage_key}")
+            raise FileStorageError(f"Failed to download file: {e}")
+
+    async def download_stream(self, storage_key: str, chunk_size: int = 64 * 1024):
+        """
+        Stream a file from storage in chunks.
+
+        Yields chunks without buffering the entire file in memory.
+
+        Args:
+            storage_key: Key of the file to download
+            chunk_size: Size of each chunk in bytes (default: 64 KB)
+
+        Yields:
+            File content chunks as bytes
+
+        Raises:
+            FileStorageError: If download fails or file not found
+        """
+        try:
+            async with self._get_client() as client:
+                response = await client.get_object(
+                    Bucket=self.bucket,
+                    Key=storage_key
+                )
+                # Use the StreamingBody wrapper directly — NOT `async with
+                # response["Body"] as stream` which yields the raw aiohttp
+                # ClientResponse whose read() takes no size argument.
+                body = response["Body"]
+                try:
+                    while True:
+                        chunk = await body.read(chunk_size)
+                        if not chunk:
+                            break
+                        yield chunk
+                finally:
+                    body.close()
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":

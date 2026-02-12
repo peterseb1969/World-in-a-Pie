@@ -6,7 +6,6 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-import io
 
 from ..models.file import FileStatus
 from ..models.api_models import (
@@ -20,7 +19,11 @@ from ..models.api_models import (
     FileIntegrityResponse,
 )
 from ..services.file_service import get_file_service, FileServiceError
-from ..services.file_storage_client import is_file_storage_enabled
+from ..services.file_storage_client import (
+    get_file_storage_client,
+    is_file_storage_enabled,
+    FileStorageError,
+)
 from .auth import require_api_key
 
 
@@ -204,26 +207,27 @@ async def download_file_content(
     file_id: str,
     _: str = Depends(require_api_key)
 ):
-    """Download file content directly."""
-    service = get_file_service()
+    """Download file content directly, streamed from storage."""
+    from ..models.file import File as FileModel, FileStatus
 
-    try:
-        result = await service.download_file(file_id)
-        if not result:
-            raise HTTPException(status_code=404, detail="File not found")
+    # Quick metadata lookup (no file content loaded yet)
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
 
-        content, file_doc = result
+    if file_doc.status == FileStatus.INACTIVE:
+        raise HTTPException(status_code=400, detail="File has been deleted")
 
-        return StreamingResponse(
-            io.BytesIO(content),
-            media_type=file_doc.content_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{file_doc.filename}"',
-                "Content-Length": str(file_doc.size_bytes),
-            }
-        )
-    except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # Stream chunks directly from MinIO → browser (no full buffering)
+    storage = get_file_storage_client()
+    return StreamingResponse(
+        storage.download_stream(file_doc.storage_key),
+        media_type=file_doc.content_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{file_doc.filename}"',
+            "Content-Length": str(file_doc.size_bytes),
+        }
+    )
 
 
 @router.patch(

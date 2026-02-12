@@ -1269,7 +1269,9 @@ $security_headers
     }
 
     handle /api/document-store/* {
-        reverse_proxy wip-document-store:8004
+        reverse_proxy wip-document-store:8004 {
+            flush_interval -1
+        }
     }
 
     handle /api/reporting-sync/* {
