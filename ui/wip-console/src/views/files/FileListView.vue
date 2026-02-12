@@ -82,11 +82,18 @@ function viewFile(file: FileEntity) {
   router.push(`/files/${file.file_id}`)
 }
 
-// Download file
+// Download file — streams through the API to avoid mixed-content issues
 async function downloadFile(file: FileEntity) {
   try {
-    const response = await fileStoreClient.getDownloadUrl(file.file_id)
-    window.open(response.download_url, '_blank')
+    const blob = await fileStoreClient.downloadFileContent(file.file_id)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   } catch (e) {
     uiStore.showError('Download Failed', (e as Error).message)
   }

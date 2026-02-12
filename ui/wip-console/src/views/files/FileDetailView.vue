@@ -128,12 +128,20 @@ function cancelEdit() {
   editMode.value = false
 }
 
-// Download file
+// Download file — streams through the API to avoid mixed-content (HTTPS→HTTP) issues
+// with direct MinIO pre-signed URLs
 async function downloadFile() {
   if (!file.value) return
   try {
-    const response = await fileStoreClient.getDownloadUrl(file.value.file_id)
-    window.open(response.download_url, '_blank')
+    const blob = await fileStoreClient.downloadFileContent(file.value.file_id)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.value.filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   } catch (e) {
     uiStore.showError('Download Failed', (e as Error).message)
   }
@@ -218,13 +226,13 @@ function formatDate(dateStr: string | null): string {
 // Check if file is an image for preview
 const isImage = computed(() => file.value?.content_type.startsWith('image/'))
 
-// Get preview URL (if image)
+// Get preview URL (if image) — fetches blob through API to avoid mixed-content issues
 const previewUrl = ref<string | null>(null)
 async function loadPreview() {
   if (!file.value || !isImage.value) return
   try {
-    const response = await fileStoreClient.getDownloadUrl(file.value.file_id, 300)
-    previewUrl.value = response.download_url
+    const blob = await fileStoreClient.downloadFileContent(file.value.file_id)
+    previewUrl.value = URL.createObjectURL(blob)
   } catch {
     // Ignore preview errors
   }
