@@ -1,14 +1,16 @@
 # Streamlined Import of Records with References
 
+> **Status: Implemented** -- This design has been implemented across the Registry and Document Store services. The sections below describe the actual working behavior.
+
 ## 1. Overview
 
-This document summarizes the architectural discussion and resulting design for streamlining the import of WIP documents that contain references to other documents. The primary goal is to reduce the number of API calls required by the client, simplify the import logic, and better align the system's behavior with the core philosophy that all unique identifiers, including synonyms, are first-class citizens.
+This document describes the architectural design and implementation of streamlined import for WIP documents that contain references to other documents. The goal was to reduce the number of API calls required by the client, simplify the import logic, and better align the system's behavior with the core philosophy that all unique identifiers, including synonyms, are first-class citizens.
 
 ## 2. The Problem: The "Chatty" Import Workflow
 
-The current, validated workflow for importing a record (e.g., an Invoice) that references another record (e.g., a Customer) via a synonym or business key is "chatty," requiring four distinct API calls and significant client-side orchestration.
+The previous workflow for importing a record (e.g., an Invoice) that references another record (e.g., a Customer) via a synonym or business key was "chatty," requiring four distinct API calls and significant client-side orchestration.
 
-### Current Workflow Breakdown
+### Previous Workflow Breakdown
 
 **Part 1: Create the Referenced Entity (Customer) with a Synonym**
 
@@ -24,20 +26,33 @@ The current, validated workflow for importing a record (e.g., an Invoice) that r
 4.  **Create the Invoice:** The client uses the resolved canonical ID to create the invoice document.
     *   `POST /api/document-store/documents` (with invoice data including `"customer": "CUS-001"`)
 
-This process requires a total of **four API calls** and forces the client to manage the state and logic of this multi-step orchestration.
+This process required a total of **four API calls** and forced the client to manage the state and logic of this multi-step orchestration.
 
-## 3. The Goal: A Streamlined Workflow
+## 3. The Streamlined Workflow
 
-The proposed, more efficient workflow would reduce the process to just two API calls by shifting the responsibility of identity resolution to the server, where it belongs.
+The streamlined workflow reduces the process to just two API calls by shifting the responsibility of identity resolution to the server, where it belongs.
 
-### Proposed Workflow Breakdown
+### Workflow
 
-1.  **Create the Customer (with optional synonym):** The client creates the customer and provides the synonym in the same API call.
-    *   `POST /api/document-store/documents` (with customer data and an optional `synonyms` field)
-2.  **Create the Invoice (referencing by synonym):** The client creates the invoice, referencing the customer directly by its synonym.
-    *   `POST /api/document-store/documents` (with invoice data including `"customer": "ext_123"`)
+1.  **Create the Customer (with optional synonyms):** The client creates the customer and provides synonyms in the same API call.
+    *   `POST /api/document-store/documents`
+        ```json
+        {
+          "template_id": "TPL-XXXXXX",
+          "data": { "name": "Acme Corp", "email": "acme@example.com" },
+          "synonyms": [{ "external_id": "ext_123" }]
+        }
+        ```
+2.  **Create the Invoice (referencing by synonym):** The client creates the invoice, referencing the customer directly by its synonym. The server resolves it automatically via the Registry.
+    *   `POST /api/document-store/documents`
+        ```json
+        {
+          "template_id": "TPL-YYYYYY",
+          "data": { "invoice_id": "INV-456", "customer": "ext_123" }
+        }
+        ```
 
-This process would require only **two API calls**, drastically simplifying client-side logic and reducing network latency.
+This process requires only **two API calls**, drastically simplifying client-side logic and reducing network latency.
 
 ## 4. Architectural Discussion & Justification
 
@@ -54,42 +69,46 @@ These objections were based on a misunderstanding of the role of synonyms in WIP
 > **Synonyms are first-class citizens in WIP.** They are not random strings. They are guaranteed to be unique within their namespace, and synonym lookup should be as fast and reliable as a canonical WIP ID lookup, likely using the same underlying database indexes.
 
 This principle reframes the problem and invalidates the initial objections:
-1.  **Coupling is Justified:** The Document Store is not coupling to a vague "search" function but to a well-defined "identity resolution" function, which is a core responsibility of the Registry. This is a legitimate and necessary interaction.
-2.  **Performance is Addressed:** If a synonym lookup is an indexed, O(1) operation, the performance impact is minimal and acceptable, as it saves the client a full network round-trip.
-3.  **Ambiguity is Eliminated:** The guarantee of uniqueness within a namespace means the lookup will return one or zero results, removing the need for complex ambiguity handling in the Document Store.
+1.  **Coupling is Justified:** The Document Store does not couple to a vague "search" function but to a well-defined "identity resolution" function, which is a core responsibility of the Registry. This is a legitimate and necessary interaction.
+2.  **Performance is Addressed:** Because a synonym lookup is an indexed, O(1) operation, the performance impact is minimal and acceptable, as it saves the client a full network round-trip.
+3.  **Ambiguity is Eliminated:** The guarantee of uniqueness within a namespace means the lookup returns one or zero results, removing the need for complex ambiguity handling in the Document Store.
 
-## 5. Proposed Architectural Design
+## 5. Architectural Design
 
-To implement the streamlined workflow, the following enhancements should be made.
+The streamlined workflow is implemented through the following enhancements.
 
 ### 1. Registry Service Enhancement
 
-The Registry should expose a unified, high-performance endpoint for resolving any unique identifier—be it a canonical ID, a hashed composite key, or a synonym.
+Rather than introducing a new endpoint, the existing `POST /api/registry/entries/lookup/by-id` endpoint was extended with a 3-step resolution cascade:
 
-*   **Endpoint:** `POST /api/registry/resolve`
-*   **Request:**
+1.  **entry_id match** -- Direct lookup by the `entry_id` field.
+2.  **additional_ids match** -- Search in the `additional_ids` array.
+3.  **composite key value match** -- Search in the `search_values` flat array (all string values from primary + synonym composite keys).
+
+*   **Endpoint:** `POST /api/registry/entries/lookup/by-id`
+*   **Request format** (existing bulk model):
     ```json
-    {
-      "identifiers": [
-        { "pool_id": "wip-documents", "value": "ext_123" },
-        { "pool_id": "wip-documents", "value": "CUS-001" }
-      ]
-    }
+    [
+      { "entry_id": "ext_123", "pool_id": "wip-documents" }
+    ]
     ```
-*   **Behavior:** The endpoint would efficiently check against all indexed unique identifiers and return the canonical ID for each resolved value.
+*   **The `pool_id` field is optional.** When set to `null`, the lookup searches all pools, enabling cross-namespace resolution.
+*   **Response** includes a `matched_via` field indicating how the entry was found: `"entry_id"`, `"additional_id"`, or `"composite_key_value"`.
 
 ### 2. Document Store Service Enhancement
 
-The validation logic for `reference` fields within the Document Store must be updated to perform server-side resolution.
+The validation logic for `reference` fields within the Document Store performs server-side resolution using the following cascade.
 
-**New Resolution Cascade:**
-When validating a field of `type: "reference"`, the service will attempt to resolve the provided `lookup_value` in the following order:
+**Resolution Cascade:**
+When validating a field of `type: "reference"`, the service resolves the provided value in the following order:
 
-1.  **Is it a Canonical ID?** Check if the value matches the format of a canonical WIP ID (e.g., a UUID7 for documents). If it exists and is valid, resolution succeeds.
-2.  **Is it a Synonym/Business Key?** If not a canonical ID, call the Registry's new `resolve` endpoint to look it up as a synonym or other unique identifier.
-3.  **Success or Failure:**
-    *   If the Registry returns a canonical ID, resolution succeeds. The Document Store proceeds to validate that the resolved entity is of the correct template type (e.g., `CUSTOMER_SYNONYM_TEST`).
-    *   If the Registry does not find a match, validation fails with a "Referenced document not found" error.
+1.  **UUID7 pattern** -- If the value matches a UUID7 format, perform a direct `document_id` lookup.
+2.  **`hash:` prefix** -- If the value starts with `hash:`, perform an `identity_hash` lookup.
+3.  **Registry lookup** -- Call `POST /api/registry/entries/lookup/by-id` to resolve the value. If found, fetch the document by the resolved ID. If that document is inactive, follow the `identity_hash` chain to find the latest active version.
+4.  **String fallback** -- Treat the value as a business key and look up the document via its identity fields.
+5.  **Dict** -- If the value is a dictionary, perform a composite business key lookup.
+
+**Document creation** now accepts an optional `synonyms` field to register synonyms at creation time, eliminating the need for a separate API call to the Registry.
 
 ### 3. Client Impact
 

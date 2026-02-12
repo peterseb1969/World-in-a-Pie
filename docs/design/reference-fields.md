@@ -266,6 +266,8 @@ References are stored in a dedicated `references` field (replacing/extending `te
 4. **Check target status** - Warn if inactive/deprecated (don't fail)
 5. **Store resolution** - Save resolved IDs and metadata
 
+> **Note:** Document creation now supports an optional `synonyms` field to register Registry synonyms at creation time, eliminating the need for a separate API call. When provided, synonym entries are created in the Registry pointing to the document's canonical identity, enabling Registry-backed resolution immediately after the document is created.
+
 #### Validation Errors
 
 | Condition | Behavior |
@@ -283,7 +285,9 @@ WIP accepts multiple input formats for reference values. The system auto-detects
 |--------|-----------|------------|----------|
 | Document ID | UUID7 pattern | Direct lookup by document_id | UI dropdowns, system integrations |
 | Identity Hash | Prefix `hash:` | Lookup by identity_hash | System integrations, version-independent |
-| Business Key | Anything else | Resolve via identity fields | API imports, human-entered data |
+| Registry Identifier | Any string | Registry lookup via `/entries/lookup/by-id` → follows identity_hash chain | **Synonyms, external IDs, any registered identifier** |
+| Business Key | Fallback | Resolve via identity fields | API imports, human-entered data |
+| Composite Key | Dict/object | Match multiple identity fields | Composite identity lookups |
 
 **Examples:**
 
@@ -309,7 +313,9 @@ WIP accepts multiple input formats for reference values. The system auto-detects
 
 1. **Document ID** (UUID7 format): Direct lookup, return document
 2. **Identity Hash** (prefixed `hash:`): Find active document with matching identity_hash
-3. **Business Key**: Match against the target template's identity fields
+3. **Registry Lookup** (implemented): Resolve via `POST /api/registry/entries/lookup/by-id` — resolves canonical IDs, synonym values, and any composite key value. If the resolved document is inactive, follows the identity_hash chain to find the latest active version.
+4. **Business Key** (string fallback): Match against the target template's identity fields
+5. **Composite Key** (dict/object): Match against multiple identity fields
 
 **Single identity field example:**
 
