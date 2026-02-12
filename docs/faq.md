@@ -63,6 +63,36 @@ If you can log in via Dex but then see "Authentication required" errors when acc
 
 2. **Solution:** Ensure consistent hostname everywhere - re-run setup.sh with the correct `--hostname`.
 
+### "Session expired" immediately after OIDC login
+
+**Cause:** The JWT issuer URL in the token doesn't match what the backend services expect. This happens when Dex's `issuer` config, `.env`'s `WIP_AUTH_JWT_ISSUER_URL`, and `VITE_OIDC_AUTHORITY` don't all agree.
+
+**These three must be identical:**
+
+| Config | Variable | Example |
+|--------|----------|---------|
+| `config/dex/config.yaml` | `issuer` | `https://localhost:8443/dex` |
+| `.env` | `WIP_AUTH_JWT_ISSUER_URL` | `https://localhost:8443/dex` |
+| `.env` | `VITE_OIDC_AUTHORITY` | `https://localhost:8443/dex` |
+
+**Solution:** Re-run `setup.sh` with the correct `--hostname`. It generates all three from a single source. Then **recreate** (not just restart) containers:
+
+```bash
+# CORRECT - picks up new .env
+podman-compose down && podman-compose up -d
+
+# WRONG - env vars not reloaded
+podman-compose restart
+```
+
+**Verify:**
+```bash
+grep issuer config/dex/config.yaml
+podman exec wip-def-store printenv | grep WIP_AUTH_JWT_ISSUER_URL
+```
+
+Both should show the same URL.
+
 ### Browser shows "ERR_SSL_PROTOCOL_ERROR"
 
 Caddy doesn't have a TLS certificate for the hostname you're using.
@@ -124,7 +154,16 @@ After this, containers will persist across logouts, SSH disconnects, and client 
 
 **Note:** The setup script now enables linger automatically on Linux.
 
-See: [Containers Die After Logout](troubleshooting/containers-die-after-logout.md)
+**Why Docker doesn't have this problem:** Standard Docker runs as a system daemon (`dockerd`) under root. Podman in rootless mode runs containers in your user session. Rootful Podman (`sudo podman`) also avoids this issue.
+
+| | Rootless Podman | Rootful Podman | Docker |
+|---|---|---|---|
+| Linger required | Yes | No | No |
+| UID mapping issues | Yes | No | No |
+| Runs as root | No | Yes | Yes |
+| Security isolation | Best | Standard | Standard |
+
+For a dedicated WIP server (Pi), rootful Podman or Docker may be simpler. Rootless is better for multi-user or exposed environments.
 
 ---
 
@@ -159,5 +198,5 @@ podman exec -it wip-mongodb mongosh
 ## See Also
 
 - [Authentication Guide](authentication.md) - Detailed auth configuration
-- [Troubleshooting](troubleshooting/) - More detailed troubleshooting guides
-- [Setup Script Reference](../scripts/setup.sh) - All setup.sh options
+- [Network Configuration](network-configuration.md) - All 4 deployment scenarios
+- [Container Inventory](container-inventory.md) - Detailed service specs and Pi deployment

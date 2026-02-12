@@ -662,6 +662,114 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 ---
 
+## Raspberry Pi Deployment
+
+### Prerequisites
+
+```bash
+# Install Podman on Raspberry Pi OS
+sudo apt update
+sudo apt install -y podman podman-compose jq
+
+# Clone repository
+git clone <your-repo-url>
+cd WorldInPie
+```
+
+### Quick Setup
+
+```bash
+# Auto-detect Pi model and deploy
+./scripts/setup.sh --hostname your-pi.local
+
+# Or specify preset explicitly
+./scripts/setup.sh --preset standard --hostname your-pi.local
+./scripts/setup.sh --preset core  # API keys only, minimal footprint
+./scripts/setup.sh --preset full --hostname your-pi.local
+
+# With external storage
+./scripts/setup.sh --data-dir /mnt/usb-ssd --preset standard --hostname your-pi.local
+```
+
+### Why Caddy for OIDC?
+
+The OIDC library (oidc-client-ts) uses PKCE which requires `Crypto.subtle`, available only in secure contexts (HTTPS or localhost). Caddy provides:
+
+- Auto-generated self-signed TLS certificate
+- Reverse proxy for all services on single port (8443)
+- OIDC login works over network without SSH tunnels
+- ~25MB RAM overhead
+
+For API-key-only deployments, use `--preset core` to skip Caddy.
+
+### Pi-Specific Notes
+
+| Consideration | Details |
+|---------------|---------|
+| **MongoDB version** | Pi 4 requires MongoDB 4.4.x (ARMv8.0), Pi 5 can use 7.x |
+| **Health check timing** | Pi profiles use longer intervals (10s vs 5s) |
+| **Mongo Express** | Excluded from prod variant to save ~200MB RAM |
+| **SD Card wear** | Consider external USB SSD for data directory |
+| **Linger** | Rootless Podman requires `sudo loginctl enable-linger $USER` (setup.sh enables this automatically) |
+
+---
+
+## Backup and Recovery
+
+### MongoDB Backup
+
+```bash
+#!/bin/bash
+BACKUP_DIR=/backups/mongodb
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Dump database
+podman exec wip-mongodb mongodump --out="/data/backup_$DATE"
+
+# Copy from container
+podman cp wip-mongodb:/data/backup_$DATE "$BACKUP_DIR/$DATE"
+
+# Compress
+tar -czf "$BACKUP_DIR/wip_$DATE.tar.gz" -C "$BACKUP_DIR" "$DATE"
+rm -rf "$BACKUP_DIR/$DATE"
+
+# Retain last 30 days
+find "$BACKUP_DIR" -name "*.tar.gz" -mtime +30 -delete
+
+echo "Backup complete: $BACKUP_DIR/wip_$DATE.tar.gz"
+```
+
+### PostgreSQL Backup
+
+```bash
+#!/bin/bash
+BACKUP_DIR=/backups/postgres
+DATE=$(date +%Y%m%d_%H%M%S)
+
+# Dump database
+podman exec wip-postgres pg_dump -U wip wip_reporting | gzip > "$BACKUP_DIR/wip_reporting_$DATE.sql.gz"
+
+# Retain last 30 days
+find "$BACKUP_DIR" -name "*.sql.gz" -mtime +30 -delete
+
+echo "Backup complete: $BACKUP_DIR/wip_reporting_$DATE.sql.gz"
+```
+
+### Recovery
+
+```bash
+# MongoDB restore
+tar -xzf wip_20240115_120000.tar.gz
+podman cp 20240115_120000 wip-mongodb:/data/
+podman exec wip-mongodb mongorestore /data/20240115_120000
+
+# PostgreSQL restore
+gunzip -c wip_reporting_20240115_120000.sql.gz | \
+  podman exec -i wip-postgres psql -U wip wip_reporting
+```
+
+---
+
 ## Recommended Security Hardening
 
 For production deployments:

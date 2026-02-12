@@ -1,5 +1,18 @@
 # World In a Pie: Vision
 
+## The Problem
+
+Modern applications often face a fundamental tension:
+
+1. **Rigid schemas** provide consistency but resist change
+2. **Schemaless storage** provides flexibility but sacrifices consistency
+3. **Domain-specific systems** solve one problem well but don't generalize
+4. **Enterprise platforms** generalize but are heavy and expensive
+
+Organizations end up with multiple disconnected systems, inconsistent data quality, difficulty querying across silos, and vendor lock-in.
+
+**WIP resolves this** by separating *structure definition* from *data storage*: store anything, as long as it conforms to a template that references a shared vocabulary.
+
 ## Philosophy
 
 World In a Pie (WIP) is a **generic, domain-agnostic storage and reporting engine**. It is not an application—it is a foundation upon which applications are built.
@@ -328,6 +341,65 @@ Every major component has an abstraction layer:
 - Storage: MongoDB now, SQLite later
 - Auth: Dex now, Authentik/other OIDC providers interchangeable
 - Reporting: PostgreSQL now, other SQL databases possible
+
+---
+
+## Benefits
+
+### For Developers
+
+- **No schema migrations** — templates define structure, not database schemas
+- **Self-documenting** — templates and definitions serve as documentation
+- **API consistency** — same REST API regardless of data type
+
+### For Data Managers
+
+- **Single source of truth** — all definitions in one place
+- **Controlled vocabulary** — terminology enforced across all data
+- **Data quality** — validation prevents bad data entry
+- **Audit trail** — full history of all changes
+
+### For Organizations
+
+- **Reduced silos** — one system for many data types
+- **Lower costs** — runs on minimal infrastructure
+- **Vendor independence** — open source, portable
+
+### For Analysts
+
+- **Consistent data** — same field means the same thing everywhere
+- **Query flexibility** — JSON queries or SQL via reporting layer
+- **Historical analysis** — query data at any point in time
+
+---
+
+## Design Tradeoffs
+
+Every architecture involves tradeoffs. WIP makes these deliberately:
+
+| We Prioritize | Over | Because |
+|---------------|------|---------|
+| Flexibility | Raw performance | Most systems are I/O bound, not CPU bound |
+| Validation | Ingestion speed | Catching errors early saves time later |
+| Portability | Deep platform integration | Independence is more valuable long-term |
+| Simplicity | Feature richness | Simple systems are maintainable systems |
+| JSON | Binary formats | Human-readable is debuggable |
+
+---
+
+## Use Cases
+
+WIP is well-suited for:
+
+| Use Case | Why WIP Works |
+|----------|---------------|
+| **Research data management** | Flexible schemas, full provenance |
+| **Configuration management** | Versioned, validated configs |
+| **Master data management** | Single source of truth, cross-system identity |
+| **Content management** | Template-driven content types |
+| **IoT data collection** | Lightweight, runs at the edge |
+| **Compliance records** | Audit trail, never-delete policy |
+| **Multi-tenant SaaS** | Same engine, different templates per tenant |
 
 ---
 
