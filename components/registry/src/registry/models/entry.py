@@ -126,6 +126,13 @@ class RegistryEntry(Document):
         description="User or system that last updated this entry"
     )
 
+    # Flat array of all string values from primary + synonym composite keys
+    # Used for efficient value-based lookups (e.g. find entry by any composite key value)
+    search_values: list[str] = Field(
+        default_factory=list,
+        description="Flattened string values from all composite keys for search"
+    )
+
     # Additional metadata
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -161,10 +168,10 @@ class RegistryEntry(Document):
                 [("status", 1)],
                 name="status_idx"
             ),
-            # Text index for search-by-term across composite key values
+            # Index for value-based lookups across composite keys
             IndexModel(
-                [("primary_composite_key", "text"), ("synonyms.composite_key", "text")],
-                name="composite_key_text_idx"
+                [("search_values", 1), ("primary_pool_id", 1), ("status", 1)],
+                name="search_values_pool_status_idx"
             ),
         ]
 
@@ -180,3 +187,15 @@ class RegistryEntry(Document):
             if syn.composite_key_hash == key_hash:
                 return syn
         return None
+
+    def rebuild_search_values(self):
+        """Rebuild the flat search_values array from all composite keys."""
+        values = set()
+        for v in self.primary_composite_key.values():
+            if isinstance(v, str):
+                values.add(v)
+        for syn in self.synonyms:
+            for v in syn.composite_key.values():
+                if isinstance(v, str):
+                    values.add(v)
+        self.search_values = sorted(values)

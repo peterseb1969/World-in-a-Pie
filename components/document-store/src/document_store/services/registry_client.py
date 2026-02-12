@@ -160,6 +160,89 @@ class RegistryClient:
             data = response.json()
             return data["results"]
 
+    async def add_synonyms(
+        self,
+        entry_id: str,
+        pool_id: str,
+        synonyms: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """
+        Register synonyms for a registry entry via POST /api/registry/synonyms/add.
+
+        Args:
+            entry_id: The entry ID to add synonyms to
+            pool_id: Pool ID of the entry
+            synonyms: List of synonym composite key dicts
+
+        Returns:
+            List of synonym registration results
+
+        Raises:
+            RegistryError: If registration fails
+        """
+        items = [
+            {
+                "target_pool_id": pool_id,
+                "target_id": entry_id,
+                "synonym_pool_id": pool_id,
+                "synonym_composite_key": syn,
+            }
+            for syn in synonyms
+        ]
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/synonyms/add",
+                headers=self._get_headers(),
+                json=items
+            )
+
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to add synonyms: {response.status_code} - {response.text}"
+                )
+
+            return response.json()
+
+    async def resolve_identifier(
+        self,
+        pool_id: Optional[str],
+        value: str
+    ) -> Optional[str]:
+        """
+        Resolve any identifier to a canonical entry_id via POST /api/registry/entries/lookup/by-id.
+
+        Uses the extended lookup which searches entry_id, additional_ids,
+        and composite key values.
+
+        Args:
+            pool_id: Pool ID to search in (None = search all pools)
+            value: The identifier value to resolve
+
+        Returns:
+            The resolved entry_id, or None if not found
+        """
+        lookup_item = {"entry_id": value}
+        if pool_id:
+            lookup_item["pool_id"] = pool_id
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/lookup/by-id",
+                headers=self._get_headers(),
+                json=[lookup_item]
+            )
+
+            if response.status_code != 200:
+                return None
+
+            data = response.json()
+            results = data.get("results", [])
+            if results and results[0].get("status") == "found":
+                return results[0].get("preferred_id")
+
+            return None
+
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:

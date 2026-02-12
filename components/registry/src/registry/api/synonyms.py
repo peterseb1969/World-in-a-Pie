@@ -120,6 +120,7 @@ async def add_synonyms(
             )
 
             entry.synonyms.append(synonym)
+            entry.rebuild_search_values()
             entry.updated_at = datetime.now(timezone.utc)
             await entry.save()
 
@@ -191,6 +192,7 @@ async def remove_synonyms(
                 ))
                 continue
 
+            entry.rebuild_search_values()
             entry.updated_at = datetime.now(timezone.utc)
             entry.updated_by = item.updated_by
             await entry.save()
@@ -305,6 +307,7 @@ async def merge_entries(
             await deprecated.save()
 
             # Save the preferred entry
+            preferred.rebuild_search_values()
             preferred.updated_at = datetime.now(timezone.utc)
             preferred.updated_by = item.updated_by
             await preferred.save()

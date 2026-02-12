@@ -240,7 +240,7 @@ class MergeResponse(BaseModel):
 class LookupByIdItem(BaseModel):
     """Request model for looking up by ID."""
 
-    pool_id: str = Field(default="default", description="ID pool of the entry")
+    pool_id: Optional[str] = Field(default=None, description="ID pool to search in (None = search all pools)")
     entry_id: str = Field(..., description="The entry ID to look up")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
@@ -274,6 +274,12 @@ class LookupResponse(BaseModel):
 
     # All synonyms
     synonyms: list[Synonym] = Field(default_factory=list)
+
+    # How the match was found
+    matched_via: Optional[str] = Field(
+        None,
+        description="How the match was found: entry_id, additional_id, or composite_key_value"
+    )
 
     # Source info and optional fetched data
     source_info: Optional[SourceInfo] = None

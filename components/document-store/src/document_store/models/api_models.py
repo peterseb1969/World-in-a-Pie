@@ -32,6 +32,10 @@ class DocumentCreateRequest(BaseModel):
         None,
         description="Custom metadata"
     )
+    synonyms: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description="Optional synonym composite keys to register for this document in the Registry"
+    )
 
 
 class DocumentResponse(BaseModel):

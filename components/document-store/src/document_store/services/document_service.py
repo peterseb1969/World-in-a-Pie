@@ -158,7 +158,8 @@ class DocumentService:
             # Create new document
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, pool_id=pool_id, template_pool_id=template_pool_id
+                request, validation_result, pool_id=pool_id, template_pool_id=template_pool_id,
+                synonyms=request.synonyms
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
 
@@ -172,7 +173,8 @@ class DocumentService:
         request: DocumentCreateRequest,
         validation_result: Any,
         pool_id: str = "wip-documents",
-        template_pool_id: str = "wip-templates"
+        template_pool_id: str = "wip-templates",
+        synonyms: Optional[list[dict]] = None
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document."""
         try:
@@ -189,6 +191,20 @@ class DocumentService:
                 pool_id=pool_id
             )
             registry_ms = (time.perf_counter() - start) * 1000
+
+            # Register synonyms if provided
+            if synonyms:
+                try:
+                    await registry.add_synonyms(
+                        entry_id=document_id,
+                        pool_id=pool_id,
+                        synonyms=synonyms
+                    )
+                except RegistryError as e:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        f"Failed to register synonyms for {document_id}: {e}"
+                    )
 
             # Create document
             now = datetime.now(timezone.utc)

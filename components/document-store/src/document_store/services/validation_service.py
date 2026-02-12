@@ -1432,8 +1432,12 @@ class ValidationService:
                     "status": DocumentStatus.ACTIVE
                 })
             else:
-                # Business key lookup - need to find by template's identity fields
-                doc = await self._lookup_by_business_key(value, target_templates)
+                # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
+                doc = await self._resolve_via_registry(value, "wip-documents")
+
+                if not doc:
+                    # Fallback: Business key lookup
+                    doc = await self._lookup_by_business_key(value, target_templates)
         elif isinstance(value, dict):
             # Composite business key
             doc = await self._lookup_by_business_key(value, target_templates)
@@ -1526,6 +1530,50 @@ class ValidationService:
                 continue
 
         return None
+
+    async def _resolve_via_registry(
+        self,
+        value: str,
+        pool_id: str
+    ) -> Optional[Any]:
+        """
+        Resolve a reference value via the Registry's extended lookup.
+
+        If the resolved entry points to an inactive document, follows the
+        identity_hash chain to find the latest active version.
+        """
+        from ..models.document import Document, DocumentStatus
+        from .registry_client import get_registry_client, RegistryError
+
+        try:
+            registry = get_registry_client()
+            resolved_id = await registry.resolve_identifier(pool_id, value)
+            if not resolved_id:
+                return None
+
+            # Fetch the document by resolved ID
+            doc = await Document.find_one({
+                "document_id": resolved_id,
+                "status": DocumentStatus.ACTIVE
+            })
+            if doc:
+                return doc
+
+            # If inactive, follow identity_hash chain to latest active version
+            inactive_doc = await Document.find_one({"document_id": resolved_id})
+            if inactive_doc:
+                active_doc = await Document.find_one({
+                    "identity_hash": inactive_doc.identity_hash,
+                    "status": DocumentStatus.ACTIVE
+                })
+                if active_doc:
+                    return active_doc
+                # Return the inactive doc if no active version exists
+                return inactive_doc
+
+            return None
+        except RegistryError:
+            return None
 
     async def _resolve_term_reference(
         self,

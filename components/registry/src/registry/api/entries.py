@@ -39,6 +39,7 @@ def build_lookup_response(
     status: str = "found",
     matched_pool_id: Optional[str] = None,
     matched_composite_key: Optional[dict] = None,
+    matched_via: Optional[str] = None,
     source_data: Optional[dict] = None,
     error: Optional[str] = None
 ) -> LookupResponse:
@@ -58,6 +59,7 @@ def build_lookup_response(
         additional_ids=entry.additional_ids,
         matched_pool_id=matched_pool_id or entry.primary_pool_id,
         matched_composite_key=matched_composite_key or entry.primary_composite_key,
+        matched_via=matched_via,
         synonyms=entry.synonyms,
         source_info=entry.source_info,
         source_data=source_data,
@@ -166,6 +168,7 @@ async def register_keys(
                 created_by=item.created_by,
                 metadata=item.metadata,
             )
+            entry.rebuild_search_values()
             entries_to_insert.append(entry)
             insert_indices.append(i)
 
@@ -234,24 +237,36 @@ async def lookup_by_ids(
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
-                # Find by entry_id and pool_id
-                entry = await RegistryEntry.find_one({
-                    "primary_pool_id": item.pool_id,
-                    "entry_id": item.entry_id,
-                    "status": "active"
-                })
+                matched_via = None
 
-                # Also check additional_ids if not found as primary
+                # 1. Find by entry_id (optionally scoped to pool)
+                q1 = {"entry_id": item.entry_id, "status": "active"}
+                if item.pool_id:
+                    q1["primary_pool_id"] = item.pool_id
+                entry = await RegistryEntry.find_one(q1)
+                if entry:
+                    matched_via = "entry_id"
+
+                # 2. Check additional_ids if not found as primary
                 if not entry:
+                    elem_match = {"id": item.entry_id}
+                    if item.pool_id:
+                        elem_match["pool_id"] = item.pool_id
                     entry = await RegistryEntry.find_one({
-                        "additional_ids": {
-                            "$elemMatch": {
-                                "pool_id": item.pool_id,
-                                "id": item.entry_id
-                            }
-                        },
+                        "additional_ids": {"$elemMatch": elem_match},
                         "status": "active"
                     })
+                    if entry:
+                        matched_via = "additional_id"
+
+                # 3. Composite key value search — find by value in search_values array
+                if not entry:
+                    q3 = {"search_values": item.entry_id, "status": "active"}
+                    if item.pool_id:
+                        q3["primary_pool_id"] = item.pool_id
+                    entry = await RegistryEntry.find_one(q3)
+                    if entry:
+                        matched_via = "composite_key_value"
 
                 if not entry:
                     results.append(LookupResponse(
@@ -274,6 +289,7 @@ async def lookup_by_ids(
                 results.append(build_lookup_response(
                     input_index=i,
                     entry=entry,
+                    matched_via=matched_via,
                     source_data=source_data
                 ))
                 found_count += 1
