@@ -27,6 +27,7 @@ class FileStorageClient:
         secret_key: Optional[str] = None,
         bucket: Optional[str] = None,
         region: str = "us-east-1",
+        public_endpoint_url: Optional[str] = None,
     ):
         """
         Initialize the file storage client.
@@ -37,9 +38,17 @@ class FileStorageClient:
             secret_key: Secret key (default from env WIP_FILE_STORAGE_SECRET_KEY)
             bucket: Bucket name (default from env WIP_FILE_STORAGE_BUCKET)
             region: AWS region (only used for signature, not relevant for MinIO)
+            public_endpoint_url: Browser-accessible endpoint for pre-signed URLs
+                (default from env WIP_FILE_STORAGE_PUBLIC_ENDPOINT, falls back to
+                http://localhost:9000). Required when the internal endpoint uses a
+                container hostname (e.g. http://wip-minio:9000) that browsers cannot resolve.
         """
         self.endpoint_url = endpoint_url or os.getenv(
             "WIP_FILE_STORAGE_ENDPOINT",
+            "http://localhost:9000"
+        )
+        self.public_endpoint_url = public_endpoint_url or os.getenv(
+            "WIP_FILE_STORAGE_PUBLIC_ENDPOINT",
             "http://localhost:9000"
         )
         self.access_key = access_key or os.getenv(
@@ -208,6 +217,13 @@ class FileStorageClient:
                     Params=params,
                     ExpiresIn=expires_in
                 )
+
+                # Rewrite internal endpoint to public endpoint for browser access.
+                # The S3 client generates URLs using the internal endpoint (e.g.
+                # http://wip-minio:9000) which browsers cannot resolve.
+                if self.public_endpoint_url and self.public_endpoint_url != self.endpoint_url:
+                    url = url.replace(self.endpoint_url, self.public_endpoint_url, 1)
+
                 return url
         except ClientError as e:
             raise FileStorageError(f"Failed to generate download URL: {e}")
