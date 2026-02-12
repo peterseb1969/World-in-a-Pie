@@ -50,6 +50,7 @@ Key concepts the AI **must** internalize:
 | **References** | Typed, validated links between documents | Documents can reference other documents via `type: "reference"` fields. WIP validates and resolves references automatically. |
 | **Reporting Sync** | Real-time MongoDB to PostgreSQL sync via NATS | Enables SQL queries over document data. Must be configured per template. |
 | **Namespaces** | Logical partitions for IDs (pools) | Each namespace has its own ID sequence and format. Cross-namespace search is supported. |
+| **File Storage** | Binary files stored in MinIO (S3-compatible) | Files are first-class entities with Registry IDs (FILE-XXXXXX), reference tracking, and orphan detection. Linked to documents via `type: "file"` fields. |
 | **Soft Delete** | Nothing is ever physically deleted | Entities are set to `status: inactive`. Historical references always resolve. |
 
 ### Step 1.2: Ask the User for Connection Details
@@ -178,6 +179,7 @@ Template: <CODE>
 - **`type: reference`** fields must have `reference_type` and `target_templates` (for document refs) or `target_terminologies` (for term refs)
 - **`type: object`** fields use `template_ref` to reference another template for nested structure
 - **`type: array`** fields use `items` with a full field definition
+- **`type: file`** fields link binary files stored in MinIO. Use `file_config` to constrain allowed types and sizes.
 - **Semantic type hints** can be added via `semantic_type`: `email`, `url`, `percentage`, `duration`, `geo_point`, `latitude`, `longitude`
 
 #### Identity Fields — Get These Right
@@ -273,6 +275,45 @@ If the user needs SQL access to the data, configure reporting on each template:
 | `flatten_arrays` | true/false | true | Expand arrays into rows |
 
 **If the user mentions reporting, dashboards, or SQL — always enable reporting sync.**
+
+#### File Fields — Attaching Binary Files to Documents
+
+Use `type: "file"` when a document needs attached files (images, PDFs, scans, contracts). Files are stored in MinIO and linked to documents via file fields.
+
+```json
+{
+  "name": "contract_scan",
+  "label": "Contract Scan",
+  "type": "file",
+  "file_config": {
+    "allowed_types": ["application/pdf", "image/*"],
+    "max_size_mb": 50,
+    "multiple": false
+  }
+}
+```
+
+| Config Key | Type | Description |
+|------------|------|-------------|
+| `allowed_types` | array | MIME patterns: `"application/pdf"`, `"image/*"`, `"*/*"` (any) |
+| `max_size_mb` | number | Maximum file size in MB |
+| `multiple` | boolean | Allow multiple files in one field |
+
+**How file linking works:**
+
+1. **Upload the file first** — `POST /api/document-store/files` returns a `FILE-XXXXXX` ID
+2. **Use the file ID in document data** — set the field value to `"FILE-XXXXXX"`
+3. **WIP validates** — checks the file exists, is active, matches `allowed_types` and `max_size_mb`
+4. **WIP tracks references** — the file's `reference_count` increments, status changes from `orphan` to `active`
+
+**File lifecycle:**
+- Newly uploaded files start as `orphan` (not referenced by any document)
+- When linked to a document → `active` (reference_count > 0)
+- When all document references are removed → back to `orphan`
+- Soft-delete → `inactive` (only if not referenced, or with `force=true`)
+- Hard-delete → permanent removal (only from `inactive` status)
+
+**If the user mentions attachments, uploads, scans, images, or binary files — use file fields, not string fields with external URLs.**
 
 ### Step 2.4: Present the Data Model to the User
 
@@ -674,7 +715,80 @@ curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
 
 **If version is always 1:** Your identity fields are wrong or missing. Every submission is creating a new document instead of updating.
 
-### Sub-Phase 5.6: Load Data
+### Sub-Phase 5.6: Upload and Link Files (If Applicable)
+
+If any templates have `type: "file"` fields, upload files before creating documents that reference them.
+
+**Step 1: Upload files to MinIO**
+
+```bash
+# Upload a file — returns FILE-XXXXXX
+curl -s -X POST -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files" \
+  -F "file=@/path/to/contract.pdf" \
+  -F "description=Signed contract for Acme Corp" \
+  -F "tags=legal,contracts" \
+  -F "category=contracts" | jq '{file_id, filename, content_type, size_bytes, status}'
+
+# Expected: file_id="FILE-000001", status="orphan"
+```
+
+**Step 2: Use file IDs in document data**
+
+```bash
+# Create a document with a file reference
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<TPL-ID>",
+    "data": {
+      "customer_id": "CUS-001",
+      "name": "Acme Corp",
+      "contract_scan": "FILE-000001"
+    }
+  }' | jq .
+
+# The file is now status="active" with reference_count=1
+```
+
+**Step 3: Verify and download**
+
+```bash
+# Get file metadata
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/FILE-000001" | jq '{status, reference_count}'
+
+# Get a pre-signed download URL (valid for 1 hour by default)
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/FILE-000001/download" | jq .
+
+# Or stream the file directly
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/FILE-000001/content" -o contract.pdf
+```
+
+**Managing orphan files:**
+
+Files uploaded but never linked to a document are orphans. Clean them up periodically:
+
+```bash
+# List orphan files older than 24 hours
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/orphans/list?older_than_hours=24" | jq '.[].file_id'
+
+# Check overall file integrity
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/health/integrity" | jq .
+```
+
+**Duplicate detection:** Files are checksummed (SHA-256) on upload. Check for duplicates before uploading:
+
+```bash
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/files/by-checksum/<sha256-hex>" | jq .
+```
+
+### Sub-Phase 5.7: Load Data
 
 Once single-document creation and versioning are verified, load the actual data:
 
@@ -692,7 +806,7 @@ For example: Countries → Customers → Orders → Order Lines
 
 **Tell the user:** "You can monitor document creation in real-time via WIP Console under Documents, or check MongoDB Express at `http://<hostname>:8081` if available."
 
-### Sub-Phase 5.7: Verify Data Integrity
+### Sub-Phase 5.8: Verify Data Integrity
 
 After loading:
 
@@ -715,7 +829,7 @@ curl -s -H "X-API-Key: <key>" \
   "http://<hostname>:8005/health" | jq .
 ```
 
-### Sub-Phase 5.8: Build the Application Layer
+### Sub-Phase 5.9: Build the Application Layer
 
 Now build whatever was agreed in Phase 4:
 
@@ -724,7 +838,7 @@ Now build whatever was agreed in Phase 4:
 - **Use WIP's validation** — let the API reject bad data rather than duplicating validation logic
 - **Handle WIP error responses** — parse error details and present them to the user
 
-### Sub-Phase 5.9: Verify Reporting (If Applicable)
+### Sub-Phase 5.10: Verify Reporting (If Applicable)
 
 If the user needs SQL access:
 
@@ -882,6 +996,9 @@ Synonyms are scoped to their pool/namespace. The same synonym value in different
 | **Too few identity fields** | Different real-world entities collide and overwrite each other. |
 | **Forgetting reporting config** | If the user needs SQL/dashboards, add `reporting: {sync_enabled: true}` to templates. |
 | **Not registering external IDs as synonyms** | Use the `synonyms` field on document creation for external IDs. Without them, cross-system references break. |
+| **Using string fields for file URLs** | Use `type: "file"` with `file_config`. String fields give you no validation, no reference tracking, no orphan detection. |
+| **Creating documents before uploading files** | Upload files first, get FILE-XXXXXX IDs, then use them in document data. |
+| **Not cleaning up orphan files** | Files uploaded but never linked to documents consume storage indefinitely. Check `/files/orphans/list` periodically. |
 | **Modifying WIP code** | Never. Build on top of it, not inside it. |
 | **Skipping user approval** | Always wait for explicit sign-off at Phase 2 and Phase 4 gates. |
 
@@ -1057,15 +1174,17 @@ The API key is simpler for development and scripts. OIDC/JWT is required for use
           ↓
 7. Test versioning — submit same identity, verify version increments
           ↓
-8. Create REFERENCED documents first (e.g., customers)
+8. Upload files if templates have file fields (get FILE-XXXXXX IDs)
+          ↓
+9. Create REFERENCED documents first (e.g., customers)
    — register synonyms if external IDs exist
           ↓
-9. Create REFERENCING documents (e.g., invoices)
-   — use business keys, synonyms, or document IDs for references
+10. Create REFERENCING documents (e.g., invoices)
+    — use business keys, synonyms, or document IDs for references
           ↓
-10. Verify data integrity (counts, table view, reporting, referential integrity)
+11. Verify data integrity (counts, table view, reporting, referential integrity)
           ↓
-11. Build application layer
+12. Build application layer
 ```
 
 ---
@@ -1082,6 +1201,11 @@ The API key is simpler for development and scripts. OIDC/JWT is required for use
 | **Document-Store** | `POST /api/document-store/documents` | Create/update document (upsert) |
 | | `POST /api/document-store/documents/bulk` | Bulk create/update |
 | | `GET /api/document-store/table/{template_id}` | Table view |
+| | `POST /api/document-store/files` | Upload file (multipart/form-data) |
+| | `GET /api/document-store/files/{id}/download` | Get pre-signed download URL |
+| | `GET /api/document-store/files/{id}/content` | Stream file content directly |
+| | `GET /api/document-store/files/orphans/list` | List orphan files |
+| | `GET /api/document-store/files/health/integrity` | File integrity check |
 | | `GET /api/document-store/health/integrity` | Referential integrity check |
 | **Registry** | `POST /api/registry/entries/lookup/by-id` | Resolve any identifier |
 | | `POST /api/registry/synonyms/add` | Register synonyms |
@@ -1097,8 +1221,9 @@ This process exists because:
 3. **Identity fields make or break versioning** — choose them carefully, always define them
 4. **References must use `type: "reference"`** — never `type: "string"` for cross-document links
 5. **Synonyms enable cross-system integration** — register external IDs at document creation time
-6. **APIs have undocumented behaviors** — test before you code
-7. **Order matters** — terminologies → templates (referenced first) → documents (referenced first)
-8. **The user is the domain expert** — the AI is the technical implementer
+6. **Files are first-class entities** — use `type: "file"` fields, not string URLs. Upload first, link second.
+7. **APIs have undocumented behaviors** — test before you code
+8. **Order matters** — terminologies → templates (referenced first) → files → documents (referenced first)
+9. **The user is the domain expert** — the AI is the technical implementer
 
 Follow the phases. Respect the gates. Test everything. Never change WIP.
