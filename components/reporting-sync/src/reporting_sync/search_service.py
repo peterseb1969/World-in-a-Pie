@@ -178,7 +178,7 @@ class SearchService:
         Queries each service in parallel and aggregates results.
         """
         query = request.query.strip()
-        types = request.types or ["terminology", "term", "template", "document"]
+        types = request.types or ["terminology", "term", "template", "document", "file"]
         status = request.status
         limit = request.limit
 
@@ -192,6 +192,8 @@ class SearchService:
             tasks.append(("template", self._search_templates(query, status, limit)))
         if "document" in types:
             tasks.append(("document", self._search_documents(query, status, limit)))
+        if "file" in types:
+            tasks.append(("file", self._search_files(query, status, limit)))
 
         # Gather results
         all_results: list[SearchResult] = []
@@ -448,7 +450,7 @@ class SearchService:
 
         Aggregates recent changes from all services.
         """
-        types = types or ["terminology", "term", "template", "document"]
+        types = types or ["terminology", "term", "template", "document", "file"]
         activities: list[ActivityItem] = []
 
         # Fetch recent items from each service in parallel
@@ -461,6 +463,8 @@ class SearchService:
             tasks.append(("template", self._get_recent_templates(limit)))
         if "document" in types:
             tasks.append(("document", self._get_recent_documents(limit)))
+        if "file" in types:
+            tasks.append(("file", self._get_recent_files(limit)))
 
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
@@ -791,6 +795,8 @@ class SearchService:
                 return await self._get_terminology_references(entity_id)
             elif entity_type == "term":
                 return await self._get_term_references(entity_id)
+            elif entity_type == "file":
+                return await self._get_file_references(entity_id)
             else:
                 return EntityReferencesResponse(error=f"Unknown entity type: {entity_type}")
         except Exception as e:
@@ -1201,6 +1207,201 @@ class SearchService:
                 )
             )
 
+    async def _search_files(
+        self, query: str, status: str | None, limit: int
+    ) -> list[SearchResult]:
+        """Search files in Document Store."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                params: dict[str, Any] = {"page_size": 100}
+                if status:
+                    params["status"] = status
+
+                response = await client.get(
+                    f"{settings.document_store_url}/api/document-store/files",
+                    params=params,
+                    headers={"X-API-Key": settings.api_key}
+                )
+
+                if response.status_code != 200:
+                    return []
+
+                data = response.json()
+                results = []
+                query_lower = query.lower()
+
+                for item in data.get("items", []):
+                    file_id = item.get("file_id", "")
+                    filename = item.get("filename", "")
+                    metadata = item.get("metadata", {})
+                    description = metadata.get("description", "") or ""
+                    category = metadata.get("category", "") or ""
+                    tags = metadata.get("tags", []) or []
+
+                    if (query_lower in file_id.lower() or
+                        query_lower in filename.lower() or
+                        query_lower in description.lower() or
+                        query_lower in category.lower() or
+                        any(query_lower in tag.lower() for tag in tags)):
+                        results.append(SearchResult(
+                            type="file",
+                            id=file_id,
+                            code=None,
+                            name=filename,
+                            status=item.get("status"),
+                            description=f"{item.get('content_type', '')} • {self._format_file_size(item.get('size_bytes', 0))}",
+                            updated_at=self._parse_datetime(item.get("updated_at") or item.get("uploaded_at"))
+                        ))
+
+                return results[:limit]
+        except Exception as e:
+            logger.error(f"File search failed: {e}")
+            return []
+
+    async def _get_recent_files(self, limit: int) -> list[ActivityItem]:
+        """Get recently uploaded/modified files."""
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    f"{settings.document_store_url}/api/document-store/files",
+                    params={"page_size": limit},
+                    headers={"X-API-Key": settings.api_key}
+                )
+
+                if response.status_code != 200:
+                    return []
+
+                items = []
+                for item in response.json().get("items", []):
+                    uploaded_at = self._parse_datetime(item.get("uploaded_at"))
+                    updated_at = self._parse_datetime(item.get("updated_at"))
+
+                    status = item.get("status", "")
+                    if status == "inactive":
+                        action = "deleted"
+                        timestamp = updated_at or uploaded_at or datetime.now(timezone.utc)
+                    elif updated_at and uploaded_at and updated_at > uploaded_at:
+                        action = "updated"
+                        timestamp = updated_at
+                    else:
+                        action = "created"
+                        timestamp = uploaded_at or datetime.now(timezone.utc)
+
+                    items.append(ActivityItem(
+                        type="file",
+                        action=action,
+                        entity_id=item.get("file_id"),
+                        entity_code=None,
+                        entity_name=item.get("filename"),
+                        timestamp=timestamp,
+                        user=item.get("updated_by") or item.get("uploaded_by"),
+                    ))
+
+                return items
+        except Exception as e:
+            logger.error(f"Failed to get recent files: {e}")
+            return []
+
+    async def _get_file_references(self, file_id: str) -> EntityReferencesResponse:
+        """Get file details (files don't have outgoing references to other entities)."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{settings.document_store_url}/api/document-store/files/{file_id}",
+                headers={"X-API-Key": settings.api_key}
+            )
+
+            if response.status_code != 200:
+                return EntityReferencesResponse(error=f"File not found: {file_id}")
+
+            file_data = response.json()
+            metadata = file_data.get("metadata", {})
+
+            return EntityReferencesResponse(
+                entity=EntityDetails(
+                    entity_type="file",
+                    entity_id=file_id,
+                    entity_code=None,
+                    entity_name=file_data.get("filename"),
+                    entity_status=file_data.get("status"),
+                    version=None,
+                    created_at=self._parse_datetime(file_data.get("uploaded_at")),
+                    updated_at=self._parse_datetime(file_data.get("updated_at")),
+                    data={
+                        "content_type": file_data.get("content_type"),
+                        "size_bytes": file_data.get("size_bytes"),
+                        "reference_count": file_data.get("reference_count", 0),
+                        "checksum": file_data.get("checksum"),
+                        "description": metadata.get("description"),
+                        "category": metadata.get("category"),
+                        "tags": metadata.get("tags", []),
+                    },
+                    references=[],
+                    valid_refs=0,
+                    broken_refs=0,
+                    inactive_refs=0
+                )
+            )
+
+    async def _get_file_referenced_by(
+        self, file_id: str, limit: int
+    ) -> ReferencedByResponse:
+        """Find documents that reference a file."""
+        references: list[IncomingReference] = []
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Get file details
+            file_response = await client.get(
+                f"{settings.document_store_url}/api/document-store/files/{file_id}",
+                headers={"X-API-Key": settings.api_key}
+            )
+
+            if file_response.status_code != 200:
+                return ReferencedByResponse(
+                    entity_type="file",
+                    entity_id=file_id,
+                    error=f"File not found: {file_id}"
+                )
+
+            file_data = file_response.json()
+
+            # Query the file→documents endpoint
+            docs_response = await client.get(
+                f"{settings.document_store_url}/api/document-store/files/{file_id}/documents",
+                params={"page_size": limit},
+                headers={"X-API-Key": settings.api_key}
+            )
+
+            if docs_response.status_code == 200:
+                docs_data = docs_response.json()
+                for doc in docs_data.get("items", []):
+                    references.append(IncomingReference(
+                        entity_type="document",
+                        entity_id=doc.get("document_id"),
+                        entity_code=doc.get("template_code"),
+                        entity_name=f"{doc.get('template_code', 'Unknown')} document",
+                        entity_status=doc.get("status"),
+                        field_path=doc.get("field_path"),
+                        reference_type="file_ref"
+                    ))
+
+        return ReferencedByResponse(
+            entity_type="file",
+            entity_id=file_id,
+            entity_code=None,
+            entity_name=file_data.get("filename"),
+            referenced_by=references[:limit],
+            total=len(references)
+        )
+
+    @staticmethod
+    def _format_file_size(size_bytes: int) -> str:
+        """Format file size for display."""
+        if size_bytes < 1024:
+            return f"{size_bytes} B"
+        if size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        return f"{size_bytes / (1024 * 1024):.2f} MB"
+
     @staticmethod
     def _parse_datetime(value: Any) -> datetime | None:
         """Parse datetime from various formats."""
@@ -1250,6 +1451,8 @@ class SearchService:
                 return await self._get_terminology_referenced_by(entity_id, limit)
             elif entity_type == "term":
                 return await self._get_term_referenced_by(entity_id, limit)
+            elif entity_type == "file":
+                return await self._get_file_referenced_by(entity_id, limit)
             elif entity_type == "document":
                 # Documents don't get referenced by other entities
                 return ReferencedByResponse(

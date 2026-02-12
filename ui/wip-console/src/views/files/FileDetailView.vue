@@ -11,6 +11,9 @@ import Chips from 'primevue/chips'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Panel from 'primevue/panel'
+import DataTable from 'primevue/datatable'
+import Column from 'primevue/column'
+import Paginator from 'primevue/paginator'
 import { fileStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
 import type { FileEntity } from '@/types'
@@ -32,6 +35,51 @@ const editMode = ref(false)
 const editDescription = ref('')
 const editTags = ref<string[]>([])
 const editCategory = ref('')
+
+// Referencing documents state
+const referencingDocs = ref<Array<{
+  document_id: string
+  template_id: string
+  template_code: string | null
+  field_path: string
+  status: string
+  created_at: string | null
+}>>([])
+const referencingDocsTotal = ref(0)
+const referencingDocsPage = ref(1)
+const referencingDocsPageSize = ref(10)
+const referencingDocsPages = ref(1)
+const referencingDocsLoading = ref(false)
+
+async function loadReferencingDocs() {
+  if (!file.value || file.value.reference_count === 0) return
+
+  referencingDocsLoading.value = true
+  try {
+    const response = await fileStoreClient.getFileDocuments(
+      fileId.value,
+      referencingDocsPage.value,
+      referencingDocsPageSize.value
+    )
+    referencingDocs.value = response.items
+    referencingDocsTotal.value = response.total
+    referencingDocsPages.value = response.pages
+  } catch (e) {
+    console.error('Failed to load referencing documents:', e)
+  } finally {
+    referencingDocsLoading.value = false
+  }
+}
+
+function onReferencingDocsPage(event: { page: number; rows: number }) {
+  referencingDocsPage.value = event.page + 1  // PrimeVue Paginator is 0-indexed
+  referencingDocsPageSize.value = event.rows
+  loadReferencingDocs()
+}
+
+function navigateToDocument(documentId: string) {
+  router.push(`/documents/${documentId}`)
+}
 
 // Load file
 async function loadFile() {
@@ -187,6 +235,7 @@ onMounted(async () => {
   if (isImage.value) {
     loadPreview()
   }
+  loadReferencingDocs()
 })
 </script>
 
@@ -365,6 +414,68 @@ onMounted(async () => {
           </template>
         </Card>
 
+        <!-- Referencing Documents card -->
+        <Card v-if="file.reference_count > 0" class="referencing-docs-card">
+          <template #title>
+            <div class="referencing-docs-title">
+              <span>Referencing Documents</span>
+              <Tag :value="`${referencingDocsTotal}`" severity="secondary" />
+            </div>
+          </template>
+          <template #content>
+            <div v-if="referencingDocsLoading" class="loading-inline">
+              <ProgressSpinner style="width: 24px; height: 24px" />
+              <span>Loading documents...</span>
+            </div>
+            <template v-else>
+              <DataTable
+                :value="referencingDocs"
+                size="small"
+                class="referencing-docs-table"
+                @row-click="(e) => navigateToDocument(e.data.document_id)"
+                :pt="{ bodyRow: { style: 'cursor: pointer' } }"
+              >
+                <Column field="document_id" header="Document ID" style="width: 240px">
+                  <template #body="{ data }">
+                    <code class="doc-id">{{ data.document_id }}</code>
+                  </template>
+                </Column>
+                <Column field="template_id" header="Template" style="width: 180px">
+                  <template #body="{ data }">
+                    <span>{{ data.template_code || data.template_id }}</span>
+                  </template>
+                </Column>
+                <Column field="field_path" header="Field">
+                  <template #body="{ data }">
+                    <code class="field-path">{{ data.field_path }}</code>
+                  </template>
+                </Column>
+                <Column field="status" header="Status" style="width: 100px">
+                  <template #body="{ data }">
+                    <Tag :value="data.status" :severity="data.status === 'active' ? 'success' : 'danger'" size="small" />
+                  </template>
+                </Column>
+                <Column field="created_at" header="Created" style="width: 160px">
+                  <template #body="{ data }">
+                    <span class="date-value">{{ formatDate(data.created_at) }}</span>
+                  </template>
+                </Column>
+                <template #empty>
+                  <div class="empty-state-inline">No referencing documents found</div>
+                </template>
+              </DataTable>
+              <Paginator
+                v-if="referencingDocsTotal > referencingDocsPageSize"
+                :rows="referencingDocsPageSize"
+                :totalRecords="referencingDocsTotal"
+                :first="(referencingDocsPage - 1) * referencingDocsPageSize"
+                :rowsPerPageOptions="[10, 25, 50]"
+                @page="onReferencingDocsPage"
+              />
+            </template>
+          </template>
+        </Card>
+
         <!-- Preview card (for images) -->
         <Card v-if="isImage && previewUrl" class="preview-card">
           <template #title>Preview</template>
@@ -482,7 +593,8 @@ onMounted(async () => {
 
 .preview-card,
 .danger-card,
-.raw-json-panel {
+.raw-json-panel,
+.referencing-docs-card {
   grid-column: span 2;
 }
 
@@ -647,6 +759,56 @@ onMounted(async () => {
   color: var(--p-text-muted-color);
 }
 
+/* Referencing documents */
+.referencing-docs-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.referencing-docs-card :deep(.p-card-content) {
+  padding: 0;
+}
+
+.referencing-docs-table :deep(.p-datatable-tbody > tr:hover) {
+  background-color: var(--p-surface-100);
+}
+
+.doc-id {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background-color: var(--p-surface-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.field-path {
+  font-size: 0.75rem;
+  background-color: var(--p-surface-100);
+  padding: 0.125rem 0.375rem;
+  border-radius: 4px;
+}
+
+.date-value {
+  font-size: 0.875rem;
+  color: var(--p-text-muted-color);
+}
+
+.loading-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+.empty-state-inline {
+  text-align: center;
+  padding: 2rem;
+  color: var(--p-text-muted-color);
+}
+
 @media (max-width: 768px) {
   .content-grid {
     grid-template-columns: 1fr;
@@ -655,7 +817,8 @@ onMounted(async () => {
   .info-card,
   .metadata-card,
   .preview-card,
-  .danger-card {
+  .danger-card,
+  .referencing-docs-card {
     grid-column: span 1;
   }
 

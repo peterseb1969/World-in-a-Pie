@@ -20,11 +20,14 @@ _nats_enabled = False
 
 
 class EventType(str, Enum):
-    """Document event types."""
+    """Document and file event types."""
     DOCUMENT_CREATED = "document.created"
     DOCUMENT_UPDATED = "document.updated"
     DOCUMENT_DELETED = "document.deleted"
     DOCUMENT_ARCHIVED = "document.archived"
+    FILE_UPLOADED = "file.uploaded"
+    FILE_UPDATED = "file.updated"
+    FILE_DELETED = "file.deleted"
 
 
 async def configure_nats_client(nats_url: str) -> bool:
@@ -146,6 +149,55 @@ async def publish_document_event(
 
         logger.debug(
             f"Published {event_type.value} event for document {document.get('document_id')} "
+            f"to {subject} (seq={ack.seq})"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to publish event {event_type.value}: {e}")
+        return False
+
+
+async def publish_file_event(
+    event_type: EventType,
+    file_data: dict[str, Any],
+    changed_by: Optional[str] = None
+) -> bool:
+    """
+    Publish a file event to NATS.
+
+    Args:
+        event_type: Type of event (uploaded, updated, deleted)
+        file_data: File metadata to include in event
+        changed_by: User/system that made the change
+
+    Returns:
+        True if published successfully, False otherwise
+    """
+    global _jetstream, _nats_enabled
+
+    if not _nats_enabled or not _jetstream:
+        logger.debug(f"NATS disabled, skipping event: {event_type.value}")
+        return False
+
+    try:
+        event = {
+            "event_type": event_type.value,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "changed_by": changed_by,
+            "file": file_data,
+        }
+
+        # Format: wip.files.<file_id>.<action>
+        file_id = file_data.get("file_id", "unknown")
+        action = event_type.value.split(".")[1]
+        subject = f"wip.files.{file_id}.{action}"
+
+        payload = json.dumps(event).encode()
+        ack = await _jetstream.publish(subject, payload)
+
+        logger.debug(
+            f"Published {event_type.value} event for file {file_id} "
             f"to {subject} (seq={ack.seq})"
         )
         return True

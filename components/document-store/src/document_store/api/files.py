@@ -1,9 +1,11 @@
 """File API endpoints for binary file storage."""
 
+import math
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 import io
 
 from ..models.file import FileStatus
@@ -20,6 +22,25 @@ from ..models.api_models import (
 from ..services.file_service import get_file_service, FileServiceError
 from ..services.file_storage_client import is_file_storage_enabled
 from .auth import require_api_key
+
+
+class FileDocumentRef(BaseModel):
+    """A document that references a file."""
+    document_id: str
+    template_id: str
+    template_code: str | None = None
+    field_path: str
+    status: str
+    created_at: str | None = None
+
+
+class FileDocumentsResponse(BaseModel):
+    """Paginated list of documents referencing a file."""
+    items: list[FileDocumentRef] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 10
+    pages: int = 1
 
 router = APIRouter(prefix="/files", tags=["Files"])
 
@@ -254,6 +275,70 @@ async def delete_file(
         return {"status": "deleted", "file_id": file_id}
     except FileServiceError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get(
+    "/{file_id}/documents",
+    response_model=FileDocumentsResponse,
+    summary="List documents referencing this file",
+    description="""
+Find all active documents that reference a specific file.
+
+Uses the file_references index for efficient lookup.
+    """,
+    dependencies=[Depends(require_file_storage)]
+)
+async def get_file_documents(
+    file_id: str,
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    _: str = Depends(require_api_key)
+):
+    """List documents that reference this file."""
+    from ..models.document import Document as DocumentModel
+
+    # Verify file exists
+    service = get_file_service()
+    file_response = await service.get_file(file_id)
+    if not file_response:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Query documents with this file_id in file_references
+    query = {
+        "file_references.file_id": file_id,
+        "status": "active",
+    }
+
+    total = await DocumentModel.find(query).count()
+    skip = (page - 1) * page_size
+    docs = await DocumentModel.find(query).skip(skip).limit(page_size).sort(
+        [("created_at", -1)]
+    ).to_list()
+
+    items = []
+    for doc in docs:
+        # Find the field_path(s) referencing this file
+        field_paths = []
+        for ref in (doc.file_references or []):
+            if ref.get("file_id") == file_id:
+                field_paths.append(ref.get("field_path", "unknown"))
+
+        items.append(FileDocumentRef(
+            document_id=doc.document_id,
+            template_id=doc.template_id,
+            template_code=None,  # Document model doesn't store template_code
+            field_path=", ".join(field_paths) if field_paths else "unknown",
+            status=doc.status.value if hasattr(doc.status, 'value') else doc.status,
+            created_at=doc.created_at.isoformat() if doc.created_at else None,
+        ))
+
+    return FileDocumentsResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 1,
+    )
 
 
 @router.delete(

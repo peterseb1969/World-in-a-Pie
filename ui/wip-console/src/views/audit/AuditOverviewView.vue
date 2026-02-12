@@ -36,7 +36,7 @@ const integrityResult = ref<IntegrityCheckResult | null>(null)
 const integrityError = ref<string | null>(null)
 
 // Filters
-const selectedTypes = ref<string[]>(['terminology', 'term', 'template', 'document'])
+const selectedTypes = ref<string[]>(['terminology', 'term', 'template', 'document', 'file'])
 const activityLimit = ref(100)
 const activitySearch = ref('')
 
@@ -45,7 +45,8 @@ const typeOptions = [
   { label: 'Terminologies', value: 'terminology' },
   { label: 'Terms', value: 'term' },
   { label: 'Templates', value: 'template' },
-  { label: 'Documents', value: 'document' }
+  { label: 'Documents', value: 'document' },
+  { label: 'Files', value: 'file' }
 ]
 
 // Activity counts by type
@@ -121,6 +122,7 @@ function getTypeSeverity(type: string): 'success' | 'info' | 'warn' | 'danger' |
     case 'term': return 'secondary'
     case 'template': return 'success'
     case 'document': return 'warn'
+    case 'file': return 'danger'
     default: return 'secondary'
   }
 }

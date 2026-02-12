@@ -80,7 +80,7 @@ async function inspectEntity(type: string, id: string) {
   referencedBy.value = []
   referencedByTotal.value = 0
 
-  const entityType = type as 'document' | 'template' | 'terminology' | 'term'
+  const entityType = type as 'document' | 'template' | 'terminology' | 'term' | 'file'
 
   try {
     // Fetch entity references (outgoing)
@@ -98,7 +98,7 @@ async function inspectEntity(type: string, id: string) {
     inspectionLoading.value = false
   }
 
-  // Fetch referenced by (incoming) - only for non-document entities
+  // Fetch referenced by (incoming) - for non-document entities (including files)
   if (entityType !== 'document') {
     referencedByLoading.value = true
     try {
@@ -136,6 +136,7 @@ function getTypeSeverity(type: string): 'success' | 'info' | 'warn' | 'danger' |
     case 'term': return 'secondary'
     case 'template': return 'success'
     case 'document': return 'warn'
+    case 'file': return 'danger'
     default: return 'secondary'
   }
 }
@@ -201,6 +202,7 @@ function getRefTypeLabel(refType: string): string {
     case 'template_ref': return 'references'
     case 'terminology_ref': return 'references'
     case 'term_ref': return 'references'
+    case 'file_ref': return 'references'
     default: return refType
   }
 }

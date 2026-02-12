@@ -22,6 +22,11 @@ class EventType(str, Enum):
     TEMPLATE_UPDATED = "template.updated"
     TEMPLATE_DELETED = "template.deleted"
 
+    # File events
+    FILE_UPLOADED = "file.uploaded"
+    FILE_UPDATED = "file.updated"
+    FILE_DELETED = "file.deleted"
+
 
 class SyncStrategy(str, Enum):
     """Sync strategy for a template."""

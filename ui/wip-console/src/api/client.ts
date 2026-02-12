@@ -611,6 +611,26 @@ class FileStoreClient extends BaseApiClient {
     return response.data
   }
 
+  async getFileDocuments(fileId: string, page: number = 1, pageSize: number = 10): Promise<{
+    items: Array<{
+      document_id: string
+      template_id: string
+      template_code: string | null
+      field_path: string
+      status: string
+      created_at: string | null
+    }>
+    total: number
+    page: number
+    page_size: number
+    pages: number
+  }> {
+    const response = await this.client.get(`/${fileId}/documents`, {
+      params: { page, page_size: pageSize }
+    })
+    return response.data
+  }
+
   // ===========================================================================
   // STORAGE STATUS
   // ===========================================================================
@@ -671,7 +691,7 @@ export interface IntegrityCheckResult {
 
 // Search and activity types
 export interface SearchResult {
-  type: 'terminology' | 'term' | 'template' | 'document'
+  type: 'terminology' | 'term' | 'template' | 'document' | 'file'
   id: string
   code: string | null
   name: string | null
@@ -688,7 +708,7 @@ export interface SearchResponse {
 }
 
 export interface ActivityItem {
-  type: 'terminology' | 'term' | 'template' | 'document'
+  type: 'terminology' | 'term' | 'template' | 'document' | 'file'
   action: 'created' | 'updated' | 'deleted' | 'deprecated'
   entity_id: string
   entity_code: string | null
@@ -731,7 +751,7 @@ export interface EntityReference {
 }
 
 export interface EntityDetails {
-  entity_type: 'document' | 'template' | 'terminology' | 'term'
+  entity_type: 'document' | 'template' | 'terminology' | 'term' | 'file'
   entity_id: string
   entity_code: string | null
   entity_name: string | null
@@ -759,11 +779,11 @@ export interface IncomingReference {
   entity_name: string | null
   entity_status: string | null
   field_path: string | null
-  reference_type: 'uses_template' | 'extends' | 'template_ref' | 'terminology_ref' | 'term_ref'
+  reference_type: 'uses_template' | 'extends' | 'template_ref' | 'terminology_ref' | 'term_ref' | 'file_ref'
 }
 
 export interface ReferencedByResponse {
-  entity_type: 'document' | 'template' | 'terminology' | 'term'
+  entity_type: 'document' | 'template' | 'terminology' | 'term' | 'file'
   entity_id: string
   entity_code: string | null
   entity_name: string | null
@@ -828,7 +848,7 @@ class ReportingSyncClient extends BaseApiClient {
   }
 
   async getEntityReferences(
-    entityType: 'document' | 'template' | 'terminology' | 'term',
+    entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
     entityId: string
   ): Promise<EntityReferencesResponse> {
     const response = await this.client.get<EntityReferencesResponse>(
@@ -838,7 +858,7 @@ class ReportingSyncClient extends BaseApiClient {
   }
 
   async getReferencedBy(
-    entityType: 'document' | 'template' | 'terminology' | 'term',
+    entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
     entityId: string,
     limit: number = 100
   ): Promise<ReferencedByResponse> {

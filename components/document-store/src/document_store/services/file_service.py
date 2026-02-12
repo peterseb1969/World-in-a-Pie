@@ -27,6 +27,7 @@ from .file_storage_client import (
     FileStorageError,
     is_file_storage_enabled,
 )
+from .nats_client import EventType, publish_file_event
 
 # Import identity helper from wip-auth
 from ..api.auth import get_identity_string
@@ -137,6 +138,13 @@ class FileService:
         )
 
         await file_doc.insert()
+
+        # Publish NATS event
+        await publish_file_event(
+            EventType.FILE_UPLOADED,
+            self._file_to_event_payload(file_doc),
+            changed_by=actor,
+        )
 
         return self._to_response(file_doc)
 
@@ -301,6 +309,13 @@ class FileService:
         file_doc.updated_by = actor
         await file_doc.save()
 
+        # Publish NATS event
+        await publish_file_event(
+            EventType.FILE_DELETED,
+            self._file_to_event_payload(file_doc),
+            changed_by=actor,
+        )
+
         return True
 
     async def hard_delete_file(self, file_id: str) -> bool:
@@ -374,6 +389,13 @@ class FileService:
         file_doc.updated_at = datetime.now(timezone.utc)
         file_doc.updated_by = actor
         await file_doc.save()
+
+        # Publish NATS event
+        await publish_file_event(
+            EventType.FILE_UPDATED,
+            self._file_to_event_payload(file_doc),
+            changed_by=actor,
+        )
 
         return self._to_response(file_doc)
 
@@ -709,6 +731,28 @@ class FileService:
         """
         files = await File.find({"checksum": checksum}).to_list()
         return [self._to_response(f) for f in files]
+
+    @staticmethod
+    def _file_to_event_payload(file_doc: File) -> dict:
+        """Convert File document to event payload."""
+        return {
+            "file_id": file_doc.file_id,
+            "filename": file_doc.filename,
+            "content_type": file_doc.content_type,
+            "size_bytes": file_doc.size_bytes,
+            "checksum": file_doc.checksum,
+            "status": file_doc.status.value if hasattr(file_doc.status, 'value') else file_doc.status,
+            "reference_count": file_doc.reference_count,
+            "metadata": {
+                "description": file_doc.metadata.description,
+                "tags": file_doc.metadata.tags,
+                "category": file_doc.metadata.category,
+            },
+            "uploaded_at": file_doc.uploaded_at.isoformat() if file_doc.uploaded_at else None,
+            "uploaded_by": file_doc.uploaded_by,
+            "updated_at": file_doc.updated_at.isoformat() if file_doc.updated_at else None,
+            "updated_by": file_doc.updated_by,
+        }
 
     def _to_response(self, file_doc: File) -> FileResponse:
         """Convert File document to FileResponse."""
