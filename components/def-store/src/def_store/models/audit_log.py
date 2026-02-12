@@ -17,10 +17,10 @@ class TermAuditLog(Document):
     this provides the audit trail for what changed and when.
     """
 
-    # Namespace for multi-tenant isolation
-    namespace: str = Field(
+    # Pool ID for multi-tenant isolation
+    pool_id: str = Field(
         default="wip-terms",
-        description="Namespace of the term (e.g., wip-terms, dev-terms)"
+        description="Pool ID of the term (e.g., wip-terms, dev-terms)"
     )
 
     # Reference to the term
@@ -70,12 +70,12 @@ class TermAuditLog(Document):
     class Settings:
         name = "term_audit_log"
         indexes = [
-            # Time-based queries within namespace
-            IndexModel([("namespace", 1), ("term_id", 1), ("changed_at", DESCENDING)], name="ns_term_time_idx"),
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("changed_at", DESCENDING)], name="ns_terminology_time_idx"),
-            IndexModel([("namespace", 1), ("changed_at", DESCENDING)], name="ns_time_idx"),
+            # Time-based queries within pool
+            IndexModel([("pool_id", 1), ("term_id", 1), ("changed_at", DESCENDING)], name="pool_term_time_idx"),
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("changed_at", DESCENDING)], name="pool_terminology_time_idx"),
+            IndexModel([("pool_id", 1), ("changed_at", DESCENDING)], name="pool_time_idx"),
             # Action filter
-            IndexModel([("namespace", 1), ("action", 1)], name="ns_action_idx"),
+            IndexModel([("pool_id", 1), ("action", 1)], name="pool_action_idx"),
             # Global time index for admin queries
             IndexModel([("changed_at", DESCENDING)], name="time_idx"),
         ]

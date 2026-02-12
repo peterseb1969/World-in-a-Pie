@@ -25,7 +25,7 @@ class SearchService:
 
         Args:
             field_criteria: Field-value pairs to search for
-            restrict_to_pools: Optional list of namespaces to restrict search
+            restrict_to_pools: Optional list of pools to restrict search
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -52,9 +52,9 @@ class SearchService:
                 }
             }
 
-            # Add namespace restriction to synonym search if specified
+            # Add pool restriction to synonym search if specified
             if restrict_to_pools:
-                synonym_condition["synonyms"]["$elemMatch"]["namespace"] = {
+                synonym_condition["synonyms"]["$elemMatch"]["pool_id"] = {
                     "$in": restrict_to_pools
                 }
 
@@ -64,16 +64,16 @@ class SearchService:
         # Combine all conditions
         query: dict[str, Any] = {"$or": or_conditions}
 
-        # Add namespace restriction for primary key
+        # Add pool restriction for primary key
         if restrict_to_pools:
-            # Either primary namespace matches OR a synonym namespace matches
+            # Either primary pool matches OR a synonym pool matches
             query = {
                 "$and": [
                     query,
                     {
                         "$or": [
-                            {"primary_namespace": {"$in": restrict_to_pools}},
-                            {"synonyms.namespace": {"$in": restrict_to_pools}}
+                            {"primary_pool_id": {"$in": restrict_to_pools}},
+                            {"synonyms.pool_id": {"$in": restrict_to_pools}}
                         ]
                     }
                 ]
@@ -101,7 +101,7 @@ class SearchService:
 
         Args:
             term: Search term
-            restrict_to_pools: Optional list of namespaces to restrict search
+            restrict_to_pools: Optional list of pools to restrict search
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -112,11 +112,11 @@ class SearchService:
             "$text": {"$search": term}
         }
 
-        # Add namespace restriction
+        # Add pool restriction
         if restrict_to_pools:
             query["$or"] = [
-                {"primary_namespace": {"$in": restrict_to_pools}},
-                {"synonyms.namespace": {"$in": restrict_to_pools}}
+                {"primary_pool_id": {"$in": restrict_to_pools}},
+                {"synonyms.pool_id": {"$in": restrict_to_pools}}
             ]
 
         # Filter by status
@@ -138,7 +138,7 @@ class SearchService:
 
         Args:
             term: Search term (will be escaped for regex safety)
-            restrict_to_pools: Optional list of namespaces
+            restrict_to_pools: Optional list of pools
             include_inactive: Whether to include inactive entries
 
         Returns:
@@ -169,15 +169,15 @@ class SearchService:
             ]
         }
 
-        # Add namespace restriction
+        # Add pool restriction
         if restrict_to_pools:
             query = {
                 "$and": [
                     query,
                     {
                         "$or": [
-                            {"primary_namespace": {"$in": restrict_to_pools}},
-                            {"synonyms.namespace": {"$in": restrict_to_pools}}
+                            {"primary_pool_id": {"$in": restrict_to_pools}},
+                            {"synonyms.pool_id": {"$in": restrict_to_pools}}
                         ]
                     }
                 ]
@@ -230,7 +230,7 @@ class SearchService:
         """
         return SearchResult(
             registry_id=entry.entry_id,
-            pool_id=entry.primary_namespace,
+            pool_id=entry.primary_pool_id,
             matched_in=matched_in,
             matched_pool_id=matched_pool_id,
             matched_composite_key=matched_composite_key,
@@ -251,19 +251,19 @@ class SearchService:
             field_criteria: The search criteria
 
         Returns:
-            Tuple of (matched_in, matched_namespace, matched_composite_key)
+            Tuple of (matched_in, matched_pool_id, matched_composite_key)
         """
         # Check primary key first
         if SearchService._matches_criteria(entry.primary_composite_key, field_criteria):
-            return "primary", entry.primary_namespace, entry.primary_composite_key
+            return "primary", entry.primary_pool_id, entry.primary_composite_key
 
         # Check synonyms
         for synonym in entry.synonyms:
             if SearchService._matches_criteria(synonym.composite_key, field_criteria):
-                return "synonym", synonym.namespace, synonym.composite_key
+                return "synonym", synonym.pool_id, synonym.composite_key
 
         # Default to primary (shouldn't happen if query was correct)
-        return "primary", entry.primary_namespace, entry.primary_composite_key
+        return "primary", entry.primary_pool_id, entry.primary_composite_key
 
     @staticmethod
     def _matches_criteria(composite_key: dict[str, Any], criteria: dict[str, Any]) -> bool:

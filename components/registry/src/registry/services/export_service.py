@@ -80,7 +80,7 @@ class ExportService:
             # Export registry entries for all pools in the namespace
             registry_path = os.path.join(export_dir, "registry-entries.jsonl")
             async for entry in RegistryEntry.find(
-                {"primary_namespace": {"$in": namespace.get_all_pools()}}
+                {"primary_pool_id": {"$in": namespace.get_all_pools()}}
             ):
                 with open(registry_path, "a") as f:
                     f.write(entry.model_dump_json() + "\n")
@@ -89,7 +89,7 @@ class ExportService:
             # Export terminologies
             terminologies = await self._fetch_all_paginated(
                 f"{self.def_store_url}/api/def-store/terminologies",
-                {"namespace": namespace.terminologies_pool},
+                {"pool_id": namespace.terminologies_pool},
             )
             terms_path = os.path.join(export_dir, "terminologies.jsonl")
             for term in terminologies:
@@ -102,7 +102,7 @@ class ExportService:
             for terminology in terminologies:
                 terms = await self._fetch_all_paginated(
                     f"{self.def_store_url}/api/def-store/terminologies/{terminology['terminology_id']}/terms",
-                    {"namespace": namespace.terms_pool},
+                    {"pool_id": namespace.terms_pool},
                 )
                 all_terms.extend(terms)
 
@@ -115,7 +115,7 @@ class ExportService:
             # Export templates
             templates = await self._fetch_all_paginated(
                 f"{self.template_store_url}/api/template-store/templates",
-                {"namespace": namespace.templates_pool},
+                {"pool_id": namespace.templates_pool},
             )
             templates_path = os.path.join(export_dir, "templates.jsonl")
             for template in templates:
@@ -126,7 +126,7 @@ class ExportService:
             # Export documents
             documents = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/documents",
-                {"namespace": namespace.documents_pool},
+                {"pool_id": namespace.documents_pool},
             )
             documents_path = os.path.join(export_dir, "documents.jsonl")
             for doc in documents:
@@ -137,7 +137,7 @@ class ExportService:
             # Export file metadata (and optionally content)
             files = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/files",
-                {"namespace": namespace.files_pool},
+                {"pool_id": namespace.files_pool},
             )
             files_path = os.path.join(export_dir, "files.jsonl")
             for file_meta in files:

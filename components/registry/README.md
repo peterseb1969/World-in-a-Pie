@@ -115,7 +115,7 @@ curl -X POST http://localhost:8001/api/registry/entries/register \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
-    "namespace": "default",
+    "pool_id": "default",
     "composite_key": {"product_id": "PROD-001", "region": "EU"}
   }]'
 ```
@@ -127,9 +127,9 @@ curl -X POST http://localhost:8001/api/registry/synonyms/add \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
-    "target_namespace": "default",
+    "target_pool_id": "default",
     "target_id": "your_registry_id",
-    "synonym_namespace": "vendor1",
+    "synonym_pool_id": "vendor1",
     "synonym_composite_key": {"vendor_sku": "V1-SKU-001"}
   }]'
 ```

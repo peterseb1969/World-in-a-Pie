@@ -43,7 +43,7 @@ export const useDocumentStore = defineStore('document', () => {
     try {
       const response = await documentStoreClient.listDocuments({
         ...params,
-        namespace: namespaceStore.documentsPool
+        pool_id: namespaceStore.documentsPool
       })
       documents.value = response.items
       total.value = response.total

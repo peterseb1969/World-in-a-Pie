@@ -69,8 +69,8 @@ class ReferenceValidator:
 
     async def validate_document_references(
         self,
-        document_namespace: str,
-        template_namespace: str,
+        document_pool_id: str,
+        template_pool_id: str,
         term_references: list[dict[str, Any]] | None = None,
         file_references: list[dict[str, Any]] | None = None,
     ) -> None:
@@ -78,8 +78,8 @@ class ReferenceValidator:
         Validate that all references in a document comply with isolation rules.
 
         Args:
-            document_namespace: Namespace of the document being created/updated
-            template_namespace: Namespace of the referenced template
+            document_pool_id: Pool ID of the document being created/updated
+            template_pool_id: Pool ID of the referenced template
             term_references: List of term reference objects
             file_references: List of file reference objects
 
@@ -87,24 +87,24 @@ class ReferenceValidator:
             ReferenceValidationError: If any references violate isolation rules
         """
         # Get the document's namespace
-        namespace = await self._get_namespace(document_namespace)
+        namespace = await self._get_namespace(document_pool_id)
 
         if not namespace:
             # No namespace info - allow all
             return
 
-        doc_prefix = self._get_prefix(document_namespace)
+        doc_prefix = self._get_prefix(document_pool_id)
         is_strict = namespace.get("isolation_mode") == "strict"
         violations = []
 
         # Check template reference
-        template_prefix = self._get_prefix(template_namespace)
+        template_prefix = self._get_prefix(template_pool_id)
         if template_prefix and template_prefix != doc_prefix:
             if not self._is_allowed_reference(template_prefix, namespace, is_strict):
                 violations.append({
                     "type": "template",
-                    "namespace": template_namespace,
-                    "message": f"Template namespace '{template_namespace}' is not accessible from '{doc_prefix}' namespace",
+                    "pool_id": template_pool_id,
+                    "message": f"Template pool '{template_pool_id}' is not accessible from '{doc_prefix}' namespace",
                 })
 
         # Check term references
@@ -112,8 +112,8 @@ class ReferenceValidator:
             # Get unique term namespaces
             term_namespaces = set()
             for ref in term_references:
-                # Term references may have a namespace field or we infer from term_id
-                term_ns = ref.get("namespace") or ref.get("term_namespace")
+                # Term references may have a pool_id field or we infer from term_id
+                term_ns = ref.get("pool_id") or ref.get("term_pool_id")
                 if term_ns:
                     term_namespaces.add(term_ns)
 
@@ -123,15 +123,15 @@ class ReferenceValidator:
                     if not self._is_allowed_reference(term_prefix, namespace, is_strict):
                         violations.append({
                             "type": "term",
-                            "namespace": term_ns,
-                            "message": f"Term namespace '{term_ns}' is not accessible from '{doc_prefix}' namespace",
+                            "pool_id": term_ns,
+                            "message": f"Term pool '{term_ns}' is not accessible from '{doc_prefix}' namespace",
                         })
 
         # Check file references
         if file_references:
             file_namespaces = set()
             for ref in file_references:
-                file_ns = ref.get("namespace") or ref.get("file_namespace")
+                file_ns = ref.get("pool_id") or ref.get("file_pool_id")
                 if file_ns:
                     file_namespaces.add(file_ns)
 
@@ -141,8 +141,8 @@ class ReferenceValidator:
                     if not self._is_allowed_reference(file_prefix, namespace, is_strict):
                         violations.append({
                             "type": "file",
-                            "namespace": file_ns,
-                            "message": f"File namespace '{file_ns}' is not accessible from '{doc_prefix}' namespace",
+                            "pool_id": file_ns,
+                            "message": f"File pool '{file_ns}' is not accessible from '{doc_prefix}' namespace",
                         })
 
         if violations:
@@ -178,51 +178,51 @@ class ReferenceValidator:
 
     async def validate_template_references(
         self,
-        template_namespace: str,
-        extends_template_namespace: str | None = None,
-        terminology_references: list[str] | None = None,
+        template_pool_id: str,
+        extends_template_pool_id: str | None = None,
+        terminology_pool_ids: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
 
         Args:
-            template_namespace: Namespace of the template being created/updated
-            extends_template_namespace: Namespace of parent template (if any)
-            terminology_references: List of terminology namespace IDs referenced
+            template_pool_id: Pool ID of the template being created/updated
+            extends_template_pool_id: Pool ID of parent template (if any)
+            terminology_pool_ids: List of terminology pool IDs referenced
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
         """
-        namespace = await self._get_namespace(template_namespace)
+        namespace = await self._get_namespace(template_pool_id)
 
         if not namespace:
             return
 
-        template_prefix = self._get_prefix(template_namespace)
+        template_prefix = self._get_prefix(template_pool_id)
         is_strict = namespace.get("isolation_mode") == "strict"
         violations = []
 
         # Check extends reference
-        if extends_template_namespace:
-            extends_prefix = self._get_prefix(extends_template_namespace)
+        if extends_template_pool_id:
+            extends_prefix = self._get_prefix(extends_template_pool_id)
             if extends_prefix and extends_prefix != template_prefix:
                 if not self._is_allowed_reference(extends_prefix, namespace, is_strict):
                     violations.append({
                         "type": "extends",
-                        "namespace": extends_template_namespace,
-                        "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_prefix}' namespace",
+                        "pool_id": extends_template_pool_id,
+                        "message": f"Parent template pool '{extends_template_pool_id}' is not accessible from '{template_prefix}' namespace",
                     })
 
         # Check terminology references
-        if terminology_references:
-            for term_ns in terminology_references:
+        if terminology_pool_ids:
+            for term_ns in terminology_pool_ids:
                 term_prefix = self._get_prefix(term_ns)
                 if term_prefix and term_prefix != template_prefix:
                     if not self._is_allowed_reference(term_prefix, namespace, is_strict):
                         violations.append({
                             "type": "terminology",
-                            "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_prefix}' namespace",
+                            "pool_id": term_ns,
+                            "message": f"Terminology pool '{term_ns}' is not accessible from '{template_prefix}' namespace",
                         })
 
         if violations:

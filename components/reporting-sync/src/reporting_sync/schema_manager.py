@@ -174,9 +174,9 @@ class SchemaManager:
         # System columns (always present)
         columns.extend([
             ("document_id", "TEXT PRIMARY KEY"),
-            ("namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip-documents'"),  # Namespace for multi-tenant isolation
+            ("pool_id", "VARCHAR(255) NOT NULL DEFAULT 'wip-documents'"),  # ID pool for multi-tenant isolation
             ("template_id", "TEXT NOT NULL"),
-            ("template_namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip-templates'"),  # Template namespace
+            ("template_pool_id", "VARCHAR(255) NOT NULL DEFAULT 'wip-templates'"),  # Template ID pool
             ("template_version", "INTEGER NOT NULL"),
             ("version", "INTEGER NOT NULL"),
             ("status", "VARCHAR(20) NOT NULL"),
@@ -219,15 +219,15 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 );
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON "{table_name}"(namespace);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON "{table_name}"(namespace, template_id);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON "{table_name}"(namespace, status);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON "{table_name}"(namespace, identity_hash);
-CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(namespace, created_at);
+CREATE INDEX IF NOT EXISTS "{table_name}_pool_id_idx" ON "{table_name}"(pool_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_pool_template_id_idx" ON "{table_name}"(pool_id, template_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_pool_status_idx" ON "{table_name}"(pool_id, status);
+CREATE INDEX IF NOT EXISTS "{table_name}_pool_identity_hash_idx" ON "{table_name}"(pool_id, identity_hash);
+CREATE INDEX IF NOT EXISTS "{table_name}_pool_created_at_idx" ON "{table_name}"(pool_id, created_at);
 
--- Partial unique index for active documents by identity within namespace
-CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
-ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
+-- Partial unique index for active documents by identity within pool
+CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_pool_active_identity_idx"
+ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
 """
         return ddl.strip()
 

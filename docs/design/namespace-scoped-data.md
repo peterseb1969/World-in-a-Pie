@@ -280,9 +280,9 @@ When a document references a template from a different namespace:
 # Document in dev-documents referencing template in wip-templates
 {
     "document_id": "...",
-    "namespace": "dev-documents",
+    "pool_id": "dev-documents",
     "template_id": "TPL-000001",
-    "template_namespace": "wip-templates",  # Cross-reference
+    "template_pool_id": "wip-templates",  # Cross-reference
     "data": {...}
 }
 ```
@@ -414,15 +414,15 @@ When importing `dev` namespace as `staging`:
 # Original (in export)
 {
     "document_id": "...",
-    "namespace": "dev-documents",
-    "template_namespace": "dev-templates"
+    "pool_id": "dev-documents",
+    "template_pool_id": "dev-templates"
 }
 
 # After import with remap
 {
     "document_id": "...",
-    "namespace": "staging-documents",
-    "template_namespace": "staging-templates"
+    "pool_id": "staging-documents",
+    "template_pool_id": "staging-templates"
 }
 ```
 
@@ -493,8 +493,8 @@ curl -X DELETE .../namespace-groups/dev?confirm=true
 async def add_namespace_field():
     # Terminologies
     await Terminology.get_motor_collection().update_many(
-        {"namespace": {"$exists": False}},
-        {"$set": {"namespace": "wip-terminologies"}}
+        {"pool_id": {"$exists": False}},
+        {"$set": {"pool_id": "wip-terminologies"}}
     )
     # Repeat for terms, templates, documents, files
 ```

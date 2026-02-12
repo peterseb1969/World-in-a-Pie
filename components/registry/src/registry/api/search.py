@@ -67,7 +67,7 @@ async def search_by_fields(
                 )
                 search_results.append(SearchResult(
                     registry_id=entry.entry_id,
-                    pool_id=entry.primary_namespace,
+                    pool_id=entry.primary_pool_id,
                     matched_in=matched_in,
                     matched_pool_id=matched_ns,
                     matched_composite_key=matched_key,
@@ -152,7 +152,7 @@ async def search_by_term(
             for entry in entries:
                 # Check where the term appears
                 matched_in = "primary"
-                matched_ns = entry.primary_namespace
+                matched_ns = entry.primary_pool_id
                 matched_key = entry.primary_composite_key
 
                 # Check if term appears in primary key values
@@ -171,13 +171,13 @@ async def search_by_term(
                         )
                         if found_in_syn:
                             matched_in = "synonym"
-                            matched_ns = syn.namespace
+                            matched_ns = syn.pool_id
                             matched_key = syn.composite_key
                             break
 
                 search_results.append(SearchResult(
                     registry_id=entry.entry_id,
-                    pool_id=entry.primary_namespace,
+                    pool_id=entry.primary_pool_id,
                     matched_in=matched_in,
                     matched_pool_id=matched_ns,
                     matched_composite_key=matched_key,

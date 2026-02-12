@@ -75,11 +75,11 @@ def create_product_entries(base_url: str, api_key: str) -> list[str]:
     """Create product entries and return their registry IDs."""
 
     products = [
-        {"namespace": "products", "composite_key": {"name": "Widget Pro", "category": "electronics", "sku": "WP-001"}},
-        {"namespace": "products", "composite_key": {"name": "Gadget Plus", "category": "electronics", "sku": "GP-002"}},
-        {"namespace": "products", "composite_key": {"name": "Super Sprocket", "category": "hardware", "sku": "SS-003"}},
-        {"namespace": "products", "composite_key": {"name": "Mega Bolt", "category": "hardware", "sku": "MB-004"}},
-        {"namespace": "products", "composite_key": {"name": "Ultra Cable", "category": "accessories", "sku": "UC-005"}},
+        {"pool_id": "products", "composite_key": {"name": "Widget Pro", "category": "electronics", "sku": "WP-001"}},
+        {"pool_id": "products", "composite_key": {"name": "Gadget Plus", "category": "electronics", "sku": "GP-002"}},
+        {"pool_id": "products", "composite_key": {"name": "Super Sprocket", "category": "hardware", "sku": "SS-003"}},
+        {"pool_id": "products", "composite_key": {"name": "Mega Bolt", "category": "hardware", "sku": "MB-004"}},
+        {"pool_id": "products", "composite_key": {"name": "Ultra Cable", "category": "accessories", "sku": "UC-005"}},
     ]
 
     print("\nRegistering products...")
@@ -107,10 +107,10 @@ def create_customer_entries(base_url: str, api_key: str) -> list[str]:
     """Create customer entries and return their registry IDs."""
 
     customers = [
-        {"namespace": "customers", "composite_key": {"email": "john.doe@example.com", "region": "US"}},
-        {"namespace": "customers", "composite_key": {"email": "jane.smith@example.com", "region": "EU"}},
-        {"namespace": "customers", "composite_key": {"email": "bob.wilson@example.com", "region": "US"}},
-        {"namespace": "customers", "composite_key": {"email": "alice.chen@example.com", "region": "APAC"}},
+        {"pool_id": "customers", "composite_key": {"email": "john.doe@example.com", "region": "US"}},
+        {"pool_id": "customers", "composite_key": {"email": "jane.smith@example.com", "region": "EU"}},
+        {"pool_id": "customers", "composite_key": {"email": "bob.wilson@example.com", "region": "US"}},
+        {"pool_id": "customers", "composite_key": {"email": "alice.chen@example.com", "region": "APAC"}},
     ]
 
     print("\nRegistering customers...")
@@ -144,29 +144,29 @@ def add_vendor_synonyms(base_url: str, api_key: str, product_ids: list[str]) -> 
     synonyms = [
         # Widget Pro has codes in both ACME and Globex
         {
-            "target_namespace": "products",
+            "target_pool_id": "products",
             "target_id": product_ids[0],
-            "synonym_namespace": "vendor-acme",
+            "synonym_pool_id": "vendor-acme",
             "synonym_composite_key": {"acme_code": "ACM-WGT-001", "acme_category": "ELEC"}
         },
         {
-            "target_namespace": "products",
+            "target_pool_id": "products",
             "target_id": product_ids[0],
-            "synonym_namespace": "vendor-globex",
+            "synonym_pool_id": "vendor-globex",
             "synonym_composite_key": {"globex_sku": "GLX-1001", "globex_dept": "Electronics"}
         },
         # Gadget Plus has ACME code
         {
-            "target_namespace": "products",
+            "target_pool_id": "products",
             "target_id": product_ids[1],
-            "synonym_namespace": "vendor-acme",
+            "synonym_pool_id": "vendor-acme",
             "synonym_composite_key": {"acme_code": "ACM-GDG-002", "acme_category": "ELEC"}
         },
         # Super Sprocket has Globex code
         {
-            "target_namespace": "products",
+            "target_pool_id": "products",
             "target_id": product_ids[2],
-            "synonym_namespace": "vendor-globex",
+            "synonym_pool_id": "vendor-globex",
             "synonym_composite_key": {"globex_sku": "GLX-2001", "globex_dept": "Hardware"}
         },
     ]
@@ -195,7 +195,7 @@ def create_order_entries(base_url: str, api_key: str, customer_ids: list[str], p
 
     orders = [
         {
-            "namespace": "orders",
+            "pool_id": "orders",
             "composite_key": {
                 "customer_ref": customer_ids[0] if customer_ids else "unknown",
                 "product_ref": product_ids[0] if product_ids else "unknown",
@@ -204,7 +204,7 @@ def create_order_entries(base_url: str, api_key: str, customer_ids: list[str], p
             }
         },
         {
-            "namespace": "orders",
+            "pool_id": "orders",
             "composite_key": {
                 "customer_ref": customer_ids[1] if len(customer_ids) > 1 else customer_ids[0],
                 "product_ref": product_ids[1] if len(product_ids) > 1 else product_ids[0],
@@ -213,7 +213,7 @@ def create_order_entries(base_url: str, api_key: str, customer_ids: list[str], p
             }
         },
         {
-            "namespace": "orders",
+            "pool_id": "orders",
             "composite_key": {
                 "customer_ref": customer_ids[0] if customer_ids else "unknown",
                 "product_ref": product_ids[2] if len(product_ids) > 2 else product_ids[0],
@@ -257,7 +257,7 @@ def demo_searches(base_url: str, api_key: str) -> None:
     if response.status_code == 200:
         results = response.json()["results"][0]["results"]
         for r in results:
-            print(f"   - {r['registry_id']}: matched in {r['matched_namespace']}")
+            print(f"   - {r['registry_id']}: matched in {r['matched_pool_id']}")
 
     # Search across namespaces for vendor code
     print("\n2. Search across all namespaces for ACME code 'ACM-WGT-001':")
@@ -269,7 +269,7 @@ def demo_searches(base_url: str, api_key: str) -> None:
     if response.status_code == 200:
         results = response.json()["results"][0]["results"]
         for r in results:
-            print(f"   - {r['registry_id']}: found via {r['matched_in']} in {r['matched_namespace']}")
+            print(f"   - {r['registry_id']}: found via {r['matched_in']} in {r['matched_pool_id']}")
 
     # Free text search
     print("\n3. Free text search for 'widget':")

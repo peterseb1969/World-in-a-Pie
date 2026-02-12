@@ -56,7 +56,7 @@ export const useTemplateStore = defineStore('template', () => {
       // Fetch own namespace
       const ownResponse = await templateStoreClient.listTemplates({
         ...params,
-        namespace: namespaceStore.templatesPool
+        pool_id: namespaceStore.templatesPool
       })
       ownTemplates.value = ownResponse.items
       total.value = ownResponse.total
@@ -66,7 +66,7 @@ export const useTemplateStore = defineStore('template', () => {
         try {
           const wipResponse = await templateStoreClient.listTemplates({
             ...params,
-            namespace: 'wip-templates'
+            pool_id: 'wip-templates'
           })
           wipTemplates.value = wipResponse.items
           wipTotal.value = wipResponse.total
@@ -272,7 +272,7 @@ export const useTemplateStore = defineStore('template', () => {
       const response = await defStoreClient.listTerminologies({
         status: 'active',
         page_size: 100,
-        namespace: namespaceStore.terminologiesPool
+        pool_id: namespaceStore.terminologiesPool
       })
       terminologies.value = response.items
     } catch (e) {

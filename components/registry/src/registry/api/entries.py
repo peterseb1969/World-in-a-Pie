@@ -54,9 +54,9 @@ def build_lookup_response(
         input_index=input_index,
         status=status,
         preferred_id=entry.entry_id,
-        preferred_pool_id=entry.primary_namespace,
+        preferred_pool_id=entry.primary_pool_id,
         additional_ids=entry.additional_ids,
-        matched_pool_id=matched_pool_id or entry.primary_namespace,
+        matched_pool_id=matched_pool_id or entry.primary_pool_id,
         matched_composite_key=matched_composite_key or entry.primary_composite_key,
         synonyms=entry.synonyms,
         source_info=entry.source_info,
@@ -79,7 +79,7 @@ async def register_keys(
 
     For each key:
     - If the key already exists, returns the existing registry ID
-    - If new, generates an ID based on namespace configuration and creates entry
+    - If new, generates an ID based on pool configuration and creates entry
 
     Uses batch MongoDB operations for efficiency with large imports.
     """
@@ -127,7 +127,7 @@ async def register_keys(
                     input_index=i,
                     status="already_exists",
                     registry_id=existing.entry_id,
-                    pool_id=existing.primary_namespace,
+                    pool_id=existing.primary_pool_id,
                 )
                 exists_count += 1
                 continue
@@ -159,7 +159,7 @@ async def register_keys(
             # Build entry for batch insert
             entry = RegistryEntry(
                 entry_id=entry_id,
-                primary_namespace=item.pool_id,
+                primary_pool_id=item.pool_id,
                 primary_composite_key=item.composite_key,
                 primary_composite_key_hash=key_hash,
                 source_info=item.source_info,
@@ -188,7 +188,7 @@ async def register_keys(
                     input_index=idx,
                     status="created",
                     registry_id=entry.entry_id,
-                    pool_id=entry.primary_namespace,
+                    pool_id=entry.primary_pool_id,
                 )
                 created_count += 1
         except Exception as e:
@@ -234,9 +234,9 @@ async def lookup_by_ids(
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
-                # Find by entry_id and namespace
+                # Find by entry_id and pool_id
                 entry = await RegistryEntry.find_one({
-                    "primary_namespace": item.pool_id,
+                    "primary_pool_id": item.pool_id,
                     "entry_id": item.entry_id,
                     "status": "active"
                 })
@@ -326,7 +326,7 @@ async def lookup_by_keys(
                     query = {
                         "$or": [
                             {
-                                "primary_namespace": item.pool_id,
+                                "primary_pool_id": item.pool_id,
                                 "primary_composite_key_hash": key_hash
                             },
                             {
@@ -343,7 +343,7 @@ async def lookup_by_keys(
                 else:
                     # Search primary only
                     query = {
-                        "primary_namespace": item.pool_id,
+                        "primary_pool_id": item.pool_id,
                         "primary_composite_key_hash": key_hash,
                         "status": "active"
                     }
@@ -365,7 +365,7 @@ async def lookup_by_keys(
                     # Match was in a synonym
                     for syn in entry.synonyms:
                         if syn.composite_key_hash == key_hash:
-                            matched_pool_id = syn.namespace
+                            matched_pool_id = syn.pool_id
                             matched_composite_key = syn.composite_key
                             break
 
@@ -420,7 +420,7 @@ async def update_entries(
     for i, item in enumerate(items):
         try:
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.pool_id,
+                "primary_pool_id": item.pool_id,
                 "entry_id": item.entry_id,
                 "status": "active"
             })
@@ -475,7 +475,7 @@ async def delete_entries(
     for i, item in enumerate(items):
         try:
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.pool_id,
+                "primary_pool_id": item.pool_id,
                 "entry_id": item.entry_id,
             })
 

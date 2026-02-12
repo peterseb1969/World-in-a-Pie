@@ -87,51 +87,51 @@ class ReferenceValidator:
 
     async def validate_template_references(
         self,
-        template_namespace: str,
-        extends_template_namespace: str | None = None,
-        terminology_namespaces: list[str] | None = None,
+        template_pool_id: str,
+        extends_template_pool_id: str | None = None,
+        terminology_pool_ids: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
 
         Args:
-            template_namespace: Namespace of the template being created/updated
-            extends_template_namespace: Namespace of parent template (if any)
-            terminology_namespaces: List of terminology namespace IDs referenced
+            template_pool_id: Pool ID of the template being created/updated
+            extends_template_pool_id: Pool ID of parent template (if any)
+            terminology_pool_ids: List of terminology pool IDs referenced
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
         """
-        namespace = await self._get_namespace(template_namespace)
+        namespace = await self._get_namespace(template_pool_id)
 
         if not namespace:
             return
 
-        template_prefix = self._get_prefix(template_namespace)
+        template_prefix = self._get_prefix(template_pool_id)
         is_strict = namespace.get("isolation_mode") == "strict"
         violations = []
 
         # Check extends reference
-        if extends_template_namespace:
-            extends_prefix = self._get_prefix(extends_template_namespace)
+        if extends_template_pool_id:
+            extends_prefix = self._get_prefix(extends_template_pool_id)
             if extends_prefix and extends_prefix != template_prefix:
                 if not self._is_allowed_reference(extends_prefix, namespace, is_strict):
                     violations.append({
                         "type": "extends",
-                        "namespace": extends_template_namespace,
-                        "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_prefix}' namespace",
+                        "pool_id": extends_template_pool_id,
+                        "message": f"Parent template pool '{extends_template_pool_id}' is not accessible from '{template_prefix}' namespace",
                     })
 
         # Check terminology references
-        if terminology_namespaces:
-            for term_ns in terminology_namespaces:
-                term_prefix = self._get_prefix(term_ns)
+        if terminology_pool_ids:
+            for term_pool in terminology_pool_ids:
+                term_prefix = self._get_prefix(term_pool)
                 if term_prefix and term_prefix != template_prefix:
                     if not self._is_allowed_reference(term_prefix, namespace, is_strict):
                         violations.append({
                             "type": "terminology",
-                            "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_prefix}' namespace",
+                            "pool_id": term_pool,
+                            "message": f"Terminology pool '{term_pool}' is not accessible from '{template_prefix}' namespace",
                         })
 
         if violations:

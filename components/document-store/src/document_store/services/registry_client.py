@@ -12,7 +12,7 @@ class RegistryClient:
     Client for the WIP Registry service.
 
     Handles UUID7 ID generation for documents.
-    Documents use the wip-documents namespace which generates UUID7 IDs
+    Documents use the wip-documents pool which generates UUID7 IDs
     for time-based ordering.
     """
 
@@ -52,19 +52,19 @@ class RegistryClient:
         identity_hash: str,
         template_id: str,
         created_by: Optional[str] = None,
-        namespace: str = "wip-documents"
+        pool_id: str = "wip-documents"
     ) -> str:
         """
         Generate a new document ID from the Registry.
 
-        Uses the wip-documents namespace which generates UUID7 IDs
+        Uses the wip-documents pool which generates UUID7 IDs
         for time-based ordering.
 
         Args:
             identity_hash: Document identity hash
             template_id: Template ID the document conforms to
             created_by: User or system creating this
-            namespace: Namespace for the document (default: wip-documents)
+            pool_id: Pool ID for the document (default: wip-documents)
 
         Returns:
             Generated document ID (UUID7)
@@ -81,7 +81,7 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": namespace,
+                    "pool_id": pool_id,
                     "composite_key": {
                         "identity_hash": identity_hash,
                         "template_id": template_id,
@@ -111,7 +111,7 @@ class RegistryClient:
         self,
         items: list[dict[str, Any]],
         created_by: Optional[str] = None,
-        namespace: str = "wip-documents"
+        pool_id: str = "wip-documents"
     ) -> list[dict[str, Any]]:
         """
         Generate multiple document IDs from the Registry in a single call.
@@ -119,7 +119,7 @@ class RegistryClient:
         Args:
             items: List of dicts with identity_hash, template_id, and version
             created_by: User or system creating these
-            namespace: Namespace for the documents (default: wip-documents)
+            pool_id: Pool ID for the documents (default: wip-documents)
 
         Returns:
             List of registration results with IDs
@@ -131,7 +131,7 @@ class RegistryClient:
         # We use a UUID for each to guarantee uniqueness in the batch
         registry_items = [
             {
-                "pool_id": namespace,
+                "pool_id": pool_id,
                 "composite_key": {
                     "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],

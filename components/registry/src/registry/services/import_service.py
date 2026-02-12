@@ -325,7 +325,7 @@ class ImportService:
         return count
 
     def _remap_pools(self, item: dict[str, Any], pool_map: dict[str, str]) -> dict[str, Any]:
-        """Recursively remap namespace fields in an item."""
+        """Recursively remap pool_id fields in an item."""
         result = {}
         for key, value in item.items():
             if isinstance(value, str) and value in pool_map:

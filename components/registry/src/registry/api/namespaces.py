@@ -130,7 +130,7 @@ async def get_namespace_stats(
     # Count entries in each ID pool
     pool_counts = {}
     for pool_id in ns.get_all_pools():
-        count = await RegistryEntry.find({"primary_namespace": pool_id}).count()
+        count = await RegistryEntry.find({"primary_pool_id": pool_id}).count()
         pool_counts[pool_id] = count
 
     return NamespaceStatsResponse(

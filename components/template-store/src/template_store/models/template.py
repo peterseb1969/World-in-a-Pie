@@ -77,10 +77,10 @@ class Template(Document):
     - Address template: street, city, postal_code, country
     """
 
-    # Namespace for multi-tenant isolation
-    namespace: str = Field(
+    # Pool ID for multi-tenant isolation
+    pool_id: str = Field(
         default="wip-templates",
-        description="Namespace for data isolation (e.g., wip-templates, dev-templates)"
+        description="Pool ID for data isolation (e.g., wip-templates, dev-templates)"
     )
 
     # Identity (from Registry)
@@ -170,16 +170,16 @@ class Template(Document):
     class Settings:
         name = "templates"
         indexes = [
-            # Unique ID within namespace
-            IndexModel([("namespace", 1), ("template_id", 1)], unique=True, name="ns_template_id_unique_idx"),
-            # Unique code+version within namespace
-            IndexModel([("namespace", 1), ("code", 1), ("version", 1)], unique=True, name="ns_code_version_unique_idx"),
-            # Code lookup within namespace
-            IndexModel([("namespace", 1), ("code", 1)], name="ns_code_idx"),
-            # Status filter within namespace
-            IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
-            # Extends lookup within namespace
-            IndexModel([("namespace", 1), ("extends", 1)], name="ns_extends_idx"),
+            # Unique ID within pool
+            IndexModel([("pool_id", 1), ("template_id", 1)], unique=True, name="pool_template_id_unique_idx"),
+            # Unique code+version within pool
+            IndexModel([("pool_id", 1), ("code", 1), ("version", 1)], unique=True, name="pool_code_version_unique_idx"),
+            # Code lookup within pool
+            IndexModel([("pool_id", 1), ("code", 1)], name="pool_code_idx"),
+            # Status filter within pool
+            IndexModel([("pool_id", 1), ("status", 1)], name="pool_status_idx"),
+            # Extends lookup within pool
+            IndexModel([("pool_id", 1), ("extends", 1)], name="pool_extends_idx"),
             # Global template_id lookup (for cross-namespace refs in open mode)
             IndexModel([("template_id", 1)], unique=True, name="template_id_unique_idx"),
             # Text search (global)

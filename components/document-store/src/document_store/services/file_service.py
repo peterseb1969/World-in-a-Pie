@@ -56,7 +56,7 @@ class FileService:
         filename: str,
         content_type: str,
         metadata: Optional[FileUploadMetadata] = None,
-        namespace: str = "wip-files",
+        pool_id: str = "wip-files",
     ) -> FileResponse:
         """
         Upload a file to storage.
@@ -71,7 +71,7 @@ class FileService:
             filename: Original filename
             content_type: MIME type
             metadata: Optional metadata (description, tags, category, etc.)
-            namespace: Namespace for the file (default: wip-files)
+            pool_id: Pool ID for the file (default: wip-files)
 
         Returns:
             FileResponse with file details
@@ -91,7 +91,7 @@ class FileService:
         # Generate file ID from Registry
         try:
             registry = get_registry_client()
-            file_id = await self._generate_file_id(registry, checksum, actor, namespace=namespace)
+            file_id = await self._generate_file_id(registry, checksum, actor, pool_id=pool_id)
         except RegistryError as e:
             raise FileServiceError(f"Failed to generate file ID: {e}")
 
@@ -121,7 +121,7 @@ class FileService:
         )
 
         file_doc = File(
-            namespace=namespace,
+            pool_id=pool_id,
             file_id=file_id,
             filename=filename,
             content_type=content_type,
@@ -145,7 +145,7 @@ class FileService:
         registry,
         checksum: str,
         created_by: Optional[str],
-        namespace: str = "wip-files"
+        pool_id: str = "wip-files"
     ) -> str:
         """Generate a file ID from the Registry."""
         # Use checksum + UUID to ensure uniqueness (same file can be uploaded multiple times)
@@ -154,7 +154,7 @@ class FileService:
                 f"{registry.base_url}/api/registry/entries/register",
                 headers=registry._get_headers(),
                 json=[{
-                    "pool_id": namespace,
+                    "pool_id": pool_id,
                     "composite_key": {
                         "checksum": checksum,
                         "upload_uuid": str(uuid.uuid4()),
@@ -386,7 +386,7 @@ class FileService:
         uploaded_by: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str = "wip-files"
+        pool_id: str = "wip-files"
     ) -> FileListResponse:
         """
         List files with pagination and filters.
@@ -399,12 +399,12 @@ class FileService:
             uploaded_by: Filter by uploader
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (default: wip-files)
+            pool_id: Pool ID to query (default: wip-files)
 
         Returns:
             FileListResponse with paginated results
         """
-        query = {"namespace": namespace}
+        query = {"pool_id": pool_id}
 
         if status:
             query["status"] = status.value

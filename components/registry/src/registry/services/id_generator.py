@@ -10,19 +10,19 @@ from ..models.id_pool import IdGeneratorConfig, IdGeneratorType
 
 
 class IdGeneratorService:
-    """Service for generating IDs based on namespace configuration."""
+    """Service for generating IDs based on pool configuration."""
 
     # Counter for prefixed IDs (in production, use Redis or similar for distributed counter)
     _counters: dict[str, int] = {}
 
     @classmethod
-    def generate(cls, config: IdGeneratorConfig, namespace_id: str = "default") -> str:
+    def generate(cls, config: IdGeneratorConfig, pool_id: str = "default") -> str:
         """
         Generate an ID based on the provided configuration.
 
         Args:
             config: ID generator configuration
-            namespace_id: Namespace identifier (used for counter keys)
+            pool_id: Pool identifier (used for counter keys)
 
         Returns:
             Generated ID string
@@ -38,7 +38,7 @@ class IdGeneratorService:
         elif generator_type == IdGeneratorType.NANOID:
             return cls._generate_nanoid(config.length)
         elif generator_type == IdGeneratorType.PREFIXED:
-            return cls._generate_prefixed(config.prefix or "", namespace_id)
+            return cls._generate_prefixed(config.prefix or "", pool_id)
         elif generator_type == IdGeneratorType.EXTERNAL:
             raise ValueError("External IDs must be provided by the caller, not generated")
         elif generator_type == IdGeneratorType.CUSTOM:
@@ -105,13 +105,13 @@ class IdGeneratorService:
         return ''.join(secrets.choice(alphabet) for _ in range(length))
 
     @classmethod
-    def _generate_prefixed(cls, prefix: str, namespace_id: str) -> str:
+    def _generate_prefixed(cls, prefix: str, pool_id: str) -> str:
         """
         Generate a prefixed ID with sequential number.
 
         Format: PREFIX-NNNNNN (e.g., TERM-000001)
         """
-        counter_key = f"{namespace_id}:{prefix}"
+        counter_key = f"{pool_id}:{prefix}"
 
         # Increment counter (thread-safe in single process, needs Redis for distributed)
         if counter_key not in cls._counters:
@@ -161,7 +161,7 @@ class IdGeneratorService:
         cls._counters.clear()
 
     @classmethod
-    def set_counter(cls, namespace_id: str, prefix: str, value: int) -> None:
+    def set_counter(cls, pool_id: str, prefix: str, value: int) -> None:
         """Set a counter value (useful for initialization from database)."""
-        counter_key = f"{namespace_id}:{prefix}"
+        counter_key = f"{pool_id}:{prefix}"
         cls._counters[counter_key] = value

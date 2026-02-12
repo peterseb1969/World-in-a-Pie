@@ -21,7 +21,7 @@ router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 @router.post("", response_model=TerminologyResponse, status_code=201, summary="Create a terminology")
 async def create_terminology(
     request: CreateTerminologyRequest,
-    namespace: str = Query(default="wip-terminologies", description="Namespace for the terminology"),
+    pool_id: str = Query(default="wip-terminologies", description="Pool ID for the terminology"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
@@ -31,7 +31,7 @@ async def create_terminology(
     a unique ID (e.g., TERM-000001).
     """
     try:
-        return await TerminologyService.create_terminology(request, namespace=namespace)
+        return await TerminologyService.create_terminology(request, pool_id=pool_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -40,7 +40,7 @@ async def create_terminology(
 
 @router.get("", response_model=TerminologyListResponse, summary="List terminologies")
 async def list_terminologies(
-    namespace: str = Query(default="wip-terminologies", description="Namespace to query"),
+    pool_id: str = Query(default="wip-terminologies", description="Pool ID to query"),
     status: Optional[str] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
@@ -51,7 +51,7 @@ async def list_terminologies(
         status=status,
         page=page,
         page_size=page_size,
-        namespace=namespace
+        pool_id=pool_id
     )
     return TerminologyListResponse(
         items=terminologies,
@@ -64,11 +64,11 @@ async def list_terminologies(
 @router.get("/by-code/{code}", response_model=TerminologyResponse, summary="Get a terminology by code")
 async def get_terminology_by_code(
     code: str,
-    namespace: str = Query(default="wip-terminologies", description="Namespace to search in"),
+    pool_id: str = Query(default="wip-terminologies", description="Pool ID to search in"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its code (e.g., DOC_STATUS)."""
-    result = await TerminologyService.get_terminology(code=code, namespace=namespace)
+    result = await TerminologyService.get_terminology(code=code, pool_id=pool_id)
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
     return result

@@ -304,7 +304,7 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │                                                                              │
 │   POST /api/registry/ids                                                     │
 │   {                                                                          │
-│     "namespace": "wip-templates",                                            │
+│     "pool_id": "wip-templates",                                            │
 │     "composite_key": {"code": "PERSON", "version": 1}                       │
 │   }                                                                          │
 │                                                                              │

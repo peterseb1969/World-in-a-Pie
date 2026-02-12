@@ -237,7 +237,7 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
 ```python
 # Terminology composite key
 {
-    "namespace": "wip-terminologies",
+    "pool_id": "wip-terminologies",
     "composite_key": {
         "code": "GENDER",
         "name": "Gender"
@@ -247,7 +247,7 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
 
 # Term composite key
 {
-    "namespace": "wip-terms",
+    "pool_id": "wip-terms",
     "composite_key": {
         "terminology_id": "TERM-000001",
         "code": "M",

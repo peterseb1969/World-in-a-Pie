@@ -8,9 +8,9 @@ import type {
   UpdateTerminologyRequest
 } from '@/types'
 
-// Extended terminology with namespace info for UI display
-export interface TerminologyWithNamespace extends Terminology {
-  _namespace: string
+// Extended terminology with pool info for UI display
+export interface TerminologyWithPool extends Terminology {
+  _poolId: string
   _isExternal: boolean
 }
 
@@ -27,16 +27,16 @@ export const useTerminologyStore = defineStore('terminology', () => {
   // Combined list for backward compatibility
   const terminologies = computed(() => ownTerminologies.value)
 
-  // All terminologies with namespace info (own first, then WIP)
-  const allTerminologies = computed<TerminologyWithNamespace[]>(() => {
+  // All terminologies with pool info (own first, then WIP)
+  const allTerminologies = computed<TerminologyWithPool[]>(() => {
     const own = ownTerminologies.value.map(t => ({
       ...t,
-      _namespace: namespaceStore.terminologiesPool,
+      _poolId: namespaceStore.terminologiesPool,
       _isExternal: false
     }))
     const wip = wipTerminologies.value.map(t => ({
       ...t,
-      _namespace: 'wip-terminologies',
+      _poolId: 'wip-terminologies',
       _isExternal: true
     }))
     return [...own, ...wip]
@@ -67,7 +67,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
       // Fetch own namespace
       const ownResponse = await defStoreClient.listTerminologies({
         ...params,
-        namespace: namespaceStore.terminologiesPool
+        pool_id: namespaceStore.terminologiesPool
       })
       ownTerminologies.value = ownResponse.items
       total.value = ownResponse.total
@@ -77,7 +77,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
         try {
           const wipResponse = await defStoreClient.listTerminologies({
             ...params,
-            namespace: 'wip-terminologies'
+            pool_id: 'wip-terminologies'
           })
           wipTerminologies.value = wipResponse.items
           wipTotal.value = wipResponse.total

@@ -34,7 +34,7 @@ async def add_synonyms(
     """
     Add one or more synonyms to existing registry entries.
 
-    Each synonym is a composite key in a potentially different namespace
+    Each synonym is a composite key in a potentially different pool
     that resolves to the same entity.
     """
     results = []
@@ -45,7 +45,7 @@ async def add_synonyms(
             if item.target_id:
                 # Look up by ID
                 entry = await RegistryEntry.find_one({
-                    "primary_namespace": item.target_pool_id,
+                    "primary_pool_id": item.target_pool_id,
                     "entry_id": item.target_id,
                     "status": "active"
                 })
@@ -55,13 +55,13 @@ async def add_synonyms(
                 entry = await RegistryEntry.find_one({
                     "$or": [
                         {
-                            "primary_namespace": item.target_pool_id,
+                            "primary_pool_id": item.target_pool_id,
                             "primary_composite_key_hash": target_hash
                         },
                         {
                             "synonyms": {
                                 "$elemMatch": {
-                                    "namespace": item.target_pool_id,
+                                    "pool_id": item.target_pool_id,
                                     "composite_key_hash": target_hash
                                 }
                             }
@@ -112,7 +112,7 @@ async def add_synonyms(
 
             # Create and add the synonym
             synonym = Synonym(
-                namespace=item.synonym_pool_id,
+                pool_id=item.synonym_pool_id,
                 composite_key=item.synonym_composite_key,
                 composite_key_hash=synonym_hash,
                 source_info=item.synonym_source_info,
@@ -159,7 +159,7 @@ async def remove_synonyms(
         try:
             # Find the target entry
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.target_pool_id,
+                "primary_pool_id": item.target_pool_id,
                 "entry_id": item.target_id,
                 "status": "active"
             })
@@ -179,7 +179,7 @@ async def remove_synonyms(
             original_count = len(entry.synonyms)
             entry.synonyms = [
                 s for s in entry.synonyms
-                if not (s.namespace == item.synonym_pool_id and s.composite_key_hash == synonym_hash)
+                if not (s.pool_id == item.synonym_pool_id and s.composite_key_hash == synonym_hash)
             ]
 
             if len(entry.synonyms) == original_count:
@@ -235,7 +235,7 @@ async def merge_entries(
         try:
             # Find the preferred entry
             preferred = await RegistryEntry.find_one({
-                "primary_namespace": item.preferred_pool_id,
+                "primary_pool_id": item.preferred_pool_id,
                 "entry_id": item.preferred_id,
                 "status": "active"
             })
@@ -250,7 +250,7 @@ async def merge_entries(
 
             # Find the deprecated entry
             deprecated = await RegistryEntry.find_one({
-                "primary_namespace": item.deprecated_pool_id,
+                "primary_pool_id": item.deprecated_pool_id,
                 "entry_id": item.deprecated_id,
                 "status": "active"
             })
@@ -274,7 +274,7 @@ async def merge_entries(
 
             # Add the deprecated ID to additional_ids
             preferred.additional_ids.append({
-                "namespace": deprecated.primary_namespace,
+                "pool_id": deprecated.primary_pool_id,
                 "id": deprecated.entry_id
             })
 
@@ -283,7 +283,7 @@ async def merge_entries(
 
             # Add the deprecated entry's primary key as a synonym
             deprecated_as_synonym = Synonym(
-                namespace=deprecated.primary_namespace,
+                pool_id=deprecated.primary_pool_id,
                 composite_key=deprecated.primary_composite_key,
                 composite_key_hash=deprecated.primary_composite_key_hash,
                 source_info=deprecated.source_info,
@@ -350,7 +350,7 @@ async def set_preferred_ids(
         try:
             # Find the entry
             entry = await RegistryEntry.find_one({
-                "primary_namespace": item.pool_id,
+                "primary_pool_id": item.pool_id,
                 "entry_id": item.entry_id,
                 "status": "active"
             })
@@ -363,7 +363,7 @@ async def set_preferred_ids(
                 continue
 
             # Check if new preferred is already the current
-            if (item.new_preferred_pool_id == entry.primary_namespace and
+            if (item.new_preferred_pool_id == entry.primary_pool_id and
                 item.new_preferred_id == entry.entry_id):
                 results.append(SetPreferredResponse(
                     input_index=i,
@@ -375,7 +375,7 @@ async def set_preferred_ids(
             # Check if new preferred is in additional_ids
             found_in_additional = None
             for idx, add_id in enumerate(entry.additional_ids):
-                if (add_id["namespace"] == item.new_preferred_pool_id and
+                if (add_id["pool_id"] == item.new_preferred_pool_id and
                     add_id["id"] == item.new_preferred_id):
                     found_in_additional = idx
                     break
@@ -389,7 +389,7 @@ async def set_preferred_ids(
                 continue
 
             # Swap the IDs
-            old_primary_namespace = entry.primary_namespace
+            old_primary_pool_id = entry.primary_pool_id
             old_primary_id = entry.entry_id
 
             # Remove from additional_ids
@@ -397,12 +397,12 @@ async def set_preferred_ids(
 
             # Add old primary to additional_ids
             entry.additional_ids.append({
-                "namespace": old_primary_namespace,
+                "pool_id": old_primary_pool_id,
                 "id": old_primary_id
             })
 
             # Set new primary
-            entry.primary_namespace = item.new_preferred_pool_id
+            entry.primary_pool_id = item.new_preferred_pool_id
             entry.entry_id = item.new_preferred_id
 
             entry.updated_at = datetime.now(timezone.utc)

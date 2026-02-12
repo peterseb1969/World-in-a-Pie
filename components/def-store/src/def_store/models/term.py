@@ -37,10 +37,10 @@ class Term(Document):
     - In "PRIORITY" terminology: critical, high, medium, low
     """
 
-    # Namespace for multi-tenant isolation
-    namespace: str = Field(
+    # Pool ID for multi-tenant isolation
+    pool_id: str = Field(
         default="wip-terms",
-        description="Namespace for data isolation (e.g., wip-terms, dev-terms)"
+        description="Pool ID for data isolation (e.g., wip-terms, dev-terms)"
     )
 
     # Identity (from Registry)
@@ -54,9 +54,9 @@ class Term(Document):
         ...,
         description="ID of the parent terminology (e.g., TERM-000001)"
     )
-    terminology_namespace: str = Field(
+    terminology_pool_id: str = Field(
         default="wip-terminologies",
-        description="Namespace of the parent terminology"
+        description="Pool ID of the parent terminology"
     )
     terminology_code: Optional[str] = Field(
         None,
@@ -144,18 +144,18 @@ class Term(Document):
     class Settings:
         name = "terms"
         indexes = [
-            # Unique ID within namespace
-            IndexModel([("namespace", 1), ("term_id", 1)], unique=True, name="ns_term_id_unique_idx"),
-            # Unique code within terminology within namespace
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("code", 1)], unique=True, name="ns_terminology_code_unique_idx"),
+            # Unique ID within pool
+            IndexModel([("pool_id", 1), ("term_id", 1)], unique=True, name="pool_term_id_unique_idx"),
+            # Unique code within terminology within pool
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("code", 1)], unique=True, name="pool_terminology_code_unique_idx"),
             # Value lookup within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], name="ns_terminology_value_idx"),
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("value", 1)], name="pool_terminology_value_idx"),
             # Alias lookup within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("aliases", 1)], name="ns_terminology_aliases_idx"),
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("aliases", 1)], name="pool_terminology_aliases_idx"),
             # Sort order within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("sort_order", 1)], name="pool_terminology_sort_idx"),
             # Status filter within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("status", 1)], name="ns_terminology_status_idx"),
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("status", 1)], name="pool_terminology_status_idx"),
             # Global term_id lookup (for cross-namespace refs in open mode)
             IndexModel([("term_id", 1)], unique=True, name="term_id_unique_idx"),
             # Parent term lookup

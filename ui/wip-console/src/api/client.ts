@@ -166,7 +166,7 @@ class DefStoreClient extends BaseApiClient {
     page_size?: number
     status?: string
     search?: string
-    namespace?: string
+    pool_id?: string
   }): Promise<TerminologyListResponse> {
     const response = await this.client.get<TerminologyListResponse>('/terminologies', { params })
     return response.data
@@ -304,7 +304,7 @@ class TemplateStoreClient extends BaseApiClient {
     extends?: string
     code?: string
     latest_only?: boolean
-    namespace?: string
+    pool_id?: string
   }): Promise<TemplateListResponse> {
     const response = await this.client.get<TemplateListResponse>('/templates', { params })
     return response.data

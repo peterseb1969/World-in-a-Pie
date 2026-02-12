@@ -39,7 +39,7 @@ class TerminologyService:
     @staticmethod
     async def create_terminology(
         request: CreateTerminologyRequest,
-        namespace: str = "wip-terminologies"
+        pool_id: str = "wip-terminologies"
     ) -> TerminologyResponse:
         """
         Create a new terminology.
@@ -49,7 +49,7 @@ class TerminologyService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the terminology (default: wip-terminologies)
+            pool_id: Pool ID for the terminology (default: wip-terminologies)
 
         Returns:
             Created terminology
@@ -58,10 +58,10 @@ class TerminologyService:
             ValueError: If code already exists
             RegistryError: If Registry communication fails
         """
-        # Check if code already exists within namespace
-        existing = await Terminology.find_one({"namespace": namespace, "code": request.code})
+        # Check if code already exists within pool
+        existing = await Terminology.find_one({"pool_id": pool_id, "code": request.code})
         if existing:
-            raise ValueError(f"Terminology with code '{request.code}' already exists in namespace '{namespace}'")
+            raise ValueError(f"Terminology with code '{request.code}' already exists in pool '{pool_id}'")
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -72,12 +72,12 @@ class TerminologyService:
             code=request.code,
             name=request.name,
             created_by=actor,
-            namespace=namespace
+            pool_id=pool_id
         )
 
         # Create terminology document
         terminology = Terminology(
-            namespace=namespace,
+            pool_id=pool_id,
             terminology_id=terminology_id,
             code=request.code,
             name=request.name,
@@ -96,7 +96,7 @@ class TerminologyService:
     async def get_terminology(
         terminology_id: Optional[str] = None,
         code: Optional[str] = None,
-        namespace: Optional[str] = None
+        pool_id: Optional[str] = None
     ) -> Optional[TerminologyResponse]:
         """
         Get a terminology by ID or code.
@@ -104,7 +104,7 @@ class TerminologyService:
         Args:
             terminology_id: Terminology ID (e.g., 'TERM-000001')
             code: Terminology code (e.g., 'DOC_STATUS')
-            namespace: Namespace to search in (if None, searches globally by ID)
+            pool_id: Pool ID to search in (if None, searches globally by ID)
 
         Returns:
             Terminology if found, None otherwise
@@ -112,13 +112,13 @@ class TerminologyService:
         if terminology_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
             query = {"terminology_id": terminology_id}
-            if namespace:
-                query["namespace"] = namespace
+            if pool_id:
+                query["pool_id"] = pool_id
             terminology = await Terminology.find_one(query)
         elif code:
-            # Code lookups require namespace (defaults to wip-terminologies)
-            ns = namespace or "wip-terminologies"
-            terminology = await Terminology.find_one({"namespace": ns, "code": code})
+            # Code lookups require pool_id (defaults to wip-terminologies)
+            ns = pool_id or "wip-terminologies"
+            terminology = await Terminology.find_one({"pool_id": ns, "code": code})
         else:
             return None
 
@@ -131,7 +131,7 @@ class TerminologyService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 50,
-        namespace: str = "wip-terminologies"
+        pool_id: str = "wip-terminologies"
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -140,12 +140,12 @@ class TerminologyService:
             status: Filter by status (active, deprecated, inactive)
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (default: wip-terminologies)
+            pool_id: Pool ID to query (default: wip-terminologies)
 
         Returns:
             Tuple of (terminologies, total_count)
         """
-        query = {"namespace": namespace}
+        query = {"pool_id": pool_id}
         if status:
             query["status"] = status
 
@@ -190,15 +190,15 @@ class TerminologyService:
 
         # If code changes, add synonym in Registry
         if code_changed:
-            # Check new code doesn't exist within the same namespace
-            existing = await Terminology.find_one({"namespace": terminology.namespace, "code": request.code})
+            # Check new code doesn't exist within the same pool
+            existing = await Terminology.find_one({"pool_id": terminology.pool_id, "code": request.code})
             if existing:
-                raise ValueError(f"Terminology with code '{request.code}' already exists in namespace '{terminology.namespace}'")
+                raise ValueError(f"Terminology with code '{request.code}' already exists in pool '{terminology.pool_id}'")
 
             # Add synonym for new code
             client = get_registry_client()
             await client.add_synonym(
-                namespace=terminology.namespace,
+                pool_id=terminology.pool_id,
                 target_id=terminology_id,
                 new_code=request.code,
                 additional_fields={"name": request.name or terminology.name}
@@ -278,8 +278,8 @@ class TerminologyService:
     async def create_term(
         terminology_id: str,
         request: CreateTermRequest,
-        namespace: str = "wip-terms",
-        terminology_namespace: str = "wip-terminologies"
+        pool_id: str = "wip-terms",
+        terminology_pool_id: str = "wip-terminologies"
     ) -> TermResponse:
         """
         Create a new term in a terminology.
@@ -287,8 +287,8 @@ class TerminologyService:
         Args:
             terminology_id: Parent terminology ID
             request: Creation request
-            namespace: Namespace for the term (default: wip-terms)
-            terminology_namespace: Namespace of the parent terminology (default: wip-terminologies)
+            pool_id: Pool ID for the term (default: wip-terms)
+            terminology_pool_id: Pool ID of the parent terminology (default: wip-terminologies)
 
         Returns:
             Created term
@@ -301,9 +301,9 @@ class TerminologyService:
         if not terminology:
             raise ValueError(f"Terminology '{terminology_id}' not found")
 
-        # Check code uniqueness within terminology and namespace
+        # Check code uniqueness within terminology and pool
         existing = await Term.find_one({
-            "namespace": namespace,
+            "pool_id": pool_id,
             "terminology_id": terminology_id,
             "code": request.code
         })
@@ -322,15 +322,15 @@ class TerminologyService:
             code=request.code,
             value=request.value,
             created_by=actor,
-            namespace=namespace
+            pool_id=pool_id
         )
 
         # Create term document
         term = Term(
-            namespace=namespace,
+            pool_id=pool_id,
             term_id=term_id,
             terminology_id=terminology_id,
-            terminology_namespace=terminology.namespace,
+            terminology_pool_id=terminology.pool_id,
             terminology_code=terminology.code,
             code=request.code,
             value=request.value,
@@ -357,7 +357,7 @@ class TerminologyService:
                 "aliases": request.aliases,
                 "label": request.label,
             },
-            namespace=namespace
+            pool_id=pool_id
         )
 
         # Update terminology term count
@@ -376,7 +376,7 @@ class TerminologyService:
         update_existing: bool = False,
         batch_size: int = 1000,
         registry_batch_size: int = 100,
-        namespace: str = "wip-terms",
+        pool_id: str = "wip-terms",
     ) -> list[BulkOperationResult]:
         """
         Create multiple terms in a terminology using batch operations.
@@ -394,7 +394,7 @@ class TerminologyService:
             update_existing: If True, placeholder for future update logic
             batch_size: Number of terms to process per MongoDB batch (default 1000)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
-            namespace: Namespace for the terms (default: wip-terms)
+            pool_id: Pool ID for the terms (default: wip-terms)
 
         Returns:
             List of operation results
@@ -436,7 +436,7 @@ class TerminologyService:
                 terms=[{"code": t.code, "value": t.value} for t in batch_terms],
                 created_by=actor,
                 registry_batch_size=registry_batch_size,
-                namespace=namespace,
+                pool_id=pool_id,
             )
             logger.debug(f"Registry registration complete for batch {batch_num}")
 
@@ -456,7 +456,7 @@ class TerminologyService:
                 existing_by_id = {t.term_id: t for t in existing_terms}
             if batch_codes:
                 code_matches = await Term.find({
-                    "namespace": namespace,
+                    "pool_id": pool_id,
                     "terminology_id": terminology_id,
                     "code": {"$in": batch_codes}
                 }).to_list()
@@ -502,10 +502,10 @@ class TerminologyService:
 
                 # Build Term document for batch insert
                 term = Term(
-                    namespace=namespace,
+                    pool_id=pool_id,
                     term_id=term_id,
                     terminology_id=terminology_id,
-                    terminology_namespace=terminology.namespace,
+                    terminology_pool_id=terminology.pool_id,
                     terminology_code=terminology.code,
                     code=term_req.code,
                     value=term_req.value,
@@ -566,7 +566,7 @@ class TerminologyService:
             # Phase F: Batch insert audit logs for this batch
             audit_entries = [
                 TermAuditLog(
-                    namespace=namespace,
+                    pool_id=pool_id,
                     term_id=terms_to_insert[pos].term_id,
                     terminology_id=terminology_id,
                     action="created",
@@ -646,7 +646,7 @@ class TerminologyService:
         page: int = 1,
         page_size: int = 50,
         search: Optional[str] = None,
-        namespace: str = "wip-terms"
+        pool_id: str = "wip-terms"
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -658,12 +658,12 @@ class TerminologyService:
             page: Page number (1-based)
             page_size: Number of items per page
             search: Search string for code, value, or aliases
-            namespace: Namespace to query (default: wip-terms)
+            pool_id: Pool ID to query (default: wip-terms)
 
         Returns:
             Tuple of (list of terms, total count)
         """
-        query: dict = {"namespace": namespace, "terminology_id": terminology_id}
+        query: dict = {"pool_id": pool_id, "terminology_id": terminology_id}
         if status:
             query["status"] = status
 
@@ -714,9 +714,9 @@ class TerminologyService:
         code_changed = request.code and request.code != old_code
 
         if code_changed:
-            # Check new code doesn't exist within same namespace
+            # Check new code doesn't exist within same pool
             existing = await Term.find_one({
-                "namespace": term.namespace,
+                "pool_id": term.pool_id,
                 "terminology_id": term.terminology_id,
                 "code": request.code
             })
@@ -726,7 +726,7 @@ class TerminologyService:
             # Add synonym
             client = get_registry_client()
             await client.add_synonym(
-                namespace=term.namespace,
+                pool_id=term.pool_id,
                 target_id=term_id,
                 new_code=request.code,
                 additional_fields={
@@ -807,7 +807,7 @@ class TerminologyService:
                 changed_fields=changed_fields,
                 previous_values=previous_values,
                 new_values=new_values,
-                namespace=term.namespace
+                pool_id=term.pool_id
             )
 
         return TerminologyService._to_term_response(term)
@@ -1010,11 +1010,11 @@ class TerminologyService:
         previous_values: dict = None,
         new_values: dict = None,
         comment: Optional[str] = None,
-        namespace: str = "wip-terms"
+        pool_id: str = "wip-terms"
     ):
         """Create an audit log entry for a term change."""
         audit_entry = TermAuditLog(
-            namespace=namespace,
+            pool_id=pool_id,
             term_id=term_id,
             terminology_id=terminology_id,
             action=action,

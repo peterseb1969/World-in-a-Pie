@@ -95,8 +95,8 @@ class DocumentService:
     async def create_document(
         self,
         request: DocumentCreateRequest,
-        namespace: str = "wip-documents",
-        template_namespace: str = "wip-templates"
+        pool_id: str = "wip-documents",
+        template_pool_id: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """
         Create or update a document.
@@ -108,8 +108,8 @@ class DocumentService:
 
         Args:
             request: Document creation request
-            namespace: Namespace for the document (default: wip-documents)
-            template_namespace: Namespace of the template (default: wip-templates)
+            pool_id: Pool ID for the document (default: wip-documents)
+            template_pool_id: Pool ID of the template (default: wip-templates)
 
         Returns:
             Tuple of (response, error_message)
@@ -133,32 +133,32 @@ class DocumentService:
         try:
             validator = get_reference_validator()
             await validator.validate_document_references(
-                document_namespace=namespace,
-                template_namespace=template_namespace,
+                document_pool_id=pool_id,
+                template_pool_id=template_pool_id,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
             )
         except ReferenceValidationError as e:
             return None, f"Cross-namespace reference violation: {e.violations}"
 
-        # Check for existing active document with same identity within namespace
+        # Check for existing active document with same identity within pool
         start = time.perf_counter()
         identity_hash = validation_result.identity_hash
-        existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+        existing = await self._find_active_by_identity(identity_hash, pool_id=pool_id)
         timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
         if existing:
             # Upsert: deactivate old, create new version
             start = time.perf_counter()
             result = await self._create_new_version(
-                request, existing, validation_result, namespace=namespace, template_namespace=template_namespace
+                request, existing, validation_result, pool_id=pool_id, template_pool_id=template_pool_id
             )
             timing["3_create_version"] = (time.perf_counter() - start) * 1000
         else:
             # Create new document
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, namespace=namespace, template_namespace=template_namespace
+                request, validation_result, pool_id=pool_id, template_pool_id=template_pool_id
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
 
@@ -171,8 +171,8 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         validation_result: Any,
-        namespace: str = "wip-documents",
-        template_namespace: str = "wip-templates"
+        pool_id: str = "wip-documents",
+        template_pool_id: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document."""
         try:
@@ -186,7 +186,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
                 created_by=actor,
-                namespace=namespace
+                pool_id=pool_id
             )
             registry_ms = (time.perf_counter() - start) * 1000
 
@@ -198,10 +198,10 @@ class DocumentService:
             )
 
             document = Document(
-                namespace=namespace,
+                pool_id=pool_id,
                 document_id=document_id,
                 template_id=request.template_id,
-                template_namespace=template_namespace,
+                template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
                 identity_hash=validation_result.identity_hash,
                 version=1,
@@ -304,8 +304,8 @@ class DocumentService:
         request: DocumentCreateRequest,
         existing: Document,
         validation_result: Any,
-        namespace: str = "wip-documents",
-        template_namespace: str = "wip-templates"
+        pool_id: str = "wip-documents",
+        template_pool_id: str = "wip-templates"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a new version of an existing document."""
         # Check if data has actually changed
@@ -337,7 +337,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
                 created_by=actor,
-                namespace=namespace
+                pool_id=pool_id
             )
 
             # Deactivate old version
@@ -355,10 +355,10 @@ class DocumentService:
             )
 
             document = Document(
-                namespace=namespace,
+                pool_id=pool_id,
                 document_id=document_id,
                 template_id=request.template_id,
-                template_namespace=template_namespace,
+                template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
@@ -409,11 +409,11 @@ class DocumentService:
     async def _find_active_by_identity(
         self,
         identity_hash: str,
-        namespace: str = "wip-documents"
+        pool_id: str = "wip-documents"
     ) -> Optional[Document]:
-        """Find the active document with the given identity hash within namespace."""
+        """Find the active document with the given identity hash within pool."""
         return await Document.find_one({
-            "namespace": namespace,
+            "pool_id": pool_id,
             "identity_hash": identity_hash,
             "status": DocumentStatus.ACTIVE.value
         })
@@ -476,10 +476,10 @@ class DocumentService:
         status: Optional[DocumentStatus] = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str = "wip-documents"
+        pool_id: str = "wip-documents"
     ) -> DocumentListResponse:
         """List documents with pagination."""
-        query = {"namespace": namespace}
+        query = {"pool_id": pool_id}
         if template_id:
             query["template_id"] = template_id
         if status:

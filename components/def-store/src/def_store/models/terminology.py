@@ -46,10 +46,10 @@ class Terminology(Document):
     - Country codes: [imported from ISO 3166]
     """
 
-    # Namespace for multi-tenant isolation
-    namespace: str = Field(
+    # Pool ID for multi-tenant isolation
+    pool_id: str = Field(
         default="wip-terminologies",
-        description="Namespace for data isolation (e.g., wip-terminologies, dev-terminologies)"
+        description="Pool ID for data isolation (e.g., wip-terminologies, dev-terminologies)"
     )
 
     # Identity (from Registry)
@@ -123,12 +123,12 @@ class Terminology(Document):
     class Settings:
         name = "terminologies"
         indexes = [
-            # Unique ID within namespace
-            IndexModel([("namespace", 1), ("terminology_id", 1)], unique=True, name="ns_terminology_id_unique_idx"),
-            # Unique code within namespace
-            IndexModel([("namespace", 1), ("code", 1)], unique=True, name="ns_code_unique_idx"),
-            # Filter by status within namespace
-            IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
+            # Unique ID within pool
+            IndexModel([("pool_id", 1), ("terminology_id", 1)], unique=True, name="pool_terminology_id_unique_idx"),
+            # Unique code within pool
+            IndexModel([("pool_id", 1), ("code", 1)], unique=True, name="pool_code_unique_idx"),
+            # Filter by status within pool
+            IndexModel([("pool_id", 1), ("status", 1)], name="pool_status_idx"),
             # Global terminology_id lookup (for cross-namespace refs in open mode)
             IndexModel([("terminology_id", 1)], unique=True, name="terminology_id_unique_idx"),
             # Text search (global)

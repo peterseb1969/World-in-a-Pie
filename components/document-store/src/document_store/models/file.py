@@ -52,10 +52,10 @@ class File(BeanieDocument):
     The storage_key in MinIO is simply the file_id for easy mapping.
     """
 
-    # Namespace for multi-tenant isolation
-    namespace: str = Field(
+    # Pool ID for multi-tenant isolation
+    pool_id: str = Field(
         default="wip-files",
-        description="Namespace for data isolation (e.g., wip-files, dev-files)"
+        description="Pool ID for data isolation (e.g., wip-files, dev-files)"
     )
 
     # Identity (from Registry - FILE-XXXXXX)
@@ -131,21 +131,21 @@ class File(BeanieDocument):
     class Settings:
         name = "files"
         indexes = [
-            # Unique file ID within namespace
-            IndexModel([("namespace", 1), ("file_id", 1)], unique=True, name="ns_file_id_unique_idx"),
-            # Status queries within namespace
-            IndexModel([("namespace", 1), ("status", 1)], name="ns_file_status_idx"),
-            # Duplicate detection by checksum within namespace
-            IndexModel([("namespace", 1), ("checksum", 1)], name="ns_file_checksum_idx"),
-            # Content type filter within namespace
-            IndexModel([("namespace", 1), ("content_type", 1)], name="ns_file_content_type_idx"),
-            # Orphan detection within namespace
+            # Unique file ID within pool
+            IndexModel([("pool_id", 1), ("file_id", 1)], unique=True, name="pool_file_id_unique_idx"),
+            # Status queries within pool
+            IndexModel([("pool_id", 1), ("status", 1)], name="pool_file_status_idx"),
+            # Duplicate detection by checksum within pool
+            IndexModel([("pool_id", 1), ("checksum", 1)], name="pool_file_checksum_idx"),
+            # Content type filter within pool
+            IndexModel([("pool_id", 1), ("content_type", 1)], name="pool_file_content_type_idx"),
+            # Orphan detection within pool
             IndexModel(
-                [("namespace", 1), ("status", 1), ("reference_count", 1)],
-                name="ns_file_orphan_idx"
+                [("pool_id", 1), ("status", 1), ("reference_count", 1)],
+                name="pool_file_orphan_idx"
             ),
-            # Time-based queries within namespace
-            IndexModel([("namespace", 1), ("uploaded_at", DESCENDING)], name="ns_file_uploaded_at_idx"),
+            # Time-based queries within pool
+            IndexModel([("pool_id", 1), ("uploaded_at", DESCENDING)], name="pool_file_uploaded_at_idx"),
             # Global file_id lookup (for cross-namespace refs in open mode)
             IndexModel([("file_id", 1)], unique=True, name="file_id_unique_idx"),
             # Tag search (global - typically tags are namespace-agnostic)

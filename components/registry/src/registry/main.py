@@ -56,7 +56,7 @@ async def initialize_prefixed_counters():
         # Find the highest entry_id for this ID pool
         # Use find with sort and limit instead of aggregate
         result = await RegistryEntry.find(
-            {"primary_namespace": pool_id}  # Field name kept for backward compat
+            {"primary_pool_id": pool_id}
         ).sort("-entry_id").limit(1).to_list()
 
         if result:
@@ -122,8 +122,8 @@ The Registry service provides centralized identity management for the WIP ecosys
 
 ### Key Features
 
-- **Namespace Groups**: Manage related namespaces together (dev, staging, prod environments)
-- **Namespace Management**: Logical partitions for ID isolation
+- **Namespaces**: Manage related ID pools together (dev, staging, prod environments)
+- **ID Pool Management**: Logical partitions for ID isolation
 - **Composite Key Registration**: Register any combination of fields as an identity
 - **Synonym Support**: Multiple keys can resolve to the same entity
 - **ID-as-Synonym (Merge)**: Resolve duplicate registrations

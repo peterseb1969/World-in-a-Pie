@@ -34,7 +34,7 @@ logging:
   level: INFO
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# ID Generation defaults (can be overridden per namespace)
+# ID Generation defaults (can be overridden per pool)
 id_generation:
   default_type: uuid4
   prefixed:

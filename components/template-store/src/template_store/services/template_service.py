@@ -35,7 +35,7 @@ class TemplateService:
     @staticmethod
     async def create_template(
         request: CreateTemplateRequest,
-        namespace: str = "wip-templates"
+        pool_id: str = "wip-templates"
     ) -> TemplateResponse:
         """
         Create a new template.
@@ -46,7 +46,7 @@ class TemplateService:
 
         Args:
             request: Creation request
-            namespace: Namespace for the template (default: wip-templates)
+            pool_id: Pool ID for the template (default: wip-templates)
 
         Returns:
             Created template
@@ -55,23 +55,23 @@ class TemplateService:
             ValueError: If code already exists or extends invalid
             RegistryError: If Registry communication fails
         """
-        # Check if code already exists within namespace
-        existing = await Template.find_one({"namespace": namespace, "code": request.code})
+        # Check if code already exists within pool
+        existing = await Template.find_one({"pool_id": pool_id, "code": request.code})
         if existing:
-            raise ValueError(f"Template with code '{request.code}' already exists in namespace '{namespace}'")
+            raise ValueError(f"Template with code '{request.code}' already exists in pool '{pool_id}'")
 
         # Validate extends if provided
-        parent_namespace: str | None = None
+        parent_pool_id: str | None = None
         if request.extends:
             parent = await Template.find_one({"template_id": request.extends})
             if not parent:
-                # Try by code within same namespace
-                parent = await Template.find_one({"namespace": namespace, "code": request.extends})
+                # Try by code within same pool
+                parent = await Template.find_one({"pool_id": pool_id, "code": request.extends})
                 if parent:
                     request.extends = parent.template_id
                 else:
                     raise ValueError(f"Parent template '{request.extends}' not found")
-            parent_namespace = parent.namespace
+            parent_pool_id = parent.pool_id
 
         # Validate references if requested (default: True)
         if request.validate_references:
@@ -85,13 +85,13 @@ class TemplateService:
 
         # Validate cross-namespace references (isolation mode check)
         # Only validate extends reference - terminology refs are resolved by code at runtime
-        if parent_namespace:
+        if parent_pool_id:
             try:
                 validator = get_reference_validator()
                 await validator.validate_template_references(
-                    template_namespace=namespace,
-                    extends_template_namespace=parent_namespace,
-                    terminology_namespaces=None,  # Terminology refs are by code, validated at doc creation
+                    template_pool_id=pool_id,
+                    extends_template_pool_id=parent_pool_id,
+                    terminology_pool_ids=None,  # Terminology refs are by code, validated at doc creation
                 )
             except ReferenceValidationError as e:
                 raise ValueError(f"Cross-namespace reference violation: {e.violations}")
@@ -105,12 +105,12 @@ class TemplateService:
             code=request.code,
             name=request.name,
             created_by=actor,
-            namespace=namespace
+            pool_id=pool_id
         )
 
         # Create template document
         template = Template(
-            namespace=namespace,
+            pool_id=pool_id,
             template_id=template_id,
             code=request.code,
             name=request.name,
@@ -139,7 +139,7 @@ class TemplateService:
         template_id: Optional[str] = None,
         code: Optional[str] = None,
         resolve_inheritance: bool = True,
-        namespace: Optional[str] = None
+        pool_id: Optional[str] = None
     ) -> Optional[TemplateResponse]:
         """
         Get a template by ID or code.
@@ -148,7 +148,7 @@ class TemplateService:
             template_id: Template ID (e.g., 'TPL-000001')
             code: Template code (e.g., 'PERSON')
             resolve_inheritance: Whether to resolve inheritance
-            namespace: Namespace to search in (if None, searches globally by ID)
+            pool_id: Pool ID to search in (if None, searches globally by ID)
 
         Returns:
             Template if found, None otherwise
@@ -156,13 +156,13 @@ class TemplateService:
         if template_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
             query = {"template_id": template_id}
-            if namespace:
-                query["namespace"] = namespace
+            if pool_id:
+                query["pool_id"] = pool_id
             template = await Template.find_one(query)
         elif code:
-            # Code lookups require namespace (defaults to wip-templates)
-            ns = namespace or "wip-templates"
-            template = await Template.find_one({"namespace": ns, "code": code})
+            # Code lookups require pool_id (defaults to wip-templates)
+            ns = pool_id or "wip-templates"
+            template = await Template.find_one({"pool_id": ns, "code": code})
         else:
             return None
 
@@ -207,7 +207,7 @@ class TemplateService:
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        namespace: str = "wip-templates"
+        pool_id: str = "wip-templates"
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -219,12 +219,12 @@ class TemplateService:
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (default: wip-templates)
+            pool_id: Pool ID to query (default: wip-templates)
 
         Returns:
             Tuple of (templates, total_count)
         """
-        query = {"namespace": namespace}
+        query = {"pool_id": pool_id}
         if status:
             query["status"] = status
         if extends:
@@ -275,19 +275,19 @@ class TemplateService:
     @staticmethod
     async def get_template_versions(
         code: str,
-        namespace: str = "wip-templates"
+        pool_id: str = "wip-templates"
     ) -> list[TemplateResponse]:
         """
         Get all versions of a template by code.
 
         Args:
             code: Template code
-            namespace: Namespace to search in (default: wip-templates)
+            pool_id: Pool ID to search in (default: wip-templates)
 
         Returns:
             List of all versions, sorted by version descending (newest first)
         """
-        templates = await Template.find({"namespace": namespace, "code": code}) \
+        templates = await Template.find({"pool_id": pool_id, "code": code}) \
             .sort([("version", -1)]) \
             .to_list()
 

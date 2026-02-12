@@ -24,9 +24,9 @@ class SourceInfo(BaseModel):
 class Synonym(BaseModel):
     """A composite key variant that resolves to the parent entry."""
 
-    namespace: str = Field(
+    pool_id: str = Field(
         ...,
-        description="Namespace this synonym belongs to"
+        description="ID pool this synonym belongs to"
     )
     composite_key: dict[str, Any] = Field(
         ...,
@@ -57,16 +57,16 @@ class RegistryEntry(Document):
     One entry is marked as preferred, with additional_ids storing merged duplicates.
     """
 
-    # The primary ID for this entry (generated based on namespace config)
+    # The primary ID for this entry (generated based on pool config)
     entry_id: str = Field(
         ...,
-        description="Primary ID in the primary namespace"
+        description="Primary ID in the primary pool"
     )
 
-    # The namespace of the primary entry
-    primary_namespace: str = Field(
+    # The ID pool of the primary entry
+    primary_pool_id: str = Field(
         default="default",
-        description="Namespace of the primary ID"
+        description="ID pool of the primary ID"
     )
 
     # Is this the preferred entry when multiple entries were merged?
@@ -95,7 +95,7 @@ class RegistryEntry(Document):
     # IDs that were merged into this entry (from ID-as-synonym merges)
     additional_ids: list[dict[str, str]] = Field(
         default_factory=list,
-        description="Other IDs that are synonyms [{'namespace': '...', 'id': '...'}]"
+        description="Other IDs that are synonyms [{'pool_id': '...', 'id': '...'}]"
     )
 
     # Source system that owns this entry
@@ -135,26 +135,26 @@ class RegistryEntry(Document):
     class Settings:
         name = "registry_entries"
         indexes = [
-            # Primary lookup by entry_id + namespace
+            # Primary lookup by entry_id + pool
             IndexModel(
-                [("primary_namespace", 1), ("entry_id", 1)],
+                [("primary_pool_id", 1), ("entry_id", 1)],
                 unique=True,
-                name="entry_id_namespace_unique_idx"
+                name="entry_id_pool_unique_idx"
             ),
             # Lookup by primary composite key hash
             IndexModel(
                 [("primary_composite_key_hash", 1)],
                 name="primary_key_hash_idx"
             ),
-            # Lookup by synonym composite key hash (for cross-namespace search)
+            # Lookup by synonym composite key hash (for cross-pool search)
             IndexModel(
                 [("synonyms.composite_key_hash", 1)],
                 name="synonyms_key_hash_idx"
             ),
-            # Lookup by synonym namespace + hash
+            # Lookup by synonym pool + hash
             IndexModel(
-                [("synonyms.namespace", 1), ("synonyms.composite_key_hash", 1)],
-                name="synonyms_namespace_hash_idx"
+                [("synonyms.pool_id", 1), ("synonyms.composite_key_hash", 1)],
+                name="synonyms_pool_hash_idx"
             ),
             # Status index for filtering active entries
             IndexModel(
