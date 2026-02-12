@@ -41,14 +41,16 @@ Key concepts the AI **must** internalize:
 
 | Concept | What It Means | Why It Matters |
 |---------|---------------|----------------|
-| **Registry** | Central ID generator for all entities | Every entity gets its ID from the Registry. IDs are namespaced, prefixed, and guaranteed unique |
-| **Synonyms** | Multiple identifiers resolving to one entity | Legacy IDs, aliases, and external references all map to a canonical WIP ID. This is how WIP handles real-world messiness |
-| **Terminologies** | Controlled vocabularies (code + value + aliases) | The building blocks of validated data. Terms are resolved by code, value, or alias |
-| **Templates** | Document schemas with typed fields and validation | Define what data looks like. Fields can reference terminologies for controlled values |
-| **Documents** | Validated, versioned data conforming to a template | The actual data. Identity fields determine uniqueness; same identity = new version |
-| **Identity Hash** | SHA-256 of identity fields | How WIP decides if a document is new or an update to an existing one |
-| **Reporting Sync** | Real-time MongoDB to PostgreSQL sync via NATS | Enables SQL queries over document data. Critical for reporting use cases |
-| **Soft Delete** | Nothing is ever physically deleted | Entities are set to `status: inactive`. Historical references always resolve |
+| **Registry** | Central ID generator and identity resolver for all entities | Every entity gets its ID from the Registry. IDs are namespaced and guaranteed unique. The Registry also resolves synonyms and external identifiers. |
+| **Synonyms** | Multiple identifiers resolving to one entity | Legacy IDs, aliases, and external references all map to a canonical WIP ID. Synonyms are first-class citizens — as fast to look up as canonical IDs. |
+| **Terminologies** | Controlled vocabularies (code + value + aliases) | The building blocks of validated data. Terms are resolved by code, value, or alias. |
+| **Templates** | Document schemas with typed fields and validation | Define what data looks like. Fields can reference terminologies, other documents, and more. |
+| **Documents** | Validated, versioned data conforming to a template | The actual data. Identity fields determine uniqueness; same identity = new version. |
+| **Identity Hash** | SHA-256 of identity fields | How WIP decides if a document is new or an update to an existing one. **Get identity fields wrong and versioning breaks.** |
+| **References** | Typed, validated links between documents | Documents can reference other documents via `type: "reference"` fields. WIP validates and resolves references automatically. |
+| **Reporting Sync** | Real-time MongoDB to PostgreSQL sync via NATS | Enables SQL queries over document data. Must be configured per template. |
+| **Namespaces** | Logical partitions for IDs (pools) | Each namespace has its own ID sequence and format. Cross-namespace search is supported. |
+| **Soft Delete** | Nothing is ever physically deleted | Entities are set to `status: inactive`. Historical references always resolve. |
 
 ### Step 1.2: Ask the User for Connection Details
 
@@ -125,6 +127,7 @@ Ask the user:
 3. **What fields does each entity have?** Ask for specifics: names, types, which fields have controlled values.
 4. **What makes each entity unique?** These become identity fields in the template.
 5. **Are there relationships between entities?** (e.g., an order has line items, a patient has visits)
+6. **Do external systems have their own IDs for these entities?** These become synonyms.
 
 If the user provides files (CSV, XLSX, JSON), analyze them to:
 - Identify columns/fields and their data types
@@ -149,7 +152,7 @@ For every field with controlled/repeating values, propose a terminology:
 
 ### Step 2.3: Design Templates
 
-For each entity, design a WIP template:
+For each entity, design a WIP template. **This is the most critical step** — template design determines everything that follows.
 
 ```
 Template: <CODE>
@@ -158,17 +161,118 @@ Template: <CODE>
   Fields:
     - name: <field_name>
       label: <Human-readable label>
-      type: string | number | integer | date | boolean | term | array | object
+      type: string | number | integer | date | boolean | term | array | object | reference
       required: true | false
       terminology_ref: <TERMINOLOGY_CODE>  (for term-type fields only)
+      reference_type: document | term       (for reference-type fields only)
+      target_templates: [<TEMPLATE_CODE>]   (for document references)
+  Reporting:
+    sync_enabled: true
+    sync_strategy: latest_only
 ```
 
-Key rules:
+#### Template Field Rules
+
 - **Every field needs a `label`** — this is required by the Template-Store
-- **`type: term`** fields must reference a terminology via `terminology_ref`
-- **Identity fields** determine what makes a document unique. Same identity = new version, not new document
-- **Nested objects** use `type: object` with `properties`
-- **Arrays** use `type: array` with `items`
+- **`type: term`** fields must have `terminology_ref`
+- **`type: reference`** fields must have `reference_type` and `target_templates` (for document refs) or `target_terminologies` (for term refs)
+- **`type: object`** fields use `template_ref` to reference another template for nested structure
+- **`type: array`** fields use `items` with a full field definition
+- **Semantic type hints** can be added via `semantic_type`: `email`, `url`, `percentage`, `duration`, `geo_point`, `latitude`, `longitude`
+
+#### Identity Fields — Get These Right
+
+> **Identity fields are the single most important design decision.** They determine what makes a document unique and control WIP's entire versioning behavior.
+
+**How identity fields work:**
+
+1. WIP computes a SHA-256 hash of the identity field values
+2. When a new document is submitted:
+   - If a document with the same identity_hash exists → **new version** (old version deactivated)
+   - If no document with that hash exists → **new document**
+
+**If you define no identity fields, every POST creates a brand new document. You get no versioning, no deduplication, nothing.**
+
+**Good identity field choices:**
+
+| Entity | Identity Fields | Why |
+|--------|----------------|-----|
+| Person | `["email"]` | Email is unique per person |
+| Order | `["order_number"]` | Business assigns unique order numbers |
+| Invoice Line | `["invoice_number", "line_number"]` | Composite: line is unique within an invoice |
+| Sensor Reading | `["sensor_id", "timestamp"]` | Each sensor produces one reading per timestamp |
+| Country | `["iso_code"]` | ISO codes are globally unique |
+
+**Bad identity field choices:**
+
+| Entity | Bad Choice | Problem |
+|--------|-----------|---------|
+| Person | `["first_name", "last_name"]` | Two "John Smith"s collide — one overwrites the other |
+| Order | `[]` (none) | Every submission creates a new document, no versioning |
+| Invoice | `["invoice_number", "amount", "date", "customer"]` | Correcting the amount creates a new document instead of a new version |
+| Sensor | `["sensor_id"]` | All readings from the same sensor overwrite each other — you keep only the latest |
+
+**The rule of thumb:** Identity fields should include exactly the fields that answer "is this the same real-world thing?" — no more, no less.
+
+#### Reference Fields — Linking Documents
+
+Use `type: "reference"` whenever one document points to another. **Never use `type: "string"` for cross-document links** — you lose validation, resolution, and referential integrity.
+
+```json
+{
+  "name": "customer",
+  "label": "Customer",
+  "type": "reference",
+  "reference_type": "document",
+  "target_templates": ["CUSTOMER"],
+  "mandatory": true
+}
+```
+
+**What this gives you:**
+- WIP validates the referenced document exists
+- WIP validates it conforms to one of the `target_templates`
+- WIP stores the resolved document_id and identity_hash
+- The reference survives document versioning (follows identity_hash chain)
+
+**Version strategy** (optional, defaults to `latest`):
+- `latest` — always resolves to the current active version of the referenced document
+- `pinned` — locks to the exact version at creation time (for audit compliance)
+
+**Polymorphic references** — a field can accept documents from multiple templates:
+
+```json
+{
+  "name": "parent_entity",
+  "label": "Parent",
+  "type": "reference",
+  "reference_type": "document",
+  "target_templates": ["STUDY_DEFINITION", "STUDY_ARM", "STUDY_TIMEPOINT"]
+}
+```
+
+#### Reporting Configuration
+
+If the user needs SQL access to the data, configure reporting on each template:
+
+```json
+{
+  "reporting": {
+    "sync_enabled": true,
+    "sync_strategy": "latest_only",
+    "table_name": "doc_customer"
+  }
+}
+```
+
+| Setting | Options | Default | Description |
+|---------|---------|---------|-------------|
+| `sync_enabled` | true/false | false | Sync to PostgreSQL |
+| `sync_strategy` | `latest_only`, `all_versions`, `disabled` | `latest_only` | Which versions to sync |
+| `table_name` | string | `doc_{code}` | PostgreSQL table name |
+| `flatten_arrays` | true/false | true | Expand arrays into rows |
+
+**If the user mentions reporting, dashboards, or SQL — always enable reporting sync.**
 
 ### Step 2.4: Present the Data Model to the User
 
@@ -176,9 +280,11 @@ Present the complete proposed model:
 
 1. List of terminologies with their terms (codes, values, aliases)
 2. List of templates with all fields, types, and validation rules
-3. How identity fields determine document uniqueness
-4. Which existing WIP terminologies/templates will be reused
-5. A diagram or table showing entity relationships
+3. How identity fields determine document uniqueness — **explain the versioning behavior explicitly**
+4. Which fields are references and what they point to
+5. Which existing WIP terminologies/templates will be reused
+6. A diagram or table showing entity relationships
+7. Which templates have reporting enabled
 
 **Wait for explicit user approval before proceeding.** The data model is the foundation — getting it wrong means rework.
 
@@ -189,13 +295,24 @@ Create a clear mapping from the user's original data to WIP primitives:
 ```
 User's "Customer" spreadsheet
   → Template: CUSTOMER (identity: [customer_id])
+  → Reporting: sync_enabled, table: doc_customer
   → Fields:
-      customer_id  → string, required (identity field)
+      customer_id  → string, required (IDENTITY FIELD)
       name         → string, required
       country      → term (COUNTRY terminology)
       status       → term (CUSTOMER_STATUS terminology)
-      email        → string
+      email        → string, semantic_type: email
       created_date → date
+
+User's "Invoice" spreadsheet
+  → Template: INVOICE (identity: [invoice_number])
+  → Reporting: sync_enabled, table: doc_invoice
+  → Fields:
+      invoice_number → string, required (IDENTITY FIELD)
+      customer       → reference (document, target: CUSTOMER)
+      amount         → number, required
+      currency       → term (CURRENCY terminology)
+      issue_date     → date, required
 ```
 
 ---
@@ -342,54 +459,231 @@ curl -s -H "X-API-Key: <key>" \
 
 ### Sub-Phase 5.2: Create Templates
 
-Templates must exist before documents can be created.
+Templates must exist before documents can be created. **Create templates for referenced entities before templates that reference them** (e.g., CUSTOMER before INVOICE).
 
 ```bash
 # 1. Create the template
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8003/api/template-store/templates" \
   -d '{
-    "code": "<CODE>",
-    "name": "<Name>",
-    "identity_fields": ["<field1>", "<field2>"],
+    "code": "CUSTOMER",
+    "name": "Customer",
+    "identity_fields": ["customer_id"],
     "fields": [
-      {"name": "<field>", "label": "<Label>", "type": "<type>", "required": true}
-    ]
+      {"name": "customer_id", "label": "Customer ID", "type": "string", "mandatory": true},
+      {"name": "name", "label": "Name", "type": "string", "mandatory": true},
+      {"name": "country", "label": "Country", "type": "term", "terminology_ref": "COUNTRY"},
+      {"name": "email", "label": "Email", "type": "string", "semantic_type": "email"}
+    ],
+    "reporting": {
+      "sync_enabled": true,
+      "sync_strategy": "latest_only"
+    }
   }' | jq .
 
-# 2. Verify the template
+# 2. Verify the template — check that identity_fields and field types are correct
 curl -s -H "X-API-Key: <key>" \
-  "http://<hostname>:8003/api/template-store/templates/<ID>" | jq .
+  "http://<hostname>:8003/api/template-store/templates/<ID>" | jq '{
+    template_id, code, identity_fields,
+    fields: [.fields[] | {name, type, terminology_ref, reference_type, target_templates}]
+  }'
+```
+
+**For templates with reference fields:**
+
+```bash
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8003/api/template-store/templates" \
+  -d '{
+    "code": "INVOICE",
+    "name": "Invoice",
+    "identity_fields": ["invoice_number"],
+    "fields": [
+      {"name": "invoice_number", "label": "Invoice Number", "type": "string", "mandatory": true},
+      {
+        "name": "customer",
+        "label": "Customer",
+        "type": "reference",
+        "reference_type": "document",
+        "target_templates": ["CUSTOMER"],
+        "mandatory": true
+      },
+      {"name": "amount", "label": "Amount", "type": "number", "mandatory": true},
+      {"name": "currency", "label": "Currency", "type": "term", "terminology_ref": "CURRENCY"},
+      {"name": "issue_date", "label": "Issue Date", "type": "date", "mandatory": true}
+    ],
+    "reporting": {
+      "sync_enabled": true,
+      "sync_strategy": "latest_only"
+    }
+  }' | jq .
 ```
 
 **Tell the user:** "You can see the template structure in WIP Console under Templates."
 
-### Sub-Phase 5.3: Test Document Creation
+### Sub-Phase 5.3: Create Referenced Documents First
 
-Before loading bulk data, test with a single document:
+Before creating documents that reference other documents, the referenced documents must exist. This mirrors real-world data flow: customers exist before invoices.
+
+**Basic document creation:**
 
 ```bash
-# 1. Create one test document
+# Create a customer document
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8004/api/document-store/documents" \
   -d '{
-    "template_id": "<TPL-ID>",
-    "data": { ... }
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {
+      "customer_id": "CUS-001",
+      "name": "Acme Corp",
+      "country": "Germany",
+      "email": "info@acme.com"
+    }
   }' | jq .
-
-# 2. Verify it was created
-curl -s -H "X-API-Key: <key>" \
-  "http://<hostname>:8004/api/document-store/documents/<DOC-ID>" | jq .
-
-# 3. Check term resolution worked
-# Look for "term_references" in the response — this confirms terms resolved correctly
 ```
 
-If the test document fails, fix the issue before proceeding to bulk loading.
+**Verify the response:**
+```bash
+# Check:
+# 1. document_id was generated (UUID7)
+# 2. identity_hash was computed
+# 3. term_references shows resolved term IDs (e.g., "country": "T-000042")
+# 4. version is 1
+```
 
-### Sub-Phase 5.4: Load Data
+**Document creation with synonyms — register external IDs at creation time:**
 
-Once single-document creation is verified, load the actual data:
+If external systems have their own IDs for this entity, register them as synonyms in the same call:
+
+```bash
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {
+      "customer_id": "CUS-001",
+      "name": "Acme Corp",
+      "country": "Germany",
+      "email": "info@acme.com"
+    },
+    "synonyms": [
+      {"erp_id": "ERP-ACME-001"},
+      {"salesforce_id": "SF-00042"}
+    ]
+  }' | jq .
+```
+
+This registers `ERP-ACME-001` and `SF-00042` as synonyms in the Registry. Later, any document can reference this customer by any of these identifiers.
+
+### Sub-Phase 5.4: Create Documents with References
+
+Now create documents that reference the entities from Sub-Phase 5.3.
+
+**WIP resolves references automatically.** You can provide the reference value in multiple formats — WIP tries each in order:
+
+| Format | Example | Resolution |
+|--------|---------|------------|
+| Document ID (UUID7) | `"0192abc1-def2-7abc-..."` | Direct lookup — fastest |
+| Identity hash | `"hash:a1b2c3d4e5..."` | Find active doc with this hash |
+| Synonym / external ID | `"ERP-ACME-001"` | Registry lookup → resolved to canonical ID |
+| Business key | `"CUS-001"` | Match against target template's identity fields |
+| Composite key (dict) | `{"order_id": "ORD-001", "line": 1}` | Match multiple identity fields |
+
+```bash
+# Create an invoice referencing the customer by business key
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<INVOICE-TPL-ID>",
+    "data": {
+      "invoice_number": "INV-2024-001",
+      "customer": "CUS-001",
+      "amount": 1500.00,
+      "currency": "EUR",
+      "issue_date": "2024-06-15"
+    }
+  }' | jq .
+```
+
+**Or reference by synonym (external ID):**
+
+```bash
+# Same invoice, but referencing customer by its ERP synonym
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<INVOICE-TPL-ID>",
+    "data": {
+      "invoice_number": "INV-2024-002",
+      "customer": "ERP-ACME-001",
+      "amount": 2300.00,
+      "currency": "EUR",
+      "issue_date": "2024-07-01"
+    }
+  }' | jq .
+```
+
+**Verify the response:**
+```bash
+# Check:
+# 1. The "references" object contains the resolved customer
+# 2. references.customer.resolved.document_id points to the customer document
+# 3. references.customer.resolved.template_code is "CUSTOMER"
+# 4. No validation errors about unresolved references
+```
+
+**If reference resolution fails**, check:
+- Does the referenced document exist and have `status: active`?
+- Does the template field have `target_templates` set correctly?
+- If using a synonym, was it registered? Check with Registry lookup.
+
+### Sub-Phase 5.5: Test Versioning Behavior
+
+Before bulk loading, verify that identity-based versioning works:
+
+```bash
+# 1. Create a customer
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {"customer_id": "TEST-001", "name": "Test Customer", "email": "test@example.com"}
+  }' | jq '{document_id, version, identity_hash}'
+
+# 2. Submit SAME identity (customer_id=TEST-001) with different data
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {"customer_id": "TEST-001", "name": "Test Customer Updated", "email": "new@example.com"}
+  }' | jq '{document_id, version, identity_hash}'
+
+# Expected: version=2, SAME identity_hash, DIFFERENT document_id
+# The first document is now status=inactive
+
+# 3. Submit DIFFERENT identity (customer_id=TEST-002)
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {"customer_id": "TEST-002", "name": "Another Customer", "email": "other@example.com"}
+  }' | jq '{document_id, version, identity_hash}'
+
+# Expected: version=1, DIFFERENT identity_hash — this is a new document, not an update
+```
+
+**If version is always 1:** Your identity fields are wrong or missing. Every submission is creating a new document instead of updating.
+
+### Sub-Phase 5.6: Load Data
+
+Once single-document creation and versioning are verified, load the actual data:
+
+**Creation order for documents with references:**
+1. Create all "leaf" entities first (entities that don't reference other documents)
+2. Then create entities that reference them
+3. Continue up the dependency chain
+
+For example: Countries → Customers → Orders → Order Lines
 
 - Use bulk endpoints for efficiency
 - Implement progress reporting (log every N records)
@@ -398,7 +692,7 @@ Once single-document creation is verified, load the actual data:
 
 **Tell the user:** "You can monitor document creation in real-time via WIP Console under Documents, or check MongoDB Express at `http://<hostname>:8081` if available."
 
-### Sub-Phase 5.5: Verify Data Integrity
+### Sub-Phase 5.7: Verify Data Integrity
 
 After loading:
 
@@ -411,11 +705,17 @@ curl -s -H "X-API-Key: <key>" \
 curl -s -H "X-API-Key: <key>" \
   "http://<hostname>:8004/api/document-store/table/<TPL-ID>?limit=5" | jq .
 
+# Check referential integrity
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/health/integrity" | jq .
+
 # If reporting sync is active, check PostgreSQL
 # (Data should appear in PostgreSQL within seconds of creation)
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8005/health" | jq .
 ```
 
-### Sub-Phase 5.6: Build the Application Layer
+### Sub-Phase 5.8: Build the Application Layer
 
 Now build whatever was agreed in Phase 4:
 
@@ -424,18 +724,143 @@ Now build whatever was agreed in Phase 4:
 - **Use WIP's validation** — let the API reject bad data rather than duplicating validation logic
 - **Handle WIP error responses** — parse error details and present them to the user
 
-### Sub-Phase 5.7: Verify Reporting (If Applicable)
+### Sub-Phase 5.9: Verify Reporting (If Applicable)
 
 If the user needs SQL access:
 
 ```bash
 # Check if reporting sync is active
 curl -s -H "X-API-Key: <key>" \
-  "http://<hostname>:8005/api/reporting-sync/health" | jq .
+  "http://<hostname>:8005/health" | jq .
 
 # Query PostgreSQL directly
-psql -h <hostname> -U wip -d wip_reporting -c "SELECT count(*) FROM <table>;"
+psql -h <hostname> -U wip -d wip_reporting -c "SELECT count(*) FROM doc_customer;"
+
+# Check that reference fields are available in reporting
+psql -h <hostname> -U wip -d wip_reporting -c "SELECT invoice_number, customer FROM doc_invoice LIMIT 5;"
 ```
+
+---
+
+## Reference Resolution — How It Works
+
+When a document contains a reference field, WIP resolves it using a 5-step cascade. Understanding this is essential for troubleshooting.
+
+### The Resolution Cascade
+
+```
+Input value provided in document's reference field
+        │
+        ▼
+   ┌─────────────────┐
+   │ 1. UUID7 format?│──yes──► Direct document_id lookup
+   └────────┬────────┘
+            │ no
+   ┌────────▼────────┐
+   │ 2. "hash:" ?    │──yes──► Identity hash lookup (active docs)
+   └────────┬────────┘
+            │ no
+   ┌────────▼────────┐
+   │ 3. Registry     │──yes──► Resolved! Fetch doc by canonical ID
+   │    lookup       │         If inactive → follow identity_hash
+   └────────┬────────┘         chain to latest active version
+            │ not found
+   ┌────────▼────────┐
+   │ 4. Business key │──yes──► Match against target template's
+   │    (string)     │         identity fields
+   └────────┬────────┘
+            │ not found
+   ┌────────▼────────┐
+   │ 5. Composite    │──yes──► Match dict against multiple
+   │    key (dict)   │         identity fields
+   └────────┬────────┘
+            │ not found
+            ▼
+      VALIDATION ERROR
+   "Referenced document not found"
+```
+
+### Registry Lookup (Step 3) in Detail
+
+The Registry performs its own 3-step cascade:
+
+1. **entry_id match** — Is the value a canonical WIP ID?
+2. **additional_ids match** — Is it a merged/deprecated ID?
+3. **search_values match** — Is it a synonym or composite key value?
+
+The Registry's `search_values` is a flat array of all string values from an entry's composite keys and synonym keys, indexed for O(1) lookups. This is why synonym resolution is as fast as canonical ID lookup.
+
+### Business Key Lookup (Step 4) in Detail
+
+When the Registry doesn't find a match, WIP falls back to searching by template identity fields:
+
+- For each `target_templates` in the field definition, WIP fetches the template
+- It reads the template's `identity_fields`
+- If the reference value is a string and the template has a single identity field, it queries `data.<identity_field> = value`
+- If the reference value is a dict, it matches each key against the corresponding identity field
+- Returns the first active document match
+
+**This is why identity fields are critical** — without them, business key lookup can't work.
+
+---
+
+## Synonym Patterns
+
+Synonyms bridge WIP's internal IDs with external system identifiers. Use them whenever data flows between systems.
+
+### When to Use Synonyms
+
+| Scenario | Synonym Pattern |
+|----------|----------------|
+| **Legacy migration** | Register old system IDs as synonyms: `{"legacy_id": "OLD-42"}` |
+| **ERP integration** | Register ERP codes: `{"erp_code": "SAP-MAT-001"}` |
+| **Multi-system** | Each system's ID becomes a synonym: `{"system_a": "X"}, {"system_b": "Y"}` |
+| **Human-friendly codes** | Register short codes: `{"short_code": "DEMO-001"}` |
+
+### How to Register Synonyms
+
+**At document creation time** (preferred — one API call):
+
+```json
+{
+  "template_id": "TPL-XXXXXX",
+  "data": { "..." },
+  "synonyms": [
+    {"erp_id": "SAP-CUST-001"},
+    {"crm_id": "SF-00042"}
+  ]
+}
+```
+
+**After document creation** (via Registry directly):
+
+```bash
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8001/api/registry/synonyms/add" \
+  -d '[{
+    "target_pool_id": "wip-documents",
+    "target_id": "<DOCUMENT-UUID7>",
+    "synonym_pool_id": "wip-documents",
+    "synonym_composite_key": {"erp_id": "SAP-CUST-001"}
+  }]' | jq .
+```
+
+### Verifying Synonym Resolution
+
+```bash
+# Look up by synonym via Registry
+curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
+  "http://<hostname>:8001/api/registry/entries/lookup/by-id" \
+  -d '[{"entry_id": "SAP-CUST-001", "pool_id": "wip-documents"}]' | jq .
+
+# Expected: status="found", preferred_id=<DOCUMENT-UUID7>, matched_via="composite_key_value"
+```
+
+### Namespace Safety
+
+Synonyms are scoped to their pool/namespace. The same synonym value in different pools won't collide:
+- `{"erp_id": "X"}` in `wip-documents` and `{"erp_id": "X"}` in `wip-templates` are independent
+- Omit `pool_id` in a Registry lookup to search across all pools
 
 ---
 
@@ -443,16 +868,148 @@ psql -h <hostname> -U wip -d wip_reporting -c "SELECT count(*) FROM <table>;"
 
 | Pitfall | Prevention |
 |---------|------------|
-| Creating terminologies that already exist | Always check existing data first (Phase 1.5) |
-| Missing `label` field on template fields | Every field requires both `name` and `label` |
-| Wrong creation order | Terminologies → Terms → Templates → Documents. Always. |
-| Assuming API behavior from docs | Test with curl first. Always. |
-| Huge batch without tuning | Use `batch_size=1000` and `registry_batch_size=50` for large imports |
-| Trying to delete data | WIP uses soft-delete only. Deactivate, don't delete. |
-| Ignoring term aliases | Real data is messy. Plan aliases when creating terminologies. |
-| Forgetting identity fields | Without proper identity fields, every submission creates a new document instead of a new version |
-| Modifying WIP code | Never. Build on top of it, not inside it. |
-| Skipping user approval | Always wait for explicit sign-off at Phase 2 and Phase 4 gates. |
+| **No identity fields on template** | Every template MUST have `identity_fields`. Without them, no versioning, no deduplication, no business key resolution. |
+| **Using `type: "string"` for cross-document links** | Use `type: "reference"` with `reference_type` and `target_templates`. String fields give you no validation or resolution. |
+| **Creating terminologies that already exist** | Always check existing data first (Phase 1.5). |
+| **Missing `label` field on template fields** | Every field requires both `name` and `label`. |
+| **Missing `reference_type` on reference fields** | `type: "reference"` requires `reference_type: "document"` (or `"term"`) and `target_templates` (or `target_terminologies`). |
+| **Wrong creation order** | Terminologies → Terms → Templates (referenced first) → Templates (referencing) → Documents (referenced first) → Documents (referencing). |
+| **Assuming API behavior from docs** | Test with curl first. Always. |
+| **Huge batch without tuning** | Use `batch_size=1000` and `registry_batch_size=50` for large imports. |
+| **Trying to delete data** | WIP uses soft-delete only. Deactivate, don't delete. |
+| **Ignoring term aliases** | Real data is messy. Plan aliases when creating terminologies. |
+| **Too many identity fields** | Makes every minor change create a new document instead of a new version. |
+| **Too few identity fields** | Different real-world entities collide and overwrite each other. |
+| **Forgetting reporting config** | If the user needs SQL/dashboards, add `reporting: {sync_enabled: true}` to templates. |
+| **Not registering external IDs as synonyms** | Use the `synonyms` field on document creation for external IDs. Without them, cross-system references break. |
+| **Modifying WIP code** | Never. Build on top of it, not inside it. |
+| **Skipping user approval** | Always wait for explicit sign-off at Phase 2 and Phase 4 gates. |
+
+---
+
+## End-to-End Example: Customer/Invoice Domain
+
+This walkthrough demonstrates the complete pattern for a domain with cross-document references and synonyms.
+
+### 1. Create Terminologies
+
+```bash
+API_KEY="dev_master_key_for_testing"
+HOST="http://localhost"
+
+# Create CURRENCY terminology
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8002/api/def-store/terminologies" \
+  -d '{"code": "CURRENCY", "name": "Currency"}' | jq .
+
+# Add terms (note the CURRENCY terminology_id from above response)
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8002/api/def-store/terminologies/<TERM-ID>/terms/bulk" \
+  -d '{"terms": [
+    {"code": "EUR", "value": "Euro", "aliases": ["euro", "eur"]},
+    {"code": "USD", "value": "US Dollar", "aliases": ["usd", "dollar", "$"]},
+    {"code": "GBP", "value": "British Pound", "aliases": ["gbp", "pound", "£"]}
+  ]}' | jq .
+```
+
+### 2. Create Templates (referenced entity first)
+
+```bash
+# CUSTOMER template — this is referenced by INVOICE, so create it first
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8003/api/template-store/templates" \
+  -d '{
+    "code": "CUSTOMER",
+    "name": "Customer",
+    "identity_fields": ["customer_id"],
+    "fields": [
+      {"name": "customer_id", "label": "Customer ID", "type": "string", "mandatory": true},
+      {"name": "name", "label": "Company Name", "type": "string", "mandatory": true},
+      {"name": "email", "label": "Email", "type": "string", "semantic_type": "email"},
+      {"name": "country", "label": "Country", "type": "term", "terminology_ref": "COUNTRY"}
+    ],
+    "reporting": {"sync_enabled": true, "sync_strategy": "latest_only"}
+  }' | jq .
+
+# INVOICE template — references CUSTOMER
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8003/api/template-store/templates" \
+  -d '{
+    "code": "INVOICE",
+    "name": "Invoice",
+    "identity_fields": ["invoice_number"],
+    "fields": [
+      {"name": "invoice_number", "label": "Invoice Number", "type": "string", "mandatory": true},
+      {"name": "customer", "label": "Customer", "type": "reference", "reference_type": "document", "target_templates": ["CUSTOMER"], "mandatory": true},
+      {"name": "amount", "label": "Amount", "type": "number", "mandatory": true},
+      {"name": "currency", "label": "Currency", "type": "term", "terminology_ref": "CURRENCY"},
+      {"name": "issue_date", "label": "Issue Date", "type": "date", "mandatory": true},
+      {"name": "notes", "label": "Notes", "type": "string"}
+    ],
+    "reporting": {"sync_enabled": true, "sync_strategy": "latest_only"}
+  }' | jq .
+```
+
+### 3. Create Customer Documents (with synonyms)
+
+```bash
+# Create customer with ERP synonym
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<CUSTOMER-TPL-ID>",
+    "data": {
+      "customer_id": "CUS-001",
+      "name": "Acme Corp",
+      "email": "billing@acme.com",
+      "country": "Germany"
+    },
+    "synonyms": [{"erp_id": "SAP-ACME-001"}]
+  }' | jq '{document_id, version, identity_hash}'
+```
+
+### 4. Create Invoice Referencing Customer
+
+```bash
+# Reference by business key (customer_id)
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<INVOICE-TPL-ID>",
+    "data": {
+      "invoice_number": "INV-2024-001",
+      "customer": "CUS-001",
+      "amount": 1500.00,
+      "currency": "EUR",
+      "issue_date": "2024-06-15"
+    }
+  }' | jq .
+
+# OR reference by synonym (ERP ID)
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST:8004/api/document-store/documents" \
+  -d '{
+    "template_id": "<INVOICE-TPL-ID>",
+    "data": {
+      "invoice_number": "INV-2024-002",
+      "customer": "SAP-ACME-001",
+      "amount": 2300.00,
+      "currency": "USD",
+      "issue_date": "2024-07-01"
+    }
+  }' | jq .
+```
+
+### 5. Verify
+
+```bash
+# Check both invoices resolved to the same customer
+curl -s -H "X-API-Key: $API_KEY" \
+  "$HOST:8004/api/document-store/documents?template_code=INVOICE" \
+  | jq '.items[] | {invoice_number: .data.invoice_number, customer_ref: .references.customer.resolved.document_id}'
+
+# Both should show the same customer document_id
+```
 
 ---
 
@@ -492,16 +1049,42 @@ The API key is simpler for development and scripts. OIDC/JWT is required for use
           ↓
 3. Create terms within each terminology (codes, values, aliases)
           ↓
-4. Create templates (document schemas referencing terminologies)
+4. Create templates for REFERENCED entities first (e.g., CUSTOMER)
           ↓
-5. Test with a single document (verify everything works)
+5. Create templates for REFERENCING entities (e.g., INVOICE → CUSTOMER)
           ↓
-6. Bulk load documents
+6. Test with a single document — verify identity fields, term resolution, references
           ↓
-7. Verify data integrity (counts, table view, reporting)
+7. Test versioning — submit same identity, verify version increments
           ↓
-8. Build application layer
+8. Create REFERENCED documents first (e.g., customers)
+   — register synonyms if external IDs exist
+          ↓
+9. Create REFERENCING documents (e.g., invoices)
+   — use business keys, synonyms, or document IDs for references
+          ↓
+10. Verify data integrity (counts, table view, reporting, referential integrity)
+          ↓
+11. Build application layer
 ```
+
+---
+
+## Quick Reference: Key API Endpoints
+
+| Service | Endpoint | Purpose |
+|---------|----------|---------|
+| **Def-Store** | `POST /api/def-store/terminologies` | Create terminology |
+| | `POST /api/def-store/terminologies/{id}/terms/bulk` | Bulk create terms |
+| | `POST /api/def-store/validate/bulk` | Validate term values |
+| **Template-Store** | `POST /api/template-store/templates` | Create template |
+| | `GET /api/template-store/templates/by-code/{code}` | Get latest by code |
+| **Document-Store** | `POST /api/document-store/documents` | Create/update document (upsert) |
+| | `POST /api/document-store/documents/bulk` | Bulk create/update |
+| | `GET /api/document-store/table/{template_id}` | Table view |
+| | `GET /api/document-store/health/integrity` | Referential integrity check |
+| **Registry** | `POST /api/registry/entries/lookup/by-id` | Resolve any identifier |
+| | `POST /api/registry/synonyms/add` | Register synonyms |
 
 ---
 
@@ -511,8 +1094,11 @@ This process exists because:
 
 1. **WIP is powerful but generic** — the AI must understand its primitives before building on them
 2. **Data models are hard to change** — get user approval before implementing
-3. **APIs have undocumented behaviors** — test before you code
-4. **Order matters** — terminologies before templates before documents
-5. **The user is the domain expert** — the AI is the technical implementer
+3. **Identity fields make or break versioning** — choose them carefully, always define them
+4. **References must use `type: "reference"`** — never `type: "string"` for cross-document links
+5. **Synonyms enable cross-system integration** — register external IDs at document creation time
+6. **APIs have undocumented behaviors** — test before you code
+7. **Order matters** — terminologies → templates (referenced first) → documents (referenced first)
+8. **The user is the domain expert** — the AI is the technical implementer
 
 Follow the phases. Respect the gates. Test everything. Never change WIP.
