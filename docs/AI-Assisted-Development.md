@@ -176,7 +176,7 @@ Template: <CODE>
 
 - **Every field needs a `label`** — this is required by the Template-Store
 - **`type: term`** fields must have `terminology_ref`
-- **`type: reference`** fields must have `reference_type` and `target_templates` (for document refs) or `target_terminologies` (for term refs)
+- **`type: reference`** fields must have `reference_type` and `target_templates` (for document refs) or `target_terminologies` (for term refs). Add `include_subtypes: true` to also accept documents from child templates.
 - **`type: object`** fields use `template_ref` to reference another template for nested structure
 - **`type: array`** fields use `items` with a full field definition
 - **`type: file`** fields link binary files stored in MinIO. Use `file_config` to constrain allowed types and sizes.
@@ -253,7 +253,26 @@ Use `type: "reference"` whenever one document points to another. **Never use `ty
 }
 ```
 
-> **Warning: Reference validation is template-exact, not inheritance-aware.** If a reference field specifies `target_templates: ["PARENT_TEMPLATE"]`, only documents created with that exact template are accepted. Documents created with child templates that extend `PARENT_TEMPLATE` are **not** automatically accepted, even though they inherit from it. To accept documents from a parent and all its children, you must explicitly list every template code in `target_templates`.
+**Inheritance-aware references** — use `include_subtypes` to automatically accept child templates:
+
+```json
+{
+  "name": "entity",
+  "label": "Entity",
+  "type": "reference",
+  "reference_type": "document",
+  "target_templates": ["BASE_ENTITY"],
+  "include_subtypes": true
+}
+```
+
+With `include_subtypes: true`, WIP expands `target_templates` at validation time to include all templates that inherit from `BASE_ENTITY` (directly or indirectly). This is useful when you have a template hierarchy and want a reference field to accept any member of the hierarchy without maintaining an explicit list.
+
+> **Reference validation is template-exact by default.** If a reference field specifies `target_templates: ["PARENT_TEMPLATE"]`, only documents created with that exact template are accepted. Documents created with child templates that extend `PARENT_TEMPLATE` are **not** automatically accepted, even though they inherit from it.
+>
+> **To accept child templates**, you have two options:
+> 1. **`include_subtypes: true`** (recommended) — add this to the field definition and WIP will automatically expand `target_templates` to include all descendant templates at validation time
+> 2. **Explicit listing** — manually list every accepted template code in `target_templates`
 
 #### Reporting Configuration
 
@@ -814,9 +833,11 @@ For example: Countries → Customers → Orders → Order Lines
 After loading:
 
 ```bash
-# Count documents by template
+# Count documents by template (by ID or by code)
 curl -s -H "X-API-Key: <key>" \
   "http://<hostname>:8004/api/document-store/documents?template_id=<TPL-ID>" | jq '.total'
+curl -s -H "X-API-Key: <key>" \
+  "http://<hostname>:8004/api/document-store/documents?template_code=CUSTOMER" | jq '.total'
 
 # Check table view works
 curl -s -H "X-API-Key: <key>" \
@@ -990,9 +1011,9 @@ Synonyms are scoped to their pool/namespace. The same synonym value in different
 | **Creating terminologies that already exist** | Always check existing data first (Phase 1.5). |
 | **Missing `label` field on template fields** | Every field requires both `name` and `label`. |
 | **Missing `reference_type` on reference fields** | `type: "reference"` requires `reference_type: "document"` (or `"term"`) and `target_templates` (or `target_terminologies`). |
-| **Assuming inheritance makes references polymorphic** | `target_templates: ["PARENT"]` does NOT accept child templates. List all accepted template codes explicitly. |
-| **Including inherited fields when updating a child template** | Only send the child's own fields in a PUT update. Including inherited fields turns them into overrides, breaking inheritance. |
-| **Expecting parent template updates to cascade** | Child templates store a resolved `template_id` for `extends`. Updating the parent does NOT update children — each child must be updated individually. |
+| **Assuming inheritance makes references polymorphic** | `target_templates: ["PARENT"]` does NOT accept child templates by default. Use `include_subtypes: true` on the field, or list all accepted template codes explicitly. |
+| **Including inherited fields when updating a child template** | Only send the child's own fields in a PUT update. Including inherited fields turns them into overrides, breaking inheritance. Use the `inherited` flag on resolved template fields to distinguish inherited from own fields. |
+| **Expecting parent template updates to auto-cascade** | Child templates store a resolved `template_id` for `extends`. Updating the parent does NOT automatically update children. Use `POST /api/template-store/templates/{id}/cascade` to propagate, or update each child individually. |
 | **Wrong creation order** | Terminologies → Terms → Templates (referenced first) → Templates (referencing) → Documents (referenced first) → Documents (referencing). |
 | **Assuming API behavior from docs** | Test with curl first. Always. |
 | **Huge batch without tuning** | Use `batch_size=1000` and `registry_batch_size=50` for large imports. |
@@ -1150,9 +1171,9 @@ When a template is updated, WIP creates a **new template_id** with an incremente
 The `extends` field is stored as a resolved **template_id** (e.g., `TPL-000009`), not as a code — even though creation accepts a code. This has important consequences:
 
 - **When a parent template is updated** (creating a new version), child templates continue extending the **old** parent version. They do NOT automatically follow the new version.
-- **To propagate a parent change**, each child must be individually updated with `"extends": "<PARENT_CODE>"`, which resolves to the latest parent version at update time.
+- **To propagate a parent change**, use `POST /api/template-store/templates/{parent_id}/cascade` to create new versions of all child templates pointing to the new parent. Alternatively, update each child individually with `"extends": "<PARENT_CODE>"`.
 - **When updating a child template with PUT**, include ONLY the child's own fields. If you fetch a resolved template (which merges inherited + own fields) and send it back in an update, all inherited fields become overrides on the child, effectively **breaking inheritance** for those fields.
-- There is currently no reliable way to distinguish inherited from own fields in the API response. When updating children, carefully track which fields the child defines or overrides versus which it inherits.
+- **Distinguishing inherited from own fields:** When fetching a resolved template (e.g., `GET /templates/{id}`), each field includes `inherited: true/false` and `inherited_from: "<template_id>"`. Use this to identify which fields belong to the child vs. which are inherited from parents. Only send non-inherited fields in PUT updates.
 
 ---
 
@@ -1209,12 +1230,17 @@ The API key is simpler for development and scripts. OIDC/JWT is required for use
 | Service | Endpoint | Purpose |
 |---------|----------|---------|
 | **Def-Store** | `POST /api/def-store/terminologies` | Create terminology |
+| | `GET /api/def-store/terminologies/by-code/{code}` | Get terminology by code |
 | | `POST /api/def-store/terminologies/{id}/terms/bulk` | Bulk create terms |
 | | `POST /api/def-store/validate/bulk` | Validate term values |
 | **Template-Store** | `POST /api/template-store/templates` | Create template |
 | | `GET /api/template-store/templates/by-code/{code}` | Get latest by code |
+| | `POST /api/template-store/templates/{id}/cascade` | Cascade parent update to children |
+| | `GET /api/template-store/templates/{id}/children` | Get direct child templates |
+| | `GET /api/template-store/templates/{id}/descendants` | Get all descendant templates |
 | **Document-Store** | `POST /api/document-store/documents` | Create/update document (upsert) |
 | | `POST /api/document-store/documents/bulk` | Bulk create/update |
+| | `GET /api/document-store/documents?template_code=X` | Filter documents by template code |
 | | `GET /api/document-store/table/{template_id}` | Table view |
 | | `POST /api/document-store/files` | Upload file (multipart/form-data) |
 | | `GET /api/document-store/files/{id}/download` | Get pre-signed download URL |

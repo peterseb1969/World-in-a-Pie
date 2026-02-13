@@ -353,6 +353,7 @@ class FieldType(str, Enum):
     OBJECT = "object"
     ARRAY = "array"
     REFERENCE = "reference"  # Cross-document reference
+    FILE = "file"            # Binary file attachment (MinIO)
 
 
 class TemplateField(BaseModel):
@@ -376,13 +377,47 @@ class TemplateField(BaseModel):
         None,
         description="Template code (for object type)"
     )
+    reference_type: str | None = Field(
+        None,
+        description="Reference type: 'document' or 'term' (for reference type)"
+    )
+    target_templates: list[str] | None = Field(
+        None,
+        description="Accepted template codes (for document references)"
+    )
+    target_terminologies: list[str] | None = Field(
+        None,
+        description="Accepted terminology codes (for term references)"
+    )
+    include_subtypes: bool | None = Field(
+        None,
+        description="When true, target_templates also accepts documents from child templates"
+    )
     reference_template: str | None = Field(
         None,
-        description="Template code (for reference type)"
+        description="Template code (for reference type) — deprecated, use target_templates"
     )
     items: "TemplateField | None" = Field(
         None,
         description="Item definition (for array type)"
+    )
+    file_config: dict | None = Field(
+        None,
+        description="File constraints: allowed_types, max_size_mb, multiple (for file type)"
+    )
+    semantic_type: str | None = Field(
+        None,
+        description="Semantic hint: email, url, percentage, duration, geo_point, latitude, longitude"
+    )
+
+    # Inheritance tracking (set by server during resolution, not stored)
+    inherited: bool | None = Field(
+        None,
+        description="Whether this field is inherited from a parent template"
+    )
+    inherited_from: str | None = Field(
+        None,
+        description="Template ID of the parent this field was inherited from"
     )
 
     # Validation constraints
@@ -729,6 +764,7 @@ The Registry pre-configures namespaces for WIP components:
 | `wip-terms` | prefixed | `T-000001` | Def-Store |
 | `wip-templates` | prefixed | `TPL-000001` | Template Store |
 | `wip-documents` | uuid7 | `0192abc1-def2-7abc-...` | Document Store |
+| `wip-files` | prefixed | `FILE-000001` | File Storage |
 | `default` | uuid4 | `550e8400-e29b-41d4-...` | General use |
 
 ### Registry Entry

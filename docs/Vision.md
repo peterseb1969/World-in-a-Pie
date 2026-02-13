@@ -26,6 +26,7 @@ This is intentional. WIP provides **primitives**, not solutions:
 | **Terminologies** | Controlled vocabularies (codes, values, aliases) |
 | **Templates** | Document schemas with validation rules |
 | **Documents** | Validated, versioned data storage |
+| **Files** | Binary file storage with reference tracking (MinIO) |
 | **Reporting** | SQL-accessible data via PostgreSQL sync |
 
 These primitives are domain-agnostic. WIP doesn't know what a "patient", "invoice", or "sensor reading" is. You define that through terminologies and templates.
@@ -50,10 +51,10 @@ To demonstrate WIP's capabilities, demo applications must be built as **separate
 │  (Patient Portal, Invoice System, IoT Hub)  │
 ├─────────────────────────────────────────────┤
 │              WIP APIs                       │
-│  Terminologies │ Templates │ Documents │ SQL│
+│  Terminologies │ Templates │ Documents │ Files │ SQL│
 ├─────────────────────────────────────────────┤
 │           WIP Infrastructure                │
-│  MongoDB │ PostgreSQL │ NATS │ Dex/OIDC     │
+│  MongoDB │ PostgreSQL │ NATS │ MinIO │ Dex/OIDC │
 └─────────────────────────────────────────────┘
 ```
 
@@ -147,6 +148,7 @@ Every entity in WIP receives its ID from the Registry:
 | `wip-terms` | `T-000001` | Terms |
 | `wip-templates` | `TPL-000001` | Templates |
 | `wip-documents` | UUID7 (time-ordered) | Documents |
+| `wip-files` | `FILE-000001` | Files |
 
 This centralization provides:
 - **Guaranteed uniqueness** across all services

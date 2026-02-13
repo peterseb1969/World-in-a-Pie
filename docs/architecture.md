@@ -95,6 +95,16 @@ World In a Pie (WIP) follows a microservices architecture with clear separation 
 │   │                         │  │   • doc_<template_code> │                 │
 │   └─────────────────────────┘  └─────────────────────────┘                 │
 │                                                                             │
+│   ┌─────────────────────────┐                                              │
+│   │   MinIO :9000/:9001     │                                              │
+│   │   (Object Storage)      │                                              │
+│   │                         │                                              │
+│   │   S3-compatible file    │                                              │
+│   │   storage for binary    │                                              │
+│   │   attachments           │                                              │
+│   │   (FILE-XXXXXX IDs)     │                                              │
+│   └─────────────────────────┘                                              │
+│                                                                             │
 │   ┌─────────────────────────┐  ┌─────────────────────────┐                 │
 │   │   NATS :4222            │  │   Dex :5556             │                 │
 │   │   (Message Queue)       │  │   (OIDC Provider)       │                 │
@@ -296,6 +306,7 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   │  • wip-terms          │  Prefix: T-     │  For Def-Store       │        │
 │   │  • wip-templates      │  Prefix: TPL-   │  For Template Store  │        │
 │   │  • wip-documents      │  UUID7          │  For Document Store  │        │
+│   │  • wip-files          │  Prefix: FILE-  │  For File Storage    │        │
 │   │  • default            │  UUID4          │  General use         │        │
 │   └────────────────────────────────────────────────────────────────┘        │
 │                                                                              │
@@ -581,11 +592,23 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   • ${WIP_DATA_DIR}/mongodb    - Document store data                        │
 │   • ${WIP_DATA_DIR}/postgres   - Reporting database                         │
 │   • ${WIP_DATA_DIR}/nats       - Message queue persistence                  │
+│   • ${WIP_DATA_DIR}/minio      - Binary file storage                        │
 │   • ${WIP_DATA_DIR}/dex        - OIDC token storage                         │
 │   • ${WIP_DATA_DIR}/caddy      - TLS certificates                           │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Kubernetes Deployment
+
+WIP also supports Kubernetes deployment via manifests in the `k8s/` directory. Key differences from compose:
+- Images must be self-contained (wip-auth baked in via `k8s/build-images.sh`)
+- NGINX Ingress replaces Caddy for routing and TLS
+- StatefulSets for infrastructure (MongoDB, PostgreSQL, NATS, MinIO)
+- Deployments for application services
+- `kubectl apply -k k8s/` for one-command deployment
+
+See `k8s/README.md` for full instructions.
 
 ### Network Modes
 

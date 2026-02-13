@@ -116,6 +116,8 @@ DEPARTMENT (terminology)
 | POST | `/api/def-store/terminologies` | Create terminology |
 | PUT | `/api/def-store/terminologies/{id}` | Update terminology |
 | DELETE | `/api/def-store/terminologies/{id}` | Deactivate terminology |
+| POST | `/api/def-store/terminologies/{id}/restore` | Restore inactive terminology |
+| GET | `/api/def-store/terminologies/by-code/{code}` | Get terminology by code |
 | POST | `/api/def-store/terminologies/bulk` | Bulk create terminologies |
 | GET | `/api/def-store/terminologies/{id}/dependencies` | Get dependent templates |
 | **Terms** | | |
@@ -241,7 +243,8 @@ A schema definition for documents. **Multiple template versions can be active si
 | `term` | Reference to terminology | "Male" | `terminology_ref` |
 | `object` | Nested object | {...} | `template_ref` |
 | `array` | List of items | [...] | `items` (field definition) |
-| `reference` | Cross-document reference | "DOC-..." | `reference_template` |
+| `reference` | Cross-document reference | "DOC-..." | `reference_type`, `target_templates`, `include_subtypes` |
+| `file` | Binary file attachment | "FILE-000001" | `file_config` (`allowed_types`, `max_size_mb`, `multiple`) |
 
 #### Rule Types
 
@@ -285,6 +288,8 @@ Inheritance resolution:
 4. Child defines its own identity fields (replaces parent's)
 5. Rules are merged (child rules evaluated after parent rules)
 
+When fetching a resolved template, each field includes `inherited: true/false` and `inherited_from: "<template_id>"` to indicate whether it comes from a parent template or is defined directly on the child.
+
 ### Template Versioning
 
 **Key difference from document versioning:** Multiple template versions can be active simultaneously.
@@ -309,6 +314,10 @@ Inheritance resolution:
 | DELETE | `/api/template-store/templates/{id}` | Deactivate template |
 | POST | `/api/template-store/templates/bulk` | Bulk create templates |
 | GET | `/api/template-store/templates/{id}/dependencies` | Get dependent documents |
+| GET | `/api/template-store/templates/{id}/raw` | Get template without inheritance resolution |
+| GET | `/api/template-store/templates/{id}/children` | Get direct child templates |
+| GET | `/api/template-store/templates/{id}/descendants` | Get all descendant templates |
+| POST | `/api/template-store/templates/{id}/cascade` | Cascade parent update to child templates |
 | **By Code** | | |
 | GET | `/api/template-store/templates/by-code/{code}` | Get latest version by code |
 | GET | `/api/template-store/templates/by-code/{code}/versions` | List all versions |
@@ -385,6 +394,7 @@ The Document Store holds **actual data** that conforms to templates. It is the p
 ```
 
 **Key fields:**
+- `template_code` - Template code (e.g., "PERSON") for convenient filtering without needing the template_id
 - `data` - Original submitted values
 - `term_references` - Resolved term IDs for term fields (stores both original value AND term_id)
 - `identity_hash` - SHA-256 of identity field values
@@ -464,7 +474,7 @@ Search for active document with same hash
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | **Documents** | | |
-| GET | `/api/document-store/documents` | List documents (with filtering) |
+| GET | `/api/document-store/documents` | List documents (filter by `template_id`, `template_code`, `status`) |
 | GET | `/api/document-store/documents/{id}` | Get document |
 | POST | `/api/document-store/documents` | Create/update document (upsert) |
 | DELETE | `/api/document-store/documents/{id}` | Soft-delete (set status=inactive) |
@@ -479,6 +489,14 @@ Search for active document with same hash
 | GET | `/api/document-store/table/{template_id}/csv` | Export as CSV |
 | **Query** | | |
 | POST | `/api/document-store/documents/query` | Complex query |
+| **Files** | | |
+| POST | `/api/document-store/files` | Upload file (multipart/form-data) |
+| GET | `/api/document-store/files/{id}` | Get file metadata |
+| GET | `/api/document-store/files/{id}/download` | Get pre-signed download URL |
+| GET | `/api/document-store/files/{id}/content` | Stream file content directly |
+| DELETE | `/api/document-store/files/{id}` | Soft-delete file |
+| GET | `/api/document-store/files/orphans/list` | List orphan files |
+| GET | `/api/document-store/files/health/integrity` | File integrity check |
 | **Health** | | |
 | GET | `/api/document-store/health/integrity` | Check referential integrity |
 
@@ -790,6 +808,16 @@ Message queue with JetStream for event persistence.
 | `wip.documents.deleted` | Document Store | Reporting Sync |
 | `wip.templates.created` | Template Store | Reporting Sync |
 | `wip.templates.updated` | Template Store | Reporting Sync |
+
+### MinIO
+
+**Port:** 9000 (API) / 9001 (Console)
+
+S3-compatible object storage for binary files. Used by Document Store for file uploads.
+- Files stored with Registry IDs (FILE-XXXXXX)
+- Reference tracking (documents → files)
+- Orphan detection for unlinked files
+- SHA-256 checksums for duplicate detection
 
 ### Dex
 
