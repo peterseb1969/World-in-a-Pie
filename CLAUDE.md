@@ -43,6 +43,7 @@ All core services are implemented and working:
 - Binary file storage via MinIO — full API, UI upload/list, reference tracking, orphan detection
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point) with validation, reporting sync, UI
 - Metabase optional deployment (`deploy/optional/metabase/`) with PostgreSQL reporting infrastructure
+- Template draft mode — create templates with `status: "draft"`, cascading activation with full validation
 
 ---
 
@@ -152,6 +153,14 @@ Templates support multi-version operation (for gradual migration):
 - Update creates NEW template_id with incremented version
 - Original template remains active
 - Documents reference specific template_id
+
+### Template Draft Mode
+
+Templates can be created with `status: "draft"` to skip reference validation:
+- Enables circular dependencies and order-independent creation
+- `POST /templates/{id}/activate` validates and activates (cascading to referenced drafts)
+- All-or-nothing: if any template in the set fails, none activate
+- See `docs/design/template-draft-mode.md` for details
 
 ### Term Storage
 

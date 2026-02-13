@@ -300,6 +300,17 @@ When fetching a resolved template, each field includes `inherited: true/false` a
 | Update TPL-000001 | NEW TPL-000002, version=2, **original still active** |
 | Update TPL-000002 | NEW TPL-000003, version=3, **all versions still active** |
 
+### Draft Mode
+
+Templates can be created with `status: "draft"` to skip all cross-reference validation. This enables:
+- **Order-independent creation** — create templates in any order, activate when ready
+- **Circular references** — both sides exist as drafts before either is activated
+- **Cascading activation** — `POST /templates/{id}/activate` validates and activates the target plus all draft templates it references (all-or-nothing)
+- **Dry-run preview** — `?dry_run=true` shows what would activate without making changes
+- Draft templates cannot be used for document creation (Document-Store rejects non-active templates)
+
+See `docs/design/template-draft-mode.md` for the full design.
+
 ### API Endpoints
 
 | Method | Endpoint | Description |
@@ -318,6 +329,7 @@ When fetching a resolved template, each field includes `inherited: true/false` a
 | GET | `/api/template-store/templates/{id}/children` | Get direct child templates |
 | GET | `/api/template-store/templates/{id}/descendants` | Get all descendant templates |
 | POST | `/api/template-store/templates/{id}/cascade` | Cascade parent update to child templates |
+| POST | `/api/template-store/templates/{id}/activate` | Activate a draft template (cascading) |
 | **By Code** | | |
 | GET | `/api/template-store/templates/by-code/{code}` | Get latest version by code |
 | GET | `/api/template-store/templates/by-code/{code}/versions` | List all versions |

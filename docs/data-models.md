@@ -310,7 +310,7 @@ class Template(BaseModel):
         default=1,
         description="Version number (incremented on updates)"
     )
-    status: Literal["active", "deprecated", "inactive"] = Field(
+    status: Literal["draft", "active", "deprecated", "inactive"] = Field(
         default="active"
     )
     extends: str | None = Field(

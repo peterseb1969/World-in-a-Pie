@@ -119,21 +119,29 @@ Structural validation still applies in draft mode:
 - Required properties (name, label, type) must be present
 - Identity fields must reference defined field names
 
-### Implementation Notes
+### Implementation Notes (Implemented)
 
-**Template model:** Add `"draft"` to the status enum.
+**Template model (`template.py`):** Status field description includes "draft".
 
-**Template service (create):** If `request.status == "draft"`, skip the `validate_template()` call that checks cross-references.
+**API models (`api_models.py`):** `CreateTemplateRequest` has `status` field (None/"active"/"draft"). New `ActivateTemplateResponse` and `ActivationDetail` models. `ValidateTemplateResponse` has `will_also_activate` field.
 
-**Template service (activate):** New method that:
-1. Fetches the template
-2. Runs full `validate_template()`
-3. If valid, sets status to "active"
-4. If invalid, returns validation errors
+**Template service (create):** If `request.status == "draft"`, skips: extends existence check, `_validate_field_references()`, cross-namespace validation, and NATS event publishing.
+
+**Template service (activate):** Cascading activation via BFS:
+1. Fetches template, verifies status is "draft"
+2. `_build_activation_set()` — BFS through references, collecting all reachable draft templates (handles circular refs via visited set)
+3. `_validate_activation_set()` — validates the full set as a unit (references valid if in set OR active)
+4. If errors → returns errors, no state changes
+5. If `dry_run` → returns preview
+6. Sets `status="active"` on all, saves, publishes `TEMPLATE_ACTIVATED` events
+
+**Template service (validate):** For draft templates, builds activation set and returns cascade preview via `will_also_activate`.
+
+**NATS events (`nats_client.py`):** Added `TEMPLATE_ACTIVATED = "template.activated"` event type.
 
 **Document-Store validation:** Already checks `template.status == "active"` — draft templates are automatically rejected for document creation.
 
-**Activate-batch:** Builds a dependency graph from all provided template IDs, topologically sorts them, and activates in order. Returns partial results if some fail.
+**Bulk create:** Respects `status` from each request item, skips NATS events for drafts.
 
 ### Interaction with Existing Features
 
