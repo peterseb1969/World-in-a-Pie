@@ -253,6 +253,8 @@ Use `type: "reference"` whenever one document points to another. **Never use `ty
 }
 ```
 
+> **Warning: Reference validation is template-exact, not inheritance-aware.** If a reference field specifies `target_templates: ["PARENT_TEMPLATE"]`, only documents created with that exact template are accepted. Documents created with child templates that extend `PARENT_TEMPLATE` are **not** automatically accepted, even though they inherit from it. To accept documents from a parent and all its children, you must explicitly list every template code in `target_templates`.
+
 #### Reporting Configuration
 
 If the user needs SQL access to the data, configure reporting on each template:
@@ -477,19 +479,20 @@ Do not assume behavior from Swagger documentation. APIs may have undocumented re
 For each terminology in the data model:
 
 ```bash
-# 1. Check if it already exists
+# 1. Check if it already exists (use by-code endpoint for exact match)
 curl -s -H "X-API-Key: <key>" \
-  "http://<hostname>:8002/api/def-store/terminologies?code=<CODE>" | jq .
+  "http://<hostname>:8002/api/def-store/terminologies/by-code/<CODE>" | jq .
+# Returns the terminology if found, or 404 if not
 
 # 2. Create if it doesn't exist
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8002/api/def-store/terminologies" \
   -d '{"code": "<CODE>", "name": "<Name>", "description": "<Description>"}' | jq .
 
-# 3. Add terms (bulk)
+# 3. Add terms (bulk) — every term requires code, value, AND label
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8002/api/def-store/terminologies/<ID>/terms/bulk" \
-  -d '{"terms": [{"code": "...", "value": "...", "aliases": ["..."]}]}' | jq .
+  -d '{"terms": [{"code": "...", "value": "...", "label": "...", "aliases": ["..."]}]}' | jq .
 
 # 4. Verify terms were created
 curl -s -H "X-API-Key: <key>" \
@@ -987,6 +990,9 @@ Synonyms are scoped to their pool/namespace. The same synonym value in different
 | **Creating terminologies that already exist** | Always check existing data first (Phase 1.5). |
 | **Missing `label` field on template fields** | Every field requires both `name` and `label`. |
 | **Missing `reference_type` on reference fields** | `type: "reference"` requires `reference_type: "document"` (or `"term"`) and `target_templates` (or `target_terminologies`). |
+| **Assuming inheritance makes references polymorphic** | `target_templates: ["PARENT"]` does NOT accept child templates. List all accepted template codes explicitly. |
+| **Including inherited fields when updating a child template** | Only send the child's own fields in a PUT update. Including inherited fields turns them into overrides, breaking inheritance. |
+| **Expecting parent template updates to cascade** | Child templates store a resolved `template_id` for `extends`. Updating the parent does NOT update children — each child must be updated individually. |
 | **Wrong creation order** | Terminologies → Terms → Templates (referenced first) → Templates (referencing) → Documents (referenced first) → Documents (referencing). |
 | **Assuming API behavior from docs** | Test with curl first. Always. |
 | **Huge batch without tuning** | Use `batch_size=1000` and `registry_batch_size=50` for large imports. |
@@ -1023,9 +1029,9 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   "$HOST:8002/api/def-store/terminologies/<TERM-ID>/terms/bulk" \
   -d '{"terms": [
-    {"code": "EUR", "value": "Euro", "aliases": ["euro", "eur"]},
-    {"code": "USD", "value": "US Dollar", "aliases": ["usd", "dollar", "$"]},
-    {"code": "GBP", "value": "British Pound", "aliases": ["gbp", "pound", "£"]}
+    {"code": "EUR", "value": "Euro", "label": "Euro", "aliases": ["euro", "eur"]},
+    {"code": "USD", "value": "US Dollar", "label": "US Dollar", "aliases": ["usd", "dollar", "$"]},
+    {"code": "GBP", "value": "British Pound", "label": "British Pound", "aliases": ["gbp", "pound", "£"]}
   ]}' | jq .
 ```
 
@@ -1138,6 +1144,15 @@ When a template is updated, WIP creates a **new template_id** with an incremente
 - New documents can use either version
 - The AI should always use the latest template version for new documents
 - Migration between template versions is the application's responsibility, not WIP's
+
+### Versioning and Inheritance
+
+The `extends` field is stored as a resolved **template_id** (e.g., `TPL-000009`), not as a code — even though creation accepts a code. This has important consequences:
+
+- **When a parent template is updated** (creating a new version), child templates continue extending the **old** parent version. They do NOT automatically follow the new version.
+- **To propagate a parent change**, each child must be individually updated with `"extends": "<PARENT_CODE>"`, which resolves to the latest parent version at update time.
+- **When updating a child template with PUT**, include ONLY the child's own fields. If you fetch a resolved template (which merges inherited + own fields) and send it back in an update, all inherited fields become overrides on the child, effectively **breaking inheritance** for those fields.
+- There is currently no reliable way to distinguish inherited from own fields in the API response. When updating children, carefully track which fields the child defines or overrides versus which it inherits.
 
 ---
 
