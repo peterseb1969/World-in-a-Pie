@@ -1,0 +1,98 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wip-template-store
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: template-store
+    app.kubernetes.io/part-of: wip
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8003
+      targetPort: 8003
+  selector:
+    app.kubernetes.io/name: template-store
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wip-template-store
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: template-store
+    app.kubernetes.io/part-of: wip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: template-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: template-store
+        app.kubernetes.io/part-of: wip
+    spec:
+      containers:
+        - name: template-store
+          image: wip/template-store:latest
+          ports:
+            - containerPort: 8003
+          command: ["uvicorn", "template_store.main:app", "--host", "0.0.0.0", "--port", "8003"]
+          env:
+            - name: PYTHONPATH
+              value: "/app/src"
+            - name: DATABASE_NAME
+              value: "wip_template_store"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: mongo-uri
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: WIP_AUTH_LEGACY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: REGISTRY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: DEF_STORE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: DOCUMENT_STORE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+          envFrom:
+            - configMapRef:
+                name: wip-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

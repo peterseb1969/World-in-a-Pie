@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: wip-document-store
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: document-store
+    app.kubernetes.io/part-of: wip
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8004
+      targetPort: 8004
+  selector:
+    app.kubernetes.io/name: document-store
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wip-document-store
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: document-store
+    app.kubernetes.io/part-of: wip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: document-store
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: document-store
+        app.kubernetes.io/part-of: wip
+    spec:
+      containers:
+        - name: document-store
+          image: wip/document-store:latest
+          ports:
+            - containerPort: 8004
+          command: ["uvicorn", "document_store.main:app", "--host", "0.0.0.0", "--port", "8004"]
+          env:
+            - name: PYTHONPATH
+              value: "/app/src"
+            - name: DATABASE_NAME
+              value: "wip_document_store"
+            - name: MONGO_URI
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: mongo-uri
+            - name: API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: WIP_AUTH_LEGACY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: REGISTRY_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: TEMPLATE_STORE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: DEF_STORE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            # MinIO credentials
+            - name: WIP_FILE_STORAGE_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: minio-root-user
+            - name: WIP_FILE_STORAGE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: minio-root-password
+          envFrom:
+            - configMapRef:
+                name: wip-config
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"

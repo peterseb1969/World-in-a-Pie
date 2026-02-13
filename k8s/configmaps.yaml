@@ -1,0 +1,126 @@
+---
+# ── Shared environment for all WIP services ───────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wip-config
+  namespace: wip
+  labels:
+    app.kubernetes.io/part-of: wip
+data:
+  # Auth
+  WIP_AUTH_MODE: "dual"
+  WIP_AUTH_JWT_AUDIENCE: "wip-console"
+  # IMPORTANT: WIP_AUTH_JWT_ISSUER_URL must match the Dex issuer seen by browsers.
+  # Replace WIP_HOSTNAME with your Ingress hostname (e.g. wip.example.com).
+  WIP_AUTH_JWT_ISSUER_URL: "https://WIP_HOSTNAME/dex"
+  WIP_AUTH_JWT_JWKS_URI: "http://wip-dex:5556/dex/keys"
+
+  # Service URLs (K8s DNS within the wip namespace)
+  REGISTRY_URL: "http://wip-registry:8001"
+  DEF_STORE_URL: "http://wip-def-store:8002"
+  TEMPLATE_STORE_URL: "http://wip-template-store:8003"
+  DOCUMENT_STORE_URL: "http://wip-document-store:8004"
+  NATS_URL: "nats://wip-nats:4222"
+
+  # CORS — restrict in production
+  CORS_ORIGINS: "*"
+  WIP_CORS_ORIGINS: "*"
+
+  # File storage
+  WIP_FILE_STORAGE_ENABLED: "true"
+  WIP_FILE_STORAGE_TYPE: "minio"
+  WIP_FILE_STORAGE_ENDPOINT: "http://wip-minio:9000"
+  WIP_FILE_STORAGE_PUBLIC_ENDPOINT: "http://wip-minio:9000"
+  WIP_FILE_STORAGE_BUCKET: "wip-attachments"
+
+  # PostgreSQL
+  POSTGRES_HOST: "wip-postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "wip_reporting"
+  POSTGRES_USER: "wip"
+
+---
+# ── Dex OIDC provider configuration ──────────────────────────────
+# Replace WIP_HOSTNAME with your Ingress hostname before deploying.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wip-dex-config
+  namespace: wip
+  labels:
+    app.kubernetes.io/part-of: wip
+data:
+  config.yaml: |
+    # IMPORTANT: Replace WIP_HOSTNAME below with your actual Ingress hostname
+    issuer: https://WIP_HOSTNAME/dex
+
+    storage:
+      type: sqlite3
+      config:
+        file: /data/dex.db
+
+    web:
+      http: 0.0.0.0:5556
+
+    oauth2:
+      skipApprovalScreen: true
+      passwordConnector: local
+
+    staticClients:
+      - id: wip-console
+        name: WIP Console
+        secretEnv: DEX_CLIENT_SECRET
+        redirectURIs:
+          - https://WIP_HOSTNAME/auth/callback
+
+    connectors: []
+
+    enablePasswordDB: true
+
+    staticPasswords:
+      - email: admin@wip.local
+        hash: "$2a$10$kyL3xczYvxM.q4HkR5GV3uStfdvGF0M8XaOjcIefPsA0ZymAEk832"
+        username: admin
+        userID: admin-001
+      - email: editor@wip.local
+        hash: "$2a$10$LLUecNDEbi.Nr4f8GRp/a.MAoXECtKfaS1s46ujPd3K14hpja2BU."
+        username: editor
+        userID: editor-001
+      - email: viewer@wip.local
+        hash: "$2a$10$Rh2i0EzOHeYNfp9mMaJinOaQxusS7Q8qO2/P9urmHF0xpah.W15rq"
+        username: viewer
+        userID: viewer-001
+
+---
+# ── Console nginx.conf (SPA serving only — Ingress handles routing) ──
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wip-console-nginx
+  namespace: wip
+  labels:
+    app.kubernetes.io/part-of: wip
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        gzip on;
+        gzip_types text/plain text/css application/json application/javascript
+                   text/xml application/xml application/xml+rss text/javascript;
+
+        # SPA routing — all non-file paths fall back to index.html
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }

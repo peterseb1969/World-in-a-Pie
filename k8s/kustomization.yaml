@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: wip
+
+resources:
+  # Namespace
+  - namespace.yaml
+
+  # Secrets & ConfigMaps
+  - secrets.yaml
+  - configmaps.yaml
+
+  # Infrastructure (StatefulSets)
+  - infrastructure/mongodb.yaml
+  - infrastructure/nats.yaml
+  - infrastructure/postgres.yaml
+  - infrastructure/minio.yaml
+  - infrastructure/dex.yaml
+
+  # Application services (Deployments)
+  - services/registry.yaml
+  - services/def-store.yaml
+  - services/template-store.yaml
+  - services/document-store.yaml
+  - services/reporting-sync.yaml
+  - services/ingest-gateway.yaml
+  - services/wip-console.yaml
+
+  # Networking
+  - ingress/ingress.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/managed-by: kustomize

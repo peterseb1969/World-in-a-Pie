@@ -1,0 +1,91 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wip-ingress
+  namespace: wip
+  labels:
+    app.kubernetes.io/part-of: wip
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Allow large file uploads (matches MinIO default)
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # Streaming support for document-store file downloads
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        # Replace with your hostname
+        - WIP_HOSTNAME
+      secretName: wip-tls
+  rules:
+    # Replace with your hostname
+    - host: WIP_HOSTNAME
+      http:
+        paths:
+          # ── Dex OIDC provider ─────────────────────────
+          - path: /dex
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-dex
+                port:
+                  number: 5556
+
+          # ── API services ──────────────────────────────
+          - path: /api/registry
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-registry
+                port:
+                  number: 8001
+
+          - path: /api/def-store
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-def-store
+                port:
+                  number: 8002
+
+          - path: /api/template-store
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-template-store
+                port:
+                  number: 8003
+
+          - path: /api/document-store
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-document-store
+                port:
+                  number: 8004
+
+          - path: /api/reporting-sync
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-reporting-sync
+                port:
+                  number: 8005
+
+          - path: /api/ingest-gateway
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-ingest-gateway
+                port:
+                  number: 8006
+
+          # ── Console (default / catch-all) ─────────────
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-console
+                port:
+                  number: 80
