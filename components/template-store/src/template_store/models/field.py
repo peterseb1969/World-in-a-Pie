@@ -159,6 +159,10 @@ class FieldDefinition(BaseModel):
         None,
         description="Allowed template codes for document references"
     )
+    include_subtypes: Optional[bool] = Field(
+        None,
+        description="When true, target_templates also accepts documents from child templates (via inheritance)"
+    )
     target_terminologies: Optional[list[str]] = Field(
         None,
         description="Allowed terminology codes for term references"
@@ -202,6 +206,16 @@ class FieldDefinition(BaseModel):
     semantic_type: Optional[SemanticType] = Field(
         None,
         description="Semantic type for additional validation (email, url, latitude, etc.)"
+    )
+
+    # Inheritance tracking (populated during resolution, not stored)
+    inherited: Optional[bool] = Field(
+        None,
+        description="Whether this field is inherited from a parent template (set during resolution)"
+    )
+    inherited_from: Optional[str] = Field(
+        None,
+        description="Template ID of the parent template this field was inherited from"
     )
 
     # Additional metadata

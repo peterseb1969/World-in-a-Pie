@@ -237,6 +237,33 @@ class ValidateTemplateResponse(BaseModel):
     warnings: list[ValidationWarning] = []
 
 
+class CascadeResult(BaseModel):
+    """Result of cascading a parent update to a single child template."""
+
+    code: str
+    old_template_id: str
+    new_template_id: Optional[str] = None
+    new_version: Optional[int] = None
+    status: str = Field(
+        ...,
+        description="updated, unchanged, or error"
+    )
+    error: Optional[str] = None
+
+
+class CascadeResponse(BaseModel):
+    """Response for template cascade operation."""
+
+    parent_template_id: str
+    parent_code: str
+    parent_version: int
+    total: int
+    updated: int
+    unchanged: int
+    failed: int
+    results: list[CascadeResult]
+
+
 class ValidateDocumentRequest(StrictModel):
     """Request to validate a document against a template."""
 

@@ -129,6 +129,7 @@ class TerminologyService:
     @staticmethod
     async def list_terminologies(
         status: Optional[str] = None,
+        code: Optional[str] = None,
         page: int = 1,
         page_size: int = 50,
         pool_id: str = "wip-terminologies"
@@ -138,6 +139,7 @@ class TerminologyService:
 
         Args:
             status: Filter by status (active, deprecated, inactive)
+            code: Filter by exact code match
             page: Page number (1-indexed)
             page_size: Items per page
             pool_id: Pool ID to query (default: wip-terminologies)
@@ -148,6 +150,8 @@ class TerminologyService:
         query = {"pool_id": pool_id}
         if status:
             query["status"] = status
+        if code:
+            query["code"] = code
 
         total = await Terminology.find(query).count()
         skip = (page - 1) * page_size
@@ -269,6 +273,61 @@ class TerminologyService:
         })
 
         return True
+
+    @staticmethod
+    async def restore_terminology(
+        terminology_id: str,
+        restore_terms: bool = True
+    ) -> Optional[TerminologyResponse]:
+        """
+        Restore a soft-deleted terminology (set status back to active).
+
+        Optionally reactivates all terms that were deactivated with it.
+
+        Args:
+            terminology_id: Terminology to restore
+            restore_terms: If True, also reactivate inactive terms
+
+        Returns:
+            Restored terminology, or None if not found
+        """
+        terminology = await Terminology.find_one({"terminology_id": terminology_id})
+        if not terminology:
+            return None
+
+        if terminology.status == "active":
+            return TerminologyService._to_terminology_response(terminology)
+
+        actor = get_identity_string()
+        now = datetime.now(timezone.utc)
+
+        # Reactivate terminology
+        terminology.status = "active"
+        terminology.updated_at = now
+        terminology.updated_by = actor
+        await terminology.save()
+
+        # Reactivate terms
+        if restore_terms:
+            await Term.find({
+                "terminology_id": terminology_id,
+                "status": "inactive"
+            }).update_many({
+                "$set": {
+                    "status": "active",
+                    "updated_at": now,
+                    "updated_by": actor
+                }
+            })
+
+            # Recalculate term count
+            terminology.term_count = await Term.find({
+                "terminology_id": terminology_id,
+                "status": "active"
+            }).count()
+            await terminology.save()
+
+        return TerminologyService._to_terminology_response(terminology)
 
     # =========================================================================
     # TERM OPERATIONS

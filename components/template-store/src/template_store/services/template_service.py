@@ -13,6 +13,8 @@ from ..models.api_models import (
     ValidateTemplateResponse,
     ValidationError,
     ValidationWarning,
+    CascadeResult,
+    CascadeResponse,
 )
 from .registry_client import get_registry_client, RegistryError
 from .def_store_client import get_def_store_client, DefStoreError
@@ -816,6 +818,157 @@ class TemplateService:
             template_id=template_id,
             errors=errors,
             warnings=warnings
+        )
+
+    # =========================================================================
+    # CASCADE
+    # =========================================================================
+
+    @staticmethod
+    async def cascade_to_children(template_id: str) -> CascadeResponse:
+        """
+        Cascade a parent template update to all child templates.
+
+        When a parent template is updated (creating a new version), child
+        templates still extend the old version. This method creates new
+        versions of all direct children that extend the new parent version.
+
+        The cascade only updates the `extends` pointer — child-specific fields
+        are preserved as-is.
+
+        Args:
+            template_id: The new parent template_id to cascade from
+
+        Returns:
+            CascadeResponse with results for each child
+
+        Raises:
+            ValueError: If template not found
+        """
+        # Find the target parent template
+        parent = await Template.find_one({"template_id": template_id})
+        if not parent:
+            raise ValueError(f"Template '{template_id}' not found")
+
+        # Find all versions of this template's code to get ALL possible old template_ids
+        all_parent_versions = await Template.find({"code": parent.code}).to_list()
+        all_parent_ids = [t.template_id for t in all_parent_versions]
+
+        # Find all active children extending ANY version of this parent
+        children = await Template.find({
+            "extends": {"$in": all_parent_ids},
+            "status": "active"
+        }).to_list()
+
+        if not children:
+            return CascadeResponse(
+                parent_template_id=parent.template_id,
+                parent_code=parent.code,
+                parent_version=parent.version,
+                total=0,
+                updated=0,
+                unchanged=0,
+                failed=0,
+                results=[]
+            )
+
+        # Get authenticated identity
+        actor = get_identity_string()
+        client = get_registry_client()
+
+        results = []
+        updated = 0
+        unchanged = 0
+        failed = 0
+
+        # Group children by code (only cascade latest version of each child)
+        children_by_code: dict[str, Template] = {}
+        for child in children:
+            existing = children_by_code.get(child.code)
+            if not existing or child.version > existing.version:
+                children_by_code[child.code] = child
+
+        for child in children_by_code.values():
+            try:
+                # Skip if already extending the target parent
+                if child.extends == template_id:
+                    unchanged += 1
+                    results.append(CascadeResult(
+                        code=child.code,
+                        old_template_id=child.template_id,
+                        status="unchanged"
+                    ))
+                    continue
+
+                # Calculate new version for this child
+                max_ver = await Template.find(
+                    {"code": child.code}
+                ).sort([("version", -1)]).limit(1).to_list()
+                new_version = max_ver[0].version + 1 if max_ver else 1
+
+                # Register new version with Registry
+                new_child_id = await client.register_template(
+                    code=child.code,
+                    name=child.name,
+                    version=new_version,
+                    created_by=actor
+                )
+
+                # Create new child version with updated extends pointer
+                new_child = Template(
+                    template_id=new_child_id,
+                    code=child.code,
+                    name=child.name,
+                    description=child.description,
+                    version=new_version,
+                    extends=template_id,  # Point to new parent
+                    identity_fields=child.identity_fields,
+                    fields=child.fields,  # Preserve child's own fields
+                    rules=child.rules,
+                    metadata=child.metadata,
+                    reporting=child.reporting,
+                    status="active",
+                    created_at=datetime.now(timezone.utc),
+                    created_by=actor,
+                    updated_at=datetime.now(timezone.utc),
+                    updated_by=actor,
+                )
+                await new_child.insert()
+
+                # Publish event
+                await publish_template_event(
+                    EventType.TEMPLATE_UPDATED,
+                    TemplateService._template_to_event_payload(new_child),
+                    changed_by=actor
+                )
+
+                updated += 1
+                results.append(CascadeResult(
+                    code=child.code,
+                    old_template_id=child.template_id,
+                    new_template_id=new_child_id,
+                    new_version=new_version,
+                    status="updated"
+                ))
+
+            except Exception as e:
+                failed += 1
+                results.append(CascadeResult(
+                    code=child.code,
+                    old_template_id=child.template_id,
+                    status="error",
+                    error=str(e)
+                ))
+
+        return CascadeResponse(
+            parent_template_id=parent.template_id,
+            parent_code=parent.code,
+            parent_version=parent.version,
+            total=len(results),
+            updated=updated,
+            unchanged=unchanged,
+            failed=failed,
+            results=results
         )
 
     # =========================================================================

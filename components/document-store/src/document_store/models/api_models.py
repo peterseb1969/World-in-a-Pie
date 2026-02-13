@@ -49,6 +49,10 @@ class DocumentResponse(BaseModel):
     document_id: str
     template_id: str
     template_version: int
+    template_code: Optional[str] = Field(
+        None,
+        description="Template code (e.g., PLANNED_VISIT)"
+    )
     identity_hash: str
     version: int
     data: dict[str, Any]
@@ -93,6 +97,10 @@ class DocumentCreateResponse(BaseModel):
 
     document_id: str
     template_id: str
+    template_code: Optional[str] = Field(
+        None,
+        description="Template code (e.g., PLANNED_VISIT)"
+    )
     identity_hash: str
     version: int
     is_new: bool = Field(

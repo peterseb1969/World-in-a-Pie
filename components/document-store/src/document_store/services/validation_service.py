@@ -23,6 +23,7 @@ class ValidationResult:
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
         self.template_version: Optional[int] = None
+        self.template_code: Optional[str] = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -192,6 +193,7 @@ class ValidationService:
             return result
 
         result.template_version = template.get("version", 1)
+        result.template_code = template.get("code")
 
         # Stage 3: Field validation
         start = time.perf_counter()
@@ -1199,13 +1201,23 @@ class ValidationService:
         # Collect all reference values to validate
         ref_validations = self._collect_reference_values(data, template.get("fields", []), "")
 
+        # Cache for expanded target_templates (to avoid repeated lookups)
+        expanded_templates_cache: dict[str, list[str]] = {}
+
         for ref_val in ref_validations:
             field_path = ref_val["field_path"]
             reference_type = ref_val["reference_type"]
             value = ref_val["value"]
             target_templates = ref_val.get("target_templates", [])
+            include_subtypes = ref_val.get("include_subtypes", False)
             target_terminologies = ref_val.get("target_terminologies", [])
             version_strategy = ref_val.get("version_strategy", "latest")
+
+            # Expand target_templates with descendants when include_subtypes is set
+            if include_subtypes and target_templates and reference_type == "document":
+                target_templates = await self._expand_target_templates(
+                    target_templates, expanded_templates_cache
+                )
 
             try:
                 if reference_type == "document":
@@ -1402,6 +1414,46 @@ class ValidationService:
                             })
 
         return file_values
+
+    async def _expand_target_templates(
+        self,
+        target_templates: list[str],
+        cache: dict[str, list[str]]
+    ) -> list[str]:
+        """
+        Expand target_templates to include descendant template codes.
+
+        When include_subtypes is set on a reference field, this method
+        fetches all templates that inherit (directly or indirectly) from
+        each target template and adds their codes to the allowed list.
+
+        Uses a cache to avoid repeated lookups for the same template code.
+        """
+        expanded = set(target_templates)
+        client = get_template_store_client()
+
+        for code in target_templates:
+            if code in cache:
+                expanded.update(cache[code])
+                continue
+
+            try:
+                # Fetch template by code to get template_id
+                template = await client.get_template(template_code=code)
+                if not template:
+                    cache[code] = []
+                    continue
+
+                template_id = template.get("template_id")
+                # Fetch descendants using template-store API
+                descendants = await client.get_template_descendants(template_id)
+                descendant_codes = [d.get("code") for d in descendants if d.get("code")]
+                cache[code] = descendant_codes
+                expanded.update(descendant_codes)
+            except TemplateStoreError:
+                cache[code] = []
+
+        return list(expanded)
 
     async def _resolve_document_reference(
         self,
@@ -1698,6 +1750,7 @@ class ValidationService:
                     "field_path": full_path,
                     "reference_type": field.get("reference_type"),
                     "target_templates": field.get("target_templates", []),
+                    "include_subtypes": field.get("include_subtypes", False),
                     "target_terminologies": field.get("target_terminologies", []),
                     "version_strategy": field.get("version_strategy", "latest"),
                     "value": value
@@ -1711,6 +1764,7 @@ class ValidationService:
                             "field_path": f"{full_path}[{i}]",
                             "reference_type": field.get("reference_type"),
                             "target_templates": field.get("target_templates", []),
+                            "include_subtypes": field.get("include_subtypes", False),
                             "target_terminologies": field.get("target_terminologies", []),
                             "version_strategy": field.get("version_strategy", "latest"),
                             "value": item

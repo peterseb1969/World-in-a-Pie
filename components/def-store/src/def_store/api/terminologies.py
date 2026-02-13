@@ -42,13 +42,15 @@ async def create_terminology(
 async def list_terminologies(
     pool_id: str = Query(default="wip-terminologies", description="Pool ID to query"),
     status: Optional[str] = Query(None, description="Filter by status"),
+    code: Optional[str] = Query(None, description="Filter by exact code match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyListResponse:
-    """List all terminologies with pagination."""
+    """List all terminologies with pagination and optional filters."""
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
+        code=code,
         page=page,
         page_size=page_size,
         pool_id=pool_id
@@ -139,6 +141,27 @@ async def get_terminology_dependencies(
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/{terminology_id}/restore", response_model=TerminologyResponse, summary="Restore a terminology")
+async def restore_terminology(
+    terminology_id: str,
+    restore_terms: bool = Query(True, description="Also reactivate inactive terms"),
+    api_key: str = Depends(require_api_key)
+) -> TerminologyResponse:
+    """
+    Restore a soft-deleted (inactive) terminology back to active status.
+
+    By default also reactivates all terms that were deactivated with it.
+    Set restore_terms=false to restore only the terminology itself.
+    """
+    result = await TerminologyService.restore_terminology(
+        terminology_id=terminology_id,
+        restore_terms=restore_terms
+    )
+    if not result:
+        raise HTTPException(status_code=404, detail="Terminology not found")
+    return result
 
 
 @router.delete("/{terminology_id}", summary="Delete a terminology")

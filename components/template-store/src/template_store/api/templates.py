@@ -14,6 +14,7 @@ from ..models.api_models import (
     BulkOperationResponse,
     ValidateTemplateRequest,
     ValidateTemplateResponse,
+    CascadeResponse,
 )
 from ..services.template_service import TemplateService
 from ..services.registry_client import RegistryError
@@ -321,6 +322,25 @@ async def create_templates_bulk(request: BulkCreateTemplateRequest):
             succeeded=succeeded,
             failed=failed
         )
+    except RegistryError as e:
+        raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
+
+
+@router.post("/{template_id}/cascade", response_model=CascadeResponse)
+async def cascade_template(template_id: str):
+    """
+    Cascade a parent template update to all child templates.
+
+    After updating a parent template (which creates a new version), child
+    templates still extend the old version. This endpoint creates new versions
+    of all direct children that extend the new parent version.
+
+    Only the `extends` pointer is updated — child-specific fields are preserved.
+    """
+    try:
+        return await TemplateService.cascade_to_children(template_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except RegistryError as e:
         raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
 

@@ -70,6 +70,10 @@ class Document(BeanieDocument):
         ...,
         description="Version of template used for validation"
     )
+    template_code: Optional[str] = Field(
+        None,
+        description="Template code (e.g., PLANNED_VISIT) for easier identification"
+    )
 
     # Identity for upsert logic
     identity_hash: str = Field(

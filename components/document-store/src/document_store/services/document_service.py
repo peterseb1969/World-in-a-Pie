@@ -219,6 +219,7 @@ class DocumentService:
                 template_id=request.template_id,
                 template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
+                template_code=validation_result.template_code,
                 identity_hash=validation_result.identity_hash,
                 version=1,
                 data=request.data,
@@ -258,6 +259,7 @@ class DocumentService:
             return DocumentCreateResponse(
                 document_id=document_id,
                 template_id=request.template_id,
+                template_code=validation_result.template_code,
                 identity_hash=validation_result.identity_hash,
                 version=1,
                 is_new=True,
@@ -336,6 +338,7 @@ class DocumentService:
             return DocumentCreateResponse(
                 document_id=existing.document_id,
                 template_id=existing.template_id,
+                template_code=existing.template_code,
                 identity_hash=existing.identity_hash,
                 version=existing.version,
                 is_new=False,
@@ -376,6 +379,7 @@ class DocumentService:
                 template_id=request.template_id,
                 template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
+                template_code=validation_result.template_code,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
                 data=request.data,
@@ -412,6 +416,7 @@ class DocumentService:
             return DocumentCreateResponse(
                 document_id=document_id,
                 template_id=request.template_id,
+                template_code=validation_result.template_code,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
                 is_new=False,
@@ -448,6 +453,7 @@ class DocumentService:
             "document_id": document.document_id,
             "template_id": document.template_id,
             "template_version": document.template_version,
+            "template_code": document.template_code,
             "identity_hash": document.identity_hash,
             "version": document.version,
             "data": document.data,
@@ -489,6 +495,7 @@ class DocumentService:
     async def list_documents(
         self,
         template_id: Optional[str] = None,
+        template_code: Optional[str] = None,
         status: Optional[DocumentStatus] = None,
         page: int = 1,
         page_size: int = 20,
@@ -498,6 +505,8 @@ class DocumentService:
         query = {"pool_id": pool_id}
         if template_id:
             query["template_id"] = template_id
+        if template_code:
+            query["template_code"] = template_code
         if status:
             query["status"] = status.value
 
@@ -940,6 +949,7 @@ class DocumentService:
                     document_id=document_id,
                     template_id=item.template_id,
                     template_version=validation_result.template_version,
+                    template_code=validation_result.template_code,
                     identity_hash=identity_hash,
                     version=new_version,
                     data=item.data,
@@ -1068,6 +1078,7 @@ class DocumentService:
             document_id=document.document_id,
             template_id=document.template_id,
             template_version=document.template_version,
+            template_code=document.template_code,
             identity_hash=document.identity_hash,
             version=document.version,
             data=document.data,

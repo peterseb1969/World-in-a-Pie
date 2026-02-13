@@ -171,6 +171,40 @@ class TemplateStoreClient:
         # Check if active
         return template.get("status") == "active"
 
+    async def get_template_descendants(
+        self,
+        template_id: str
+    ) -> list[dict[str, Any]]:
+        """
+        Get all templates that inherit from this template (directly or indirectly).
+
+        Args:
+            template_id: Template ID to get descendants for
+
+        Returns:
+            List of descendant template dicts
+        """
+        url = f"{self.base_url}/api/template-store/templates/{template_id}/descendants"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
+                    url,
+                    headers=self._get_headers()
+                )
+
+                if response.status_code == 404:
+                    return []
+
+                if response.status_code != 200:
+                    raise TemplateStoreError(
+                        f"Failed to get descendants: {response.status_code} - {response.text}"
+                    )
+
+                data = response.json()
+                return data.get("items", [])
+        except httpx.RequestError as e:
+            raise TemplateStoreError(f"Request failed: {str(e)}")
+
     async def validate_template_references(
         self,
         template_ids: list[str]

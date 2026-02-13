@@ -131,22 +131,39 @@ class InheritanceService:
         Merge fields from inheritance chain.
 
         Later templates (children) override earlier templates (parents)
-        for fields with the same name.
+        for fields with the same name. Each field is tagged with
+        inherited=True/False and inherited_from (the source template_id).
 
         Args:
             chain: Templates from root to child
 
         Returns:
-            Merged list of field definitions
+            Merged list of field definitions with inheritance info
         """
         fields_by_name: dict[str, FieldDefinition] = {}
+        field_source: dict[str, str] = {}  # field_name -> template_id
 
         for template in chain:
             for field in template.fields:
                 # Child overrides parent by name
                 fields_by_name[field.name] = field
+                field_source[field.name] = template.template_id
 
-        return list(fields_by_name.values())
+        # The child template is the last in the chain
+        child_template_id = chain[-1].template_id
+
+        # Tag each field with inheritance info
+        result = []
+        for field in fields_by_name.values():
+            source_id = field_source[field.name]
+            is_inherited = source_id != child_template_id
+            tagged = field.model_copy(update={
+                "inherited": is_inherited,
+                "inherited_from": source_id if is_inherited else None,
+            })
+            result.append(tagged)
+
+        return result
 
     @staticmethod
     def _merge_rules(chain: list[Template]) -> list[ValidationRule]:

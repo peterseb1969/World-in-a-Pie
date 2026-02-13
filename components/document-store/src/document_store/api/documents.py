@@ -58,6 +58,7 @@ async def create_document(
 async def list_documents(
     pool_id: str = Query(default="wip-documents", description="Pool ID to query"),
     template_id: Optional[str] = Query(None, description="Filter by template ID"),
+    template_code: Optional[str] = Query(None, description="Filter by template code (e.g., PLANNED_VISIT)"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -67,6 +68,7 @@ async def list_documents(
     service = get_document_service()
     return await service.list_documents(
         template_id=template_id,
+        template_code=template_code,
         status=status,
         page=page,
         page_size=page_size,
