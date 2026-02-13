@@ -86,12 +86,16 @@ class TemplateService:
         # Validate references if requested (default: True) — skip for drafts
         if not is_draft and request.validate_references:
             validation_errors = await TemplateService._validate_field_references(
-                request.fields
+                request.fields, pool_id
             )
             if validation_errors:
                 raise ValueError(
                     f"Invalid references: {'; '.join(validation_errors)}"
                 )
+
+        # Normalize all field references to canonical IDs — skip for drafts
+        if not is_draft:
+            await TemplateService._normalize_field_references(request.fields, pool_id)
 
         # Validate cross-namespace references (isolation mode check) — skip for drafts
         if not is_draft and parent_pool_id:
@@ -635,6 +639,21 @@ class TemplateService:
             req_status = template_req.status or "active"
             is_draft = req_status == "draft"
 
+            # Normalize field references to canonical IDs — skip for drafts
+            if not is_draft:
+                try:
+                    await TemplateService._normalize_field_references(
+                        template_req.fields, "wip-templates"
+                    )
+                except ValueError as e:
+                    results.append(BulkOperationResult(
+                        index=i,
+                        status="error",
+                        code=template_req.code,
+                        error=str(e)
+                    ))
+                    continue
+
             # Create template document
             template = Template(
                 template_id=template_id,
@@ -781,9 +800,10 @@ class TemplateService:
         if check_templates:
             for field in template.fields:
                 if field.template_ref:
-                    ref_template = await Template.find_one({"template_id": field.template_ref})
-                    if not ref_template:
-                        ref_template = await Template.find_one({"code": field.template_ref})
+                    if field.template_ref.startswith("TPL-"):
+                        ref_template = await Template.find_one({"template_id": field.template_ref})
+                    else:
+                        ref_template = await Template.find_one({"pool_id": template.pool_id, "code": field.template_ref})
                     if not ref_template:
                         errors.append(ValidationError(
                             field=f"fields.{field.name}.template_ref",
@@ -792,9 +812,10 @@ class TemplateService:
                         ))
 
                 if field.array_template_ref:
-                    ref_template = await Template.find_one({"template_id": field.array_template_ref})
-                    if not ref_template:
-                        ref_template = await Template.find_one({"code": field.array_template_ref})
+                    if field.array_template_ref.startswith("TPL-"):
+                        ref_template = await Template.find_one({"template_id": field.array_template_ref})
+                    else:
+                        ref_template = await Template.find_one({"pool_id": template.pool_id, "code": field.array_template_ref})
                     if not ref_template:
                         errors.append(ValidationError(
                             field=f"fields.{field.name}.array_template_ref",
@@ -821,13 +842,16 @@ class TemplateService:
                                     message="target_templates is required for document references"
                                 ))
                             elif check_templates:
-                                for tpl_code in field.target_templates:
-                                    ref_tpl = await Template.find_one({"code": tpl_code})
+                                for tpl_ref in field.target_templates:
+                                    if tpl_ref.startswith("TPL-"):
+                                        ref_tpl = await Template.find_one({"template_id": tpl_ref})
+                                    else:
+                                        ref_tpl = await Template.find_one({"pool_id": template.pool_id, "code": tpl_ref})
                                     if not ref_tpl:
                                         errors.append(ValidationError(
                                             field=f"fields.{field.name}.target_templates",
                                             code="invalid_reference",
-                                            message=f"Template '{tpl_code}' not found"
+                                            message=f"Template '{tpl_ref}' not found"
                                         ))
 
                         # Validate target_terminologies for term references
@@ -1354,6 +1378,23 @@ class TemplateService:
                 warnings=warnings,
             )
 
+        # Build known_templates from activation set for cross-resolution
+        known_templates = {}
+        for t in activation_set:
+            known_templates[t.code] = t.template_id
+            known_templates[t.template_id] = t.template_id
+
+        # Normalize all references to canonical IDs
+        for t in activation_set:
+            await TemplateService._normalize_field_references(
+                t.fields, pool_id, known_templates=known_templates
+            )
+            # Also normalize extends if it's a code
+            if t.extends and not t.extends.startswith("TPL-"):
+                t.extends = await TemplateService._resolve_to_template_id(
+                    t.extends, pool_id, known_templates=known_templates
+                )
+
         # Activate all templates in the set
         actor = get_identity_string()
         now = datetime.now(timezone.utc)
@@ -1437,7 +1478,135 @@ class TemplateService:
         )
 
     @staticmethod
-    async def _validate_field_references(fields: list) -> list[str]:
+    async def _resolve_to_template_id(
+        ref: str,
+        pool_id: str,
+        known_templates: dict[str, str] | None = None
+    ) -> str:
+        """
+        Resolve a template reference to a canonical template_id.
+
+        Accepts either a template_id (TPL-XXXXXX) or a code.
+        Returns the canonical template_id.
+
+        Args:
+            ref: Template ID or code
+            pool_id: Pool to search in for code lookups
+            known_templates: Optional dict {code→template_id, template_id→template_id}
+                for resolving within an activation set
+        """
+        # Check known_templates first (for activation set cross-references)
+        if known_templates and ref in known_templates:
+            return known_templates[ref]
+
+        if ref.startswith("TPL-"):
+            # Validate it exists
+            template = await Template.find_one({"template_id": ref})
+            if not template:
+                raise ValueError(f"Template '{ref}' not found")
+            return ref
+
+        # It's a code — resolve to latest active template_id in the pool
+        template = await Template.find_one(
+            {"pool_id": pool_id, "code": ref, "status": "active"},
+            sort=[("version", -1)]
+        )
+        if not template:
+            raise ValueError(
+                f"No active template with code '{ref}' found in pool '{pool_id}'"
+            )
+        return template.template_id
+
+    @staticmethod
+    async def _resolve_to_terminology_id(
+        ref: str,
+        pool_id: str = "wip-terminologies"
+    ) -> str:
+        """
+        Resolve a terminology reference to a canonical terminology_id.
+
+        Accepts either a terminology_id (TERM-XXXXXX) or a code.
+        Returns the canonical terminology_id.
+
+        Args:
+            ref: Terminology ID or code
+            pool_id: Pool to search in for code lookups
+        """
+        def_store = get_def_store_client()
+
+        if ref.startswith("TERM-"):
+            # Validate it exists and is active
+            terminology = await def_store.get_terminology(terminology_id=ref)
+            if not terminology:
+                raise ValueError(f"Terminology '{ref}' not found")
+            if terminology.get("status") != "active":
+                raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
+            return ref
+
+        # It's a code — look up by code
+        terminology = await def_store.get_terminology(terminology_code=ref)
+        if not terminology:
+            raise ValueError(f"No terminology with code '{ref}' found")
+        if terminology.get("status") != "active":
+            raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
+        return terminology["terminology_id"]
+
+    @staticmethod
+    async def _normalize_field_references(
+        fields: list,
+        pool_id: str,
+        known_templates: dict[str, str] | None = None
+    ) -> None:
+        """
+        Normalize all reference fields to canonical IDs.
+
+        Resolves template codes to template_ids and terminology codes to
+        terminology_ids. Mutates fields in-place.
+
+        Args:
+            fields: List of FieldDefinition objects
+            pool_id: Pool ID for template lookups
+            known_templates: Optional dict for activation set cross-references
+        """
+        for field in fields:
+            # Template references
+            if field.target_templates:
+                field.target_templates = [
+                    await TemplateService._resolve_to_template_id(
+                        ref, pool_id, known_templates
+                    )
+                    for ref in field.target_templates
+                ]
+
+            if field.template_ref:
+                field.template_ref = await TemplateService._resolve_to_template_id(
+                    field.template_ref, pool_id, known_templates
+                )
+
+            if field.array_template_ref:
+                field.array_template_ref = await TemplateService._resolve_to_template_id(
+                    field.array_template_ref, pool_id, known_templates
+                )
+
+            # Terminology references
+            if field.terminology_ref:
+                field.terminology_ref = await TemplateService._resolve_to_terminology_id(
+                    field.terminology_ref
+                )
+
+            if field.array_terminology_ref:
+                field.array_terminology_ref = await TemplateService._resolve_to_terminology_id(
+                    field.array_terminology_ref
+                )
+
+            if field.target_terminologies:
+                field.target_terminologies = [
+                    await TemplateService._resolve_to_terminology_id(ref)
+                    for ref in field.target_terminologies
+                ]
+
+    @staticmethod
+    async def _validate_field_references(fields: list, pool_id: str = "wip-templates") -> list[str]:
         """
         Validate terminology_ref and template_ref values in fields.
 
@@ -1459,7 +1628,10 @@ class TemplateService:
                 term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
                 if term_ref:
                     try:
-                        terminology = await def_store.get_terminology(term_ref)
+                        if term_ref.startswith("TERM-"):
+                            terminology = await def_store.get_terminology(terminology_id=term_ref)
+                        else:
+                            terminology = await def_store.get_terminology(terminology_code=term_ref)
                         if terminology is None:
                             errors.append(f"Field '{field_name}': terminology '{term_ref}' not found")
                         elif terminology.get('status') != 'active':
@@ -1471,8 +1643,10 @@ class TemplateService:
             if field_type == 'object':
                 tpl_ref = field.template_ref if hasattr(field, 'template_ref') else field.get('template_ref')
                 if tpl_ref:
-                    # Look up by code (template_ref stores code, not ID)
-                    referenced = await Template.find_one({"code": tpl_ref})
+                    if tpl_ref.startswith("TPL-"):
+                        referenced = await Template.find_one({"template_id": tpl_ref})
+                    else:
+                        referenced = await Template.find_one({"pool_id": pool_id, "code": tpl_ref})
                     if referenced is None:
                         errors.append(f"Field '{field_name}': template '{tpl_ref}' not found")
                     elif referenced.status != 'active':
@@ -1486,7 +1660,10 @@ class TemplateService:
                     array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
                     if array_term_ref:
                         try:
-                            terminology = await def_store.get_terminology(array_term_ref)
+                            if array_term_ref.startswith("TERM-"):
+                                terminology = await def_store.get_terminology(terminology_id=array_term_ref)
+                            else:
+                                terminology = await def_store.get_terminology(terminology_code=array_term_ref)
                             if terminology is None:
                                 errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found")
                             elif terminology.get('status') != 'active':
@@ -1497,7 +1674,10 @@ class TemplateService:
                 if array_item_type == 'object':
                     array_tpl_ref = field.array_template_ref if hasattr(field, 'array_template_ref') else field.get('array_template_ref')
                     if array_tpl_ref:
-                        referenced = await Template.find_one({"code": array_tpl_ref})
+                        if array_tpl_ref.startswith("TPL-"):
+                            referenced = await Template.find_one({"template_id": array_tpl_ref})
+                        else:
+                            referenced = await Template.find_one({"pool_id": pool_id, "code": array_tpl_ref})
                         if referenced is None:
                             errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' not found")
                         elif referenced.status != 'active':

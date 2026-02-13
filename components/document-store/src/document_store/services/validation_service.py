@@ -712,7 +712,20 @@ class ValidationService:
         if template_ref:
             try:
                 client = get_template_store_client()
-                nested_template = await client.get_template_resolved(template_ref)
+                version_strategy = field.get("version_strategy", "latest")
+                if version_strategy == "pinned":
+                    # Use exactly this template version
+                    nested_template = await client.get_template_resolved(template_ref)
+                else:
+                    # latest: resolve to latest version of the family
+                    tpl = await client.get_template(template_id=template_ref)
+                    if tpl:
+                        nested_template = await client.get_template(
+                            template_code=tpl.get("code"),
+                            resolve_inheritance=True
+                        )
+                    else:
+                        nested_template = None
                 if nested_template:
                     await self._validate_fields(
                         value, nested_template, result, prefix=f"{field_path}."
@@ -765,7 +778,18 @@ class ValidationService:
                     if template_ref:
                         try:
                             client = get_template_store_client()
-                            item_template = await client.get_template_resolved(template_ref)
+                            version_strategy = field.get("version_strategy", "latest")
+                            if version_strategy == "pinned":
+                                item_template = await client.get_template_resolved(template_ref)
+                            else:
+                                tpl = await client.get_template(template_id=template_ref)
+                                if tpl:
+                                    item_template = await client.get_template(
+                                        template_code=tpl.get("code"),
+                                        resolve_inheritance=True
+                                    )
+                                else:
+                                    item_template = None
                             if item_template:
                                 await self._validate_fields(
                                     item, item_template, result, prefix=f"{item_path}."
@@ -1216,14 +1240,16 @@ class ValidationService:
             # Expand target_templates with descendants when include_subtypes is set
             if include_subtypes and target_templates and reference_type == "document":
                 target_templates = await self._expand_target_templates(
-                    target_templates, expanded_templates_cache
+                    target_templates, expanded_templates_cache,
+                    version_strategy=version_strategy
                 )
 
             try:
                 if reference_type == "document":
                     # Resolve document reference
                     resolved = await self._resolve_document_reference(
-                        value, target_templates, result, field_path
+                        value, target_templates, result, field_path,
+                        version_strategy=version_strategy
                     )
                     if resolved:
                         result.references.append({
@@ -1418,40 +1444,44 @@ class ValidationService:
     async def _expand_target_templates(
         self,
         target_templates: list[str],
-        cache: dict[str, list[str]]
+        cache: dict[str, list[str]],
+        version_strategy: str = "latest"
     ) -> list[str]:
         """
-        Expand target_templates to include descendant template codes.
+        Expand target_templates to include descendant templates.
 
         When include_subtypes is set on a reference field, this method
         fetches all templates that inherit (directly or indirectly) from
-        each target template and adds their codes to the allowed list.
+        each target template and adds them to the allowed list.
 
-        Uses a cache to avoid repeated lookups for the same template code.
+        For pinned strategy, expands with template_ids.
+        For latest strategy, expands with template codes.
+
+        Uses a cache to avoid repeated lookups for the same template.
         """
         expanded = set(target_templates)
         client = get_template_store_client()
 
-        for code in target_templates:
-            if code in cache:
-                expanded.update(cache[code])
+        for tpl_id in target_templates:
+            if tpl_id in cache:
+                expanded.update(cache[tpl_id])
                 continue
 
             try:
-                # Fetch template by code to get template_id
-                template = await client.get_template(template_code=code)
+                template = await client.get_template(template_id=tpl_id)
                 if not template:
-                    cache[code] = []
+                    cache[tpl_id] = []
                     continue
 
-                template_id = template.get("template_id")
-                # Fetch descendants using template-store API
-                descendants = await client.get_template_descendants(template_id)
-                descendant_codes = [d.get("code") for d in descendants if d.get("code")]
-                cache[code] = descendant_codes
-                expanded.update(descendant_codes)
+                descendants = await client.get_template_descendants(template.get("template_id"))
+                if version_strategy == "pinned":
+                    desc_refs = [d.get("template_id") for d in descendants if d.get("template_id")]
+                else:
+                    desc_refs = [d.get("code") for d in descendants if d.get("code")]
+                cache[tpl_id] = desc_refs
+                expanded.update(desc_refs)
             except TemplateStoreError:
-                cache[code] = []
+                cache[tpl_id] = []
 
         return list(expanded)
 
@@ -1460,7 +1490,8 @@ class ValidationService:
         value: Any,
         target_templates: list[str],
         result: ValidationResult,
-        field_path: str
+        field_path: str,
+        version_strategy: str = "latest"
     ) -> Optional[dict[str, Any]]:
         """Resolve a document reference by ID, hash, or business key."""
         from ..models.document import Document, DocumentStatus
@@ -1511,20 +1542,36 @@ class ValidationService:
             return None
 
         # Verify template matches target_templates
-        # Look up the template code for this document
-        try:
-            client = get_template_store_client()
-            doc_template = await client.get_template(doc.template_id)
-            if doc_template and target_templates:
-                if doc_template.get("code") not in target_templates:
-                    result.add_error(
-                        code="invalid_reference_template",
-                        message=f"Referenced document is '{doc_template.get('code')}', expected one of {target_templates}",
-                        field=field_path
-                    )
-                    return None
-        except TemplateStoreError:
-            result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
+        if target_templates:
+            try:
+                client = get_template_store_client()
+                doc_template = await client.get_template(doc.template_id)
+                if doc_template:
+                    if version_strategy == "pinned":
+                        # Exact template_id match
+                        if doc.template_id not in target_templates:
+                            result.add_error(
+                                code="invalid_reference_template",
+                                message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
+                                field=field_path
+                            )
+                            return None
+                    else:
+                        # latest: resolve stored IDs to family codes, match by code
+                        allowed_codes = set()
+                        for tpl_id in target_templates:
+                            tpl = await client.get_template(template_id=tpl_id)
+                            if tpl:
+                                allowed_codes.add(tpl.get("code"))
+                        if doc_template.get("code") not in allowed_codes:
+                            result.add_error(
+                                code="invalid_reference_template",
+                                message=f"Referenced document uses template '{doc_template.get('code')}', expected family of {list(allowed_codes)}",
+                                field=field_path
+                            )
+                            return None
+            except TemplateStoreError:
+                result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
 
         # Check if document is inactive (warning only)
         if doc.status != DocumentStatus.ACTIVE:
@@ -1548,9 +1595,9 @@ class ValidationService:
         # For each target template, try to find a matching document
         client = get_template_store_client()
 
-        for tpl_code in target_templates:
+        for tpl_ref in target_templates:
             try:
-                template = await client.get_template(template_code=tpl_code)
+                template = await client.get_template(template_id=tpl_ref)
                 if not template:
                     continue
 
