@@ -15,6 +15,7 @@ from ..models.api_models import (
     ValidateTemplateRequest,
     ValidateTemplateResponse,
     CascadeResponse,
+    ActivateTemplateResponse,
 )
 from ..services.template_service import TemplateService
 from ..services.registry_client import RegistryError
@@ -300,6 +301,32 @@ async def validate_template(
         check_terminologies=request.check_terminologies,
         check_templates=request.check_templates
     )
+
+
+@router.post("/{template_id}/activate", response_model=ActivateTemplateResponse)
+async def activate_template(
+    template_id: str,
+    pool_id: str = Query(default="wip-templates", description="Pool ID for the template"),
+    dry_run: bool = Query(default=False, description="Preview activation without making changes")
+):
+    """
+    Activate a draft template.
+
+    Validates all references and transitions the template from draft to active.
+    If the template references other draft templates, those are activated too
+    (cascading activation). All-or-nothing: if any template in the set fails
+    validation, none are activated.
+
+    Use dry_run=true to preview what would be activated without making changes.
+    """
+    try:
+        return await TemplateService.activate_template(
+            template_id=template_id,
+            pool_id=pool_id,
+            dry_run=dry_run
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/bulk", response_model=BulkOperationResponse)

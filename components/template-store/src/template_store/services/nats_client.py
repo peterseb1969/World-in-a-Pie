@@ -24,6 +24,7 @@ class EventType(str, Enum):
     TEMPLATE_CREATED = "template.created"
     TEMPLATE_UPDATED = "template.updated"
     TEMPLATE_DELETED = "template.deleted"
+    TEMPLATE_ACTIVATED = "template.activated"
 
 
 async def configure_nats_client(nats_url: str) -> bool:

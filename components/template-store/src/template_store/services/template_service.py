@@ -57,6 +57,11 @@ class TemplateService:
             ValueError: If code already exists or extends invalid
             RegistryError: If Registry communication fails
         """
+        # Validate status value
+        is_draft = request.status == "draft"
+        if request.status is not None and request.status not in ("active", "draft"):
+            raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
+
         # Check if code already exists within pool
         existing = await Template.find_one({"pool_id": pool_id, "code": request.code})
         if existing:
@@ -72,11 +77,14 @@ class TemplateService:
                 if parent:
                     request.extends = parent.template_id
                 else:
-                    raise ValueError(f"Parent template '{request.extends}' not found")
-            parent_pool_id = parent.pool_id
+                    if not is_draft:
+                        raise ValueError(f"Parent template '{request.extends}' not found")
+                    # Draft mode: store raw extends value even if parent doesn't exist yet
+            if parent:
+                parent_pool_id = parent.pool_id
 
-        # Validate references if requested (default: True)
-        if request.validate_references:
+        # Validate references if requested (default: True) — skip for drafts
+        if not is_draft and request.validate_references:
             validation_errors = await TemplateService._validate_field_references(
                 request.fields
             )
@@ -85,9 +93,8 @@ class TemplateService:
                     f"Invalid references: {'; '.join(validation_errors)}"
                 )
 
-        # Validate cross-namespace references (isolation mode check)
-        # Only validate extends reference - terminology refs are resolved by code at runtime
-        if parent_pool_id:
+        # Validate cross-namespace references (isolation mode check) — skip for drafts
+        if not is_draft and parent_pool_id:
             try:
                 validator = get_reference_validator()
                 await validator.validate_template_references(
@@ -123,16 +130,18 @@ class TemplateService:
             rules=request.rules,
             metadata=request.metadata or TemplateMetadata(),
             reporting=request.reporting,
+            status=request.status or "active",
             created_by=actor,
         )
         await template.insert()
 
-        # Publish template created event
-        await publish_template_event(
-            EventType.TEMPLATE_CREATED,
-            TemplateService._template_to_event_payload(template),
-            changed_by=actor
-        )
+        # Publish template created event — skip for drafts
+        if not is_draft:
+            await publish_template_event(
+                EventType.TEMPLATE_CREATED,
+                TemplateService._template_to_event_payload(template),
+                changed_by=actor
+            )
 
         return TemplateService._to_template_response(template)
 
@@ -622,6 +631,10 @@ class TemplateService:
                 ))
                 continue
 
+            # Determine status (draft or active)
+            req_status = template_req.status or "active"
+            is_draft = req_status == "draft"
+
             # Create template document
             template = Template(
                 template_id=template_id,
@@ -634,9 +647,18 @@ class TemplateService:
                 rules=template_req.rules,
                 metadata=template_req.metadata or TemplateMetadata(),
                 reporting=template_req.reporting,
+                status=req_status,
                 created_by=actor,
             )
             await template.insert()
+
+            # Publish event — skip for drafts
+            if not is_draft:
+                await publish_template_event(
+                    EventType.TEMPLATE_CREATED,
+                    TemplateService._template_to_event_payload(template),
+                    changed_by=actor
+                )
 
             results.append(BulkOperationResult(
                 index=i,
@@ -683,6 +705,27 @@ class TemplateService:
                     code="not_found",
                     message=f"Template '{template_id}' not found"
                 )]
+            )
+
+        # Draft templates: validate via activation set and return cascade preview
+        if template.status == "draft":
+            activation_set = await TemplateService._build_activation_set(
+                template, template.pool_id
+            )
+            errors, warnings = await TemplateService._validate_activation_set(
+                activation_set, template.pool_id
+            )
+            # Collect other draft template IDs that would also activate
+            other_ids = [
+                t.template_id for t in activation_set
+                if t.template_id != template_id
+            ]
+            return ValidateTemplateResponse(
+                valid=len(errors) == 0,
+                template_id=template_id,
+                errors=errors,
+                warnings=warnings,
+                will_also_activate=other_ids if other_ids else None
             )
 
         errors = []
@@ -969,6 +1012,380 @@ class TemplateService:
             unchanged=unchanged,
             failed=failed,
             results=results
+        )
+
+    # =========================================================================
+    # DRAFT ACTIVATION
+    # =========================================================================
+
+    @staticmethod
+    def _collect_template_references(template: Template) -> list[str]:
+        """
+        Collect all template IDs/codes referenced by a template.
+
+        Walks extends, field template_ref, array_template_ref, and
+        reference-type target_templates.
+
+        Returns:
+            List of template IDs or codes referenced
+        """
+        refs = []
+
+        if template.extends:
+            refs.append(template.extends)
+
+        for field in template.fields:
+            if field.template_ref:
+                refs.append(field.template_ref)
+            if field.array_template_ref:
+                refs.append(field.array_template_ref)
+            if field.target_templates:
+                refs.extend(field.target_templates)
+
+        return refs
+
+    @staticmethod
+    async def _build_activation_set(
+        root: Template,
+        pool_id: str
+    ) -> list[Template]:
+        """
+        BFS from root template, collecting all draft templates that must
+        be activated together.
+
+        For each reference:
+        - If it points to a draft template → add to set, recurse
+        - If it points to an active template → skip (already valid)
+        - If not found → skip (validation will catch it later)
+
+        Handles circular references via a visited set.
+
+        Returns:
+            List of all draft Templates needing activation (including root)
+        """
+        activation_set = [root]
+        visited = {root.template_id}
+        queue = [root]
+
+        while queue:
+            current = queue.pop(0)
+            refs = TemplateService._collect_template_references(current)
+
+            for ref in refs:
+                # Try to find the referenced template
+                target = await Template.find_one({"template_id": ref})
+                if not target:
+                    # Try by code within the pool
+                    target = await Template.find_one({"pool_id": pool_id, "code": ref})
+                if not target:
+                    # Not found — validation will catch it
+                    continue
+
+                if target.template_id in visited:
+                    continue
+                visited.add(target.template_id)
+
+                if target.status == "draft":
+                    activation_set.append(target)
+                    queue.append(target)
+                # If active or other status, no need to recurse
+
+        return activation_set
+
+    @staticmethod
+    async def _validate_activation_set(
+        activation_set: list[Template],
+        pool_id: str
+    ) -> tuple[list, list]:
+        """
+        Validate all templates in the activation set as a unit.
+
+        For each template, check:
+        - extends: must be in set OR exist as active
+        - terminology_ref / array_terminology_ref: must exist and be active
+        - template_ref / array_template_ref: must be in set OR exist as active
+        - target_templates: each code must be in set OR have an active template
+        - target_terminologies: must exist and be active
+        - reference_type required for reference fields
+
+        Returns:
+            Tuple of (errors, warnings) as ValidationError/ValidationWarning lists
+        """
+        from ..models.api_models import ValidationError, ValidationWarning
+
+        # Build lookups for the activation set
+        set_ids = {t.template_id for t in activation_set}
+        set_codes = {t.code for t in activation_set}
+
+        errors = []
+        warnings = []
+
+        def_store = get_def_store_client()
+
+        for template in activation_set:
+            prefix = f"[{template.code}] "
+
+            # Check extends
+            if template.extends:
+                # Resolve: is it in the set (by ID or code) or active?
+                in_set = (
+                    template.extends in set_ids or
+                    template.extends in set_codes
+                )
+                if not in_set:
+                    parent = await Template.find_one({"template_id": template.extends})
+                    if not parent:
+                        parent = await Template.find_one({"pool_id": pool_id, "code": template.extends})
+                    if not parent:
+                        errors.append(ValidationError(
+                            field=f"{prefix}extends",
+                            code="invalid_reference",
+                            message=f"Parent template '{template.extends}' not found"
+                        ))
+                    elif parent.status != "active":
+                        errors.append(ValidationError(
+                            field=f"{prefix}extends",
+                            code="invalid_reference",
+                            message=f"Parent template '{template.extends}' is {parent.status}, not active"
+                        ))
+
+            # Check fields
+            for field in template.fields:
+                # Terminology refs
+                if field.terminology_ref:
+                    try:
+                        exists = await def_store.terminology_exists(field.terminology_ref)
+                        if not exists:
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.terminology_ref",
+                                code="invalid_reference",
+                                message=f"Terminology '{field.terminology_ref}' not found or inactive"
+                            ))
+                    except DefStoreError as e:
+                        warnings.append(ValidationWarning(
+                            field=f"{prefix}fields.{field.name}.terminology_ref",
+                            code="validation_failed",
+                            message=f"Could not validate terminology: {str(e)}"
+                        ))
+
+                if field.array_terminology_ref:
+                    try:
+                        exists = await def_store.terminology_exists(field.array_terminology_ref)
+                        if not exists:
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.array_terminology_ref",
+                                code="invalid_reference",
+                                message=f"Terminology '{field.array_terminology_ref}' not found or inactive"
+                            ))
+                    except DefStoreError as e:
+                        warnings.append(ValidationWarning(
+                            field=f"{prefix}fields.{field.name}.array_terminology_ref",
+                            code="validation_failed",
+                            message=f"Could not validate terminology: {str(e)}"
+                        ))
+
+                # Template refs
+                if field.template_ref:
+                    in_set = field.template_ref in set_ids or field.template_ref in set_codes
+                    if not in_set:
+                        ref_tpl = await Template.find_one({"template_id": field.template_ref})
+                        if not ref_tpl:
+                            ref_tpl = await Template.find_one({"pool_id": pool_id, "code": field.template_ref})
+                        if not ref_tpl:
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.template_ref",
+                                code="invalid_reference",
+                                message=f"Template '{field.template_ref}' not found"
+                            ))
+                        elif ref_tpl.status not in ("active",):
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.template_ref",
+                                code="invalid_reference",
+                                message=f"Template '{field.template_ref}' is {ref_tpl.status}, not active"
+                            ))
+
+                if field.array_template_ref:
+                    in_set = field.array_template_ref in set_ids or field.array_template_ref in set_codes
+                    if not in_set:
+                        ref_tpl = await Template.find_one({"template_id": field.array_template_ref})
+                        if not ref_tpl:
+                            ref_tpl = await Template.find_one({"pool_id": pool_id, "code": field.array_template_ref})
+                        if not ref_tpl:
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.array_template_ref",
+                                code="invalid_reference",
+                                message=f"Template '{field.array_template_ref}' not found"
+                            ))
+                        elif ref_tpl.status not in ("active",):
+                            errors.append(ValidationError(
+                                field=f"{prefix}fields.{field.name}.array_template_ref",
+                                code="invalid_reference",
+                                message=f"Template '{field.array_template_ref}' is {ref_tpl.status}, not active"
+                            ))
+
+                # Reference type fields
+                if field.type.value == "reference":
+                    if not field.reference_type:
+                        errors.append(ValidationError(
+                            field=f"{prefix}fields.{field.name}.reference_type",
+                            code="required",
+                            message="reference_type is required for reference fields"
+                        ))
+                    else:
+                        if field.reference_type.value == "document":
+                            if not field.target_templates:
+                                errors.append(ValidationError(
+                                    field=f"{prefix}fields.{field.name}.target_templates",
+                                    code="required",
+                                    message="target_templates is required for document references"
+                                ))
+                            else:
+                                for tpl_code in field.target_templates:
+                                    in_set = tpl_code in set_codes or tpl_code in set_ids
+                                    if not in_set:
+                                        ref_tpl = await Template.find_one({"pool_id": pool_id, "code": tpl_code})
+                                        if not ref_tpl:
+                                            errors.append(ValidationError(
+                                                field=f"{prefix}fields.{field.name}.target_templates",
+                                                code="invalid_reference",
+                                                message=f"Template '{tpl_code}' not found"
+                                            ))
+                                        elif ref_tpl.status not in ("active",):
+                                            errors.append(ValidationError(
+                                                field=f"{prefix}fields.{field.name}.target_templates",
+                                                code="invalid_reference",
+                                                message=f"Template '{tpl_code}' is {ref_tpl.status}, not active"
+                                            ))
+
+                        elif field.reference_type.value == "term":
+                            if not field.target_terminologies:
+                                errors.append(ValidationError(
+                                    field=f"{prefix}fields.{field.name}.target_terminologies",
+                                    code="required",
+                                    message="target_terminologies is required for term references"
+                                ))
+                            else:
+                                for term_code in field.target_terminologies:
+                                    try:
+                                        exists = await def_store.terminology_exists(term_code)
+                                        if not exists:
+                                            errors.append(ValidationError(
+                                                field=f"{prefix}fields.{field.name}.target_terminologies",
+                                                code="invalid_reference",
+                                                message=f"Terminology '{term_code}' not found or inactive"
+                                            ))
+                                    except DefStoreError as e:
+                                        warnings.append(ValidationWarning(
+                                            field=f"{prefix}fields.{field.name}.target_terminologies",
+                                            code="validation_failed",
+                                            message=f"Could not validate terminology: {str(e)}"
+                                        ))
+
+        return errors, warnings
+
+    @staticmethod
+    async def activate_template(
+        template_id: str,
+        pool_id: str = "wip-templates",
+        dry_run: bool = False
+    ):
+        """
+        Activate a draft template and all draft templates it references (cascading).
+
+        1. Find template → verify status is "draft"
+        2. Build activation set (BFS through references)
+        3. Validate the full set as a unit
+        4. If errors → return errors, no state changes
+        5. If dry_run → return preview
+        6. Set status="active" on all, save, publish events
+
+        Args:
+            template_id: The draft template to activate
+            pool_id: Pool ID for lookups
+            dry_run: If True, return preview without making changes
+
+        Returns:
+            ActivateTemplateResponse
+
+        Raises:
+            ValueError: If template not found or not in draft status
+        """
+        from ..models.api_models import ActivateTemplateResponse, ActivationDetail
+
+        template = await Template.find_one({"template_id": template_id})
+        if not template:
+            raise ValueError(f"Template '{template_id}' not found")
+        if template.status != "draft":
+            raise ValueError(
+                f"Template '{template_id}' is '{template.status}', not 'draft'. "
+                f"Only draft templates can be activated."
+            )
+
+        # Build the full activation set (all reachable drafts)
+        activation_set = await TemplateService._build_activation_set(template, pool_id)
+
+        # Validate the full set
+        errors, warnings = await TemplateService._validate_activation_set(
+            activation_set, pool_id
+        )
+
+        if errors:
+            return ActivateTemplateResponse(
+                activated=[],
+                activation_details=[],
+                total_activated=0,
+                errors=errors,
+                warnings=warnings,
+            )
+
+        if dry_run:
+            return ActivateTemplateResponse(
+                activated=[],
+                activation_details=[
+                    ActivationDetail(
+                        template_id=t.template_id,
+                        code=t.code,
+                        status="would_activate"
+                    )
+                    for t in activation_set
+                ],
+                total_activated=0,
+                errors=[],
+                warnings=warnings,
+            )
+
+        # Activate all templates in the set
+        actor = get_identity_string()
+        now = datetime.now(timezone.utc)
+        activated_ids = []
+
+        for t in activation_set:
+            t.status = "active"
+            t.updated_at = now
+            t.updated_by = actor
+            await t.save()
+            activated_ids.append(t.template_id)
+
+            # Publish activation event
+            await publish_template_event(
+                EventType.TEMPLATE_ACTIVATED,
+                TemplateService._template_to_event_payload(t),
+                changed_by=actor
+            )
+
+        return ActivateTemplateResponse(
+            activated=activated_ids,
+            activation_details=[
+                ActivationDetail(
+                    template_id=t.template_id,
+                    code=t.code,
+                    status="activated"
+                )
+                for t in activation_set
+            ],
+            total_activated=len(activated_ids),
+            errors=[],
+            warnings=warnings,
         )
 
     # =========================================================================

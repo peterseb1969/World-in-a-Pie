@@ -66,6 +66,10 @@ class CreateTemplateRequest(StrictModel):
         default=True,
         description="Validate that terminology_ref and template_ref values exist before creating"
     )
+    status: Optional[str] = Field(
+        default=None,
+        description="Initial status: 'active' (default) or 'draft' (skips reference validation)"
+    )
 
 
 class UpdateTemplateRequest(StrictModel):
@@ -235,6 +239,43 @@ class ValidateTemplateResponse(BaseModel):
     template_id: str
     errors: list[ValidationError] = []
     warnings: list[ValidationWarning] = []
+    will_also_activate: Optional[list[str]] = Field(
+        default=None,
+        description="Template IDs of other draft templates that would be activated together (draft templates only)"
+    )
+
+
+class ActivationDetail(BaseModel):
+    """Detail for a single template in an activation operation."""
+
+    template_id: str
+    code: str
+    status: str = Field(
+        ...,
+        description="Result: 'activated' or 'would_activate' (dry_run)"
+    )
+
+
+class ActivateTemplateResponse(BaseModel):
+    """Response for template activation."""
+
+    activated: list[str] = Field(
+        default_factory=list,
+        description="Template IDs that were activated"
+    )
+    activation_details: list[ActivationDetail] = Field(
+        default_factory=list,
+        description="Details for each template in the activation set"
+    )
+    total_activated: int = 0
+    errors: list[ValidationError] = Field(
+        default_factory=list,
+        description="Validation errors preventing activation"
+    )
+    warnings: list[ValidationWarning] = Field(
+        default_factory=list,
+        description="Validation warnings"
+    )
 
 
 class CascadeResult(BaseModel):
