@@ -21,7 +21,7 @@ source "$SUITE_DIR/../lib/assertions.sh"
 # ─────────────────────────────────────────────────────────────────────────────
 
 PROTECTED_ENDPOINTS=(
-    "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
+    "http://localhost:$PORT_REGISTRY/api/registry/namespaces"
     "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies"
     "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates"
     "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents"
@@ -32,7 +32,7 @@ PROTECTED_ENDPOINTS=(
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_registry_with_api_key() {
-    api_get "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
+    api_get "http://localhost:$PORT_REGISTRY/api/registry/namespaces"
     assert_success
 }
 
@@ -56,7 +56,7 @@ test_document_store_with_api_key() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_registry_no_auth() {
-    api_get_noauth "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
+    api_get_noauth "http://localhost:$PORT_REGISTRY/api/registry/namespaces"
     assert_auth_failure
 }
 
@@ -80,7 +80,7 @@ test_document_store_no_auth() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_registry_bad_key() {
-    api_get_badkey "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
+    api_get_badkey "http://localhost:$PORT_REGISTRY/api/registry/namespaces"
     assert_auth_failure
 }
 

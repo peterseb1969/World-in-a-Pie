@@ -65,7 +65,7 @@ async def list_terminologies(
 @router.get("/by-value/{value}", response_model=TerminologyResponse, summary="Get a terminology by value")
 async def get_terminology_by_value(
     value: str,
-    namespace: str = Query(default="wip", description="Namespace to search in"),
+    namespace: Optional[str] = Query(default=None, description="Namespace to search in (omit for all)"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its value (e.g., DOC_STATUS)."""

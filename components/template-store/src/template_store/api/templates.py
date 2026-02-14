@@ -113,7 +113,7 @@ async def get_template_raw(template_id: str):
 @router.get("/by-value/{value}", response_model=TemplateResponse)
 async def get_template_by_value(
     value: str,
-    namespace: str = Query(default="wip", description="Namespace to search in")
+    namespace: Optional[str] = Query(default=None, description="Namespace to search in (omit for all)")
 ):
     """
     Get the latest version of a template by value.

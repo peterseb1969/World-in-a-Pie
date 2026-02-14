@@ -130,9 +130,10 @@ class TerminologyService:
                 query["namespace"] = namespace
             terminology = await Terminology.find_one(query)
         elif value:
-            # Value lookups require namespace (defaults to wip)
-            ns = namespace or "wip"
-            terminology = await Terminology.find_one({"namespace": ns, "value": value})
+            query = {"value": value}
+            if namespace is not None:
+                query["namespace"] = namespace
+            terminology = await Terminology.find_one(query)
         else:
             return None
 

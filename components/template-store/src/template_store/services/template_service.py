@@ -283,19 +283,22 @@ class TemplateService:
     @staticmethod
     async def get_template_versions(
         value: str,
-        namespace: str = "wip"
+        namespace: Optional[str] = None
     ) -> list[TemplateResponse]:
         """
         Get all versions of a template by value.
 
         Args:
             value: Template value
-            namespace: Namespace to search in (default: wip)
+            namespace: Namespace to search in (None for all namespaces)
 
         Returns:
             List of all versions, sorted by version descending (newest first)
         """
-        templates = await Template.find({"namespace": namespace, "value": value}) \
+        query: dict = {"value": value}
+        if namespace is not None:
+            query["namespace"] = namespace
+        templates = await Template.find(query) \
             .sort([("version", -1)]) \
             .to_list()
 
