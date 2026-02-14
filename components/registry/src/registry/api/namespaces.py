@@ -180,6 +180,7 @@ async def create_namespace(
     await ns.create()
 
     # Create all 5 ID pools for this namespace
+    ns_prefix = request.prefix.upper()
     for pool_type, config in ID_POOL_CONFIGS.items():
         pool_id = f"{request.prefix}-{pool_type}"
 
@@ -188,11 +189,20 @@ async def create_namespace(
         if existing_pool:
             continue
 
+        # Non-default namespaces get a namespace-scoped ID prefix to avoid
+        # collisions (e.g., SEED-TERM-000001 instead of TERM-000001)
+        id_gen = config["id_generator"]
+        if request.prefix != "wip" and id_gen.type == IdGeneratorType.PREFIXED:
+            id_gen = IdGeneratorConfig(
+                type=IdGeneratorType.PREFIXED,
+                prefix=f"{ns_prefix}-{id_gen.prefix}",
+            )
+
         pool = IdPool(
             pool_id=pool_id,
-            name=f"{request.prefix.upper()} {config['name_suffix']}",
+            name=f"{ns_prefix} {config['name_suffix']}",
             description=f"ID pool for {config['description_suffix']} in {request.prefix} namespace",
-            id_generator=config["id_generator"],
+            id_generator=id_gen,
         )
         await pool.create()
 
