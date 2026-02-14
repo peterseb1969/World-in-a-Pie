@@ -11,17 +11,22 @@ onMounted(() => {
   namespaceStore.loadNamespaces()
 })
 
-// Filter to only active namespaces, ensure wip is always first
+// Synthetic "All" entry for unfiltered view
+const allEntry = { prefix: 'all', description: 'All namespaces (no filter)', status: 'active' as const }
+
+// Filter to only active namespaces, ensure "All" first, then wip, then alphabetically
 const activeGroups = computed(() => {
   const namespaces = namespaceStore.namespaces || []
   const active = namespaces.filter(ns => ns.status === 'active')
 
   // Sort: wip first, then alphabetically
-  return [...active].sort((a, b) => {
+  const sorted = [...active].sort((a, b) => {
     if (a.prefix === 'wip') return -1
     if (b.prefix === 'wip') return 1
     return a.prefix.localeCompare(b.prefix)
   })
+
+  return [allEntry, ...sorted]
 })
 
 // Current namespace for v-model
@@ -32,6 +37,7 @@ const selectedGroup = computed({
 
 // Severity for non-production namespaces
 function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' | 'contrast' | undefined {
+  if (prefix === 'all') return 'contrast'
   if (prefix === 'wip') return undefined
   if (prefix.startsWith('dev')) return 'info'
   if (prefix.startsWith('test') || prefix.startsWith('staging')) return 'warn'

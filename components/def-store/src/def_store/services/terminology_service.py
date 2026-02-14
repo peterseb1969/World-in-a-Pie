@@ -146,7 +146,7 @@ class TerminologyService:
         code: Optional[str] = None,
         page: int = 1,
         page_size: int = 50,
-        pool_id: str = "wip-terminologies"
+        pool_id: Optional[str] = None
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -156,12 +156,14 @@ class TerminologyService:
             code: Filter by exact code match
             page: Page number (1-indexed)
             page_size: Items per page
-            pool_id: Pool ID to query (default: wip-terminologies)
+            pool_id: Pool ID to query (None returns all)
 
         Returns:
             Tuple of (terminologies, total_count)
         """
-        query = {"pool_id": pool_id}
+        query: dict = {}
+        if pool_id:
+            query["pool_id"] = pool_id
         if status:
             query["status"] = status
         if code:
@@ -742,7 +744,7 @@ class TerminologyService:
         page: int = 1,
         page_size: int = 50,
         search: Optional[str] = None,
-        pool_id: str = "wip-terms"
+        pool_id: Optional[str] = None
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -754,12 +756,14 @@ class TerminologyService:
             page: Page number (1-based)
             page_size: Number of items per page
             search: Search string for code, value, or aliases
-            pool_id: Pool ID to query (default: wip-terms)
+            pool_id: Pool ID to query (None = derive from terminology)
 
         Returns:
             Tuple of (list of terms, total count)
         """
-        query: dict = {"pool_id": pool_id, "terminology_id": terminology_id}
+        query: dict = {"terminology_id": terminology_id}
+        if pool_id:
+            query["pool_id"] = pool_id
         if status:
             query["status"] = status
 

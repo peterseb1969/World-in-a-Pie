@@ -18,9 +18,9 @@ from wip_auth import setup_auth
 from .models.id_pool import IdPool, IdGeneratorType
 from .models.namespace import Namespace  # User-facing namespace
 from .models.entry import RegistryEntry
+from .models.id_counter import IdCounter
 from .api import api_router
 from .services.auth import AuthService
-from .services.id_generator import IdGeneratorService
 
 
 # Application configuration
@@ -37,13 +37,16 @@ class Settings:
 settings = Settings()
 
 
-async def initialize_prefixed_counters():
+async def migrate_prefixed_counters():
     """
-    Initialize prefixed ID counters from existing entries in the database.
+    Migrate prefixed ID counters into the id_counters collection.
 
-    This ensures that after a restart, new IDs don't collide with existing ones.
+    Scans existing registry entries for each prefixed pool and writes
+    the max sequence value using $max (never rolls back an already-
+    incremented counter).  After the first successful startup the
+    id_counters collection is self-maintaining, but we keep this for
+    safety and to pick up newly-created pools.
     """
-    # Find all ID pools with prefixed generators
     pools = await IdPool.find(
         {"id_generator.type": IdGeneratorType.PREFIXED}
     ).to_list()
@@ -54,20 +57,17 @@ async def initialize_prefixed_counters():
         counter_key = f"{pool_id}:{prefix}"
 
         # Find the highest entry_id for this ID pool
-        # Use find with sort and limit instead of aggregate
         result = await RegistryEntry.find(
             {"primary_pool_id": pool_id}
         ).sort("-entry_id").limit(1).to_list()
 
         if result:
-            # Extract the number from the entry_id (e.g., "TPL-000026" -> 26)
             entry_id = result[0].entry_id
             try:
-                # Remove prefix and parse number
                 number_str = entry_id[len(prefix):]
                 max_number = int(number_str)
-                IdGeneratorService._counters[counter_key] = max_number
-                print(f"Initialized counter for {pool_id}: {entry_id} (counter={max_number})")
+                await IdCounter.set_if_higher(counter_key, max_number)
+                print(f"Migrated counter for {pool_id}: {entry_id} (max={max_number})")
             except (ValueError, IndexError) as e:
                 print(f"Warning: Could not parse entry_id {entry_id} for {pool_id}: {e}")
         else:
@@ -87,7 +87,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[IdPool, Namespace, RegistryEntry]
+        document_models=[IdPool, Namespace, RegistryEntry, IdCounter]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -101,8 +101,8 @@ async def lifespan(app: FastAPI):
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
 
-    # Initialize prefixed ID counters from existing entries
-    await initialize_prefixed_counters()
+    # Migrate prefixed ID counters into MongoDB (idempotent)
+    await migrate_prefixed_counters()
 
     yield
 

@@ -4,6 +4,7 @@
 from .id_pool import IdPool, IdGeneratorConfig, IdGeneratorType, WIP_ID_POOLS
 from .namespace import Namespace
 from .entry import RegistryEntry, Synonym, SourceInfo
+from .id_counter import IdCounter
 
 # API models
 from .api_models import (
@@ -57,6 +58,7 @@ from .api_models import (
 __all__ = [
     # Core models
     "IdPool",
+    "IdCounter",
     "Namespace",
     "IdGeneratorConfig",
     "IdGeneratorType",

@@ -121,7 +121,7 @@ async def create_terms_bulk(
 )
 async def list_terms(
     terminology_id: str,
-    pool_id: str = Query(default="wip-terms", description="Pool ID to query"),
+    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (auto-derived from terminology if omitted)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -132,10 +132,13 @@ async def list_terms(
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        # Try by code (within the corresponding terminology namespace)
-        term_ns_prefix = pool_id.rsplit("-", 1)[0] if "-" in pool_id else "wip"
-        terminology_pool = f"{term_ns_prefix}-terminologies"
-        terminology = await Terminology.find_one({"pool_id": terminology_pool, "code": terminology_id})
+        # Try by code — derive terminology pool from term pool or search all
+        if pool_id:
+            term_ns_prefix = pool_id.rsplit("-", 1)[0] if "-" in pool_id else "wip"
+            terminology_pool = f"{term_ns_prefix}-terminologies"
+            terminology = await Terminology.find_one({"pool_id": terminology_pool, "code": terminology_id})
+        else:
+            terminology = await Terminology.find_one({"code": terminology_id})
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 

@@ -149,7 +149,8 @@ class DefStoreClient:
             Terminology data with terms, or None if not found
         """
         # Determine endpoint based on ref format
-        if terminology_ref.startswith("TERM-"):
+        # Terminology IDs contain "TERM-" followed by digits (e.g., TERM-000001, SEED-TERM-000002)
+        if "TERM-" in terminology_ref and terminology_ref.split("TERM-")[-1].isdigit():
             url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
         else:
             url = f"{self.base_url}/api/def-store/terminologies/by-code/{terminology_ref}"
@@ -235,7 +236,7 @@ class DefStoreClient:
         if terminology:
             self._terminology_cache.set(terminology_ref, terminology)
             # Also cache by the other ref (code or id) for convenience
-            if terminology_ref.startswith("TERM-"):
+            if "TERM-" in terminology_ref and terminology_ref.split("TERM-")[-1].isdigit():
                 code = terminology.get("code")
                 if code:
                     self._terminology_cache.set(code, terminology)

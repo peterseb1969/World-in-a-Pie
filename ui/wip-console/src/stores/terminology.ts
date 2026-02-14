@@ -31,7 +31,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
   const allTerminologies = computed<TerminologyWithPool[]>(() => {
     const own = ownTerminologies.value.map(t => ({
       ...t,
-      _poolId: namespaceStore.terminologiesPool,
+      _poolId: namespaceStore.terminologiesPool ?? 'all',
       _isExternal: false
     }))
     const wip = wipTerminologies.value.map(t => ({
@@ -42,8 +42,9 @@ export const useTerminologyStore = defineStore('terminology', () => {
     return [...own, ...wip]
   })
 
-  // Should we show WIP section? Only for open namespaces that are not WIP
+  // Should we show WIP section? Only for open namespaces that are not WIP or "all"
   const showWipSection = computed(() => {
+    if (namespaceStore.isAll) return false
     const group = namespaceStore.currentNamespace
     const isWip = namespaceStore.current === 'wip'
     const isOpen = !group || group.isolation_mode === 'open'

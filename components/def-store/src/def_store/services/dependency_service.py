@@ -102,7 +102,7 @@ class DependencyService:
         """
         # Read URL at call time to ensure we have the latest env var
         template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-        template_store_api_key = os.getenv("TEMPLATE_STORE_API_KEY", "dev_master_key_for_testing")
+        template_store_api_key = os.getenv("TEMPLATE_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
 
         try:
             # Fetch all templates with pagination (max page_size is 100)

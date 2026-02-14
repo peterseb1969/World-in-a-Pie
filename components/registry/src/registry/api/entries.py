@@ -156,7 +156,7 @@ async def register_keys(
                     error_count += 1
                     continue
             else:
-                entry_id = IdGeneratorService.generate(id_gen_config, item.pool_id)
+                entry_id = await IdGeneratorService.generate(id_gen_config, item.pool_id)
 
             # Build entry for batch insert
             entry = RegistryEntry(

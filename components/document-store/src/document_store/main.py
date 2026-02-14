@@ -38,11 +38,11 @@ class Settings:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_document_store")
     API_KEY: str = os.getenv("API_KEY", "dev_master_key_for_testing")
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
-    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY", "dev_master_key_for_testing")
+    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     TEMPLATE_STORE_URL: str = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-    TEMPLATE_STORE_API_KEY: str = os.getenv("TEMPLATE_STORE_API_KEY", "dev_master_key_for_testing")
+    TEMPLATE_STORE_API_KEY: str = os.getenv("TEMPLATE_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     DEF_STORE_URL: str = os.getenv("DEF_STORE_URL", "http://localhost:8002")
-    DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY", "dev_master_key_for_testing")
+    DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
     # File storage settings (MinIO/S3)

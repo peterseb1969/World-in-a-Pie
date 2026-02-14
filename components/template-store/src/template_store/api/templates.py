@@ -52,7 +52,7 @@ async def create_template(
 
 @router.get("", response_model=TemplateListResponse)
 async def list_templates(
-    pool_id: str = Query(default="wip-templates", description="Pool ID to query"),
+    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
     status: Optional[str] = Query(None, description="Filter by status"),
     extends: Optional[str] = Query(None, description="Filter by parent template"),
     code: Optional[str] = Query(None, description="Filter by template code (shows all versions)"),
@@ -330,7 +330,10 @@ async def activate_template(
 
 
 @router.post("/bulk", response_model=BulkOperationResponse)
-async def create_templates_bulk(request: BulkCreateTemplateRequest):
+async def create_templates_bulk(
+    request: BulkCreateTemplateRequest,
+    pool_id: str = Query(default="wip-templates", description="Pool ID for templates"),
+):
     """
     Create multiple templates at once.
 
@@ -339,7 +342,8 @@ async def create_templates_bulk(request: BulkCreateTemplateRequest):
     try:
         results = await TemplateService.create_templates_bulk(
             templates=request.templates,
-            created_by=request.created_by
+            created_by=request.created_by,
+            pool_id=pool_id,
         )
         succeeded = sum(1 for r in results if r.status == "created")
         failed = sum(1 for r in results if r.status == "error")

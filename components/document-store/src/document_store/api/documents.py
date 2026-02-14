@@ -56,7 +56,7 @@ async def create_document(
     description="List documents with optional filtering and pagination."
 )
 async def list_documents(
-    pool_id: str = Query(default="wip-documents", description="Pool ID to query"),
+    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
     template_id: Optional[str] = Query(None, description="Filter by template ID"),
     template_code: Optional[str] = Query(None, description="Filter by template code (e.g., PLANNED_VISIT)"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
@@ -238,11 +238,12 @@ By default, processing continues even if some items fail.
 )
 async def bulk_create_documents(
     request: BulkCreateRequest,
+    pool_id: str = Query(default="wip-documents", description="Pool ID for the documents"),
     _: str = Depends(require_api_key)
 ):
     """Bulk create documents."""
     service = get_document_service()
-    return await service.bulk_create(request)
+    return await service.bulk_create(request, pool_id=pool_id)
 
 
 @router.get(

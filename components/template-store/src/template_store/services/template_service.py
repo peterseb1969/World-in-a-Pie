@@ -222,7 +222,7 @@ class TemplateService:
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        pool_id: str = "wip-templates"
+        pool_id: Optional[str] = None
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -234,12 +234,14 @@ class TemplateService:
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
-            pool_id: Pool ID to query (default: wip-templates)
+            pool_id: Pool ID to query (None returns all)
 
         Returns:
             Tuple of (templates, total_count)
         """
-        query = {"pool_id": pool_id}
+        query: dict = {}
+        if pool_id:
+            query["pool_id"] = pool_id
         if status:
             query["status"] = status
         if extends:
@@ -587,7 +589,8 @@ class TemplateService:
     @staticmethod
     async def create_templates_bulk(
         templates: list[CreateTemplateRequest],
-        created_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
+        pool_id: str = "wip-templates",
     ) -> list[BulkOperationResult]:
         """
         Create multiple templates.
@@ -595,6 +598,7 @@ class TemplateService:
         Args:
             templates: Templates to create
             created_by: Deprecated - uses authenticated identity
+            pool_id: Pool ID for template registration
 
         Returns:
             List of operation results
@@ -606,7 +610,8 @@ class TemplateService:
         client = get_registry_client()
         registry_results = await client.register_templates_bulk(
             templates=[{"code": t.code, "name": t.name} for t in templates],
-            created_by=actor
+            created_by=actor,
+            pool_id=pool_id,
         )
 
         results = []
@@ -643,7 +648,7 @@ class TemplateService:
             if not is_draft:
                 try:
                     await TemplateService._normalize_field_references(
-                        template_req.fields, "wip-templates"
+                        template_req.fields, pool_id
                     )
                 except ValueError as e:
                     results.append(BulkOperationResult(
@@ -657,6 +662,7 @@ class TemplateService:
             # Create template document
             template = Template(
                 template_id=template_id,
+                pool_id=pool_id,
                 code=template_req.code,
                 name=template_req.name,
                 description=template_req.description,
@@ -1146,6 +1152,11 @@ class TemplateService:
 
         def_store = get_def_store_client()
 
+        # Derive terminology pool from template pool
+        term_pool_id: str | None = None
+        if pool_id != "wip-templates":
+            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
+
         for template in activation_set:
             prefix = f"[{template.code}] "
 
@@ -1178,7 +1189,7 @@ class TemplateService:
                 # Terminology refs
                 if field.terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.terminology_ref)
+                        exists = await def_store.terminology_exists(field.terminology_ref, pool_id=term_pool_id)
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.terminology_ref",
@@ -1194,7 +1205,7 @@ class TemplateService:
 
                 if field.array_terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.array_terminology_ref)
+                        exists = await def_store.terminology_exists(field.array_terminology_ref, pool_id=term_pool_id)
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.array_terminology_ref",
@@ -1291,7 +1302,7 @@ class TemplateService:
                             else:
                                 for term_code in field.target_terminologies:
                                     try:
-                                        exists = await def_store.terminology_exists(term_code)
+                                        exists = await def_store.terminology_exists(term_code, pool_id=term_pool_id)
                                         if not exists:
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_terminologies",
@@ -1534,9 +1545,9 @@ class TemplateService:
         """
         def_store = get_def_store_client()
 
-        if ref.startswith("TERM-"):
+        if ref.startswith("TERM-") or "-TERM-" in ref:
             # Validate it exists and is active
-            terminology = await def_store.get_terminology(terminology_id=ref)
+            terminology = await def_store.get_terminology(terminology_id=ref, pool_id=pool_id)
             if not terminology:
                 raise ValueError(f"Terminology '{ref}' not found")
             if terminology.get("status") != "active":
@@ -1544,7 +1555,7 @@ class TemplateService:
             return ref
 
         # It's a code — look up by code
-        terminology = await def_store.get_terminology(terminology_code=ref)
+        terminology = await def_store.get_terminology(terminology_code=ref, pool_id=pool_id)
         if not terminology:
             raise ValueError(f"No terminology with code '{ref}' found")
         if terminology.get("status") != "active":
@@ -1568,6 +1579,12 @@ class TemplateService:
             pool_id: Pool ID for template lookups
             known_templates: Optional dict for activation set cross-references
         """
+        # Derive terminology pool from template pool (same namespace prefix)
+        # e.g., "seed-templates" -> "seed-terminologies"
+        term_pool_id: str | None = None
+        if pool_id != "wip-templates":
+            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
+
         for field in fields:
             # Template references
             if field.target_templates:
@@ -1591,17 +1608,19 @@ class TemplateService:
             # Terminology references
             if field.terminology_ref:
                 field.terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.terminology_ref
+                    field.terminology_ref, pool_id=term_pool_id
                 )
 
             if field.array_terminology_ref:
                 field.array_terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.array_terminology_ref
+                    field.array_terminology_ref, pool_id=term_pool_id
                 )
 
             if field.target_terminologies:
                 field.target_terminologies = [
-                    await TemplateService._resolve_to_terminology_id(ref)
+                    await TemplateService._resolve_to_terminology_id(
+                        ref, pool_id=term_pool_id
+                    )
                     for ref in field.target_terminologies
                 ]
 

@@ -42,12 +42,16 @@ export const useNamespaceStore = defineStore('namespace', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // "all" is a special value meaning no namespace filtering
+  const isAll = computed(() => current.value === 'all')
+
   // Computed - derive ID pool names from current namespace
-  const terminologiesPool = computed(() => `${current.value}-terminologies`)
-  const termsPool = computed(() => `${current.value}-terms`)
-  const templatesPool = computed(() => `${current.value}-templates`)
-  const documentsPool = computed(() => `${current.value}-documents`)
-  const filesPool = computed(() => `${current.value}-files`)
+  // When "all" is selected, pools are undefined so the API param is omitted
+  const terminologiesPool = computed(() => isAll.value ? undefined : `${current.value}-terminologies`)
+  const termsPool = computed(() => isAll.value ? undefined : `${current.value}-terms`)
+  const templatesPool = computed(() => isAll.value ? undefined : `${current.value}-templates`)
+  const documentsPool = computed(() => isAll.value ? undefined : `${current.value}-documents`)
+  const filesPool = computed(() => isAll.value ? undefined : `${current.value}-files`)
 
   // Current namespace object
   const currentNamespace = computed(() =>
@@ -173,6 +177,7 @@ export const useNamespaceStore = defineStore('namespace', () => {
     documentsPool,
     filesPool,
     currentNamespace,
+    isAll,
     isNonProduction,
     // Actions
     loadNamespaces,

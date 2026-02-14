@@ -499,10 +499,12 @@ class DocumentService:
         status: Optional[DocumentStatus] = None,
         page: int = 1,
         page_size: int = 20,
-        pool_id: str = "wip-documents"
+        pool_id: Optional[str] = None
     ) -> DocumentListResponse:
         """List documents with pagination."""
-        query = {"pool_id": pool_id}
+        query: dict = {}
+        if pool_id:
+            query["pool_id"] = pool_id
         if template_id:
             query["template_id"] = template_id
         if template_code:
@@ -754,7 +756,8 @@ class DocumentService:
 
     async def bulk_create(
         self,
-        request: BulkCreateRequest
+        request: BulkCreateRequest,
+        pool_id: str = "wip-documents",
     ) -> BulkCreateResponse:
         """
         Create multiple documents with optimized bulk operations.
@@ -867,7 +870,8 @@ class DocumentService:
         try:
             registry_results = await registry.generate_document_ids_bulk(
                 registry_items,
-                created_by=actor
+                created_by=actor,
+                pool_id=pool_id,
             )
         except RegistryError as e:
             # All valid documents fail due to Registry error
@@ -945,9 +949,14 @@ class DocumentService:
                     warnings=validation_result.warnings,
                     custom=item.metadata or {}
                 )
+                # Derive template_pool_id from document pool_id
+                template_pool_id = pool_id.rsplit("-", 1)[0] + "-templates" if pool_id != "wip-documents" else "wip-templates"
+
                 document = Document(
+                    pool_id=pool_id,
                     document_id=document_id,
                     template_id=item.template_id,
+                    template_pool_id=template_pool_id,
                     template_version=validation_result.template_version,
                     template_code=validation_result.template_code,
                     identity_hash=identity_hash,

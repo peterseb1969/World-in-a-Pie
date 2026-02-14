@@ -31,7 +31,7 @@ class Settings:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_def_store")
     API_KEY: str = os.getenv("API_KEY", "dev_master_key_for_testing")
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
-    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY", "dev_master_key_for_testing")
+    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
 
 

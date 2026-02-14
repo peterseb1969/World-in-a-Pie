@@ -72,7 +72,11 @@ async function loadDashboard() {
 
     // Fetch recent documents — use API total as authoritative count
     try {
-      const docResponse = await documentStoreClient.listDocuments({ page_size: 5 })
+      const docParams: Record<string, unknown> = { page_size: 5 }
+      if (namespaceStore.documentsPool) {
+        docParams.pool_id = namespaceStore.documentsPool
+      }
+      const docResponse = await documentStoreClient.listDocuments(docParams as any)
       recentDocuments.value = docResponse.items
       entityCounts.value.documents = docResponse.total
     } catch {
@@ -163,13 +167,18 @@ watch(
     }
   }
 )
+
+// Watch for namespace changes and reload dashboard
+watch(() => namespaceStore.current, () => {
+  loadDashboard()
+})
 </script>
 
 <template>
   <div class="home-view">
     <div class="page-header">
       <h1>Dashboard</h1>
-      <p class="subtitle">Namespace: <strong>{{ namespaceStore.current }}</strong></p>
+      <p class="subtitle">Namespace: <strong>{{ namespaceStore.isAll ? 'All' : namespaceStore.current }}</strong></p>
     </div>
 
     <!-- Auth warning -->

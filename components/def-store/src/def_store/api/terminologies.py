@@ -40,7 +40,7 @@ async def create_terminology(
 
 @router.get("", response_model=TerminologyListResponse, summary="List terminologies")
 async def list_terminologies(
-    pool_id: str = Query(default="wip-terminologies", description="Pool ID to query"),
+    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
     status: Optional[str] = Query(None, description="Filter by status"),
     code: Optional[str] = Query(None, description="Filter by exact code match"),
     page: int = Query(1, ge=1, description="Page number"),

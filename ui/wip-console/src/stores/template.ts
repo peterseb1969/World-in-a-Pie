@@ -29,8 +29,9 @@ export const useTemplateStore = defineStore('template', () => {
   // Combined list for backward compatibility
   const templates = computed(() => ownTemplates.value)
 
-  // Should we show WIP section? Only for open namespaces that are not WIP
+  // Should we show WIP section? Only for open namespaces that are not WIP or "all"
   const showWipSection = computed(() => {
+    if (namespaceStore.isAll) return false
     const group = namespaceStore.currentNamespace
     const isWip = namespaceStore.current === 'wip'
     const isOpen = !group || group.isolation_mode === 'open'
