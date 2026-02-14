@@ -43,7 +43,7 @@ Key concepts the AI **must** internalize:
 |---------|---------------|----------------|
 | **Registry** | Central ID generator and identity resolver for all entities | Every entity gets its ID from the Registry. IDs are namespaced and guaranteed unique. The Registry also resolves synonyms and external identifiers. |
 | **Synonyms** | Multiple identifiers resolving to one entity | Legacy IDs, aliases, and external references all map to a canonical WIP ID. Synonyms are first-class citizens — as fast to look up as canonical IDs. |
-| **Terminologies** | Controlled vocabularies (code + value + aliases) | The building blocks of validated data. Terms are resolved by code, value, or alias. |
+| **Terminologies** | Controlled vocabularies (value + aliases) | The building blocks of validated data. Terms are resolved by value or alias. |
 | **Templates** | Document schemas with typed fields and validation | Define what data looks like. Fields can reference terminologies, other documents, and more. |
 | **Documents** | Validated, versioned data conforming to a template | The actual data. Identity fields determine uniqueness; same identity = new version. |
 | **Identity Hash** | SHA-256 of identity fields | How WIP decides if a document is new or an update to an existing one. **Get identity fields wrong and versioning breaks.** |
@@ -340,7 +340,7 @@ Use `type: "file"` when a document needs attached files (images, PDFs, scans, co
 
 Present the complete proposed model:
 
-1. List of terminologies with their terms (codes, values, aliases)
+1. List of terminologies with their terms (values, labels, aliases)
 2. List of templates with all fields, types, and validation rules
 3. How identity fields determine document uniqueness — **explain the versioning behavior explicitly**
 4. Which fields are references and what they point to
@@ -508,10 +508,10 @@ curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8002/api/def-store/terminologies" \
   -d '{"code": "<CODE>", "name": "<Name>", "description": "<Description>"}' | jq .
 
-# 3. Add terms (bulk) — every term requires code, value, AND label
+# 3. Add terms (bulk) — every term requires value; label is optional (defaults to value)
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8002/api/def-store/terminologies/<ID>/terms/bulk" \
-  -d '{"terms": [{"code": "...", "value": "...", "label": "...", "aliases": ["..."]}]}' | jq .
+  -d '{"terms": [{"value": "...", "label": "...", "aliases": ["..."]}]}' | jq .
 
 # 4. Verify terms were created
 curl -s -H "X-API-Key: <key>" \
@@ -1050,9 +1050,9 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   "$HOST:8002/api/def-store/terminologies/<TERM-ID>/terms/bulk" \
   -d '{"terms": [
-    {"code": "EUR", "value": "Euro", "label": "Euro", "aliases": ["euro", "eur"]},
-    {"code": "USD", "value": "US Dollar", "label": "US Dollar", "aliases": ["usd", "dollar", "$"]},
-    {"code": "GBP", "value": "British Pound", "label": "British Pound", "aliases": ["gbp", "pound", "£"]}
+    {"value": "Euro", "aliases": ["euro", "eur", "EUR"]},
+    {"value": "US Dollar", "aliases": ["usd", "dollar", "$", "USD"]},
+    {"value": "British Pound", "aliases": ["gbp", "pound", "£", "GBP"]}
   ]}' | jq .
 ```
 
@@ -1200,7 +1200,7 @@ The API key is simpler for development and scripts. OIDC/JWT is required for use
           ↓
 2. Create terminologies (controlled vocabularies)
           ↓
-3. Create terms within each terminology (codes, values, aliases)
+3. Create terms within each terminology (values, labels, aliases)
           ↓
 4. Create templates for REFERENCED entities first (e.g., CUSTOMER)
           ↓
