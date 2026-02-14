@@ -47,7 +47,8 @@ class DefStoreClient:
     async def get_terminology(
         self,
         terminology_id: Optional[str] = None,
-        terminology_code: Optional[str] = None
+        terminology_code: Optional[str] = None,
+        pool_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """
         Get a terminology by ID or code.
@@ -55,6 +56,7 @@ class DefStoreClient:
         Args:
             terminology_id: Terminology ID (e.g., 'TERM-000001')
             terminology_code: Terminology code (e.g., 'DOC_STATUS')
+            pool_id: Terminology pool ID (e.g., 'seed-terminologies')
 
         Returns:
             Terminology data if found, None otherwise
@@ -66,9 +68,11 @@ class DefStoreClient:
         else:
             return None
 
+        params = {"pool_id": pool_id} if pool_id else None
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(url, headers=self._get_headers())
+                response = await client.get(url, headers=self._get_headers(), params=params)
 
                 if response.status_code == 404:
                     return None
@@ -84,22 +88,24 @@ class DefStoreClient:
 
     async def terminology_exists(
         self,
-        terminology_ref: str
+        terminology_ref: str,
+        pool_id: Optional[str] = None,
     ) -> bool:
         """
         Check if a terminology exists by ID or code.
 
         Args:
             terminology_ref: Terminology ID or code
+            pool_id: Terminology pool ID for namespace-scoped lookups
 
         Returns:
             True if terminology exists and is active
         """
         # Try as ID first (if it looks like an ID)
-        if terminology_ref.startswith("TERM-"):
-            terminology = await self.get_terminology(terminology_id=terminology_ref)
+        if terminology_ref.startswith("TERM-") or "-TERM-" in terminology_ref:
+            terminology = await self.get_terminology(terminology_id=terminology_ref, pool_id=pool_id)
         else:
-            terminology = await self.get_terminology(terminology_code=terminology_ref)
+            terminology = await self.get_terminology(terminology_code=terminology_ref, pool_id=pool_id)
 
         if terminology is None:
             return False

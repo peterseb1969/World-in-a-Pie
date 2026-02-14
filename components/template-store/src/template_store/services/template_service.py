@@ -1612,12 +1612,19 @@ class TemplateService:
 
         Args:
             fields: List of field definitions
+            pool_id: Template pool ID (used to derive terminology pool for cross-service lookups)
 
         Returns:
             List of error messages for invalid references
         """
         errors = []
         def_store = get_def_store_client()
+
+        # Derive terminology pool from template pool (same namespace prefix)
+        # e.g., "seed-templates" -> "seed-terminologies", "wip-templates" -> "wip-terminologies"
+        term_pool_id: str | None = None
+        if pool_id != "wip-templates":
+            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
 
         for field in fields:
             field_name = field.name if hasattr(field, 'name') else field.get('name', 'unknown')
@@ -1628,10 +1635,10 @@ class TemplateService:
                 term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
                 if term_ref:
                     try:
-                        if term_ref.startswith("TERM-"):
-                            terminology = await def_store.get_terminology(terminology_id=term_ref)
+                        if term_ref.startswith("TERM-") or "-TERM-" in term_ref:
+                            terminology = await def_store.get_terminology(terminology_id=term_ref, pool_id=term_pool_id)
                         else:
-                            terminology = await def_store.get_terminology(terminology_code=term_ref)
+                            terminology = await def_store.get_terminology(terminology_code=term_ref, pool_id=term_pool_id)
                         if terminology is None:
                             errors.append(f"Field '{field_name}': terminology '{term_ref}' not found")
                         elif terminology.get('status') != 'active':
@@ -1660,10 +1667,10 @@ class TemplateService:
                     array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
                     if array_term_ref:
                         try:
-                            if array_term_ref.startswith("TERM-"):
-                                terminology = await def_store.get_terminology(terminology_id=array_term_ref)
+                            if array_term_ref.startswith("TERM-") or "-TERM-" in array_term_ref:
+                                terminology = await def_store.get_terminology(terminology_id=array_term_ref, pool_id=term_pool_id)
                             else:
-                                terminology = await def_store.get_terminology(terminology_code=array_term_ref)
+                                terminology = await def_store.get_terminology(terminology_code=array_term_ref, pool_id=term_pool_id)
                             if terminology is None:
                                 errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found")
                             elif terminology.get('status') != 'active':
