@@ -51,6 +51,10 @@ data/secrets/
 .coverage
 htmlcov/
 testdata/
+results.json
+
+# Setup logs
+logs/
 
 # MongoDB data (local dev)
 data/
