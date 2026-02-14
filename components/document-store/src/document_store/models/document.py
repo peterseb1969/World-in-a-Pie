@@ -45,10 +45,10 @@ class Document(BeanieDocument):
     (new version) rather than created as a new entity.
     """
 
-    # Pool ID for multi-tenant isolation
-    pool_id: str = Field(
-        default="wip-documents",
-        description="Pool ID for data isolation (e.g., wip-documents, dev-documents)"
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation (e.g., wip, dev, seed)"
     )
 
     # Identity (from Registry - UUID7 for time-ordering)
@@ -62,17 +62,13 @@ class Document(BeanieDocument):
         ...,
         description="Reference to Template Store template ID"
     )
-    template_pool_id: str = Field(
-        default="wip-templates",
-        description="Pool ID of the template"
-    )
     template_version: int = Field(
         ...,
         description="Version of template used for validation"
     )
-    template_code: Optional[str] = Field(
+    template_value: Optional[str] = Field(
         None,
-        description="Template code (e.g., PLANNED_VISIT) for easier identification"
+        description="Template value (e.g., PLANNED_VISIT) for easier identification"
     )
 
     # Identity for upsert logic
@@ -143,20 +139,20 @@ class Document(BeanieDocument):
     class Settings:
         name = "documents"
         indexes = [
-            # Unique document ID within pool
-            IndexModel([("pool_id", 1), ("document_id", 1)], unique=True, name="pool_document_id_unique_idx"),
-            # Version lookup by identity within pool
-            IndexModel([("pool_id", 1), ("identity_hash", 1), ("version", 1)], name="pool_identity_version_idx"),
-            # Active document lookup by identity within pool
-            IndexModel([("pool_id", 1), ("identity_hash", 1), ("status", 1)], name="pool_identity_status_idx"),
-            # Template queries within pool
-            IndexModel([("pool_id", 1), ("template_id", 1), ("status", 1)], name="pool_template_status_idx"),
-            # Time-based queries within pool
-            IndexModel([("pool_id", 1), ("created_at", DESCENDING)], name="pool_created_at_idx"),
-            # Composite for common queries within pool
+            # Unique document ID within namespace
+            IndexModel([("namespace", 1), ("document_id", 1)], unique=True, name="ns_document_id_unique_idx"),
+            # Version lookup by identity within namespace
+            IndexModel([("namespace", 1), ("identity_hash", 1), ("version", 1)], name="ns_identity_version_idx"),
+            # Active document lookup by identity within namespace
+            IndexModel([("namespace", 1), ("identity_hash", 1), ("status", 1)], name="ns_identity_status_idx"),
+            # Template queries within namespace
+            IndexModel([("namespace", 1), ("template_id", 1), ("status", 1)], name="ns_template_status_idx"),
+            # Time-based queries within namespace
+            IndexModel([("namespace", 1), ("created_at", DESCENDING)], name="ns_created_at_idx"),
+            # Composite for common queries within namespace
             IndexModel(
-                [("pool_id", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
-                name="pool_template_status_time_idx"
+                [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
+                name="ns_template_status_time_idx"
             ),
             # Global document_id lookup (for cross-namespace refs in open mode)
             IndexModel([("document_id", 1)], unique=True, name="document_id_unique_idx"),

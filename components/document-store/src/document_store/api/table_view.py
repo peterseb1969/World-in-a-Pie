@@ -45,8 +45,8 @@ class TableColumn(BaseModel):
 class TableViewResponse(BaseModel):
     """Response from table view endpoint."""
     template_id: str
-    template_code: str
-    template_name: str
+    template_value: str
+    template_label: str
     columns: list[TableColumn] = Field(
         ...,
         description="Column definitions for the table"
@@ -297,8 +297,8 @@ async def get_table_view(
     if total_documents == 0:
         return TableViewResponse(
             template_id=template_id,
-            template_code=template.get("code", ""),
-            template_name=template.get("name", ""),
+            template_value=template.get("value", ""),
+            template_label=template.get("label", ""),
             columns=columns,
             rows=[],
             total_documents=0,
@@ -335,8 +335,8 @@ async def get_table_view(
 
     return TableViewResponse(
         template_id=template_id,
-        template_code=template.get("code", ""),
-        template_name=template.get("name", ""),
+        template_value=template.get("value", ""),
+        template_label=template.get("label", ""),
         columns=columns,
         rows=all_rows,
         total_documents=total_documents,
@@ -403,7 +403,7 @@ async def export_table_csv(
             content="",
             media_type="text/csv",
             headers={
-                "Content-Disposition": f'attachment; filename="{template.get("code", template_id)}.csv"'
+                "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
             }
         )
 
@@ -439,6 +439,6 @@ async def export_table_csv(
         content=csv_content,
         media_type="text/csv",
         headers={
-            "Content-Disposition": f'attachment; filename="{template.get("code", template_id)}.csv"'
+            "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
         }
     )

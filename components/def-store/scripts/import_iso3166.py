@@ -45,8 +45,7 @@ def transform_to_terminology(countries: list[dict]) -> dict:
             continue
 
         term = {
-            "code": alpha2,  # US, DE, FR
-            "value": alpha2.lower(),  # us, de, fr (for storage)
+            "value": alpha2.lower(),  # us, de, fr
             "label": name,  # United States of America
             "description": f"{name} ({alpha3})",
             "sort_order": i,
@@ -65,8 +64,8 @@ def transform_to_terminology(countries: list[dict]) -> dict:
 
     return {
         "terminology": {
-            "code": "ISO_3166_COUNTRY",
-            "name": "ISO 3166 Country Codes",
+            "value": "ISO_3166_COUNTRY",
+            "label": "ISO 3166 Country Codes",
             "description": "ISO 3166-1 country codes including alpha-2, alpha-3, and numeric codes with regional classifications.",
             "case_sensitive": False,
             "allow_multiple": False,
@@ -85,7 +84,7 @@ def transform_to_terminology(countries: list[dict]) -> dict:
 async def import_terminology(api_url: str, api_key: str, data: dict) -> dict:
     """Import terminology into Def-Store."""
     print(f"\nImporting to {api_url}...")
-    print(f"  Terminology: {data['terminology']['code']}")
+    print(f"  Terminology: {data['terminology']['value']}")
     print(f"  Terms: {len(data['terms'])}")
 
     async with httpx.AsyncClient(timeout=60.0) as client:

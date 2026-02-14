@@ -19,6 +19,7 @@ def term_to_response(term) -> TermResponse:
     return TermResponse(
         term_id=term.term_id,
         terminology_id=term.terminology_id,
+        terminology_value=term.terminology_value,
         value=term.value,
         aliases=term.aliases,
         label=term.label or term.value,
@@ -42,26 +43,26 @@ async def validate_value(request: ValidateValueRequest) -> ValidateValueResponse
     """
     Validate a single value against a terminology.
 
-    Provide either terminology_id or terminology_code (not both).
+    Provide either terminology_id or terminology_value (not both).
     """
-    if not request.terminology_id and not request.terminology_code:
+    if not request.terminology_id and not request.terminology_value:
         raise HTTPException(
             status_code=400,
-            detail="Either terminology_id or terminology_code is required"
+            detail="Either terminology_id or terminology_value is required"
         )
 
     try:
         is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
             terminology_id=request.terminology_id,
-            terminology_code=request.terminology_code,
+            terminology_value=request.terminology_value,
             value=request.value
         )
 
         # Get terminology info for response
         if request.terminology_id:
-            terminology = await TerminologyService.get_terminology(request.terminology_id)
+            terminology = await TerminologyService.get_terminology(terminology_id=request.terminology_id)
         else:
-            terminology = await TerminologyService.get_terminology(code=request.terminology_code)
+            terminology = await TerminologyService.get_terminology(value=request.terminology_value)
 
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
@@ -69,7 +70,7 @@ async def validate_value(request: ValidateValueRequest) -> ValidateValueResponse
         return ValidateValueResponse(
             valid=is_valid,
             terminology_id=terminology.terminology_id,
-            terminology_code=terminology.code,
+            terminology_value=terminology.value,
             value=request.value,
             matched_term=term_to_response(matched_term) if matched_term else None,
             matched_via=matched_via,
@@ -90,34 +91,34 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
 
     for item in request.items:
         try:
-            if not item.terminology_id and not item.terminology_code:
+            if not item.terminology_id and not item.terminology_value:
                 results.append(ValidateValueResponse(
                     valid=False,
                     terminology_id="",
-                    terminology_code="",
+                    terminology_value="",
                     value=item.value,
-                    error="Either terminology_id or terminology_code is required"
+                    error="Either terminology_id or terminology_value is required"
                 ))
                 invalid_count += 1
                 continue
 
             is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
                 terminology_id=item.terminology_id,
-                terminology_code=item.terminology_code,
+                terminology_value=item.terminology_value,
                 value=item.value
             )
 
             # Get terminology info
             if item.terminology_id:
-                terminology = await TerminologyService.get_terminology(item.terminology_id)
+                terminology = await TerminologyService.get_terminology(terminology_id=item.terminology_id)
             else:
-                terminology = await TerminologyService.get_terminology(code=item.terminology_code)
+                terminology = await TerminologyService.get_terminology(value=item.terminology_value)
 
             if not terminology:
                 results.append(ValidateValueResponse(
                     valid=False,
                     terminology_id=item.terminology_id or "",
-                    terminology_code=item.terminology_code or "",
+                    terminology_value=item.terminology_value or "",
                     value=item.value,
                     error="Terminology not found"
                 ))
@@ -127,7 +128,7 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
             results.append(ValidateValueResponse(
                 valid=is_valid,
                 terminology_id=terminology.terminology_id,
-                terminology_code=terminology.code,
+                terminology_value=terminology.value,
                 value=item.value,
                 matched_term=term_to_response(matched_term) if matched_term else None,
                 matched_via=matched_via,
@@ -143,7 +144,7 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
             results.append(ValidateValueResponse(
                 valid=False,
                 terminology_id=item.terminology_id or "",
-                terminology_code=item.terminology_code or "",
+                terminology_value=item.terminology_value or "",
                 value=item.value,
                 error=str(e)
             ))

@@ -11,7 +11,7 @@ class RegistryClient:
     """
     Client for the WIP Registry service.
 
-    Handles ID generation and composite key registration for
+    Handles ID registration and composite key management for
     terminologies and terms.
     """
 
@@ -48,22 +48,22 @@ class RegistryClient:
 
     async def register_terminology(
         self,
-        code: str,
-        name: str,
+        value: str,
+        label: str,
         created_by: Optional[str] = None,
-        pool_id: str = "wip-terminologies"
+        namespace: str = "wip"
     ) -> str:
         """
         Register a new terminology in the Registry.
 
         Args:
-            code: Terminology code (e.g., 'DOC_STATUS')
-            name: Terminology name
+            value: Terminology value (e.g., 'DOC_STATUS')
+            label: Terminology label
             created_by: User or system creating this
-            pool_id: Pool ID for the terminology (default: wip-terminologies)
+            namespace: Namespace for the terminology (default: wip)
 
         Returns:
-            Generated terminology ID (e.g., 'TERM-000001')
+            Generated terminology ID
 
         Raises:
             RegistryError: If registration fails
@@ -73,10 +73,11 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": "terminologies",
                     "composite_key": {
-                        "code": code,
-                        "name": name
+                        "value": value,
+                        "label": label
                     },
                     "created_by": created_by,
                     "metadata": {"type": "terminology"}
@@ -103,23 +104,21 @@ class RegistryClient:
     async def register_term(
         self,
         terminology_id: str,
-        code: str,
         value: str,
         created_by: Optional[str] = None,
-        pool_id: str = "wip-terms"
+        namespace: str = "wip"
     ) -> str:
         """
         Register a new term in the Registry.
 
         Args:
             terminology_id: Parent terminology ID
-            code: Registry composite key code (typically the term value)
             value: Term value
             created_by: User or system creating this
-            pool_id: Pool ID for the term (default: wip-terms)
+            namespace: Namespace for the term (default: wip)
 
         Returns:
-            Generated term ID (e.g., 'T-000042')
+            Generated term ID
 
         Raises:
             RegistryError: If registration fails
@@ -129,10 +128,10 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": "terms",
                     "composite_key": {
                         "terminology_id": terminology_id,
-                        "code": code,
                         "value": value
                     },
                     "created_by": created_by,
@@ -163,7 +162,7 @@ class RegistryClient:
         created_by: Optional[str] = None,
         timeout: Optional[float] = None,
         registry_batch_size: int = 100,
-        pool_id: str = "wip-terms"
+        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple terms in the Registry.
@@ -173,11 +172,11 @@ class RegistryClient:
 
         Args:
             terminology_id: Parent terminology ID
-            terms: List of term dicts with 'value' (and optional 'code' for composite key)
+            terms: List of term dicts with 'value'
             created_by: User or system creating these
             timeout: Request timeout in seconds per sub-batch (default 120)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
-            pool_id: Pool ID for the terms (default: wip-terms)
+            namespace: Namespace for the terms (default: wip)
 
         Returns:
             List of registration results with IDs
@@ -201,10 +200,10 @@ class RegistryClient:
 
                 items = [
                     {
-                        "pool_id": pool_id,
+                        "namespace": namespace,
+                        "entity_type": "terms",
                         "composite_key": {
                             "terminology_id": terminology_id,
-                            "code": term.get("code", term["value"]),
                             "value": term["value"]
                         },
                         "created_by": created_by,
@@ -237,20 +236,22 @@ class RegistryClient:
 
     async def add_synonym(
         self,
-        pool_id: str,
+        namespace: str,
+        entity_type: str,
         target_id: str,
-        new_code: str,
+        new_value: str,
         additional_fields: Optional[dict[str, Any]] = None
     ) -> bool:
         """
-        Add a synonym when a code changes.
+        Add a synonym when a value changes.
 
-        This allows lookups by both old and new codes.
+        This allows lookups by both old and new values.
 
         Args:
-            pool_id: Target pool ID ('wip-terminologies' or 'wip-terms')
+            namespace: Namespace (e.g., 'wip')
+            entity_type: Entity type (e.g., 'terminologies', 'terms')
             target_id: The existing registry ID
-            new_code: The new code to add as synonym
+            new_value: The new value to add as synonym
             additional_fields: Additional composite key fields
 
         Returns:
@@ -259,7 +260,7 @@ class RegistryClient:
         Raises:
             RegistryError: If operation fails
         """
-        composite_key = {"code": new_code}
+        composite_key = {"value": new_value}
         if additional_fields:
             composite_key.update(additional_fields)
 
@@ -268,9 +269,9 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "target_pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": entity_type,
                     "target_id": target_id,
-                    "synonym_pool_id": pool_id,
                     "synonym_composite_key": composite_key
                 }]
             )
@@ -283,24 +284,26 @@ class RegistryClient:
             data = response.json()
             return data[0].get("status") == "added"
 
-    async def lookup_by_code(
+    async def lookup_by_value(
         self,
-        pool_id: str,
-        code: str,
+        namespace: str,
+        entity_type: str,
+        value: str,
         additional_fields: Optional[dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Look up a registry ID by code.
+        Look up a registry ID by value.
 
         Args:
-            pool_id: Pool ID to search
-            code: Code to look up
+            namespace: Namespace to search
+            entity_type: Entity type to search
+            value: Value to look up
             additional_fields: Additional composite key fields
 
         Returns:
             Registry ID if found, None otherwise
         """
-        composite_key = {"code": code}
+        composite_key = {"value": value}
         if additional_fields:
             composite_key.update(additional_fields)
 
@@ -309,7 +312,8 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/lookup/by-key",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": entity_type,
                     "composite_key": composite_key,
                     "search_synonyms": True
                 }]

@@ -31,7 +31,7 @@ class FileDocumentRef(BaseModel):
     """A document that references a file."""
     document_id: str
     template_id: str
-    template_code: str | None = None
+    template_value: str | None = None
     field_path: str
     status: str
     created_at: str | None = None
@@ -64,24 +64,24 @@ def require_file_storage():
     description="""
 Upload a file to storage.
 
-The file receives a unique ID (FILE-XXXXXX) from the Registry and is stored in MinIO.
+The file receives a unique ID from the Registry and is stored in MinIO.
 Initially the file has status 'orphan' until it's referenced by a document.
 
 Metadata can be provided as form fields:
 - description: Human-readable description
 - tags: Comma-separated tags (e.g., "invoice,2024,important")
 - category: Classification category
-- allowed_templates: Comma-separated template codes that can use this file
+- allowed_templates: Comma-separated template values that can use this file
     """,
     dependencies=[Depends(require_file_storage)]
 )
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
-    pool_id: str = Form(default="wip-files", description="Pool ID for the file"),
+    namespace: str = Form(default="wip", description="Namespace for the file"),
     description: Optional[str] = Form(None, description="File description"),
     tags: Optional[str] = Form(None, description="Comma-separated tags"),
     category: Optional[str] = Form(None, description="Classification category"),
-    allowed_templates: Optional[str] = Form(None, description="Comma-separated template codes"),
+    allowed_templates: Optional[str] = Form(None, description="Comma-separated template values"),
     _: str = Depends(require_api_key)
 ):
     """Upload a file to storage."""
@@ -106,7 +106,7 @@ async def upload_file(
             filename=file.filename or "unnamed",
             content_type=file.content_type or "application/octet-stream",
             metadata=metadata,
-            pool_id=pool_id,
+            namespace=namespace,
         )
     except FileServiceError as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -120,7 +120,7 @@ async def upload_file(
     dependencies=[Depends(require_file_storage)]
 )
 async def list_files(
-    pool_id: str = Query(default="wip-files", description="Pool ID to query"),
+    namespace: str = Query(default="wip", description="Namespace to query"),
     status: Optional[FileStatus] = Query(None, description="Filter by status"),
     content_type: Optional[str] = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
     category: Optional[str] = Query(None, description="Filter by category"),
@@ -143,7 +143,7 @@ async def list_files(
         uploaded_by=uploaded_by,
         page=page,
         page_size=page_size,
-        pool_id=pool_id,
+        namespace=namespace,
     )
 
 
@@ -330,7 +330,7 @@ async def get_file_documents(
         items.append(FileDocumentRef(
             document_id=doc.document_id,
             template_id=doc.template_id,
-            template_code=None,  # Document model doesn't store template_code
+            template_value=None,  # Could be populated from document.template_value
             field_path=", ".join(field_paths) if field_paths else "unknown",
             status=doc.status.value if hasattr(doc.status, 'value') else doc.status,
             created_at=doc.created_at.isoformat() if doc.created_at else None,

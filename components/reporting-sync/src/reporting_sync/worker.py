@@ -103,19 +103,19 @@ class SyncWorker:
             metrics.record_event_failed(None, None, "template_not_found", f"Template {template_id} not found")
             return False
 
-        template_code = template.get("code", "unknown")
+        template_value = template.get("value", "unknown")
         config = self._get_reporting_config(template)
 
         # Check if sync is enabled
         if not config.sync_enabled:
-            logger.debug(f"Sync disabled for template {template_code}, skipping")
-            metrics.record_event_skipped(template_code, "sync_disabled")
+            logger.debug(f"Sync disabled for template {template_value}, skipping")
+            metrics.record_event_skipped(template_value, "sync_disabled")
             return True  # Not an error, just skipped
 
         # Ensure table exists
         table_name = await self.schema_manager.ensure_table_for_template(template)
         if not table_name:
-            metrics.record_event_skipped(template_code, "table_creation_skipped")
+            metrics.record_event_skipped(template_value, "table_creation_skipped")
             return True  # Sync disabled
 
         # Transform document to rows (pass template for semantic type processing)
@@ -134,7 +134,7 @@ class SyncWorker:
                     document_id,
                 )
             latency_ms = (time.perf_counter() - start_time) * 1000
-            metrics.record_event_processed(template_code, table_name, latency_ms)
+            metrics.record_event_processed(template_value, table_name, latency_ms)
             logger.info(f"Marked document {document_id} as deleted in {table_name}")
             return True
 
@@ -152,14 +152,14 @@ class SyncWorker:
                         raise
 
             latency_ms = (time.perf_counter() - start_time) * 1000
-            metrics.record_event_processed(template_code, table_name, latency_ms)
+            metrics.record_event_processed(template_value, table_name, latency_ms)
             logger.info(
                 f"Synced document {document_id} to {table_name} ({len(rows)} rows, {latency_ms:.1f}ms)"
             )
             return True
 
         except Exception as e:
-            metrics.record_event_failed(template_code, table_name, "insert_error", str(e))
+            metrics.record_event_failed(template_value, table_name, "insert_error", str(e))
             raise
 
     async def _process_template_event(self, event_data: dict[str, Any]) -> bool:
@@ -169,26 +169,26 @@ class SyncWorker:
         Creates or updates the PostgreSQL table schema.
         """
         template = event_data.get("template", {})
-        template_code = template.get("code")
+        template_value = template.get("value")
 
-        if not template_code:
-            logger.warning("Invalid template event: missing code")
+        if not template_value:
+            logger.warning("Invalid template event: missing value")
             return False
 
         # Clear template cache
         for key in list(self._template_cache.keys()):
-            if self._template_cache[key].get("code") == template_code:
+            if self._template_cache[key].get("value") == template_value:
                 del self._template_cache[key]
 
         config = self._get_reporting_config(template)
 
         if not config.sync_enabled:
-            logger.info(f"Sync disabled for template {template_code}, skipping schema update")
+            logger.info(f"Sync disabled for template {template_value}, skipping schema update")
             return True
 
         # Create or update table
         table_name = await self.schema_manager.ensure_table_for_template(template)
-        logger.info(f"Ensured table {table_name} for template {template_code}")
+        logger.info(f"Ensured table {table_name} for template {template_value}")
 
         return True
 

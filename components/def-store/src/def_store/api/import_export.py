@@ -45,7 +45,7 @@ async def export_terminology(
                 content=result["csv_content"],
                 media_type="text/csv",
                 headers={
-                    "Content-Disposition": f"attachment; filename={result['terminology']['code']}.csv"
+                    "Content-Disposition": f"attachment; filename={result['terminology']['value']}.csv"
                 }
             )
 
@@ -100,20 +100,20 @@ async def import_terminology(
     ```json
     {
       "terminology": {
-        "code": "DOC_STATUS",
-        "name": "Document Status",
+        "value": "DOC_STATUS",
+        "label": "Document Status",
         "description": "...",
         "case_sensitive": false
       },
       "terms": [
-        {"code": "DRAFT", "value": "draft", "label": "Draft"},
-        {"code": "APPROVED", "value": "approved", "label": "Approved"}
+        {"value": "draft", "label": "Draft"},
+        {"value": "approved", "label": "Approved"}
       ]
     }
     ```
 
-    CSV format requires terminology_code and terminology_name in the data,
-    plus csv_content with columns: code, value, label, description, sort_order
+    CSV format requires terminology_value and terminology_label in the data,
+    plus csv_content with columns: value, label, description, sort_order
 
     For very large imports (100k+ terms), you may need to tune the batch sizes:
     - `batch_size`: Controls MongoDB batch size (default 1000)
@@ -151,8 +151,8 @@ async def import_terminology(
 async def import_from_url(
     url: str = Query(..., description="URL to fetch terminology from"),
     format: str = Query("json", description="Expected format: json, csv"),
-    terminology_code: Optional[str] = Query(None, description="Code for CSV import"),
-    terminology_name: Optional[str] = Query(None, description="Name for CSV import"),
+    terminology_value: Optional[str] = Query(None, description="Value for CSV import"),
+    terminology_label: Optional[str] = Query(None, description="Label for CSV import"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: Optional[str] = Query(None, description="User performing import"),
@@ -181,8 +181,8 @@ async def import_from_url(
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
             "created_by": created_by,
-            "terminology_code": terminology_code,
-            "terminology_name": terminology_name,
+            "terminology_value": terminology_value,
+            "terminology_label": terminology_label,
             "batch_size": batch_size,
             "registry_batch_size": registry_batch_size,
         }

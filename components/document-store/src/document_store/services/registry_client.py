@@ -12,8 +12,7 @@ class RegistryClient:
     Client for the WIP Registry service.
 
     Handles UUID7 ID generation for documents.
-    Documents use the wip-documents pool which generates UUID7 IDs
-    for time-based ordering.
+    Documents use UUID7 IDs for time-based ordering.
     """
 
     def __init__(
@@ -52,19 +51,18 @@ class RegistryClient:
         identity_hash: str,
         template_id: str,
         created_by: Optional[str] = None,
-        pool_id: str = "wip-documents"
+        namespace: str = "wip"
     ) -> str:
         """
         Generate a new document ID from the Registry.
 
-        Uses the wip-documents pool which generates UUID7 IDs
-        for time-based ordering.
+        Uses UUID7 IDs for time-based ordering.
 
         Args:
             identity_hash: Document identity hash
             template_id: Template ID the document conforms to
             created_by: User or system creating this
-            pool_id: Pool ID for the document (default: wip-documents)
+            namespace: Namespace for the document (default: wip)
 
         Returns:
             Generated document ID (UUID7)
@@ -81,7 +79,8 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": "documents",
                     "composite_key": {
                         "identity_hash": identity_hash,
                         "template_id": template_id,
@@ -111,7 +110,7 @@ class RegistryClient:
         self,
         items: list[dict[str, Any]],
         created_by: Optional[str] = None,
-        pool_id: str = "wip-documents"
+        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Generate multiple document IDs from the Registry in a single call.
@@ -119,7 +118,7 @@ class RegistryClient:
         Args:
             items: List of dicts with identity_hash, template_id, and version
             created_by: User or system creating these
-            pool_id: Pool ID for the documents (default: wip-documents)
+            namespace: Namespace for the documents (default: wip)
 
         Returns:
             List of registration results with IDs
@@ -131,7 +130,8 @@ class RegistryClient:
         # We use a UUID for each to guarantee uniqueness in the batch
         registry_items = [
             {
-                "pool_id": pool_id,
+                "namespace": namespace,
+                "entity_type": "documents",
                 "composite_key": {
                     "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],
@@ -163,7 +163,8 @@ class RegistryClient:
     async def add_synonyms(
         self,
         entry_id: str,
-        pool_id: str,
+        namespace: str,
+        entity_type: str,
         synonyms: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """
@@ -171,7 +172,8 @@ class RegistryClient:
 
         Args:
             entry_id: The entry ID to add synonyms to
-            pool_id: Pool ID of the entry
+            namespace: Namespace of the entry
+            entity_type: Entity type (e.g., 'documents')
             synonyms: List of synonym composite key dicts
 
         Returns:
@@ -182,9 +184,11 @@ class RegistryClient:
         """
         items = [
             {
-                "target_pool_id": pool_id,
+                "target_namespace": namespace,
+                "target_entity_type": entity_type,
                 "target_id": entry_id,
-                "synonym_pool_id": pool_id,
+                "synonym_namespace": namespace,
+                "synonym_entity_type": entity_type,
                 "synonym_composite_key": syn,
             }
             for syn in synonyms
@@ -206,7 +210,8 @@ class RegistryClient:
 
     async def resolve_identifier(
         self,
-        pool_id: Optional[str],
+        namespace: Optional[str],
+        entity_type: Optional[str],
         value: str
     ) -> Optional[str]:
         """
@@ -216,15 +221,18 @@ class RegistryClient:
         and composite key values.
 
         Args:
-            pool_id: Pool ID to search in (None = search all pools)
+            namespace: Namespace to search in (None = search all)
+            entity_type: Entity type to search in (None = search all)
             value: The identifier value to resolve
 
         Returns:
             The resolved entry_id, or None if not found
         """
         lookup_item = {"entry_id": value}
-        if pool_id:
-            lookup_item["pool_id"] = pool_id
+        if namespace:
+            lookup_item["namespace"] = namespace
+        if entity_type:
+            lookup_item["entity_type"] = entity_type
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(

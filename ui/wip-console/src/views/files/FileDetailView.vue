@@ -40,7 +40,7 @@ const editCategory = ref('')
 const referencingDocs = ref<Array<{
   document_id: string
   template_id: string
-  template_code: string | null
+  template_value: string | null
   field_path: string
   status: string
   created_at: string | null
@@ -450,7 +450,7 @@ onMounted(async () => {
                 </Column>
                 <Column field="template_id" header="Template" style="width: 180px">
                   <template #body="{ data }">
-                    <span>{{ data.template_code || data.template_id }}</span>
+                    <span>{{ data.template_value || data.template_id }}</span>
                   </template>
                 </Column>
                 <Column field="field_path" header="Field">

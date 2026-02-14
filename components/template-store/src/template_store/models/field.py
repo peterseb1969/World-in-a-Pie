@@ -141,13 +141,13 @@ class FieldDefinition(BaseModel):
     # For type=term: reference to Def-Store terminology (legacy)
     terminology_ref: Optional[str] = Field(
         None,
-        description="Canonical terminology_id (TERM-XXXXXX) for term validation (resolved from code at creation)"
+        description="Canonical terminology_id for term validation (resolved from value at creation)"
     )
 
     # For type=object: reference to another template
     template_ref: Optional[str] = Field(
         None,
-        description="Canonical template_id (TPL-XXXXXX) for nested template (resolved from code at creation)"
+        description="Canonical template_id for nested template (resolved from value at creation)"
     )
 
     # For type=reference: unified reference configuration
@@ -157,7 +157,7 @@ class FieldDefinition(BaseModel):
     )
     target_templates: Optional[list[str]] = Field(
         None,
-        description="Canonical template_ids for allowed document reference targets (resolved from codes at creation)"
+        description="Canonical template_ids for allowed document reference targets (resolved from values at creation)"
     )
     include_subtypes: Optional[bool] = Field(
         None,
@@ -165,7 +165,7 @@ class FieldDefinition(BaseModel):
     )
     target_terminologies: Optional[list[str]] = Field(
         None,
-        description="Canonical terminology_ids for allowed term reference targets (resolved from codes at creation)"
+        description="Canonical terminology_ids for allowed term reference targets (resolved from values at creation)"
     )
     version_strategy: Optional[VersionStrategy] = Field(
         None,
@@ -185,11 +185,11 @@ class FieldDefinition(BaseModel):
     )
     array_terminology_ref: Optional[str] = Field(
         None,
-        description="Canonical terminology_id (TERM-XXXXXX) for array item term validation (resolved from code at creation)"
+        description="Canonical terminology_id for array item term validation (resolved from value at creation)"
     )
     array_template_ref: Optional[str] = Field(
         None,
-        description="Canonical template_id (TPL-XXXXXX) for array item template (resolved from code at creation)"
+        description="Canonical template_id for array item template (resolved from value at creation)"
     )
     array_file_config: Optional[FileFieldConfig] = Field(
         None,

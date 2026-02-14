@@ -136,9 +136,9 @@ async def publish_template_event(
         }
 
         # Determine subject based on event type
-        # Format: wip.templates.<template_code>.<event_type>
-        template_code = template.get("code", "unknown")
-        subject = f"wip.templates.{template_code}.{event_type.value.split('.')[1]}"
+        # Format: wip.templates.<template_value>.<event_type>
+        template_value = template.get("value", "unknown")
+        subject = f"wip.templates.{template_value}.{event_type.value.split('.')[1]}"
 
         # Publish to JetStream
         payload = json.dumps(event).encode()

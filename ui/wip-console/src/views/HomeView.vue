@@ -73,8 +73,8 @@ async function loadDashboard() {
     // Fetch recent documents — use API total as authoritative count
     try {
       const docParams: Record<string, unknown> = { page_size: 5 }
-      if (namespaceStore.documentsPool) {
-        docParams.pool_id = namespaceStore.documentsPool
+      if (namespaceStore.currentNamespaceParam) {
+        docParams.namespace = namespaceStore.currentNamespaceParam
       }
       const docResponse = await documentStoreClient.listDocuments(docParams as any)
       recentDocuments.value = docResponse.items

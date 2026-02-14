@@ -66,7 +66,7 @@ class ReportingConfig(BaseModel):
 
     sync_enabled: bool = True
     sync_strategy: SyncStrategy = SyncStrategy.LATEST_ONLY
-    table_name: str | None = None  # Auto-generated from template code if not set
+    table_name: str | None = None  # Auto-generated from template value if not set
     include_metadata: bool = True
     flatten_arrays: bool = True
     max_array_elements: int = 10
@@ -162,7 +162,7 @@ class BatchSyncJob(BaseModel):
     """Batch sync job status."""
 
     job_id: str
-    template_code: str
+    template_value: str
     status: BatchSyncStatus
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -176,7 +176,7 @@ class BatchSyncJob(BaseModel):
 class BatchSyncRequest(StrictModel):
     """Request to start a batch sync."""
 
-    template_code: str | None = None  # None = all templates
+    template_value: str | None = None  # None = all templates
     force: bool = False  # Force re-sync even if table has data
     page_size: int = Field(default=100, ge=10, le=1000)
 
@@ -185,7 +185,7 @@ class BatchSyncResponse(BaseModel):
     """Response from starting a batch sync."""
 
     job_id: str
-    template_code: str
+    template_value: str
     status: BatchSyncStatus
     message: str
 
@@ -198,7 +198,7 @@ class BatchSyncResponse(BaseModel):
 class PerTemplateStats(BaseModel):
     """Statistics for a specific template."""
 
-    template_code: str
+    template_value: str
     table_name: str
     documents_synced: int = 0
     documents_failed: int = 0

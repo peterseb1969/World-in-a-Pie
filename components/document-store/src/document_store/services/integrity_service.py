@@ -189,7 +189,7 @@ def extract_term_ids(term_references: list[dict[str, Any]]) -> list[tuple[str, s
     for ref in term_references:
         field_path = ref.get("field_path", "")
         term_id = ref.get("term_id", "")
-        if term_id and term_id.startswith("T-"):
+        if term_id:
             results.append((field_path, term_id))
 
     return results

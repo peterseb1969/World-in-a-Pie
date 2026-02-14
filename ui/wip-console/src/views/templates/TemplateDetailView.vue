@@ -40,8 +40,8 @@ const showRawView = ref(false)
 
 // Form state
 const form = ref<{
-  code: string
-  name: string
+  value: string
+  label: string
   description: string
   extends: string | null
   identity_fields: string[]
@@ -61,8 +61,8 @@ const form = ref<{
     max_array_elements: number
   }
 }>({
-  code: '',
-  name: '',
+  value: '',
+  label: '',
   description: '',
   extends: null,
   identity_fields: [],
@@ -89,7 +89,7 @@ const templateOptions = computed(() => {
   return templateStore.templates
     .filter(t => t.template_id !== currentId && t.status === 'active')
     .map(t => ({
-      label: `${t.name} (${t.code})`,
+      label: `${t.label} (${t.value})`,
       value: t.template_id
     }))
 })
@@ -110,7 +110,7 @@ const inheritedFields = computed(() => {
 const parentTemplateName = computed(() => {
   if (!form.value.extends) return ''
   const parent = templateStore.templates.find(t => t.template_id === form.value.extends)
-  return parent ? parent.name : ''
+  return parent ? parent.label : ''
 })
 
 // Current template being viewed
@@ -144,8 +144,8 @@ async function loadTemplate() {
 
 function resetForm(t: Template) {
   form.value = {
-    code: t.code,
-    name: t.name,
+    value: t.value,
+    label: t.label,
     description: t.description || '',
     extends: t.extends || null,
     identity_fields: [...t.identity_fields],
@@ -168,8 +168,8 @@ function resetForm(t: Template) {
 }
 
 async function saveTemplate() {
-  if (!form.value.code || !form.value.name) {
-    uiStore.showWarn('Validation Error', 'Code and Name are required')
+  if (!form.value.value || !form.value.label) {
+    uiStore.showWarn('Validation Error', 'Value and Label are required')
     return
   }
 
@@ -186,8 +186,8 @@ async function saveTemplate() {
 
     if (isNew.value) {
       const created = await templateStore.createTemplate({
-        code: form.value.code,
-        name: form.value.name,
+        value: form.value.value,
+        label: form.value.label,
         description: form.value.description || undefined,
         extends: form.value.extends || undefined,
         identity_fields: form.value.identity_fields,
@@ -202,12 +202,12 @@ async function saveTemplate() {
         reporting: reportingConfig
       })
       clearDraft()
-      uiStore.showSuccess('Template Created', `Template "${created.name}" has been created`)
+      uiStore.showSuccess('Template Created', `Template "${created.label}" has been created`)
       router.push(`/templates/${created.template_id}`)
     } else if (props.id) {
       const updateData: UpdateTemplateRequest = {
-        code: form.value.code,
-        name: form.value.name,
+        value: form.value.value,
+        label: form.value.label,
         description: form.value.description || undefined,
         extends: form.value.extends || undefined,
         identity_fields: form.value.identity_fields,
@@ -278,7 +278,7 @@ function confirmDeactivate() {
   if (!template.value) return
 
   confirm.require({
-    message: `Are you sure you want to deactivate "${template.value.name}"? It can be restored later.`,
+    message: `Are you sure you want to deactivate "${template.value.label}"? It can be restored later.`,
     header: 'Deactivate Template',
     icon: 'pi pi-exclamation-triangle',
     rejectLabel: 'Cancel',
@@ -393,7 +393,7 @@ watch(form, () => {
 // --- Live validation (Item 31) ---
 const validationErrors = computed(() => {
   const errs: string[] = []
-  if ((isEditing.value || isNew.value) && form.value.code) {
+  if ((isEditing.value || isNew.value) && form.value.value) {
     // Check field name uniqueness
     const names = form.value.fields.map(f => f.name)
     const dupes = names.filter((n, i) => names.indexOf(n) !== i)
@@ -401,8 +401,8 @@ const validationErrors = computed(() => {
       errs.push(`Duplicate field names: ${[...new Set(dupes)].join(', ')}`)
     }
     // Check required fields
-    if (!form.value.code.trim()) errs.push('Code is required')
-    if (!form.value.name.trim()) errs.push('Name is required')
+    if (!form.value.value.trim()) errs.push('Value is required')
+    if (!form.value.label.trim()) errs.push('Label is required')
     // Check term refs exist
     for (const f of form.value.fields) {
       if (f.type === 'term' && !f.terminology_ref) {
@@ -432,8 +432,8 @@ onMounted(async () => {
       showDraftResume.value = true
     }
     form.value = {
-      code: '',
-      name: '',
+      value: '',
+      label: '',
       description: '',
       extends: null,
       identity_fields: [],
@@ -476,9 +476,9 @@ onMounted(async () => {
           @click="router.push('/templates')"
         />
         <div class="header-info" v-if="template && !isNew">
-          <h1>{{ template.name }}</h1>
+          <h1>{{ template.label }}</h1>
           <div class="header-meta">
-            <code>{{ template.code }}</code>
+            <code>{{ template.value }}</code>
             <Tag :value="template.status" :severity="getStatusSeverity(template.status)" />
             <span class="version">v{{ template.version }}</span>
           </div>
@@ -579,10 +579,10 @@ onMounted(async () => {
             <div class="info-column">
               <div class="form-grid single-col">
                 <div class="form-field">
-                  <label for="code">Code *</label>
+                  <label for="value">Value *</label>
                   <InputText
-                    id="code"
-                    v-model="form.code"
+                    id="value"
+                    v-model="form.value"
                     :disabled="!isEditing && !isNew"
                     placeholder="e.g., PERSON"
                     class="w-full"
@@ -590,10 +590,10 @@ onMounted(async () => {
                 </div>
 
                 <div class="form-field">
-                  <label for="name">Name *</label>
+                  <label for="label">Label *</label>
                   <InputText
-                    id="name"
-                    v-model="form.name"
+                    id="label"
+                    v-model="form.label"
                     :disabled="!isEditing && !isNew"
                     placeholder="e.g., Person Template"
                     class="w-full"
@@ -728,10 +728,10 @@ onMounted(async () => {
                 id="table_name"
                 v-model="form.reporting.table_name"
                 :disabled="!isEditing && !isNew"
-                :placeholder="`doc_${form.code?.toLowerCase() || 'template'}`"
+                :placeholder="`doc_${form.value?.toLowerCase() || 'template'}`"
                 class="w-full"
               />
-              <small>Leave empty to auto-generate from template code</small>
+              <small>Leave empty to auto-generate from template value</small>
             </div>
 
             <div class="form-field">

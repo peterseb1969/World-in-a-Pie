@@ -89,8 +89,8 @@ async def create_test_terminology(client: httpx.AsyncClient, code: str, name: st
             f"{DEF_STORE_URL}/api/def-store/terminologies",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
             json={
-                "code": code,
-                "name": name,
+                "value": code,
+                "label": name,
                 "description": f"Test terminology created by stress test {TEST_RUN_ID}"
             }
         )
@@ -134,8 +134,8 @@ async def create_test_template(
             f"{TEMPLATE_STORE_URL}/api/template-store/templates",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
             json={
-                "code": code,
-                "name": f"Ingest Test Template {code}",
+                "value": code,
+                "label": f"Ingest Test Template {code}",
                 "description": f"Test template for stress test {TEST_RUN_ID}",
                 "identity_fields": ["email"],
                 "fields": [
@@ -176,8 +176,8 @@ def generate_valid_terminology(index: int) -> dict:
     return {
         "correlation_id": f"{TEST_RUN_ID}-term-{index}-{uuid.uuid4().hex[:8]}",
         "payload": {
-            "code": f"INGEST_TEST_{TEST_RUN_ID}_{index}",
-            "name": f"Ingest Test Terminology {index}",
+            "value": f"INGEST_TEST_{TEST_RUN_ID}_{index}",
+            "label": f"Ingest Test Terminology {index}",
             "description": f"Created by stress test {TEST_RUN_ID}"
         }
     }
@@ -191,7 +191,6 @@ def generate_valid_terms_bulk(terminology_id: str, count: int) -> dict:
             "terminology_id": terminology_id,
             "terms": [
                 {
-                    "code": f"TERM_{TEST_RUN_ID}_{i}",
                     "value": f"term_{i}",
                     "label": f"Term {i}"
                 }
@@ -206,8 +205,8 @@ def generate_valid_template(index: int, terminology_id: str) -> dict:
     return {
         "correlation_id": f"{TEST_RUN_ID}-tpl-{index}-{uuid.uuid4().hex[:8]}",
         "payload": {
-            "code": f"TPL_INGEST_{TEST_RUN_ID}_{index}",
-            "name": f"Ingest Test Template {index}",
+            "value": f"TPL_INGEST_{TEST_RUN_ID}_{index}",
+            "label": f"Ingest Test Template {index}",
             "description": f"Created by stress test {TEST_RUN_ID}",
             "identity_fields": ["email"],
             "fields": [
@@ -239,13 +238,13 @@ def generate_valid_document(template_id: str, index: int) -> dict:
     }
 
 
-def generate_invalid_missing_code(index: int) -> dict:
-    """Generate terminology missing required 'code' field."""
+def generate_invalid_missing_value(index: int) -> dict:
+    """Generate terminology missing required 'value' field."""
     return {
         "correlation_id": f"{TEST_RUN_ID}-invalid-missing-{index}-{uuid.uuid4().hex[:8]}",
         "payload": {
-            # Missing 'code' - should fail validation
-            "name": "Invalid - No Code"
+            # Missing 'value' - should fail validation
+            "label": "Invalid - No Value"
         }
     }
 
@@ -261,13 +260,13 @@ def generate_invalid_bad_template_ref(index: int) -> dict:
     }
 
 
-def generate_duplicate_terminology(original_code: str, index: int) -> dict:
-    """Generate terminology with duplicate code (should fail)."""
+def generate_duplicate_terminology(original_value: str, index: int) -> dict:
+    """Generate terminology with duplicate value (should fail)."""
     return {
         "correlation_id": f"{TEST_RUN_ID}-dup-{index}-{uuid.uuid4().hex[:8]}",
         "payload": {
-            "code": original_code,
-            "name": f"Duplicate terminology {index}"
+            "value": original_value,
+            "label": f"Duplicate terminology {index}"
         }
     }
 
@@ -450,8 +449,8 @@ async def run_stress_test(
 
             # Create test terms
             await create_test_terms(http_client, test_terminology_id, [
-                {"code": "STATUS_ACTIVE", "value": "active", "label": "Active"},
-                {"code": "STATUS_PENDING", "value": "pending", "label": "Pending"},
+                {"value": "active", "label": "Active"},
+                {"value": "pending", "label": "Pending"},
             ])
             print("  Created test terms")
         else:
@@ -459,9 +458,9 @@ async def run_stress_test(
             test_terminology_id = "TERM-UNKNOWN"
 
         # Create test template for documents
-        test_template_code = f"STRESS_TEST_TPL_{TEST_RUN_ID}"
+        test_template_value = f"STRESS_TEST_TPL_{TEST_RUN_ID}"
         test_template_id = await create_test_template(
-            http_client, test_template_code, test_terminology_id
+            http_client, test_template_value, test_terminology_id
         )
         if test_template_id:
             print(f"  Created template: {test_template_id}")
@@ -498,7 +497,7 @@ async def run_stress_test(
 
     # Invalid - missing fields
     for i in range(invalid_count):
-        msg = generate_invalid_missing_code(i)
+        msg = generate_invalid_missing_value(i)
         messages.append(("wip.ingest.terminologies.create", msg, "invalid_missing", "failed"))
 
     # Invalid - bad references
@@ -506,10 +505,10 @@ async def run_stress_test(
         msg = generate_invalid_bad_template_ref(i)
         messages.append(("wip.ingest.documents.create", msg, "invalid_reference", "failed"))
 
-    # Duplicate terminologies (use the first generated terminology code)
-    first_term_code = f"INGEST_TEST_{TEST_RUN_ID}_0"
+    # Duplicate terminologies (use the first generated terminology value)
+    first_term_value = f"INGEST_TEST_{TEST_RUN_ID}_0"
     for i in range(10):
-        msg = generate_duplicate_terminology(first_term_code, i)
+        msg = generate_duplicate_terminology(first_term_value, i)
         messages.append(("wip.ingest.terminologies.create", msg, "duplicate", "failed"))
 
     print(f"  Total messages: {len(messages)}")

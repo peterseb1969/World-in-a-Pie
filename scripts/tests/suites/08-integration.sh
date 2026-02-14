@@ -17,8 +17,8 @@ source "$SUITE_DIR/../lib/api.sh"
 source "$SUITE_DIR/../lib/assertions.sh"
 
 # Test data tracking
-INTEGRATION_TERM_CODE=""
-INTEGRATION_TEMPLATE_CODE=""
+INTEGRATION_TERM_VALUE=""
+INTEGRATION_TEMPLATE_VALUE=""
 INTEGRATION_DOCUMENT_ID=""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,8 +26,8 @@ INTEGRATION_DOCUMENT_ID=""
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_create_document_with_terms() {
-    # Get a template_id first (API requires template_id, not template_code)
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+    # Get a template_id first (API requires template_id, not template_value)
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/MINIMAL"
 
     local template_id=""
     if [[ "$RESPONSE_CODE" == "200" ]]; then
@@ -36,7 +36,7 @@ test_create_document_with_terms() {
 
     if [[ -z "$template_id" || "$template_id" == "null" ]]; then
         # Fall back to any available template
-        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?page_size=1"
         template_id=$(json_field "items[0].template_id")
     fi
 
@@ -71,7 +71,7 @@ test_create_document_with_terms() {
 test_retrieve_created_document() {
     if [[ -z "$INTEGRATION_DOCUMENT_ID" ]]; then
         # Fallback: get an existing document (subshell scope workaround)
-        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
         INTEGRATION_DOCUMENT_ID=$(json_field "items[0].document_id")
     fi
 
@@ -87,7 +87,7 @@ test_retrieve_created_document() {
 test_document_term_references_stored() {
     if [[ -z "$INTEGRATION_DOCUMENT_ID" ]]; then
         # Fallback: get an existing document
-        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
         INTEGRATION_DOCUMENT_ID=$(json_field "items[0].document_id")
     fi
 
@@ -117,7 +117,7 @@ test_update_document() {
     # We test that we can create a new version by posting with same identity fields
 
     # Get a template (prefer MINIMAL which has simple structure)
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/MINIMAL"
     local template_id=""
     if [[ "$RESPONSE_CODE" == "200" ]]; then
         template_id=$(json_field "template_id")
@@ -125,7 +125,7 @@ test_update_document() {
 
     if [[ -z "$template_id" || "$template_id" == "null" ]]; then
         # Fallback to any template
-        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?page_size=1"
         template_id=$(json_field "items[0].template_id")
     fi
 
@@ -164,10 +164,10 @@ test_update_document() {
 # Term Resolution Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 
-test_term_resolution_by_code() {
+test_term_resolution_by_value() {
     # Use the validation API to resolve a term using SALUTATION which is always seeded
     local body='{
-        "terminology_code": "SALUTATION",
+        "terminology_value": "SALUTATION",
         "value": "Mr"
     }'
 
@@ -191,7 +191,7 @@ test_term_resolution_by_code() {
 test_term_resolution_by_alias() {
     # Try to resolve using an alias (if any exist)
     local body='{
-        "terminology_code": "SALUTATION",
+        "terminology_value": "SALUTATION",
         "value": "Doctor"
     }'
 
@@ -215,9 +215,9 @@ test_term_resolution_by_alias() {
 test_bulk_term_resolution() {
     local body='{
         "items": [
-            {"terminology_code": "SALUTATION", "value": "Mr"},
-            {"terminology_code": "SALUTATION", "value": "Ms"},
-            {"terminology_code": "GENDER", "value": "Male"}
+            {"terminology_value": "SALUTATION", "value": "Mr"},
+            {"terminology_value": "SALUTATION", "value": "Ms"},
+            {"terminology_value": "GENDER", "value": "Male"}
         ]
     }'
 
@@ -244,7 +244,7 @@ test_bulk_term_resolution() {
 
 test_validate_valid_data() {
     # First get a template by code
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/MINIMAL"
 
     if [[ "$RESPONSE_CODE" != "200" ]]; then
         echo "MINIMAL template not found (not seeded)"
@@ -267,7 +267,7 @@ test_validate_valid_data() {
 
 test_validate_invalid_data() {
     # First get a template by code
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/MINIMAL"
 
     if [[ "$RESPONSE_CODE" != "200" ]]; then
         echo "MINIMAL template not found (not seeded)"
@@ -302,7 +302,7 @@ test_validate_invalid_data() {
 
 test_validate_against_nonexistent_template() {
     # Try to get a nonexistent template - should return 404
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/NONEXISTENT_TEMPLATE_XYZ"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/NONEXISTENT_TEMPLATE_XYZ"
 
     # Should get 404
     if [[ "$RESPONSE_CODE" == "404" ]]; then
@@ -318,7 +318,7 @@ test_validate_against_nonexistent_template() {
 
 test_document_template_reference_valid() {
     # Get a document and verify its template exists
-    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
 
     if ! assert_status 200; then return 1; fi
 
@@ -339,7 +339,7 @@ test_registry_entry_exists_for_document() {
     # Documents should have registry entries
     if [[ -z "$INTEGRATION_DOCUMENT_ID" ]]; then
         # Get any document
-        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
         INTEGRATION_DOCUMENT_ID=$(json_field "items[0].document_id")
     fi
 
@@ -350,7 +350,8 @@ test_registry_entry_exists_for_document() {
 
     # Look up in registry
     local body='[{
-        "pool_id": "wip-documents",
+        "namespace": "wip",
+        "entity_type": "documents",
         "id": "'$INTEGRATION_DOCUMENT_ID'"
     }]'
 
@@ -426,7 +427,7 @@ run_suite() {
     run_test "Update document" test_update_document
 
     echo -e "\n  ${DIM}Term Resolution${NC}"
-    run_test "Resolve term by code" test_term_resolution_by_code
+    run_test "Resolve term by value" test_term_resolution_by_value
     run_test "Resolve term by alias" test_term_resolution_by_alias
     run_test "Bulk term resolution" test_bulk_term_resolution
 

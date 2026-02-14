@@ -37,7 +37,7 @@ class TemplateService:
     @staticmethod
     async def create_template(
         request: CreateTemplateRequest,
-        pool_id: str = "wip-templates"
+        namespace: str = "wip"
     ) -> TemplateResponse:
         """
         Create a new template.
@@ -48,13 +48,13 @@ class TemplateService:
 
         Args:
             request: Creation request
-            pool_id: Pool ID for the template (default: wip-templates)
+            namespace: Namespace for the template (default: wip)
 
         Returns:
             Created template
 
         Raises:
-            ValueError: If code already exists or extends invalid
+            ValueError: If value already exists or extends invalid
             RegistryError: If Registry communication fails
         """
         # Validate status value
@@ -62,18 +62,18 @@ class TemplateService:
         if request.status is not None and request.status not in ("active", "draft"):
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
 
-        # Check if code already exists within pool
-        existing = await Template.find_one({"pool_id": pool_id, "code": request.code})
+        # Check if value already exists within namespace
+        existing = await Template.find_one({"namespace": namespace, "value": request.value})
         if existing:
-            raise ValueError(f"Template with code '{request.code}' already exists in pool '{pool_id}'")
+            raise ValueError(f"Template with value '{request.value}' already exists in namespace '{namespace}'")
 
         # Validate extends if provided
-        parent_pool_id: str | None = None
+        parent_namespace: str | None = None
         if request.extends:
             parent = await Template.find_one({"template_id": request.extends})
             if not parent:
-                # Try by code within same pool
-                parent = await Template.find_one({"pool_id": pool_id, "code": request.extends})
+                # Try by value within same namespace
+                parent = await Template.find_one({"namespace": namespace, "value": request.extends})
                 if parent:
                     request.extends = parent.template_id
                 else:
@@ -81,30 +81,21 @@ class TemplateService:
                         raise ValueError(f"Parent template '{request.extends}' not found")
                     # Draft mode: store raw extends value even if parent doesn't exist yet
             if parent:
-                parent_pool_id = parent.pool_id
+                parent_namespace = parent.namespace
 
-        # Validate references if requested (default: True) — skip for drafts
-        if not is_draft and request.validate_references:
-            validation_errors = await TemplateService._validate_field_references(
-                request.fields, pool_id
-            )
-            if validation_errors:
-                raise ValueError(
-                    f"Invalid references: {'; '.join(validation_errors)}"
-                )
-
-        # Normalize all field references to canonical IDs — skip for drafts
+        # Normalize all field references to canonical IDs — skip for drafts.
+        # Normalization implicitly validates (raises ValueError for invalid refs),
+        # so a separate validation pass is not needed.
         if not is_draft:
-            await TemplateService._normalize_field_references(request.fields, pool_id)
+            await TemplateService._normalize_field_references(request.fields, namespace)
 
         # Validate cross-namespace references (isolation mode check) — skip for drafts
-        if not is_draft and parent_pool_id:
+        if not is_draft and parent_namespace:
             try:
                 validator = get_reference_validator()
                 await validator.validate_template_references(
-                    template_pool_id=pool_id,
-                    extends_template_pool_id=parent_pool_id,
-                    terminology_pool_ids=None,  # Terminology refs are by code, validated at doc creation
+                    template_namespace=namespace,
+                    extends_template_namespace=parent_namespace,
                 )
             except ReferenceValidationError as e:
                 raise ValueError(f"Cross-namespace reference violation: {e.violations}")
@@ -115,18 +106,18 @@ class TemplateService:
         # Register with Registry to get ID
         client = get_registry_client()
         template_id = await client.register_template(
-            code=request.code,
-            name=request.name,
+            value=request.value,
+            label=request.label,
             created_by=actor,
-            pool_id=pool_id
+            namespace=namespace
         )
 
         # Create template document
         template = Template(
-            pool_id=pool_id,
+            namespace=namespace,
             template_id=template_id,
-            code=request.code,
-            name=request.name,
+            value=request.value,
+            label=request.label,
             description=request.description,
             extends=request.extends,
             identity_fields=request.identity_fields,
@@ -152,18 +143,18 @@ class TemplateService:
     @staticmethod
     async def get_template(
         template_id: Optional[str] = None,
-        code: Optional[str] = None,
+        value: Optional[str] = None,
         resolve_inheritance: bool = True,
-        pool_id: Optional[str] = None
+        namespace: Optional[str] = None
     ) -> Optional[TemplateResponse]:
         """
-        Get a template by ID or code.
+        Get a template by ID or value.
 
         Args:
-            template_id: Template ID (e.g., 'TPL-000001')
-            code: Template code (e.g., 'PERSON')
+            template_id: Template ID
+            value: Template value (e.g., 'PERSON')
             resolve_inheritance: Whether to resolve inheritance
-            pool_id: Pool ID to search in (if None, searches globally by ID)
+            namespace: Namespace to search in (if None, searches globally by ID)
 
         Returns:
             Template if found, None otherwise
@@ -171,13 +162,13 @@ class TemplateService:
         if template_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
             query = {"template_id": template_id}
-            if pool_id:
-                query["pool_id"] = pool_id
+            if namespace:
+                query["namespace"] = namespace
             template = await Template.find_one(query)
-        elif code:
-            # Code lookups require pool_id (defaults to wip-templates)
-            ns = pool_id or "wip-templates"
-            template = await Template.find_one({"pool_id": ns, "code": code})
+        elif value:
+            # Value lookups require namespace (defaults to wip)
+            ns = namespace or "wip"
+            template = await Template.find_one({"namespace": ns, "value": value})
         else:
             return None
 
@@ -196,21 +187,21 @@ class TemplateService:
     @staticmethod
     async def get_template_raw(
         template_id: Optional[str] = None,
-        code: Optional[str] = None
+        value: Optional[str] = None
     ) -> Optional[TemplateResponse]:
         """
-        Get a template by ID or code without inheritance resolution.
+        Get a template by ID or value without inheritance resolution.
 
         Args:
             template_id: Template ID
-            code: Template code
+            value: Template value
 
         Returns:
             Template as stored, without inheritance resolution
         """
         return await TemplateService.get_template(
             template_id=template_id,
-            code=code,
+            value=value,
             resolve_inheritance=False
         )
 
@@ -218,11 +209,11 @@ class TemplateService:
     async def list_templates(
         status: Optional[str] = None,
         extends: Optional[str] = None,
-        code: Optional[str] = None,
+        value: Optional[str] = None,
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        pool_id: Optional[str] = None
+        namespace: Optional[str] = None
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -230,36 +221,36 @@ class TemplateService:
         Args:
             status: Filter by status (draft, active, inactive)
             extends: Filter by parent template ID
-            code: Filter by template code (shows all versions of that code)
+            value: Filter by template value (shows all versions of that value)
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
-            pool_id: Pool ID to query (None returns all)
+            namespace: Namespace to query (None returns all)
 
         Returns:
             Tuple of (templates, total_count)
         """
         query: dict = {}
-        if pool_id:
-            query["pool_id"] = pool_id
+        if namespace:
+            query["namespace"] = namespace
         if status:
             query["status"] = status
         if extends:
             query["extends"] = extends
-        if code:
-            query["code"] = code
+        if value:
+            query["value"] = value
 
-        if latest_only and not code:
-            # Use aggregation to get only the latest version of each code
+        if latest_only and not value:
+            # Use aggregation to get only the latest version of each value
             pipeline = [
                 {"$match": query} if query else {"$match": {}},
-                {"$sort": {"code": 1, "version": -1}},
+                {"$sort": {"value": 1, "version": -1}},
                 {"$group": {
-                    "_id": "$code",
+                    "_id": "$value",
                     "doc": {"$first": "$$ROOT"}
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
-                {"$sort": {"name": 1}}
+                {"$sort": {"label": 1}}
             ]
 
             # Get total count
@@ -279,7 +270,7 @@ class TemplateService:
             skip = (page - 1) * page_size
 
             templates = await Template.find(query) \
-                .sort([("code", 1), ("version", -1)]) \
+                .sort([("value", 1), ("version", -1)]) \
                 .skip(skip) \
                 .limit(page_size) \
                 .to_list()
@@ -291,43 +282,43 @@ class TemplateService:
 
     @staticmethod
     async def get_template_versions(
-        code: str,
-        pool_id: str = "wip-templates"
+        value: str,
+        namespace: str = "wip"
     ) -> list[TemplateResponse]:
         """
-        Get all versions of a template by code.
+        Get all versions of a template by value.
 
         Args:
-            code: Template code
-            pool_id: Pool ID to search in (default: wip-templates)
+            value: Template value
+            namespace: Namespace to search in (default: wip)
 
         Returns:
             List of all versions, sorted by version descending (newest first)
         """
-        templates = await Template.find({"pool_id": pool_id, "code": code}) \
+        templates = await Template.find({"namespace": namespace, "value": value}) \
             .sort([("version", -1)]) \
             .to_list()
 
         return [TemplateService._to_template_response(t) for t in templates]
 
     @staticmethod
-    async def get_template_by_code_and_version(
-        code: str,
+    async def get_template_by_value_and_version(
+        value: str,
         version: int,
         resolve_inheritance: bool = True
     ) -> Optional[TemplateResponse]:
         """
-        Get a specific version of a template by code and version number.
+        Get a specific version of a template by value and version number.
 
         Args:
-            code: Template code
+            value: Template value
             version: Version number
             resolve_inheritance: Whether to resolve inheritance
 
         Returns:
             Template if found, None otherwise
         """
-        template = await Template.find_one({"code": code, "version": version})
+        template = await Template.find_one({"value": value, "version": version})
         if not template:
             return None
 
@@ -352,9 +343,9 @@ class TemplateService:
         import json
 
         # Check each field that can be updated
-        if request.code is not None and request.code != original.code:
+        if request.value is not None and request.value != original.value:
             return True
-        if request.name is not None and request.name != original.name:
+        if request.label is not None and request.label != original.label:
             return True
         if request.description is not None and request.description != original.description:
             return True
@@ -449,36 +440,36 @@ class TemplateService:
             # No changes - return current template info
             return TemplateUpdateResponse(
                 template_id=original.template_id,
-                code=original.code,
+                value=original.value,
                 version=original.version,
                 is_new_version=False,
                 previous_version=None
             )
 
-        # Calculate new version number (max version for this code + 1)
+        # Calculate new version number (max version for this value + 1)
         max_version_template = await Template.find(
-            {"code": original.code}
+            {"value": original.value}
         ).sort([("version", -1)]).limit(1).to_list()
         new_version = max_version_template[0].version + 1 if max_version_template else 1
 
-        # Determine the code for the new version
-        new_code = request.code if request.code is not None else original.code
+        # Determine the value for the new version
+        new_value = request.value if request.value is not None else original.value
 
-        # If code is changing, check it doesn't conflict with another template family
-        if new_code != original.code:
+        # If value is changing, check it doesn't conflict with another template family
+        if new_value != original.value:
             existing_other = await Template.find_one({
-                "code": new_code,
-                "code": {"$ne": original.code}  # Different template family
+                "value": new_value,
+                "value": {"$ne": original.value}  # Different template family
             })
             if existing_other:
-                raise ValueError(f"Template with code '{new_code}' already exists")
+                raise ValueError(f"Template with value '{new_value}' already exists")
 
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
             parent = await Template.find_one({"template_id": extends_value})
             if not parent:
-                parent = await Template.find_one({"code": extends_value})
+                parent = await Template.find_one({"value": extends_value})
                 if parent:
                     extends_value = parent.template_id
                 else:
@@ -496,8 +487,8 @@ class TemplateService:
         # Register new version with Registry to get a new template_id
         client = get_registry_client()
         new_template_id = await client.register_template(
-            code=new_code,
-            name=request.name if request.name is not None else original.name,
+            value=new_value,
+            label=request.label if request.label is not None else original.label,
             version=new_version,
             created_by=actor
         )
@@ -505,8 +496,8 @@ class TemplateService:
         # Create new template document for this version
         new_template = Template(
             template_id=new_template_id,
-            code=new_code,
-            name=request.name if request.name is not None else original.name,
+            value=new_value,
+            label=request.label if request.label is not None else original.label,
             description=request.description if request.description is not None else original.description,
             version=new_version,
             extends=extends_value if extends_value else None,
@@ -532,7 +523,7 @@ class TemplateService:
 
         return TemplateUpdateResponse(
             template_id=new_template_id,
-            code=new_code,
+            value=new_value,
             version=new_version,
             is_new_version=True,
             previous_version=original.version
@@ -590,7 +581,7 @@ class TemplateService:
     async def create_templates_bulk(
         templates: list[CreateTemplateRequest],
         created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
-        pool_id: str = "wip-templates",
+        namespace: str = "wip",
     ) -> list[BulkOperationResult]:
         """
         Create multiple templates.
@@ -598,7 +589,7 @@ class TemplateService:
         Args:
             templates: Templates to create
             created_by: Deprecated - uses authenticated identity
-            pool_id: Pool ID for template registration
+            namespace: Namespace for template registration
 
         Returns:
             List of operation results
@@ -609,9 +600,9 @@ class TemplateService:
         # Register all templates with Registry
         client = get_registry_client()
         registry_results = await client.register_templates_bulk(
-            templates=[{"code": t.code, "name": t.name} for t in templates],
+            templates=[{"value": t.value, "label": t.label} for t in templates],
             created_by=actor,
-            pool_id=pool_id,
+            namespace=namespace,
         )
 
         results = []
@@ -621,7 +612,7 @@ class TemplateService:
                 results.append(BulkOperationResult(
                     index=i,
                     status="error",
-                    code=template_req.code,
+                    value=template_req.value,
                     error=reg_result.get("error")
                 ))
                 continue
@@ -635,7 +626,7 @@ class TemplateService:
                     index=i,
                     status="skipped",
                     id=template_id,
-                    code=template_req.code,
+                    value=template_req.value,
                     error="Already exists"
                 ))
                 continue
@@ -648,13 +639,13 @@ class TemplateService:
             if not is_draft:
                 try:
                     await TemplateService._normalize_field_references(
-                        template_req.fields, pool_id
+                        template_req.fields, namespace
                     )
                 except ValueError as e:
                     results.append(BulkOperationResult(
                         index=i,
                         status="error",
-                        code=template_req.code,
+                        value=template_req.value,
                         error=str(e)
                     ))
                     continue
@@ -662,9 +653,9 @@ class TemplateService:
             # Create template document
             template = Template(
                 template_id=template_id,
-                pool_id=pool_id,
-                code=template_req.code,
-                name=template_req.name,
+                namespace=namespace,
+                value=template_req.value,
+                label=template_req.label,
                 description=template_req.description,
                 extends=template_req.extends,
                 identity_fields=template_req.identity_fields,
@@ -689,7 +680,7 @@ class TemplateService:
                 index=i,
                 status="created",
                 id=template_id,
-                code=template_req.code
+                value=template_req.value
             ))
 
         return results
@@ -735,10 +726,10 @@ class TemplateService:
         # Draft templates: validate via activation set and return cascade preview
         if template.status == "draft":
             activation_set = await TemplateService._build_activation_set(
-                template, template.pool_id
+                template, template.namespace
             )
             errors, warnings = await TemplateService._validate_activation_set(
-                activation_set, template.pool_id
+                activation_set, template.namespace
             )
             # Collect other draft template IDs that would also activate
             other_ids = [
@@ -772,7 +763,9 @@ class TemplateService:
             for field in template.fields:
                 if field.terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.terminology_ref)
+                        exists = await def_store.terminology_exists(
+                            field.terminology_ref, namespace=template.namespace
+                        )
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"fields.{field.name}.terminology_ref",
@@ -788,7 +781,9 @@ class TemplateService:
 
                 if field.array_terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.array_terminology_ref)
+                        exists = await def_store.terminology_exists(
+                            field.array_terminology_ref, namespace=template.namespace
+                        )
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"fields.{field.name}.array_terminology_ref",
@@ -806,10 +801,9 @@ class TemplateService:
         if check_templates:
             for field in template.fields:
                 if field.template_ref:
-                    if field.template_ref.startswith("TPL-"):
-                        ref_template = await Template.find_one({"template_id": field.template_ref})
-                    else:
-                        ref_template = await Template.find_one({"pool_id": template.pool_id, "code": field.template_ref})
+                    ref_template = await TemplateService._find_template_by_ref(
+                        field.template_ref, template.namespace
+                    )
                     if not ref_template:
                         errors.append(ValidationError(
                             field=f"fields.{field.name}.template_ref",
@@ -818,10 +812,9 @@ class TemplateService:
                         ))
 
                 if field.array_template_ref:
-                    if field.array_template_ref.startswith("TPL-"):
-                        ref_template = await Template.find_one({"template_id": field.array_template_ref})
-                    else:
-                        ref_template = await Template.find_one({"pool_id": template.pool_id, "code": field.array_template_ref})
+                    ref_template = await TemplateService._find_template_by_ref(
+                        field.array_template_ref, template.namespace
+                    )
                     if not ref_template:
                         errors.append(ValidationError(
                             field=f"fields.{field.name}.array_template_ref",
@@ -849,10 +842,9 @@ class TemplateService:
                                 ))
                             elif check_templates:
                                 for tpl_ref in field.target_templates:
-                                    if tpl_ref.startswith("TPL-"):
-                                        ref_tpl = await Template.find_one({"template_id": tpl_ref})
-                                    else:
-                                        ref_tpl = await Template.find_one({"pool_id": template.pool_id, "code": tpl_ref})
+                                    ref_tpl = await TemplateService._find_template_by_ref(
+                                        tpl_ref, template.namespace
+                                    )
                                     if not ref_tpl:
                                         errors.append(ValidationError(
                                             field=f"fields.{field.name}.target_templates",
@@ -870,14 +862,16 @@ class TemplateService:
                                 ))
                             elif check_terminologies:
                                 def_store = get_def_store_client()
-                                for term_code in field.target_terminologies:
+                                for term_val in field.target_terminologies:
                                     try:
-                                        exists = await def_store.terminology_exists(term_code)
+                                        exists = await def_store.terminology_exists(
+                                            term_val, namespace=template.namespace
+                                        )
                                         if not exists:
                                             errors.append(ValidationError(
                                                 field=f"fields.{field.name}.target_terminologies",
                                                 code="invalid_reference",
-                                                message=f"Terminology '{term_code}' not found or inactive"
+                                                message=f"Terminology '{term_val}' not found or inactive"
                                             ))
                                     except DefStoreError as e:
                                         warnings.append(ValidationWarning(
@@ -923,8 +917,8 @@ class TemplateService:
         if not parent:
             raise ValueError(f"Template '{template_id}' not found")
 
-        # Find all versions of this template's code to get ALL possible old template_ids
-        all_parent_versions = await Template.find({"code": parent.code}).to_list()
+        # Find all versions of this template's value to get ALL possible old template_ids
+        all_parent_versions = await Template.find({"value": parent.value}).to_list()
         all_parent_ids = [t.template_id for t in all_parent_versions]
 
         # Find all active children extending ANY version of this parent
@@ -936,7 +930,7 @@ class TemplateService:
         if not children:
             return CascadeResponse(
                 parent_template_id=parent.template_id,
-                parent_code=parent.code,
+                parent_value=parent.value,
                 parent_version=parent.version,
                 total=0,
                 updated=0,
@@ -954,20 +948,20 @@ class TemplateService:
         unchanged = 0
         failed = 0
 
-        # Group children by code (only cascade latest version of each child)
-        children_by_code: dict[str, Template] = {}
+        # Group children by value (only cascade latest version of each child)
+        children_by_value: dict[str, Template] = {}
         for child in children:
-            existing = children_by_code.get(child.code)
+            existing = children_by_value.get(child.value)
             if not existing or child.version > existing.version:
-                children_by_code[child.code] = child
+                children_by_value[child.value] = child
 
-        for child in children_by_code.values():
+        for child in children_by_value.values():
             try:
                 # Skip if already extending the target parent
                 if child.extends == template_id:
                     unchanged += 1
                     results.append(CascadeResult(
-                        code=child.code,
+                        value=child.value,
                         old_template_id=child.template_id,
                         status="unchanged"
                     ))
@@ -975,14 +969,14 @@ class TemplateService:
 
                 # Calculate new version for this child
                 max_ver = await Template.find(
-                    {"code": child.code}
+                    {"value": child.value}
                 ).sort([("version", -1)]).limit(1).to_list()
                 new_version = max_ver[0].version + 1 if max_ver else 1
 
                 # Register new version with Registry
                 new_child_id = await client.register_template(
-                    code=child.code,
-                    name=child.name,
+                    value=child.value,
+                    label=child.label,
                     version=new_version,
                     created_by=actor
                 )
@@ -990,8 +984,8 @@ class TemplateService:
                 # Create new child version with updated extends pointer
                 new_child = Template(
                     template_id=new_child_id,
-                    code=child.code,
-                    name=child.name,
+                    value=child.value,
+                    label=child.label,
                     description=child.description,
                     version=new_version,
                     extends=template_id,  # Point to new parent
@@ -1017,7 +1011,7 @@ class TemplateService:
 
                 updated += 1
                 results.append(CascadeResult(
-                    code=child.code,
+                    value=child.value,
                     old_template_id=child.template_id,
                     new_template_id=new_child_id,
                     new_version=new_version,
@@ -1027,7 +1021,7 @@ class TemplateService:
             except Exception as e:
                 failed += 1
                 results.append(CascadeResult(
-                    code=child.code,
+                    value=child.value,
                     old_template_id=child.template_id,
                     status="error",
                     error=str(e)
@@ -1035,7 +1029,7 @@ class TemplateService:
 
         return CascadeResponse(
             parent_template_id=parent.template_id,
-            parent_code=parent.code,
+            parent_value=parent.value,
             parent_version=parent.version,
             total=len(results),
             updated=updated,
@@ -1051,13 +1045,13 @@ class TemplateService:
     @staticmethod
     def _collect_template_references(template: Template) -> list[str]:
         """
-        Collect all template IDs/codes referenced by a template.
+        Collect all template IDs/values referenced by a template.
 
         Walks extends, field template_ref, array_template_ref, and
         reference-type target_templates.
 
         Returns:
-            List of template IDs or codes referenced
+            List of template IDs or values referenced
         """
         refs = []
 
@@ -1077,16 +1071,16 @@ class TemplateService:
     @staticmethod
     async def _build_activation_set(
         root: Template,
-        pool_id: str
+        namespace: str
     ) -> list[Template]:
         """
         BFS from root template, collecting all draft templates that must
         be activated together.
 
         For each reference:
-        - If it points to a draft template → add to set, recurse
-        - If it points to an active template → skip (already valid)
-        - If not found → skip (validation will catch it later)
+        - If it points to a draft template -> add to set, recurse
+        - If it points to an active template -> skip (already valid)
+        - If not found -> skip (validation will catch it later)
 
         Handles circular references via a visited set.
 
@@ -1103,10 +1097,7 @@ class TemplateService:
 
             for ref in refs:
                 # Try to find the referenced template
-                target = await Template.find_one({"template_id": ref})
-                if not target:
-                    # Try by code within the pool
-                    target = await Template.find_one({"pool_id": pool_id, "code": ref})
+                target = await TemplateService._find_template_by_ref(ref, namespace)
                 if not target:
                     # Not found — validation will catch it
                     continue
@@ -1125,7 +1116,7 @@ class TemplateService:
     @staticmethod
     async def _validate_activation_set(
         activation_set: list[Template],
-        pool_id: str
+        namespace: str
     ) -> tuple[list, list]:
         """
         Validate all templates in the activation set as a unit.
@@ -1134,7 +1125,7 @@ class TemplateService:
         - extends: must be in set OR exist as active
         - terminology_ref / array_terminology_ref: must exist and be active
         - template_ref / array_template_ref: must be in set OR exist as active
-        - target_templates: each code must be in set OR have an active template
+        - target_templates: each value must be in set OR have an active template
         - target_terminologies: must exist and be active
         - reference_type required for reference fields
 
@@ -1145,32 +1136,27 @@ class TemplateService:
 
         # Build lookups for the activation set
         set_ids = {t.template_id for t in activation_set}
-        set_codes = {t.code for t in activation_set}
+        set_values = {t.value for t in activation_set}
 
         errors = []
         warnings = []
 
         def_store = get_def_store_client()
 
-        # Derive terminology pool from template pool
-        term_pool_id: str | None = None
-        if pool_id != "wip-templates":
-            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
-
         for template in activation_set:
-            prefix = f"[{template.code}] "
+            prefix = f"[{template.value}] "
 
             # Check extends
             if template.extends:
-                # Resolve: is it in the set (by ID or code) or active?
+                # Resolve: is it in the set (by ID or value) or active?
                 in_set = (
                     template.extends in set_ids or
-                    template.extends in set_codes
+                    template.extends in set_values
                 )
                 if not in_set:
-                    parent = await Template.find_one({"template_id": template.extends})
-                    if not parent:
-                        parent = await Template.find_one({"pool_id": pool_id, "code": template.extends})
+                    parent = await TemplateService._find_template_by_ref(
+                        template.extends, namespace
+                    )
                     if not parent:
                         errors.append(ValidationError(
                             field=f"{prefix}extends",
@@ -1189,7 +1175,9 @@ class TemplateService:
                 # Terminology refs
                 if field.terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.terminology_ref, pool_id=term_pool_id)
+                        exists = await def_store.terminology_exists(
+                            field.terminology_ref, namespace=namespace
+                        )
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.terminology_ref",
@@ -1205,7 +1193,9 @@ class TemplateService:
 
                 if field.array_terminology_ref:
                     try:
-                        exists = await def_store.terminology_exists(field.array_terminology_ref, pool_id=term_pool_id)
+                        exists = await def_store.terminology_exists(
+                            field.array_terminology_ref, namespace=namespace
+                        )
                         if not exists:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.array_terminology_ref",
@@ -1221,11 +1211,11 @@ class TemplateService:
 
                 # Template refs
                 if field.template_ref:
-                    in_set = field.template_ref in set_ids or field.template_ref in set_codes
+                    in_set = field.template_ref in set_ids or field.template_ref in set_values
                     if not in_set:
-                        ref_tpl = await Template.find_one({"template_id": field.template_ref})
-                        if not ref_tpl:
-                            ref_tpl = await Template.find_one({"pool_id": pool_id, "code": field.template_ref})
+                        ref_tpl = await TemplateService._find_template_by_ref(
+                            field.template_ref, namespace
+                        )
                         if not ref_tpl:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.template_ref",
@@ -1240,11 +1230,11 @@ class TemplateService:
                             ))
 
                 if field.array_template_ref:
-                    in_set = field.array_template_ref in set_ids or field.array_template_ref in set_codes
+                    in_set = field.array_template_ref in set_ids or field.array_template_ref in set_values
                     if not in_set:
-                        ref_tpl = await Template.find_one({"template_id": field.array_template_ref})
-                        if not ref_tpl:
-                            ref_tpl = await Template.find_one({"pool_id": pool_id, "code": field.array_template_ref})
+                        ref_tpl = await TemplateService._find_template_by_ref(
+                            field.array_template_ref, namespace
+                        )
                         if not ref_tpl:
                             errors.append(ValidationError(
                                 field=f"{prefix}fields.{field.name}.array_template_ref",
@@ -1275,21 +1265,23 @@ class TemplateService:
                                     message="target_templates is required for document references"
                                 ))
                             else:
-                                for tpl_code in field.target_templates:
-                                    in_set = tpl_code in set_codes or tpl_code in set_ids
+                                for tpl_val in field.target_templates:
+                                    in_set = tpl_val in set_values or tpl_val in set_ids
                                     if not in_set:
-                                        ref_tpl = await Template.find_one({"pool_id": pool_id, "code": tpl_code})
+                                        ref_tpl = await TemplateService._find_template_by_ref(
+                                            tpl_val, namespace
+                                        )
                                         if not ref_tpl:
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_templates",
                                                 code="invalid_reference",
-                                                message=f"Template '{tpl_code}' not found"
+                                                message=f"Template '{tpl_val}' not found"
                                             ))
                                         elif ref_tpl.status not in ("active",):
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_templates",
                                                 code="invalid_reference",
-                                                message=f"Template '{tpl_code}' is {ref_tpl.status}, not active"
+                                                message=f"Template '{tpl_val}' is {ref_tpl.status}, not active"
                                             ))
 
                         elif field.reference_type.value == "term":
@@ -1300,14 +1292,16 @@ class TemplateService:
                                     message="target_terminologies is required for term references"
                                 ))
                             else:
-                                for term_code in field.target_terminologies:
+                                for term_val in field.target_terminologies:
                                     try:
-                                        exists = await def_store.terminology_exists(term_code, pool_id=term_pool_id)
+                                        exists = await def_store.terminology_exists(
+                                            term_val, namespace=namespace
+                                        )
                                         if not exists:
                                             errors.append(ValidationError(
                                                 field=f"{prefix}fields.{field.name}.target_terminologies",
                                                 code="invalid_reference",
-                                                message=f"Terminology '{term_code}' not found or inactive"
+                                                message=f"Terminology '{term_val}' not found or inactive"
                                             ))
                                     except DefStoreError as e:
                                         warnings.append(ValidationWarning(
@@ -1321,22 +1315,22 @@ class TemplateService:
     @staticmethod
     async def activate_template(
         template_id: str,
-        pool_id: str = "wip-templates",
+        namespace: str = "wip",
         dry_run: bool = False
     ):
         """
         Activate a draft template and all draft templates it references (cascading).
 
-        1. Find template → verify status is "draft"
+        1. Find template -> verify status is "draft"
         2. Build activation set (BFS through references)
         3. Validate the full set as a unit
-        4. If errors → return errors, no state changes
-        5. If dry_run → return preview
+        4. If errors -> return errors, no state changes
+        5. If dry_run -> return preview
         6. Set status="active" on all, save, publish events
 
         Args:
             template_id: The draft template to activate
-            pool_id: Pool ID for lookups
+            namespace: Namespace for lookups
             dry_run: If True, return preview without making changes
 
         Returns:
@@ -1357,11 +1351,11 @@ class TemplateService:
             )
 
         # Build the full activation set (all reachable drafts)
-        activation_set = await TemplateService._build_activation_set(template, pool_id)
+        activation_set = await TemplateService._build_activation_set(template, namespace)
 
         # Validate the full set
         errors, warnings = await TemplateService._validate_activation_set(
-            activation_set, pool_id
+            activation_set, namespace
         )
 
         if errors:
@@ -1379,7 +1373,7 @@ class TemplateService:
                 activation_details=[
                     ActivationDetail(
                         template_id=t.template_id,
-                        code=t.code,
+                        value=t.value,
                         status="would_activate"
                     )
                     for t in activation_set
@@ -1392,19 +1386,21 @@ class TemplateService:
         # Build known_templates from activation set for cross-resolution
         known_templates = {}
         for t in activation_set:
-            known_templates[t.code] = t.template_id
+            known_templates[t.value] = t.template_id
             known_templates[t.template_id] = t.template_id
 
         # Normalize all references to canonical IDs
         for t in activation_set:
             await TemplateService._normalize_field_references(
-                t.fields, pool_id, known_templates=known_templates
+                t.fields, namespace, known_templates=known_templates
             )
-            # Also normalize extends if it's a code
-            if t.extends and not t.extends.startswith("TPL-"):
-                t.extends = await TemplateService._resolve_to_template_id(
-                    t.extends, pool_id, known_templates=known_templates
+            # Also normalize extends if it's a value (not already an ID)
+            if t.extends:
+                resolved = await TemplateService._resolve_to_template_id(
+                    t.extends, namespace, known_templates=known_templates
                 )
+                if resolved:
+                    t.extends = resolved
 
         # Activate all templates in the set
         actor = get_identity_string()
@@ -1430,7 +1426,7 @@ class TemplateService:
             activation_details=[
                 ActivationDetail(
                     template_id=t.template_id,
-                    code=t.code,
+                    value=t.value,
                     status="activated"
                 )
                 for t in activation_set
@@ -1449,8 +1445,8 @@ class TemplateService:
         """Convert Template document to event payload for NATS publishing."""
         return {
             "template_id": t.template_id,
-            "code": t.code,
-            "name": t.name,
+            "value": t.value,
+            "label": t.label,
             "description": t.description,
             "version": t.version,
             "extends": t.extends,
@@ -1471,8 +1467,9 @@ class TemplateService:
         """Convert Template document to response model."""
         return TemplateResponse(
             template_id=t.template_id,
-            code=t.code,
-            name=t.name,
+            namespace=t.namespace,
+            value=t.value,
+            label=t.label,
             description=t.description,
             version=t.version,
             extends=t.extends,
@@ -1489,75 +1486,92 @@ class TemplateService:
         )
 
     @staticmethod
+    async def _find_template_by_ref(
+        ref: str,
+        namespace: str
+    ) -> Optional[Template]:
+        """
+        Find a template by reference (ID or value).
+
+        Tries ID lookup first, then value lookup within namespace.
+
+        Args:
+            ref: Template ID or value
+            namespace: Namespace for value lookups
+        """
+        # Try by template_id first
+        template = await Template.find_one({"template_id": ref})
+        if template:
+            return template
+        # Try by value within namespace
+        return await Template.find_one({"namespace": namespace, "value": ref})
+
+    @staticmethod
     async def _resolve_to_template_id(
         ref: str,
-        pool_id: str,
+        namespace: str,
         known_templates: dict[str, str] | None = None
     ) -> str:
         """
         Resolve a template reference to a canonical template_id.
 
-        Accepts either a template_id (TPL-XXXXXX) or a code.
+        Accepts either a template_id or a value.
         Returns the canonical template_id.
 
         Args:
-            ref: Template ID or code
-            pool_id: Pool to search in for code lookups
-            known_templates: Optional dict {code→template_id, template_id→template_id}
+            ref: Template ID or value
+            namespace: Namespace to search in for value lookups
+            known_templates: Optional dict {value->template_id, template_id->template_id}
                 for resolving within an activation set
         """
         # Check known_templates first (for activation set cross-references)
         if known_templates and ref in known_templates:
             return known_templates[ref]
 
-        if ref.startswith("TPL-"):
-            # Validate it exists
-            template = await Template.find_one({"template_id": ref})
-            if not template:
-                raise ValueError(f"Template '{ref}' not found")
+        # Try by template_id
+        template = await Template.find_one({"template_id": ref})
+        if template:
             return ref
 
-        # It's a code — resolve to latest active template_id in the pool
+        # It's a value — resolve to latest active template_id in the namespace
         template = await Template.find_one(
-            {"pool_id": pool_id, "code": ref, "status": "active"},
+            {"namespace": namespace, "value": ref, "status": "active"},
             sort=[("version", -1)]
         )
         if not template:
             raise ValueError(
-                f"No active template with code '{ref}' found in pool '{pool_id}'"
+                f"No active template with value '{ref}' found in namespace '{namespace}'"
             )
         return template.template_id
 
     @staticmethod
     async def _resolve_to_terminology_id(
         ref: str,
-        pool_id: str = "wip-terminologies"
+        namespace: str = "wip"
     ) -> str:
         """
         Resolve a terminology reference to a canonical terminology_id.
 
-        Accepts either a terminology_id (TERM-XXXXXX) or a code.
+        Accepts either a terminology_id or a value.
         Returns the canonical terminology_id.
 
         Args:
-            ref: Terminology ID or code
-            pool_id: Pool to search in for code lookups
+            ref: Terminology ID or value
+            namespace: Namespace to search in for value lookups
         """
         def_store = get_def_store_client()
 
-        if ref.startswith("TERM-") or "-TERM-" in ref:
-            # Validate it exists and is active
-            terminology = await def_store.get_terminology(terminology_id=ref, pool_id=pool_id)
-            if not terminology:
-                raise ValueError(f"Terminology '{ref}' not found")
+        # Try as ID first
+        terminology = await def_store.get_terminology(terminology_id=ref, namespace=namespace)
+        if terminology:
             if terminology.get("status") != "active":
                 raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
-            return ref
+            return terminology["terminology_id"]
 
-        # It's a code — look up by code
-        terminology = await def_store.get_terminology(terminology_code=ref, pool_id=pool_id)
+        # Try as value
+        terminology = await def_store.get_terminology(terminology_value=ref, namespace=namespace)
         if not terminology:
-            raise ValueError(f"No terminology with code '{ref}' found")
+            raise ValueError(f"No terminology with value '{ref}' found")
         if terminology.get("status") != "active":
             raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
         return terminology["terminology_id"]
@@ -1565,85 +1579,73 @@ class TemplateService:
     @staticmethod
     async def _normalize_field_references(
         fields: list,
-        pool_id: str,
+        namespace: str,
         known_templates: dict[str, str] | None = None
     ) -> None:
         """
         Normalize all reference fields to canonical IDs.
 
-        Resolves template codes to template_ids and terminology codes to
+        Resolves template values to template_ids and terminology values to
         terminology_ids. Mutates fields in-place.
 
         Args:
             fields: List of FieldDefinition objects
-            pool_id: Pool ID for template lookups
+            namespace: Namespace for lookups
             known_templates: Optional dict for activation set cross-references
         """
-        # Derive terminology pool from template pool (same namespace prefix)
-        # e.g., "seed-templates" -> "seed-terminologies"
-        term_pool_id: str | None = None
-        if pool_id != "wip-templates":
-            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
-
         for field in fields:
             # Template references
             if field.target_templates:
                 field.target_templates = [
                     await TemplateService._resolve_to_template_id(
-                        ref, pool_id, known_templates
+                        ref, namespace, known_templates
                     )
                     for ref in field.target_templates
                 ]
 
             if field.template_ref:
                 field.template_ref = await TemplateService._resolve_to_template_id(
-                    field.template_ref, pool_id, known_templates
+                    field.template_ref, namespace, known_templates
                 )
 
             if field.array_template_ref:
                 field.array_template_ref = await TemplateService._resolve_to_template_id(
-                    field.array_template_ref, pool_id, known_templates
+                    field.array_template_ref, namespace, known_templates
                 )
 
             # Terminology references
             if field.terminology_ref:
                 field.terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.terminology_ref, pool_id=term_pool_id
+                    field.terminology_ref, namespace=namespace
                 )
 
             if field.array_terminology_ref:
                 field.array_terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.array_terminology_ref, pool_id=term_pool_id
+                    field.array_terminology_ref, namespace=namespace
                 )
 
             if field.target_terminologies:
                 field.target_terminologies = [
                     await TemplateService._resolve_to_terminology_id(
-                        ref, pool_id=term_pool_id
+                        ref, namespace=namespace
                     )
                     for ref in field.target_terminologies
                 ]
 
     @staticmethod
-    async def _validate_field_references(fields: list, pool_id: str = "wip-templates") -> list[str]:
+    async def _validate_field_references(fields: list, namespace: str = "wip") -> list[str]:
         """
         Validate terminology_ref and template_ref values in fields.
 
         Args:
             fields: List of field definitions
-            pool_id: Template pool ID (used to derive terminology pool for cross-service lookups)
+            namespace: Namespace for cross-service lookups
 
         Returns:
             List of error messages for invalid references
         """
         errors = []
         def_store = get_def_store_client()
-
-        # Derive terminology pool from template pool (same namespace prefix)
-        # e.g., "seed-templates" -> "seed-terminologies", "wip-templates" -> "wip-terminologies"
-        term_pool_id: str | None = None
-        if pool_id != "wip-templates":
-            term_pool_id = pool_id.rsplit("-", 1)[0] + "-terminologies"
 
         for field in fields:
             field_name = field.name if hasattr(field, 'name') else field.get('name', 'unknown')
@@ -1654,14 +1656,11 @@ class TemplateService:
                 term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
                 if term_ref:
                     try:
-                        if term_ref.startswith("TERM-") or "-TERM-" in term_ref:
-                            terminology = await def_store.get_terminology(terminology_id=term_ref, pool_id=term_pool_id)
-                        else:
-                            terminology = await def_store.get_terminology(terminology_code=term_ref, pool_id=term_pool_id)
-                        if terminology is None:
-                            errors.append(f"Field '{field_name}': terminology '{term_ref}' not found")
-                        elif terminology.get('status') != 'active':
-                            errors.append(f"Field '{field_name}': terminology '{term_ref}' is {terminology.get('status')}")
+                        exists = await def_store.terminology_exists(
+                            term_ref, namespace=namespace
+                        )
+                        if not exists:
+                            errors.append(f"Field '{field_name}': terminology '{term_ref}' not found or inactive")
                     except DefStoreError as e:
                         errors.append(f"Field '{field_name}': could not validate terminology '{term_ref}': {e}")
 
@@ -1669,10 +1668,7 @@ class TemplateService:
             if field_type == 'object':
                 tpl_ref = field.template_ref if hasattr(field, 'template_ref') else field.get('template_ref')
                 if tpl_ref:
-                    if tpl_ref.startswith("TPL-"):
-                        referenced = await Template.find_one({"template_id": tpl_ref})
-                    else:
-                        referenced = await Template.find_one({"pool_id": pool_id, "code": tpl_ref})
+                    referenced = await TemplateService._find_template_by_ref(tpl_ref, namespace)
                     if referenced is None:
                         errors.append(f"Field '{field_name}': template '{tpl_ref}' not found")
                     elif referenced.status != 'active':
@@ -1686,24 +1682,20 @@ class TemplateService:
                     array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
                     if array_term_ref:
                         try:
-                            if array_term_ref.startswith("TERM-") or "-TERM-" in array_term_ref:
-                                terminology = await def_store.get_terminology(terminology_id=array_term_ref, pool_id=term_pool_id)
-                            else:
-                                terminology = await def_store.get_terminology(terminology_code=array_term_ref, pool_id=term_pool_id)
-                            if terminology is None:
-                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found")
-                            elif terminology.get('status') != 'active':
-                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' is {terminology.get('status')}")
+                            exists = await def_store.terminology_exists(
+                                array_term_ref, namespace=namespace
+                            )
+                            if not exists:
+                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found or inactive")
                         except DefStoreError as e:
                             errors.append(f"Field '{field_name}[]': could not validate terminology '{array_term_ref}': {e}")
 
                 if array_item_type == 'object':
                     array_tpl_ref = field.array_template_ref if hasattr(field, 'array_template_ref') else field.get('array_template_ref')
                     if array_tpl_ref:
-                        if array_tpl_ref.startswith("TPL-"):
-                            referenced = await Template.find_one({"template_id": array_tpl_ref})
-                        else:
-                            referenced = await Template.find_one({"pool_id": pool_id, "code": array_tpl_ref})
+                        referenced = await TemplateService._find_template_by_ref(
+                            array_tpl_ref, namespace
+                        )
                         if referenced is None:
                             errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' not found")
                         elif referenced.status != 'active':

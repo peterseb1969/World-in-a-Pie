@@ -1,6 +1,6 @@
 """File model for the Document Store service.
 
-Files are first-class entities with Registry IDs (FILE-XXXXXX), stored in MinIO,
+Files are first-class entities with Registry IDs, stored in MinIO,
 and referenced by documents like any other reference type.
 """
 
@@ -45,23 +45,23 @@ class File(BeanieDocument):
     """
     A file entity stored in MinIO.
 
-    Files are first-class entities with Registry IDs (FILE-XXXXXX).
+    Files are first-class entities with Registry IDs.
     They can be shared across multiple documents and support
     orphan detection for cleanup.
 
     The storage_key in MinIO is simply the file_id for easy mapping.
     """
 
-    # Pool ID for multi-tenant isolation
-    pool_id: str = Field(
-        default="wip-files",
-        description="Pool ID for data isolation (e.g., wip-files, dev-files)"
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation (e.g., wip, dev, seed)"
     )
 
-    # Identity (from Registry - FILE-XXXXXX)
+    # Identity (from Registry)
     file_id: str = Field(
         ...,
-        description="Unique ID from Registry (FILE-XXXXXX)"
+        description="Unique ID from Registry"
     )
 
     # Core file properties
@@ -107,7 +107,7 @@ class File(BeanieDocument):
     # Optional: restrict which templates can use this file
     allowed_templates: Optional[list[str]] = Field(
         None,
-        description="Template codes that can reference this file (None = all)"
+        description="Template values that can reference this file (None = all)"
     )
 
     # Lifecycle
@@ -131,21 +131,21 @@ class File(BeanieDocument):
     class Settings:
         name = "files"
         indexes = [
-            # Unique file ID within pool
-            IndexModel([("pool_id", 1), ("file_id", 1)], unique=True, name="pool_file_id_unique_idx"),
-            # Status queries within pool
-            IndexModel([("pool_id", 1), ("status", 1)], name="pool_file_status_idx"),
-            # Duplicate detection by checksum within pool
-            IndexModel([("pool_id", 1), ("checksum", 1)], name="pool_file_checksum_idx"),
-            # Content type filter within pool
-            IndexModel([("pool_id", 1), ("content_type", 1)], name="pool_file_content_type_idx"),
-            # Orphan detection within pool
+            # Unique file ID within namespace
+            IndexModel([("namespace", 1), ("file_id", 1)], unique=True, name="ns_file_id_unique_idx"),
+            # Status queries within namespace
+            IndexModel([("namespace", 1), ("status", 1)], name="ns_file_status_idx"),
+            # Duplicate detection by checksum within namespace
+            IndexModel([("namespace", 1), ("checksum", 1)], name="ns_file_checksum_idx"),
+            # Content type filter within namespace
+            IndexModel([("namespace", 1), ("content_type", 1)], name="ns_file_content_type_idx"),
+            # Orphan detection within namespace
             IndexModel(
-                [("pool_id", 1), ("status", 1), ("reference_count", 1)],
-                name="pool_file_orphan_idx"
+                [("namespace", 1), ("status", 1), ("reference_count", 1)],
+                name="ns_file_orphan_idx"
             ),
-            # Time-based queries within pool
-            IndexModel([("pool_id", 1), ("uploaded_at", DESCENDING)], name="pool_file_uploaded_at_idx"),
+            # Time-based queries within namespace
+            IndexModel([("namespace", 1), ("uploaded_at", DESCENDING)], name="ns_file_uploaded_at_idx"),
             # Global file_id lookup (for cross-namespace refs in open mode)
             IndexModel([("file_id", 1)], unique=True, name="file_id_unique_idx"),
             # Tag search (global - typically tags are namespace-agnostic)
@@ -171,7 +171,7 @@ class FileReference(BaseModel):
     )
     file_id: str = Field(
         ...,
-        description="Reference to file entity (FILE-XXXXXX)"
+        description="Reference to file entity"
     )
     # Denormalized for display (avoids extra lookups)
     filename: str = Field(

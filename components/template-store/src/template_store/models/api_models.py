@@ -22,17 +22,21 @@ class StrictModel(BaseModel):
 class CreateTemplateRequest(StrictModel):
     """Request to create a new template."""
 
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Human-readable code (e.g., 'PERSON')"
+        description="Human-readable value (e.g., 'PERSON')"
     )
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Display name"
+        description="Display label"
     )
     description: Optional[str] = Field(
         None,
         description="Detailed description"
+    )
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for the template"
     )
     extends: Optional[str] = Field(
         None,
@@ -75,13 +79,13 @@ class CreateTemplateRequest(StrictModel):
 class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
-    code: Optional[str] = Field(
+    value: Optional[str] = Field(
         None,
-        description="New code (triggers Registry synonym)"
+        description="New value (triggers Registry synonym)"
     )
-    name: Optional[str] = Field(
+    label: Optional[str] = Field(
         None,
-        description="New display name"
+        description="New display label"
     )
     description: Optional[str] = Field(
         None,
@@ -121,8 +125,9 @@ class TemplateResponse(BaseModel):
     """Response containing template details."""
 
     template_id: str
-    code: str
-    name: str
+    namespace: str
+    value: str
+    label: str
     description: Optional[str] = None
     version: int = 1
     extends: Optional[str] = None
@@ -151,7 +156,7 @@ class TemplateUpdateResponse(BaseModel):
     """Response after updating a template."""
 
     template_id: str
-    code: str
+    value: str
     version: int
     is_new_version: bool = Field(
         ...,
@@ -186,7 +191,7 @@ class BulkOperationResult(BaseModel):
     index: int
     status: str  # created, updated, error, skipped
     id: Optional[str] = None
-    code: Optional[str] = None
+    value: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -249,7 +254,7 @@ class ActivationDetail(BaseModel):
     """Detail for a single template in an activation operation."""
 
     template_id: str
-    code: str
+    value: str
     status: str = Field(
         ...,
         description="Result: 'activated' or 'would_activate' (dry_run)"
@@ -281,7 +286,7 @@ class ActivateTemplateResponse(BaseModel):
 class CascadeResult(BaseModel):
     """Result of cascading a parent update to a single child template."""
 
-    code: str
+    value: str
     old_template_id: str
     new_template_id: Optional[str] = None
     new_version: Optional[int] = None
@@ -296,7 +301,7 @@ class CascadeResponse(BaseModel):
     """Response for template cascade operation."""
 
     parent_template_id: str
-    parent_code: str
+    parent_value: str
     parent_version: int
     total: int
     updated: int

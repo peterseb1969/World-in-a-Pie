@@ -6,23 +6,19 @@ import { registryClient } from '@/api/client'
  * User-facing namespace for organizing data.
  *
  * Users work with Namespaces (e.g., "wip", "dev", "prod"). Each namespace
- * automatically creates 5 ID pools for ID generation per entity type.
+ * has configurable ID generation per entity type.
  */
 export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
   allowed_external_refs: string[]
+  id_config: Record<string, unknown>
   status: 'active' | 'archived' | 'deleted'
   created_at: string
   created_by: string | null
   updated_at: string
   updated_by: string | null
-  terminologies_pool: string
-  terms_pool: string
-  templates_pool: string
-  documents_pool: string
-  files_pool: string
 }
 
 export interface NamespaceStats {
@@ -30,7 +26,7 @@ export interface NamespaceStats {
   description: string
   isolation_mode: string
   status: string
-  pools: Record<string, number>
+  entity_counts: Record<string, number>
 }
 
 const STORAGE_KEY = 'wip-namespace'
@@ -45,13 +41,8 @@ export const useNamespaceStore = defineStore('namespace', () => {
   // "all" is a special value meaning no namespace filtering
   const isAll = computed(() => current.value === 'all')
 
-  // Computed - derive ID pool names from current namespace
-  // When "all" is selected, pools are undefined so the API param is omitted
-  const terminologiesPool = computed(() => isAll.value ? undefined : `${current.value}-terminologies`)
-  const termsPool = computed(() => isAll.value ? undefined : `${current.value}-terms`)
-  const templatesPool = computed(() => isAll.value ? undefined : `${current.value}-templates`)
-  const documentsPool = computed(() => isAll.value ? undefined : `${current.value}-documents`)
-  const filesPool = computed(() => isAll.value ? undefined : `${current.value}-files`)
+  // Returns the current namespace string for API params, or undefined for "all"
+  const currentNamespaceParam = computed(() => isAll.value ? undefined : current.value)
 
   // Current namespace object
   const currentNamespace = computed(() =>
@@ -171,11 +162,7 @@ export const useNamespaceStore = defineStore('namespace', () => {
     loading,
     error,
     // Computed
-    terminologiesPool,
-    termsPool,
-    templatesPool,
-    documentsPool,
-    filesPool,
+    currentNamespaceParam,
     currentNamespace,
     isAll,
     isNonProduction,

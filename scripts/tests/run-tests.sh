@@ -314,7 +314,7 @@ collect_data_stats() {
     # Document-Store documents
     local doc_resp
     doc_resp=$(curl -sf -H "X-API-Key: $API_KEY" \
-        "http://localhost:${PORT_DOCUMENT_STORE:-8004}/api/document-store/documents?limit=1" 2>/dev/null || echo '{"total":0}')
+        "http://localhost:${PORT_DOCUMENT_STORE:-8004}/api/document-store/documents?page_size=1" 2>/dev/null || echo '{"total":0}')
     DATA_STATS_DOCUMENTS=$(echo "$doc_resp" | sed -n 's/.*"total":\([0-9]*\).*/\1/p' | head -1)
     : "${DATA_STATS_DOCUMENTS:=0}"
 

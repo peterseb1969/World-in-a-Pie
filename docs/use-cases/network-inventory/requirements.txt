@@ -1,2 +1,0 @@
-# Network Inventory Use Case Dependencies
-requests>=2.28.0

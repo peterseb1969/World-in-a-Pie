@@ -9,19 +9,14 @@ import httpx
 
 class TerminologyCache:
     """
-    Cache for complete terminologies.
+    Cache for complete terminologies with TTL-based refresh.
 
     Caches entire terminologies (with all terms) for fast local validation.
-    Much more efficient than caching individual term validations.
+    Terminologies are essentially immutable, so a 5-minute TTL is just a
+    safety net to pick up any rare changes.
     """
 
     def __init__(self, ttl: int = 300):
-        """
-        Initialize the terminology cache.
-
-        Args:
-            ttl: Time-to-live in seconds (default 5 minutes)
-        """
         self.ttl = ttl
         # terminology_ref -> (terminology_data, timestamp)
         self._cache: dict[str, tuple[dict[str, Any], float]] = {}
@@ -36,7 +31,6 @@ class TerminologyCache:
                 self._hits += 1
                 return data
             else:
-                # Expired
                 del self._cache[terminology_ref]
         self._misses += 1
         return None
@@ -79,7 +73,7 @@ class DefStoreClient:
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         timeout: float = 10.0,
-        cache_ttl: int = DEFAULT_CACHE_TTL
+        cache_ttl: int = DEFAULT_CACHE_TTL,
     ):
         """
         Initialize the Def-Store client.
@@ -88,7 +82,7 @@ class DefStoreClient:
             base_url: Def-Store API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
-            cache_ttl: Cache time-to-live in seconds (default 5 minutes)
+            cache_ttl: Terminology cache TTL in seconds (default 5 minutes)
         """
         self.base_url = base_url or os.getenv(
             "DEF_STORE_URL",
@@ -100,7 +94,7 @@ class DefStoreClient:
         )
         self.timeout = timeout
 
-        # Cache for complete terminologies
+        # Cache for complete terminologies (refreshed every TTL seconds)
         self._terminology_cache = TerminologyCache(ttl=cache_ttl)
 
         # Track validation stats
@@ -140,28 +134,30 @@ class DefStoreClient:
         terminology_ref: str
     ) -> Optional[dict[str, Any]]:
         """
-        Fetch a terminology with all its terms from Def-Store.
+        Fetch a terminology with ALL its terms from Def-Store.
+
+        Makes exactly 1 HTTP connection: fetches the terminology metadata,
+        then paginates through all terms using the same client.
 
         Args:
-            terminology_ref: Terminology ID or code
+            terminology_ref: Terminology ID or value
 
         Returns:
-            Terminology data with terms, or None if not found
+            Terminology data with terms and _lookup index, or None if not found
         """
-        # Determine endpoint based on ref format
-        # Terminology IDs contain "TERM-" followed by digits (e.g., TERM-000001, SEED-TERM-000002)
-        if "TERM-" in terminology_ref and terminology_ref.split("TERM-")[-1].isdigit():
-            url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
-        else:
-            url = f"{self.base_url}/api/def-store/terminologies/by-code/{terminology_ref}"
+        url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # Fetch terminology
-                response = await client.get(url, headers=self._get_headers())
+                headers = self._get_headers()
 
+                # Fetch terminology (try ID, fall back to value)
+                response = await client.get(url, headers=headers)
                 if response.status_code == 404:
-                    return None
+                    value_url = f"{self.base_url}/api/def-store/terminologies/by-value/{terminology_ref}"
+                    response = await client.get(value_url, headers=headers)
+                    if response.status_code == 404:
+                        return None
 
                 if response.status_code != 200:
                     raise DefStoreError(
@@ -171,22 +167,28 @@ class DefStoreClient:
                 terminology = response.json()
                 terminology_id = terminology.get("terminology_id")
 
-                # Fetch all terms for this terminology
+                # Fetch ALL terms (paginate if >500)
+                all_terms = []
                 terms_url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}/terms"
-                terms_response = await client.get(
-                    terms_url,
-                    headers=self._get_headers(),
-                    params={"limit": 10000}  # Get all terms
-                )
-
-                if terms_response.status_code == 200:
+                page = 1
+                while True:
+                    terms_response = await client.get(
+                        terms_url,
+                        headers=headers,
+                        params={"page_size": 500, "page": page},
+                    )
+                    if terms_response.status_code != 200:
+                        break
                     terms_data = terms_response.json()
-                    terminology["terms"] = terms_data.get("items", [])
-                else:
-                    terminology["terms"] = []
+                    items = terms_data.get("items", [])
+                    all_terms.extend(items)
+                    # Stop when we got fewer than page_size (last page)
+                    if len(items) < 500:
+                        break
+                    page += 1
 
-                # Build lookup indexes for fast validation
-                terminology["_lookup"] = self._build_term_lookup(terminology["terms"])
+                terminology["terms"] = all_terms
+                terminology["_lookup"] = self._build_term_lookup(all_terms)
 
                 return terminology
 
@@ -235,15 +237,13 @@ class DefStoreClient:
         terminology = await self._fetch_terminology_with_terms(terminology_ref)
         if terminology:
             self._terminology_cache.set(terminology_ref, terminology)
-            # Also cache by the other ref (code or id) for convenience
-            if "TERM-" in terminology_ref and terminology_ref.split("TERM-")[-1].isdigit():
-                code = terminology.get("code")
-                if code:
-                    self._terminology_cache.set(code, terminology)
-            else:
-                term_id = terminology.get("terminology_id")
-                if term_id:
-                    self._terminology_cache.set(term_id, terminology)
+            # Also cache by the other ref (value or id) for convenience
+            term_id = terminology.get("terminology_id")
+            value = terminology.get("value")
+            if term_id and term_id != terminology_ref:
+                self._terminology_cache.set(term_id, terminology)
+            if value and value != terminology_ref:
+                self._terminology_cache.set(value, terminology)
 
         return terminology
 
@@ -283,22 +283,22 @@ class DefStoreClient:
     async def get_terminology(
         self,
         terminology_id: Optional[str] = None,
-        terminology_code: Optional[str] = None
+        terminology_value: Optional[str] = None
     ) -> Optional[dict[str, Any]]:
         """
-        Get a terminology by ID or code.
+        Get a terminology by ID or value.
 
         Args:
-            terminology_id: Terminology ID (e.g., 'TERM-000001')
-            terminology_code: Terminology code (e.g., 'DOC_STATUS')
+            terminology_id: Terminology ID
+            terminology_value: Terminology value (e.g., 'DOC_STATUS')
 
         Returns:
             Terminology data if found, None otherwise
         """
         if terminology_id:
             return await self._get_terminology_cached(terminology_id)
-        elif terminology_code:
-            return await self._get_terminology_cached(terminology_code)
+        elif terminology_value:
+            return await self._get_terminology_cached(terminology_value)
         return None
 
     async def terminology_exists(
@@ -446,13 +446,13 @@ def get_def_store_client() -> DefStoreClient:
 def configure_def_store_client(
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-    cache_ttl: Optional[int] = None
+    cache_ttl: Optional[int] = None,
 ) -> DefStoreClient:
     """Configure and return the Def-Store client."""
     global _client
     _client = DefStoreClient(
         base_url=base_url,
         api_key=api_key,
-        cache_ttl=cache_ttl or DefStoreClient.DEFAULT_CACHE_TTL
+        cache_ttl=cache_ttl or DefStoreClient.DEFAULT_CACHE_TTL,
     )
     return _client

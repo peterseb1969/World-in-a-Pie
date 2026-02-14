@@ -38,17 +38,17 @@ router = APIRouter(tags=["Terms"])
 async def create_term(
     terminology_id: str,
     request: CreateTermRequest,
-    pool_id: str = Query(default="wip-terms", description="Pool ID for the term"),
     api_key: str = Depends(require_api_key)
 ) -> TermResponse:
     """
     Create a new term in a terminology.
 
+    Namespace is inherited from the parent terminology.
     The term will be registered with the Registry service to get
-    a unique ID (e.g., T-000042).
+    a unique ID.
     """
     try:
-        return await TerminologyService.create_term(terminology_id, request, pool_id=pool_id)
+        return await TerminologyService.create_term(terminology_id, request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -64,10 +64,6 @@ async def create_term(
 async def create_terms_bulk(
     terminology_id: str,
     request: BulkCreateTermRequest,
-    pool_id: str = Query(
-        default="wip-terms",
-        description="Pool ID for the terms"
-    ),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -82,6 +78,7 @@ async def create_terms_bulk(
     """
     Create multiple terms in a terminology at once.
 
+    Namespace is inherited from the parent terminology.
     Useful for importing terms or seeding data.
 
     For very large imports (100k+ terms), you may need to tune the batch sizes:
@@ -97,7 +94,6 @@ async def create_terms_bulk(
             created_by=request.created_by,
             batch_size=batch_size,
             registry_batch_size=registry_batch_size,
-            pool_id=pool_id,
         )
         succeeded = sum(1 for r in results if r.status in ("created", "updated"))
         failed = sum(1 for r in results if r.status == "error")
@@ -121,7 +117,7 @@ async def create_terms_bulk(
 )
 async def list_terms(
     terminology_id: str,
-    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (auto-derived from terminology if omitted)"),
+    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -132,13 +128,11 @@ async def list_terms(
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
-        # Try by code — derive terminology pool from term pool or search all
-        if pool_id:
-            term_ns_prefix = pool_id.rsplit("-", 1)[0] if "-" in pool_id else "wip"
-            terminology_pool = f"{term_ns_prefix}-terminologies"
-            terminology = await Terminology.find_one({"pool_id": terminology_pool, "code": terminology_id})
+        # Try by value
+        if namespace:
+            terminology = await Terminology.find_one({"namespace": namespace, "value": terminology_id})
         else:
-            terminology = await Terminology.find_one({"code": terminology_id})
+            terminology = await Terminology.find_one({"value": terminology_id})
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
 
@@ -148,7 +142,7 @@ async def list_terms(
         page=page,
         page_size=page_size,
         search=search,
-        pool_id=pool_id
+        namespace=namespace
     )
 
     return TermListResponse(
@@ -157,7 +151,7 @@ async def list_terms(
         page=page,
         page_size=page_size,
         terminology_id=terminology.terminology_id,
-        terminology_code=terminology.code
+        terminology_value=terminology.value
     )
 
 
@@ -260,23 +254,23 @@ async def validate_value(
     Returns whether the value is valid and the matching term if found.
     Also provides suggestions for close matches.
     """
-    if not request.terminology_id and not request.terminology_code:
+    if not request.terminology_id and not request.terminology_value:
         raise HTTPException(
             status_code=400,
-            detail="Must provide terminology_id or terminology_code"
+            detail="Must provide terminology_id or terminology_value"
         )
 
     # Get terminology for response
     if request.terminology_id:
         terminology = await Terminology.find_one({"terminology_id": request.terminology_id})
     else:
-        terminology = await Terminology.find_one({"code": request.terminology_code})
+        terminology = await Terminology.find_one({"value": request.terminology_value})
 
     if not terminology:
         return ValidateValueResponse(
             valid=False,
             terminology_id=request.terminology_id or "",
-            terminology_code=request.terminology_code or "",
+            terminology_value=request.terminology_value or "",
             value=request.value,
             error="Terminology not found"
         )
@@ -289,7 +283,7 @@ async def validate_value(
     return ValidateValueResponse(
         valid=is_valid,
         terminology_id=terminology.terminology_id,
-        terminology_code=terminology.code,
+        terminology_value=terminology.value,
         value=request.value,
         matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
         matched_via=matched_via,
@@ -315,15 +309,15 @@ async def validate_values_bulk(
         # Get terminology
         if item.terminology_id:
             terminology = await Terminology.find_one({"terminology_id": item.terminology_id})
-        elif item.terminology_code:
-            terminology = await Terminology.find_one({"code": item.terminology_code})
+        elif item.terminology_value:
+            terminology = await Terminology.find_one({"value": item.terminology_value})
         else:
             results.append(ValidateValueResponse(
                 valid=False,
                 terminology_id="",
-                terminology_code="",
+                terminology_value="",
                 value=item.value,
-                error="Must provide terminology_id or terminology_code"
+                error="Must provide terminology_id or terminology_value"
             ))
             invalid_count += 1
             continue
@@ -332,7 +326,7 @@ async def validate_values_bulk(
             results.append(ValidateValueResponse(
                 valid=False,
                 terminology_id=item.terminology_id or "",
-                terminology_code=item.terminology_code or "",
+                terminology_value=item.terminology_value or "",
                 value=item.value,
                 error="Terminology not found"
             ))
@@ -347,7 +341,7 @@ async def validate_values_bulk(
         results.append(ValidateValueResponse(
             valid=is_valid,
             terminology_id=terminology.terminology_id,
-            terminology_code=terminology.code,
+            terminology_value=terminology.value,
             value=item.value,
             matched_term=TerminologyService._to_term_response(matched_term) if matched_term else None,
             matched_via=matched_via,

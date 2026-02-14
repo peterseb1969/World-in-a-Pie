@@ -17,7 +17,7 @@ export const useTermStore = defineStore('term', () => {
   const page = ref(1)
   const pageSize = ref(50)
   const terminologyId = ref<string | null>(null)
-  const terminologyCode = ref<string | null>(null)
+  const terminologyValue = ref<string | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
 
@@ -36,7 +36,7 @@ export const useTermStore = defineStore('term', () => {
       page.value = response.page
       pageSize.value = response.page_size
       terminologyId.value = response.terminology_id
-      terminologyCode.value = response.terminology_code
+      terminologyValue.value = response.terminology_value
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch terms'
       throw e
@@ -158,7 +158,7 @@ export const useTermStore = defineStore('term', () => {
     terms.value = []
     total.value = 0
     terminologyId.value = null
-    terminologyCode.value = null
+    terminologyValue.value = null
   }
 
   function clearCurrent() {
@@ -172,7 +172,7 @@ export const useTermStore = defineStore('term', () => {
     page,
     pageSize,
     terminologyId,
-    terminologyCode,
+    terminologyValue,
     loading,
     error,
     fetchTerms,

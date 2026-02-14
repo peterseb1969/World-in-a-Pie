@@ -10,7 +10,7 @@ class RegistryClient:
     """
     Client for the WIP Registry service.
 
-    Handles ID generation and composite key registration for templates.
+    Handles ID registration and composite key management for templates.
     """
 
     def __init__(
@@ -46,24 +46,24 @@ class RegistryClient:
 
     async def register_template(
         self,
-        code: str,
-        name: str,
+        value: str,
+        label: str,
         version: int = 1,
         created_by: Optional[str] = None,
-        pool_id: str = "wip-templates"
+        namespace: str = "wip"
     ) -> str:
         """
         Register a new template in the Registry.
 
         Args:
-            code: Template code (e.g., 'PERSON')
-            name: Template name
+            value: Template value (e.g., 'PERSON')
+            label: Template label
             version: Template version (included in composite key for versioning)
             created_by: User or system creating this
-            pool_id: Pool ID for the template (default: wip-templates)
+            namespace: Namespace for the template (default: wip)
 
         Returns:
-            Generated template ID (e.g., 'TPL-000001')
+            Generated template ID (UUID by default)
 
         Raises:
             RegistryError: If registration fails
@@ -73,10 +73,11 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": pool_id,
+                    "namespace": namespace,
+                    "entity_type": "templates",
                     "composite_key": {
-                        "code": code,
-                        "name": name,
+                        "value": value,
+                        "label": label,
                         "version": version
                     },
                     "created_by": created_by,
@@ -105,15 +106,15 @@ class RegistryClient:
         self,
         templates: list[dict[str, Any]],
         created_by: Optional[str] = None,
-        pool_id: str = "wip-templates"
+        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple templates in the Registry.
 
         Args:
-            templates: List of template dicts with 'code', 'name', and optional 'version'
+            templates: List of template dicts with 'value', 'label', and optional 'version'
             created_by: User or system creating these
-            pool_id: Pool ID for the templates (default: wip-templates)
+            namespace: Namespace for the templates (default: wip)
 
         Returns:
             List of registration results with IDs
@@ -123,10 +124,11 @@ class RegistryClient:
         """
         items = [
             {
-                "pool_id": pool_id,
+                "namespace": namespace,
+                "entity_type": "templates",
                 "composite_key": {
-                    "code": template["code"],
-                    "name": template["name"],
+                    "value": template["value"],
+                    "label": template["label"],
                     "version": template.get("version", 1)
                 },
                 "created_by": created_by,
@@ -153,17 +155,19 @@ class RegistryClient:
     async def add_synonym(
         self,
         target_id: str,
-        new_code: str,
+        new_value: str,
+        namespace: str = "wip",
         additional_fields: Optional[dict[str, Any]] = None
     ) -> bool:
         """
-        Add a synonym when a code changes.
+        Add a synonym when a value changes.
 
-        This allows lookups by both old and new codes.
+        This allows lookups by both old and new values.
 
         Args:
             target_id: The existing registry ID
-            new_code: The new code to add as synonym
+            new_value: The new value to add as synonym
+            namespace: Namespace for the synonym
             additional_fields: Additional composite key fields
 
         Returns:
@@ -172,7 +176,7 @@ class RegistryClient:
         Raises:
             RegistryError: If operation fails
         """
-        composite_key = {"code": new_code}
+        composite_key = {"value": new_value}
         if additional_fields:
             composite_key.update(additional_fields)
 
@@ -181,9 +185,11 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "target_pool_id": "wip-templates",
+                    "target_namespace": namespace,
+                    "target_entity_type": "templates",
                     "target_id": target_id,
-                    "synonym_pool_id": "wip-templates",
+                    "synonym_namespace": namespace,
+                    "synonym_entity_type": "templates",
                     "synonym_composite_key": composite_key
                 }]
             )
@@ -196,22 +202,24 @@ class RegistryClient:
             data = response.json()
             return data[0].get("status") == "added"
 
-    async def lookup_by_code(
+    async def lookup_by_value(
         self,
-        code: str,
+        value: str,
+        namespace: str = "wip",
         additional_fields: Optional[dict[str, Any]] = None
     ) -> Optional[str]:
         """
-        Look up a registry ID by code.
+        Look up a registry ID by value.
 
         Args:
-            code: Code to look up
+            value: Value to look up
+            namespace: Namespace to search in
             additional_fields: Additional composite key fields
 
         Returns:
             Registry ID if found, None otherwise
         """
-        composite_key = {"code": code}
+        composite_key = {"value": value}
         if additional_fields:
             composite_key.update(additional_fields)
 
@@ -220,7 +228,8 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/entries/lookup/by-key",
                 headers=self._get_headers(),
                 json=[{
-                    "pool_id": "wip-templates",
+                    "namespace": namespace,
+                    "entity_type": "templates",
                     "composite_key": composite_key,
                     "search_synonyms": True
                 }]

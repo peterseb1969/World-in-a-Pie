@@ -24,7 +24,7 @@ class ReportingConfig(BaseModel):
     )
     table_name: Optional[str] = Field(
         default=None,
-        description="Custom PostgreSQL table name (auto-generated from code if not set)"
+        description="Custom PostgreSQL table name (auto-generated from value if not set)"
     )
     include_metadata: bool = Field(
         default=True,
@@ -77,28 +77,28 @@ class Template(Document):
     - Address template: street, city, postal_code, country
     """
 
-    # Pool ID for multi-tenant isolation
-    pool_id: str = Field(
-        default="wip-templates",
-        description="Pool ID for data isolation (e.g., wip-templates, dev-templates)"
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation (e.g., wip, dev, seed)"
     )
 
     # Identity (from Registry)
     template_id: str = Field(
         ...,
-        description="Unique ID from Registry (e.g., TPL-000001)"
+        description="Unique ID from Registry (UUID by default)"
     )
 
     # Human-friendly identifier (mutable)
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Human-readable code (e.g., 'PERSON'). Must be unique."
+        description="Human-readable value (e.g., 'PERSON'). Must be unique within namespace."
     )
 
     # Display information
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Display name (e.g., 'Person Template')"
+        description="Display label (e.g., 'Person Template')"
     )
     description: Optional[str] = Field(
         None,
@@ -170,18 +170,18 @@ class Template(Document):
     class Settings:
         name = "templates"
         indexes = [
-            # Unique ID within pool
-            IndexModel([("pool_id", 1), ("template_id", 1)], unique=True, name="pool_template_id_unique_idx"),
-            # Unique code+version within pool
-            IndexModel([("pool_id", 1), ("code", 1), ("version", 1)], unique=True, name="pool_code_version_unique_idx"),
-            # Code lookup within pool
-            IndexModel([("pool_id", 1), ("code", 1)], name="pool_code_idx"),
-            # Status filter within pool
-            IndexModel([("pool_id", 1), ("status", 1)], name="pool_status_idx"),
-            # Extends lookup within pool
-            IndexModel([("pool_id", 1), ("extends", 1)], name="pool_extends_idx"),
+            # Unique ID within namespace
+            IndexModel([("namespace", 1), ("template_id", 1)], unique=True, name="ns_template_id_unique_idx"),
+            # Unique value+version within namespace
+            IndexModel([("namespace", 1), ("value", 1), ("version", 1)], unique=True, name="ns_value_version_unique_idx"),
+            # Value lookup within namespace
+            IndexModel([("namespace", 1), ("value", 1)], name="ns_value_idx"),
+            # Status filter within namespace
+            IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
+            # Extends lookup within namespace
+            IndexModel([("namespace", 1), ("extends", 1)], name="ns_extends_idx"),
             # Global template_id lookup (for cross-namespace refs in open mode)
             IndexModel([("template_id", 1)], unique=True, name="template_id_unique_idx"),
             # Text search (global)
-            IndexModel([("name", "text"), ("description", "text")], name="text_search_idx"),
+            IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

@@ -21,17 +21,16 @@ router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 @router.post("", response_model=TerminologyResponse, status_code=201, summary="Create a terminology")
 async def create_terminology(
     request: CreateTerminologyRequest,
-    pool_id: str = Query(default="wip-terminologies", description="Pool ID for the terminology"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Create a new terminology (controlled vocabulary).
 
     The terminology will be registered with the Registry service to get
-    a unique ID (e.g., TERM-000001).
+    a unique ID. Namespace is specified in the request body (default: "wip").
     """
     try:
-        return await TerminologyService.create_terminology(request, pool_id=pool_id)
+        return await TerminologyService.create_terminology(request, namespace=request.namespace)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -40,9 +39,9 @@ async def create_terminology(
 
 @router.get("", response_model=TerminologyListResponse, summary="List terminologies")
 async def list_terminologies(
-    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
+    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
     status: Optional[str] = Query(None, description="Filter by status"),
-    code: Optional[str] = Query(None, description="Filter by exact code match"),
+    value: Optional[str] = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     api_key: str = Depends(require_api_key)
@@ -50,10 +49,10 @@ async def list_terminologies(
     """List all terminologies with pagination and optional filters."""
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
-        code=code,
+        value=value,
         page=page,
         page_size=page_size,
-        pool_id=pool_id
+        namespace=namespace
     )
     return TerminologyListResponse(
         items=terminologies,
@@ -63,14 +62,14 @@ async def list_terminologies(
     )
 
 
-@router.get("/by-code/{code}", response_model=TerminologyResponse, summary="Get a terminology by code")
-async def get_terminology_by_code(
-    code: str,
-    pool_id: str = Query(default="wip-terminologies", description="Pool ID to search in"),
+@router.get("/by-value/{value}", response_model=TerminologyResponse, summary="Get a terminology by value")
+async def get_terminology_by_value(
+    value: str,
+    namespace: str = Query(default="wip", description="Namespace to search in"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
-    """Get a terminology by its code (e.g., DOC_STATUS)."""
-    result = await TerminologyService.get_terminology(code=code, pool_id=pool_id)
+    """Get a terminology by its value (e.g., DOC_STATUS)."""
+    result = await TerminologyService.get_terminology(value=value, namespace=namespace)
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
     return result
@@ -79,17 +78,19 @@ async def get_terminology_by_code(
 @router.get("/{terminology_id}", response_model=TerminologyResponse, summary="Get a terminology")
 async def get_terminology(
     terminology_id: str,
+    namespace: Optional[str] = Query(default=None, description="Namespace for value fallback lookup"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
     Get a terminology by ID.
 
-    The ID can be either the Registry ID (TERM-000001) or the code (DOC_STATUS).
+    The ID can be either the Registry ID or the value (DOC_STATUS).
+    When falling back to value lookup, namespace is used for scoping.
     """
-    # Try as ID first, then as code
+    # Try as ID first, then as value
     result = await TerminologyService.get_terminology(terminology_id=terminology_id)
     if not result:
-        result = await TerminologyService.get_terminology(code=terminology_id)
+        result = await TerminologyService.get_terminology(value=terminology_id, namespace=namespace)
 
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
@@ -106,8 +107,8 @@ async def update_terminology(
     """
     Update a terminology.
 
-    If the code changes, a synonym will be added in the Registry to allow
-    lookups by both old and new codes.
+    If the value changes, a synonym will be added in the Registry to allow
+    lookups by both old and new values.
     """
     try:
         result = await TerminologyService.update_terminology(terminology_id, request)

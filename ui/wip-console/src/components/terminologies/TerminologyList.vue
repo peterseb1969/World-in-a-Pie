@@ -31,8 +31,8 @@ const filteredOwnTerminologies = computed(() => {
   if (!searchQuery.value) return terminologyStore.ownTerminologies
   const query = searchQuery.value.toLowerCase()
   return terminologyStore.ownTerminologies.filter(t =>
-    t.code.toLowerCase().includes(query) ||
-    t.name.toLowerCase().includes(query) ||
+    t.value.toLowerCase().includes(query) ||
+    t.label.toLowerCase().includes(query) ||
     t.description?.toLowerCase().includes(query)
   )
 })
@@ -42,8 +42,8 @@ const filteredWipTerminologies = computed(() => {
   if (!searchQuery.value) return terminologyStore.wipTerminologies
   const query = searchQuery.value.toLowerCase()
   return terminologyStore.wipTerminologies.filter(t =>
-    t.code.toLowerCase().includes(query) ||
-    t.name.toLowerCase().includes(query) ||
+    t.value.toLowerCase().includes(query) ||
+    t.label.toLowerCase().includes(query) ||
     t.description?.toLowerCase().includes(query)
   )
 })
@@ -91,7 +91,7 @@ function editTerminology(terminology: Terminology) {
 
 function confirmDeactivate(terminology: Terminology) {
   confirm.require({
-    message: `Are you sure you want to deactivate "${terminology.name}"? This will also deactivate all terms. It can be restored later.`,
+    message: `Are you sure you want to deactivate "${terminology.label}"? This will also deactivate all terms. It can be restored later.`,
     header: 'Deactivate Terminology',
     icon: 'pi pi-exclamation-triangle',
     rejectClass: 'p-button-secondary p-button-text',
@@ -99,7 +99,7 @@ function confirmDeactivate(terminology: Terminology) {
     accept: async () => {
       try {
         await terminologyStore.deleteTerminology(terminology.terminology_id)
-        uiStore.showSuccess('Terminology Deactivated', `"${terminology.name}" has been deactivated`)
+        uiStore.showSuccess('Terminology Deactivated', `"${terminology.label}" has been deactivated`)
       } catch (e) {
         uiStore.showError('Deactivation Failed', (e as Error).message)
       }
@@ -169,20 +169,20 @@ async function onUpdated() {
         </template>
       </Column>
 
-      <Column field="code" header="Code" sortable style="width: 15%">
+      <Column field="value" header="Value" sortable style="width: 15%">
         <template #body="{ data }">
-          <span class="code-badge">{{ data.code }}</span>
+          <span class="code-badge">{{ data.value }}</span>
         </template>
       </Column>
 
-      <Column field="name" header="Name" sortable style="width: 20%">
+      <Column field="label" header="Label" sortable style="width: 20%">
         <template #body="{ data }">
           <a
             href="#"
             class="terminology-link"
             @click.prevent="viewTerminology(data)"
           >
-            {{ data.name }}
+            {{ data.label }}
           </a>
         </template>
       </Column>
@@ -271,20 +271,20 @@ async function onUpdated() {
           </div>
         </template>
 
-        <Column field="code" header="Code" sortable style="width: 15%">
+        <Column field="value" header="Value" sortable style="width: 15%">
           <template #body="{ data }">
-            <span class="code-badge">{{ data.code }}</span>
+            <span class="code-badge">{{ data.value }}</span>
           </template>
         </Column>
 
-        <Column field="name" header="Name" sortable style="width: 30%">
+        <Column field="label" header="Label" sortable style="width: 30%">
           <template #body="{ data }">
             <a
               href="#"
               class="terminology-link"
               @click.prevent="viewTerminology(data)"
             >
-              {{ data.name }}
+              {{ data.label }}
             </a>
           </template>
         </Column>

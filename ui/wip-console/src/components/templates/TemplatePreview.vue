@@ -18,8 +18,8 @@ const jsonPreview = computed(() => {
   // Create a clean view of the template
   const preview = {
     template_id: props.template.template_id,
-    code: props.template.code,
-    name: props.template.name,
+    value: props.template.value,
+    label: props.template.label,
     description: props.template.description,
     version: props.template.version,
     extends: props.template.extends,

@@ -40,15 +40,15 @@ class TerminologyCache:
     def _load_all(self):
         """Load all terminologies from the terminologies module."""
         for terminology in term_module.get_terminology_definitions():
-            self._terminologies[terminology["code"]] = terminology
+            self._terminologies[terminology["value"]] = terminology
 
     def get_terminology(self, code: str) -> dict | None:
-        """Get a terminology by code."""
+        """Get a terminology by value."""
         return self._terminologies.get(code)
 
-    def get_random_term_value(self, terminology_code: str, use_alias: bool = False) -> str | None:
+    def get_random_term_value(self, terminology_value: str, use_alias: bool = False) -> str | None:
         """Get a random term value from a terminology."""
-        terminology = self.get_terminology(terminology_code)
+        terminology = self.get_terminology(terminology_value)
         if not terminology or not terminology.get("terms"):
             return None
 
@@ -59,16 +59,16 @@ class TerminologyCache:
 
         return term["value"]
 
-    def get_term_values(self, terminology_code: str) -> list[str]:
+    def get_term_values(self, terminology_value: str) -> list[str]:
         """Get all term values for a terminology."""
-        terminology = self.get_terminology(terminology_code)
+        terminology = self.get_terminology(terminology_value)
         if not terminology or not terminology.get("terms"):
             return []
         return [t["value"] for t in terminology["terms"]]
 
-    def get_random_term_from_list(self, terminology_code: str, allowed_values: list[str]) -> str | None:
+    def get_random_term_from_list(self, terminology_value: str, allowed_values: list[str]) -> str | None:
         """Get a random term value from an allowed list."""
-        terminology = self.get_terminology(terminology_code)
+        terminology = self.get_terminology(terminology_value)
         if not terminology:
             return allowed_values[0] if allowed_values else None
 
@@ -77,9 +77,9 @@ class TerminologyCache:
             return random.choice(valid_terms)
         return allowed_values[0] if allowed_values else None
 
-    def get_random_term_excluding(self, terminology_code: str, exclude_values: list[str]) -> str | None:
+    def get_random_term_excluding(self, terminology_value: str, exclude_values: list[str]) -> str | None:
         """Get a random term value excluding specific values."""
-        terminology = self.get_terminology(terminology_code)
+        terminology = self.get_terminology(terminology_value)
         if not terminology or not terminology.get("terms"):
             return None
 
@@ -99,15 +99,15 @@ class TemplateCache:
     def _load_all(self):
         """Load all templates from the templates module."""
         for template in tmpl_module.get_template_definitions():
-            self._templates[template["code"]] = template
+            self._templates[template["value"]] = template
 
-    def get_template(self, code: str) -> dict | None:
-        """Get a template by code."""
-        return self._templates.get(code)
+    def get_template(self, value: str) -> dict | None:
+        """Get a template by value."""
+        return self._templates.get(value)
 
-    def get_resolved_template(self, code: str) -> dict | None:
+    def get_resolved_template(self, value: str) -> dict | None:
         """Get a template with inheritance resolved (fields merged from parents)."""
-        template = self.get_template(code)
+        template = self.get_template(value)
         if not template:
             return None
 
@@ -199,23 +199,23 @@ class DocumentGenerator:
             "product_name": lambda: fake.catch_phrase(),
         }
 
-    def generate(self, template_code: str, index: int = 0) -> dict[str, Any]:
+    def generate(self, template_value: str, index: int = 0) -> dict[str, Any]:
         """
         Generate a valid document for a template.
 
         Args:
-            template_code: The template code (e.g., "PERSON", "EMPLOYEE")
+            template_value: The template value (e.g., "PERSON", "EMPLOYEE")
             index: Index for unique ID generation
 
         Returns:
             A document dict that satisfies all template validation rules
         """
-        template = self.templates.get_resolved_template(template_code)
+        template = self.templates.get_resolved_template(template_value)
         if not template:
-            raise ValueError(f"Template '{template_code}' not found")
+            raise ValueError(f"Template '{template_value}' not found")
 
         # Generate base document from fields
-        doc = self._generate_fields(template["fields"], index, template_code)
+        doc = self._generate_fields(template["fields"], index, template_value)
 
         # Apply rules to ensure validity
         rules = template.get("rules", [])
@@ -227,7 +227,7 @@ class DocumentGenerator:
         self,
         fields: list[dict],
         index: int,
-        template_code: str,
+        template_value: str,
         prefix: str = ""
     ) -> dict[str, Any]:
         """Generate values for all fields in a template."""
@@ -239,7 +239,7 @@ class DocumentGenerator:
 
             # Always generate mandatory fields, sometimes generate optional
             if mandatory or random.random() < 0.7:
-                value = self._generate_field_value(field, index, template_code, prefix)
+                value = self._generate_field_value(field, index, template_value, prefix)
                 if value is not None:
                     doc[name] = value
 
@@ -249,7 +249,7 @@ class DocumentGenerator:
         self,
         field: dict,
         index: int,
-        template_code: str,
+        template_value: str,
         prefix: str = ""
     ) -> Any:
         """Generate a value for a single field based on its type."""
@@ -267,7 +267,7 @@ class DocumentGenerator:
 
         # Generate by type
         if field_type == "string":
-            return self._generate_string(field, index, template_code)
+            return self._generate_string(field, index, template_value)
         elif field_type == "number":
             return self._generate_number(field, validation)
         elif field_type == "integer":
@@ -287,7 +287,7 @@ class DocumentGenerator:
         else:
             return None
 
-    def _generate_string(self, field: dict, index: int, template_code: str) -> str:
+    def _generate_string(self, field: dict, index: int, template_value: str) -> str:
         """Generate a string value."""
         field_name = field["name"]
         validation = field.get("validation", {})
@@ -295,7 +295,7 @@ class DocumentGenerator:
         # Check for ID patterns
         if "pattern" in validation:
             pattern = validation["pattern"]
-            return self._generate_from_pattern(pattern, field_name, index, template_code)
+            return self._generate_from_pattern(pattern, field_name, index, template_value)
 
         # Check for enum
         if "enum" in validation:
@@ -321,7 +321,7 @@ class DocumentGenerator:
                 text = text + "x" * (min_length - len(text))
             return text
 
-    def _generate_from_pattern(self, pattern: str, field_name: str, index: int, template_code: str) -> str:
+    def _generate_from_pattern(self, pattern: str, field_name: str, index: int, template_value: str) -> str:
         """Generate a string matching a regex pattern."""
         # Common patterns and their generators
         pattern_generators = {
@@ -613,6 +613,6 @@ def get_generator() -> DocumentGenerator:
     return _generator
 
 
-def generate_document(template_code: str, index: int = 0) -> dict[str, Any]:
+def generate_document(template_value: str, index: int = 0) -> dict[str, Any]:
     """Generate a document for a template (convenience function)."""
-    return get_generator().generate(template_code, index)
+    return get_generator().generate(template_value, index)

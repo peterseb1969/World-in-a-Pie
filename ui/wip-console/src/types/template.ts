@@ -272,8 +272,9 @@ export interface TemplateMetadata {
 
 export interface Template {
   template_id: string
-  code: string
-  name: string
+  namespace: string
+  value: string
+  label: string
   description?: string
   version: number
   extends?: string
@@ -290,9 +291,10 @@ export interface Template {
 }
 
 export interface CreateTemplateRequest {
-  code: string
-  name: string
+  value: string
+  label: string
   description?: string
+  namespace?: string
   extends?: string
   identity_fields?: string[]
   fields?: FieldDefinition[]
@@ -303,8 +305,8 @@ export interface CreateTemplateRequest {
 }
 
 export interface UpdateTemplateRequest {
-  code?: string
-  name?: string
+  value?: string
+  label?: string
   description?: string
   extends?: string
   identity_fields?: string[]
@@ -324,7 +326,7 @@ export interface TemplateListResponse {
 
 export interface TemplateUpdateResponse {
   template_id: string
-  code: string
+  value: string
   version: number
   is_new_version: boolean
   previous_version: number | null
@@ -343,7 +345,7 @@ export interface TemplateBulkOperationResult {
   index: number
   status: 'created' | 'updated' | 'error' | 'skipped'
   id?: string
-  code?: string
+  value?: string
   error?: string
 }
 

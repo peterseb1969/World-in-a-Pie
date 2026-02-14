@@ -69,15 +69,15 @@ class TemplateStoreClient:
     async def get_template(
         self,
         template_id: Optional[str] = None,
-        template_code: Optional[str] = None,
+        template_value: Optional[str] = None,
         resolve_inheritance: bool = True
     ) -> Optional[dict[str, Any]]:
         """
-        Get a template by ID or code.
+        Get a template by ID or value.
 
         Args:
-            template_id: Template ID (e.g., 'TPL-000001')
-            template_code: Template code (e.g., 'PERSON')
+            template_id: Template ID
+            template_value: Template value (e.g., 'PERSON')
             resolve_inheritance: If True, returns fully resolved template
 
         Returns:
@@ -85,21 +85,21 @@ class TemplateStoreClient:
         """
         if template_id:
             url = f"{self.base_url}/api/template-store/templates/{template_id}"
-        elif template_code:
-            url = f"{self.base_url}/api/template-store/templates/by-code/{template_code}"
+        elif template_value:
+            url = f"{self.base_url}/api/template-store/templates/by-value/{template_value}"
         else:
             return None
 
-        params = {}
-        if resolve_inheritance:
-            params["resolve"] = "true"
+        # The /{id} endpoint always resolves inheritance; /{id}/raw does not.
+        # No need to pass resolve= as a query param.
+        if not resolve_inheritance and template_id:
+            url = f"{self.base_url}/api/template-store/templates/{template_id}/raw"
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
                     url,
                     headers=self._get_headers(),
-                    params=params
                 )
 
                 if response.status_code == 404:
@@ -159,11 +159,10 @@ class TemplateStoreClient:
         Returns:
             True if template exists and is active
         """
-        # Try as ID first (if it looks like an ID)
-        if template_ref.startswith("TPL-"):
-            template = await self.get_template(template_id=template_ref)
-        else:
-            template = await self.get_template(template_code=template_ref)
+        # Try as ID first, then as value
+        template = await self.get_template(template_id=template_ref)
+        if template is None:
+            template = await self.get_template(template_value=template_ref)
 
         if template is None:
             return False

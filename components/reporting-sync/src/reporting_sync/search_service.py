@@ -33,8 +33,8 @@ class SearchResult(BaseModel):
 
     type: str = Field(..., description="Entity type: terminology, term, template, document")
     id: str = Field(..., description="Entity ID")
-    code: str | None = Field(None, description="Entity code (if applicable)")
-    name: str | None = Field(None, description="Entity name/value")
+    value: str | None = Field(None, description="Entity value (if applicable)")
+    label: str | None = Field(None, description="Entity label")
     status: str | None = Field(None, description="Entity status")
     description: str | None = Field(None, description="Brief description or context")
     updated_at: datetime | None = Field(None, description="Last update time")
@@ -67,8 +67,8 @@ class ActivityItem(BaseModel):
     type: str = Field(..., description="Entity type")
     action: str = Field(..., description="Action: created, updated, deleted, deprecated")
     entity_id: str
-    entity_code: str | None = None
-    entity_name: str | None = None
+    entity_value: str | None = None
+    entity_label: str | None = None
     timestamp: datetime
     user: str | None = None
     version: int | None = None
@@ -87,7 +87,7 @@ class DocumentReference(BaseModel):
 
     document_id: str
     template_id: str
-    template_code: str | None = None
+    template_value: str | None = None
     field_path: str
     status: str
     created_at: datetime | None = None
@@ -106,8 +106,8 @@ class EntityReference(BaseModel):
 
     ref_type: str = Field(..., description="Type of reference: template, terminology, term")
     ref_id: str = Field(..., description="Referenced entity ID")
-    ref_code: str | None = Field(None, description="Referenced entity code")
-    ref_name: str | None = Field(None, description="Referenced entity name")
+    ref_value: str | None = Field(None, description="Referenced entity value")
+    ref_label: str | None = Field(None, description="Referenced entity label")
     field_path: str | None = Field(None, description="Field that holds the reference")
     status: str = Field(..., description="Reference status: valid, broken, inactive")
     error: str | None = Field(None, description="Error message if broken")
@@ -118,8 +118,8 @@ class EntityDetails(BaseModel):
 
     entity_type: str
     entity_id: str
-    entity_code: str | None = None
-    entity_name: str | None = None
+    entity_value: str | None = None
+    entity_label: str | None = None
     entity_status: str | None = None
     version: int | None = None
     created_at: datetime | None = None
@@ -146,8 +146,8 @@ class IncomingReference(BaseModel):
 
     entity_type: str = Field(..., description="Type: document, template")
     entity_id: str = Field(..., description="ID of the referencing entity")
-    entity_code: str | None = Field(None, description="Code (for templates)")
-    entity_name: str | None = Field(None, description="Name or description")
+    entity_value: str | None = Field(None, description="Value (for templates)")
+    entity_label: str | None = Field(None, description="Label or description")
     entity_status: str | None = Field(None, description="Status of the referencing entity")
     field_path: str | None = Field(None, description="Field containing the reference")
     reference_type: str = Field(..., description="How it references: uses_template, extends, terminology_ref, template_ref, term_ref")
@@ -158,8 +158,8 @@ class ReferencedByResponse(BaseModel):
 
     entity_type: str
     entity_id: str
-    entity_code: str | None = None
-    entity_name: str | None = None
+    entity_value: str | None = None
+    entity_label: str | None = None
     referenced_by: list[IncomingReference] = Field(default_factory=list)
     total: int = 0
     error: str | None = None
@@ -218,9 +218,9 @@ class SearchService:
         query_lower = query.lower()
         all_results.sort(
             key=lambda r: (
-                0 if r.code and r.code.lower() == query_lower else
+                0 if r.value and r.value.lower() == query_lower else
                 1 if r.id.lower() == query_lower else
-                2 if r.code and query_lower in r.code.lower() else
+                2 if r.value and query_lower in r.value.lower() else
                 3,
                 r.updated_at or datetime.min.replace(tzinfo=timezone.utc)
             ),
@@ -260,14 +260,14 @@ class SearchService:
 
                 for item in data.get("items", []):
                     # Filter by query
-                    if (query_lower in item.get("code", "").lower() or
-                        query_lower in item.get("name", "").lower() or
+                    if (query_lower in item.get("value", "").lower() or
+                        query_lower in item.get("label", "").lower() or
                         query_lower in item.get("terminology_id", "").lower()):
                         results.append(SearchResult(
                             type="terminology",
                             id=item.get("terminology_id"),
-                            code=item.get("code"),
-                            name=item.get("name"),
+                            value=item.get("value"),
+                            label=item.get("label"),
                             status=item.get("status"),
                             description=item.get("description"),
                             updated_at=self._parse_datetime(item.get("updated_at"))
@@ -318,17 +318,17 @@ class SearchService:
 
                     for term in terms_response.json().get("items", []):
                         # Filter by query
-                        if (query_lower in term.get("code", "").lower() or
-                            query_lower in term.get("value", "").lower() or
+                        if (query_lower in term.get("value", "").lower() or
+                            query_lower in term.get("label", "").lower() or
                             query_lower in term.get("term_id", "").lower() or
                             any(query_lower in alias.lower() for alias in term.get("aliases", []))):
                             results.append(SearchResult(
                                 type="term",
                                 id=term.get("term_id"),
-                                code=term.get("code"),
-                                name=term.get("value"),
+                                value=term.get("value"),
+                                label=term.get("label"),
                                 status=term.get("status"),
-                                description=f"In {terminology.get('code')}",
+                                description=f"In {terminology.get('value')}",
                                 updated_at=self._parse_datetime(term.get("updated_at"))
                             ))
 
@@ -366,14 +366,14 @@ class SearchService:
 
                 for item in data.get("items", []):
                     # Filter by query
-                    if (query_lower in item.get("code", "").lower() or
-                        query_lower in item.get("name", "").lower() or
+                    if (query_lower in item.get("value", "").lower() or
+                        query_lower in item.get("label", "").lower() or
                         query_lower in item.get("template_id", "").lower()):
                         results.append(SearchResult(
                             type="template",
                             id=item.get("template_id"),
-                            code=item.get("code"),
-                            name=item.get("name"),
+                            value=item.get("value"),
+                            label=item.get("label"),
                             status=item.get("status"),
                             description=f"v{item.get('version', 1)}",
                             updated_at=self._parse_datetime(item.get("updated_at"))
@@ -390,8 +390,8 @@ class SearchService:
         """Search documents in Document Store."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # First fetch templates to build template_id -> code mapping
-                # (Document list API returns template_code as null)
+                # First fetch templates to build template_id -> value mapping
+                # (Document list API returns template_value as null)
                 template_response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates",
                     params={"page_size": 100},
@@ -401,7 +401,7 @@ class SearchService:
                 template_map: dict[str, str] = {}
                 if template_response.status_code == 200:
                     for tpl in template_response.json().get("items", []):
-                        template_map[tpl.get("template_id")] = tpl.get("code", "")
+                        template_map[tpl.get("template_id")] = tpl.get("value", "")
 
                 # Fetch more items than limit to search through, then filter
                 params = {"page_size": 100}
@@ -424,19 +424,19 @@ class SearchService:
                 for item in data.get("items", []):
                     doc_id = item.get("document_id", "")
                     template_id = item.get("template_id", "")
-                    # Get template_code from our lookup (API returns null)
-                    template_code = template_map.get(template_id, item.get("template_code") or "unknown")
+                    # Get template_value from our lookup (API returns null)
+                    template_value = template_map.get(template_id, item.get("template_value") or "unknown")
 
-                    # Filter by query (search in ID and template code)
+                    # Filter by query (search in ID and template value)
                     if (query_lower in doc_id.lower() or
-                        query_lower in template_code.lower()):
+                        query_lower in template_value.lower()):
                         results.append(SearchResult(
                             type="document",
                             id=doc_id,
-                            code=None,
-                            name=f"{template_code} document",
+                            value=None,
+                            label=f"{template_value} document",
                             status=item.get("status"),
-                            description=f"v{item.get('version', 1)} • {template_code}",
+                            description=f"v{item.get('version', 1)} • {template_value}",
                             updated_at=self._parse_datetime(item.get("updated_at"))
                         ))
 
@@ -517,8 +517,8 @@ class SearchService:
                         type="terminology",
                         action=action,
                         entity_id=item.get("terminology_id"),
-                        entity_code=item.get("code"),
-                        entity_name=item.get("name"),
+                        entity_value=item.get("value"),
+                        entity_label=item.get("label"),
                         timestamp=timestamp,
                         user=item.get("updated_by") or item.get("created_by")
                     ))
@@ -572,11 +572,11 @@ class SearchService:
                             type="term",
                             action=action,
                             entity_id=term.get("term_id"),
-                            entity_code=term.get("code"),
-                            entity_name=term.get("value"),
+                            entity_value=term.get("value"),
+                            entity_label=term.get("label"),
                             timestamp=timestamp,
                             user=term.get("updated_by") or term.get("created_by"),
-                            details={"terminology": terminology.get("code")}
+                            details={"terminology": terminology.get("value")}
                         ))
 
                 return sorted(items, key=lambda x: x.timestamp, reverse=True)[:limit]
@@ -615,8 +615,8 @@ class SearchService:
                         type="template",
                         action=action,
                         entity_id=item.get("template_id"),
-                        entity_code=item.get("code"),
-                        entity_name=item.get("name"),
+                        entity_value=item.get("value"),
+                        entity_label=item.get("label"),
                         timestamp=timestamp,
                         user=item.get("updated_by") or item.get("created_by"),
                         version=version
@@ -631,8 +631,8 @@ class SearchService:
         """Get recently modified documents."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # First fetch templates to build template_id -> code mapping
-                # (Document list API returns template_code as null)
+                # First fetch templates to build template_id -> value mapping
+                # (Document list API returns template_value as null)
                 template_response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates",
                     params={"page_size": 100},
@@ -642,7 +642,7 @@ class SearchService:
                 template_map: dict[str, str] = {}
                 if template_response.status_code == 200:
                     for tpl in template_response.json().get("items", []):
-                        template_map[tpl.get("template_id")] = tpl.get("code", "")
+                        template_map[tpl.get("template_id")] = tpl.get("value", "")
 
                 # Fetch documents
                 response = await client.get(
@@ -667,16 +667,16 @@ class SearchService:
                         action = "created"
                         timestamp = created_at or datetime.now(timezone.utc)
 
-                    # Get template_code from our lookup (API returns null)
+                    # Get template_value from our lookup (API returns null)
                     template_id = item.get("template_id")
-                    template_code = template_map.get(template_id, item.get("template_code") or "unknown")
+                    template_value = template_map.get(template_id, item.get("template_value") or "unknown")
 
                     items.append(ActivityItem(
                         type="document",
                         action=action,
                         entity_id=item.get("document_id"),
-                        entity_code=template_code,
-                        entity_name=f"{template_code} document",
+                        entity_value=template_value,
+                        entity_label=f"{template_value} document",
                         timestamp=timestamp,
                         user=item.get("updated_by") or item.get("created_by"),
                         version=version
@@ -744,8 +744,8 @@ class SearchService:
                         LIMIT $2
                     """, f'%"{term_id}"%', limit - len(documents))
 
-                    # Extract template_code from table name
-                    template_code = table_name[4:].upper()  # Remove 'doc_' prefix
+                    # Extract template_value from table name
+                    template_value = table_name[4:].upper()  # Remove 'doc_' prefix
 
                     for row in rows:
                         # Find which field references this term
@@ -762,7 +762,7 @@ class SearchService:
                         documents.append(DocumentReference(
                             document_id=row["document_id"],
                             template_id=row["template_id"],
-                            template_code=template_code,
+                            template_value=template_value,
                             field_path=field_path or "unknown",
                             status=row["status"],
                             created_at=row["created_at"]
@@ -847,8 +847,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="template",
                         ref_id=template_id,
-                        ref_code=tpl.get("code"),
-                        ref_name=tpl.get("name"),
+                        ref_value=tpl.get("value"),
+                        ref_label=tpl.get("label"),
                         field_path=None,
                         status=ref_status,
                         error=f"Template is {tpl_status}" if tpl_status != "active" else None
@@ -858,8 +858,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="template",
                         ref_id=template_id,
-                        ref_code=None,
-                        ref_name=None,
+                        ref_value=None,
+                        ref_label=None,
                         field_path=None,
                         status="broken",
                         error="Template not found"
@@ -902,8 +902,8 @@ class SearchService:
                         references.append(EntityReference(
                             ref_type="term",
                             ref_id=term_id,
-                            ref_code=term.get("code"),
-                            ref_name=term.get("value"),
+                            ref_value=term.get("value"),
+                            ref_label=term.get("label"),
                             field_path=field_path_str,
                             status=ref_status,
                             error=f"Term is {term_status}" if term_status != "active" else None
@@ -913,26 +913,26 @@ class SearchService:
                         references.append(EntityReference(
                             ref_type="term",
                             ref_id=term_id,
-                            ref_code=None,
-                            ref_name=None,
+                            ref_value=None,
+                            ref_label=None,
                             field_path=field_path_str,
                             status="broken",
                             error="Term not found"
                         ))
 
-            # Build template code from lookup if needed
-            template_code = None
+            # Build template value from lookup if needed
+            template_value = None
             for ref in references:
                 if ref.ref_type == "template":
-                    template_code = ref.ref_code
+                    template_value = ref.ref_value
                     break
 
             return EntityReferencesResponse(
                 entity=EntityDetails(
                     entity_type="document",
                     entity_id=document_id,
-                    entity_code=template_code,
-                    entity_name=f"{template_code or 'Unknown'} document",
+                    entity_value=template_value,
+                    entity_label=f"{template_value or 'Unknown'} document",
                     entity_status=doc.get("status"),
                     version=doc.get("version"),
                     created_at=self._parse_datetime(doc.get("created_at")),
@@ -984,8 +984,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="template",
                         ref_id=extends,  # extends stores template_id
-                        ref_code=parent.get("code"),
-                        ref_name=parent.get("name"),
+                        ref_value=parent.get("value"),
+                        ref_label=parent.get("label"),
                         field_path="extends",
                         status=ref_status,
                         error=f"Parent template is {parent_status}" if parent_status != "active" else None
@@ -995,8 +995,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="template",
                         ref_id=extends,
-                        ref_code=None,  # Code unknown for missing template
-                        ref_name=None,
+                        ref_value=None,  # Code unknown for missing template
+                        ref_label=None,
                         field_path="extends",
                         status="broken",
                         error="Parent template not found"
@@ -1030,8 +1030,8 @@ class SearchService:
                             references.append(EntityReference(
                                 ref_type="terminology",
                                 ref_id=term_ref,
-                                ref_code=terminology.get("code"),
-                                ref_name=terminology.get("name"),
+                                ref_value=terminology.get("value"),
+                                ref_label=terminology.get("label"),
                                 field_path=f"fields.{field_name}.terminology_ref",
                                 status=ref_status,
                                 error=f"Terminology is {term_status}" if term_status != "active" else None
@@ -1041,19 +1041,19 @@ class SearchService:
                             references.append(EntityReference(
                                 ref_type="terminology",
                                 ref_id=term_ref,
-                                ref_code=None,
-                                ref_name=None,
+                                ref_value=None,
+                                ref_label=None,
                                 field_path=f"fields.{field_name}.terminology_ref",
                                 status="broken",
                                 error="Terminology not found"
                             ))
 
-                # Check nested template references
+                # Check nested template references (template_ref stores canonical template_id)
                 if field_type == "object":
                     nested_ref = field.get("template_ref")
                     if nested_ref:
                         nested_response = await client.get(
-                            f"{settings.template_store_url}/api/template-store/templates/by-code/{nested_ref}",
+                            f"{settings.template_store_url}/api/template-store/templates/{nested_ref}",
                             headers={"X-API-Key": settings.api_key}
                         )
 
@@ -1070,8 +1070,8 @@ class SearchService:
                             references.append(EntityReference(
                                 ref_type="template",
                                 ref_id=nested.get("template_id"),
-                                ref_code=nested_ref,
-                                ref_name=nested.get("name"),
+                                ref_value=nested_ref,
+                                ref_label=nested.get("label"),
                                 field_path=f"fields.{field_name}.template_ref",
                                 status=ref_status,
                                 error=f"Referenced template is {nested_status}" if nested_status != "active" else None
@@ -1081,8 +1081,8 @@ class SearchService:
                             references.append(EntityReference(
                                 ref_type="template",
                                 ref_id=nested_ref,
-                                ref_code=nested_ref,
-                                ref_name=None,
+                                ref_value=nested_ref,
+                                ref_label=None,
                                 field_path=f"fields.{field_name}.template_ref",
                                 status="broken",
                                 error="Referenced template not found"
@@ -1092,8 +1092,8 @@ class SearchService:
                 entity=EntityDetails(
                     entity_type="template",
                     entity_id=template_id,
-                    entity_code=tpl.get("code"),
-                    entity_name=tpl.get("name"),
+                    entity_value=tpl.get("value"),
+                    entity_label=tpl.get("label"),
                     entity_status=tpl.get("status"),
                     version=tpl.get("version"),
                     created_at=self._parse_datetime(tpl.get("created_at")),
@@ -1124,8 +1124,8 @@ class SearchService:
                 entity=EntityDetails(
                     entity_type="terminology",
                     entity_id=terminology_id,
-                    entity_code=terminology.get("code"),
-                    entity_name=terminology.get("name"),
+                    entity_value=terminology.get("value"),
+                    entity_label=terminology.get("label"),
                     entity_status=terminology.get("status"),
                     version=None,
                     created_at=self._parse_datetime(terminology.get("created_at")),
@@ -1176,8 +1176,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="terminology",
                         ref_id=terminology_id,
-                        ref_code=terminology.get("code"),
-                        ref_name=terminology.get("name"),
+                        ref_value=terminology.get("value"),
+                        ref_label=terminology.get("label"),
                         field_path="terminology_id",
                         status=ref_status,
                         error=f"Terminology is {term_status}" if term_status != "active" else None
@@ -1187,8 +1187,8 @@ class SearchService:
                     references.append(EntityReference(
                         ref_type="terminology",
                         ref_id=terminology_id,
-                        ref_code=None,
-                        ref_name=None,
+                        ref_value=None,
+                        ref_label=None,
                         field_path="terminology_id",
                         status="broken",
                         error="Terminology not found"
@@ -1198,8 +1198,8 @@ class SearchService:
                 entity=EntityDetails(
                     entity_type="term",
                     entity_id=term_id,
-                    entity_code=term.get("code"),
-                    entity_name=term.get("value"),
+                    entity_value=term.get("value"),
+                    entity_label=term.get("label"),
                     entity_status=term.get("status"),
                     version=None,
                     created_at=self._parse_datetime(term.get("created_at")),
@@ -1251,8 +1251,8 @@ class SearchService:
                         results.append(SearchResult(
                             type="file",
                             id=file_id,
-                            code=None,
-                            name=filename,
+                            value=None,
+                            label=filename,
                             status=item.get("status"),
                             description=f"{item.get('content_type', '')} • {self._format_file_size(item.get('size_bytes', 0))}",
                             updated_at=self._parse_datetime(item.get("updated_at") or item.get("uploaded_at"))
@@ -1296,8 +1296,8 @@ class SearchService:
                         type="file",
                         action=action,
                         entity_id=item.get("file_id"),
-                        entity_code=None,
-                        entity_name=item.get("filename"),
+                        entity_value=None,
+                        entity_label=item.get("filename"),
                         timestamp=timestamp,
                         user=item.get("updated_by") or item.get("uploaded_by"),
                     ))
@@ -1325,8 +1325,8 @@ class SearchService:
                 entity=EntityDetails(
                     entity_type="file",
                     entity_id=file_id,
-                    entity_code=None,
-                    entity_name=file_data.get("filename"),
+                    entity_value=None,
+                    entity_label=file_data.get("filename"),
                     entity_status=file_data.get("status"),
                     version=None,
                     created_at=self._parse_datetime(file_data.get("uploaded_at")),
@@ -1382,8 +1382,8 @@ class SearchService:
                     references.append(IncomingReference(
                         entity_type="document",
                         entity_id=doc.get("document_id"),
-                        entity_code=doc.get("template_code"),
-                        entity_name=f"{doc.get('template_code', 'Unknown')} document",
+                        entity_value=doc.get("template_value"),
+                        entity_label=f"{doc.get('template_value', 'Unknown')} document",
                         entity_status=doc.get("status"),
                         field_path=doc.get("field_path"),
                         reference_type="file_ref"
@@ -1392,8 +1392,8 @@ class SearchService:
         return ReferencedByResponse(
             entity_type="file",
             entity_id=file_id,
-            entity_code=None,
-            entity_name=file_data.get("filename"),
+            entity_value=None,
+            entity_label=file_data.get("filename"),
             referenced_by=references[:limit],
             total=len(references)
         )
@@ -1501,7 +1501,7 @@ class SearchService:
                 )
 
             tpl = tpl_response.json()
-            template_code = tpl.get("code")
+            template_value = tpl.get("value")
 
             # 1. Find documents using this template
             doc_response = await client.get(
@@ -1516,8 +1516,8 @@ class SearchService:
                     references.append(IncomingReference(
                         entity_type="document",
                         entity_id=doc.get("document_id"),
-                        entity_code=None,
-                        entity_name=f"{template_code} document",
+                        entity_value=None,
+                        entity_label=f"{template_value} document",
                         entity_status=doc.get("status"),
                         field_path="template_id",
                         reference_type="uses_template"
@@ -1536,14 +1536,15 @@ class SearchService:
                     references.append(IncomingReference(
                         entity_type="template",
                         entity_id=t.get("template_id"),
-                        entity_code=t.get("code"),
-                        entity_name=t.get("name"),
+                        entity_value=t.get("value"),
+                        entity_label=t.get("label"),
                         entity_status=t.get("status"),
                         field_path="extends",
                         reference_type="extends"
                     ))
 
-            # 3. Find templates with template_ref to this template's code
+            # 3. Find templates with template_ref to this template
+            # template_ref and array_template_ref store canonical template_id
             # This requires scanning all templates - do a full list and filter
             all_tpl_response = await client.get(
                 f"{settings.template_store_url}/api/template-store/templates",
@@ -1554,24 +1555,24 @@ class SearchService:
             if all_tpl_response.status_code == 200:
                 all_templates = all_tpl_response.json()
                 for t in all_templates.get("items", []):
-                    # Check fields for template_ref matching our code
+                    # Check fields for template_ref matching our template_id
                     for field in t.get("fields", []):
-                        if field.get("template_ref") == template_code:
+                        if field.get("template_ref") == template_id:
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),
-                                entity_code=t.get("code"),
-                                entity_name=t.get("name"),
+                                entity_value=t.get("value"),
+                                entity_label=t.get("label"),
                                 entity_status=t.get("status"),
                                 field_path=f"fields.{field.get('name')}.template_ref",
                                 reference_type="template_ref"
                             ))
-                        if field.get("array_template_ref") == template_code:
+                        if field.get("array_template_ref") == template_id:
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),
-                                entity_code=t.get("code"),
-                                entity_name=t.get("name"),
+                                entity_value=t.get("value"),
+                                entity_label=t.get("label"),
                                 entity_status=t.get("status"),
                                 field_path=f"fields.{field.get('name')}.array_template_ref",
                                 reference_type="template_ref"
@@ -1580,8 +1581,8 @@ class SearchService:
         return ReferencedByResponse(
             entity_type="template",
             entity_id=template_id,
-            entity_code=template_code,
-            entity_name=tpl.get("name"),
+            entity_value=template_value,
+            entity_label=tpl.get("label"),
             referenced_by=references[:limit],
             total=len(references)
         )
@@ -1607,7 +1608,7 @@ class SearchService:
                 )
 
             terminology = term_response.json()
-            terminology_code = terminology.get("code")
+            terminology_value = terminology.get("value")
 
             # Find templates with terminology_ref to this terminology
             all_tpl_response = await client.get(
@@ -1620,26 +1621,26 @@ class SearchService:
                 all_templates = all_tpl_response.json()
                 for t in all_templates.get("items", []):
                     for field in t.get("fields", []):
-                        # Check terminology_ref (could be ID or code)
+                        # Check terminology_ref (could be ID or value)
                         term_ref = field.get("terminology_ref")
-                        if term_ref and (term_ref == terminology_id or term_ref == terminology_code):
+                        if term_ref and (term_ref == terminology_id or term_ref == terminology_value):
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),
-                                entity_code=t.get("code"),
-                                entity_name=t.get("name"),
+                                entity_value=t.get("value"),
+                                entity_label=t.get("label"),
                                 entity_status=t.get("status"),
                                 field_path=f"fields.{field.get('name')}.terminology_ref",
                                 reference_type="terminology_ref"
                             ))
                         # Check array_terminology_ref
                         array_term_ref = field.get("array_terminology_ref")
-                        if array_term_ref and (array_term_ref == terminology_id or array_term_ref == terminology_code):
+                        if array_term_ref and (array_term_ref == terminology_id or array_term_ref == terminology_value):
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),
-                                entity_code=t.get("code"),
-                                entity_name=t.get("name"),
+                                entity_value=t.get("value"),
+                                entity_label=t.get("label"),
                                 entity_status=t.get("status"),
                                 field_path=f"fields.{field.get('name')}.array_terminology_ref",
                                 reference_type="terminology_ref"
@@ -1648,8 +1649,8 @@ class SearchService:
         return ReferencedByResponse(
             entity_type="terminology",
             entity_id=terminology_id,
-            entity_code=terminology_code,
-            entity_name=terminology.get("name"),
+            entity_value=terminology_value,
+            entity_label=terminology.get("label"),
             referenced_by=references[:limit],
             total=len(references)
         )
@@ -1705,8 +1706,8 @@ class SearchService:
                                     references.append(IncomingReference(
                                         entity_type="document",
                                         entity_id=row["document_id"],
-                                        entity_code=None,
-                                        entity_name=f"Document {row['document_id'][:8]}...",
+                                        entity_value=None,
+                                        entity_label=f"Document {row['document_id'][:8]}...",
                                         entity_status=row["status"],
                                         field_path="term_references",
                                         reference_type="term_ref"
@@ -1727,8 +1728,8 @@ class SearchService:
         return ReferencedByResponse(
             entity_type="term",
             entity_id=term_id,
-            entity_code=term.get("code"),
-            entity_name=term.get("value"),
+            entity_value=term.get("value"),
+            entity_label=term.get("label"),
             referenced_by=references[:limit],
             total=len(references)
         )

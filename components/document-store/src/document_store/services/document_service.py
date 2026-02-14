@@ -23,6 +23,8 @@ from ..models.api_models import (
 )
 from .registry_client import get_registry_client, RegistryError
 from .validation_service import ValidationService
+from .template_store_client import get_template_store_client
+from .def_store_client import get_def_store_client
 from .nats_client import publish_document_event, EventType, is_nats_enabled
 from .file_storage_client import is_file_storage_enabled
 from .reference_validator import get_reference_validator, ReferenceValidationError
@@ -95,8 +97,7 @@ class DocumentService:
     async def create_document(
         self,
         request: DocumentCreateRequest,
-        pool_id: str = "wip-documents",
-        template_pool_id: str = "wip-templates"
+        namespace: str = "wip",
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """
         Create or update a document.
@@ -108,8 +109,7 @@ class DocumentService:
 
         Args:
             request: Document creation request
-            pool_id: Pool ID for the document (default: wip-documents)
-            template_pool_id: Pool ID of the template (default: wip-templates)
+            namespace: Namespace for the document (default: wip)
 
         Returns:
             Tuple of (response, error_message)
@@ -133,8 +133,8 @@ class DocumentService:
         try:
             validator = get_reference_validator()
             await validator.validate_document_references(
-                document_pool_id=pool_id,
-                template_pool_id=template_pool_id,
+                document_namespace=namespace,
+                template_namespace=namespace,
                 term_references=validation_result.term_references,
                 file_references=validation_result.file_references,
             )
@@ -144,21 +144,21 @@ class DocumentService:
         # Check for existing active document with same identity within pool
         start = time.perf_counter()
         identity_hash = validation_result.identity_hash
-        existing = await self._find_active_by_identity(identity_hash, pool_id=pool_id)
+        existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
         timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
         if existing:
             # Upsert: deactivate old, create new version
             start = time.perf_counter()
             result = await self._create_new_version(
-                request, existing, validation_result, pool_id=pool_id, template_pool_id=template_pool_id
+                request, existing, validation_result, namespace=namespace
             )
             timing["3_create_version"] = (time.perf_counter() - start) * 1000
         else:
             # Create new document
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, pool_id=pool_id, template_pool_id=template_pool_id,
+                request, validation_result, namespace=namespace,
                 synonyms=request.synonyms
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
@@ -172,8 +172,7 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         validation_result: Any,
-        pool_id: str = "wip-documents",
-        template_pool_id: str = "wip-templates",
+        namespace: str = "wip",
         synonyms: Optional[list[dict]] = None
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document."""
@@ -188,7 +187,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
                 created_by=actor,
-                pool_id=pool_id
+                namespace=namespace
             )
             registry_ms = (time.perf_counter() - start) * 1000
 
@@ -197,7 +196,8 @@ class DocumentService:
                 try:
                     await registry.add_synonyms(
                         entry_id=document_id,
-                        pool_id=pool_id,
+                        namespace=namespace,
+                        entity_type="documents",
                         synonyms=synonyms
                     )
                 except RegistryError as e:
@@ -214,12 +214,11 @@ class DocumentService:
             )
 
             document = Document(
-                pool_id=pool_id,
+                namespace=namespace,
                 document_id=document_id,
                 template_id=request.template_id,
-                template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
-                template_code=validation_result.template_code,
+                template_value=validation_result.template_value,
                 identity_hash=validation_result.identity_hash,
                 version=1,
                 data=request.data,
@@ -258,8 +257,9 @@ class DocumentService:
 
             return DocumentCreateResponse(
                 document_id=document_id,
+                namespace=namespace,
                 template_id=request.template_id,
-                template_code=validation_result.template_code,
+                template_value=validation_result.template_value,
                 identity_hash=validation_result.identity_hash,
                 version=1,
                 is_new=True,
@@ -322,8 +322,7 @@ class DocumentService:
         request: DocumentCreateRequest,
         existing: Document,
         validation_result: Any,
-        pool_id: str = "wip-documents",
-        template_pool_id: str = "wip-templates"
+        namespace: str = "wip"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a new version of an existing document."""
         # Check if data has actually changed
@@ -337,8 +336,9 @@ class DocumentService:
             # No change - return existing document info without creating new version
             return DocumentCreateResponse(
                 document_id=existing.document_id,
+                namespace=namespace,
                 template_id=existing.template_id,
-                template_code=existing.template_code,
+                template_value=existing.template_value,
                 identity_hash=existing.identity_hash,
                 version=existing.version,
                 is_new=False,
@@ -356,7 +356,7 @@ class DocumentService:
                 identity_hash=validation_result.identity_hash,
                 template_id=request.template_id,
                 created_by=actor,
-                pool_id=pool_id
+                namespace=namespace
             )
 
             # Deactivate old version
@@ -374,12 +374,11 @@ class DocumentService:
             )
 
             document = Document(
-                pool_id=pool_id,
+                namespace=namespace,
                 document_id=document_id,
                 template_id=request.template_id,
-                template_pool_id=template_pool_id,
                 template_version=validation_result.template_version,
-                template_code=validation_result.template_code,
+                template_value=validation_result.template_value,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
                 data=request.data,
@@ -415,8 +414,9 @@ class DocumentService:
 
             return DocumentCreateResponse(
                 document_id=document_id,
+                namespace=namespace,
                 template_id=request.template_id,
-                template_code=validation_result.template_code,
+                template_value=validation_result.template_value,
                 identity_hash=validation_result.identity_hash,
                 version=new_version,
                 is_new=False,
@@ -430,11 +430,11 @@ class DocumentService:
     async def _find_active_by_identity(
         self,
         identity_hash: str,
-        pool_id: str = "wip-documents"
+        namespace: str = "wip"
     ) -> Optional[Document]:
-        """Find the active document with the given identity hash within pool."""
+        """Find the active document with the given identity hash within namespace."""
         return await Document.find_one({
-            "pool_id": pool_id,
+            "namespace": namespace,
             "identity_hash": identity_hash,
             "status": DocumentStatus.ACTIVE.value
         })
@@ -453,7 +453,7 @@ class DocumentService:
             "document_id": document.document_id,
             "template_id": document.template_id,
             "template_version": document.template_version,
-            "template_code": document.template_code,
+            "template_value": document.template_value,
             "identity_hash": document.identity_hash,
             "version": document.version,
             "data": document.data,
@@ -495,20 +495,20 @@ class DocumentService:
     async def list_documents(
         self,
         template_id: Optional[str] = None,
-        template_code: Optional[str] = None,
+        template_value: Optional[str] = None,
         status: Optional[DocumentStatus] = None,
         page: int = 1,
         page_size: int = 20,
-        pool_id: Optional[str] = None
+        namespace: Optional[str] = None
     ) -> DocumentListResponse:
         """List documents with pagination."""
         query: dict = {}
-        if pool_id:
-            query["pool_id"] = pool_id
+        if namespace:
+            query["namespace"] = namespace
         if template_id:
             query["template_id"] = template_id
-        if template_code:
-            query["template_code"] = template_code
+        if template_value:
+            query["template_value"] = template_value
         if status:
             query["status"] = status.value
 
@@ -757,7 +757,7 @@ class DocumentService:
     async def bulk_create(
         self,
         request: BulkCreateRequest,
-        pool_id: str = "wip-documents",
+        namespace: str = "wip",
     ) -> BulkCreateResponse:
         """
         Create multiple documents with optimized bulk operations.
@@ -775,6 +775,38 @@ class DocumentService:
         updated = 0
         unchanged = 0
         failed = 0
+
+        # Stage 0: Pre-warm template and terminology caches for the batch.
+        # Fetch each unique template once (including nested template_refs),
+        # then extract terminology_refs and pre-fetch each unique terminology
+        # once. After this, the validation loop runs entirely from cache.
+        start = time.perf_counter()
+        template_client = get_template_store_client()
+        def_store_client = get_def_store_client()
+        unique_template_ids = {item.template_id for item in request.items}
+        warmed_templates: set[str] = set()
+
+        async def warm_template(tid: str):
+            """Recursively warm a template and its nested template_refs."""
+            if tid in warmed_templates:
+                return
+            warmed_templates.add(tid)
+            template = await template_client.get_template_resolved(tid)
+            if not template:
+                return
+            for field in template.get("fields", []):
+                for key in ("terminology_ref", "array_terminology_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await def_store_client._get_terminology_cached(ref)
+                for key in ("template_ref", "array_template_ref"):
+                    ref = field.get(key)
+                    if ref:
+                        await warm_template(ref)
+
+        for tid in unique_template_ids:
+            await warm_template(tid)
+        timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
         # Stage 1: Validate all documents
         start = time.perf_counter()
@@ -832,6 +864,17 @@ class DocumentService:
 
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
+        # Aggregate per-stage validation timing from all individual results
+        val_stage_totals: dict[str, float] = {}
+        val_count = 0
+        for _, _, vr in validation_results:
+            val_count += 1
+            for stage, ms in vr.timing.items():
+                val_stage_totals[stage] = val_stage_totals.get(stage, 0) + ms
+        if val_stage_totals:
+            for stage, total_ms in sorted(val_stage_totals.items()):
+                timing[f"1v_{stage}"] = round(total_ms, 1)
+
         if not validation_results:
             timing["total"] = (time.perf_counter() - total_start) * 1000
             self._record_creation_timing(timing)
@@ -871,7 +914,7 @@ class DocumentService:
             registry_results = await registry.generate_document_ids_bulk(
                 registry_items,
                 created_by=actor,
-                pool_id=pool_id,
+                namespace=namespace,
             )
         except RegistryError as e:
             # All valid documents fail due to Registry error
@@ -949,16 +992,12 @@ class DocumentService:
                     warnings=validation_result.warnings,
                     custom=item.metadata or {}
                 )
-                # Derive template_pool_id from document pool_id
-                template_pool_id = pool_id.rsplit("-", 1)[0] + "-templates" if pool_id != "wip-documents" else "wip-templates"
-
                 document = Document(
-                    pool_id=pool_id,
+                    namespace=namespace,
                     document_id=document_id,
                     template_id=item.template_id,
-                    template_pool_id=template_pool_id,
                     template_version=validation_result.template_version,
-                    template_code=validation_result.template_code,
+                    template_value=validation_result.template_value,
                     identity_hash=identity_hash,
                     version=new_version,
                     data=item.data,
@@ -1035,7 +1074,8 @@ class DocumentService:
             updated=updated,
             unchanged=unchanged,
             failed=failed,
-            results=sorted(results, key=lambda r: r.index)
+            results=sorted(results, key=lambda r: r.index),
+            timing={k: round(v, 1) for k, v in timing.items()},
         )
 
     async def validate_document(
@@ -1085,9 +1125,10 @@ class DocumentService:
 
         return DocumentResponse(
             document_id=document.document_id,
+            namespace=document.namespace,
             template_id=document.template_id,
             template_version=document.template_version,
-            template_code=document.template_code,
+            template_value=document.template_value,
             identity_hash=document.identity_hash,
             version=document.version,
             data=document.data,

@@ -51,7 +51,7 @@ def create_mock_registry_client():
 
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_register_template(code: str, name: str, created_by=None):
+    async def mock_register_template(value: str, label: str, created_by=None):
         global _template_counter
         _template_counter += 1
         return f"TPL-{_template_counter:06d}"
@@ -64,14 +64,14 @@ def create_mock_registry_client():
             results.append({
                 "status": "registered",
                 "registry_id": f"TPL-{_template_counter:06d}",
-                "code": template["code"]
+                "value": template["value"]
             })
         return results
 
     async def mock_add_synonym(*args, **kwargs):
         return True
 
-    async def mock_lookup_by_code(*args, **kwargs):
+    async def mock_lookup_by_value(*args, **kwargs):
         return None
 
     async def mock_health_check():
@@ -80,7 +80,7 @@ def create_mock_registry_client():
     mock_client.register_template = mock_register_template
     mock_client.register_templates_bulk = mock_register_templates_bulk
     mock_client.add_synonym = mock_add_synonym
-    mock_client.lookup_by_code = mock_lookup_by_code
+    mock_client.lookup_by_value = mock_lookup_by_value
     mock_client.health_check = mock_health_check
 
     return mock_client
@@ -98,11 +98,11 @@ def create_mock_def_store_client():
             return True
         return False
 
-    async def mock_get_terminology(terminology_id=None, terminology_code=None):
+    async def mock_get_terminology(terminology_id=None, terminology_value=None):
         if terminology_id and terminology_id.startswith("TERM-"):
             return {"terminology_id": terminology_id, "status": "active"}
-        if terminology_code in ["GENDER", "COUNTRY", "DOC_STATUS"]:
-            return {"terminology_id": f"TERM-{terminology_code}", "status": "active"}
+        if terminology_value in ["GENDER", "COUNTRY", "DOC_STATUS"]:
+            return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
     async def mock_validate_value(terminology_ref: str, value: str):

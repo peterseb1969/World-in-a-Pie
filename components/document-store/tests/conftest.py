@@ -45,8 +45,8 @@ def _reset_counters():
 SAMPLE_TEMPLATES = {
     "TPL-000001": {
         "template_id": "TPL-000001",
-        "code": "PERSON",
-        "name": "Person Template",
+        "value": "PERSON",
+        "label": "Person Template",
         "version": 1,
         "status": "active",
         "identity_fields": ["national_id"],
@@ -103,8 +103,8 @@ SAMPLE_TEMPLATES = {
     },
     "TPL-000002": {
         "template_id": "TPL-000002",
-        "code": "EMPLOYEE",
-        "name": "Employee Template",
+        "value": "EMPLOYEE",
+        "label": "Employee Template",
         "version": 1,
         "status": "active",
         "identity_fields": ["employee_id", "company_id"],
@@ -154,8 +154,8 @@ SAMPLE_TEMPLATES = {
     },
     "TPL-INACTIVE": {
         "template_id": "TPL-INACTIVE",
-        "code": "INACTIVE",
-        "name": "Inactive Template",
+        "value": "INACTIVE",
+        "label": "Inactive Template",
         "version": 1,
         "status": "inactive",
         "identity_fields": [],
@@ -196,7 +196,7 @@ def create_mock_template_store_client():
     """Create a mock Template Store client for testing."""
     mock_client = AsyncMock(spec=TemplateStoreClient)
 
-    async def mock_get_template(template_id=None, template_code=None, resolve_inheritance=True):
+    async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True):
         if template_id and template_id in SAMPLE_TEMPLATES:
             return SAMPLE_TEMPLATES[template_id]
         return None
@@ -233,11 +233,11 @@ def create_mock_def_store_client():
             return True
         return terminology_ref in VALID_TERMS
 
-    async def mock_get_terminology(terminology_id=None, terminology_code=None):
+    async def mock_get_terminology(terminology_id=None, terminology_value=None):
         if terminology_id and terminology_id.startswith("TERM-"):
             return {"terminology_id": terminology_id, "status": "active"}
-        if terminology_code in VALID_TERMS:
-            return {"terminology_id": f"TERM-{terminology_code}", "status": "active"}
+        if terminology_value in VALID_TERMS:
+            return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
     async def mock_validate_value(terminology_ref, value):

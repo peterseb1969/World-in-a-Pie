@@ -47,28 +47,28 @@ class DefStoreClient:
     async def get_terminology(
         self,
         terminology_id: Optional[str] = None,
-        terminology_code: Optional[str] = None,
-        pool_id: Optional[str] = None,
+        terminology_value: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """
-        Get a terminology by ID or code.
+        Get a terminology by ID or value.
 
         Args:
-            terminology_id: Terminology ID (e.g., 'TERM-000001')
-            terminology_code: Terminology code (e.g., 'DOC_STATUS')
-            pool_id: Terminology pool ID (e.g., 'seed-terminologies')
+            terminology_id: Terminology ID
+            terminology_value: Terminology value (e.g., 'DOC_STATUS')
+            namespace: Namespace for scoped lookups
 
         Returns:
             Terminology data if found, None otherwise
         """
         if terminology_id:
             url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
-        elif terminology_code:
-            url = f"{self.base_url}/api/def-store/terminologies/by-code/{terminology_code}"
+        elif terminology_value:
+            url = f"{self.base_url}/api/def-store/terminologies/by-value/{terminology_value}"
         else:
             return None
 
-        params = {"pool_id": pool_id} if pool_id else None
+        params = {"namespace": namespace} if namespace else None
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -89,23 +89,26 @@ class DefStoreClient:
     async def terminology_exists(
         self,
         terminology_ref: str,
-        pool_id: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> bool:
         """
-        Check if a terminology exists by ID or code.
+        Check if a terminology exists by ID or value.
 
         Args:
-            terminology_ref: Terminology ID or code
-            pool_id: Terminology pool ID for namespace-scoped lookups
+            terminology_ref: Terminology ID or value
+            namespace: Namespace for scoped lookups
 
         Returns:
             True if terminology exists and is active
         """
-        # Try as ID first (if it looks like an ID)
-        if terminology_ref.startswith("TERM-") or "-TERM-" in terminology_ref:
-            terminology = await self.get_terminology(terminology_id=terminology_ref, pool_id=pool_id)
-        else:
-            terminology = await self.get_terminology(terminology_code=terminology_ref, pool_id=pool_id)
+        # Try as ID first, then as value
+        terminology = await self.get_terminology(
+            terminology_id=terminology_ref, namespace=namespace
+        )
+        if terminology is None:
+            terminology = await self.get_terminology(
+                terminology_value=terminology_ref, namespace=namespace
+            )
 
         if terminology is None:
             return False
@@ -122,17 +125,13 @@ class DefStoreClient:
         Validate a value against a terminology.
 
         Args:
-            terminology_ref: Terminology ID or code
+            terminology_ref: Terminology ID or value
             value: Value to validate
 
         Returns:
             Validation result with valid, matched_term, suggestion
         """
-        # Determine if ID or code
-        if terminology_ref.startswith("TERM-"):
-            payload = {"terminology_id": terminology_ref, "value": value}
-        else:
-            payload = {"terminology_code": terminology_ref, "value": value}
+        payload = {"terminology_id": terminology_ref, "value": value}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -164,20 +163,13 @@ class DefStoreClient:
         Returns:
             List of validation results
         """
-        # Transform items to API format
-        api_items = []
-        for item in items:
-            terminology_ref = item["terminology_ref"]
-            if terminology_ref.startswith("TERM-"):
-                api_items.append({
-                    "terminology_id": terminology_ref,
-                    "value": item["value"]
-                })
-            else:
-                api_items.append({
-                    "terminology_code": terminology_ref,
-                    "value": item["value"]
-                })
+        api_items = [
+            {
+                "terminology_id": item["terminology_ref"],
+                "value": item["value"]
+            }
+            for item in items
+        ]
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

@@ -1,7 +1,7 @@
 """Atomic ID counter backed by MongoDB.
 
 Each document holds a sequence value for a specific counter_key
-(e.g. "wip-terminologies:TERM-").  The next value is obtained via
+(e.g. "wip:terminologies:TERM-").  The next value is obtained via
 findOneAndUpdate with $inc, which is atomic even under concurrent access.
 """
 
@@ -14,7 +14,7 @@ class IdCounter(Document):
     """Persistent, atomic sequence counter."""
 
     counter_key: str = Field(
-        ..., description="Unique key, typically '{pool_id}:{prefix}'"
+        ..., description="Unique key, typically '{namespace}:{entity_type}:{prefix}'"
     )
     seq: int = Field(default=0, description="Current sequence value")
 

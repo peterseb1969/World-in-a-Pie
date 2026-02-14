@@ -31,107 +31,91 @@ class ReferenceValidator:
         self.api_key = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
         self._namespace_cache: dict[str, dict[str, Any]] = {}
 
-    async def _get_namespace(self, pool_id: str) -> dict[str, Any] | None:
-        """Get namespace info for an ID pool."""
-        # Extract prefix from pool_id (e.g., "dev-templates" -> "dev")
-        if "-" not in pool_id:
-            return None
-
-        prefix = pool_id.rsplit("-", 1)[0]
-
-        if prefix in self._namespace_cache:
-            return self._namespace_cache[prefix]
+    async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:
+        """Get namespace info from the registry."""
+        if namespace in self._namespace_cache:
+            return self._namespace_cache[namespace]
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(
-                    f"{self.registry_url}/api/registry/namespaces/{prefix}",
+                    f"{self.registry_url}/api/registry/namespaces/{namespace}",
                     headers={"X-API-Key": self.api_key},
                 )
                 if response.status_code == 200:
-                    namespace = response.json()
-                    self._namespace_cache[prefix] = namespace
-                    return namespace
+                    ns_data = response.json()
+                    self._namespace_cache[namespace] = ns_data
+                    return ns_data
                 elif response.status_code == 404:
                     # No namespace found - treat as open mode
-                    self._namespace_cache[prefix] = {"isolation_mode": "open"}
-                    return self._namespace_cache[prefix]
+                    self._namespace_cache[namespace] = {"isolation_mode": "open"}
+                    return self._namespace_cache[namespace]
         except Exception as e:
-            logger.warning(f"Failed to fetch namespace for {pool_id}: {e}")
+            logger.warning(f"Failed to fetch namespace '{namespace}': {e}")
 
         return None
 
-    def _get_prefix(self, pool_id: str) -> str | None:
-        """Extract prefix from pool ID."""
-        if "-" not in pool_id:
-            return None
-        return pool_id.rsplit("-", 1)[0]
-
-    def _is_allowed_reference(self, prefix: str, namespace: dict[str, Any], is_strict: bool) -> bool:
+    def _is_allowed_reference(self, target_ns: str, source_ns_data: dict[str, Any], is_strict: bool) -> bool:
         """
-        Check if a reference to the given prefix is allowed.
+        Check if a reference to the given namespace is allowed.
 
         Rules:
-        - Strict mode: Only own prefix + allowed_external_refs
-        - Open mode: Own prefix + 'wip' (always) + allowed_external_refs
+        - Strict mode: Only own namespace + allowed_external_refs
+        - Open mode: Own namespace + 'wip' (always) + allowed_external_refs
         """
-        allowed = namespace.get("allowed_external_refs", [])
-        if prefix in allowed:
+        allowed = source_ns_data.get("allowed_external_refs", [])
+        if target_ns in allowed:
             return True
 
         if is_strict:
             return False
         else:
-            # Open mode: also allow 'wip' prefix
-            return prefix == "wip"
+            # Open mode: also allow 'wip' namespace
+            return target_ns == "wip"
 
     async def validate_template_references(
         self,
-        template_pool_id: str,
-        extends_template_pool_id: str | None = None,
-        terminology_pool_ids: list[str] | None = None,
+        template_namespace: str,
+        extends_template_namespace: str | None = None,
+        terminology_namespaces: list[str] | None = None,
     ) -> None:
         """
         Validate that template references comply with isolation rules.
 
         Args:
-            template_pool_id: Pool ID of the template being created/updated
-            extends_template_pool_id: Pool ID of parent template (if any)
-            terminology_pool_ids: List of terminology pool IDs referenced
+            template_namespace: Namespace of the template being created/updated
+            extends_template_namespace: Namespace of parent template (if any)
+            terminology_namespaces: List of terminology namespaces referenced
 
         Raises:
             ReferenceValidationError: If any references violate isolation rules
         """
-        namespace = await self._get_namespace(template_pool_id)
+        ns_data = await self._get_namespace(template_namespace)
 
-        if not namespace:
+        if not ns_data:
             return
 
-        template_prefix = self._get_prefix(template_pool_id)
-        is_strict = namespace.get("isolation_mode") == "strict"
+        is_strict = ns_data.get("isolation_mode") == "strict"
         violations = []
 
         # Check extends reference
-        if extends_template_pool_id:
-            extends_prefix = self._get_prefix(extends_template_pool_id)
-            if extends_prefix and extends_prefix != template_prefix:
-                if not self._is_allowed_reference(extends_prefix, namespace, is_strict):
-                    violations.append({
-                        "type": "extends",
-                        "pool_id": extends_template_pool_id,
-                        "message": f"Parent template pool '{extends_template_pool_id}' is not accessible from '{template_prefix}' namespace",
-                    })
+        if extends_template_namespace and extends_template_namespace != template_namespace:
+            if not self._is_allowed_reference(extends_template_namespace, ns_data, is_strict):
+                violations.append({
+                    "type": "extends",
+                    "namespace": extends_template_namespace,
+                    "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
+                })
 
         # Check terminology references
-        if terminology_pool_ids:
-            for term_pool in terminology_pool_ids:
-                term_prefix = self._get_prefix(term_pool)
-                if term_prefix and term_prefix != template_prefix:
-                    if not self._is_allowed_reference(term_prefix, namespace, is_strict):
+        if terminology_namespaces:
+            for term_ns in terminology_namespaces:
+                if term_ns != template_namespace:
+                    if not self._is_allowed_reference(term_ns, ns_data, is_strict):
                         violations.append({
                             "type": "terminology",
-                            "pool_id": term_pool,
-                            "message": f"Terminology pool '{term_pool}' is not accessible from '{template_prefix}' namespace",
+                            "namespace": term_ns,
+                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
                         })
 
         if violations:

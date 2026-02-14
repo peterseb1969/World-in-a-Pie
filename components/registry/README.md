@@ -115,7 +115,8 @@ curl -X POST http://localhost:8001/api/registry/entries/register \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
-    "pool_id": "default",
+    "namespace": "wip",
+    "entity_type": "terminologies",
     "composite_key": {"product_id": "PROD-001", "region": "EU"}
   }]'
 ```
@@ -127,9 +128,9 @@ curl -X POST http://localhost:8001/api/registry/synonyms/add \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '[{
-    "target_pool_id": "default",
     "target_id": "your_registry_id",
-    "synonym_pool_id": "vendor1",
+    "synonym_namespace": "vendor1",
+    "synonym_entity_type": "terminologies",
     "synonym_composite_key": {"vendor_sku": "V1-SKU-001"}
   }]'
 ```
@@ -175,19 +176,21 @@ registry/
 └── requirements.txt
 ```
 
-## WIP Internal Namespaces
+## WIP Namespace
 
-The registry pre-configures these namespaces for WIP components:
+The registry pre-configures the `wip` namespace with per-entity-type ID algorithms:
 
-| Namespace | ID Generator | Purpose |
-|-----------|--------------|---------|
-| `default` | UUID4 | General use |
-| `wip-terminologies` | Prefixed (TERM-) | Terminology IDs |
-| `wip-terms` | Prefixed (T-) | Term IDs |
-| `wip-templates` | Prefixed (TPL-) | Template IDs |
-| `wip-documents` | UUID7 | Document IDs |
+| Entity Type | Default Algorithm | Purpose |
+|-------------|-------------------|---------|
+| `terminologies` | UUID7 | Terminology IDs |
+| `terms` | UUID7 | Term IDs |
+| `templates` | UUID7 | Template IDs |
+| `documents` | UUID7 | Document IDs |
+| `files` | UUID7 | File IDs |
 
-Initialize these with:
+ID algorithms are configurable per namespace per entity type (UUID4, UUID7, NanoID, Prefixed, Pattern).
+
+Initialize with:
 ```bash
 curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
   -H "X-API-Key: dev_master_key_for_testing"

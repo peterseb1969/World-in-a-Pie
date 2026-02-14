@@ -1,150 +1,37 @@
-"""ID generation service with pluggable strategies."""
+"""ID generation service using IdAlgorithmConfig."""
 
-import secrets
-import string
-import uuid
-from datetime import datetime
-
-from ..models.id_pool import IdGeneratorConfig, IdGeneratorType
+from ..models.id_algorithm import IdAlgorithmConfig, IdGenerator
 from ..models.id_counter import IdCounter
+from ..models.namespace import Namespace
 
 
 class IdGeneratorService:
-    """Service for generating IDs based on pool configuration."""
+    """Service for generating IDs based on namespace configuration."""
 
     @classmethod
-    async def generate(cls, config: IdGeneratorConfig, pool_id: str = "default") -> str:
+    async def generate(cls, namespace: str, entity_type: str) -> str:
+        """Generate an ID for the given namespace and entity type.
+
+        Looks up the namespace's ID config and generates accordingly.
+        For prefixed algorithms, uses atomic MongoDB counter.
+        For UUID/nanoid, generates locally.
         """
-        Generate an ID based on the provided configuration.
+        ns = await Namespace.find_one({"prefix": namespace, "status": "active"})
+        if not ns:
+            # Default to UUID7 if namespace not found
+            return IdGenerator.generate_uuid7()
 
-        Args:
-            config: ID generator configuration
-            pool_id: Pool identifier (used for counter keys)
+        config = ns.get_id_algorithm(entity_type)
+        return await cls.generate_from_config(config, namespace, entity_type)
 
-        Returns:
-            Generated ID string
-        """
-        generator_type = config.type
-        if isinstance(generator_type, str):
-            generator_type = IdGeneratorType(generator_type)
-
-        if generator_type == IdGeneratorType.UUID4:
-            return cls._generate_uuid4()
-        elif generator_type == IdGeneratorType.UUID7:
-            return cls._generate_uuid7()
-        elif generator_type == IdGeneratorType.NANOID:
-            return cls._generate_nanoid(config.length)
-        elif generator_type == IdGeneratorType.PREFIXED:
-            return await cls._generate_prefixed(config.prefix or "", pool_id)
-        elif generator_type == IdGeneratorType.EXTERNAL:
-            raise ValueError("External IDs must be provided by the caller, not generated")
-        elif generator_type == IdGeneratorType.CUSTOM:
-            return cls._generate_custom(config.pattern or "")
+    @classmethod
+    async def generate_from_config(
+        cls, config: IdAlgorithmConfig, namespace: str, entity_type: str
+    ) -> str:
+        """Generate an ID from a specific config."""
+        if config.algorithm == "prefixed":
+            counter_key = f"{namespace}:{entity_type}:{config.prefix or ''}"
+            seq = await IdCounter.next_val(counter_key)
+            return IdGenerator.generate_prefixed(config.prefix or "", seq, config.pad)
         else:
-            # Default to UUID4
-            return cls._generate_uuid4()
-
-    @staticmethod
-    def _generate_uuid4() -> str:
-        """Generate a UUID4 (random)."""
-        return str(uuid.uuid4())
-
-    @staticmethod
-    def _generate_uuid7() -> str:
-        """
-        Generate a UUID7 (time-ordered).
-
-        UUID7 format: timestamp (48 bits) + random (74 bits)
-        This provides time-sortable IDs while maintaining uniqueness.
-        """
-        # Get current timestamp in milliseconds
-        timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
-
-        # UUID7 structure:
-        # - 48 bits: Unix timestamp in milliseconds
-        # - 4 bits: version (7)
-        # - 12 bits: random
-        # - 2 bits: variant (10)
-        # - 62 bits: random
-
-        # Create the timestamp portion (48 bits)
-        time_bytes = timestamp_ms.to_bytes(6, byteorder='big')
-
-        # Generate random bytes for the rest
-        random_bytes = secrets.token_bytes(10)
-
-        # Construct the UUID bytes
-        uuid_bytes = bytearray(16)
-
-        # First 6 bytes: timestamp
-        uuid_bytes[0:6] = time_bytes
-
-        # Bytes 6-7: version (7) in high nibble, then random
-        uuid_bytes[6] = 0x70 | (random_bytes[0] & 0x0F)
-        uuid_bytes[7] = random_bytes[1]
-
-        # Bytes 8-15: variant (10) in high 2 bits, then random
-        uuid_bytes[8] = 0x80 | (random_bytes[2] & 0x3F)
-        uuid_bytes[9:16] = random_bytes[3:10]
-
-        # Convert to UUID string
-        hex_str = uuid_bytes.hex()
-        return f"{hex_str[:8]}-{hex_str[8:12]}-{hex_str[12:16]}-{hex_str[16:20]}-{hex_str[20:]}"
-
-    @staticmethod
-    def _generate_nanoid(length: int = 21) -> str:
-        """
-        Generate a nanoid-style ID.
-
-        Uses URL-safe characters: A-Za-z0-9_-
-        """
-        alphabet = string.ascii_letters + string.digits + "_-"
-        return ''.join(secrets.choice(alphabet) for _ in range(length))
-
-    @classmethod
-    async def _generate_prefixed(cls, prefix: str, pool_id: str) -> str:
-        """
-        Generate a prefixed ID with sequential number.
-
-        Format: PREFIX-NNNNNN (e.g., TERM-000001)
-        Uses MongoDB atomic counter for concurrency safety.
-        """
-        counter_key = f"{pool_id}:{prefix}"
-        seq = await IdCounter.next_val(counter_key)
-
-        # Format with 6 digits, zero-padded
-        return f"{prefix}{seq:06d}"
-
-    @staticmethod
-    def _generate_custom(pattern: str) -> str:
-        """
-        Generate an ID based on a custom pattern.
-
-        Pattern tokens:
-        - {uuid4}: Random UUID4
-        - {timestamp}: Unix timestamp
-        - {random:N}: N random alphanumeric characters
-        - {seq:N}: N-digit sequential number (not implemented here)
-        """
-        import re
-
-        result = pattern
-
-        # Replace {uuid4}
-        while "{uuid4}" in result:
-            result = result.replace("{uuid4}", str(uuid.uuid4()), 1)
-
-        # Replace {timestamp}
-        result = result.replace("{timestamp}", str(int(datetime.utcnow().timestamp())))
-
-        # Replace {random:N}
-        random_pattern = re.compile(r'\{random:(\d+)\}')
-        for match in random_pattern.finditer(pattern):
-            length = int(match.group(1))
-            random_str = ''.join(
-                secrets.choice(string.ascii_letters + string.digits)
-                for _ in range(length)
-            )
-            result = result.replace(match.group(0), random_str, 1)
-
-        return result
+            return IdGenerator.generate(config)

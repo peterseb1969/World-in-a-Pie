@@ -39,7 +39,7 @@ export const useTemplateStore = defineStore('template', () => {
   })
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.templatesPool, () => {
+  watch(() => namespaceStore.currentNamespaceParam, () => {
     fetchTemplates()
   })
 
@@ -57,7 +57,7 @@ export const useTemplateStore = defineStore('template', () => {
       // Fetch own namespace
       const ownResponse = await templateStoreClient.listTemplates({
         ...params,
-        pool_id: namespaceStore.templatesPool
+        namespace: namespaceStore.currentNamespaceParam
       })
       ownTemplates.value = ownResponse.items
       total.value = ownResponse.total
@@ -67,7 +67,7 @@ export const useTemplateStore = defineStore('template', () => {
         try {
           const wipResponse = await templateStoreClient.listTemplates({
             ...params,
-            pool_id: 'wip-templates'
+            namespace: 'wip'
           })
           wipTemplates.value = wipResponse.items
           wipTotal.value = wipResponse.total
@@ -138,7 +138,8 @@ export const useTemplateStore = defineStore('template', () => {
     loading.value = true
     error.value = null
     try {
-      const created = await templateStoreClient.createTemplate(data)
+      const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
+      const created = await templateStoreClient.createTemplate(payload)
       templates.value.unshift(created)
       total.value++
       return created
@@ -255,7 +256,7 @@ export const useTemplateStore = defineStore('template', () => {
     loading.value = true
     error.value = null
     try {
-      const template = await templateStoreClient.getTemplateByCodeAndVersion(code, version)
+      const template = await templateStoreClient.getTemplateByValueAndVersion(code, version)
       currentTemplate.value = template
       currentTemplateRaw.value = template
       return template
@@ -273,7 +274,7 @@ export const useTemplateStore = defineStore('template', () => {
       const response = await defStoreClient.listTerminologies({
         status: 'active',
         page_size: 100,
-        pool_id: namespaceStore.terminologiesPool
+        namespace: namespaceStore.currentNamespaceParam
       })
       terminologies.value = response.items
     } catch (e) {

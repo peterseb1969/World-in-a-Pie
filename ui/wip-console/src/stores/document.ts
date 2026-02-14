@@ -31,7 +31,7 @@ export const useDocumentStore = defineStore('document', () => {
   const termsCache = ref<Record<string, Term[]>>({})
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.documentsPool, () => {
+  watch(() => namespaceStore.currentNamespaceParam, () => {
     fetchDocuments()
     // Clear terms cache when namespace changes
     termsCache.value = {}
@@ -43,7 +43,7 @@ export const useDocumentStore = defineStore('document', () => {
     try {
       const response = await documentStoreClient.listDocuments({
         ...params,
-        pool_id: namespaceStore.documentsPool
+        namespace: namespaceStore.currentNamespaceParam
       })
       documents.value = response.items
       total.value = response.total
@@ -89,7 +89,8 @@ export const useDocumentStore = defineStore('document', () => {
     loading.value = true
     error.value = null
     try {
-      const result = await documentStoreClient.createDocument(data)
+      const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
+      const result = await documentStoreClient.createDocument(payload)
       // Don't add to documents array - the view will navigate and fetch the full document
       if (result.is_new) {
         total.value++

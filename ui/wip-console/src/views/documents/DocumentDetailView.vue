@@ -50,7 +50,7 @@ const templateOptions = computed(() => {
   return templateStore.templates
     .filter(t => t.status === 'active')
     .map(t => ({
-      label: `${t.name} (${t.code})`,
+      label: `${t.label} (${t.value})`,
       value: t.template_id
     }))
 })
@@ -376,7 +376,7 @@ onMounted(async () => {
           </div>
           <div class="info-item">
             <span class="label">Template</span>
-            <span>{{ currentTemplate?.name }} ({{ currentTemplate?.code }})</span>
+            <span>{{ currentTemplate?.label }} ({{ currentTemplate?.value }})</span>
           </div>
           <div class="info-item">
             <span class="label">Version</span>
@@ -537,8 +537,8 @@ onMounted(async () => {
               <h4>Template Information</h4>
               <div class="template-info">
                 <div class="metadata-item">
-                  <span class="label">Code:</span>
-                  <code>{{ currentTemplate.code }}</code>
+                  <span class="label">Value:</span>
+                  <code>{{ currentTemplate.value }}</code>
                 </div>
                 <div class="metadata-item">
                   <span class="label">Version:</span>

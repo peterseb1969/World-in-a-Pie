@@ -185,12 +185,12 @@ const refTemplateOptions = computed(() => {
   // If target_templates is specified, only show those
   if (props.field.target_templates?.length) {
     return templateStore.templates
-      .filter(t => props.field.target_templates!.includes(t.template_id) || props.field.target_templates!.includes(t.code))
-      .map(t => ({ label: `${t.name} (${t.code})`, value: t.template_id }))
+      .filter(t => props.field.target_templates!.includes(t.template_id) || props.field.target_templates!.includes(t.value))
+      .map(t => ({ label: `${t.label} (${t.value})`, value: t.template_id }))
   }
   return templateStore.templates
     .filter(t => t.status === 'active')
-    .map(t => ({ label: `${t.name} (${t.code})`, value: t.template_id }))
+    .map(t => ({ label: `${t.label} (${t.value})`, value: t.template_id }))
 })
 
 // Whether template filter should be locked (single target template)
@@ -198,7 +198,7 @@ const refTemplateLocked = ref(false)
 
 // Resolve a template code to a template_id
 function resolveTemplateId(codeOrId: string): string {
-  const tpl = templateStore.templates.find(t => t.code === codeOrId || t.template_id === codeOrId)
+  const tpl = templateStore.templates.find(t => t.value === codeOrId || t.template_id === codeOrId)
   return tpl ? tpl.template_id : codeOrId
 }
 
@@ -252,7 +252,7 @@ function getDocTemplateName(doc: Record<string, unknown>): string {
   const tplId = doc.template_id as string
   if (!tplId) return '-'
   const tpl = templateStore.templates.find(t => t.template_id === tplId)
-  return tpl ? tpl.name : tplId.slice(0, 12)
+  return tpl ? tpl.label : tplId.slice(0, 12)
 }
 
 // Get a readable preview of document data (first few key-value pairs)
@@ -674,7 +674,7 @@ onMounted(() => {
           <div class="object-nested-header">
             <small class="nested-template-ref">
               <i class="pi pi-sitemap"></i>
-              {{ nestedTemplate.name }} ({{ nestedTemplate.code }})
+              {{ nestedTemplate.label }} ({{ nestedTemplate.value }})
             </small>
           </div>
           <div class="object-nested-fields">

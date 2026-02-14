@@ -18,7 +18,7 @@ class TemplateDependencies(BaseModel):
     """Dependencies of a template."""
 
     template_id: str
-    template_code: str
+    template_value: str
 
     # Templates that extend this one
     child_template_count: int = 0
@@ -58,14 +58,14 @@ class DependencyService:
 
         result = TemplateDependencies(
             template_id=template_id,
-            template_code=template.code
+            template_value=template.value
         )
 
         # Check child templates (extends this template)
         children = await InheritanceService.get_children(template_id)
         result.child_template_count = len(children)
         result.child_templates = [
-            {"template_id": c.template_id, "code": c.code, "name": c.name}
+            {"template_id": c.template_id, "value": c.value, "label": c.label}
             for c in children[:10]  # Limit to first 10
         ]
 

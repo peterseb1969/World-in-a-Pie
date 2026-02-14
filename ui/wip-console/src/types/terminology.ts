@@ -12,8 +12,9 @@ export interface TerminologyMetadata {
 
 export interface Terminology {
   terminology_id: string
-  code: string
-  name: string
+  namespace: string
+  value: string
+  label: string
   description?: string
   case_sensitive: boolean
   allow_multiple: boolean
@@ -28,9 +29,10 @@ export interface Terminology {
 }
 
 export interface CreateTerminologyRequest {
-  code: string
-  name: string
+  value: string
+  label: string
   description?: string
+  namespace?: string
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
@@ -39,8 +41,8 @@ export interface CreateTerminologyRequest {
 }
 
 export interface UpdateTerminologyRequest {
-  code?: string
-  name?: string
+  value?: string
+  label?: string
   description?: string
   case_sensitive?: boolean
   allow_multiple?: boolean
@@ -68,6 +70,7 @@ export interface TermTranslation {
 
 export interface Term {
   term_id: string
+  namespace: string
   terminology_id: string
   value: string
   aliases: string[]
@@ -122,7 +125,7 @@ export interface TermListResponse {
   page: number
   page_size: number
   terminology_id: string
-  terminology_code: string
+  terminology_value: string
 }
 
 // =============================================================================
@@ -183,14 +186,14 @@ export interface ExportTerminologyResponse {
 
 export interface ValidateValueRequest {
   terminology_id?: string
-  terminology_code?: string
+  terminology_value?: string
   value: string
 }
 
 export interface ValidateValueResponse {
   valid: boolean
   terminology_id: string
-  terminology_code: string
+  terminology_value: string
   value: string
   matched_term?: Term
   suggestion?: Term

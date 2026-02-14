@@ -57,7 +57,7 @@ async function loadAllInlineStats() {
   for (const ns of namespaceStore.namespaces) {
     try {
       const stats = await namespaceStore.getNamespaceStats(ns.prefix)
-      inlineStats.value[ns.prefix] = stats.pools
+      inlineStats.value[ns.prefix] = stats.entity_counts
     } catch {
       // Skip if stats unavailable
     }
@@ -66,9 +66,9 @@ async function loadAllInlineStats() {
 }
 
 function getInlineTotal(prefix: string): number {
-  const pools = inlineStats.value[prefix]
-  if (!pools) return 0
-  return Object.values(pools).reduce((a, b) => a + b, 0)
+  const counts = inlineStats.value[prefix]
+  if (!counts) return 0
+  return Object.values(counts).reduce((a, b) => a + b, 0)
 }
 
 // Computed
@@ -194,7 +194,7 @@ function formatDate(dateStr: string): string {
 
 // Total entity count for stats
 function getTotalEntities(stats: NamespaceStats): number {
-  return Object.values(stats.pools).reduce((a, b) => a + b, 0)
+  return Object.values(stats.entity_counts).reduce((a, b) => a + b, 0)
 }
 </script>
 
@@ -337,7 +337,7 @@ function getTotalEntities(stats: NamespaceStats): number {
             class="w-full"
           />
           <small class="help-text">
-            Creates 5 ID pools: {prefix}-terminologies, -terms, -templates, -documents, -files
+            Namespace prefix used to isolate terminologies, terms, templates, documents, and files
           </small>
         </div>
 
@@ -465,7 +465,7 @@ function getTotalEntities(stats: NamespaceStats): number {
 
         <div class="pool-stats">
           <div
-            v-for="(count, pool) in selectedStats.pools"
+            v-for="(count, pool) in selectedStats.entity_counts"
             :key="pool"
             class="pool-stat"
           >

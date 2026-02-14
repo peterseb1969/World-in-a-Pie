@@ -5,7 +5,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .id_pool import IdGeneratorConfig
+from .id_algorithm import IdAlgorithmConfig
 from .entry import Synonym, SourceInfo
 
 
@@ -15,58 +15,7 @@ class StrictModel(BaseModel):
 
 
 # =============================================================================
-# ID Pool API Models (Internal - for ID generation pools)
-# =============================================================================
-
-class IdPoolCreate(StrictModel):
-    """Request model for creating an ID pool."""
-
-    pool_id: str = Field(..., description="Unique ID pool identifier")
-    name: str = Field(..., description="Human-readable name")
-    description: Optional[str] = Field(None, description="Purpose of this ID pool")
-    id_generator: Optional[IdGeneratorConfig] = Field(
-        None, description="ID generation configuration"
-    )
-    source_endpoint: Optional[str] = Field(None, description="API endpoint for external pools")
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class IdPoolUpdate(StrictModel):
-    """Request model for updating an ID pool."""
-
-    name: Optional[str] = None
-    description: Optional[str] = None
-    id_generator: Optional[IdGeneratorConfig] = None
-    source_endpoint: Optional[str] = None
-    status: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
-
-
-class IdPoolResponse(BaseModel):
-    """Response model for an ID pool."""
-
-    pool_id: str
-    name: str
-    description: Optional[str]
-    id_generator: IdGeneratorConfig
-    source_endpoint: Optional[str]
-    status: str
-    created_at: datetime
-    updated_at: datetime
-    metadata: dict[str, Any]
-
-
-class IdPoolBulkResponse(BaseModel):
-    """Response model for bulk ID pool operations."""
-
-    input_index: int
-    status: str  # created, updated, deleted, error
-    pool_id: Optional[str] = None
-    error: Optional[str] = None
-
-
-# =============================================================================
-# Namespace API Models (User-facing - for organizing data)
+# Namespace API Models
 # =============================================================================
 
 class NamespaceCreate(StrictModel):
@@ -82,6 +31,10 @@ class NamespaceCreate(StrictModel):
         default_factory=list,
         description="For open mode, optional allowlist of external namespace prefixes"
     )
+    id_config: Optional[dict[str, Any]] = Field(
+        None,
+        description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
+    )
     created_by: Optional[str] = Field(None, description="User creating the namespace")
 
 
@@ -91,6 +44,7 @@ class NamespaceUpdate(StrictModel):
     description: Optional[str] = None
     isolation_mode: Optional[str] = None
     allowed_external_refs: Optional[list[str]] = None
+    id_config: Optional[dict[str, Any]] = None
     updated_by: Optional[str] = None
 
 
@@ -101,17 +55,12 @@ class NamespaceResponse(BaseModel):
     description: str
     isolation_mode: str
     allowed_external_refs: list[str]
+    id_config: dict[str, Any]
     status: str
     created_at: datetime
     created_by: Optional[str]
     updated_at: datetime
     updated_by: Optional[str]
-    # Derived ID pool names
-    terminologies_pool: str
-    terms_pool: str
-    templates_pool: str
-    documents_pool: str
-    files_pool: str
 
 
 class NamespaceStatsResponse(BaseModel):
@@ -121,9 +70,9 @@ class NamespaceStatsResponse(BaseModel):
     description: str
     isolation_mode: str
     status: str
-    pools: dict[str, int] = Field(
+    entity_counts: dict[str, int] = Field(
         default_factory=dict,
-        description="Map of pool_id to entry count"
+        description="Map of entity_type to entry count"
     )
 
 
@@ -132,9 +81,11 @@ class NamespaceStatsResponse(BaseModel):
 # =============================================================================
 
 class RegisterKeyItem(StrictModel):
-    """Request model for registering a composite key."""
+    """Request model for registering a composite key (reserve + activate in one step)."""
 
-    pool_id: str = Field(default="default", description="ID pool for the key")
+    namespace: str = Field(default="wip", description="Namespace")
+    entity_type: str = Field(default="terms", description="Entity type")
+    entry_id: Optional[str] = Field(None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(..., description="Composite key values")
     source_info: Optional[SourceInfo] = Field(None, description="Source system info")
     created_by: Optional[str] = Field(None, description="Creator identifier")
@@ -147,7 +98,8 @@ class RegisterKeyResponse(BaseModel):
     input_index: int
     status: str  # created, already_exists, error
     registry_id: Optional[str] = None
-    pool_id: Optional[str] = None
+    namespace: Optional[str] = None
+    entity_type: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -162,21 +114,108 @@ class RegisterBulkResponse(BaseModel):
 
 
 # =============================================================================
+# Provision API Models (Registry generates IDs)
+# =============================================================================
+
+class ProvisionRequest(StrictModel):
+    """Request model for provisioning IDs (registry generates them)."""
+
+    namespace: str = Field(..., description="Namespace")
+    entity_type: str = Field(..., description="Entity type")
+    count: int = Field(default=1, description="Number of IDs to provision", ge=1, le=1000)
+    composite_keys: Optional[list[dict[str, Any]]] = Field(
+        None,
+        description="Optional composite keys to associate with provisioned IDs"
+    )
+    created_by: Optional[str] = Field(None, description="Creator identifier")
+
+
+class ProvisionedId(BaseModel):
+    """A single provisioned (reserved) ID."""
+
+    entry_id: str
+    status: str = "reserved"
+
+
+class ProvisionResponse(BaseModel):
+    """Response model for ID provisioning."""
+
+    namespace: str
+    entity_type: str
+    ids: list[ProvisionedId]
+    total: int
+
+
+# =============================================================================
+# Reserve API Models (Client provides IDs)
+# =============================================================================
+
+class ReserveItem(StrictModel):
+    """Request model for reserving a client-provided ID."""
+
+    entry_id: str = Field(..., description="Client-provided ID")
+    namespace: str = Field(..., description="Namespace")
+    entity_type: str = Field(..., description="Entity type")
+    composite_key: Optional[dict[str, Any]] = Field(None, description="Composite key values")
+    created_by: Optional[str] = Field(None, description="Creator identifier")
+
+
+class ReserveItemResponse(BaseModel):
+    """Response for a single reserve operation."""
+
+    input_index: int
+    status: str  # reserved, already_exists, invalid_format, error
+    entry_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ReserveBulkResponse(BaseModel):
+    """Response model for bulk reservation."""
+
+    results: list[ReserveItemResponse]
+    total: int
+    reserved: int
+    errors: int
+
+
+# =============================================================================
+# Activate API Models
+# =============================================================================
+
+class ActivateItem(StrictModel):
+    """Request model for activating a reserved entry."""
+
+    entry_id: str = Field(..., description="ID to activate")
+
+
+class ActivateItemResponse(BaseModel):
+    """Response for a single activate operation."""
+
+    input_index: int
+    status: str  # activated, not_found, already_active, error
+    entry_id: Optional[str] = None
+    error: Optional[str] = None
+
+
+class ActivateBulkResponse(BaseModel):
+    """Response model for bulk activation."""
+
+    results: list[ActivateItemResponse]
+    total: int
+    activated: int
+    errors: int
+
+
+# =============================================================================
 # Synonym API Models
 # =============================================================================
 
 class AddSynonymItem(StrictModel):
     """Request model for adding a synonym to an existing entry."""
 
-    # Target entry identification (either by ID or by existing key)
-    target_pool_id: str = Field(..., description="ID pool of the target entry")
-    target_id: Optional[str] = Field(None, description="ID of target entry")
-    target_composite_key: Optional[dict[str, Any]] = Field(
-        None, description="Composite key to find target entry"
-    )
-
-    # The new synonym to add
-    synonym_pool_id: str = Field(..., description="ID pool for the new synonym")
+    target_id: str = Field(..., description="ID of target entry")
+    synonym_namespace: str = Field(..., description="Namespace for the synonym")
+    synonym_entity_type: str = Field(..., description="Entity type for the synonym")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
     synonym_source_info: Optional[SourceInfo] = Field(None, description="Source info for synonym")
     created_by: Optional[str] = Field(None, description="Creator identifier")
@@ -194,9 +233,9 @@ class AddSynonymResponse(BaseModel):
 class RemoveSynonymItem(StrictModel):
     """Request model for removing a synonym from an entry."""
 
-    target_pool_id: str = Field(..., description="ID pool of the target entry")
     target_id: str = Field(..., description="ID of target entry")
-    synonym_pool_id: str = Field(..., description="ID pool of synonym to remove")
+    synonym_namespace: str = Field(..., description="Namespace of synonym to remove")
+    synonym_entity_type: str = Field(..., description="Entity type of synonym to remove")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key of synonym to remove")
     updated_by: Optional[str] = Field(None, description="Updater identifier")
 
@@ -211,20 +250,14 @@ class RemoveSynonymResponse(BaseModel):
 
 
 # =============================================================================
-# Merge API Models (ID-as-Synonym)
+# Merge API Models
 # =============================================================================
 
 class MergeItem(StrictModel):
-    """Request model for merging two entries (making one a synonym of the other)."""
+    """Request model for merging two entries."""
 
-    # The entry that will become the preferred/primary
-    preferred_pool_id: str
     preferred_id: str
-
-    # The entry that will be merged into the preferred
-    deprecated_pool_id: str
     deprecated_id: str
-
     updated_by: Optional[str] = Field(None, description="Updater identifier")
 
 
@@ -245,48 +278,43 @@ class MergeResponse(BaseModel):
 class LookupByIdItem(StrictModel):
     """Request model for looking up by ID."""
 
-    pool_id: Optional[str] = Field(default=None, description="ID pool to search in (None = search all pools)")
     entry_id: str = Field(..., description="The entry ID to look up")
+    namespace: Optional[str] = Field(default=None, description="Namespace filter")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
 class LookupByKeyItem(StrictModel):
     """Request model for looking up by composite key."""
 
-    pool_id: str = Field(default="default", description="ID pool to search in")
+    namespace: str = Field(default="wip", description="Namespace to search in")
+    entity_type: str = Field(default="terms", description="Entity type to search in")
     composite_key: dict[str, Any] = Field(..., description="Composite key to look up")
     search_synonyms: bool = Field(default=True, description="Also search in synonyms")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
 class LookupResponse(BaseModel):
-    """
-    Response model for lookups.
-    Always returns preferred_id and all additional_ids per spec.
-    """
+    """Response model for lookups."""
 
     input_index: int
     status: str  # found, not_found, error
 
-    # Always return all IDs
     preferred_id: Optional[str] = None
-    preferred_pool_id: Optional[str] = None
+    namespace: Optional[str] = None
+    entity_type: Optional[str] = None
     additional_ids: list[dict[str, str]] = Field(default_factory=list)
 
-    # The matched key info
-    matched_pool_id: Optional[str] = None
+    matched_namespace: Optional[str] = None
+    matched_entity_type: Optional[str] = None
     matched_composite_key: Optional[dict[str, Any]] = None
 
-    # All synonyms
     synonyms: list[Synonym] = Field(default_factory=list)
 
-    # How the match was found
     matched_via: Optional[str] = Field(
         None,
         description="How the match was found: entry_id, additional_id, or composite_key_value"
     )
 
-    # Source info and optional fetched data
     source_info: Optional[SourceInfo] = None
     source_data: Optional[dict[str, Any]] = None
 
@@ -310,17 +338,18 @@ class LookupBulkResponse(BaseModel):
 class SearchItem(StrictModel):
     """Request model for structured search."""
 
-    # Field-value search criteria within composite keys
     field_criteria: dict[str, Any] = Field(
         ...,
         description="Field-value pairs to search for in composite keys"
     )
-    # Optional ID pool restriction
-    restrict_to_pools: Optional[list[str]] = Field(
+    restrict_to_namespaces: Optional[list[str]] = Field(
         None,
-        description="Only search in these ID pools (None = all)"
+        description="Only search in these namespaces (None = all)"
     )
-    # Include inactive entries?
+    restrict_to_entity_types: Optional[list[str]] = Field(
+        None,
+        description="Only search in these entity types (None = all)"
+    )
     include_inactive: bool = Field(default=False)
 
 
@@ -328,9 +357,13 @@ class SearchByTermItem(StrictModel):
     """Request model for free-text term search."""
 
     term: str = Field(..., description="Term to search for across all composite key values")
-    restrict_to_pools: Optional[list[str]] = Field(
+    restrict_to_namespaces: Optional[list[str]] = Field(
         None,
-        description="Only search in these ID pools (None = all)"
+        description="Only search in these namespaces (None = all)"
+    )
+    restrict_to_entity_types: Optional[list[str]] = Field(
+        None,
+        description="Only search in these entity types (None = all)"
     )
     include_inactive: bool = Field(default=False)
 
@@ -339,9 +372,11 @@ class SearchResult(BaseModel):
     """A single search result."""
 
     registry_id: str
-    pool_id: str
+    namespace: str
+    entity_type: str
     matched_in: str  # "primary" or "synonym"
-    matched_pool_id: str
+    matched_namespace: str
+    matched_entity_type: str
     matched_composite_key: dict[str, Any]
     all_synonyms: list[Synonym]
     additional_ids: list[dict[str, str]]
@@ -368,7 +403,6 @@ class SearchBulkResponse(BaseModel):
 class UpdateEntryItem(StrictModel):
     """Request model for updating an entry."""
 
-    pool_id: str
     entry_id: str
     source_info: Optional[SourceInfo] = None
     metadata: Optional[dict[str, Any]] = None
@@ -387,14 +421,8 @@ class UpdateEntryResponse(BaseModel):
 class SetPreferredItem(StrictModel):
     """Request model for setting the preferred ID."""
 
-    # Current entry
-    pool_id: str
     entry_id: str
-
-    # The ID to make preferred (must be in additional_ids or same as entry_id)
-    new_preferred_pool_id: str
     new_preferred_id: str
-
     updated_by: Optional[str] = None
 
 
@@ -414,7 +442,6 @@ class SetPreferredResponse(BaseModel):
 class DeleteItem(StrictModel):
     """Request model for deleting (deactivating) an entry."""
 
-    pool_id: str
     entry_id: str
     updated_by: Optional[str] = None
 

@@ -47,6 +47,7 @@ from .identity import (
 )
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
+from .query_validation import RejectUnknownQueryParamsMiddleware
 from .providers import (
     APIKeyProvider,
     AuthProvider,
@@ -89,6 +90,7 @@ __all__ = [
     # Middleware
     "AuthMiddleware",
     "create_auth_middleware",
+    "RejectUnknownQueryParamsMiddleware",
     # Setup
     "setup_auth",
     "create_providers_from_config",

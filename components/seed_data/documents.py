@@ -114,12 +114,12 @@ def get_total_documents(profile: str) -> int:
 
 
 def generate_documents_for_template(
-    template_code: str,
+    template_value: str,
     count: int,
     start_index: int = 0
 ) -> list[dict[str, Any]]:
     """Generate multiple documents for a template."""
-    generator = generators.get_generator(template_code)
+    generator = generators.get_generator(template_value)
     if not generator:
         return []
 
@@ -133,14 +133,14 @@ def generate_documents_for_template(
 
 
 def generate_all_documents(profile: str = "standard") -> dict[str, list[dict[str, Any]]]:
-    """Generate all documents for a profile, grouped by template code."""
+    """Generate all documents for a profile, grouped by template value."""
     counts = get_document_counts(profile)
     all_documents = {}
 
-    for template_code, count in counts.items():
-        documents = generate_documents_for_template(template_code, count)
+    for template_value, count in counts.items():
+        documents = generate_documents_for_template(template_value, count)
         if documents:
-            all_documents[template_code] = documents
+            all_documents[template_value] = documents
 
     return all_documents
 
@@ -193,7 +193,7 @@ def generate_validation_edge_cases() -> list[tuple[str, dict[str, Any], str]]:
     """
     Generate documents designed to test validation edge cases.
 
-    Returns tuples of (template_code, document_data, expected_result)
+    Returns tuples of (template_value, document_data, expected_result)
     where expected_result is 'valid', 'invalid', or 'warning'.
     """
     cases = []

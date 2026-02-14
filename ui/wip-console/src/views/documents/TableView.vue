@@ -46,7 +46,7 @@ const templateOptions = computed(() => {
   return templateStore.templates
     .filter(t => t.status === 'active')
     .map(t => ({
-      label: `${t.name} (${t.code})`,
+      label: `${t.label} (${t.value})`,
       value: t.template_id
     }))
 })
@@ -149,7 +149,7 @@ async function exportCsv() {
     const url = window.URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${tableData.value?.template_code || selectedTemplateId.value}.csv`
+    a.download = `${tableData.value?.template_value || selectedTemplateId.value}.csv`
     document.body.appendChild(a)
     a.click()
     window.URL.revokeObjectURL(url)
@@ -311,8 +311,8 @@ onMounted(async () => {
           <!-- Table info -->
           <div class="table-info">
             <div class="info-left">
-              <h2>{{ tableData.template_name }}</h2>
-              <code>{{ tableData.template_code }}</code>
+              <h2>{{ tableData.template_label }}</h2>
+              <code>{{ tableData.template_value }}</code>
             </div>
             <div class="info-right">
               <span class="stat">

@@ -17,6 +17,7 @@ import httpx
 
 from ..models.namespace import Namespace
 from ..models.entry import RegistryEntry
+from ..models.id_algorithm import VALID_ENTITY_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -64,23 +65,29 @@ class ExportService:
         export_dir = tempfile.mkdtemp(prefix=f"wip-export-{namespace.prefix}-")
 
         try:
+            # Build id_config for manifest
+            id_config = {}
+            for entity_type in VALID_ENTITY_TYPES:
+                config = namespace.get_id_algorithm(entity_type)
+                id_config[entity_type] = config.model_dump()
+
             # Export manifest
             manifest = {
-                "version": "1.0",
+                "version": "2.0",
                 "exported_at": datetime.now(timezone.utc).isoformat(),
                 "prefix": namespace.prefix,
                 "description": namespace.description,
                 "isolation_mode": namespace.isolation_mode,
                 "allowed_external_refs": namespace.allowed_external_refs,
-                "pools": namespace.get_all_pools(),
+                "id_config": id_config,
             }
             with open(os.path.join(export_dir, "manifest.json"), "w") as f:
                 json.dump(manifest, f, indent=2)
 
-            # Export registry entries for all pools in the namespace
+            # Export registry entries for this namespace
             registry_path = os.path.join(export_dir, "registry-entries.jsonl")
             async for entry in RegistryEntry.find(
-                {"primary_pool_id": {"$in": namespace.get_all_pools()}}
+                {"namespace": namespace.prefix}
             ):
                 with open(registry_path, "a") as f:
                     f.write(entry.model_dump_json() + "\n")
@@ -89,7 +96,7 @@ class ExportService:
             # Export terminologies
             terminologies = await self._fetch_all_paginated(
                 f"{self.def_store_url}/api/def-store/terminologies",
-                {"pool_id": namespace.terminologies_pool},
+                {"namespace": namespace.prefix},
             )
             terms_path = os.path.join(export_dir, "terminologies.jsonl")
             for term in terminologies:
@@ -102,7 +109,7 @@ class ExportService:
             for terminology in terminologies:
                 terms = await self._fetch_all_paginated(
                     f"{self.def_store_url}/api/def-store/terminologies/{terminology['terminology_id']}/terms",
-                    {"pool_id": namespace.terms_pool},
+                    {"namespace": namespace.prefix},
                 )
                 all_terms.extend(terms)
 
@@ -115,7 +122,7 @@ class ExportService:
             # Export templates
             templates = await self._fetch_all_paginated(
                 f"{self.template_store_url}/api/template-store/templates",
-                {"pool_id": namespace.templates_pool},
+                {"namespace": namespace.prefix},
             )
             templates_path = os.path.join(export_dir, "templates.jsonl")
             for template in templates:
@@ -126,7 +133,7 @@ class ExportService:
             # Export documents
             documents = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/documents",
-                {"pool_id": namespace.documents_pool},
+                {"namespace": namespace.prefix},
             )
             documents_path = os.path.join(export_dir, "documents.jsonl")
             for doc in documents:
@@ -137,7 +144,7 @@ class ExportService:
             # Export file metadata (and optionally content)
             files = await self._fetch_all_paginated(
                 f"{self.document_store_url}/api/document-store/files",
-                {"pool_id": namespace.files_pool},
+                {"namespace": namespace.prefix},
             )
             files_path = os.path.join(export_dir, "files.jsonl")
             for file_meta in files:

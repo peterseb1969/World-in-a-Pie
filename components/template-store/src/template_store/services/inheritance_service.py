@@ -62,8 +62,8 @@ class InheritanceService:
         return Template(
             id=template.id,
             template_id=template.template_id,
-            code=template.code,
-            name=template.name,
+            value=template.value,
+            label=template.label,
             description=template.description,
             version=template.version,
             extends=template.extends,  # Keep original extends reference

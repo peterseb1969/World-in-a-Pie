@@ -15,40 +15,9 @@ from typing import Any, Literal
 
 import httpx
 
-from ..models.id_pool import IdPool, IdGeneratorConfig, IdGeneratorType
 from ..models.namespace import Namespace
 
 logger = logging.getLogger(__name__)
-
-
-# ID pool type configurations
-ID_POOL_CONFIGS = {
-    "terminologies": {
-        "name_suffix": "Terminologies",
-        "description_suffix": "terminology IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TERM-"),
-    },
-    "terms": {
-        "name_suffix": "Terms",
-        "description_suffix": "individual term IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="T-"),
-    },
-    "templates": {
-        "name_suffix": "Templates",
-        "description_suffix": "template IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TPL-"),
-    },
-    "documents": {
-        "name_suffix": "Documents",
-        "description_suffix": "document IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.UUID7),
-    },
-    "files": {
-        "name_suffix": "Files",
-        "description_suffix": "file attachment IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="FILE-"),
-    },
-}
 
 
 class ImportService:
@@ -132,30 +101,17 @@ class ImportService:
                     description=manifest.get("description", f"Imported from {source_prefix}"),
                     isolation_mode=manifest.get("isolation_mode", "open"),
                     allowed_external_refs=manifest.get("allowed_external_refs", []),
+                    id_config=manifest.get("id_config", {}),
                     created_by=imported_by,
                 )
                 await namespace.create()
-
-                # Create ID pools
-                for pool_type, config in ID_POOL_CONFIGS.items():
-                    pool_id = f"{prefix}-{pool_type}"
-                    existing_pool = await IdPool.find_one({"pool_id": pool_id})
-                    if not existing_pool:
-                        pool = IdPool(
-                            pool_id=pool_id,
-                            name=f"{prefix.upper()} {config['name_suffix']}",
-                            description=f"ID pool for {config['description_suffix']} in {prefix} namespace",
-                            id_generator=config["id_generator"],
-                        )
-                        await pool.create()
             else:
                 namespace = existing_ns
 
-            # Build pool mapping (for prefix remapping)
-            pool_map = {}
+            # Build namespace mapping (for prefix remapping)
+            ns_map = {}
             if target_prefix and target_prefix != source_prefix:
-                for pool_type in ["terminologies", "terms", "templates", "documents", "files"]:
-                    pool_map[f"{source_prefix}-{pool_type}"] = f"{target_prefix}-{pool_type}"
+                ns_map[source_prefix] = target_prefix
 
             # Import terminologies
             terminologies_path = os.path.join(extract_dir, "terminologies.jsonl")
@@ -163,7 +119,7 @@ class ImportService:
                 stats["terminologies"] = await self._import_jsonl(
                     terminologies_path,
                     f"{self.def_store_url}/api/def-store/terminologies",
-                    pool_map,
+                    ns_map,
                     mode,
                 )
 
@@ -172,7 +128,7 @@ class ImportService:
             if os.path.exists(terms_path):
                 stats["terms"] = await self._import_terms(
                     terms_path,
-                    pool_map,
+                    ns_map,
                     mode,
                 )
 
@@ -182,7 +138,7 @@ class ImportService:
                 stats["templates"] = await self._import_jsonl(
                     templates_path,
                     f"{self.template_store_url}/api/template-store/templates",
-                    pool_map,
+                    ns_map,
                     mode,
                 )
 
@@ -192,15 +148,13 @@ class ImportService:
                 stats["documents"] = await self._import_jsonl(
                     documents_path,
                     f"{self.document_store_url}/api/document-store/documents",
-                    pool_map,
+                    ns_map,
                     mode,
                 )
 
             # Import file metadata (content import is more complex, skip for now)
             files_path = os.path.join(extract_dir, "files.jsonl")
             if os.path.exists(files_path):
-                # Files are imported through the document references
-                # Just count them for stats
                 with open(files_path) as f:
                     for line in f:
                         if line.strip():
@@ -217,7 +171,7 @@ class ImportService:
         self,
         file_path: str,
         endpoint: str,
-        pool_map: dict[str, str],
+        ns_map: dict[str, str],
         mode: str,
     ) -> int:
         """Import items from a JSONL file to an API endpoint."""
@@ -233,8 +187,8 @@ class ImportService:
                         item = json.loads(line)
 
                         # Remap namespace if needed
-                        if pool_map:
-                            item = self._remap_pools(item, pool_map)
+                        if ns_map:
+                            item = self._remap_namespaces(item, ns_map)
 
                         # Remove read-only fields
                         item.pop("created_at", None)
@@ -249,7 +203,6 @@ class ImportService:
                         if response.status_code in (200, 201):
                             count += 1
                         elif response.status_code == 409 and mode == "merge":
-                            # Already exists, skip in merge mode
                             pass
                         else:
                             logger.warning(
@@ -264,7 +217,7 @@ class ImportService:
     async def _import_terms(
         self,
         file_path: str,
-        pool_map: dict[str, str],
+        ns_map: dict[str, str],
         mode: str,
     ) -> int:
         """Import terms, grouping by terminology."""
@@ -290,15 +243,15 @@ class ImportService:
         async with httpx.AsyncClient(timeout=120.0) as client:
             for terminology_id, terms in terms_by_terminology.items():
                 # Remap namespaces if needed
-                if pool_map:
-                    terms = [self._remap_pools(t, pool_map) for t in terms]
+                if ns_map:
+                    terms = [self._remap_namespaces(t, ns_map) for t in terms]
 
                 # Prepare bulk request
                 bulk_items = []
                 for term in terms:
                     bulk_items.append({
-                        "code": term["code"],
-                        "value": term["value"],
+                        "value": term.get("value"),
+                        "label": term.get("label"),
                         "description": term.get("description"),
                         "aliases": term.get("aliases", []),
                         "metadata": term.get("metadata", {}),
@@ -324,18 +277,17 @@ class ImportService:
 
         return count
 
-    def _remap_pools(self, item: dict[str, Any], pool_map: dict[str, str]) -> dict[str, Any]:
-        """Recursively remap pool_id fields in an item."""
+    def _remap_namespaces(self, item: dict[str, Any], ns_map: dict[str, str]) -> dict[str, Any]:
+        """Remap namespace fields in an item."""
         result = {}
         for key, value in item.items():
-            if isinstance(value, str) and value in pool_map:
-                result[key] = pool_map[value]
+            if key == "namespace" and isinstance(value, str) and value in ns_map:
+                result[key] = ns_map[value]
             elif isinstance(value, dict):
-                result[key] = self._remap_pools(value, pool_map)
+                result[key] = self._remap_namespaces(value, ns_map)
             elif isinstance(value, list):
                 result[key] = [
-                    self._remap_pools(v, pool_map) if isinstance(v, dict)
-                    else pool_map.get(v, v) if isinstance(v, str)
+                    self._remap_namespaces(v, ns_map) if isinstance(v, dict)
                     else v
                     for v in value
                 ]

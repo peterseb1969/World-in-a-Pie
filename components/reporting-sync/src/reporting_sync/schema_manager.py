@@ -51,11 +51,11 @@ class SchemaManager:
     def __init__(self, pool: asyncpg.Pool):
         self.pool = pool
 
-    def get_table_name(self, template_code: str, config: ReportingConfig | None = None) -> str:
+    def get_table_name(self, template_value: str, config: ReportingConfig | None = None) -> str:
         """Get the PostgreSQL table name for a template."""
         if config and config.table_name:
             return config.table_name
-        return f"doc_{template_code.lower()}"
+        return f"doc_{template_value.lower()}"
 
     def _generate_column_ddl(
         self,
@@ -160,13 +160,13 @@ class SchemaManager:
 
     def generate_create_table_ddl(
         self,
-        template_code: str,
+        template_value: str,
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
     ) -> str:
         """Generate CREATE TABLE statement for a template."""
-        table_name = self.get_table_name(template_code, config)
+        table_name = self.get_table_name(template_value, config)
         include_metadata = config.include_metadata if config else True
 
         columns = []
@@ -174,9 +174,8 @@ class SchemaManager:
         # System columns (always present)
         columns.extend([
             ("document_id", "TEXT PRIMARY KEY"),
-            ("pool_id", "VARCHAR(255) NOT NULL DEFAULT 'wip-documents'"),  # ID pool for multi-tenant isolation
+            ("namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip'"),
             ("template_id", "TEXT NOT NULL"),
-            ("template_pool_id", "VARCHAR(255) NOT NULL DEFAULT 'wip-templates'"),  # Template ID pool
             ("template_version", "INTEGER NOT NULL"),
             ("version", "INTEGER NOT NULL"),
             ("status", "VARCHAR(20) NOT NULL"),
@@ -219,15 +218,15 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
 );
 
 -- Indexes
-CREATE INDEX IF NOT EXISTS "{table_name}_pool_id_idx" ON "{table_name}"(pool_id);
-CREATE INDEX IF NOT EXISTS "{table_name}_pool_template_id_idx" ON "{table_name}"(pool_id, template_id);
-CREATE INDEX IF NOT EXISTS "{table_name}_pool_status_idx" ON "{table_name}"(pool_id, status);
-CREATE INDEX IF NOT EXISTS "{table_name}_pool_identity_hash_idx" ON "{table_name}"(pool_id, identity_hash);
-CREATE INDEX IF NOT EXISTS "{table_name}_pool_created_at_idx" ON "{table_name}"(pool_id, created_at);
+CREATE INDEX IF NOT EXISTS "{table_name}_namespace_idx" ON "{table_name}"(namespace);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON "{table_name}"(namespace, template_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON "{table_name}"(namespace, status);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON "{table_name}"(namespace, identity_hash);
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(namespace, created_at);
 
--- Partial unique index for active documents by identity within pool
-CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_pool_active_identity_idx"
-ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
+-- Partial unique index for active documents by identity within namespace
+CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
+ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
 """
         return ddl.strip()
 
@@ -260,18 +259,18 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
 
     async def create_table(
         self,
-        template_code: str,
+        template_value: str,
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
     ) -> str:
         """Create a table for a template."""
         ddl = self.generate_create_table_ddl(
-            template_code, template_version, fields, config
+            template_value, template_version, fields, config
         )
-        table_name = self.get_table_name(template_code, config)
+        table_name = self.get_table_name(template_value, config)
 
-        logger.info(f"Creating table {table_name} for template {template_code}")
+        logger.info(f"Creating table {table_name} for template {template_value}")
 
         async with self.pool.acquire() as conn:
             await conn.execute(ddl)
@@ -279,11 +278,11 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
             # Record the migration
             await conn.execute(
                 """
-                INSERT INTO _wip_schema_migrations (template_code, template_version, migration_sql)
+                INSERT INTO _wip_schema_migrations (template_value, template_version, migration_sql)
                 VALUES ($1, $2, $3)
-                ON CONFLICT (template_code, template_version) DO NOTHING
+                ON CONFLICT (template_value, template_version) DO NOTHING
                 """,
-                template_code,
+                template_value,
                 template_version,
                 ddl,
             )
@@ -293,7 +292,7 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
 
     async def update_table_schema(
         self,
-        template_code: str,
+        template_value: str,
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
@@ -304,10 +303,10 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
         Only adds new columns; never removes or modifies existing columns
         to preserve historical data.
         """
-        table_name = self.get_table_name(template_code, config)
+        table_name = self.get_table_name(template_value, config)
 
         if not await self.table_exists(table_name):
-            await self.create_table(template_code, template_version, fields, config)
+            await self.create_table(template_value, template_version, fields, config)
             return [f"Created table {table_name}"]
 
         existing_columns = await self.get_existing_columns(table_name)
@@ -336,13 +335,13 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
                 migration_sql = ";\n".join(migrations)
                 await conn.execute(
                     """
-                    INSERT INTO _wip_schema_migrations (template_code, template_version, migration_sql)
+                    INSERT INTO _wip_schema_migrations (template_value, template_version, migration_sql)
                     VALUES ($1, $2, $3)
-                    ON CONFLICT (template_code, template_version) DO UPDATE
+                    ON CONFLICT (template_value, template_version) DO UPDATE
                     SET migration_sql = _wip_schema_migrations.migration_sql || E'\n' || $3,
                         applied_at = NOW()
                     """,
-                    template_code,
+                    template_value,
                     template_version,
                     migration_sql,
                 )
@@ -362,7 +361,7 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
         Returns:
             Table name
         """
-        template_code = template["code"]
+        template_value = template["value"]
         template_version = template.get("version", 1)
         fields_data = template.get("fields", [])
 
@@ -402,18 +401,18 @@ ON "{table_name}"(pool_id, identity_hash) WHERE status = 'active';
 
         # Check if sync is enabled
         if config and not config.sync_enabled:
-            logger.info(f"Sync disabled for template {template_code}, skipping table creation")
+            logger.info(f"Sync disabled for template {template_value}, skipping table creation")
             return ""
 
-        table_name = self.get_table_name(template_code, config)
+        table_name = self.get_table_name(template_value, config)
 
         if await self.table_exists(table_name):
             migrations = await self.update_table_schema(
-                template_code, template_version, fields, config
+                template_value, template_version, fields, config
             )
             if migrations:
                 logger.info(f"Updated table {table_name} with {len(migrations)} new columns")
         else:
-            await self.create_table(template_code, template_version, fields, config)
+            await self.create_table(template_value, template_version, fields, config)
 
         return table_name

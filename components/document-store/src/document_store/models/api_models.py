@@ -25,6 +25,10 @@ class DocumentCreateRequest(StrictModel):
         ...,
         description="Template ID to validate against"
     )
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for the document"
+    )
     data: dict[str, Any] = Field(
         ...,
         description="Document content"
@@ -47,11 +51,12 @@ class DocumentResponse(BaseModel):
     """Response containing a document."""
 
     document_id: str
+    namespace: str
     template_id: str
     template_version: int
-    template_code: Optional[str] = Field(
+    template_value: Optional[str] = Field(
         None,
-        description="Template code (e.g., PLANNED_VISIT)"
+        description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str
     version: int
@@ -96,10 +101,11 @@ class DocumentCreateResponse(BaseModel):
     """Response after creating/updating a document."""
 
     document_id: str
+    namespace: str
     template_id: str
-    template_code: Optional[str] = Field(
+    template_value: Optional[str] = Field(
         None,
-        description="Template code (e.g., PLANNED_VISIT)"
+        description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str
     version: int
@@ -265,6 +271,10 @@ class BulkCreateResponse(BaseModel):
     unchanged: int = 0
     failed: int
     results: list[BulkCreateResult]
+    timing: Optional[dict[str, float]] = Field(
+        default=None,
+        description="Server-side timing breakdown in milliseconds"
+    )
 
 
 # ============================================================================
@@ -367,7 +377,7 @@ class FileUploadMetadata(StrictModel):
     )
     allowed_templates: Optional[list[str]] = Field(
         None,
-        description="Template codes that can reference this file (None = all)"
+        description="Template values that can reference this file (None = all)"
     )
 
 
@@ -392,7 +402,7 @@ class UpdateFileMetadataRequest(StrictModel):
     )
     allowed_templates: Optional[list[str]] = Field(
         None,
-        description="Template codes that can reference this file"
+        description="Template values that can reference this file"
     )
 
 

@@ -25,8 +25,8 @@ const isEdit = computed(() => !!props.terminology)
 const dialogTitle = computed(() => isEdit.value ? 'Edit Terminology' : 'Create Terminology')
 
 const form = ref({
-  code: '',
-  name: '',
+  value: '',
+  label: '',
   description: '',
   case_sensitive: false,
   allow_multiple: false,
@@ -46,8 +46,8 @@ watch(
     if (visible) {
       if (props.terminology) {
         form.value = {
-          code: props.terminology.code,
-          name: props.terminology.name,
+          value: props.terminology.value,
+          label: props.terminology.label,
           description: props.terminology.description || '',
           case_sensitive: props.terminology.case_sensitive,
           allow_multiple: props.terminology.allow_multiple,
@@ -67,8 +67,8 @@ watch(
 
 function resetForm() {
   form.value = {
-    code: '',
-    name: '',
+    value: '',
+    label: '',
     description: '',
     case_sensitive: false,
     allow_multiple: false,
@@ -83,14 +83,14 @@ function resetForm() {
 function validate(): boolean {
   errors.value = {}
 
-  if (!form.value.code.trim()) {
-    errors.value.code = 'Code is required'
-  } else if (!/^[A-Z0-9_]+$/.test(form.value.code)) {
-    errors.value.code = 'Code must be uppercase letters, numbers, and underscores only'
+  if (!form.value.value.trim()) {
+    errors.value.value = 'Value is required'
+  } else if (!/^[A-Z0-9_]+$/.test(form.value.value)) {
+    errors.value.value = 'Value must be uppercase letters, numbers, and underscores only'
   }
 
-  if (!form.value.name.trim()) {
-    errors.value.name = 'Name is required'
+  if (!form.value.label.trim()) {
+    errors.value.label = 'Label is required'
   }
 
   return Object.keys(errors.value).length === 0
@@ -103,8 +103,8 @@ async function submit() {
   try {
     if (isEdit.value && props.terminology) {
       const updateData: UpdateTerminologyRequest = {
-        code: form.value.code !== props.terminology.code ? form.value.code : undefined,
-        name: form.value.name,
+        value: form.value.value !== props.terminology.value ? form.value.value : undefined,
+        label: form.value.label,
         description: form.value.description || undefined,
         case_sensitive: form.value.case_sensitive,
         allow_multiple: form.value.allow_multiple,
@@ -117,12 +117,12 @@ async function submit() {
         }
       }
       await terminologyStore.updateTerminology(props.terminology.terminology_id, updateData)
-      uiStore.showSuccess('Terminology Updated', `"${form.value.name}" has been updated`)
+      uiStore.showSuccess('Terminology Updated', `"${form.value.label}" has been updated`)
       emit('updated')
     } else {
       const createData: CreateTerminologyRequest = {
-        code: form.value.code,
-        name: form.value.name,
+        value: form.value.value,
+        label: form.value.label,
         description: form.value.description || undefined,
         case_sensitive: form.value.case_sensitive,
         allow_multiple: form.value.allow_multiple,
@@ -135,7 +135,7 @@ async function submit() {
         }
       }
       await terminologyStore.createTerminology(createData)
-      uiStore.showSuccess('Terminology Created', `"${form.value.name}" has been created`)
+      uiStore.showSuccess('Terminology Created', `"${form.value.label}" has been created`)
       emit('created')
     }
     emit('update:visible', false)
@@ -162,29 +162,29 @@ function cancel() {
     <form @submit.prevent="submit" class="terminology-form">
       <div class="form-row">
         <div class="form-field">
-          <label for="code">Code *</label>
+          <label for="value">Value *</label>
           <InputText
-            id="code"
-            v-model="form.code"
-            :class="{ 'p-invalid': errors.code }"
+            id="value"
+            v-model="form.value"
+            :class="{ 'p-invalid': errors.value }"
             placeholder="e.g., DOC_STATUS"
             :disabled="isEdit"
           />
-          <small v-if="errors.code" class="p-error">{{ errors.code }}</small>
+          <small v-if="errors.value" class="p-error">{{ errors.value }}</small>
           <small v-else class="help-text">Machine identifier (e.g., DOC_STATUS). Uppercase letters, numbers, underscores.</small>
         </div>
       </div>
 
       <div class="form-row">
         <div class="form-field">
-          <label for="name">Name *</label>
+          <label for="label">Label *</label>
           <InputText
-            id="name"
-            v-model="form.name"
-            :class="{ 'p-invalid': errors.name }"
+            id="label"
+            v-model="form.label"
+            :class="{ 'p-invalid': errors.label }"
             placeholder="e.g., Document Status"
           />
-          <small v-if="errors.name" class="p-error">{{ errors.name }}</small>
+          <small v-if="errors.label" class="p-error">{{ errors.label }}</small>
           <small v-else class="help-text">Human-readable display name</small>
         </div>
       </div>

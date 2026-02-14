@@ -166,7 +166,7 @@ class DefStoreClient extends BaseApiClient {
     page_size?: number
     status?: string
     search?: string
-    pool_id?: string
+    namespace?: string
   }): Promise<TerminologyListResponse> {
     const response = await this.client.get<TerminologyListResponse>('/terminologies', { params })
     return response.data
@@ -302,9 +302,9 @@ class TemplateStoreClient extends BaseApiClient {
     page_size?: number
     status?: string
     extends?: string
-    code?: string
+    value?: string
     latest_only?: boolean
-    pool_id?: string
+    namespace?: string
   }): Promise<TemplateListResponse> {
     const response = await this.client.get<TemplateListResponse>('/templates', { params })
     return response.data
@@ -320,23 +320,23 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async getTemplateByCode(code: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/by-code/${code}`)
+  async getTemplateByValue(value: string): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-value/${value}`)
     return response.data
   }
 
-  async getTemplateByCodeRaw(code: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/by-code/${code}/raw`)
+  async getTemplateByValueRaw(value: string): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-value/${value}/raw`)
     return response.data
   }
 
-  async getTemplateVersions(code: string): Promise<TemplateListResponse> {
-    const response = await this.client.get<TemplateListResponse>(`/templates/by-code/${code}/versions`)
+  async getTemplateVersions(value: string): Promise<TemplateListResponse> {
+    const response = await this.client.get<TemplateListResponse>(`/templates/by-value/${value}/versions`)
     return response.data
   }
 
-  async getTemplateByCodeAndVersion(code: string, version: number): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/by-code/${code}/versions/${version}`)
+  async getTemplateByValueAndVersion(value: string, version: number): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-value/${value}/versions/${version}`)
     return response.data
   }
 
@@ -615,7 +615,7 @@ class FileStoreClient extends BaseApiClient {
     items: Array<{
       document_id: string
       template_id: string
-      template_code: string | null
+      template_value: string | null
       field_path: string
       status: string
       created_at: string | null
@@ -663,7 +663,7 @@ export interface IntegrityIssue {
   severity: string
   source: string
   entity_id: string
-  entity_code: string | null
+  entity_value: string | null
   field_path: string | null
   reference: string
   message: string
@@ -693,8 +693,8 @@ export interface IntegrityCheckResult {
 export interface SearchResult {
   type: 'terminology' | 'term' | 'template' | 'document' | 'file'
   id: string
-  code: string | null
-  name: string | null
+  value: string | null
+  label: string | null
   status: string | null
   description: string | null
   updated_at: string | null
@@ -711,8 +711,8 @@ export interface ActivityItem {
   type: 'terminology' | 'term' | 'template' | 'document' | 'file'
   action: 'created' | 'updated' | 'deleted' | 'deprecated'
   entity_id: string
-  entity_code: string | null
-  entity_name: string | null
+  entity_value: string | null
+  entity_label: string | null
   timestamp: string
   user: string | null
   version: number | null
@@ -727,7 +727,7 @@ export interface ActivityResponse {
 export interface DocumentReference {
   document_id: string
   template_id: string
-  template_code: string | null
+  template_value: string | null
   field_path: string
   status: string
   created_at: string | null
@@ -743,8 +743,8 @@ export interface TermDocumentsResponse {
 export interface EntityReference {
   ref_type: 'template' | 'terminology' | 'term'
   ref_id: string
-  ref_code: string | null
-  ref_name: string | null
+  ref_value: string | null
+  ref_label: string | null
   field_path: string | null
   status: 'valid' | 'broken' | 'inactive'
   error: string | null
@@ -753,8 +753,8 @@ export interface EntityReference {
 export interface EntityDetails {
   entity_type: 'document' | 'template' | 'terminology' | 'term' | 'file'
   entity_id: string
-  entity_code: string | null
-  entity_name: string | null
+  entity_value: string | null
+  entity_label: string | null
   entity_status: string | null
   version: number | null
   created_at: string | null
@@ -775,8 +775,8 @@ export interface EntityReferencesResponse {
 export interface IncomingReference {
   entity_type: 'document' | 'template'
   entity_id: string
-  entity_code: string | null
-  entity_name: string | null
+  entity_value: string | null
+  entity_label: string | null
   entity_status: string | null
   field_path: string | null
   reference_type: 'uses_template' | 'extends' | 'template_ref' | 'terminology_ref' | 'term_ref' | 'file_ref'
@@ -785,8 +785,8 @@ export interface IncomingReference {
 export interface ReferencedByResponse {
   entity_type: 'document' | 'template' | 'terminology' | 'term' | 'file'
   entity_id: string
-  entity_code: string | null
-  entity_name: string | null
+  entity_value: string | null
+  entity_label: string | null
   referenced_by: IncomingReference[]
   total: number
   error: string | null
@@ -882,16 +882,12 @@ export interface Namespace {
   description: string
   isolation_mode: 'open' | 'strict'
   allowed_external_refs: string[]
+  id_config: Record<string, unknown>
   status: 'active' | 'archived' | 'deleted'
   created_at: string
   created_by: string | null
   updated_at: string
   updated_by: string | null
-  terminologies_pool: string
-  terms_pool: string
-  templates_pool: string
-  documents_pool: string
-  files_pool: string
 }
 
 export interface NamespaceStats {
@@ -899,7 +895,7 @@ export interface NamespaceStats {
   description: string
   isolation_mode: string
   status: string
-  pools: Record<string, number>
+  entity_counts: Record<string, number>
 }
 
 export interface CreateNamespaceRequest {

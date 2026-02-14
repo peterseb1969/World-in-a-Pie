@@ -181,8 +181,8 @@ test_consumer_lag_acceptable() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_services_publish_events() {
-    # Get a template_id first (API requires template_id, not template_code)
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+    # Get a template_id first (API requires template_id, not template_value)
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?page_size=1"
     local template_id
     template_id=$(json_field "items[0].template_id")
 

@@ -189,18 +189,18 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
         # Create schema migrations tracking table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_schema_migrations (
-                template_code TEXT NOT NULL,
+                template_value TEXT NOT NULL,
                 template_version INTEGER NOT NULL,
                 migration_sql TEXT NOT NULL,
                 applied_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                PRIMARY KEY (template_code, template_version)
+                PRIMARY KEY (template_value, template_version)
             )
         """)
 
         # Create sync status tracking table
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS _wip_sync_status (
-                template_code TEXT PRIMARY KEY,
+                template_value TEXT PRIMARY KEY,
                 last_sync_at TIMESTAMP WITH TIME ZONE,
                 documents_synced BIGINT DEFAULT 0,
                 last_error TEXT,
@@ -466,13 +466,13 @@ async def test_alerts() -> dict[str, Any]:
     }
 
 
-@router.get("/schema/{template_code}")
-async def get_schema(template_code: str) -> dict[str, Any]:
+@router.get("/schema/{template_value}")
+async def get_schema(template_value: str) -> dict[str, Any]:
     """Get the PostgreSQL schema for a template."""
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
-    table_name = f"doc_{template_code.lower()}"
+    table_name = f"doc_{template_value.lower()}"
 
     async with state.postgres_pool.acquire() as conn:
         # Check if table exists
@@ -508,7 +508,7 @@ async def get_schema(template_code: str) -> dict[str, Any]:
         row_count = await conn.fetchval(f'SELECT COUNT(*) FROM "{table_name}"')
 
         return {
-            "template_code": template_code,
+            "template_value": template_value,
             "table_name": table_name,
             "columns": [
                 {
@@ -523,9 +523,9 @@ async def get_schema(template_code: str) -> dict[str, Any]:
         }
 
 
-@router.post("/sync/batch/{template_code}", response_model=BatchSyncResponse)
+@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
 async def trigger_batch_sync(
-    template_code: str,
+    template_value: str,
     force: bool = False,
     page_size: int = 100,
 ) -> BatchSyncResponse:
@@ -536,7 +536,7 @@ async def trigger_batch_sync(
     and syncs them to PostgreSQL.
 
     Args:
-        template_code: Template code to sync
+        template_value: Template code to sync
         force: Force re-sync even if table already has data
         page_size: Number of documents to fetch per page (10-1000)
     """
@@ -547,16 +547,16 @@ async def trigger_batch_sync(
         raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
 
     job = await state.batch_sync_service.start_batch_sync(
-        template_code=template_code,
+        template_value=template_value,
         force=force,
         page_size=page_size,
     )
 
     return BatchSyncResponse(
         job_id=job.job_id,
-        template_code=job.template_code,
+        template_value=job.template_value,
         status=job.status,
-        message=f"Batch sync started for {template_code}",
+        message=f"Batch sync started for {template_value}",
     )
 
 
@@ -582,9 +582,9 @@ async def trigger_batch_sync_all(
     return [
         BatchSyncResponse(
             job_id=job.job_id,
-            template_code=job.template_code,
+            template_value=job.template_value,
             status=job.status,
-            message=f"Batch sync started for {job.template_code}",
+            message=f"Batch sync started for {job.template_value}",
         )
         for job in jobs
     ]
@@ -647,7 +647,7 @@ class IntegrityIssue(BaseModel):
     severity: str
     source: str = Field(..., description="Source service (template-store or document-store)")
     entity_id: str = Field(..., description="ID of the entity with the issue")
-    entity_code: str | None = Field(None, description="Code of the entity (if applicable)")
+    entity_value: str | None = Field(None, description="Value of the entity (if applicable)")
     field_path: str | None = Field(None, description="Field path")
     reference: str
     message: str
@@ -750,7 +750,7 @@ async def aggregated_integrity_check(
                         severity=issue.get("severity", "warning"),
                         source="template-store",
                         entity_id=issue.get("template_id"),
-                        entity_code=issue.get("template_code"),
+                        entity_value=issue.get("template_value"),
                         field_path=issue.get("field_path"),
                         reference=issue.get("reference"),
                         message=issue.get("message"),
@@ -796,7 +796,7 @@ async def aggregated_integrity_check(
                         severity=issue.get("severity", "warning"),
                         source="document-store",
                         entity_id=issue.get("document_id"),
-                        entity_code=None,
+                        entity_value=None,
                         field_path=issue.get("field_path"),
                         reference=issue.get("reference"),
                         message=issue.get("message"),

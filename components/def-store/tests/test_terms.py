@@ -12,8 +12,8 @@ async def test_terminology(client: AsyncClient, auth_headers: dict):
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "DOC_STATUS",
-            "name": "Document Status",
+            "value": "DOC_STATUS",
+            "label": "Document Status",
             "case_sensitive": False
         }
     )
@@ -29,7 +29,6 @@ async def test_create_term(client: AsyncClient, auth_headers: dict, test_termino
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "DRAFT",
             "value": "draft",
             "label": "Draft",
             "description": "Document is in draft state",
@@ -39,7 +38,6 @@ async def test_create_term(client: AsyncClient, auth_headers: dict, test_termino
 
     assert response.status_code == 201
     data = response.json()
-    assert data["code"] == "DRAFT"
     assert data["value"] == "draft"
     assert data["term_id"].startswith("T-")
     assert data["terminology_id"] == terminology_id
@@ -55,7 +53,6 @@ async def test_create_term_duplicate_code(client: AsyncClient, auth_headers: dic
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "APPROVED",
             "value": "approved",
             "label": "Approved"
         }
@@ -66,8 +63,7 @@ async def test_create_term_duplicate_code(client: AsyncClient, auth_headers: dic
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "APPROVED",
-            "value": "different",
+            "value": "approved",
             "label": "Different"
         }
     )
@@ -83,9 +79,9 @@ async def test_list_terms(client: AsyncClient, auth_headers: dict, test_terminol
 
     # Create some terms
     terms = [
-        {"code": "DRAFT", "value": "draft", "label": "Draft", "sort_order": 1},
-        {"code": "REVIEW", "value": "review", "label": "In Review", "sort_order": 2},
-        {"code": "APPROVED", "value": "approved", "label": "Approved", "sort_order": 3},
+        {"value": "draft", "label": "Draft", "sort_order": 1},
+        {"value": "review", "label": "In Review", "sort_order": 2},
+        {"value": "approved", "label": "Approved", "sort_order": 3},
     ]
 
     for term in terms:
@@ -107,8 +103,8 @@ async def test_list_terms(client: AsyncClient, auth_headers: dict, test_terminol
 
 
 @pytest.mark.asyncio
-async def test_get_term_by_code(client: AsyncClient, auth_headers: dict, test_terminology):
-    """Test getting a term by code."""
+async def test_get_term_by_value(client: AsyncClient, auth_headers: dict, test_terminology):
+    """Test getting a term by value."""
     terminology_id = test_terminology["terminology_id"]
 
     # Create term
@@ -116,20 +112,19 @@ async def test_get_term_by_code(client: AsyncClient, auth_headers: dict, test_te
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "ARCHIVED",
             "value": "archived",
             "label": "Archived"
         }
     )
 
-    # Get by code
+    # Get by value
     response = await client.get(
-        f"/api/def-store/terminologies/{terminology_id}/terms/by-code/ARCHIVED",
+        f"/api/def-store/terminologies/{terminology_id}/terms/by-value/archived",
         headers=auth_headers
     )
 
     assert response.status_code == 200
-    assert response.json()["code"] == "ARCHIVED"
+    assert response.json()["value"] == "archived"
 
 
 @pytest.mark.asyncio
@@ -142,7 +137,6 @@ async def test_update_term(client: AsyncClient, auth_headers: dict, test_termino
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "PENDING",
             "value": "pending",
             "label": "Pending"
         }
@@ -174,7 +168,6 @@ async def test_validate_value_valid(client: AsyncClient, auth_headers: dict, tes
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "ACTIVE",
             "value": "active",
             "label": "Active"
         }
@@ -206,7 +199,6 @@ async def test_validate_value_invalid(client: AsyncClient, auth_headers: dict, t
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "ACTIVE",
             "value": "active",
             "label": "Active"
         }
@@ -238,7 +230,6 @@ async def test_validate_case_insensitive(client: AsyncClient, auth_headers: dict
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "COMPLETE",
             "value": "complete",
             "label": "Complete"
         }
@@ -265,9 +256,9 @@ async def test_bulk_create_terms(client: AsyncClient, auth_headers: dict, test_t
     terminology_id = test_terminology["terminology_id"]
 
     terms = [
-        {"code": "LOW", "value": "low", "label": "Low Priority", "sort_order": 1},
-        {"code": "MEDIUM", "value": "medium", "label": "Medium Priority", "sort_order": 2},
-        {"code": "HIGH", "value": "high", "label": "High Priority", "sort_order": 3},
+        {"value": "low", "label": "Low Priority", "sort_order": 1},
+        {"value": "medium", "label": "Medium Priority", "sort_order": 2},
+        {"value": "high", "label": "High Priority", "sort_order": 3},
     ]
 
     response = await client.post(
@@ -292,7 +283,6 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
         json={
-            "code": "OBSOLETE",
             "value": "obsolete",
             "label": "Obsolete"
         }

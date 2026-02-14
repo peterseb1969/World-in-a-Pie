@@ -29,7 +29,7 @@ class ImportExportService:
     @staticmethod
     async def export_terminology(
         terminology_id: Optional[str] = None,
-        terminology_code: Optional[str] = None,
+        terminology_value: Optional[str] = None,
         format: str = "json",
         include_metadata: bool = True,
         include_inactive: bool = False,
@@ -40,7 +40,7 @@ class ImportExportService:
 
         Args:
             terminology_id: Terminology ID
-            terminology_code: Terminology code (alternative)
+            terminology_value: Terminology value (alternative)
             format: Export format (json, csv)
             include_metadata: Include metadata in export
             include_inactive: Include inactive/deprecated terms
@@ -52,10 +52,10 @@ class ImportExportService:
         # Get terminology
         if terminology_id:
             terminology = await Terminology.find_one({"terminology_id": terminology_id})
-        elif terminology_code:
-            terminology = await Terminology.find_one({"code": terminology_code})
+        elif terminology_value:
+            terminology = await Terminology.find_one({"value": terminology_value})
         else:
-            raise ValueError("Must provide terminology_id or terminology_code")
+            raise ValueError("Must provide terminology_id or terminology_value")
 
         if not terminology:
             raise ValueError("Terminology not found")
@@ -113,8 +113,8 @@ class ImportExportService:
 
         result = {
             "terminology": {
-                "code": terminology.code,
-                "name": terminology.name,
+                "value": terminology.value,
+                "label": terminology.label,
                 "description": terminology.description,
                 "case_sensitive": terminology.case_sensitive,
                 "allow_multiple": terminology.allow_multiple,
@@ -123,7 +123,7 @@ class ImportExportService:
             "terms": term_data,
             "export_date": datetime.now(timezone.utc).isoformat(),
             "format": "json",
-            "version": "1.0"
+            "version": "2.0"
         }
 
         if include_metadata:
@@ -169,8 +169,8 @@ class ImportExportService:
 
         return {
             "terminology": {
-                "code": terminology.code,
-                "name": terminology.name,
+                "value": terminology.value,
+                "label": terminology.label,
             },
             "csv_content": output.getvalue(),
             "export_date": datetime.now(timezone.utc).isoformat(),
@@ -234,16 +234,16 @@ class ImportExportService:
         if not terminology_data:
             raise ValueError("Missing 'terminology' field in import data")
 
-        if not terminology_data.get("code"):
-            raise ValueError("Missing 'terminology.code' field in import data")
+        if not terminology_data.get("value"):
+            raise ValueError("Missing 'terminology.value' field in import data")
 
-        if not terminology_data.get("name"):
-            raise ValueError("Missing 'terminology.name' field in import data")
+        if not terminology_data.get("label"):
+            raise ValueError("Missing 'terminology.label' field in import data")
 
         terms_data = data.get("terms", [])
 
         # Check if terminology exists
-        existing_terminology = await Terminology.find_one({"code": terminology_data.get("code")})
+        existing_terminology = await Terminology.find_one({"value": terminology_data.get("value")})
 
         if existing_terminology:
             if not update_existing:
@@ -258,8 +258,8 @@ class ImportExportService:
             # Create new terminology
             metadata = terminology_data.get("metadata", {})
             create_req = CreateTerminologyRequest(
-                code=terminology_data["code"],
-                name=terminology_data["name"],
+                value=terminology_data["value"],
+                label=terminology_data["label"],
                 description=terminology_data.get("description"),
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
@@ -308,17 +308,17 @@ class ImportExportService:
         skipped_count = sum(1 for r in term_results if r.status == "skipped")
         error_count = sum(1 for r in term_results if r.status == "error")
 
-        # Get terminology name (from existing or from import data)
-        terminology_name = (
-            existing_terminology.name if existing_terminology
-            else terminology_data.get("name")
+        # Get terminology label (from existing or from import data)
+        terminology_label = (
+            existing_terminology.label if existing_terminology
+            else terminology_data.get("label")
         )
 
         return {
             "terminology": {
                 "terminology_id": terminology_id,
-                "code": terminology_data.get("code"),
-                "name": terminology_name,
+                "value": terminology_data.get("value"),
+                "label": terminology_label,
                 "status": terminology_status
             },
             "terms_result": {
@@ -336,13 +336,13 @@ class ImportExportService:
         options: dict[str, Any]
     ) -> dict[str, Any]:
         """Import from CSV format."""
-        terminology_code = data.get("terminology_code")
-        terminology_name = data.get("terminology_name", terminology_code)
+        terminology_value = data.get("terminology_value")
+        terminology_label = data.get("terminology_label", terminology_value)
         csv_content = data.get("csv_content", "")
         created_by = options.get("created_by")
 
-        if not terminology_code:
-            raise ValueError("terminology_code is required for CSV import")
+        if not terminology_value:
+            raise ValueError("terminology_value is required for CSV import")
 
         # Parse CSV
         reader = csv.DictReader(io.StringIO(csv_content))
@@ -367,8 +367,8 @@ class ImportExportService:
         # Convert to JSON format and use JSON import
         json_data = {
             "terminology": {
-                "code": terminology_code,
-                "name": terminology_name,
+                "value": terminology_value,
+                "label": terminology_label,
             },
             "terms": terms_data
         }
@@ -404,8 +404,8 @@ class ImportExportService:
                 # CSV - wrap in expected structure
                 data = {
                     "csv_content": response.text,
-                    "terminology_code": options.get("terminology_code") if options else None,
-                    "terminology_name": options.get("terminology_name") if options else None,
+                    "terminology_value": options.get("terminology_value") if options else None,
+                    "terminology_label": options.get("terminology_label") if options else None,
                 }
 
         return await ImportExportService.import_terminology(data, format, options)

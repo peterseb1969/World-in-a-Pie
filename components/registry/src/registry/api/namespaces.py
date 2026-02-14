@@ -1,19 +1,19 @@
 """Namespace management API endpoints.
 
 This module handles user-facing namespaces (e.g., "wip", "dev", "prod").
-Each namespace automatically creates 5 ID pools for ID generation.
+Each namespace has configurable ID algorithms per entity type.
 """
 
 import os
 from datetime import datetime, timezone
-from typing import List
+from typing import Any, List
 
 from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
 from fastapi.responses import FileResponse
 
-from ..models.id_pool import IdPool, IdGeneratorConfig, IdGeneratorType
 from ..models.namespace import Namespace
 from ..models.entry import RegistryEntry
+from ..models.id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES
 from ..models.api_models import (
     NamespaceCreate,
     NamespaceUpdate,
@@ -28,53 +28,25 @@ from ..services.auth import require_api_key, require_admin_key
 router = APIRouter()
 
 
-# ID pool configuration for each entity type in a namespace
-ID_POOL_CONFIGS = {
-    "terminologies": {
-        "name_suffix": "Terminologies",
-        "description_suffix": "terminology IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TERM-"),
-    },
-    "terms": {
-        "name_suffix": "Terms",
-        "description_suffix": "individual term IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="T-"),
-    },
-    "templates": {
-        "name_suffix": "Templates",
-        "description_suffix": "template IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="TPL-"),
-    },
-    "documents": {
-        "name_suffix": "Documents",
-        "description_suffix": "document IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.UUID7),
-    },
-    "files": {
-        "name_suffix": "Files",
-        "description_suffix": "file attachment IDs",
-        "id_generator": IdGeneratorConfig(type=IdGeneratorType.PREFIXED, prefix="FILE-"),
-    },
-}
-
-
 def namespace_to_response(ns: Namespace) -> NamespaceResponse:
     """Convert a Namespace document to a response model."""
+    # Build id_config for response, merging defaults
+    id_config: dict[str, Any] = {}
+    for entity_type in VALID_ENTITY_TYPES:
+        config = ns.get_id_algorithm(entity_type)
+        id_config[entity_type] = config.model_dump()
+
     return NamespaceResponse(
         prefix=ns.prefix,
         description=ns.description,
         isolation_mode=ns.isolation_mode,
         allowed_external_refs=ns.allowed_external_refs,
+        id_config=id_config,
         status=ns.status,
         created_at=ns.created_at,
         created_by=ns.created_by,
         updated_at=ns.updated_at,
         updated_by=ns.updated_by,
-        terminologies_pool=ns.terminologies_pool,
-        terms_pool=ns.terms_pool,
-        templates_pool=ns.templates_pool,
-        documents_pool=ns.documents_pool,
-        files_pool=ns.files_pool,
     )
 
 
@@ -122,24 +94,48 @@ async def get_namespace_stats(
     prefix: str,
     api_key: str = Depends(require_api_key)
 ) -> NamespaceStatsResponse:
-    """Get entity counts for each ID pool in the namespace."""
+    """Get entity counts for each entity type in the namespace."""
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    # Count entries in each ID pool
-    pool_counts = {}
-    for pool_id in ns.get_all_pools():
-        count = await RegistryEntry.find({"primary_pool_id": pool_id}).count()
-        pool_counts[pool_id] = count
+    entity_counts = {}
+    for entity_type in VALID_ENTITY_TYPES:
+        count = await RegistryEntry.find({
+            "namespace": prefix,
+            "entity_type": entity_type,
+            "status": "active"
+        }).count()
+        entity_counts[entity_type] = count
 
     return NamespaceStatsResponse(
         prefix=ns.prefix,
         description=ns.description,
         isolation_mode=ns.isolation_mode,
         status=ns.status,
-        pools=pool_counts,
+        entity_counts=entity_counts,
     )
+
+
+@router.get(
+    "/{prefix}/id-config",
+    summary="Get namespace ID config"
+)
+async def get_namespace_id_config(
+    prefix: str,
+    api_key: str = Depends(require_api_key)
+) -> dict[str, Any]:
+    """Get ID algorithm configuration for a namespace. Services cache this at startup."""
+    ns = await Namespace.find_one({"prefix": prefix, "status": "active"})
+    if not ns:
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+
+    config = {}
+    for entity_type in VALID_ENTITY_TYPES:
+        algo = ns.get_id_algorithm(entity_type)
+        config[entity_type] = algo.model_dump()
+
+    return config
 
 
 @router.post(
@@ -152,16 +148,10 @@ async def create_namespace(
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
     """
-    Create a new namespace.
+    Create a new namespace with optional ID algorithm configuration.
 
-    This creates the namespace and all 5 associated ID pools:
-    - {prefix}-terminologies
-    - {prefix}-terms
-    - {prefix}-templates
-    - {prefix}-documents
-    - {prefix}-files
+    If id_config is not provided, defaults to UUID7 for all entity types.
     """
-    # Check if namespace already exists
     existing = await Namespace.find_one({"prefix": request.prefix})
     if existing:
         raise HTTPException(
@@ -169,42 +159,15 @@ async def create_namespace(
             detail=f"Namespace already exists: {request.prefix}"
         )
 
-    # Create the namespace
     ns = Namespace(
         prefix=request.prefix,
         description=request.description,
         isolation_mode=request.isolation_mode,
         allowed_external_refs=request.allowed_external_refs,
+        id_config=request.id_config or {},
         created_by=request.created_by,
     )
     await ns.create()
-
-    # Create all 5 ID pools for this namespace
-    ns_prefix = request.prefix.upper()
-    for pool_type, config in ID_POOL_CONFIGS.items():
-        pool_id = f"{request.prefix}-{pool_type}"
-
-        # Check if ID pool already exists
-        existing_pool = await IdPool.find_one({"pool_id": pool_id})
-        if existing_pool:
-            continue
-
-        # Non-default namespaces get a namespace-scoped ID prefix to avoid
-        # collisions (e.g., SEED-TERM-000001 instead of TERM-000001)
-        id_gen = config["id_generator"]
-        if request.prefix != "wip" and id_gen.type == IdGeneratorType.PREFIXED:
-            id_gen = IdGeneratorConfig(
-                type=IdGeneratorType.PREFIXED,
-                prefix=f"{ns_prefix}-{id_gen.prefix}",
-            )
-
-        pool = IdPool(
-            pool_id=pool_id,
-            name=f"{ns_prefix} {config['name_suffix']}",
-            description=f"ID pool for {config['description_suffix']} in {request.prefix} namespace",
-            id_generator=id_gen,
-        )
-        await pool.create()
 
     return namespace_to_response(ns)
 
@@ -224,7 +187,6 @@ async def update_namespace(
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    # Apply updates
     update_data = request.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if value is not None and field != "updated_by":
@@ -247,36 +209,18 @@ async def archive_namespace(
     archived_by: str = Query(None, description="User archiving the namespace"),
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
-    """
-    Archive a namespace.
-
-    This sets the namespace status to 'archived' and deactivates all associated ID pools.
-    The data is preserved but no new entries can be created.
-    """
-    # Prevent archiving the wip namespace
+    """Archive a namespace. No new entries can be created."""
     if prefix == "wip":
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot archive the default 'wip' namespace"
-        )
+        raise HTTPException(status_code=400, detail="Cannot archive the default 'wip' namespace")
 
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    # Archive the namespace
     ns.status = "archived"
     ns.updated_at = datetime.now(timezone.utc)
     ns.updated_by = archived_by
     await ns.save()
-
-    # Deactivate all ID pools in the namespace
-    for pool_id in ns.get_all_pools():
-        pool = await IdPool.find_one({"pool_id": pool_id})
-        if pool:
-            pool.status = "inactive"
-            pool.updated_at = datetime.now(timezone.utc)
-            await pool.save()
 
     return namespace_to_response(ns)
 
@@ -291,34 +235,18 @@ async def restore_namespace(
     restored_by: str = Query(None, description="User restoring the namespace"),
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
-    """
-    Restore an archived namespace.
-
-    This reactivates the namespace and all associated ID pools.
-    """
+    """Restore an archived namespace."""
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
     if ns.status != "archived":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Namespace is not archived: {prefix}"
-        )
+        raise HTTPException(status_code=400, detail=f"Namespace is not archived: {prefix}")
 
-    # Restore the namespace
     ns.status = "active"
     ns.updated_at = datetime.now(timezone.utc)
     ns.updated_by = restored_by
     await ns.save()
-
-    # Reactivate all ID pools in the namespace
-    for pool_id in ns.get_all_pools():
-        pool = await IdPool.find_one({"pool_id": pool_id})
-        if pool:
-            pool.status = "active"
-            pool.updated_at = datetime.now(timezone.utc)
-            await pool.save()
 
     return namespace_to_response(ns)
 
@@ -333,37 +261,20 @@ async def delete_namespace(
     deleted_by: str = Query(None, description="User deleting the namespace"),
     api_key: str = Depends(require_admin_key)
 ):
-    """
-    Permanently delete a namespace.
-
-    WARNING: This is a destructive operation. Requires confirm=true.
-    The namespace must be archived first. This does NOT delete the actual data
-    in the ID pools - only the namespace metadata.
-    """
-    # Prevent deleting the wip namespace
+    """Permanently delete a namespace (soft delete). Must be archived first."""
     if prefix == "wip":
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete the default 'wip' namespace"
-        )
+        raise HTTPException(status_code=400, detail="Cannot delete the default 'wip' namespace")
 
     if not confirm:
-        raise HTTPException(
-            status_code=400,
-            detail="Deletion requires confirm=true query parameter"
-        )
+        raise HTTPException(status_code=400, detail="Deletion requires confirm=true query parameter")
 
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
     if ns.status != "archived":
-        raise HTTPException(
-            status_code=400,
-            detail="Namespace must be archived before deletion"
-        )
+        raise HTTPException(status_code=400, detail="Namespace must be archived before deletion")
 
-    # Mark as deleted (soft delete)
     ns.status = "deleted"
     ns.updated_at = datetime.now(timezone.utc)
     ns.updated_by = deleted_by
@@ -380,11 +291,7 @@ async def delete_namespace(
 async def initialize_wip_namespace(
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
-    """
-    Initialize the default 'wip' namespace.
-
-    This creates the wip namespace and all associated ID pools if they don't exist.
-    """
+    """Initialize the default 'wip' namespace with UUID7 for all entity types."""
     existing = await Namespace.find_one({"prefix": "wip"})
     if existing:
         return namespace_to_response(existing)
@@ -393,23 +300,9 @@ async def initialize_wip_namespace(
         prefix="wip",
         description="Default World In a Pie namespace",
         isolation_mode="open",
+        id_config={},  # Empty = defaults to UUID7 for everything
     )
     await ns.create()
-
-    # Create all ID pools
-    for pool_type, config in ID_POOL_CONFIGS.items():
-        pool_id = f"wip-{pool_type}"
-        existing_pool = await IdPool.find_one({"pool_id": pool_id})
-        if existing_pool:
-            continue
-
-        pool = IdPool(
-            pool_id=pool_id,
-            name=f"WIP {config['name_suffix']}",
-            description=f"ID pool for {config['description_suffix']}",
-            id_generator=config["id_generator"],
-        )
-        await pool.create()
 
     return namespace_to_response(ns)
 
@@ -428,25 +321,13 @@ async def export_namespace(
     include_files: bool = Query(False, description="Include binary file content"),
     api_key: str = Depends(require_admin_key)
 ) -> ExportResponse:
-    """
-    Export a namespace to a downloadable archive.
-
-    Creates a ZIP file containing all data from the namespace:
-    - manifest.json - Export metadata
-    - terminologies.jsonl - Terminology definitions
-    - terms.jsonl - Term definitions
-    - templates.jsonl - Template definitions
-    - documents.jsonl - Document data
-    - files.jsonl - File metadata
-    - files/ - Binary file content (if include_files=true)
-    """
+    """Export a namespace to a downloadable archive."""
     from ..services.export_service import ExportService
 
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    # Get service URLs from environment
     def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
     template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
     document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
@@ -460,20 +341,15 @@ async def export_namespace(
 
     try:
         zip_path, stats = await export_service.export_namespace(
-            namespace=ns,
-            include_files=include_files,
+            namespace=ns, include_files=include_files,
         )
-
-        # Generate export ID from filename
         export_id = os.path.basename(zip_path).replace(".zip", "")
-
         return ExportResponse(
             export_id=export_id,
             prefix=prefix,
             download_url=f"/api/registry/namespaces/exports/{export_id}",
             stats=stats,
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
@@ -513,34 +389,19 @@ async def import_namespace(
     imported_by: str = Query(None, description="User performing import"),
     api_key: str = Depends(require_admin_key)
 ) -> ImportResponse:
-    """
-    Import a namespace from an exported archive.
-
-    Import modes:
-    - create: Fail if the namespace already exists
-    - merge: Add new entities, skip existing ones
-    - replace: Archive existing namespace and import fresh
-
-    If target_prefix is provided, the namespace is renamed on import.
-    """
+    """Import a namespace from an exported archive."""
     from ..services.import_service import ImportService
     import tempfile
     import shutil
 
-    # Validate mode
     if mode not in ("create", "merge", "replace"):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid mode. Must be one of: create, merge, replace"
-        )
+        raise HTTPException(status_code=400, detail="Invalid mode. Must be one of: create, merge, replace")
 
-    # Save uploaded file to temp location
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
     try:
         shutil.copyfileobj(file.file, temp_file)
         temp_file.close()
 
-        # Get service URLs from environment
         def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
         template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
         document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
@@ -559,7 +420,6 @@ async def import_namespace(
             imported_by=imported_by,
         )
 
-        # Read manifest to get source prefix
         import zipfile
         import json
         source_prefix = None
@@ -580,5 +440,4 @@ async def import_namespace(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
     finally:
-        # Cleanup temp file
         os.unlink(temp_file.name)

@@ -5,7 +5,7 @@
 # Creates test data, verifies it can be retrieved, updated, and deleted.
 #
 # Tests:
-#   - Registry: ID pools, entries, lookups
+#   - Registry: Namespaces, entries, lookups
 #   - Def-Store: Terminologies, terms
 #   - Template-Store: Templates
 #   - Document-Store: Documents
@@ -26,19 +26,15 @@ TEST_DOCUMENT_ID=""
 # Registry API Tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-test_registry_list_pools() {
-    api_get "http://localhost:$PORT_REGISTRY/api/registry/id-pools"
-    assert_status 200 && assert_body_contains "pool_id"
-}
-
 test_registry_list_namespaces() {
     api_get "http://localhost:$PORT_REGISTRY/api/registry/namespaces"
-    assert_status 200
+    assert_status 200 && assert_body_contains "prefix"
 }
 
 test_registry_register_entry() {
     local body='[{
-        "pool_id": "wip-terminologies",
+        "namespace": "wip",
+        "entity_type": "terminologies",
         "composite_key": {"test_key": "api-test-'$(date +%s)'"}
     }]'
 
@@ -48,8 +44,9 @@ test_registry_register_entry() {
 
 test_registry_lookup_by_key() {
     local body='[{
-        "pool_id": "wip-terminologies",
-        "composite_key": {"code": "COUNTRY"}
+        "namespace": "wip",
+        "entity_type": "terminologies",
+        "composite_key": {"value": "COUNTRY"}
     }]'
 
     api_post "http://localhost:$PORT_REGISTRY/api/registry/entries/lookup/by-key" "$body"
@@ -58,7 +55,7 @@ test_registry_lookup_by_key() {
 
 test_registry_search() {
     local body='[{
-        "field_criteria": {"code": "COUNTRY"}
+        "field_criteria": {"value": "COUNTRY"}
     }]'
 
     api_post "http://localhost:$PORT_REGISTRY/api/registry/search/by-fields" "$body"
@@ -77,8 +74,8 @@ test_def_store_list_terminologies() {
 test_def_store_create_terminology() {
     local code="TEST_$(date +%s)"
     local body='{
-        "code": "'$code'",
-        "name": "Test Terminology",
+        "value": "'$code'",
+        "label": "Test Terminology",
         "description": "Created by API test"
     }'
 
@@ -118,15 +115,15 @@ test_def_store_list_terms() {
     fi
 }
 
-test_def_store_get_term_by_code() {
-    # Get a term from COUNTRY terminology by code filter
+test_def_store_get_term_by_value() {
+    # Get a term from COUNTRY terminology by value filter
     # First find the COUNTRY terminology
-    api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies/by-code/COUNTRY"
+    api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies/by-value/COUNTRY"
     local term_id
     term_id=$(json_field "terminology_id")
 
     if [[ -n "$term_id" && "$term_id" != "null" ]]; then
-        api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies/$term_id/terms?code=US"
+        api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies/$term_id/terms?value=us"
         assert_status 200
     else
         # COUNTRY terminology may not exist in minimal seed - skip gracefully
@@ -138,7 +135,7 @@ test_def_store_get_term_by_code() {
 test_def_store_validate_term() {
     # Use the validate endpoint instead of resolve
     local body='{
-        "terminology_code": "COUNTRY",
+        "terminology_value": "COUNTRY",
         "value": "US"
     }'
 
@@ -163,8 +160,8 @@ test_template_store_list() {
 test_template_store_create() {
     local code="TEST_TPL_$(date +%s)"
     local body='{
-        "code": "'$code'",
-        "name": "Test Template",
+        "value": "'$code'",
+        "label": "Test Template",
         "description": "Created by API test",
         "fields": [
             {"name": "test_field", "label": "Test Field", "type": "string", "mandatory": true}
@@ -191,9 +188,9 @@ test_template_store_get() {
     assert_status 200 && assert_has_field "template_id"
 }
 
-test_template_store_get_by_code() {
-    # Correct path is /by-code/{code}
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/PERSON"
+test_template_store_get_by_value() {
+    # Correct path is /by-value/{value}
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/PERSON"
     # May return 200 (found) or 404 (not seeded) depending on seed data
     if [[ "$RESPONSE_CODE" == "200" ]]; then
         assert_has_field "template_id"
@@ -208,7 +205,7 @@ test_template_store_get_by_code() {
 
 test_template_store_validate() {
     # Validate is under /{template_id}/validate, so we need a template ID first
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=1"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?page_size=1"
     local template_id
     template_id=$(json_field "items[0].template_id")
 
@@ -234,15 +231,15 @@ test_document_store_list() {
 test_document_store_create() {
     # First get a template_id to use - prefer TEST_TPL templates (created by our tests)
     # or MINIMAL template which has simple required fields
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?limit=100"
-    local template_id template_code
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates?page_size=100"
+    local template_id template_value
 
     # Try to find a test template (has minimal fields)
-    template_id=$(echo "$RESPONSE_BODY" | jq -r '[.items[] | select(.code | startswith("TEST_TPL_"))] | .[0].template_id // empty')
+    template_id=$(echo "$RESPONSE_BODY" | jq -r '[.items[] | select(.value | startswith("TEST_TPL_"))] | .[0].template_id // empty')
 
     # If no test template, try MINIMAL
     if [[ -z "$template_id" ]]; then
-        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/MINIMAL"
+        api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/MINIMAL"
         if [[ "$RESPONSE_CODE" == "200" ]]; then
             template_id=$(json_field "template_id")
         fi
@@ -277,7 +274,7 @@ test_document_store_create() {
 test_document_store_get() {
     if [[ -z "$TEST_DOCUMENT_ID" ]]; then
         # Use an existing document
-        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+        api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
         TEST_DOCUMENT_ID=$(json_field "items[0].document_id")
     fi
 
@@ -291,12 +288,12 @@ test_document_store_search() {
     }'
 
     # Using GET with query params instead of POST
-    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=10"
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=10"
     assert_status 200 && assert_has_field "items"
 }
 
 test_document_store_by_template() {
-    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?template_code=MINIMAL&limit=5"
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?template_value=MINIMAL&page_size=5"
     assert_status 200 && assert_has_field "items"
 }
 
@@ -306,7 +303,7 @@ test_document_store_by_template() {
 
 test_document_references_template() {
     # Get a document and verify it references a valid template
-    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=1"
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=1"
     local template_id=$(json_field "items[0].template_id")
 
     if [[ -z "$template_id" ]]; then
@@ -321,7 +318,7 @@ test_document_references_template() {
 
 test_term_resolution_in_document() {
     # First get the PERSON template_id
-    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-code/PERSON"
+    api_get "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/by-value/PERSON"
     local template_id
     template_id=$(json_field "template_id")
 
@@ -354,7 +351,6 @@ run_suite() {
     suite_start "Core APIs"
 
     echo -e "\n  ${DIM}Registry API${NC}"
-    run_test "List ID pools" test_registry_list_pools
     run_test "List namespaces" test_registry_list_namespaces
     run_test "Register entry" test_registry_register_entry
     run_test "Lookup by key" test_registry_lookup_by_key
@@ -371,7 +367,7 @@ run_suite() {
     run_test "List templates" test_template_store_list
     run_test "Create template" test_template_store_create
     run_test "Get template" test_template_store_get
-    run_test "Get template by code" test_template_store_get_by_code
+    run_test "Get template by value" test_template_store_get_by_value
     run_test "Validate against template" test_template_store_validate
 
     echo -e "\n  ${DIM}Document-Store API${NC}"

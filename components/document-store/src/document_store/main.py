@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth
+from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
 
 from .models.document import Document
 from .models.file import File
@@ -229,7 +229,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 - **Template Store Service**: Fetch templates for validation
 - **Def-Store Service**: Validate term field values
     """,
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -237,6 +237,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
 setup_auth(app)
+
+# Reject unknown query parameters (returns 422 for undeclared params)
+app.add_middleware(RejectUnknownQueryParamsMiddleware)
 
 # Add CORS middleware
 app.add_middleware(
@@ -257,7 +260,7 @@ async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Document Store",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "documentation": "/docs",
         "health": "/health",
     }

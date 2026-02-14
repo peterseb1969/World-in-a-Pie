@@ -37,10 +37,10 @@ def get_terminology_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def get_terminology_by_code(code: str) -> dict[str, Any] | None:
-    """Get a specific terminology by code."""
+def get_terminology_by_value(value: str) -> dict[str, Any] | None:
+    """Get a specific terminology by value."""
     for term in get_terminology_definitions():
-        if term["code"] == code:
+        if term["value"] == value:
             return term
     return None
 
@@ -49,8 +49,8 @@ def get_terminology_by_code(code: str) -> dict[str, Any] | None:
 # SALUTATION - Test aliases (multiple values resolve to same term)
 # =============================================================================
 SALUTATION = {
-    "code": "SALUTATION",
-    "name": "Salutations",
+    "value": "SALUTATION",
+    "label": "Salutations",
     "description": "Common salutations and titles for addressing people",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -119,8 +119,8 @@ SALUTATION = {
 # GENDER - Basic term validation
 # =============================================================================
 GENDER = {
-    "code": "GENDER",
-    "name": "Gender",
+    "value": "GENDER",
+    "label": "Gender",
     "description": "Gender identity options",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -171,8 +171,8 @@ GENDER = {
 # COUNTRY - Large terminology (ISO 3166-1 alpha-3)
 # =============================================================================
 COUNTRY = {
-    "code": "COUNTRY",
-    "name": "Countries",
+    "value": "COUNTRY",
+    "label": "Countries",
     "description": "ISO 3166-1 country codes",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -252,8 +252,8 @@ COUNTRY = {
 # CURRENCY - Financial use case
 # =============================================================================
 CURRENCY = {
-    "code": "CURRENCY",
-    "name": "Currencies",
+    "value": "CURRENCY",
+    "label": "Currencies",
     "description": "ISO 4217 currency codes",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -302,8 +302,8 @@ CURRENCY = {
 # LANGUAGE - Multi-language support
 # =============================================================================
 LANGUAGE = {
-    "code": "LANGUAGE",
-    "name": "Languages",
+    "value": "LANGUAGE",
+    "label": "Languages",
     "description": "ISO 639-1 language codes",
     "case_sensitive": False,
     "allow_multiple": True,
@@ -342,8 +342,8 @@ LANGUAGE = {
 # DOC_STATUS - Workflow states
 # =============================================================================
 DOC_STATUS = {
-    "code": "DOC_STATUS",
-    "name": "Document Status",
+    "value": "DOC_STATUS",
+    "label": "Document Status",
     "description": "Document lifecycle status values",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -367,8 +367,8 @@ DOC_STATUS = {
 # PRIORITY - Priority levels with sort_order
 # =============================================================================
 PRIORITY = {
-    "code": "PRIORITY",
-    "name": "Priority Levels",
+    "value": "PRIORITY",
+    "label": "Priority Levels",
     "description": "Task and issue priority levels",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -392,8 +392,8 @@ PRIORITY = {
 # DEPARTMENT - Hierarchical terms (parent-child)
 # =============================================================================
 DEPARTMENT = {
-    "code": "DEPARTMENT",
-    "name": "Departments",
+    "value": "DEPARTMENT",
+    "label": "Departments",
     "description": "Company organizational departments with hierarchy",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -430,8 +430,8 @@ DEPARTMENT = {
 # PRODUCT_CATEGORY - E-commerce use case
 # =============================================================================
 PRODUCT_CATEGORY = {
-    "code": "PRODUCT_CATEGORY",
-    "name": "Product Categories",
+    "value": "PRODUCT_CATEGORY",
+    "label": "Product Categories",
     "description": "E-commerce product categories",
     "case_sensitive": False,
     "allow_multiple": True,
@@ -470,8 +470,8 @@ PRODUCT_CATEGORY = {
 # PAYMENT_METHOD - Transaction testing
 # =============================================================================
 PAYMENT_METHOD = {
-    "code": "PAYMENT_METHOD",
-    "name": "Payment Methods",
+    "value": "PAYMENT_METHOD",
+    "label": "Payment Methods",
     "description": "Supported payment methods",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -498,8 +498,8 @@ PAYMENT_METHOD = {
 # EMPLOYMENT_TYPE - HR use case
 # =============================================================================
 EMPLOYMENT_TYPE = {
-    "code": "EMPLOYMENT_TYPE",
-    "name": "Employment Types",
+    "value": "EMPLOYMENT_TYPE",
+    "label": "Employment Types",
     "description": "Types of employment relationships",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -524,8 +524,8 @@ EMPLOYMENT_TYPE = {
 # MARITAL_STATUS - Personal data
 # =============================================================================
 MARITAL_STATUS = {
-    "code": "MARITAL_STATUS",
-    "name": "Marital Status",
+    "value": "MARITAL_STATUS",
+    "label": "Marital Status",
     "description": "Marital status options",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -549,8 +549,8 @@ MARITAL_STATUS = {
 # BLOOD_TYPE - Healthcare use case
 # =============================================================================
 BLOOD_TYPE = {
-    "code": "BLOOD_TYPE",
-    "name": "Blood Types",
+    "value": "BLOOD_TYPE",
+    "label": "Blood Types",
     "description": "ABO blood group types with Rh factor",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -577,8 +577,8 @@ BLOOD_TYPE = {
 # UNIT_OF_MEASURE - Inventory testing
 # =============================================================================
 UNIT_OF_MEASURE = {
-    "code": "UNIT_OF_MEASURE",
-    "name": "Units of Measure",
+    "value": "UNIT_OF_MEASURE",
+    "label": "Units of Measure",
     "description": "Standard units of measurement",
     "case_sensitive": False,
     "allow_multiple": False,
@@ -628,8 +628,8 @@ UNIT_OF_MEASURE = {
 # SEVERITY - Issue tracking
 # =============================================================================
 SEVERITY = {
-    "code": "SEVERITY",
-    "name": "Severity Levels",
+    "value": "SEVERITY",
+    "label": "Severity Levels",
     "description": "Issue and bug severity levels",
     "case_sensitive": False,
     "allow_multiple": False,

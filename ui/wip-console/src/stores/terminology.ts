@@ -8,9 +8,9 @@ import type {
   UpdateTerminologyRequest
 } from '@/types'
 
-// Extended terminology with pool info for UI display
-export interface TerminologyWithPool extends Terminology {
-  _poolId: string
+// Extended terminology with namespace info for UI display
+export interface TerminologyWithNamespace extends Terminology {
+  _namespace: string
   _isExternal: boolean
 }
 
@@ -27,16 +27,16 @@ export const useTerminologyStore = defineStore('terminology', () => {
   // Combined list for backward compatibility
   const terminologies = computed(() => ownTerminologies.value)
 
-  // All terminologies with pool info (own first, then WIP)
-  const allTerminologies = computed<TerminologyWithPool[]>(() => {
+  // All terminologies with namespace info (own first, then WIP)
+  const allTerminologies = computed<TerminologyWithNamespace[]>(() => {
     const own = ownTerminologies.value.map(t => ({
       ...t,
-      _poolId: namespaceStore.terminologiesPool ?? 'all',
+      _namespace: namespaceStore.currentNamespaceParam ?? 'all',
       _isExternal: false
     }))
     const wip = wipTerminologies.value.map(t => ({
       ...t,
-      _poolId: 'wip-terminologies',
+      _namespace: 'wip',
       _isExternal: true
     }))
     return [...own, ...wip]
@@ -52,7 +52,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
   })
 
   // Watch for namespace changes and refetch
-  watch(() => namespaceStore.terminologiesPool, () => {
+  watch(() => namespaceStore.currentNamespaceParam, () => {
     fetchTerminologies()
   })
 
@@ -68,7 +68,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
       // Fetch own namespace
       const ownResponse = await defStoreClient.listTerminologies({
         ...params,
-        pool_id: namespaceStore.terminologiesPool
+        namespace: namespaceStore.currentNamespaceParam
       })
       ownTerminologies.value = ownResponse.items
       total.value = ownResponse.total
@@ -78,7 +78,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
         try {
           const wipResponse = await defStoreClient.listTerminologies({
             ...params,
-            pool_id: 'wip-terminologies'
+            namespace: 'wip'
           })
           wipTerminologies.value = wipResponse.items
           wipTotal.value = wipResponse.total
@@ -117,7 +117,8 @@ export const useTerminologyStore = defineStore('terminology', () => {
     loading.value = true
     error.value = null
     try {
-      const created = await defStoreClient.createTerminology(data)
+      const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
+      const created = await defStoreClient.createTerminology(payload)
       terminologies.value.unshift(created)
       total.value++
       return created

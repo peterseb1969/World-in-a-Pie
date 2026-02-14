@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth
+from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
 
 from .models.terminology import Terminology
 from .models.term import Term
@@ -111,6 +111,7 @@ The Def-Store service manages controlled vocabularies (terminologies) for the WI
 - **Import/Export**: JSON and CSV support for bulk operations
 - **Multi-language**: Translation support for internationalization
 - **Hierarchical Terms**: Support for parent-child relationships
+- **Namespace Isolation**: Multi-tenant data isolation
 
 ### Authentication
 
@@ -119,9 +120,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
 ### Integration with Registry
 
 Terminologies and terms are registered with the WIP Registry service to get
-unique, system-wide identifiers (TERM-000001, T-000042).
+unique, system-wide identifiers. IDs are configurable per namespace (default: UUID7).
     """,
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -129,6 +130,9 @@ unique, system-wide identifiers (TERM-000001, T-000042).
 
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
 setup_auth(app)
+
+# Reject unknown query parameters (returns 422 for undeclared params)
+app.add_middleware(RejectUnknownQueryParamsMiddleware)
 
 # Add CORS middleware
 app.add_middleware(
@@ -149,7 +153,7 @@ async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Def-Store",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "documentation": "/docs",
         "health": "/health",
     }

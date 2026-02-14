@@ -24,9 +24,13 @@ class SourceInfo(BaseModel):
 class Synonym(BaseModel):
     """A composite key variant that resolves to the parent entry."""
 
-    pool_id: str = Field(
+    namespace: str = Field(
         ...,
-        description="ID pool this synonym belongs to"
+        description="Namespace this synonym belongs to"
+    )
+    entity_type: str = Field(
+        ...,
+        description="Entity type (terminologies, terms, templates, documents, files)"
     )
     composite_key: dict[str, Any] = Field(
         ...,
@@ -55,18 +59,26 @@ class RegistryEntry(Document):
 
     Supports multiple synonyms (composite keys) that all resolve to the same entity.
     One entry is marked as preferred, with additional_ids storing merged duplicates.
+
+    Lifecycle: reserved → active → inactive
     """
 
-    # The primary ID for this entry (generated based on pool config)
+    # The primary ID for this entry
     entry_id: str = Field(
         ...,
-        description="Primary ID in the primary pool"
+        description="Primary ID for this entry"
     )
 
-    # The ID pool of the primary entry
-    primary_pool_id: str = Field(
-        default="default",
-        description="ID pool of the primary ID"
+    # Namespace this entry belongs to
+    namespace: str = Field(
+        ...,
+        description="Namespace (e.g., 'wip', 'dev')"
+    )
+
+    # Entity type
+    entity_type: str = Field(
+        ...,
+        description="Entity type: terminologies, terms, templates, documents, files"
     )
 
     # Is this the preferred entry when multiple entries were merged?
@@ -95,7 +107,7 @@ class RegistryEntry(Document):
     # IDs that were merged into this entry (from ID-as-synonym merges)
     additional_ids: list[dict[str, str]] = Field(
         default_factory=list,
-        description="Other IDs that are synonyms [{'pool_id': '...', 'id': '...'}]"
+        description="Other IDs that are synonyms [{'namespace': '...', 'entity_type': '...', 'id': '...'}]"
     )
 
     # Source system that owns this entry
@@ -104,10 +116,10 @@ class RegistryEntry(Document):
         description="Source system information"
     )
 
-    # Status for soft delete
+    # Status: reserved (claimed), active (resolvable), inactive (soft-deleted)
     status: str = Field(
         default="active",
-        description="Status: active or inactive"
+        description="Status: reserved, active, or inactive"
     )
 
     # Timestamps
@@ -127,7 +139,6 @@ class RegistryEntry(Document):
     )
 
     # Flat array of all string values from primary + synonym composite keys
-    # Used for efficient value-based lookups (e.g. find entry by any composite key value)
     search_values: list[str] = Field(
         default_factory=list,
         description="Flattened string values from all composite keys for search"
@@ -142,36 +153,36 @@ class RegistryEntry(Document):
     class Settings:
         name = "registry_entries"
         indexes = [
-            # Primary lookup by entry_id + pool
+            # Primary lookup by entry_id (globally unique)
             IndexModel(
-                [("primary_pool_id", 1), ("entry_id", 1)],
+                [("entry_id", 1)],
                 unique=True,
-                name="entry_id_pool_unique_idx"
+                name="entry_id_unique_idx"
+            ),
+            # Lookup by namespace + entity_type
+            IndexModel(
+                [("namespace", 1), ("entity_type", 1), ("status", 1)],
+                name="namespace_entity_status_idx"
             ),
             # Lookup by primary composite key hash
             IndexModel(
                 [("primary_composite_key_hash", 1)],
                 name="primary_key_hash_idx"
             ),
-            # Lookup by synonym composite key hash (for cross-pool search)
+            # Lookup by synonym composite key hash
             IndexModel(
                 [("synonyms.composite_key_hash", 1)],
                 name="synonyms_key_hash_idx"
-            ),
-            # Lookup by synonym pool + hash
-            IndexModel(
-                [("synonyms.pool_id", 1), ("synonyms.composite_key_hash", 1)],
-                name="synonyms_pool_hash_idx"
             ),
             # Status index for filtering active entries
             IndexModel(
                 [("status", 1)],
                 name="status_idx"
             ),
-            # Index for value-based lookups across composite keys
+            # Index for value-based lookups
             IndexModel(
-                [("search_values", 1), ("primary_pool_id", 1), ("status", 1)],
-                name="search_values_pool_status_idx"
+                [("search_values", 1), ("namespace", 1), ("status", 1)],
+                name="search_values_namespace_status_idx"
             ),
         ]
 

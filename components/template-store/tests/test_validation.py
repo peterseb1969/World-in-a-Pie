@@ -12,8 +12,8 @@ async def test_validate_template_valid(client: AsyncClient, auth_headers: dict):
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "VALID_TEMPLATE",
-            "name": "Valid Template",
+            "value": "VALID_TEMPLATE",
+            "label": "Valid Template",
             "fields": [
                 {
                     "name": "gender",
@@ -47,8 +47,8 @@ async def test_validate_template_invalid_terminology(client: AsyncClient, auth_h
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "INVALID_TERM_REF",
-            "name": "Invalid Term Ref",
+            "value": "INVALID_TERM_REF",
+            "label": "Invalid Term Ref",
             "fields": [
                 {
                     "name": "invalid_field",
@@ -82,7 +82,7 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "ORPHAN", "name": "Orphan Template"}
+        json={"value": "ORPHAN", "label": "Orphan Template"}
     )
     template_id = create_response.json()["template_id"]
 
@@ -96,8 +96,8 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "NESTED_REF",
-            "name": "Nested Ref",
+            "value": "NESTED_REF",
+            "label": "Nested Ref",
             "fields": [
                 {
                     "name": "nested",
@@ -131,8 +131,8 @@ async def test_validate_template_array_terminology_ref(client: AsyncClient, auth
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "ARRAY_TERM",
-            "name": "Array Terminology",
+            "value": "ARRAY_TERM",
+            "label": "Array Terminology",
             "fields": [
                 {
                     "name": "countries",
@@ -165,8 +165,8 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "ADDRESS",
-            "name": "Address",
+            "value": "ADDRESS",
+            "label": "Address",
             "fields": [
                 {"name": "street", "label": "Street", "type": "string"},
                 {"name": "city", "label": "City", "type": "string"}
@@ -180,8 +180,8 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "PERSON_ADDRESSES",
-            "name": "Person with Addresses",
+            "value": "PERSON_ADDRESSES",
+            "label": "Person with Addresses",
             "fields": [
                 {"name": "name", "label": "Name", "type": "string"},
                 {
@@ -215,8 +215,8 @@ async def test_validate_template_skip_terminology_check(client: AsyncClient, aut
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "SKIP_TERM_CHECK",
-            "name": "Skip Term Check",
+            "value": "SKIP_TERM_CHECK",
+            "label": "Skip Term Check",
             "fields": [
                 {
                     "name": "field",
@@ -263,8 +263,8 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "CONTACT_INFO",
-            "name": "Contact Info",
+            "value": "CONTACT_INFO",
+            "label": "Contact Info",
             "fields": [
                 {"name": "email", "label": "Email", "type": "string"},
                 {"name": "phone", "label": "Phone", "type": "string"}
@@ -278,8 +278,8 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "PERSON_CONTACT",
-            "name": "Person with Contact",
+            "value": "PERSON_CONTACT",
+            "label": "Person with Contact",
             "fields": [
                 {"name": "name", "label": "Name", "type": "string"},
                 {
@@ -312,8 +312,8 @@ async def test_validate_template_with_extends(client: AsyncClient, auth_headers:
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "VAL_PARENT",
-            "name": "Validation Parent",
+            "value": "VAL_PARENT",
+            "label": "Validation Parent",
             "fields": [{"name": "id", "label": "ID", "type": "string"}]
         }
     )
@@ -324,8 +324,8 @@ async def test_validate_template_with_extends(client: AsyncClient, auth_headers:
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "VAL_CHILD",
-            "name": "Validation Child",
+            "value": "VAL_CHILD",
+            "label": "Validation Child",
             "extends": parent_id,
             "fields": [{"name": "name", "label": "Name", "type": "string"}]
         }
@@ -351,8 +351,8 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "MULTI_ERROR",
-            "name": "Multiple Errors",
+            "value": "MULTI_ERROR",
+            "label": "Multiple Errors",
             "fields": [
                 {
                     "name": "field1",

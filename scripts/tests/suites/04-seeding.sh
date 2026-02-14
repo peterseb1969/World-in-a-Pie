@@ -76,7 +76,7 @@ test_terminologies_seeded() {
 }
 
 test_terms_seeded() {
-    api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terms?limit=100"
+    api_get "http://localhost:$PORT_DEF_STORE/api/def-store/terms?page_size=100"
     if ! assert_status 200; then return 1; fi
 
     local count
@@ -104,7 +104,7 @@ test_templates_seeded() {
 }
 
 test_documents_seeded() {
-    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?limit=100"
+    api_get "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents?page_size=100"
     if ! assert_status 200; then return 1; fi
 
     local count

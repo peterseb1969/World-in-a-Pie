@@ -34,16 +34,15 @@ router = APIRouter(
 @router.post("", response_model=TemplateResponse)
 async def create_template(
     request: CreateTemplateRequest,
-    pool_id: str = Query(default="wip-templates", description="Pool ID for the template")
 ):
     """
     Create a new template.
 
-    The template is registered with the Registry service to get a unique ID
-    (TPL-XXXXXX format).
+    The template is registered with the Registry service to get a unique ID.
+    Namespace is specified in the request body (default: "wip").
     """
     try:
-        return await TemplateService.create_template(request, pool_id=pool_id)
+        return await TemplateService.create_template(request, namespace=request.namespace)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RegistryError as e:
@@ -52,10 +51,10 @@ async def create_template(
 
 @router.get("", response_model=TemplateListResponse)
 async def list_templates(
-    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
+    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
     status: Optional[str] = Query(None, description="Filter by status"),
     extends: Optional[str] = Query(None, description="Filter by parent template"),
-    code: Optional[str] = Query(None, description="Filter by template code (shows all versions)"),
+    value: Optional[str] = Query(None, description="Filter by template value (shows all versions)"),
     latest_only: bool = Query(False, description="Only return latest version of each template"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page")
@@ -63,17 +62,17 @@ async def list_templates(
     """
     List templates with pagination.
 
-    Supports filtering by status, parent template, and code.
+    Supports filtering by status, parent template, and value.
     Use latest_only=true to only show the most recent version of each template.
     """
     templates, total = await TemplateService.list_templates(
         status=status,
         extends=extends,
-        code=code,
+        value=value,
         latest_only=latest_only,
         page=page,
         page_size=page_size,
-        pool_id=pool_id
+        namespace=namespace
     )
     return TemplateListResponse(
         items=templates,
@@ -111,44 +110,44 @@ async def get_template_raw(template_id: str):
     return template
 
 
-@router.get("/by-code/{code}", response_model=TemplateResponse)
-async def get_template_by_code(
-    code: str,
-    pool_id: str = Query(default="wip-templates", description="Pool ID to search in")
+@router.get("/by-value/{value}", response_model=TemplateResponse)
+async def get_template_by_value(
+    value: str,
+    namespace: str = Query(default="wip", description="Namespace to search in")
 ):
     """
-    Get the latest version of a template by code.
+    Get the latest version of a template by value.
 
     Returns the template with inheritance resolved.
-    To get a specific version, use /by-code/{code}/versions/{version}.
+    To get a specific version, use /by-value/{value}/versions/{version}.
     """
-    versions = await TemplateService.get_template_versions(code, pool_id=pool_id)
+    versions = await TemplateService.get_template_versions(value, namespace=namespace)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     # Return the first one (highest version since sorted descending)
     return versions[0]
 
 
-@router.get("/by-code/{code}/raw", response_model=TemplateResponse)
-async def get_template_by_code_raw(code: str):
+@router.get("/by-value/{value}/raw", response_model=TemplateResponse)
+async def get_template_by_value_raw(value: str):
     """
-    Get the latest version of a template by code without inheritance resolution.
+    Get the latest version of a template by value without inheritance resolution.
     """
-    template = await TemplateService.get_template_raw(code=code)
+    template = await TemplateService.get_template_raw(value=value)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
 
 
-@router.get("/by-code/{code}/versions", response_model=TemplateListResponse)
-async def get_template_versions(code: str):
+@router.get("/by-value/{value}/versions", response_model=TemplateListResponse)
+async def get_template_versions(value: str):
     """
-    Get all versions of a template by code.
+    Get all versions of a template by value.
 
     Returns all versions sorted by version number (newest first).
     This allows viewing the full version history of a template.
     """
-    versions = await TemplateService.get_template_versions(code)
+    versions = await TemplateService.get_template_versions(value)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateListResponse(
@@ -159,18 +158,18 @@ async def get_template_versions(code: str):
     )
 
 
-@router.get("/by-code/{code}/versions/{version}", response_model=TemplateResponse)
-async def get_template_by_code_and_version(code: str, version: int):
+@router.get("/by-value/{value}/versions/{version}", response_model=TemplateResponse)
+async def get_template_by_value_and_version(value: str, version: int):
     """
     Get a specific version of a template.
 
     Args:
-        code: Template code
+        value: Template value
         version: Version number
 
     Returns the template with inheritance resolved.
     """
-    template = await TemplateService.get_template_by_code_and_version(code, version)
+    template = await TemplateService.get_template_by_value_and_version(value, version)
     if not template:
         raise HTTPException(status_code=404, detail="Template version not found")
     return template
@@ -192,7 +191,7 @@ async def update_template(template_id: str, request: UpdateTemplateRequest):
     Returns:
         TemplateUpdateResponse with:
         - template_id: The ID of the template (new if changed, existing if unchanged)
-        - code: The template code
+        - value: The template value
         - version: The version number
         - is_new_version: True if a new version was created
         - previous_version: Previous version number if created, None if unchanged
@@ -306,7 +305,7 @@ async def validate_template(
 @router.post("/{template_id}/activate", response_model=ActivateTemplateResponse)
 async def activate_template(
     template_id: str,
-    pool_id: str = Query(default="wip-templates", description="Pool ID for the template"),
+    namespace: str = Query(default="wip", description="Namespace for the template"),
     dry_run: bool = Query(default=False, description="Preview activation without making changes")
 ):
     """
@@ -322,7 +321,7 @@ async def activate_template(
     try:
         return await TemplateService.activate_template(
             template_id=template_id,
-            pool_id=pool_id,
+            namespace=namespace,
             dry_run=dry_run
         )
     except ValueError as e:
@@ -332,18 +331,20 @@ async def activate_template(
 @router.post("/bulk", response_model=BulkOperationResponse)
 async def create_templates_bulk(
     request: BulkCreateTemplateRequest,
-    pool_id: str = Query(default="wip-templates", description="Pool ID for templates"),
 ):
     """
     Create multiple templates at once.
 
     Each template is registered with the Registry service.
+    Namespace is read from each template's namespace field (default: "wip").
     """
     try:
+        # Determine namespace: use the first template's namespace (all should share the same)
+        namespace = request.templates[0].namespace if request.templates else "wip"
         results = await TemplateService.create_templates_bulk(
             templates=request.templates,
             created_by=request.created_by,
-            pool_id=pool_id,
+            namespace=namespace,
         )
         succeeded = sum(1 for r in results if r.status == "created")
         failed = sum(1 for r in results if r.status == "error")

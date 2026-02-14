@@ -21,17 +21,21 @@ class StrictModel(BaseModel):
 class CreateTerminologyRequest(StrictModel):
     """Request to create a new terminology."""
 
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Human-readable code (e.g., 'DOC_STATUS')"
+        description="Human-readable value (e.g., 'DOC_STATUS')"
     )
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Display name"
+        description="Display label"
     )
     description: Optional[str] = Field(
         None,
         description="Detailed description"
+    )
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for the terminology"
     )
     case_sensitive: bool = Field(
         default=False,
@@ -58,13 +62,13 @@ class CreateTerminologyRequest(StrictModel):
 class UpdateTerminologyRequest(StrictModel):
     """Request to update an existing terminology."""
 
-    code: Optional[str] = Field(
+    value: Optional[str] = Field(
         None,
-        description="New code (triggers Registry synonym)"
+        description="New value (triggers Registry synonym)"
     )
-    name: Optional[str] = Field(
+    label: Optional[str] = Field(
         None,
-        description="New display name"
+        description="New display label"
     )
     description: Optional[str] = Field(
         None,
@@ -96,8 +100,9 @@ class TerminologyResponse(BaseModel):
     """Response containing terminology details."""
 
     terminology_id: str
-    code: str
-    name: str
+    namespace: str
+    value: str
+    label: str
     description: Optional[str] = None
     case_sensitive: bool = False
     allow_multiple: bool = False
@@ -227,8 +232,9 @@ class TermResponse(BaseModel):
     """Response containing term details."""
 
     term_id: str
+    namespace: str
     terminology_id: str
-    terminology_code: Optional[str] = None
+    terminology_value: Optional[str] = None
     value: str
     aliases: list[str] = []
     label: Optional[str] = None
@@ -254,7 +260,7 @@ class TermListResponse(BaseModel):
     page: int = 1
     page_size: int = 50
     terminology_id: str
-    terminology_code: str
+    terminology_value: str
 
 
 # =============================================================================
@@ -350,11 +356,11 @@ class ValidateValueRequest(StrictModel):
 
     terminology_id: Optional[str] = Field(
         None,
-        description="Terminology ID (use this or code)"
+        description="Terminology ID (use this or terminology_value)"
     )
-    terminology_code: Optional[str] = Field(
+    terminology_value: Optional[str] = Field(
         None,
-        description="Terminology code (use this or id)"
+        description="Terminology value (use this or id)"
     )
     value: str = Field(
         ...,
@@ -367,7 +373,7 @@ class ValidateValueResponse(BaseModel):
 
     valid: bool
     terminology_id: str
-    terminology_code: str
+    terminology_value: str
     value: str
     matched_term: Optional[TermResponse] = None
     matched_via: Optional[str] = Field(

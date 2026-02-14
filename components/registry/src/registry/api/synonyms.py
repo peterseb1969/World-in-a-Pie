@@ -1,9 +1,9 @@
 """Synonym management API endpoints."""
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
-from fastapi import APIRouter, HTTPException, Body, Depends
+from fastapi import APIRouter, Body, Depends
 
 from ..models.entry import RegistryEntry, Synonym
 from ..models.api_models import (
@@ -31,56 +31,20 @@ async def add_synonyms(
     items: List[AddSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> List[AddSynonymResponse]:
-    """
-    Add one or more synonyms to existing registry entries.
-
-    Each synonym is a composite key in a potentially different pool
-    that resolves to the same entity.
-    """
+    """Add one or more synonyms to existing registry entries."""
     results = []
 
     for i, item in enumerate(items):
         try:
-            # Find the target entry
-            if item.target_id:
-                # Look up by ID
-                entry = await RegistryEntry.find_one({
-                    "primary_pool_id": item.target_pool_id,
-                    "entry_id": item.target_id,
-                    "status": "active"
-                })
-            elif item.target_composite_key:
-                # Look up by composite key
-                target_hash = HashService.compute_composite_key_hash(item.target_composite_key)
-                entry = await RegistryEntry.find_one({
-                    "$or": [
-                        {
-                            "primary_pool_id": item.target_pool_id,
-                            "primary_composite_key_hash": target_hash
-                        },
-                        {
-                            "synonyms": {
-                                "$elemMatch": {
-                                    "pool_id": item.target_pool_id,
-                                    "composite_key_hash": target_hash
-                                }
-                            }
-                        }
-                    ],
-                    "status": "active"
-                })
-            else:
-                results.append(AddSynonymResponse(
-                    input_index=i,
-                    status="error",
-                    error="Must provide either target_id or target_composite_key"
-                ))
-                continue
+            # Find the target entry by ID
+            entry = await RegistryEntry.find_one({
+                "entry_id": item.target_id,
+                "status": "active"
+            })
 
             if not entry:
                 results.append(AddSynonymResponse(
-                    input_index=i,
-                    status="target_not_found",
+                    input_index=i, status="target_not_found",
                 ))
                 continue
 
@@ -98,21 +62,19 @@ async def add_synonyms(
             if existing:
                 if str(existing.id) == str(entry.id):
                     results.append(AddSynonymResponse(
-                        input_index=i,
-                        status="already_exists",
+                        input_index=i, status="already_exists",
                         registry_id=entry.entry_id,
                     ))
                 else:
                     results.append(AddSynonymResponse(
-                        input_index=i,
-                        status="error",
+                        input_index=i, status="error",
                         error=f"Synonym already registered under different entry: {existing.entry_id}"
                     ))
                 continue
 
-            # Create and add the synonym
             synonym = Synonym(
-                pool_id=item.synonym_pool_id,
+                namespace=item.synonym_namespace,
+                entity_type=item.synonym_entity_type,
                 composite_key=item.synonym_composite_key,
                 composite_key_hash=synonym_hash,
                 source_info=item.synonym_source_info,
@@ -125,16 +87,12 @@ async def add_synonyms(
             await entry.save()
 
             results.append(AddSynonymResponse(
-                input_index=i,
-                status="added",
-                registry_id=entry.entry_id,
+                input_index=i, status="added", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(AddSynonymResponse(
-                input_index=i,
-                status="error",
-                error=str(e)
+                input_index=i, status="error", error=str(e)
             ))
 
     return results
@@ -149,45 +107,35 @@ async def remove_synonyms(
     items: List[RemoveSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> List[RemoveSynonymResponse]:
-    """
-    Remove one or more synonyms from registry entries.
-
-    Note: Cannot remove the primary composite key, only synonyms.
-    """
+    """Remove one or more synonyms from registry entries."""
     results = []
 
     for i, item in enumerate(items):
         try:
-            # Find the target entry
             entry = await RegistryEntry.find_one({
-                "primary_pool_id": item.target_pool_id,
                 "entry_id": item.target_id,
                 "status": "active"
             })
 
             if not entry:
                 results.append(RemoveSynonymResponse(
-                    input_index=i,
-                    status="not_found",
-                    registry_id=item.target_id,
+                    input_index=i, status="not_found", registry_id=item.target_id,
                 ))
                 continue
 
-            # Find the synonym to remove
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
 
-            # Filter out the synonym
             original_count = len(entry.synonyms)
             entry.synonyms = [
                 s for s in entry.synonyms
-                if not (s.pool_id == item.synonym_pool_id and s.composite_key_hash == synonym_hash)
+                if not (s.namespace == item.synonym_namespace
+                        and s.entity_type == item.synonym_entity_type
+                        and s.composite_key_hash == synonym_hash)
             ]
 
             if len(entry.synonyms) == original_count:
                 results.append(RemoveSynonymResponse(
-                    input_index=i,
-                    status="not_found",
-                    registry_id=entry.entry_id,
+                    input_index=i, status="not_found", registry_id=entry.entry_id,
                     error="Synonym not found in entry"
                 ))
                 continue
@@ -198,16 +146,12 @@ async def remove_synonyms(
             await entry.save()
 
             results.append(RemoveSynonymResponse(
-                input_index=i,
-                status="removed",
-                registry_id=entry.entry_id,
+                input_index=i, status="removed", registry_id=entry.entry_id,
             ))
 
         except Exception as e:
             results.append(RemoveSynonymResponse(
-                input_index=i,
-                status="error",
-                error=str(e)
+                input_index=i, status="error", error=str(e)
             ))
 
     return results
@@ -222,70 +166,48 @@ async def merge_entries(
     items: List[MergeItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> List[MergeResponse]:
-    """
-    Merge two registry entries, making one a synonym of the other.
-
-    This is used to resolve duplicate registrations. The deprecated entry's
-    ID becomes an additional_id on the preferred entry, and all its synonyms
-    are moved to the preferred entry.
-
-    Both IDs will continue to resolve to the same entity.
-    """
+    """Merge two entries, making the deprecated one a synonym of the preferred."""
     results = []
 
     for i, item in enumerate(items):
         try:
-            # Find the preferred entry
             preferred = await RegistryEntry.find_one({
-                "primary_pool_id": item.preferred_pool_id,
-                "entry_id": item.preferred_id,
-                "status": "active"
+                "entry_id": item.preferred_id, "status": "active"
             })
-
             if not preferred:
                 results.append(MergeResponse(
-                    input_index=i,
-                    status="preferred_not_found",
+                    input_index=i, status="preferred_not_found",
                     preferred_id=item.preferred_id,
                 ))
                 continue
 
-            # Find the deprecated entry
             deprecated = await RegistryEntry.find_one({
-                "primary_pool_id": item.deprecated_pool_id,
-                "entry_id": item.deprecated_id,
-                "status": "active"
+                "entry_id": item.deprecated_id, "status": "active"
             })
-
             if not deprecated:
                 results.append(MergeResponse(
-                    input_index=i,
-                    status="deprecated_not_found",
+                    input_index=i, status="deprecated_not_found",
                     deprecated_id=item.deprecated_id,
                 ))
                 continue
 
-            # Prevent merging an entry with itself
             if str(preferred.id) == str(deprecated.id):
                 results.append(MergeResponse(
-                    input_index=i,
-                    status="error",
+                    input_index=i, status="error",
                     error="Cannot merge an entry with itself"
                 ))
                 continue
 
-            # Add the deprecated ID to additional_ids
             preferred.additional_ids.append({
-                "pool_id": deprecated.primary_pool_id,
+                "namespace": deprecated.namespace,
+                "entity_type": deprecated.entity_type,
                 "id": deprecated.entry_id
             })
-
-            # Also add any additional_ids from the deprecated entry
             preferred.additional_ids.extend(deprecated.additional_ids)
 
-            # Add the deprecated entry's primary key as a synonym
             deprecated_as_synonym = Synonym(
-                pool_id=deprecated.primary_pool_id,
+                namespace=deprecated.namespace,
+                entity_type=deprecated.entity_type,
                 composite_key=deprecated.primary_composite_key,
                 composite_key_hash=deprecated.primary_composite_key_hash,
                 source_info=deprecated.source_info,
@@ -293,37 +215,30 @@ async def merge_entries(
             )
             preferred.synonyms.append(deprecated_as_synonym)
 
-            # Move all synonyms from deprecated to preferred
             for syn in deprecated.synonyms:
-                # Check for duplicates
                 if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
                     preferred.synonyms.append(syn)
 
-            # Mark the deprecated entry as inactive
             deprecated.status = "inactive"
             deprecated.is_preferred = False
             deprecated.updated_at = datetime.now(timezone.utc)
             deprecated.updated_by = item.updated_by
             await deprecated.save()
 
-            # Save the preferred entry
             preferred.rebuild_search_values()
             preferred.updated_at = datetime.now(timezone.utc)
             preferred.updated_by = item.updated_by
             await preferred.save()
 
             results.append(MergeResponse(
-                input_index=i,
-                status="merged",
+                input_index=i, status="merged",
                 preferred_id=preferred.entry_id,
                 deprecated_id=deprecated.entry_id,
             ))
 
         except Exception as e:
             results.append(MergeResponse(
-                input_index=i,
-                status="error",
-                error=str(e)
+                input_index=i, status="error", error=str(e)
             ))
 
     return results
@@ -338,91 +253,70 @@ async def set_preferred_ids(
     items: List[SetPreferredItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> List[SetPreferredResponse]:
-    """
-    Change which ID is the preferred/canonical ID for an entry.
-
-    The new preferred ID must either be:
-    - The current entry_id (no change)
-    - One of the additional_ids
-
-    This operation swaps the IDs but keeps all synonyms intact.
-    """
+    """Change which ID is preferred for an entry."""
     results = []
 
     for i, item in enumerate(items):
         try:
-            # Find the entry
             entry = await RegistryEntry.find_one({
-                "primary_pool_id": item.pool_id,
-                "entry_id": item.entry_id,
-                "status": "active"
+                "entry_id": item.entry_id, "status": "active"
             })
 
             if not entry:
                 results.append(SetPreferredResponse(
-                    input_index=i,
-                    status="not_found",
+                    input_index=i, status="not_found",
                 ))
                 continue
 
-            # Check if new preferred is already the current
-            if (item.new_preferred_pool_id == entry.primary_pool_id and
-                item.new_preferred_id == entry.entry_id):
+            if item.new_preferred_id == entry.entry_id:
                 results.append(SetPreferredResponse(
-                    input_index=i,
-                    status="updated",
+                    input_index=i, status="updated",
                     new_preferred_id=entry.entry_id,
                 ))
                 continue
 
-            # Check if new preferred is in additional_ids
             found_in_additional = None
             for idx, add_id in enumerate(entry.additional_ids):
-                if (add_id["pool_id"] == item.new_preferred_pool_id and
-                    add_id["id"] == item.new_preferred_id):
+                if add_id["id"] == item.new_preferred_id:
                     found_in_additional = idx
                     break
 
             if found_in_additional is None:
                 results.append(SetPreferredResponse(
-                    input_index=i,
-                    status="id_not_in_entry",
+                    input_index=i, status="id_not_in_entry",
                     error="New preferred ID not found in entry's additional_ids"
                 ))
                 continue
 
-            # Swap the IDs
-            old_primary_pool_id = entry.primary_pool_id
-            old_primary_id = entry.entry_id
+            old_id = entry.entry_id
+            old_ns = entry.namespace
+            old_et = entry.entity_type
 
-            # Remove from additional_ids
-            entry.additional_ids.pop(found_in_additional)
-
-            # Add old primary to additional_ids
+            new_add_id = entry.additional_ids.pop(found_in_additional)
             entry.additional_ids.append({
-                "pool_id": old_primary_pool_id,
-                "id": old_primary_id
+                "namespace": old_ns,
+                "entity_type": old_et,
+                "id": old_id
             })
 
-            # Set new primary
-            entry.primary_pool_id = item.new_preferred_pool_id
             entry.entry_id = item.new_preferred_id
+            if "namespace" in new_add_id:
+                entry.namespace = new_add_id["namespace"]
+            if "entity_type" in new_add_id:
+                entry.entity_type = new_add_id["entity_type"]
 
             entry.updated_at = datetime.now(timezone.utc)
             entry.updated_by = item.updated_by
             await entry.save()
 
             results.append(SetPreferredResponse(
-                input_index=i,
-                status="updated",
+                input_index=i, status="updated",
                 new_preferred_id=item.new_preferred_id,
             ))
 
         except Exception as e:
             results.append(SetPreferredResponse(
-                input_index=i,
-                status="error",
-                error=str(e)
+                input_index=i, status="error", error=str(e)
             ))
 
     return results

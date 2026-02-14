@@ -28,7 +28,7 @@ class IntegrityIssue(BaseModel):
         description="Severity: error, warning, info"
     )
     template_id: str = Field(..., description="Template with the issue")
-    template_code: str = Field(..., description="Template code")
+    template_value: str = Field(..., description="Template value")
     template_version: int = Field(..., description="Template version")
     field_path: Optional[str] = Field(
         None,
@@ -81,18 +81,17 @@ async def check_terminology_reference(
     def_store = get_def_store_client()
 
     try:
-        # Try to get the terminology
-        if ref.startswith("TERM-"):
-            terminology = await def_store.get_terminology(terminology_id=ref)
-        else:
-            terminology = await def_store.get_terminology(terminology_code=ref)
+        # Try to get the terminology (try as ID first, then as value)
+        terminology = await def_store.get_terminology(terminology_id=ref)
+        if terminology is None:
+            terminology = await def_store.get_terminology(terminology_value=ref)
 
         if terminology is None:
             issues.append(IntegrityIssue(
                 type="orphaned_terminology_ref",
                 severity="error",
                 template_id=template.template_id,
-                template_code=template.code,
+                template_value=template.value,
                 template_version=template.version,
                 field_path=field_path,
                 reference=ref,
@@ -103,7 +102,7 @@ async def check_terminology_reference(
                 type="inactive_terminology_ref",
                 severity="warning",
                 template_id=template.template_id,
-                template_code=template.code,
+                template_value=template.value,
                 template_version=template.version,
                 field_path=field_path,
                 reference=ref,
@@ -119,33 +118,25 @@ async def check_template_reference(
     template: Template,
     field_path: Optional[str],
     issues: list[IntegrityIssue],
-    lookup_by_id: bool = False
 ) -> None:
     """
     Check if a template reference is valid.
 
     Args:
-        ref: Template code or ID depending on lookup_by_id
+        ref: Template ID (canonical, after normalization)
         template: Template containing the reference
         field_path: Path to the field (None for 'extends')
         issues: List to append issues to
-        lookup_by_id: If True, look up by template_id (for extends);
-                      if False, look up by code (for template_ref)
     """
-    # Look up the referenced template
-    if lookup_by_id:
-        # 'extends' stores template_id
-        referenced = await Template.find_one(Template.template_id == ref)
-    else:
-        # 'template_ref' stores code
-        referenced = await Template.find_one(Template.code == ref)
+    # Look up the referenced template — both extends and template_ref store canonical template_id
+    referenced = await Template.find_one(Template.template_id == ref)
 
     if referenced is None:
         issues.append(IntegrityIssue(
             type="orphaned_template_ref",
             severity="error",
             template_id=template.template_id,
-            template_code=template.code,
+            template_value=template.value,
             template_version=template.version,
             field_path=field_path,
             reference=ref,
@@ -156,7 +147,7 @@ async def check_template_reference(
             type="inactive_template_ref",
             severity="warning",
             template_id=template.template_id,
-            template_code=template.code,
+            template_value=template.value,
             template_version=template.version,
             field_path=field_path,
             reference=ref,
@@ -180,7 +171,6 @@ async def check_template_integrity(template: Template) -> list[IntegrityIssue]:
             template,
             field_path=None,  # 'extends' is not a field
             issues=issues,
-            lookup_by_id=True  # extends stores template_id
         )
 
     # Check field references

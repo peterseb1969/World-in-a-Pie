@@ -5,7 +5,7 @@ This module defines and bootstraps system-provided terminologies that are
 automatically created when Def-Store starts. These terminologies support
 WIP's built-in semantic types.
 
-System terminologies are identified by the `_` prefix in their code.
+System terminologies are identified by the `_` prefix in their value.
 Users can add terms to system terminologies but should not delete
 the built-in terms.
 """
@@ -22,8 +22,8 @@ from .registry_client import get_registry_client, RegistryError
 # The `_` prefix indicates a system-managed terminology
 SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
     {
-        "code": "_TIME_UNITS",
-        "name": "Time Units",
+        "value": "_TIME_UNITS",
+        "label": "Time Units",
         "description": "System terminology for duration semantic type. "
                        "Each term represents a time unit with a conversion factor to seconds.",
         "case_sensitive": False,
@@ -107,22 +107,22 @@ async def ensure_system_terminologies() -> dict[str, Any]:
     for term_def in SYSTEM_TERMINOLOGIES:
         try:
             # Check if terminology already exists
-            existing = await Terminology.find_one({"code": term_def["code"]})
+            existing = await Terminology.find_one({"value": term_def["value"]})
 
             if existing:
-                print(f"  System terminology '{term_def['code']}' already exists")
+                print(f"  System terminology '{term_def['value']}' already exists")
                 summary["terminologies_existed"] += 1
                 terminology_id = existing.terminology_id
             else:
                 # Register with Registry to get ID
                 try:
                     terminology_id = await registry.register_terminology(
-                        code=term_def["code"],
-                        name=term_def["name"],
+                        value=term_def["value"],
+                        label=term_def["label"],
                         created_by="system:bootstrap"
                     )
                 except RegistryError as e:
-                    error_msg = f"Failed to register terminology '{term_def['code']}' with Registry: {e}"
+                    error_msg = f"Failed to register terminology '{term_def['value']}' with Registry: {e}"
                     print(f"  ERROR: {error_msg}")
                     summary["errors"].append(error_msg)
                     continue
@@ -132,8 +132,8 @@ async def ensure_system_terminologies() -> dict[str, Any]:
 
                 terminology = Terminology(
                     terminology_id=terminology_id,
-                    code=term_def["code"],
-                    name=term_def["name"],
+                    value=term_def["value"],
+                    label=term_def["label"],
                     description=term_def.get("description"),
                     case_sensitive=term_def.get("case_sensitive", False),
                     allow_multiple=term_def.get("allow_multiple", False),
@@ -148,7 +148,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 )
 
                 await terminology.insert()
-                print(f"  Created system terminology '{term_def['code']}' with ID {terminology_id}")
+                print(f"  Created system terminology '{term_def['value']}' with ID {terminology_id}")
                 summary["terminologies_created"] += 1
 
             # Process terms
@@ -175,7 +175,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                         created_by="system:bootstrap"
                     )
                 except RegistryError as e:
-                    error_msg = f"Failed to register terms for '{term_def['code']}' with Registry: {e}"
+                    error_msg = f"Failed to register terms for '{term_def['value']}' with Registry: {e}"
                     print(f"  ERROR: {error_msg}")
                     summary["errors"].append(error_msg)
                     continue
@@ -187,7 +187,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     term = Term(
                         term_id=term_id,
                         terminology_id=terminology_id,
-                        terminology_code=term_def["code"],
+                        terminology_value=term_def["value"],
                         value=term_data["value"],
                         aliases=term_data.get("aliases", []),
                         label=term_data.get("label", term_data["value"]),
@@ -204,7 +204,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     await term.insert()
                     summary["terms_created"] += 1
 
-                print(f"  Created {len(terms_to_create)} terms for '{term_def['code']}'")
+                print(f"  Created {len(terms_to_create)} terms for '{term_def['value']}'")
 
                 # Update term count on terminology
                 terminology_doc = await Terminology.find_one({"terminology_id": terminology_id})
@@ -215,7 +215,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     await terminology_doc.save()
 
         except Exception as e:
-            error_msg = f"Error processing system terminology '{term_def['code']}': {e}"
+            error_msg = f"Error processing system terminology '{term_def['value']}': {e}"
             print(f"  ERROR: {error_msg}")
             summary["errors"].append(error_msg)
 
@@ -236,12 +236,12 @@ def get_time_unit_factor(term_value: str) -> int | None:
         Factor in seconds, or None if not found
     """
     for term_def in SYSTEM_TERMINOLOGIES:
-        if term_def["code"] == "_TIME_UNITS":
+        if term_def["value"] == "_TIME_UNITS":
             for term in term_def["terms"]:
                 if term["value"] == term_value:
                     return term["metadata"]["factor"]
     return None
 
 
-# Constant for the time units terminology code
-TIME_UNITS_TERMINOLOGY_CODE = "_TIME_UNITS"
+# Constant for the time units terminology value
+TIME_UNITS_TERMINOLOGY_VALUE = "_TIME_UNITS"

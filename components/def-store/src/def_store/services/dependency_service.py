@@ -20,7 +20,7 @@ class TerminologyDependencies(BaseModel):
     """Dependencies of a terminology."""
 
     terminology_id: str
-    terminology_code: str
+    terminology_value: str
 
     # Templates that reference this terminology
     template_count: int = 0
@@ -59,14 +59,14 @@ class DependencyService:
 
         result = TerminologyDependencies(
             terminology_id=terminology_id,
-            terminology_code=terminology.code
+            terminology_value=terminology.value
         )
 
         # Check templates that reference this terminology
         try:
             templates = await cls._get_referencing_templates(
                 terminology_id,
-                terminology.code
+                terminology.value
             )
             result.template_count = len(templates)
             result.templates = templates[:10]  # Limit to first 10
@@ -92,7 +92,7 @@ class DependencyService:
     async def _get_referencing_templates(
         cls,
         terminology_id: str,
-        terminology_code: str
+        terminology_value: str
     ) -> list[dict]:
         """
         Get templates that reference this terminology.
@@ -147,19 +147,19 @@ class DependencyService:
                     array_term_ref = field.get("array_terminology_ref")
 
                     # Check if this field references our terminology
-                    if term_ref in (terminology_id, terminology_code):
+                    if term_ref in (terminology_id, terminology_value):
                         referencing.append({
                             "template_id": template.get("template_id"),
-                            "code": template.get("code"),
-                            "name": template.get("name"),
+                            "value": template.get("value"),
+                            "label": template.get("label"),
                             "field": field.get("name")
                         })
                         break  # Only count template once
-                    elif array_term_ref in (terminology_id, terminology_code):
+                    elif array_term_ref in (terminology_id, terminology_value):
                         referencing.append({
                             "template_id": template.get("template_id"),
-                            "code": template.get("code"),
-                            "name": template.get("name"),
+                            "value": template.get("value"),
+                            "label": template.get("label"),
                             "field": field.get("name")
                         })
                         break

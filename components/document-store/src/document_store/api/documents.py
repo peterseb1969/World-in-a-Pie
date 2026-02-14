@@ -36,12 +36,11 @@ is created and the previous version is marked as inactive.
 )
 async def create_document(
     request: DocumentCreateRequest,
-    pool_id: str = Query(default="wip-documents", description="Pool ID for the document"),
     _: str = Depends(require_api_key)
 ):
-    """Create or update a document."""
+    """Create or update a document. Namespace is specified in the request body (default: "wip")."""
     service = get_document_service()
-    response, error = await service.create_document(request, pool_id=pool_id)
+    response, error = await service.create_document(request, namespace=request.namespace)
 
     if error:
         raise HTTPException(status_code=400, detail=error)
@@ -56,9 +55,9 @@ async def create_document(
     description="List documents with optional filtering and pagination."
 )
 async def list_documents(
-    pool_id: Optional[str] = Query(default=None, description="Pool ID to query (omit for all)"),
+    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
     template_id: Optional[str] = Query(None, description="Filter by template ID"),
-    template_code: Optional[str] = Query(None, description="Filter by template code (e.g., PLANNED_VISIT)"),
+    template_value: Optional[str] = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -68,11 +67,11 @@ async def list_documents(
     service = get_document_service()
     return await service.list_documents(
         template_id=template_id,
-        template_code=template_code,
+        template_value=template_value,
         status=status,
         page=page,
         page_size=page_size,
-        pool_id=pool_id
+        namespace=namespace
     )
 
 
@@ -238,12 +237,13 @@ By default, processing continues even if some items fail.
 )
 async def bulk_create_documents(
     request: BulkCreateRequest,
-    pool_id: str = Query(default="wip-documents", description="Pool ID for the documents"),
     _: str = Depends(require_api_key)
 ):
-    """Bulk create documents."""
+    """Bulk create documents. Namespace is read from each item's namespace field (default: "wip")."""
     service = get_document_service()
-    return await service.bulk_create(request, pool_id=pool_id)
+    # Determine namespace from first item (all items in a bulk request share namespace)
+    namespace = request.items[0].namespace if request.items else "wip"
+    return await service.bulk_create(request, namespace=namespace)
 
 
 @router.get(

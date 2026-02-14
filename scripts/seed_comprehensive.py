@@ -37,7 +37,7 @@ Examples:
     # Full performance test with benchmarks
     python scripts/seed_comprehensive.py --profile performance --benchmark --output benchmark.json
 
-    # Seed into default wip-* pools (not recommended, mixes with real data)
+    # Seed into default wip namespace (not recommended, mixes with real data)
     python scripts/seed_comprehensive.py --namespace wip --profile minimal
 
     # Seed documents only (using existing terminologies and templates)
@@ -174,29 +174,72 @@ class ServiceClient:
 
     def get(self, path: str, params: dict = None) -> dict:
         """HTTP GET request."""
+        start = time.perf_counter()
         resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=30)
+        elapsed = (time.perf_counter() - start) * 1000
+        self._record_call("GET", path, elapsed, resp.status_code)
         resp.raise_for_status()
         return resp.json()
 
     def post(self, path: str, data: dict | list) -> dict:
         """HTTP POST request."""
+        start = time.perf_counter()
         resp = self.session.post(f"{self.base_url}{path}", json=data, timeout=60)
+        elapsed = (time.perf_counter() - start) * 1000
+        self._record_call("POST", path, elapsed, resp.status_code)
         resp.raise_for_status()
         return resp.json()
 
     def put(self, path: str, data: dict) -> dict:
         """HTTP PUT request."""
+        start = time.perf_counter()
         resp = self.session.put(f"{self.base_url}{path}", json=data, timeout=30)
+        elapsed = (time.perf_counter() - start) * 1000
+        self._record_call("PUT", path, elapsed, resp.status_code)
         resp.raise_for_status()
         return resp.json()
 
     def delete(self, path: str) -> dict | None:
         """HTTP DELETE request."""
+        start = time.perf_counter()
         resp = self.session.delete(f"{self.base_url}{path}", timeout=30)
+        elapsed = (time.perf_counter() - start) * 1000
+        self._record_call("DELETE", path, elapsed, resp.status_code)
         resp.raise_for_status()
         if resp.content:
             return resp.json()
         return None
+
+    def _record_call(self, method: str, path: str, elapsed_ms: float, status: int):
+        """Record an HTTP call for timing analysis."""
+        if not hasattr(self, '_call_log'):
+            self._call_log = []
+            self._call_stats = {}
+        # Normalize path (strip IDs for grouping)
+        import re
+        normalized = re.sub(
+            r'/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            '/{id}', path
+        )
+        key = f"{method} {normalized}"
+        if key not in self._call_stats:
+            self._call_stats[key] = {"count": 0, "total_ms": 0, "max_ms": 0}
+        self._call_stats[key]["count"] += 1
+        self._call_stats[key]["total_ms"] += elapsed_ms
+        self._call_stats[key]["max_ms"] = max(self._call_stats[key]["max_ms"], elapsed_ms)
+
+    def print_timing_report(self, label: str):
+        """Print HTTP call timing summary."""
+        stats = getattr(self, '_call_stats', {})
+        if not stats:
+            return
+        total_calls = sum(s["count"] for s in stats.values())
+        total_ms = sum(s["total_ms"] for s in stats.values())
+        print(f"\n  {label} HTTP Timing ({total_calls} calls, {total_ms:.0f}ms total):")
+        for key in sorted(stats, key=lambda k: stats[k]["total_ms"], reverse=True):
+            s = stats[key]
+            avg = s["total_ms"] / s["count"]
+            print(f"    {key:60s}  n={s['count']:4d}  total={s['total_ms']:8.0f}ms  avg={avg:6.1f}ms  max={s['max_ms']:6.0f}ms")
 
 
 class WIPSeeder:
@@ -221,15 +264,6 @@ class WIPSeeder:
         self.namespace = namespace
         self._custom_ns = namespace != "wip"
 
-        # Pool IDs derived from namespace (only used for custom namespaces)
-        self.pools = {
-            "terminologies": f"{namespace}-terminologies",
-            "terms": f"{namespace}-terms",
-            "templates": f"{namespace}-templates",
-            "documents": f"{namespace}-documents",
-            "files": f"{namespace}-files",
-        }
-
         # Disable SSL verification for self-signed certs when using proxy
         verify_ssl = not via_proxy
 
@@ -240,9 +274,9 @@ class WIPSeeder:
         self.document_store = ServiceClient(self.urls["document-store"], api_key, verify_ssl)
 
         # Track created resources
-        self.created_terminologies: dict[str, str] = {}  # code -> id
-        self.created_templates: dict[str, str] = {}  # code -> id
-        self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_code -> {term_value -> term_id}
+        self.created_terminologies: dict[str, str] = {}  # value -> id
+        self.created_templates: dict[str, str] = {}  # value -> id
+        self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_value -> {term_value -> term_id}
         self.created_documents: list[str] = []
 
     def check_services(self, services: list[str]) -> bool:
@@ -264,17 +298,11 @@ class WIPSeeder:
 
         return all_healthy
 
-    def _pool_qs(self, pool_type: str) -> str:
-        """Return '?pool_id=X' for custom namespaces, '' for default."""
-        if not self._custom_ns:
-            return ""
-        return f"?pool_id={self.pools[pool_type]}"
-
-    def _pool_params(self, pool_type: str, **extra: Any) -> dict | None:
-        """Return params dict with pool_id for custom namespaces."""
-        if not self._custom_ns:
-            return extra or None
-        return {"pool_id": self.pools[pool_type], **extra}
+    def _ns_params(self, **extra: Any) -> dict:
+        """Return params dict with namespace."""
+        params = {"namespace": self.namespace}
+        params.update(extra)
+        return params
 
     def initialize_namespace(self) -> None:
         """Ensure namespace and its ID pools exist in the registry."""
@@ -312,11 +340,11 @@ class WIPSeeder:
         terminology_defs = terminologies.get_terminology_definitions()
 
         for term_def in terminology_defs:
-            code = term_def["code"]
+            value = term_def["value"]
 
             if self.dry_run:
                 term_count = len(term_def.get("terms", []))
-                print(f"  [DRY-RUN] Would create terminology: {code} ({term_count} terms)")
+                print(f"  [DRY-RUN] Would create terminology: {value} ({term_count} terms)")
                 stats["terminologies"] += 1
                 stats["terms"] += term_count
                 continue
@@ -325,23 +353,23 @@ class WIPSeeder:
                 # Check if terminology already exists
                 try:
                     existing = self.def_store.get(
-                        f"/api/def-store/terminologies/by-code/{code}",
-                        params=self._pool_params("terminologies"),
+                        f"/api/def-store/terminologies/by-value/{value}",
+                        params=self._ns_params(),
                     )
                     terminology_id = existing["terminology_id"]
-                    print(f"  {code}: already exists ({terminology_id})")
-                    self.created_terminologies[code] = terminology_id
+                    print(f"  {value}: already exists ({terminology_id})")
+                    self.created_terminologies[value] = terminology_id
                     stats["terminologies"] += 1
 
                     # Still need to track term IDs for document generation
                     terms_resp = self.def_store.get(
                         f"/api/def-store/terminologies/{terminology_id}/terms",
-                        params=self._pool_params("terms", limit=500),
+                        params=self._ns_params(page_size=500),
                     )
-                    self.created_term_ids[code] = {
+                    self.created_term_ids[value] = {
                         t["value"]: t["term_id"] for t in terms_resp.get("items", [])
                     }
-                    stats["terms"] += len(self.created_term_ids[code])
+                    stats["terms"] += len(self.created_term_ids[value])
                     continue
                 except requests.HTTPError as e:
                     if e.response.status_code != 404:
@@ -349,9 +377,10 @@ class WIPSeeder:
 
                 # Create terminology
                 create_data = {
-                    "code": code,
-                    "name": term_def["name"],
+                    "value": value,
+                    "label": term_def["label"],
                     "description": term_def.get("description", ""),
+                    "namespace": self.namespace,
                     "case_sensitive": term_def.get("case_sensitive", False),
                     "allow_multiple": term_def.get("allow_multiple", False),
                     "extensible": term_def.get("extensible", False),
@@ -360,18 +389,18 @@ class WIPSeeder:
                 }
 
                 result = self.def_store.post(
-                    f"/api/def-store/terminologies{self._pool_qs('terminologies')}",
+                    "/api/def-store/terminologies",
                     create_data,
                 )
                 terminology_id = result["terminology_id"]
-                self.created_terminologies[code] = terminology_id
+                self.created_terminologies[value] = terminology_id
                 stats["terminologies"] += 1
-                print(f"  {code}: created ({terminology_id})")
+                print(f"  {value}: created ({terminology_id})")
 
                 # Create terms
                 terms = term_def.get("terms", [])
                 if terms:
-                    self.created_term_ids[code] = {}
+                    self.created_term_ids[value] = {}
 
                     # Need to handle parent_value references
                     # First pass: create terms without parents
@@ -394,7 +423,7 @@ class WIPSeeder:
                             bulk_terms.append(term_data)
 
                         bulk_result = self.def_store.post(
-                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk{self._pool_qs('terms')}",
+                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk",
                             {"terms": bulk_terms},
                         )
 
@@ -404,13 +433,13 @@ class WIPSeeder:
                                 idx = r.get("index", 0)
                                 if idx < len(bulk_terms):
                                     term_value = bulk_terms[idx]["value"]
-                                    self.created_term_ids[code][term_value] = r["term_id"]
+                                    self.created_term_ids[value][term_value] = r["term_id"]
                                     stats["terms"] += 1
 
                     # Create terms with parents (need parent term_id)
                     for t in terms_with_parents:
                         parent_value = t["parent_value"]
-                        parent_term_id = self.created_term_ids[code].get(parent_value)
+                        parent_term_id = self.created_term_ids[value].get(parent_value)
 
                         term_data = {
                             "value": t["value"],
@@ -425,17 +454,17 @@ class WIPSeeder:
 
                         try:
                             result = self.def_store.post(
-                                f"/api/def-store/terminologies/{terminology_id}/terms{self._pool_qs('terms')}",
+                                f"/api/def-store/terminologies/{terminology_id}/terms",
                                 term_data,
                             )
-                            self.created_term_ids[code][t["value"]] = result["term_id"]
+                            self.created_term_ids[value][t["value"]] = result["term_id"]
                             stats["terms"] += 1
                         except Exception as e:
                             print(f"    Error creating term {t['value']}: {e}")
                             stats["errors"] += 1
 
             except Exception as e:
-                print(f"  {code}: ERROR - {e}")
+                print(f"  {value}: ERROR - {e}")
                 stats["errors"] += 1
 
         return stats
@@ -451,10 +480,10 @@ class WIPSeeder:
         # The get_template_definitions() already returns them in correct order
 
         for template_def in template_defs:
-            code = template_def["code"]
+            value = template_def["value"]
 
             if self.dry_run:
-                print(f"  [DRY-RUN] Would create template: {code}")
+                print(f"  [DRY-RUN] Would create template: {value}")
                 stats["templates"] += 1
                 continue
 
@@ -462,12 +491,12 @@ class WIPSeeder:
                 # Check if template already exists
                 try:
                     existing = self.template_store.get(
-                        f"/api/template-store/templates/by-code/{code}",
-                        params=self._pool_params("templates"),
+                        f"/api/template-store/templates/by-value/{value}",
+                        params=self._ns_params(),
                     )
                     template_id = existing["template_id"]
-                    print(f"  {code}: already exists ({template_id})")
-                    self.created_templates[code] = template_id
+                    print(f"  {value}: already exists ({template_id})")
+                    self.created_templates[value] = template_id
                     stats["templates"] += 1
                     continue
                 except requests.HTTPError as e:
@@ -475,30 +504,31 @@ class WIPSeeder:
                         raise
 
                 # Resolve extends to template_id
-                extends_code = template_def.get("extends")
+                extends_value = template_def.get("extends")
                 extends_id = None
-                if extends_code:
-                    extends_id = self.created_templates.get(extends_code)
+                if extends_value:
+                    extends_id = self.created_templates.get(extends_value)
                     if not extends_id:
                         # Try to look it up
                         try:
                             parent = self.template_store.get(
-                                f"/api/template-store/templates/by-code/{extends_code}",
-                                params=self._pool_params("templates"),
+                                f"/api/template-store/templates/by-value/{extends_value}",
+                                params=self._ns_params(),
                             )
                             extends_id = parent["template_id"]
-                            self.created_templates[extends_code] = extends_id
+                            self.created_templates[extends_value] = extends_id
                         except Exception:
-                            print(f"    Warning: Parent template {extends_code} not found")
+                            print(f"    Warning: Parent template {extends_value} not found")
 
                 # Create template
                 # Process fields to add labels if missing
                 fields = process_template_fields(template_def.get("fields", []))
 
                 create_data = {
-                    "code": code,
-                    "name": template_def["name"],
+                    "value": value,
+                    "label": template_def["label"],
                     "description": template_def.get("description", ""),
+                    "namespace": self.namespace,
                     "identity_fields": template_def.get("identity_fields", []),
                     "fields": fields,
                     "rules": template_def.get("rules", []),
@@ -509,16 +539,16 @@ class WIPSeeder:
                     create_data["extends"] = extends_id
 
                 result = self.template_store.post(
-                    f"/api/template-store/templates{self._pool_qs('templates')}",
+                    "/api/template-store/templates",
                     create_data,
                 )
                 template_id = result["template_id"]
-                self.created_templates[code] = template_id
+                self.created_templates[value] = template_id
                 stats["templates"] += 1
-                print(f"  {code}: created ({template_id})")
+                print(f"  {value}: created ({template_id})")
 
             except Exception as e:
-                print(f"  {code}: ERROR - {e}")
+                print(f"  {value}: ERROR - {e}")
                 stats["errors"] += 1
 
         return stats
@@ -535,54 +565,65 @@ class WIPSeeder:
             operation="Creating documents"
         )
 
-        for template_code, count in doc_counts.items():
-            template_id = self.created_templates.get(template_code)
+        for template_value, count in doc_counts.items():
+            template_id = self.created_templates.get(template_value)
             if not template_id:
                 # Try to look it up
                 try:
                     template = self.template_store.get(
-                        f"/api/template-store/templates/by-code/{template_code}",
-                        params=self._pool_params("templates"),
+                        f"/api/template-store/templates/by-value/{template_value}",
+                        params=self._ns_params(),
                     )
                     template_id = template["template_id"]
-                    self.created_templates[template_code] = template_id
+                    self.created_templates[template_value] = template_id
                 except Exception:
-                    print(f"  {template_code}: SKIPPED (template not found)")
+                    print(f"  {template_value}: SKIPPED (template not found)")
                     continue
 
-            stats["by_template"][template_code] = {"created": 0, "errors": 0}
+            stats["by_template"][template_value] = {"created": 0, "errors": 0}
 
             if self.dry_run:
-                print(f"  [DRY-RUN] Would create {count} {template_code} documents")
+                print(f"  [DRY-RUN] Would create {count} {template_value} documents")
                 stats["documents"] += count
                 progress.update(count)
                 continue
 
             # Generate and create documents in batches
             batch_size = 50  # Smaller batches for reliability
-            docs = documents.generate_documents_for_template(template_code, count)
+            docs = documents.generate_documents_for_template(template_value, count)
 
             for i in range(0, len(docs), batch_size):
                 batch = docs[i:i + batch_size]
                 batch_data = [
-                    {"template_id": template_id, "data": doc, "created_by": "seed_script"}
+                    {"template_id": template_id, "namespace": self.namespace, "data": doc, "created_by": "seed_script"}
                     for doc in batch
                 ]
 
                 try:
                     result = self.document_store.post(
-                        f"/api/document-store/documents/bulk{self._pool_qs('documents')}",
+                        "/api/document-store/documents/bulk",
                         {"items": batch_data, "continue_on_error": True},
                     )
+
+                    # Log server-side timing if available
+                    server_timing = result.get("timing")
+                    if server_timing:
+                        if not hasattr(self, '_bulk_timings'):
+                            self._bulk_timings = []
+                        self._bulk_timings.append({
+                            "template": template_value,
+                            "batch_size": len(batch),
+                            **server_timing,
+                        })
 
                     for r in result.get("results", []):
                         if r.get("document_id"):
                             self.created_documents.append(r["document_id"])
                             stats["documents"] += 1
-                            stats["by_template"][template_code]["created"] += 1
+                            stats["by_template"][template_value]["created"] += 1
                         else:
                             stats["errors"] += 1
-                            stats["by_template"][template_code]["errors"] += 1
+                            stats["by_template"][template_value]["errors"] += 1
 
                     progress.update(len(batch))
 
@@ -593,16 +634,16 @@ class WIPSeeder:
                     except Exception:
                         error_detail = e.response.text
 
-                    print(f"\n  {template_code}: batch error - {e}")
+                    print(f"\n  {template_value}: batch error - {e}")
                     if isinstance(error_detail, dict) and "detail" in error_detail:
                         print(f"    Detail: {error_detail['detail'][:200]}...")
                     stats["errors"] += len(batch)
-                    stats["by_template"][template_code]["errors"] += len(batch)
+                    stats["by_template"][template_value]["errors"] += len(batch)
                     progress.update(len(batch))
                 except Exception as e:
-                    print(f"\n  {template_code}: batch error - {e}")
+                    print(f"\n  {template_value}: batch error - {e}")
                     stats["errors"] += len(batch)
-                    stats["by_template"][template_code]["errors"] += len(batch)
+                    stats["by_template"][template_value]["errors"] += len(batch)
                     progress.update(len(batch))
 
         progress.complete()
@@ -622,7 +663,7 @@ class WIPSeeder:
         try:
             term_resp = self.def_store.get(
                 "/api/def-store/terminologies",
-                params=self._pool_params("terminologies", limit=1),
+                params=self._ns_params(page_size=1),
             )
             terms_count = term_resp.get("total", 0)
         except Exception:
@@ -660,7 +701,7 @@ class WIPSeeder:
                     start = time.perf_counter()
                     try:
                         self.document_store.post(
-                            f"/api/document-store/documents{self._pool_qs('documents')}",
+                            "/api/document-store/documents",
                             {"template_id": min_template_id, "data": doc, "created_by": "benchmark"},
                         )
                         elapsed = (time.perf_counter() - start) * 1000
@@ -703,7 +744,7 @@ class WIPSeeder:
             try:
                 self.document_store.get(
                     "/api/document-store/documents",
-                    params=self._pool_params("documents", limit=50),
+                    params=self._ns_params(page_size=50),
                 )
                 elapsed = (time.perf_counter() - start) * 1000
                 list_result.times_ms.append(elapsed)
@@ -762,8 +803,8 @@ class WIPSeeder:
             # Test with inheritance templates
             test_templates = ["MANAGER", "EMPLOYEE", "PERSON", "PRODUCT", "ORDER"] * 6
 
-            for template_code in test_templates[:30]:
-                template_id = self.created_templates.get(template_code)
+            for template_value in test_templates[:30]:
+                template_id = self.created_templates.get(template_value)
                 if not template_id:
                     continue
 
@@ -850,7 +891,7 @@ def main():
     parser.add_argument(
         "--namespace",
         default="seed",
-        help="Namespace prefix for data isolation (default: seed). Use 'wip' to seed into the default pools."
+        help="Namespace prefix for data isolation (default: seed). Use 'wip' to seed into the default namespace."
     )
 
     parser.add_argument(
@@ -906,7 +947,7 @@ def main():
         print("  cd components/document-store && podman-compose -f docker-compose.yml up -d --build")
         return
 
-    # Initialize custom namespace (creates ID pools in registry)
+    # Initialize custom namespace in registry
     # Default 'wip' namespace is initialized by setup.sh, not the seed script
     if not args.dry_run and seeder._custom_ns:
         print("\nInitializing namespace...")
@@ -917,44 +958,50 @@ def main():
 
     # Seed terminologies
     if "def-store" in services and not args.skip_terminologies:
+        phase_start = time.perf_counter()
         stats = seeder.seed_terminologies()
         total_stats["terminologies"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
     else:
         # Still need to load existing terminology IDs for document generation
         print("\nLoading existing terminologies...")
         try:
             resp = seeder.def_store.get(
                 "/api/def-store/terminologies",
-                params=seeder._pool_params("terminologies", limit=100),
+                params=seeder._ns_params(page_size=100),
             )
             for t in resp.get("items", []):
-                seeder.created_terminologies[t["code"]] = t["terminology_id"]
+                seeder.created_terminologies[t["value"]] = t["terminology_id"]
             print(f"  Loaded {len(seeder.created_terminologies)} terminologies")
         except Exception as e:
             print(f"  Warning: Could not load terminologies: {e}")
 
     # Seed templates
     if "template-store" in services and not args.skip_templates:
+        phase_start = time.perf_counter()
         stats = seeder.seed_templates()
         total_stats["templates"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
     else:
         # Still need to load existing template IDs for document generation
         print("\nLoading existing templates...")
         try:
             resp = seeder.template_store.get(
                 "/api/template-store/templates",
-                params=seeder._pool_params("templates", limit=100),
+                params=seeder._ns_params(page_size=100),
             )
             for t in resp.get("items", []):
-                seeder.created_templates[t["code"]] = t["template_id"]
+                seeder.created_templates[t["value"]] = t["template_id"]
             print(f"  Loaded {len(seeder.created_templates)} templates")
         except Exception as e:
             print(f"  Warning: Could not load templates: {e}")
 
     # Seed documents
     if "document-store" in services:
+        phase_start = time.perf_counter()
         stats = seeder.seed_documents()
         total_stats["documents"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
     elapsed = time.time() - start_time
 
@@ -975,6 +1022,35 @@ def main():
     if "documents" in total_stats:
         s = total_stats["documents"]
         print(f"Documents: {s['documents']} created, {s['errors']} errors")
+
+    # Per-service HTTP timing reports
+    seeder.def_store.print_timing_report("Def-Store")
+    seeder.template_store.print_timing_report("Template-Store")
+    seeder.document_store.print_timing_report("Document-Store")
+    seeder.registry.print_timing_report("Registry")
+
+    # Server-side bulk timing breakdown
+    bulk_timings = getattr(seeder, '_bulk_timings', [])
+    if bulk_timings:
+        print(f"\n  Document-Store Server-Side Timing ({len(bulk_timings)} batches):")
+        # Aggregate by stage
+        stages = {}
+        for bt in bulk_timings:
+            for k, v in bt.items():
+                if k in ("template", "batch_size"):
+                    continue
+                if k not in stages:
+                    stages[k] = []
+                stages[k].append(v)
+        for stage in sorted(stages):
+            vals = stages[stage]
+            print(f"    {stage:30s}  avg={sum(vals)/len(vals):7.1f}ms  max={max(vals):7.0f}ms  total={sum(vals):8.0f}ms")
+        # Show first batch separately (cold cache)
+        first = bulk_timings[0]
+        print(f"    --- First batch ({first.get('template', '?')}, n={first.get('batch_size', '?')}) ---")
+        for k, v in sorted(first.items()):
+            if k not in ("template", "batch_size"):
+                print(f"    {k:30s}  {v:7.1f}ms")
 
     # Run benchmarks if requested
     if args.benchmark and not args.dry_run:

@@ -39,7 +39,7 @@ def get_document_generator() -> DocumentGenerator:
     return _generator
 
 
-def generate_document(template_code: str, index: int = 0) -> dict[str, Any]:
+def generate_document(template_value: str, index: int = 0) -> dict[str, Any]:
     """
     Generate a valid document for a template.
 
@@ -49,35 +49,35 @@ def generate_document(template_code: str, index: int = 0) -> dict[str, Any]:
     3. Applying validation rules to ensure compliance
 
     Args:
-        template_code: Template code (e.g., "PERSON", "EMPLOYEE", "ORDER")
+        template_value: Template code (e.g., "PERSON", "EMPLOYEE", "ORDER")
         index: Index for unique ID generation
 
     Returns:
         A document dict that satisfies all template validation rules
     """
-    return get_document_generator().generate(template_code, index)
+    return get_document_generator().generate(template_value, index)
 
 
-def get_generator(template_code: str) -> Callable[[int], dict[str, Any]] | None:
+def get_generator(template_value: str) -> Callable[[int], dict[str, Any]] | None:
     """
-    Get a generator function for a template code.
+    Get a generator function for a template value.
 
     This provides backwards compatibility with the old generator interface.
 
     Args:
-        template_code: Template code (e.g., "PERSON", "EMPLOYEE")
+        template_value: Template value (e.g., "PERSON", "EMPLOYEE")
 
     Returns:
         A function that takes an index and returns a document, or None if template not found
     """
     generator = get_document_generator()
-    template = generator.templates.get_template(template_code)
+    template = generator.templates.get_template(template_value)
 
     if template is None:
         return None
 
     def gen(index: int = 0) -> dict[str, Any]:
-        return generator.generate(template_code, index)
+        return generator.generate(template_value, index)
 
     return gen
 
@@ -113,7 +113,7 @@ def generate_invoice(index: int = 0) -> dict[str, Any]:
     return generate_document("INVOICE", index)
 
 
-# List of all supported template codes (for reference)
+# List of all supported template values (for reference)
 SUPPORTED_TEMPLATES = [
     # Base templates
     "ADDRESS",

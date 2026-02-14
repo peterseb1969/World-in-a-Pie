@@ -46,8 +46,8 @@ const filteredOwnTemplates = computed(() => {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(
       t =>
-        t.name.toLowerCase().includes(query) ||
-        t.code.toLowerCase().includes(query) ||
+        t.label.toLowerCase().includes(query) ||
+        t.value.toLowerCase().includes(query) ||
         t.description?.toLowerCase().includes(query)
     )
   }
@@ -63,8 +63,8 @@ const filteredWipTemplates = computed(() => {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(
       t =>
-        t.name.toLowerCase().includes(query) ||
-        t.code.toLowerCase().includes(query) ||
+        t.label.toLowerCase().includes(query) ||
+        t.value.toLowerCase().includes(query) ||
         t.description?.toLowerCase().includes(query)
     )
   }
@@ -86,7 +86,7 @@ const extendsOptions = computed(() => {
   parents.forEach(p => {
     const parent = templateStore.ownTemplates.find(t => t.template_id === p)
     options.push({
-      label: parent ? parent.name : p,
+      label: parent ? parent.label : p,
       value: p
     })
   })
@@ -121,7 +121,7 @@ function viewTemplate(template: Template) {
 
 function confirmDeactivate(template: Template) {
   confirm.require({
-    message: `Are you sure you want to deactivate "${template.name}"? It can be restored later.`,
+    message: `Are you sure you want to deactivate "${template.label}"? It can be restored later.`,
     header: 'Deactivate Template',
     icon: 'pi pi-exclamation-triangle',
     rejectLabel: 'Cancel',
@@ -130,7 +130,7 @@ function confirmDeactivate(template: Template) {
     accept: async () => {
       try {
         await templateStore.deleteTemplate(template.template_id)
-        uiStore.showSuccess('Template Deactivated', `Template "${template.name}" has been deactivated`)
+        uiStore.showSuccess('Template Deactivated', `Template "${template.label}" has been deactivated`)
       } catch (e) {
         uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
       }
@@ -244,18 +244,18 @@ onMounted(loadTemplates)
             <TruncatedId :id="data.template_id" :length="12" />
           </template>
         </Column>
-        <Column field="code" header="Code" sortable style="width: 180px">
+        <Column field="value" header="Value" sortable style="width: 180px">
           <template #body="{ data }">
             <div class="template-code-cell">
-              <code class="template-code">{{ data.code }}</code>
+              <code class="template-code">{{ data.value }}</code>
               <Tag v-if="showAllVersions" :value="`v${data.version}`" severity="info" class="version-tag" />
             </div>
           </template>
         </Column>
-        <Column field="name" header="Name" sortable style="min-width: 200px">
+        <Column field="label" header="Label" sortable style="min-width: 200px">
           <template #body="{ data }">
             <div class="template-name-cell">
-              <span class="name">{{ data.name }}</span>
+              <span class="name">{{ data.label }}</span>
               <span v-if="data.extends" class="extends-badge">
                 <i class="pi pi-arrow-right"></i>
                 {{ data.extends }}
@@ -359,18 +359,18 @@ onMounted(loadTemplates)
               <TruncatedId :id="data.template_id" :length="12" />
             </template>
           </Column>
-          <Column field="code" header="Code" sortable style="width: 180px">
+          <Column field="value" header="Value" sortable style="width: 180px">
             <template #body="{ data }">
               <div class="template-code-cell">
-                <code class="template-code">{{ data.code }}</code>
+                <code class="template-code">{{ data.value }}</code>
                 <Tag v-if="showAllVersions" :value="`v${data.version}`" severity="secondary" class="version-tag" />
               </div>
             </template>
           </Column>
-          <Column field="name" header="Name" sortable style="min-width: 200px">
+          <Column field="label" header="Label" sortable style="min-width: 200px">
             <template #body="{ data }">
               <div class="template-name-cell">
-                <span class="name">{{ data.name }}</span>
+                <span class="name">{{ data.label }}</span>
                 <span v-if="data.extends" class="extends-badge">
                   <i class="pi pi-arrow-right"></i>
                   {{ data.extends }}

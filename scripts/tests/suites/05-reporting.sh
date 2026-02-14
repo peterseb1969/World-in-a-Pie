@@ -35,7 +35,7 @@ test_postgres_schema_exists() {
     tables=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null)
 
-    # Reporting-sync creates doc_<template_code> tables per template, plus internal tables
+    # Reporting-sync creates doc_<template_value> tables per template, plus internal tables
     # Check for internal tables and at least one doc_ table
     if ! echo "$tables" | grep -q "_wip_sync_status"; then
         echo "Required table missing: _wip_sync_status"

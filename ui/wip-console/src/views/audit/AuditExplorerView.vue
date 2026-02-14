@@ -323,7 +323,7 @@ watch(
                   {{ inspectedEntity.entity_type }}
                 </Tag>
                 <h3 class="entity-title">
-                  {{ inspectedEntity.entity_name || inspectedEntity.entity_code || inspectedEntity.entity_id }}
+                  {{ inspectedEntity.entity_label || inspectedEntity.entity_value || inspectedEntity.entity_id }}
                 </h3>
                 <Tag
                   v-if="inspectedEntity.entity_status"
@@ -334,8 +334,8 @@ watch(
                 </Tag>
               </div>
               <div class="entity-meta">
-                <span v-if="inspectedEntity.entity_code" class="meta-item">
-                  <strong>Code:</strong> {{ inspectedEntity.entity_code }}
+                <span v-if="inspectedEntity.entity_value" class="meta-item">
+                  <strong>Value:</strong> {{ inspectedEntity.entity_value }}
                 </span>
                 <span class="meta-item">
                   <strong>ID:</strong> <code>{{ inspectedEntity.entity_id }}</code>
@@ -385,7 +385,7 @@ watch(
                         {{ ref.ref_type }}
                       </Tag>
                       <span class="ref-name">
-                        {{ ref.ref_name || ref.ref_code || ref.ref_id }}
+                        {{ ref.ref_label || ref.ref_value || ref.ref_id }}
                       </span>
                       <Tag :severity="getRefStatusSeverity(ref.status)" size="small">
                         {{ ref.status }}
@@ -393,7 +393,7 @@ watch(
                     </div>
                     <div class="ref-details">
                       <code v-if="ref.field_path" class="field-path">{{ ref.field_path }}</code>
-                      <span v-if="ref.ref_code && ref.ref_name" class="ref-code">{{ ref.ref_code }}</span>
+                      <span v-if="ref.ref_value && ref.ref_label" class="ref-code">{{ ref.ref_value }}</span>
                       <span class="ref-id">{{ ref.ref_id }}</span>
                     </div>
                     <div v-if="ref.error" class="ref-error">
@@ -444,7 +444,7 @@ watch(
                         {{ ref.entity_type }}
                       </Tag>
                       <span class="ref-name">
-                        {{ ref.entity_name || ref.entity_code || ref.entity_id }}
+                        {{ ref.entity_label || ref.entity_value || ref.entity_id }}
                       </span>
                       <Tag
                         v-if="ref.entity_status"
@@ -457,7 +457,7 @@ watch(
                     <div class="ref-details">
                       <span class="ref-type-label">{{ getRefTypeLabel(ref.reference_type) }}</span>
                       <code v-if="ref.field_path" class="field-path">{{ ref.field_path }}</code>
-                      <span v-if="ref.entity_code" class="ref-code">{{ ref.entity_code }}</span>
+                      <span v-if="ref.entity_value" class="ref-code">{{ ref.entity_value }}</span>
                       <span class="ref-id">{{ ref.entity_id }}</span>
                     </div>
                   </div>
@@ -552,8 +552,8 @@ watch(
             <Column header="Name / Value">
               <template #body="{ data }">
                 <div class="entity-cell">
-                  <span class="entity-name">{{ data.name || data.id }}</span>
-                  <span v-if="data.code" class="entity-code">{{ data.code }}</span>
+                  <span class="entity-name">{{ data.label || data.id }}</span>
+                  <span v-if="data.value" class="entity-code">{{ data.value }}</span>
                 </div>
               </template>
             </Column>
@@ -595,8 +595,8 @@ watch(
             <div class="search-tips">
               <h4>Search Tips</h4>
               <ul>
-                <li>Search by code: <code>PERSON</code>, <code>T-000001</code></li>
-                <li>Search by name: <code>Salutation</code>, <code>Country</code></li>
+                <li>Search by value: <code>PERSON</code>, <code>T-000001</code></li>
+                <li>Search by label: <code>Salutation</code>, <code>Country</code></li>
                 <li>Search by ID: <code>TPL-000001</code></li>
               </ul>
             </div>

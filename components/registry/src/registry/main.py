@@ -15,8 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import setup_auth
 
-from .models.id_pool import IdPool, IdGeneratorType
-from .models.namespace import Namespace  # User-facing namespace
+from .models.namespace import Namespace
 from .models.entry import RegistryEntry
 from .models.id_counter import IdCounter
 from .api import api_router
@@ -37,43 +36,6 @@ class Settings:
 settings = Settings()
 
 
-async def migrate_prefixed_counters():
-    """
-    Migrate prefixed ID counters into the id_counters collection.
-
-    Scans existing registry entries for each prefixed pool and writes
-    the max sequence value using $max (never rolls back an already-
-    incremented counter).  After the first successful startup the
-    id_counters collection is self-maintaining, but we keep this for
-    safety and to pick up newly-created pools.
-    """
-    pools = await IdPool.find(
-        {"id_generator.type": IdGeneratorType.PREFIXED}
-    ).to_list()
-
-    for pool in pools:
-        prefix = pool.id_generator.prefix or ""
-        pool_id = pool.pool_id
-        counter_key = f"{pool_id}:{prefix}"
-
-        # Find the highest entry_id for this ID pool
-        result = await RegistryEntry.find(
-            {"primary_pool_id": pool_id}
-        ).sort("-entry_id").limit(1).to_list()
-
-        if result:
-            entry_id = result[0].entry_id
-            try:
-                number_str = entry_id[len(prefix):]
-                max_number = int(number_str)
-                await IdCounter.set_if_higher(counter_key, max_number)
-                print(f"Migrated counter for {pool_id}: {entry_id} (max={max_number})")
-            except (ValueError, IndexError) as e:
-                print(f"Warning: Could not parse entry_id {entry_id} for {pool_id}: {e}")
-        else:
-            print(f"No existing entries for {pool_id}, counter starts at 0")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -87,7 +49,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[IdPool, Namespace, RegistryEntry, IdCounter]
+        document_models=[Namespace, RegistryEntry, IdCounter]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -100,9 +62,6 @@ async def lifespan(app: FastAPI):
         print("Auth service initialized with master key.")
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
-
-    # Migrate prefixed ID counters into MongoDB (idempotent)
-    await migrate_prefixed_counters()
 
     yield
 
@@ -122,13 +81,14 @@ The Registry service provides centralized identity management for the WIP ecosys
 
 ### Key Features
 
-- **Namespaces**: Manage related ID pools together (dev, staging, prod environments)
-- **ID Pool Management**: Logical partitions for ID isolation
+- **Namespaces**: Manage entity namespaces with configurable ID algorithms
 - **Composite Key Registration**: Register any combination of fields as an identity
 - **Synonym Support**: Multiple keys can resolve to the same entity
 - **ID-as-Synonym (Merge)**: Resolve duplicate registrations
 - **Cross-Namespace Search**: Find entities across all namespaces
-- **Pluggable ID Generation**: UUID4, UUID7, NanoID, Prefixed, or Custom
+- **ID Provisioning**: Registry generates IDs per namespace config
+- **ID Reservation**: Clients provide IDs, registry validates format
+- **Pluggable ID Generation**: UUID4, UUID7, NanoID, Prefixed, or Pattern-based
 
 ### Authentication
 
@@ -136,7 +96,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 Admin operations (namespace management) require elevated privileges.
     """,
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -165,7 +125,7 @@ async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Registry",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "documentation": "/docs",
         "health": "/health",
     }

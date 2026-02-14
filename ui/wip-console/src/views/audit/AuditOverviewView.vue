@@ -65,8 +65,8 @@ const filteredActivities = computed(() => {
   if (activitySearch.value.trim()) {
     const search = activitySearch.value.toLowerCase()
     result = result.filter(a =>
-      (a.entity_name && a.entity_name.toLowerCase().includes(search)) ||
-      (a.entity_code && a.entity_code.toLowerCase().includes(search)) ||
+      (a.entity_label && a.entity_label.toLowerCase().includes(search)) ||
+      (a.entity_value && a.entity_value.toLowerCase().includes(search)) ||
       (a.entity_id && a.entity_id.toLowerCase().includes(search)) ||
       (a.user && a.user.toLowerCase().includes(search))
     )
@@ -420,9 +420,9 @@ watch(
                 <span class="source">{{ data.source.replace('-store', '') }}</span>
               </template>
             </Column>
-            <Column field="entity_code" header="Entity" style="width: 140px">
+            <Column field="entity_value" header="Entity" style="width: 140px">
               <template #body="{ data }">
-                <span class="entity">{{ data.entity_code || data.entity_id.substring(0, 12) }}</span>
+                <span class="entity">{{ data.entity_value || data.entity_id.substring(0, 12) }}</span>
               </template>
             </Column>
             <Column field="field_path" header="Field" style="width: 120px">
@@ -514,9 +514,9 @@ watch(
             <Column header="Entity">
               <template #body="{ data }">
                 <div class="entity-cell">
-                  <span class="entity-name">{{ data.entity_name || data.entity_code || data.entity_id }}</span>
-                  <span v-if="data.entity_code && data.entity_name" class="entity-code">
-                    {{ data.entity_code }}
+                  <span class="entity-name">{{ data.entity_label || data.entity_value || data.entity_id }}</span>
+                  <span v-if="data.entity_value && data.entity_label" class="entity-code">
+                    {{ data.entity_value }}
                   </span>
                 </div>
               </template>

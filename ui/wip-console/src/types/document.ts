@@ -32,17 +32,18 @@ export interface Reference {
     version?: number
     // For term references
     term_id?: string
-    terminology_code?: string
+    terminology_value?: string
     matched_via?: string
     // For terminology references
     terminology_id?: string
     // For template references
-    template_code?: string
+    template_value?: string
   }
 }
 
 export interface Document {
   document_id: string
+  namespace: string
   template_id: string
   template_version: number
   identity_hash: string
@@ -68,6 +69,7 @@ export interface Document {
 
 export interface CreateDocumentRequest {
   template_id: string
+  namespace?: string
   data: Record<string, unknown>
   created_by?: string
   metadata?: {
@@ -78,6 +80,7 @@ export interface CreateDocumentRequest {
 
 export interface DocumentCreateResponse {
   document_id: string
+  namespace: string
   template_id: string
   identity_hash: string
   version: number
@@ -155,7 +158,7 @@ export interface DocumentQueryParams {
   template_id?: string
   status?: DocumentStatus
   search?: string
-  pool_id?: string
+  namespace?: string
 }
 
 // =============================================================================
@@ -196,8 +199,8 @@ export interface TableColumn {
 
 export interface TableViewResponse {
   template_id: string
-  template_code: string
-  template_name: string
+  template_value: string
+  template_label: string
   columns: TableColumn[]
   rows: Record<string, unknown>[]
   total_documents: number

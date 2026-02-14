@@ -110,15 +110,15 @@ function clearBulk() {
             id="terminology"
             v-model="selectedTerminology"
             :options="terminologyStore.terminologies"
-            option-label="name"
+            option-label="label"
             placeholder="Choose a terminology..."
             class="terminology-dropdown"
             filter
           >
             <template #option="{ option }">
               <div class="terminology-option">
-                <span class="code-badge">{{ option.code }}</span>
-                <span>{{ option.name }}</span>
+                <span class="code-badge">{{ option.value }}</span>
+                <span>{{ option.label }}</span>
                 <span class="term-count">({{ option.term_count }} terms)</span>
               </div>
             </template>
@@ -257,7 +257,7 @@ function clearBulk() {
                   <Column header="Matched Term" style="width: 30%">
                     <template #body="{ data }">
                       <span v-if="data.matched_term">
-                        {{ data.matched_term.label }} ({{ data.matched_term.code }})
+                        {{ data.matched_term.label }} ({{ data.matched_term.value }})
                       </span>
                       <span v-else class="no-match">-</span>
                     </template>

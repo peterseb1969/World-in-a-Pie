@@ -1,21 +1,18 @@
 """Namespace model for user-facing namespace management.
 
 A Namespace (e.g., "wip", "dev", "prod") is a user-facing container for
-organizing data. Each Namespace automatically creates 5 ID Pools for
-ID generation:
-- {prefix}-terminologies
-- {prefix}-terms
-- {prefix}-templates
-- {prefix}-documents
-- {prefix}-files
+organizing data. Each namespace has an ID algorithm configuration that
+defines how IDs are generated for each entity type.
 """
 
 from datetime import datetime, timezone
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from beanie import Document
-from pydantic import Field, computed_field
+from pydantic import Field
 from pymongo import IndexModel
+
+from .id_algorithm import IdAlgorithmConfig, DEFAULT_ID_CONFIG
 
 
 class Namespace(Document):
@@ -23,12 +20,8 @@ class Namespace(Document):
     A user-facing namespace for organizing data.
 
     Users work with Namespaces (e.g., "wip", "dev", "prod"). Each Namespace
-    automatically creates 5 ID Pools for ID generation per entity type.
-
-    This enables:
-    - Backup/restore of entire namespaces
-    - Dev/test environment isolation
-    - Data migration between instances
+    has configurable ID generation per entity type (terminologies, terms,
+    templates, documents, files).
     """
 
     prefix: str = Field(
@@ -46,6 +39,10 @@ class Namespace(Document):
     allowed_external_refs: list[str] = Field(
         default_factory=list,
         description="For open mode, optional allowlist of external namespace prefixes"
+    )
+    id_config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Per-entity-type ID algorithm config. Keys: terminologies, terms, templates, documents, files"
     )
     status: Literal["active", "archived", "deleted"] = Field(
         default="active",
@@ -66,46 +63,14 @@ class Namespace(Document):
         description="User who last updated this namespace"
     )
 
-    # Computed properties for ID pool names
-    @computed_field
-    @property
-    def terminologies_pool(self) -> str:
-        """ID pool for terminologies in this namespace."""
-        return f"{self.prefix}-terminologies"
-
-    @computed_field
-    @property
-    def terms_pool(self) -> str:
-        """ID pool for terms in this namespace."""
-        return f"{self.prefix}-terms"
-
-    @computed_field
-    @property
-    def templates_pool(self) -> str:
-        """ID pool for templates in this namespace."""
-        return f"{self.prefix}-templates"
-
-    @computed_field
-    @property
-    def documents_pool(self) -> str:
-        """ID pool for documents in this namespace."""
-        return f"{self.prefix}-documents"
-
-    @computed_field
-    @property
-    def files_pool(self) -> str:
-        """ID pool for files in this namespace."""
-        return f"{self.prefix}-files"
-
-    def get_all_pools(self) -> list[str]:
-        """Get all ID pool names in this namespace."""
-        return [
-            self.terminologies_pool,
-            self.terms_pool,
-            self.templates_pool,
-            self.documents_pool,
-            self.files_pool,
-        ]
+    def get_id_algorithm(self, entity_type: str) -> IdAlgorithmConfig:
+        """Get the ID algorithm config for a given entity type."""
+        if entity_type in self.id_config:
+            cfg = self.id_config[entity_type]
+            if isinstance(cfg, dict):
+                return IdAlgorithmConfig(**cfg)
+            return cfg
+        return DEFAULT_ID_CONFIG.get(entity_type, IdAlgorithmConfig(algorithm="uuid7"))
 
     class Settings:
         name = "namespaces"

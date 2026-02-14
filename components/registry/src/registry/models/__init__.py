@@ -1,18 +1,13 @@
 """Data models for the Registry service."""
 
 # Core models
-from .id_pool import IdPool, IdGeneratorConfig, IdGeneratorType, WIP_ID_POOLS
+from .id_algorithm import IdAlgorithmConfig, IdFormatValidator, IdGenerator, DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES
 from .namespace import Namespace
 from .entry import RegistryEntry, Synonym, SourceInfo
 from .id_counter import IdCounter
 
 # API models
 from .api_models import (
-    # ID Pool API models (internal)
-    IdPoolCreate,
-    IdPoolUpdate,
-    IdPoolResponse,
-    IdPoolBulkResponse,
     # User-facing Namespace API models
     NamespaceCreate,
     NamespaceUpdate,
@@ -22,6 +17,18 @@ from .api_models import (
     RegisterKeyItem,
     RegisterKeyResponse,
     RegisterBulkResponse,
+    # Provision API models
+    ProvisionRequest,
+    ProvisionedId,
+    ProvisionResponse,
+    # Reserve API models
+    ReserveItem,
+    ReserveItemResponse,
+    ReserveBulkResponse,
+    # Activate API models
+    ActivateItem,
+    ActivateItemResponse,
+    ActivateBulkResponse,
     # Synonym API models
     AddSynonymItem,
     AddSynonymResponse,
@@ -57,20 +64,16 @@ from .api_models import (
 
 __all__ = [
     # Core models
-    "IdPool",
+    "IdAlgorithmConfig",
+    "IdFormatValidator",
+    "IdGenerator",
+    "DEFAULT_ID_CONFIG",
+    "VALID_ENTITY_TYPES",
     "IdCounter",
     "Namespace",
-    "IdGeneratorConfig",
-    "IdGeneratorType",
-    "WIP_ID_POOLS",
     "RegistryEntry",
     "Synonym",
     "SourceInfo",
-    # ID Pool API models
-    "IdPoolCreate",
-    "IdPoolUpdate",
-    "IdPoolResponse",
-    "IdPoolBulkResponse",
     # Namespace API models
     "NamespaceCreate",
     "NamespaceUpdate",
@@ -80,6 +83,18 @@ __all__ = [
     "RegisterKeyItem",
     "RegisterKeyResponse",
     "RegisterBulkResponse",
+    # Provision API models
+    "ProvisionRequest",
+    "ProvisionedId",
+    "ProvisionResponse",
+    # Reserve API models
+    "ReserveItem",
+    "ReserveItemResponse",
+    "ReserveBulkResponse",
+    # Activate API models
+    "ActivateItem",
+    "ActivateItemResponse",
+    "ActivateBulkResponse",
     # Other API models
     "AddSynonymItem",
     "AddSynonymResponse",

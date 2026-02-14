@@ -46,10 +46,10 @@ def get_template_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def get_template_by_code(code: str) -> dict[str, Any] | None:
-    """Get a specific template by code."""
+def get_template_by_value(value: str) -> dict[str, Any] | None:
+    """Get a specific template by value."""
     for template in get_template_definitions():
-        if template["code"] == code:
+        if template["value"] == value:
             return template
     return None
 
@@ -69,8 +69,8 @@ def get_inheritance_templates() -> list[dict[str, Any]]:
 # =============================================================================
 
 ADDRESS = {
-    "code": "ADDRESS",
-    "name": "Address",
+    "value": "ADDRESS",
+    "label": "Address",
     "description": "Standard postal address structure for reuse as nested object",
     "identity_fields": [],  # Not used standalone
     "fields": [
@@ -92,8 +92,8 @@ ADDRESS = {
 }
 
 CONTACT_INFO = {
-    "code": "CONTACT_INFO",
-    "name": "Contact Information",
+    "value": "CONTACT_INFO",
+    "label": "Contact Information",
     "description": "Email and phone contact details",
     "identity_fields": [],  # Not used standalone
     "fields": [
@@ -143,8 +143,8 @@ CONTACT_INFO = {
 }
 
 MONEY = {
-    "code": "MONEY",
-    "name": "Money Amount",
+    "value": "MONEY",
+    "label": "Money Amount",
     "description": "Currency and amount pair",
     "identity_fields": [],  # Not used standalone
     "fields": [
@@ -168,8 +168,8 @@ MONEY = {
 # =============================================================================
 
 PERSON = {
-    "code": "PERSON",
-    "name": "Person",
+    "value": "PERSON",
+    "label": "Person",
     "description": "Base person template with all common field types",
     "identity_fields": ["email"],
     "fields": [
@@ -219,8 +219,8 @@ PERSON = {
 }
 
 PRODUCT = {
-    "code": "PRODUCT",
-    "name": "Product",
+    "value": "PRODUCT",
+    "label": "Product",
     "description": "E-commerce product template",
     "identity_fields": ["sku"],
     "fields": [
@@ -253,8 +253,8 @@ PRODUCT = {
 }
 
 ORDER_LINE = {
-    "code": "ORDER_LINE",
-    "name": "Order Line Item",
+    "value": "ORDER_LINE",
+    "label": "Order Line Item",
     "description": "Single line item within an order",
     "identity_fields": [],  # Used as nested object in ORDER
     "fields": [
@@ -284,8 +284,8 @@ ORDER_LINE = {
 }
 
 ORDER = {
-    "code": "ORDER",
-    "name": "Order",
+    "value": "ORDER",
+    "label": "Order",
     "description": "Customer order with line items",
     "identity_fields": ["order_number"],
     "fields": [
@@ -328,8 +328,8 @@ ORDER = {
 }
 
 CUSTOMER = {
-    "code": "CUSTOMER",
-    "name": "Customer",
+    "value": "CUSTOMER",
+    "label": "Customer",
     "description": "CRM customer record",
     "identity_fields": ["customer_number"],
     "fields": [
@@ -371,8 +371,8 @@ CUSTOMER = {
 }
 
 INVOICE = {
-    "code": "INVOICE",
-    "name": "Invoice",
+    "value": "INVOICE",
+    "label": "Invoice",
     "description": "Financial invoice document",
     "identity_fields": ["invoice_number"],
     "fields": [
@@ -424,8 +424,8 @@ INVOICE = {
 }
 
 MEDICAL_RECORD = {
-    "code": "MEDICAL_RECORD",
-    "name": "Medical Record",
+    "value": "MEDICAL_RECORD",
+    "label": "Medical Record",
     "description": "Healthcare patient medical record",
     "identity_fields": ["patient_id", "record_date"],
     "fields": [
@@ -484,8 +484,8 @@ MEDICAL_RECORD = {
 }
 
 ISSUE_TICKET = {
-    "code": "ISSUE_TICKET",
-    "name": "Issue Ticket",
+    "value": "ISSUE_TICKET",
+    "label": "Issue Ticket",
     "description": "Support system issue/bug ticket",
     "identity_fields": ["ticket_number"],
     "fields": [
@@ -532,8 +532,8 @@ ISSUE_TICKET = {
 # =============================================================================
 
 EMPLOYEE = {
-    "code": "EMPLOYEE",
-    "name": "Employee",
+    "value": "EMPLOYEE",
+    "label": "Employee",
     "description": "Employee extending Person with work-related fields",
     "extends": "PERSON",  # Inherits all fields from PERSON
     "identity_fields": ["employee_id"],  # Override parent identity
@@ -576,8 +576,8 @@ EMPLOYEE = {
 }
 
 CONTRACTOR = {
-    "code": "CONTRACTOR",
-    "name": "Contractor",
+    "value": "CONTRACTOR",
+    "label": "Contractor",
     "description": "Independent contractor extending Person",
     "extends": "PERSON",
     "identity_fields": ["contractor_id"],
@@ -600,8 +600,8 @@ CONTRACTOR = {
 }
 
 MANAGER = {
-    "code": "MANAGER",
-    "name": "Manager",
+    "value": "MANAGER",
+    "label": "Manager",
     "description": "Manager extending Employee with leadership fields (3-level inheritance)",
     "extends": "EMPLOYEE",  # MANAGER -> EMPLOYEE -> PERSON
     "identity_fields": ["employee_id"],  # Same as EMPLOYEE
@@ -621,8 +621,8 @@ MANAGER = {
 }
 
 INTERN = {
-    "code": "INTERN",
-    "name": "Intern",
+    "value": "INTERN",
+    "label": "Intern",
     "description": "Intern extending Employee with internship fields",
     "extends": "EMPLOYEE",
     "identity_fields": ["employee_id"],
@@ -643,8 +643,8 @@ INTERN = {
 }
 
 BILLING_ADDRESS = {
-    "code": "BILLING_ADDRESS",
-    "name": "Billing Address",
+    "value": "BILLING_ADDRESS",
+    "label": "Billing Address",
     "description": "Billing address extending Address with billing-specific fields",
     "extends": "ADDRESS",
     "identity_fields": [],  # Used as nested object
@@ -672,8 +672,8 @@ BILLING_ADDRESS = {
 }
 
 PHYSICAL_PRODUCT = {
-    "code": "PHYSICAL_PRODUCT",
-    "name": "Physical Product",
+    "value": "PHYSICAL_PRODUCT",
+    "label": "Physical Product",
     "description": "Physical product extending Product with shipping fields",
     "extends": "PRODUCT",
     "identity_fields": ["sku"],
@@ -702,8 +702,8 @@ PHYSICAL_PRODUCT = {
 }
 
 DIGITAL_PRODUCT = {
-    "code": "DIGITAL_PRODUCT",
-    "name": "Digital Product",
+    "value": "DIGITAL_PRODUCT",
+    "label": "Digital Product",
     "description": "Digital product extending Product with download fields",
     "extends": "PRODUCT",
     "identity_fields": ["sku"],
@@ -730,8 +730,8 @@ DIGITAL_PRODUCT = {
 # =============================================================================
 
 MINIMAL = {
-    "code": "MINIMAL",
-    "name": "Minimal",
+    "value": "MINIMAL",
+    "label": "Minimal",
     "description": "Minimal template with single field for edge case testing",
     "identity_fields": ["id"],
     "fields": [
@@ -741,8 +741,8 @@ MINIMAL = {
 }
 
 ALL_TYPES = {
-    "code": "ALL_TYPES",
-    "name": "All Field Types",
+    "value": "ALL_TYPES",
+    "label": "All Field Types",
     "description": "Template with one of each field type for comprehensive type testing",
     "identity_fields": ["string_field"],
     "fields": [
@@ -763,8 +763,8 @@ ALL_TYPES = {
 }
 
 DEEP_NEST = {
-    "code": "DEEP_NEST",
-    "name": "Deep Nesting",
+    "value": "DEEP_NEST",
+    "label": "Deep Nesting",
     "description": "Template with 4 levels of object nesting for stress testing",
     "identity_fields": ["root_id"],
     "fields": [
@@ -841,8 +841,8 @@ def _generate_large_fields() -> dict[str, Any]:
         })
 
     return {
-        "code": "LARGE_FIELDS",
-        "name": "Large Template",
+        "value": "LARGE_FIELDS",
+        "label": "Large Template",
         "description": "Template with 50+ fields for performance testing",
         "identity_fields": ["id"],
         "fields": fields,
@@ -852,8 +852,8 @@ def _generate_large_fields() -> dict[str, Any]:
 LARGE_FIELDS = _generate_large_fields()
 
 COMPLEX_RULES = {
-    "code": "COMPLEX_RULES",
-    "name": "Complex Rules",
+    "value": "COMPLEX_RULES",
+    "label": "Complex Rules",
     "description": "Template demonstrating all 6 rule types",
     "identity_fields": ["id"],
     "fields": [
@@ -917,8 +917,8 @@ COMPLEX_RULES = {
 }
 
 ARRAY_HEAVY = {
-    "code": "ARRAY_HEAVY",
-    "name": "Array Heavy",
+    "value": "ARRAY_HEAVY",
+    "label": "Array Heavy",
     "description": "Template with multiple array fields for array handling testing",
     "identity_fields": ["id"],
     "fields": [

@@ -23,7 +23,7 @@ class ValidationResult:
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
         self.template_version: Optional[int] = None
-        self.template_code: Optional[str] = None
+        self.template_value: Optional[str] = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -109,7 +109,7 @@ class ValidationService:
         "geo_point": "_validate_semantic_geo_point",
     }
 
-    # Time units terminology code (system-provided)
+    # Time units terminology value (system-provided)
     TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
 
     # Class-level timing statistics
@@ -193,7 +193,7 @@ class ValidationService:
             return result
 
         result.template_version = template.get("version", 1)
-        result.template_code = template.get("code")
+        result.template_value = template.get("value")
 
         # Stage 3: Field validation
         start = time.perf_counter()
@@ -623,19 +623,19 @@ class ValidationService:
                     field=field_path
                 )
         elif reference_type == "terminology":
-            # Terminology refs accept string (code)
+            # Terminology refs accept string (value)
             if not isinstance(value, str):
                 result.add_error(
                     code="invalid_type",
-                    message=f"Field '{field_path}' must be a string (terminology code)",
+                    message=f"Field '{field_path}' must be a string (terminology value)",
                     field=field_path
                 )
         elif reference_type == "template":
-            # Template refs accept string (code or ID)
+            # Template refs accept string (value or ID)
             if not isinstance(value, str):
                 result.add_error(
                     code="invalid_type",
-                    message=f"Field '{field_path}' must be a string (template code)",
+                    message=f"Field '{field_path}' must be a string (template value)",
                     field=field_path
                 )
         else:
@@ -707,25 +707,14 @@ class ValidationService:
             )
             return
 
-        # If template_ref is specified, fetch and validate against that template
+        # If template_ref is specified, fetch and validate against that template.
+        # template_ref is a specific template_id (immutable), so use the
+        # permanently cached get_template_resolved() path.
         template_ref = field.get("template_ref")
         if template_ref:
             try:
                 client = get_template_store_client()
-                version_strategy = field.get("version_strategy", "latest")
-                if version_strategy == "pinned":
-                    # Use exactly this template version
-                    nested_template = await client.get_template_resolved(template_ref)
-                else:
-                    # latest: resolve to latest version of the family
-                    tpl = await client.get_template(template_id=template_ref)
-                    if tpl:
-                        nested_template = await client.get_template(
-                            template_code=tpl.get("code"),
-                            resolve_inheritance=True
-                        )
-                    else:
-                        nested_template = None
+                nested_template = await client.get_template_resolved(template_ref)
                 if nested_template:
                     await self._validate_fields(
                         value, nested_template, result, prefix=f"{field_path}."
@@ -778,18 +767,7 @@ class ValidationService:
                     if template_ref:
                         try:
                             client = get_template_store_client()
-                            version_strategy = field.get("version_strategy", "latest")
-                            if version_strategy == "pinned":
-                                item_template = await client.get_template_resolved(template_ref)
-                            else:
-                                tpl = await client.get_template(template_id=template_ref)
-                                if tpl:
-                                    item_template = await client.get_template(
-                                        template_code=tpl.get("code"),
-                                        resolve_inheritance=True
-                                    )
-                                else:
-                                    item_template = None
+                            item_template = await client.get_template_resolved(template_ref)
                             if item_template:
                                 await self._validate_fields(
                                     item, item_template, result, prefix=f"{item_path}."
@@ -1278,7 +1256,7 @@ class ValidationService:
                             result.term_references.append({
                                 "field_path": field_path,
                                 "term_id": resolved.get("term_id"),
-                                "terminology_ref": resolved.get("terminology_code"),
+                                "terminology_ref": resolved.get("terminology_value"),
                                 "matched_via": resolved.get("matched_via"),
                             })
 
@@ -1455,7 +1433,7 @@ class ValidationService:
         each target template and adds them to the allowed list.
 
         For pinned strategy, expands with template_ids.
-        For latest strategy, expands with template codes.
+        For latest strategy, expands with template values.
 
         Uses a cache to avoid repeated lookups for the same template.
         """
@@ -1477,7 +1455,7 @@ class ValidationService:
                 if version_strategy == "pinned":
                     desc_refs = [d.get("template_id") for d in descendants if d.get("template_id")]
                 else:
-                    desc_refs = [d.get("code") for d in descendants if d.get("code")]
+                    desc_refs = [d.get("value") for d in descendants if d.get("value")]
                 cache[tpl_id] = desc_refs
                 expanded.update(desc_refs)
             except TemplateStoreError:
@@ -1516,7 +1494,7 @@ class ValidationService:
                 })
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
-                doc = await self._resolve_via_registry(value, "wip-documents")
+                doc = await self._resolve_via_registry(value, "wip", "documents")
 
                 if not doc:
                     # Fallback: Business key lookup
@@ -1562,11 +1540,11 @@ class ValidationService:
                         for tpl_id in target_templates:
                             tpl = await client.get_template(template_id=tpl_id)
                             if tpl:
-                                allowed_codes.add(tpl.get("code"))
-                        if doc_template.get("code") not in allowed_codes:
+                                allowed_codes.add(tpl.get("value"))
+                        if doc_template.get("value") not in allowed_codes:
                             result.add_error(
                                 code="invalid_reference_template",
-                                message=f"Referenced document uses template '{doc_template.get('code')}', expected family of {list(allowed_codes)}",
+                                message=f"Referenced document uses template '{doc_template.get('value')}', expected family of {list(allowed_codes)}",
                                 field=field_path
                             )
                             return None
@@ -1633,7 +1611,8 @@ class ValidationService:
     async def _resolve_via_registry(
         self,
         value: str,
-        pool_id: str
+        namespace: str,
+        entity_type: str
     ) -> Optional[Any]:
         """
         Resolve a reference value via the Registry's extended lookup.
@@ -1646,7 +1625,7 @@ class ValidationService:
 
         try:
             registry = get_registry_client()
-            resolved_id = await registry.resolve_identifier(pool_id, value)
+            resolved_id = await registry.resolve_identifier(namespace, entity_type, value)
             if not resolved_id:
                 return None
 
@@ -1685,14 +1664,14 @@ class ValidationService:
         client = get_def_store_client()
 
         # Try each terminology until we find a match
-        for terminology_code in target_terminologies:
+        for terminology_ref in target_terminologies:
             try:
-                validation_result = await client.validate_value(terminology_code, value)
+                validation_result = await client.validate_value(terminology_ref, value)
                 if validation_result.get("valid"):
                     matched_term = validation_result.get("matched_term", {})
                     return {
                         "term_id": matched_term.get("term_id"),
-                        "terminology_code": terminology_code,
+                        "terminology_value": terminology_ref,
                         "matched_via": validation_result.get("matched_via")
                     }
             except DefStoreError:
@@ -1721,7 +1700,7 @@ class ValidationService:
                 if terminology:
                     return {
                         "terminology_id": terminology.get("terminology_id"),
-                        "terminology_code": terminology.get("code"),
+                        "terminology_value": terminology.get("value"),
                     }
         except DefStoreError:
             pass
@@ -1745,12 +1724,12 @@ class ValidationService:
         try:
             template = await client.get_template(template_id=value)
             if not template:
-                template = await client.get_template(template_code=value)
+                template = await client.get_template(template_value=value)
 
             if template:
                 return {
                     "template_id": template.get("template_id"),
-                    "template_code": template.get("code"),
+                    "template_value": template.get("value"),
                     "version": template.get("version")
                 }
         except TemplateStoreError:

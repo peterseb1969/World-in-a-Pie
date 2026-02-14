@@ -62,7 +62,7 @@ class MetricsCollector:
 
     def record_event_processed(
         self,
-        template_code: str,
+        template_value: str,
         table_name: str,
         latency_ms: float,
     ) -> None:
@@ -72,19 +72,19 @@ class MetricsCollector:
         self._latency_samples.append(latency_ms)
 
         # Update template stats
-        if template_code not in self._template_stats:
-            self._template_stats[template_code] = PerTemplateStats(
-                template_code=template_code,
+        if template_value not in self._template_stats:
+            self._template_stats[template_value] = PerTemplateStats(
+                template_value=template_value,
                 table_name=table_name,
             )
 
-        stats = self._template_stats[template_code]
+        stats = self._template_stats[template_value]
         stats.documents_synced += 1
         stats.last_sync_at = datetime.now(timezone.utc)
 
     def record_event_failed(
         self,
-        template_code: str | None,
+        template_value: str | None,
         table_name: str | None,
         error_type: str,
         error_message: str,
@@ -97,23 +97,23 @@ class MetricsCollector:
         self._errors_by_type[error_type] = self._errors_by_type.get(error_type, 0) + 1
 
         # Update template stats if known
-        if template_code:
-            if template_code not in self._template_stats:
-                self._template_stats[template_code] = PerTemplateStats(
-                    template_code=template_code,
-                    table_name=table_name or f"doc_{template_code.lower()}",
+        if template_value:
+            if template_value not in self._template_stats:
+                self._template_stats[template_value] = PerTemplateStats(
+                    template_value=template_value,
+                    table_name=table_name or f"doc_{template_value.lower()}",
                 )
 
-            stats = self._template_stats[template_code]
+            stats = self._template_stats[template_value]
             stats.documents_failed += 1
             stats.last_error = error_message
             stats.last_error_at = datetime.now(timezone.utc)
 
-    def record_event_skipped(self, template_code: str, reason: str) -> None:
+    def record_event_skipped(self, template_value: str, reason: str) -> None:
         """Record a skipped event (sync disabled, etc.)."""
         self.events_processed += 1  # Still counts as processed
         self.last_event_at = datetime.now(timezone.utc)
-        logger.debug(f"Event skipped for {template_code}: {reason}")
+        logger.debug(f"Event skipped for {template_value}: {reason}")
 
     def get_latency_stats(self) -> LatencyStats:
         """Calculate latency statistics from samples."""

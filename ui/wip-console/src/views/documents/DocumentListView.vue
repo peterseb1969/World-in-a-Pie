@@ -56,7 +56,7 @@ const templateOptions = computed(() => {
   templateStore.templates.forEach(t => {
     if (t.status === 'active') {
       options.push({
-        label: `${t.name} (${t.code})`,
+        label: `${t.label} (${t.value})`,
         value: t.template_id
       })
     }
@@ -69,7 +69,7 @@ const createTemplateOptions = computed(() => {
   return templateStore.templates
     .filter(t => t.status === 'active')
     .map(t => ({
-      label: `${t.name} (${t.code})`,
+      label: `${t.label} (${t.value})`,
       value: t.template_id
     }))
 })
@@ -77,7 +77,7 @@ const createTemplateOptions = computed(() => {
 // Get template name by ID
 function getTemplateName(templateId: string): string {
   const template = templateStore.templates.find(t => t.template_id === templateId)
-  return template ? template.name : templateId
+  return template ? template.label : templateId
 }
 
 async function loadDocuments() {

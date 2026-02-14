@@ -21,7 +21,7 @@ const fileContent = ref<ImportTerminologyRequest | null>(null)
 const fileName = ref('')
 const importing = ref(false)
 const importResult = ref<{
-  terminology: { terminology_id: string; code: string; name: string }
+  terminology: { terminology_id: string; value: string; label: string }
   terms_result: BulkOperationResponse
 } | null>(null)
 
@@ -63,14 +63,14 @@ async function onFileSelect(event: { files: File[] }) {
           terminology: data.terminology,
           terms: data.terms
         }
-      } else if (data.code && data.name) {
+      } else if (data.value && data.label) {
         // It's just a terminology object
         fileContent.value = {
           terminology: data as CreateTerminologyRequest,
           terms: []
         }
       } else {
-        throw new Error('Invalid JSON format. Expected terminology data with code and name.')
+        throw new Error('Invalid JSON format. Expected terminology data with value and label.')
       }
     } else if (file.name.endsWith('.csv')) {
       // Parse CSV - assume header row
@@ -80,7 +80,7 @@ async function onFileSelect(event: { files: File[] }) {
       }
 
       const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
-      const requiredHeaders = ['code', 'value', 'label']
+      const requiredHeaders = ['value', 'label']
       const missingHeaders = requiredHeaders.filter(h => !headers.includes(h))
 
       if (missingHeaders.length > 0) {
@@ -94,7 +94,7 @@ async function onFileSelect(event: { files: File[] }) {
       for (let i = 1; i < lines.length; i++) {
         const values = lines[i].split(',').map(v => v.trim())
         const term: CreateTermRequest = {
-          value: values[headers.indexOf('value')] || values[headers.indexOf('code')] || '',
+          value: values[headers.indexOf('value')] || '',
           label: values[headers.indexOf('label')] || '',
           description: headers.includes('description') ? values[headers.indexOf('description')] : undefined,
           sort_order: i - 1
@@ -106,8 +106,8 @@ async function onFileSelect(event: { files: File[] }) {
 
       fileContent.value = {
         terminology: {
-          code: termCode,
-          name: termCode.replace(/_/g, ' ')
+          value: termCode,
+          label: termCode.replace(/_/g, ' ')
         },
         terms
       }
@@ -249,20 +249,20 @@ function getResultSeverity(status: string): 'success' | 'warn' | 'danger' | 'inf
               <strong>JSON</strong>
               <pre>{
   "terminology": {
-    "code": "STATUS",
-    "name": "Status",
+    "value": "STATUS",
+    "label": "Status",
     "description": "Status codes"
   },
   "terms": [
-    { "code": "ACTIVE", "value": "active", "label": "Active" }
+    { "value": "active", "label": "Active" }
   ]
 }</pre>
             </div>
             <div class="format-example">
               <strong>CSV</strong>
-              <pre>code,value,label,description
-ACTIVE,active,Active,Currently active
-INACTIVE,inactive,Inactive,Not active</pre>
+              <pre>value,label,description
+active,Active,Currently active
+inactive,Inactive,Not active</pre>
             </div>
           </div>
         </div>
@@ -278,12 +278,12 @@ INACTIVE,inactive,Inactive,Not active</pre>
           <div class="terminology-preview">
             <h4>Terminology</h4>
             <div class="preview-info">
-              <span class="label">Code:</span>
-              <span class="code-badge">{{ fileContent.terminology.code }}</span>
+              <span class="label">Value:</span>
+              <span class="code-badge">{{ fileContent.terminology.value }}</span>
             </div>
             <div class="preview-info">
-              <span class="label">Name:</span>
-              <span>{{ fileContent.terminology.name }}</span>
+              <span class="label">Label:</span>
+              <span>{{ fileContent.terminology.label }}</span>
             </div>
             <div v-if="fileContent.terminology.description" class="preview-info">
               <span class="label">Description:</span>
@@ -294,9 +294,8 @@ INACTIVE,inactive,Inactive,Not active</pre>
           <div class="terms-preview">
             <h4>Terms ({{ fileContent.terms.length }} total)</h4>
             <DataTable :value="previewTerms" striped-rows size="small">
-              <Column field="code" header="Code" style="width: 20%" />
-              <Column field="value" header="Value" style="width: 20%" />
-              <Column field="label" header="Label" style="width: 30%" />
+              <Column field="value" header="Value" style="width: 30%" />
+              <Column field="label" header="Label" style="width: 40%" />
               <Column field="description" header="Description" style="width: 30%">
                 <template #body="{ data }">
                   {{ data.description || '-' }}
@@ -312,7 +311,7 @@ INACTIVE,inactive,Inactive,Not active</pre>
             <h4>Import Options</h4>
             <div class="option-item">
               <Checkbox v-model="options.skip_duplicates" binary input-id="skip-dup" />
-              <label for="skip-dup">Skip duplicate terms (by code)</label>
+              <label for="skip-dup">Skip duplicate terms (by value)</label>
             </div>
             <div class="option-item">
               <Checkbox v-model="options.update_existing" binary input-id="update-ex" />
@@ -358,7 +357,7 @@ INACTIVE,inactive,Inactive,Not active</pre>
       <template #title>Import Complete</template>
       <template #content>
         <Message severity="success" :closable="false">
-          Successfully imported terminology "{{ importResult.terminology.name }}"
+          Successfully imported terminology "{{ importResult.terminology.label }}"
         </Message>
 
         <div class="result-summary">
@@ -379,7 +378,7 @@ INACTIVE,inactive,Inactive,Not active</pre>
         <div v-if="importResult.terms_result.results.length > 0" class="result-details">
           <h4>Details</h4>
           <DataTable :value="importResult.terms_result.results.slice(0, 50)" striped-rows size="small">
-            <Column field="code" header="Code" style="width: 30%" />
+            <Column field="value" header="Value" style="width: 30%" />
             <Column field="status" header="Status" style="width: 20%">
               <template #body="{ data }">
                 <Tag :value="data.status" :severity="getResultSeverity(data.status)" />

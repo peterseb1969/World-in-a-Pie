@@ -6,7 +6,7 @@
 # Usage:
 #   source lib/api.sh
 #   api_get "/api/def-store/terminologies"
-#   api_post "/api/registry/entries/register" '{"pool_id": "..."}'
+#   api_post "/api/registry/entries/register" '{"namespace": "...", "entity_type": "..."}'
 
 # Source dependencies if not already sourced
 if [[ -z "${TESTS_DIR:-}" ]]; then

@@ -35,7 +35,7 @@ const loadingUsage = ref(false)
 
 const breadcrumbItems = computed(() => [
   { label: 'Terminologies', command: () => router.push('/terminologies') },
-  { label: terminologyStore.currentTerminology?.name || 'Loading...' }
+  { label: terminologyStore.currentTerminology?.label || 'Loading...' }
 ])
 
 const breadcrumbHome = { icon: 'pi pi-home', command: () => router.push('/') }
@@ -44,7 +44,7 @@ const breadcrumbHome = { icon: 'pi pi-home', command: () => router.push('/') }
 const templatesUsingTerminology = computed(() => {
   if (!terminologyStore.currentTerminology) return []
   const termId = terminologyStore.currentTerminology.terminology_id
-  const termCode = terminologyStore.currentTerminology.code
+  const termCode = terminologyStore.currentTerminology.value
 
   return templateStore.templates.filter(template => {
     return template.fields.some(field => {
@@ -114,7 +114,7 @@ function confirmDeactivate() {
   if (!terminologyStore.currentTerminology) return
 
   confirm.require({
-    message: `Are you sure you want to deactivate "${terminologyStore.currentTerminology.name}"? This will also deactivate all terms. It can be restored later.`,
+    message: `Are you sure you want to deactivate "${terminologyStore.currentTerminology.label}"? This will also deactivate all terms. It can be restored later.`,
     header: 'Deactivate Terminology',
     icon: 'pi pi-exclamation-triangle',
     rejectClass: 'p-button-secondary p-button-text',
@@ -141,10 +141,10 @@ async function exportTerminology(format: 'json' | 'csv') {
 
     if (format === 'json') {
       blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-      filename = `${terminologyStore.currentTerminology?.code || 'terminology'}.json`
+      filename = `${terminologyStore.currentTerminology?.value || 'terminology'}.json`
     } else {
       blob = new Blob([data as string], { type: 'text/csv' })
-      filename = `${terminologyStore.currentTerminology?.code || 'terminology'}.csv`
+      filename = `${terminologyStore.currentTerminology?.value || 'terminology'}.csv`
     }
 
     const url = URL.createObjectURL(blob)
@@ -173,7 +173,7 @@ function navigateToTemplate(template: Template) {
 function getFieldsUsingTerminology(template: Template): string[] {
   if (!terminologyStore.currentTerminology) return []
   const termId = terminologyStore.currentTerminology.terminology_id
-  const termCode = terminologyStore.currentTerminology.code
+  const termCode = terminologyStore.currentTerminology.value
 
   return template.fields
     .filter(field =>
@@ -199,14 +199,14 @@ function getFieldsUsingTerminology(template: Template): string[] {
       <div class="header-section">
         <div class="header-info">
           <div class="title-row">
-            <h1>{{ terminologyStore.currentTerminology.name }}</h1>
+            <h1>{{ terminologyStore.currentTerminology.label }}</h1>
             <Tag
               :value="terminologyStore.currentTerminology.status"
               :severity="getStatusSeverity(terminologyStore.currentTerminology.status)"
             />
           </div>
           <div class="code-row">
-            <span class="code-badge">{{ terminologyStore.currentTerminology.code }}</span>
+            <span class="code-badge">{{ terminologyStore.currentTerminology.value }}</span>
             <span class="id-badge">{{ terminologyStore.currentTerminology.terminology_id }}</span>
           </div>
           <p v-if="terminologyStore.currentTerminology.description" class="description">
@@ -313,11 +313,11 @@ function getFieldsUsingTerminology(template: Template): string[] {
               class="usage-table"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
-              <Column field="name" header="Template" style="min-width: 200px">
+              <Column field="label" header="Template" style="min-width: 200px">
                 <template #body="{ data }">
                   <div class="template-name">
-                    <span class="name">{{ data.name }}</span>
-                    <code class="code">{{ data.code }}</code>
+                    <span class="name">{{ data.label }}</span>
+                    <code class="code">{{ data.value }}</code>
                   </div>
                 </template>
               </Column>

@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth
+from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
 
 from .models.template import Template
 from .api import api_router
@@ -117,7 +117,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"  - {issue_type}: {count}")
             # Log first few specific issues
             for issue in result.issues[:5]:
-                logger.warning(f"  [{issue.template_code}] {issue.field_path or 'extends'}: {issue.message}")
+                logger.warning(f"  [{issue.template_value}] {issue.field_path or 'extends'}: {issue.message}")
             if len(result.issues) > 5:
                 logger.warning(f"  ... and {len(result.issues) - 5} more issues")
     except Exception as e:
@@ -157,10 +157,11 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 ### Integration
 
-- **Registry Service**: Templates are registered to get unique IDs (TPL-XXXXXX)
+- **Registry Service**: Templates are registered to get unique IDs (UUID by default, configurable per namespace)
 - **Def-Store Service**: Terminology references can be validated
+- **Namespace Isolation**: Multi-tenant data isolation
     """,
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -168,6 +169,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
 
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
 setup_auth(app)
+
+# Reject unknown query parameters (returns 422 for undeclared params)
+app.add_middleware(RejectUnknownQueryParamsMiddleware)
 
 # Add CORS middleware
 app.add_middleware(
@@ -188,7 +192,7 @@ async def root():
     """Root endpoint with service information."""
     return {
         "service": "WIP Template Store",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "documentation": "/docs",
         "health": "/health",
     }

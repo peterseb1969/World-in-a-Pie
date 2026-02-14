@@ -11,8 +11,8 @@ async def test_create_terminology(client: AsyncClient, auth_headers: dict):
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "DOC_STATUS",
-            "name": "Document Status",
+            "value": "DOC_STATUS",
+            "label": "Document Status",
             "description": "Status codes for documents",
             "case_sensitive": False,
             "allow_multiple": False,
@@ -22,8 +22,8 @@ async def test_create_terminology(client: AsyncClient, auth_headers: dict):
 
     assert response.status_code == 201
     data = response.json()
-    assert data["code"] == "DOC_STATUS"
-    assert data["name"] == "Document Status"
+    assert data["value"] == "DOC_STATUS"
+    assert data["label"] == "Document Status"
     assert data["terminology_id"].startswith("TERM-")
     assert data["status"] == "active"
     assert data["term_count"] == 0
@@ -37,8 +37,8 @@ async def test_create_terminology_duplicate_code(client: AsyncClient, auth_heade
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "PRIORITY",
-            "name": "Priority Levels"
+            "value": "PRIORITY",
+            "label": "Priority Levels"
         }
     )
 
@@ -47,8 +47,8 @@ async def test_create_terminology_duplicate_code(client: AsyncClient, auth_heade
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "PRIORITY",
-            "name": "Different Name"
+            "value": "PRIORITY",
+            "label": "Different Name"
         }
     )
 
@@ -64,8 +64,8 @@ async def test_get_terminology_by_id(client: AsyncClient, auth_headers: dict):
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "COUNTRIES",
-            "name": "Country Codes"
+            "value": "COUNTRIES",
+            "label": "Country Codes"
         }
     )
     terminology_id = create_response.json()["terminology_id"]
@@ -78,30 +78,30 @@ async def test_get_terminology_by_id(client: AsyncClient, auth_headers: dict):
 
     assert response.status_code == 200
     assert response.json()["terminology_id"] == terminology_id
-    assert response.json()["code"] == "COUNTRIES"
+    assert response.json()["value"] == "COUNTRIES"
 
 
 @pytest.mark.asyncio
-async def test_get_terminology_by_code(client: AsyncClient, auth_headers: dict):
-    """Test getting a terminology by code."""
+async def test_get_terminology_by_value(client: AsyncClient, auth_headers: dict):
+    """Test getting a terminology by value."""
     # Create terminology
     await client.post(
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "LANGUAGES",
-            "name": "Language Codes"
+            "value": "LANGUAGES",
+            "label": "Language Codes"
         }
     )
 
-    # Get by code
+    # Get by value
     response = await client.get(
-        "/api/def-store/terminologies/by-code/LANGUAGES",
+        "/api/def-store/terminologies/by-value/LANGUAGES",
         headers=auth_headers
     )
 
     assert response.status_code == 200
-    assert response.json()["code"] == "LANGUAGES"
+    assert response.json()["value"] == "LANGUAGES"
 
 
 @pytest.mark.asyncio
@@ -113,8 +113,8 @@ async def test_list_terminologies(client: AsyncClient, auth_headers: dict):
             "/api/def-store/terminologies",
             headers=auth_headers,
             json={
-                "code": f"TEST_{i}",
-                "name": f"Test Terminology {i}"
+                "value": f"TEST_{i}",
+                "label": f"Test Terminology {i}"
             }
         )
 
@@ -138,8 +138,8 @@ async def test_update_terminology(client: AsyncClient, auth_headers: dict):
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "OLD_CODE",
-            "name": "Old Name"
+            "value": "OLD_VALUE",
+            "label": "Old Name"
         }
     )
     terminology_id = create_response.json()["terminology_id"]
@@ -149,13 +149,13 @@ async def test_update_terminology(client: AsyncClient, auth_headers: dict):
         f"/api/def-store/terminologies/{terminology_id}",
         headers=auth_headers,
         json={
-            "name": "New Name",
+            "label": "New Name",
             "description": "Added description"
         }
     )
 
     assert response.status_code == 200
-    assert response.json()["name"] == "New Name"
+    assert response.json()["label"] == "New Name"
     assert response.json()["description"] == "Added description"
 
 
@@ -167,8 +167,8 @@ async def test_delete_terminology(client: AsyncClient, auth_headers: dict):
         "/api/def-store/terminologies",
         headers=auth_headers,
         json={
-            "code": "TO_DELETE",
-            "name": "Will Be Deleted"
+            "value": "TO_DELETE",
+            "label": "Will Be Deleted"
         }
     )
     terminology_id = create_response.json()["terminology_id"]

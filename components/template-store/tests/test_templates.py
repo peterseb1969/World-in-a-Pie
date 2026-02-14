@@ -11,8 +11,8 @@ async def test_create_template(client: AsyncClient, auth_headers: dict):
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "PERSON",
-            "name": "Person Template",
+            "value": "PERSON",
+            "label": "Person Template",
             "description": "Template for person records",
             "identity_fields": ["national_id"],
             "fields": [
@@ -40,8 +40,8 @@ async def test_create_template(client: AsyncClient, auth_headers: dict):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["code"] == "PERSON"
-    assert data["name"] == "Person Template"
+    assert data["value"] == "PERSON"
+    assert data["label"] == "Person Template"
     assert data["template_id"].startswith("TPL-")
     assert data["version"] == 1
     assert len(data["fields"]) == 3
@@ -53,7 +53,7 @@ async def test_create_template_without_auth(client: AsyncClient):
     """Test that creating a template without auth fails."""
     response = await client.post(
         "/api/template-store/templates",
-        json={"code": "TEST", "name": "Test"}
+        json={"value": "TEST", "label": "Test"}
     )
     assert response.status_code == 401
 
@@ -65,14 +65,14 @@ async def test_create_template_duplicate_code(client: AsyncClient, auth_headers:
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "UNIQUE", "name": "First Template"}
+        json={"value": "UNIQUE", "label": "First Template"}
     )
 
-    # Try to create second with same code
+    # Try to create second with same value
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "UNIQUE", "name": "Second Template"}
+        json={"value": "UNIQUE", "label": "Second Template"}
     )
     assert response.status_code == 400
     assert "already exists" in response.json()["detail"]
@@ -85,7 +85,7 @@ async def test_get_template_by_id(client: AsyncClient, auth_headers: dict):
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "GETBYID", "name": "Get By ID Template"}
+        json={"value": "GETBYID", "label": "Get By ID Template"}
     )
     template_id = create_response.json()["template_id"]
 
@@ -97,27 +97,27 @@ async def test_get_template_by_id(client: AsyncClient, auth_headers: dict):
     assert response.status_code == 200
     data = response.json()
     assert data["template_id"] == template_id
-    assert data["code"] == "GETBYID"
+    assert data["value"] == "GETBYID"
 
 
 @pytest.mark.asyncio
-async def test_get_template_by_code(client: AsyncClient, auth_headers: dict):
-    """Test getting a template by code."""
+async def test_get_template_by_value(client: AsyncClient, auth_headers: dict):
+    """Test getting a template by value."""
     # Create a template
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "GETBYCODE", "name": "Get By Code Template"}
+        json={"value": "GETBYVALUE", "label": "Get By Value Template"}
     )
 
-    # Get by code
+    # Get by value
     response = await client.get(
-        "/api/template-store/templates/by-code/GETBYCODE",
+        "/api/template-store/templates/by-value/GETBYVALUE",
         headers=auth_headers
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["code"] == "GETBYCODE"
+    assert data["value"] == "GETBYVALUE"
 
 
 @pytest.mark.asyncio
@@ -138,7 +138,7 @@ async def test_list_templates(client: AsyncClient, auth_headers: dict):
         await client.post(
             "/api/template-store/templates",
             headers=auth_headers,
-            json={"code": f"LIST_{i}", "name": f"List Template {i}"}
+            json={"value": f"LIST_{i}", "label": f"List Template {i}"}
         )
 
     # List all
@@ -160,7 +160,7 @@ async def test_list_templates_with_pagination(client: AsyncClient, auth_headers:
         await client.post(
             "/api/template-store/templates",
             headers=auth_headers,
-            json={"code": f"PAGE_{i}", "name": f"Page Template {i}"}
+            json={"value": f"PAGE_{i}", "label": f"Page Template {i}"}
         )
 
     # Get first page
@@ -183,7 +183,7 @@ async def test_update_template(client: AsyncClient, auth_headers: dict):
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "UPDATE", "name": "Original Name"}
+        json={"value": "UPDATE", "label": "Original Name"}
     )
     template_id = create_response.json()["template_id"]
 
@@ -191,11 +191,11 @@ async def test_update_template(client: AsyncClient, auth_headers: dict):
     response = await client.put(
         f"/api/template-store/templates/{template_id}",
         headers=auth_headers,
-        json={"name": "Updated Name", "updated_by": "test"}
+        json={"label": "Updated Name", "updated_by": "test"}
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["name"] == "Updated Name"
+    assert data["label"] == "Updated Name"
     assert data["version"] == 2
 
 
@@ -207,8 +207,8 @@ async def test_update_template_add_fields(client: AsyncClient, auth_headers: dic
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "ADDFIELDS",
-            "name": "Add Fields Template",
+            "value": "ADDFIELDS",
+            "label": "Add Fields Template",
             "fields": [
                 {"name": "field1", "label": "Field 1", "type": "string"}
             ]
@@ -239,7 +239,7 @@ async def test_delete_template(client: AsyncClient, auth_headers: dict):
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"code": "DELETE", "name": "Delete Template"}
+        json={"value": "DELETE", "label": "Delete Template"}
     )
     template_id = create_response.json()["template_id"]
 
@@ -278,9 +278,9 @@ async def test_bulk_create_templates(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         json={
             "templates": [
-                {"code": "BULK_1", "name": "Bulk Template 1"},
-                {"code": "BULK_2", "name": "Bulk Template 2"},
-                {"code": "BULK_3", "name": "Bulk Template 3"}
+                {"value": "BULK_1", "label": "Bulk Template 1"},
+                {"value": "BULK_2", "label": "Bulk Template 2"},
+                {"value": "BULK_3", "label": "Bulk Template 3"}
             ],
             "created_by": "test"
         }
@@ -299,8 +299,8 @@ async def test_template_with_field_types(client: AsyncClient, auth_headers: dict
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "FIELDTYPES",
-            "name": "Field Types Template",
+            "value": "FIELDTYPES",
+            "label": "Field Types Template",
             "fields": [
                 {"name": "string_field", "label": "String", "type": "string"},
                 {"name": "number_field", "label": "Number", "type": "number"},
@@ -335,8 +335,8 @@ async def test_template_with_validation(client: AsyncClient, auth_headers: dict)
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "VALIDATION",
-            "name": "Validation Template",
+            "value": "VALIDATION",
+            "label": "Validation Template",
             "fields": [
                 {
                     "name": "email",
@@ -372,8 +372,8 @@ async def test_template_with_rules(client: AsyncClient, auth_headers: dict):
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "code": "RULES",
-            "name": "Rules Template",
+            "value": "RULES",
+            "label": "Rules Template",
             "fields": [
                 {"name": "country", "label": "Country", "type": "term", "terminology_ref": "COUNTRY"},
                 {"name": "tax_id", "label": "Tax ID", "type": "string"}

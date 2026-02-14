@@ -97,14 +97,14 @@ function getTypeSeverity(type: string): "success" | "info" | "warn" | "danger" |
 
 function getTerminologyName(id: string | undefined): string {
   if (!id) return ''
-  const term = props.terminologies.find(t => t.terminology_id === id || t.code === id)
-  return term ? term.name : id
+  const term = props.terminologies.find(t => t.terminology_id === id || t.value === id)
+  return term ? term.label : id
 }
 
 function getTemplateName(id: string | undefined): string {
   if (!id) return ''
-  const tpl = props.templates.find(t => t.template_id === id || t.code === id)
-  return tpl ? tpl.name : id
+  const tpl = props.templates.find(t => t.template_id === id || t.value === id)
+  return tpl ? tpl.label : id
 }
 </script>
 

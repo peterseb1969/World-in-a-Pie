@@ -55,21 +55,21 @@ class BatchSyncService:
             logger.error(f"Error fetching template {template_id}: {e}")
             return None
 
-    async def _fetch_template_by_code(self, template_code: str) -> dict[str, Any] | None:
-        """Fetch template by code from Template Store."""
+    async def _fetch_template_by_value(self, template_value: str) -> dict[str, Any] | None:
+        """Fetch template by value from Template Store."""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates/by-code/{template_code}",
+                    f"{settings.template_store_url}/api/template-store/templates/by-value/{template_value}",
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
                 )
                 if response.status_code == 200:
                     return response.json()
-                logger.error(f"Failed to fetch template by code {template_code}: {response.status_code}")
+                logger.error(f"Failed to fetch template by code {template_value}: {response.status_code}")
                 return None
         except Exception as e:
-            logger.error(f"Error fetching template by code {template_code}: {e}")
+            logger.error(f"Error fetching template by code {template_value}: {e}")
             return None
 
     async def _resolve_template_fields(self, template: dict[str, Any]) -> dict[str, Any]:
@@ -108,7 +108,7 @@ class BatchSyncService:
         resolved["fields"] = merged_fields
 
         logger.debug(
-            f"Resolved {template['code']}: {len(child_fields)} own fields + "
+            f"Resolved {template['value']}: {len(child_fields)} own fields + "
             f"{len(parent_fields)} parent fields = {len(merged_fields)} total"
         )
 
@@ -187,7 +187,7 @@ class BatchSyncService:
 
     async def start_batch_sync(
         self,
-        template_code: str,
+        template_value: str,
         force: bool = False,
         page_size: int = 100,
     ) -> BatchSyncJob:
@@ -195,7 +195,7 @@ class BatchSyncService:
         Start a batch sync job for a template.
 
         Args:
-            template_code: Template code to sync
+            template_value: Template code to sync
             force: Force re-sync even if table has data
             page_size: Number of documents to fetch per page
 
@@ -205,7 +205,7 @@ class BatchSyncService:
         job_id = str(uuid.uuid4())[:8]
         job = BatchSyncJob(
             job_id=job_id,
-            template_code=template_code,
+            template_value=template_value,
             status=BatchSyncStatus.PENDING,
         )
         self._jobs[job_id] = job
@@ -230,10 +230,10 @@ class BatchSyncService:
 
         try:
             # Fetch template
-            template = await self._fetch_template_by_code(job.template_code)
+            template = await self._fetch_template_by_value(job.template_value)
             if not template:
                 job.status = BatchSyncStatus.FAILED
-                job.error_message = f"Template {job.template_code} not found"
+                job.error_message = f"Template {job.template_value} not found"
                 job.completed_at = datetime.now(timezone.utc)
                 return
 
@@ -279,10 +279,10 @@ class BatchSyncService:
             if total == 0:
                 job.status = BatchSyncStatus.COMPLETED
                 job.completed_at = datetime.now(timezone.utc)
-                logger.info(f"No documents to sync for {job.template_code}")
+                logger.info(f"No documents to sync for {job.template_value}")
                 return
 
-            logger.info(f"Starting batch sync for {job.template_code}: {total} documents")
+            logger.info(f"Starting batch sync for {job.template_value}: {total} documents")
 
             # Process all pages
             page = 1
@@ -324,20 +324,20 @@ class BatchSyncService:
             job.completed_at = datetime.now(timezone.utc)
 
             logger.info(
-                f"Batch sync completed for {job.template_code}: "
+                f"Batch sync completed for {job.template_value}: "
                 f"{job.documents_synced} synced, {job.documents_failed} failed"
             )
 
         except asyncio.CancelledError:
             job.status = BatchSyncStatus.CANCELLED
             job.completed_at = datetime.now(timezone.utc)
-            logger.info(f"Batch sync cancelled for {job.template_code}")
+            logger.info(f"Batch sync cancelled for {job.template_value}")
 
         except Exception as e:
             job.status = BatchSyncStatus.FAILED
             job.error_message = str(e)
             job.completed_at = datetime.now(timezone.utc)
-            logger.error(f"Batch sync failed for {job.template_code}: {e}", exc_info=True)
+            logger.error(f"Batch sync failed for {job.template_value}: {e}", exc_info=True)
 
     async def start_batch_sync_all(
         self,
@@ -354,17 +354,17 @@ class BatchSyncService:
         jobs = []
 
         for template in templates:
-            template_code = template.get("code")
-            if not template_code:
+            template_value = template.get("value")
+            if not template_value:
                 continue
 
             # Check if sync is enabled
             config = self._get_reporting_config(template)
             if not config.sync_enabled:
-                logger.info(f"Skipping {template_code}: sync disabled")
+                logger.info(f"Skipping {template_value}: sync disabled")
                 continue
 
-            job = await self.start_batch_sync(template_code, force, page_size)
+            job = await self.start_batch_sync(template_value, force, page_size)
             jobs.append(job)
 
             # Small delay between starting jobs

@@ -46,28 +46,28 @@ class Terminology(Document):
     - Country codes: [imported from ISO 3166]
     """
 
-    # Pool ID for multi-tenant isolation
-    pool_id: str = Field(
-        default="wip-terminologies",
-        description="Pool ID for data isolation (e.g., wip-terminologies, dev-terminologies)"
+    # Namespace for multi-tenant isolation
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation (e.g., wip, dev, prod)"
     )
 
     # Identity (from Registry)
     terminology_id: str = Field(
         ...,
-        description="Unique ID from Registry (e.g., TERM-000001)"
+        description="Unique ID from Registry"
     )
 
     # Human-friendly identifier (mutable)
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Human-readable code (e.g., 'DOC_STATUS'). Must be unique."
+        description="Human-readable value (e.g., 'DOC_STATUS'). Must be unique within namespace."
     )
 
     # Display information
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Display name (e.g., 'Document Status')"
+        description="Display label (e.g., 'Document Status')"
     )
     description: Optional[str] = Field(
         None,
@@ -123,14 +123,14 @@ class Terminology(Document):
     class Settings:
         name = "terminologies"
         indexes = [
-            # Unique ID within pool
-            IndexModel([("pool_id", 1), ("terminology_id", 1)], unique=True, name="pool_terminology_id_unique_idx"),
-            # Unique code within pool
-            IndexModel([("pool_id", 1), ("code", 1)], unique=True, name="pool_code_unique_idx"),
-            # Filter by status within pool
-            IndexModel([("pool_id", 1), ("status", 1)], name="pool_status_idx"),
+            # Unique ID within namespace
+            IndexModel([("namespace", 1), ("terminology_id", 1)], unique=True, name="ns_terminology_id_unique_idx"),
+            # Unique value within namespace
+            IndexModel([("namespace", 1), ("value", 1)], unique=True, name="ns_value_unique_idx"),
+            # Filter by status within namespace
+            IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
             # Global terminology_id lookup (for cross-namespace refs in open mode)
             IndexModel([("terminology_id", 1)], unique=True, name="terminology_id_unique_idx"),
             # Text search (global)
-            IndexModel([("name", "text"), ("description", "text")], name="text_search_idx"),
+            IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

@@ -52,17 +52,17 @@ def create_mock_registry_client():
 
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_register_terminology(code: str, name: str, created_by=None):
+    async def mock_register_terminology(value: str, label: str, created_by=None, namespace: str = "wip"):
         global _terminology_counter
         _terminology_counter += 1
         return f"TERM-{_terminology_counter:06d}"
 
-    async def mock_register_term(terminology_id: str, code: str, value: str, created_by=None):
+    async def mock_register_term(terminology_id: str, value: str, created_by=None, namespace: str = "wip"):
         global _term_counter
         _term_counter += 1
         return f"T-{_term_counter:06d}"
 
-    async def mock_register_terms_bulk(terminology_id: str, terms: list, created_by=None):
+    async def mock_register_terms_bulk(terminology_id: str, terms: list, created_by=None, registry_batch_size: int = 100, namespace: str = "wip"):
         global _term_counter
         results = []
         for term in terms:
@@ -77,7 +77,7 @@ def create_mock_registry_client():
     async def mock_add_synonym(*args, **kwargs):
         return True
 
-    async def mock_lookup_by_code(*args, **kwargs):
+    async def mock_lookup_by_value(*args, **kwargs):
         return None
 
     async def mock_health_check():
@@ -87,7 +87,7 @@ def create_mock_registry_client():
     mock_client.register_term = mock_register_term
     mock_client.register_terms_bulk = mock_register_terms_bulk
     mock_client.add_synonym = mock_add_synonym
-    mock_client.lookup_by_code = mock_lookup_by_code
+    mock_client.lookup_by_value = mock_lookup_by_value
     mock_client.health_check = mock_health_check
 
     return mock_client
