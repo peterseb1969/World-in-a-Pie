@@ -16,6 +16,7 @@ Options:
     --clean              Clean existing data before seeding (USE WITH CAUTION)
     --benchmark          Run performance benchmarks after seeding
     --output FILE        Write benchmark results to JSON file
+    --namespace PREFIX    Namespace prefix for data isolation (default: wip)
     --skip-terminologies Skip terminology seeding (use existing)
     --skip-templates     Skip template seeding (use existing)
     --dry-run            Show what would be created without making changes
@@ -35,6 +36,9 @@ Examples:
 
     # Full performance test with benchmarks
     python scripts/seed_comprehensive.py --profile performance --benchmark --output benchmark.json
+
+    # Seed into isolated namespace (won't affect default wip-* pools)
+    python scripts/seed_comprehensive.py --namespace test-seed --profile minimal
 
     # Seed documents only (using existing terminologies and templates)
     python scripts/seed_comprehensive.py --skip-terminologies --skip-templates --services document-store
@@ -205,7 +209,8 @@ class WIPSeeder:
         host: str = DEFAULT_HOST,
         via_proxy: bool = False,
         urls: dict[str, str] = None,
-        dry_run: bool = False
+        dry_run: bool = False,
+        namespace: str = "wip",
     ):
         self.profile = profile
         self.api_key = api_key
@@ -213,6 +218,16 @@ class WIPSeeder:
         self.via_proxy = via_proxy
         self.urls = urls or get_service_urls(host, via_proxy)
         self.dry_run = dry_run
+        self.namespace = namespace
+
+        # Pool IDs derived from namespace
+        self.pools = {
+            "terminologies": f"{namespace}-terminologies",
+            "terms": f"{namespace}-terms",
+            "templates": f"{namespace}-templates",
+            "documents": f"{namespace}-documents",
+            "files": f"{namespace}-files",
+        }
 
         # Disable SSL verification for self-signed certs when using proxy
         verify_ssl = not via_proxy
@@ -248,6 +263,34 @@ class WIPSeeder:
 
         return all_healthy
 
+    def initialize_namespace(self) -> None:
+        """Ensure namespace and its ID pools exist in the registry."""
+        if self.namespace == "wip":
+            # Default namespace uses the dedicated init endpoint
+            try:
+                self.registry.post("/api/registry/namespaces/initialize-wip", {})
+                print(f"  Namespace '{self.namespace}' initialized")
+            except requests.HTTPError as e:
+                if e.response.status_code == 409:
+                    print(f"  Namespace '{self.namespace}' already exists")
+                else:
+                    raise
+        else:
+            # Custom namespace — create via generic endpoint
+            try:
+                self.registry.post("/api/registry/namespaces", {
+                    "prefix": self.namespace,
+                    "description": f"Seed data namespace ({self.namespace})",
+                    "isolation_mode": "open",
+                    "created_by": "seed_script",
+                })
+                print(f"  Namespace '{self.namespace}' created")
+            except requests.HTTPError as e:
+                if e.response.status_code == 409:
+                    print(f"  Namespace '{self.namespace}' already exists")
+                else:
+                    raise
+
     def seed_terminologies(self) -> dict[str, int]:
         """Seed all terminologies and terms."""
         stats = {"terminologies": 0, "terms": 0, "errors": 0}
@@ -268,7 +311,10 @@ class WIPSeeder:
             try:
                 # Check if terminology already exists
                 try:
-                    existing = self.def_store.get(f"/api/def-store/terminologies/by-code/{code}")
+                    existing = self.def_store.get(
+                        f"/api/def-store/terminologies/by-code/{code}",
+                        params={"pool_id": self.pools["terminologies"]},
+                    )
                     terminology_id = existing["terminology_id"]
                     print(f"  {code}: already exists ({terminology_id})")
                     self.created_terminologies[code] = terminology_id
@@ -277,7 +323,7 @@ class WIPSeeder:
                     # Still need to track term IDs for document generation
                     terms_resp = self.def_store.get(
                         f"/api/def-store/terminologies/{terminology_id}/terms",
-                        params={"limit": 500}
+                        params={"limit": 500, "pool_id": self.pools["terms"]},
                     )
                     self.created_term_ids[code] = {
                         t["value"]: t["term_id"] for t in terms_resp.get("items", [])
@@ -300,7 +346,10 @@ class WIPSeeder:
                     "created_by": "seed_script"
                 }
 
-                result = self.def_store.post("/api/def-store/terminologies", create_data)
+                result = self.def_store.post(
+                    f"/api/def-store/terminologies?pool_id={self.pools['terminologies']}",
+                    create_data,
+                )
                 terminology_id = result["terminology_id"]
                 self.created_terminologies[code] = terminology_id
                 stats["terminologies"] += 1
@@ -332,8 +381,8 @@ class WIPSeeder:
                             bulk_terms.append(term_data)
 
                         bulk_result = self.def_store.post(
-                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk",
-                            {"terms": bulk_terms}
+                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk?pool_id={self.pools['terms']}",
+                            {"terms": bulk_terms},
                         )
 
                         for r in bulk_result.get("results", []):
@@ -363,8 +412,8 @@ class WIPSeeder:
 
                         try:
                             result = self.def_store.post(
-                                f"/api/def-store/terminologies/{terminology_id}/terms",
-                                term_data
+                                f"/api/def-store/terminologies/{terminology_id}/terms?pool_id={self.pools['terms']}",
+                                term_data,
                             )
                             self.created_term_ids[code][t["value"]] = result["term_id"]
                             stats["terms"] += 1
@@ -399,7 +448,10 @@ class WIPSeeder:
             try:
                 # Check if template already exists
                 try:
-                    existing = self.template_store.get(f"/api/template-store/templates/by-code/{code}")
+                    existing = self.template_store.get(
+                        f"/api/template-store/templates/by-code/{code}",
+                        params={"pool_id": self.pools["templates"]},
+                    )
                     template_id = existing["template_id"]
                     print(f"  {code}: already exists ({template_id})")
                     self.created_templates[code] = template_id
@@ -418,7 +470,8 @@ class WIPSeeder:
                         # Try to look it up
                         try:
                             parent = self.template_store.get(
-                                f"/api/template-store/templates/by-code/{extends_code}"
+                                f"/api/template-store/templates/by-code/{extends_code}",
+                                params={"pool_id": self.pools["templates"]},
                             )
                             extends_id = parent["template_id"]
                             self.created_templates[extends_code] = extends_id
@@ -442,7 +495,10 @@ class WIPSeeder:
                 if extends_id:
                     create_data["extends"] = extends_id
 
-                result = self.template_store.post("/api/template-store/templates", create_data)
+                result = self.template_store.post(
+                    f"/api/template-store/templates?pool_id={self.pools['templates']}",
+                    create_data,
+                )
                 template_id = result["template_id"]
                 self.created_templates[code] = template_id
                 stats["templates"] += 1
@@ -472,7 +528,8 @@ class WIPSeeder:
                 # Try to look it up
                 try:
                     template = self.template_store.get(
-                        f"/api/template-store/templates/by-code/{template_code}"
+                        f"/api/template-store/templates/by-code/{template_code}",
+                        params={"pool_id": self.pools["templates"]},
                     )
                     template_id = template["template_id"]
                     self.created_templates[template_code] = template_id
@@ -501,8 +558,8 @@ class WIPSeeder:
 
                 try:
                     result = self.document_store.post(
-                        "/api/document-store/documents/bulk",
-                        {"items": batch_data, "continue_on_error": True}
+                        f"/api/document-store/documents/bulk?pool_id={self.pools['documents']}",
+                        {"items": batch_data, "continue_on_error": True},
                     )
 
                     for r in result.get("results", []):
@@ -550,7 +607,10 @@ class WIPSeeder:
 
         # Get counts for report
         try:
-            term_resp = self.def_store.get("/api/def-store/terminologies", params={"limit": 1})
+            term_resp = self.def_store.get(
+                "/api/def-store/terminologies",
+                params={"limit": 1, "pool_id": self.pools["terminologies"]},
+            )
             terms_count = term_resp.get("total", 0)
         except Exception:
             terms_count = 0
@@ -587,8 +647,8 @@ class WIPSeeder:
                     start = time.perf_counter()
                     try:
                         self.document_store.post(
-                            "/api/document-store/documents",
-                            {"template_id": min_template_id, "data": doc, "created_by": "benchmark"}
+                            f"/api/document-store/documents?pool_id={self.pools['documents']}",
+                            {"template_id": min_template_id, "data": doc, "created_by": "benchmark"},
                         )
                         elapsed = (time.perf_counter() - start) * 1000
                         create_result.times_ms.append(elapsed)
@@ -628,7 +688,10 @@ class WIPSeeder:
         for _ in range(20):
             start = time.perf_counter()
             try:
-                self.document_store.get("/api/document-store/documents", params={"limit": 50})
+                self.document_store.get(
+                    "/api/document-store/documents",
+                    params={"limit": 50, "pool_id": self.pools["documents"]},
+                )
                 elapsed = (time.perf_counter() - start) * 1000
                 list_result.times_ms.append(elapsed)
             except Exception:
@@ -772,6 +835,12 @@ def main():
     )
 
     parser.add_argument(
+        "--namespace",
+        default="wip",
+        help="Namespace prefix for data isolation (default: wip)"
+    )
+
+    parser.add_argument(
         "--api-key",
         default=DEFAULT_API_KEY,
         help="API key for authentication"
@@ -790,6 +859,7 @@ def main():
     print("=" * 70)
     print(f"Host: {args.host}" + (" (via Caddy proxy)" if args.via_proxy else " (direct ports)"))
     print(f"Profile: {args.profile}")
+    print(f"Namespace: {args.namespace}")
     print(f"Services: {', '.join(services)}")
     print(f"Dry run: {args.dry_run}")
 
@@ -809,7 +879,8 @@ def main():
         api_key=args.api_key,
         host=args.host,
         via_proxy=args.via_proxy,
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        namespace=args.namespace,
     )
 
     # Check services
@@ -822,6 +893,11 @@ def main():
         print("  cd components/document-store && podman-compose -f docker-compose.yml up -d --build")
         return
 
+    # Initialize namespace (creates ID pools in registry)
+    if not args.dry_run:
+        print("\nInitializing namespace...")
+        seeder.initialize_namespace()
+
     start_time = time.time()
     total_stats = {}
 
@@ -833,7 +909,10 @@ def main():
         # Still need to load existing terminology IDs for document generation
         print("\nLoading existing terminologies...")
         try:
-            resp = seeder.def_store.get("/api/def-store/terminologies", params={"limit": 100})
+            resp = seeder.def_store.get(
+                "/api/def-store/terminologies",
+                params={"limit": 100, "pool_id": seeder.pools["terminologies"]},
+            )
             for t in resp.get("items", []):
                 seeder.created_terminologies[t["code"]] = t["terminology_id"]
             print(f"  Loaded {len(seeder.created_terminologies)} terminologies")
@@ -848,7 +927,10 @@ def main():
         # Still need to load existing template IDs for document generation
         print("\nLoading existing templates...")
         try:
-            resp = seeder.template_store.get("/api/template-store/templates", params={"limit": 100})
+            resp = seeder.template_store.get(
+                "/api/template-store/templates",
+                params={"limit": 100, "pool_id": seeder.pools["templates"]},
+            )
             for t in resp.get("items", []):
                 seeder.created_templates[t["code"]] = t["template_id"]
             print(f"  Loaded {len(seeder.created_templates)} templates")

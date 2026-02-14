@@ -260,8 +260,8 @@ test_validate_valid_data() {
     fi
 
     # Now validate against the template (MINIMAL has one mandatory field: id)
-    local body='{"data": {"id": "test-valid-001"}}'
-    api_post "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id/validate" "$body"
+    local body='{"template_id": "'$template_id'", "data": {"id": "test-valid-001"}}'
+    api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/validation/validate" "$body"
     assert_status 200
 }
 
@@ -283,8 +283,8 @@ test_validate_invalid_data() {
     fi
 
     # Try to validate with missing required field
-    local body='{"data": {}}'
-    api_post "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id/validate" "$body"
+    local body='{"template_id": "'$template_id'", "data": {}}'
+    api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/validation/validate" "$body"
 
     # Should get 400 or validation error
     if [[ "$RESPONSE_CODE" == "400" || "$RESPONSE_CODE" == "422" ]]; then

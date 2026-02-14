@@ -161,8 +161,11 @@ cleanup_all() {
         # Remove contents of each data directory
         for subdir in mongodb nats postgres dex minio caddy; do
             if [ -d "$data_dir/$subdir" ]; then
-                rm -rf "$data_dir/$subdir"/* 2>/dev/null || true
-                rm -rf "$data_dir/$subdir"/.[!.]* 2>/dev/null || true  # Hidden files too
+                # Use podman unshare for dirs owned by container UIDs (rootless podman)
+                podman unshare rm -rf "$data_dir/$subdir"/* 2>/dev/null \
+                    || rm -rf "$data_dir/$subdir"/* 2>/dev/null || true
+                podman unshare rm -rf "$data_dir/$subdir"/.[!.]* 2>/dev/null \
+                    || rm -rf "$data_dir/$subdir"/.[!.]* 2>/dev/null || true
             fi
         done
 
