@@ -219,8 +219,9 @@ class WIPSeeder:
         self.urls = urls or get_service_urls(host, via_proxy)
         self.dry_run = dry_run
         self.namespace = namespace
+        self._custom_ns = namespace != "wip"
 
-        # Pool IDs derived from namespace
+        # Pool IDs derived from namespace (only used for custom namespaces)
         self.pools = {
             "terminologies": f"{namespace}-terminologies",
             "terms": f"{namespace}-terms",
@@ -262,6 +263,18 @@ class WIPSeeder:
                     all_healthy = False
 
         return all_healthy
+
+    def _pool_qs(self, pool_type: str) -> str:
+        """Return '?pool_id=X' for custom namespaces, '' for default."""
+        if not self._custom_ns:
+            return ""
+        return f"?pool_id={self.pools[pool_type]}"
+
+    def _pool_params(self, pool_type: str, **extra: Any) -> dict | None:
+        """Return params dict with pool_id for custom namespaces."""
+        if not self._custom_ns:
+            return extra or None
+        return {"pool_id": self.pools[pool_type], **extra}
 
     def initialize_namespace(self) -> None:
         """Ensure namespace and its ID pools exist in the registry."""
@@ -313,7 +326,7 @@ class WIPSeeder:
                 try:
                     existing = self.def_store.get(
                         f"/api/def-store/terminologies/by-code/{code}",
-                        params={"pool_id": self.pools["terminologies"]},
+                        params=self._pool_params("terminologies"),
                     )
                     terminology_id = existing["terminology_id"]
                     print(f"  {code}: already exists ({terminology_id})")
@@ -323,7 +336,7 @@ class WIPSeeder:
                     # Still need to track term IDs for document generation
                     terms_resp = self.def_store.get(
                         f"/api/def-store/terminologies/{terminology_id}/terms",
-                        params={"limit": 500, "pool_id": self.pools["terms"]},
+                        params=self._pool_params("terms", limit=500),
                     )
                     self.created_term_ids[code] = {
                         t["value"]: t["term_id"] for t in terms_resp.get("items", [])
@@ -347,7 +360,7 @@ class WIPSeeder:
                 }
 
                 result = self.def_store.post(
-                    f"/api/def-store/terminologies?pool_id={self.pools['terminologies']}",
+                    f"/api/def-store/terminologies{self._pool_qs('terminologies')}",
                     create_data,
                 )
                 terminology_id = result["terminology_id"]
@@ -381,7 +394,7 @@ class WIPSeeder:
                             bulk_terms.append(term_data)
 
                         bulk_result = self.def_store.post(
-                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk?pool_id={self.pools['terms']}",
+                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk{self._pool_qs('terms')}",
                             {"terms": bulk_terms},
                         )
 
@@ -412,7 +425,7 @@ class WIPSeeder:
 
                         try:
                             result = self.def_store.post(
-                                f"/api/def-store/terminologies/{terminology_id}/terms?pool_id={self.pools['terms']}",
+                                f"/api/def-store/terminologies/{terminology_id}/terms{self._pool_qs('terms')}",
                                 term_data,
                             )
                             self.created_term_ids[code][t["value"]] = result["term_id"]
@@ -450,7 +463,7 @@ class WIPSeeder:
                 try:
                     existing = self.template_store.get(
                         f"/api/template-store/templates/by-code/{code}",
-                        params={"pool_id": self.pools["templates"]},
+                        params=self._pool_params("templates"),
                     )
                     template_id = existing["template_id"]
                     print(f"  {code}: already exists ({template_id})")
@@ -471,7 +484,7 @@ class WIPSeeder:
                         try:
                             parent = self.template_store.get(
                                 f"/api/template-store/templates/by-code/{extends_code}",
-                                params={"pool_id": self.pools["templates"]},
+                                params=self._pool_params("templates"),
                             )
                             extends_id = parent["template_id"]
                             self.created_templates[extends_code] = extends_id
@@ -496,7 +509,7 @@ class WIPSeeder:
                     create_data["extends"] = extends_id
 
                 result = self.template_store.post(
-                    f"/api/template-store/templates?pool_id={self.pools['templates']}",
+                    f"/api/template-store/templates{self._pool_qs('templates')}",
                     create_data,
                 )
                 template_id = result["template_id"]
@@ -529,7 +542,7 @@ class WIPSeeder:
                 try:
                     template = self.template_store.get(
                         f"/api/template-store/templates/by-code/{template_code}",
-                        params={"pool_id": self.pools["templates"]},
+                        params=self._pool_params("templates"),
                     )
                     template_id = template["template_id"]
                     self.created_templates[template_code] = template_id
@@ -558,7 +571,7 @@ class WIPSeeder:
 
                 try:
                     result = self.document_store.post(
-                        f"/api/document-store/documents/bulk?pool_id={self.pools['documents']}",
+                        f"/api/document-store/documents/bulk{self._pool_qs('documents')}",
                         {"items": batch_data, "continue_on_error": True},
                     )
 
@@ -609,7 +622,7 @@ class WIPSeeder:
         try:
             term_resp = self.def_store.get(
                 "/api/def-store/terminologies",
-                params={"limit": 1, "pool_id": self.pools["terminologies"]},
+                params=self._pool_params("terminologies", limit=1),
             )
             terms_count = term_resp.get("total", 0)
         except Exception:
@@ -647,7 +660,7 @@ class WIPSeeder:
                     start = time.perf_counter()
                     try:
                         self.document_store.post(
-                            f"/api/document-store/documents?pool_id={self.pools['documents']}",
+                            f"/api/document-store/documents{self._pool_qs('documents')}",
                             {"template_id": min_template_id, "data": doc, "created_by": "benchmark"},
                         )
                         elapsed = (time.perf_counter() - start) * 1000
@@ -690,7 +703,7 @@ class WIPSeeder:
             try:
                 self.document_store.get(
                     "/api/document-store/documents",
-                    params={"limit": 50, "pool_id": self.pools["documents"]},
+                    params=self._pool_params("documents", limit=50),
                 )
                 elapsed = (time.perf_counter() - start) * 1000
                 list_result.times_ms.append(elapsed)
@@ -893,8 +906,9 @@ def main():
         print("  cd components/document-store && podman-compose -f docker-compose.yml up -d --build")
         return
 
-    # Initialize namespace (creates ID pools in registry)
-    if not args.dry_run:
+    # Initialize custom namespace (creates ID pools in registry)
+    # Default 'wip' namespace is initialized by setup.sh, not the seed script
+    if not args.dry_run and seeder._custom_ns:
         print("\nInitializing namespace...")
         seeder.initialize_namespace()
 
@@ -911,7 +925,7 @@ def main():
         try:
             resp = seeder.def_store.get(
                 "/api/def-store/terminologies",
-                params={"limit": 100, "pool_id": seeder.pools["terminologies"]},
+                params=seeder._pool_params("terminologies", limit=100),
             )
             for t in resp.get("items", []):
                 seeder.created_terminologies[t["code"]] = t["terminology_id"]
@@ -929,7 +943,7 @@ def main():
         try:
             resp = seeder.template_store.get(
                 "/api/template-store/templates",
-                params={"limit": 100, "pool_id": seeder.pools["templates"]},
+                params=seeder._pool_params("templates", limit=100),
             )
             for t in resp.get("items", []):
                 seeder.created_templates[t["code"]] = t["template_id"]
