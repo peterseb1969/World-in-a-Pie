@@ -32,13 +32,13 @@ class UserIdentity(BaseModel):
 
         Format:
         - API key: "apikey:<username>"
-        - JWT user: "user:<user_id>"
+        - JWT user: "<email>" (falls back to username, then user_id)
         - No auth: "anonymous"
         """
         if self.auth_method == "api_key":
             return f"apikey:{self.username}"
         elif self.auth_method == "jwt":
-            return f"user:{self.user_id}"
+            return self.email or self.username or f"user:{self.user_id}"
         return "anonymous"
 
     def has_group(self, group: str) -> bool:

@@ -228,7 +228,7 @@ class TemplateService:
         List templates with pagination.
 
         Args:
-            status: Filter by status (active, deprecated, inactive)
+            status: Filter by status (draft, active, inactive)
             extends: Filter by parent template ID
             code: Filter by template code (shows all versions of that code)
             latest_only: If True, only return the latest version of each template

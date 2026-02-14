@@ -95,7 +95,7 @@ const templateOptions = computed(() => {
 })
 
 // Field names for identity fields dropdown
-const fieldNames = computed(() => form.value.fields.map(f => f.name))
+const fieldNames = computed(() => form.value.fields.filter(f => f.name).map(f => f.name))
 
 // Inherited fields from parent template (resolved minus raw)
 const inheritedFields = computed(() => {
@@ -316,7 +316,7 @@ function getStatusSeverity(status: string): "success" | "info" | "warn" | "dange
   switch (status) {
     case 'active':
       return 'info'
-    case 'deprecated':
+    case 'draft':
       return 'warn'
     case 'inactive':
       return 'secondary'

@@ -282,7 +282,7 @@ export interface Template {
   rules: ValidationRule[]
   metadata: TemplateMetadata
   reporting?: ReportingConfig
-  status: 'active' | 'deprecated' | 'inactive'
+  status: 'draft' | 'active' | 'inactive'
   created_at: string
   created_by?: string
   updated_at: string

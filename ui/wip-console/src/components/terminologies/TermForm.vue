@@ -220,6 +220,8 @@ function onCodeChange() {
             v-model="form.aliases"
             placeholder="Type and press Enter to add..."
             :allow-duplicate="false"
+            separator=","
+            :addOnBlur="true"
           />
           <small class="help-text">Alternative values that resolve to this term (e.g., Mr., MR, mr)</small>
         </div>

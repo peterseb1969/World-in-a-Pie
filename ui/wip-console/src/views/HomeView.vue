@@ -115,7 +115,6 @@ async function loadIntegrityCheck() {
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
   switch (status) {
     case 'active': return 'success'
-    case 'deprecated': return 'warn'
     case 'inactive': return 'danger'
     default: return 'secondary'
   }

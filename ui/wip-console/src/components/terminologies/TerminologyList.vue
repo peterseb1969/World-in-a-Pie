@@ -75,7 +75,6 @@ watch(() => route.query.create, (val) => {
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'info' | 'secondary' | 'contrast' | undefined {
   switch (status) {
     case 'active': return 'info'
-    case 'deprecated': return 'warn'
     case 'inactive': return 'danger'
     default: return 'secondary'
   }

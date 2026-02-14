@@ -150,7 +150,7 @@ class Template(Document):
     # Lifecycle
     status: str = Field(
         default="active",
-        description="Status: draft, active, deprecated, inactive"
+        description="Status: draft, active, inactive"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)

@@ -232,7 +232,7 @@ async def check_all_templates(
     Check referential integrity for all templates.
 
     Args:
-        status_filter: Optional filter by template status ('active', 'deprecated', 'inactive')
+        status_filter: Optional filter by template status ('draft', 'active', 'inactive')
         limit: Maximum number of templates to check
 
     Returns:

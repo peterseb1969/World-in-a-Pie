@@ -258,10 +258,10 @@ async def integrity_check(
     Scans all templates for:
     - Orphaned terminology references (referenced terminology not found)
     - Orphaned template references (extends, template_ref not found)
-    - Inactive references (referenced entity is deprecated/inactive)
+    - Inactive references (referenced entity is inactive)
 
     Args:
-        status: Filter templates by status ('active', 'deprecated', 'inactive')
+        status: Filter templates by status ('draft', 'active', 'inactive')
         limit: Maximum number of templates to check (default 1000)
 
     Returns:

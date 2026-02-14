@@ -19,7 +19,7 @@ export interface Terminology {
   allow_multiple: boolean
   extensible: boolean
   metadata: TerminologyMetadata
-  status: 'active' | 'deprecated' | 'inactive'
+  status: 'active' | 'inactive'
   term_count: number
   created_at: string
   created_by?: string

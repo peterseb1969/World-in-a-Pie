@@ -46,7 +46,7 @@ const fileConfig = computed(() => {
   const config: FileFieldConfig | undefined = props.field.file_config
   return {
     allowedTypes: config?.allowed_types || ['*/*'],
-    maxSizeMb: config?.max_size_mb || 10,
+    maxSizeMb: config?.max_size_mb || 100,
     multiple: config?.multiple || false
   }
 })
@@ -61,10 +61,10 @@ const currentFileIds = computed((): string[] => {
   return [props.modelValue]
 })
 
-// Accept string for file input
+// Accept string for file input (undefined = accept all)
 const acceptString = computed(() => {
   const types = fileConfig.value.allowedTypes
-  if (types.includes('*/*') || types.length === 0) return '*'
+  if (types.includes('*/*') || types.length === 0) return undefined
   return types.join(',')
 })
 

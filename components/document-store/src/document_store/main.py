@@ -432,7 +432,7 @@ async def integrity_check(
     Scans documents for:
     - Orphaned template references (referenced template not found)
     - Orphaned term references (term_references pointing to missing terms)
-    - Inactive template references (referenced template is deprecated/inactive)
+    - Inactive template references (referenced template is inactive)
 
     Args:
         status: Filter documents by status ('active', 'inactive', 'archived')

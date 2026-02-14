@@ -53,12 +53,9 @@ function hasFieldError(fieldName: string): boolean {
 function updateField(fieldName: string, value: unknown) {
   const newData = { ...props.modelValue }
 
-  // Handle null/empty values
-  if (value === null || value === undefined || value === '') {
-    delete newData[fieldName]
-  } else {
-    newData[fieldName] = value
-  }
+  // Normalize empty strings to null, but always keep the field in the data
+  // so the backend can distinguish "not provided" from "cleared"
+  newData[fieldName] = (value === '' || value === undefined) ? null : value
 
   emit('update:modelValue', newData)
 }

@@ -30,7 +30,6 @@ const wipCollapsed = ref(false)
 const statusOptions = [
   { label: 'All Status', value: null },
   { label: 'Active', value: 'active' },
-  { label: 'Deprecated (superseded)', value: 'deprecated' },
   { label: 'Inactive (deactivated)', value: 'inactive' }
 ]
 
@@ -143,7 +142,7 @@ function getStatusSeverity(status: string): "success" | "info" | "warn" | "dange
   switch (status) {
     case 'active':
       return 'info'
-    case 'deprecated':
+    case 'draft':
       return 'warn'
     case 'inactive':
       return 'secondary'

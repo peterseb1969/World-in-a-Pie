@@ -97,7 +97,7 @@ class Terminology(Document):
     # Lifecycle
     status: str = Field(
         default="active",
-        description="Status: active, deprecated, inactive"
+        description="Status: active, inactive"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)

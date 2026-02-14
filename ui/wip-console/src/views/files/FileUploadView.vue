@@ -174,6 +174,8 @@ onMounted(() => {
                   placeholder="Add tags and press Enter"
                   class="w-full"
                   :disabled="uploading"
+                  separator=","
+                  :addOnBlur="true"
                 />
               </div>
               <div class="form-group">
@@ -183,6 +185,8 @@ onMounted(() => {
                   placeholder="Template codes (optional)"
                   class="w-full"
                   :disabled="uploading"
+                  separator=","
+                  :addOnBlur="true"
                 />
                 <small class="help-text">
                   Restrict which templates can reference this file

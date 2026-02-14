@@ -1844,6 +1844,28 @@ class ValidationService:
             elif rule_type == "dependency":
                 self._evaluate_dependency(data, rule, result)
 
+    @staticmethod
+    def _coerce_for_comparison(actual: Any, expected: Any) -> tuple[Any, Any]:
+        """Coerce values to compatible types for comparison.
+
+        Handles mismatches between numeric strings and numbers that occur
+        when rule conditions store values as strings but document data is numeric.
+        """
+        if actual is None or expected is None:
+            return actual, expected
+        # If one is numeric and the other is a string, try to coerce the string
+        if isinstance(actual, (int, float)) and isinstance(expected, str):
+            try:
+                expected = type(actual)(expected)
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(expected, (int, float)) and isinstance(actual, str):
+            try:
+                actual = type(expected)(actual)
+            except (ValueError, TypeError):
+                pass
+        return actual, expected
+
     def _check_condition(
         self,
         data: dict[str, Any],
@@ -1857,9 +1879,11 @@ class ValidationService:
         actual_value = IdentityService._get_nested_value(data, field)
 
         if operator == "equals":
-            return actual_value == expected_value
+            a, e = self._coerce_for_comparison(actual_value, expected_value)
+            return a == e
         elif operator == "not_equals":
-            return actual_value != expected_value
+            a, e = self._coerce_for_comparison(actual_value, expected_value)
+            return a != e
         elif operator == "in":
             return actual_value in expected_value if expected_value else False
         elif operator == "not_in":

@@ -259,8 +259,8 @@ test_validate_valid_data() {
         return 1
     fi
 
-    # Now validate against the template
-    local body='{"data": {"name": "Valid Test Data"}}'
+    # Now validate against the template (MINIMAL has one mandatory field: id)
+    local body='{"data": {"id": "test-valid-001"}}'
     api_post "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates/$template_id/validate" "$body"
     assert_status 200
 }

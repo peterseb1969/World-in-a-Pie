@@ -79,14 +79,14 @@ const isEdit = computed(() => !!props.field)
 const dialogHeader = computed(() => isEdit.value ? 'Edit Field' : 'Add Field')
 
 const terminologyOptions = computed(() =>
-  props.terminologies.map(t => ({
+  props.terminologies.filter(t => t.name && t.code).map(t => ({
     label: `${t.name} (${t.code})`,
     value: t.terminology_id
   }))
 )
 
 const templateOptions = computed(() =>
-  props.templates.map(t => ({
+  props.templates.filter(t => t.name && t.code).map(t => ({
     label: `${t.name} (${t.code})`,
     value: t.template_id
   }))
@@ -123,7 +123,7 @@ const showArrayTemplateRef = computed(() =>
 
 // Options for target templates (by code for user-friendliness)
 const targetTemplateOptions = computed(() =>
-  props.templates.map(t => ({
+  props.templates.filter(t => t.name && t.code).map(t => ({
     label: `${t.name} (${t.code})`,
     value: t.code
   }))
@@ -131,7 +131,7 @@ const targetTemplateOptions = computed(() =>
 
 // Options for target terminologies (by code)
 const targetTerminologyOptions = computed(() =>
-  props.terminologies.map(t => ({
+  props.terminologies.filter(t => t.name && t.code).map(t => ({
     label: `${t.name} (${t.code})`,
     value: t.code
   }))

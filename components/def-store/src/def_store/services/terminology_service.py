@@ -90,6 +90,20 @@ class TerminologyService:
         )
         await terminology.insert()
 
+        # Create audit log entry for terminology creation
+        await TerminologyService._create_audit_log(
+            term_id=terminology_id,
+            terminology_id=terminology_id,
+            action="created",
+            changed_by=actor,
+            new_values={
+                "code": request.code,
+                "name": request.name,
+                "description": request.description,
+            },
+            pool_id=pool_id
+        )
+
         return TerminologyService._to_terminology_response(terminology)
 
     @staticmethod
@@ -138,7 +152,7 @@ class TerminologyService:
         List terminologies with pagination.
 
         Args:
-            status: Filter by status (active, deprecated, inactive)
+            status: Filter by status (active, inactive)
             code: Filter by exact code match
             page: Page number (1-indexed)
             page_size: Items per page
@@ -208,6 +222,24 @@ class TerminologyService:
                 additional_fields={"name": request.name or terminology.name}
             )
 
+        # Track changes for audit log
+        changed_fields = []
+        previous_values = {}
+        new_values = {}
+
+        def _track(field_name, old_val, new_val):
+            if new_val is not None and new_val != old_val:
+                changed_fields.append(field_name)
+                previous_values[field_name] = old_val
+                new_values[field_name] = new_val
+
+        _track("code", terminology.code, request.code)
+        _track("name", terminology.name, request.name)
+        _track("description", terminology.description, request.description)
+        _track("case_sensitive", terminology.case_sensitive, request.case_sensitive)
+        _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
+        _track("extensible", terminology.extensible, request.extensible)
+
         # Apply updates
         if request.code is not None:
             terminology.code = request.code
@@ -230,6 +262,19 @@ class TerminologyService:
         terminology.updated_at = datetime.now(timezone.utc)
         terminology.updated_by = actor
         await terminology.save()
+
+        # Create audit log entry if there were changes
+        if changed_fields:
+            await TerminologyService._create_audit_log(
+                term_id=terminology_id,
+                terminology_id=terminology_id,
+                action="updated",
+                changed_by=actor,
+                changed_fields=changed_fields,
+                previous_values=previous_values,
+                new_values=new_values,
+                pool_id=terminology.pool_id
+            )
 
         return TerminologyService._to_terminology_response(terminology)
 
