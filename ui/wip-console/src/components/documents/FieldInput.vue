@@ -100,7 +100,7 @@ async function loadTerms() {
 const termOptions = computed(() => {
   return terms.value.map(t => ({
     label: t.label,
-    value: t.code
+    value: t.value
   }))
 })
 

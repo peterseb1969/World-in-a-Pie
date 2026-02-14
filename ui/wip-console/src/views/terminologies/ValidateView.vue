@@ -163,8 +163,8 @@ function clearBulk() {
                   <h4>Matched Term</h4>
                   <div class="term-details">
                     <div class="detail-row">
-                      <span class="label">Code:</span>
-                      <span class="code-badge">{{ singleResult.matched_term.code }}</span>
+                      <span class="label">Value:</span>
+                      <span class="code-badge">{{ singleResult.matched_term.value }}</span>
                     </div>
                     <div class="detail-row">
                       <span class="label">Label:</span>
@@ -180,7 +180,7 @@ function clearBulk() {
                 <div v-if="!singleResult.valid && singleResult.suggestion" class="suggestion">
                   <h4>Did you mean?</h4>
                   <div class="suggestion-term">
-                    <span class="code-badge">{{ singleResult.suggestion.code }}</span>
+                    <span class="code-badge">{{ singleResult.suggestion.value }}</span>
                     <span>{{ singleResult.suggestion.label }}</span>
                     <span class="value-text">({{ singleResult.suggestion.value }})</span>
                   </div>

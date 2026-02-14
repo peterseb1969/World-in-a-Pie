@@ -94,13 +94,12 @@ async function onFileSelect(event: { files: File[] }) {
       for (let i = 1; i < lines.length; i++) {
         const values = lines[i].split(',').map(v => v.trim())
         const term: CreateTermRequest = {
-          code: values[headers.indexOf('code')] || '',
-          value: values[headers.indexOf('value')] || '',
+          value: values[headers.indexOf('value')] || values[headers.indexOf('code')] || '',
           label: values[headers.indexOf('label')] || '',
           description: headers.includes('description') ? values[headers.indexOf('description')] : undefined,
           sort_order: i - 1
         }
-        if (term.code && term.value && term.label) {
+        if (term.value && term.label) {
           terms.push(term)
         }
       }
