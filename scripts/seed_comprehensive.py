@@ -16,7 +16,7 @@ Options:
     --clean              Clean existing data before seeding (USE WITH CAUTION)
     --benchmark          Run performance benchmarks after seeding
     --output FILE        Write benchmark results to JSON file
-    --namespace PREFIX    Namespace prefix for data isolation (default: wip)
+    --namespace PREFIX    Namespace prefix for data isolation (default: seed)
     --skip-terminologies Skip terminology seeding (use existing)
     --skip-templates     Skip template seeding (use existing)
     --dry-run            Show what would be created without making changes
@@ -37,8 +37,8 @@ Examples:
     # Full performance test with benchmarks
     python scripts/seed_comprehensive.py --profile performance --benchmark --output benchmark.json
 
-    # Seed into isolated namespace (won't affect default wip-* pools)
-    python scripts/seed_comprehensive.py --namespace test-seed --profile minimal
+    # Seed into default wip-* pools (not recommended, mixes with real data)
+    python scripts/seed_comprehensive.py --namespace wip --profile minimal
 
     # Seed documents only (using existing terminologies and templates)
     python scripts/seed_comprehensive.py --skip-terminologies --skip-templates --services document-store
@@ -849,8 +849,8 @@ def main():
 
     parser.add_argument(
         "--namespace",
-        default="wip",
-        help="Namespace prefix for data isolation (default: wip)"
+        default="seed",
+        help="Namespace prefix for data isolation (default: seed). Use 'wip' to seed into the default pools."
     )
 
     parser.add_argument(
