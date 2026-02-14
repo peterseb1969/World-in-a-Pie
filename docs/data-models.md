@@ -17,27 +17,31 @@ This document defines the conceptual data structures used throughout World In a 
 │   ┌──────────────┐            ┌──────────────┐            ┌──────────────┐  │
 │   │ Terminology  │            │   Template   │            │   Document   │  │
 │   │              │◄───────────│              │◄───────────│              │  │
-│   │ • term_id    │  references│ • template_id│  conforms  │ • document_id│  │
-│   │ • code       │            │ • code       │  to        │ • template_id│  │
+│   │ • term_id    │  canonical │ • template_id│  conforms  │ • document_id│  │
+│   │ • code       │  IDs       │ • code       │  to        │ • template_id│  │
 │   │ • name       │            │ • version    │            │ • version    │  │
 │   │              │            │ • fields[]   │            │ • data{}     │  │
-│   └──────────────┘            │ • rules[]    │            │ • term_refs{}│  │
-│          │                    │ • reporting{}│            └──────────────┘  │
-│          │ contains           └──────────────┘                              │
+│   └──────────────┘            │ • rules[]    │            │ • term_refs[]│  │
+│          │                    │ • reporting{}│            │ • refs[]     │  │
+│          │ contains           └──────────────┘            └──────────────┘  │
 │          ▼                           │                                      │
 │   ┌──────────────┐                   │ contains                             │
 │   │    Term      │                   ▼                                      │
-│   │              │            ┌──────────────┐                              │
-│   │ • term_id    │            │    Field     │                              │
-│   │ • code       │            │              │                              │
-│   │ • value      │◄───────────│ • name       │                              │
-│   │ • aliases[]  │  references│ • type       │                              │
-│   │ • parent_id  │            │ • term_ref   │                              │
-│   └──────────────┘            └──────────────┘                              │
+│   │              │            ┌──────────────────┐                          │
+│   │ • term_id    │            │  FieldDefinition │                          │
+│   │ • code       │            │                  │                          │
+│   │ • value      │◄───────────│ • name, label    │                          │
+│   │ • aliases[]  │  canonical │ • type           │                          │
+│   │ • parent_id  │  IDs       │ • terminology_ref│                          │
+│   └──────────────┘            │ • template_ref   │                          │
+│                               │ • version_strategy│                         │
+│                               └──────────────────┘                          │
 │                                                                              │
 │   Note: Terms have NO versioning - changes tracked via audit log            │
 │   Note: Templates can have multiple active versions simultaneously          │
 │   Note: Documents store both original data AND resolved term_references     │
+│   Note: All entity references stored as canonical IDs (TPL-/TERM-),         │
+│         resolved from user-supplied codes at template creation time          │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -290,6 +294,10 @@ A schema definition for documents. **Multiple template versions can be active si
 class Template(BaseModel):
     """A schema definition that documents must conform to."""
 
+    pool_id: str = Field(
+        default="wip-templates",
+        description="Pool ID for data isolation"
+    )
     template_id: str = Field(
         ...,
         description="Unique identifier (format: TPL-XXXXXX)",
@@ -315,17 +323,21 @@ class Template(BaseModel):
     )
     extends: str | None = Field(
         None,
-        description="Parent template code for inheritance"
+        description="Parent template_id for inheritance (TPL-XXXXXX)"
     )
     identity_fields: list[str] = Field(
-        ...,
+        default_factory=list,
         description="Fields that form the composite identity key"
     )
-    fields: list[TemplateField] = Field(
+    fields: list[FieldDefinition] = Field(
         default_factory=list
     )
     rules: list[ValidationRule] = Field(
         default_factory=list
+    )
+    metadata: TemplateMetadata = Field(
+        default_factory=TemplateMetadata,
+        description="Domain, category, tags, custom metadata"
     )
     reporting: ReportingConfig | None = Field(
         None,
@@ -337,9 +349,9 @@ class Template(BaseModel):
     updated_by: str | None = None
 ```
 
-### TemplateField
+### FieldDefinition
 
-A field definition within a template.
+A field definition within a template. All entity reference fields store **canonical IDs** (resolved from user-supplied codes at template creation time).
 
 ```python
 class FieldType(str, Enum):
@@ -349,90 +361,118 @@ class FieldType(str, Enum):
     BOOLEAN = "boolean"
     DATE = "date"
     DATETIME = "datetime"
-    TERM = "term"
-    OBJECT = "object"
-    ARRAY = "array"
-    REFERENCE = "reference"  # Cross-document reference
+    TERM = "term"          # Term from a Def-Store terminology
+    REFERENCE = "reference"  # Cross-entity reference (document, term, terminology, template)
     FILE = "file"            # Binary file attachment (MinIO)
+    OBJECT = "object"        # Nested template
+    ARRAY = "array"          # Collection of items
 
 
-class TemplateField(BaseModel):
+class ReferenceType(str, Enum):
+    DOCUMENT = "document"      # Reference to another document
+    TERM = "term"              # Reference to a term in a terminology
+    TERMINOLOGY = "terminology"  # Reference to a terminology itself
+    TEMPLATE = "template"      # Reference to a template itself
+
+
+class VersionStrategy(str, Enum):
+    LATEST = "latest"   # Accept any version of the same template family (default)
+    PINNED = "pinned"   # Accept only the exact stored template version
+
+
+class SemanticType(str, Enum):
+    EMAIL = "email"          # RFC 5322 email address
+    URL = "url"              # Valid HTTP(S) URL
+    LATITUDE = "latitude"    # Geographic latitude (-90 to 90)
+    LONGITUDE = "longitude"  # Geographic longitude (-180 to 180)
+    PERCENTAGE = "percentage"  # Percentage value (0 to 100)
+    DURATION = "duration"    # Time duration {value, unit}
+    GEO_POINT = "geo_point"  # Geographic point {latitude, longitude}
+
+
+class FieldDefinition(BaseModel):
     """A field definition within a template."""
 
-    name: str = Field(
-        ...,
-        description="Field name (used in document data)",
-        examples=["first_name", "birth_date", "gender"]
-    )
+    name: str
+    label: str                          # Human-readable label
     type: FieldType
-    mandatory: bool = Field(default=False)
-    description: str | None = None
+    mandatory: bool = False
+    default_value: Any | None = None
 
-    # Type-specific configurations
+    # For type=term: terminology reference (stored as canonical TERM-XXXXXX)
     terminology_ref: str | None = Field(
         None,
-        description="Terminology code (for term type)"
+        description="Canonical terminology_id (TERM-XXXXXX), resolved from code at creation"
     )
+
+    # For type=object: nested template (stored as canonical TPL-XXXXXX)
     template_ref: str | None = Field(
         None,
-        description="Template code (for object type)"
+        description="Canonical template_id (TPL-XXXXXX), resolved from code at creation"
     )
-    reference_type: str | None = Field(
-        None,
-        description="Reference type: 'document' or 'term' (for reference type)"
-    )
+
+    # For type=reference: unified reference configuration
+    reference_type: ReferenceType | None = None
     target_templates: list[str] | None = Field(
         None,
-        description="Accepted template codes (for document references)"
-    )
-    target_terminologies: list[str] | None = Field(
-        None,
-        description="Accepted terminology codes (for term references)"
+        description="Canonical template_ids for document references (resolved from codes at creation)"
     )
     include_subtypes: bool | None = Field(
         None,
-        description="When true, target_templates also accepts documents from child templates"
+        description="When true, also accepts documents from child templates via inheritance"
     )
-    reference_template: str | None = Field(
+    target_terminologies: list[str] | None = Field(
         None,
-        description="Template code (for reference type) — deprecated, use target_templates"
+        description="Canonical terminology_ids for term references (resolved from codes at creation)"
     )
-    items: "TemplateField | None" = Field(
+    version_strategy: VersionStrategy | None = Field(
         None,
-        description="Item definition (for array type)"
-    )
-    file_config: dict | None = Field(
-        None,
-        description="File constraints: allowed_types, max_size_mb, multiple (for file type)"
-    )
-    semantic_type: str | None = Field(
-        None,
-        description="Semantic hint: email, url, percentage, duration, geo_point, latitude, longitude"
+        description="How to resolve reference versions: latest (default) or pinned"
     )
 
-    # Inheritance tracking (set by server during resolution, not stored)
-    inherited: bool | None = Field(
-        None,
-        description="Whether this field is inherited from a parent template"
-    )
-    inherited_from: str | None = Field(
-        None,
-        description="Template ID of the parent this field was inherited from"
-    )
+    # For type=file
+    file_config: FileFieldConfig | None = None
 
-    # Validation constraints
+    # For type=array: item configuration
+    array_item_type: FieldType | None = None
+    array_terminology_ref: str | None = Field(
+        None,
+        description="Canonical terminology_id (TERM-XXXXXX) for array term items"
+    )
+    array_template_ref: str | None = Field(
+        None,
+        description="Canonical template_id (TPL-XXXXXX) for array object items"
+    )
+    array_file_config: FileFieldConfig | None = None
+
+    # Validation constraints (nested object)
+    validation: FieldValidation | None = None
+
+    # Semantic type for universal data patterns
+    semantic_type: SemanticType | None = None
+
+    # Inheritance tracking (populated during resolution, not stored)
+    inherited: bool | None = None
+    inherited_from: str | None = None
+
+    # Additional metadata
+    metadata: dict[str, Any] = {}
+
+
+class FieldValidation(BaseModel):
+    pattern: str | None = None      # Regex pattern for string fields
     min_length: int | None = None
     max_length: int | None = None
-    minimum: float | None = None
-    maximum: float | None = None
-    pattern: str | None = Field(
-        None,
-        description="Regex pattern for string fields"
-    )
-    enum: list[Any] | None = Field(
-        None,
-        description="Allowed values (not term-based)"
-    )
+    minimum: float | None = None    # Minimum numeric value
+    maximum: float | None = None    # Maximum numeric value
+    enum: list[Any] | None = None   # Allowed values (not term-based)
+
+
+class FileFieldConfig(BaseModel):
+    allowed_types: list[str] = ["*/*"]  # MIME type patterns
+    max_size_mb: float = 10.0           # Max file size (up to 100MB)
+    multiple: bool = False              # Allow multiple files
+    max_files: int | None = None        # Max files when multiple=true
 ```
 
 ### ReportingConfig
@@ -487,9 +527,10 @@ class RuleCondition(BaseModel):
     value: Any = None
 ```
 
-**Template Example:**
+**Template Example (as stored — all references are canonical IDs):**
 ```json
 {
+  "pool_id": "wip-templates",
   "template_id": "TPL-000001",
   "code": "PERSON",
   "name": "Person",
@@ -501,46 +542,56 @@ class RuleCondition(BaseModel):
   "fields": [
     {
       "name": "first_name",
+      "label": "First Name",
       "type": "string",
       "mandatory": true,
-      "min_length": 1,
-      "max_length": 100
+      "validation": { "min_length": 1, "max_length": 100 }
     },
     {
       "name": "last_name",
+      "label": "Last Name",
       "type": "string",
       "mandatory": true
     },
     {
       "name": "email",
+      "label": "Email",
       "type": "string",
       "mandatory": true,
-      "pattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+      "semantic_type": "email"
     },
     {
       "name": "gender",
+      "label": "Gender",
       "type": "term",
-      "mandatory": false,
-      "terminology_ref": "GENDER"
+      "terminology_ref": "TERM-000001"
     },
     {
       "name": "country",
+      "label": "Country",
       "type": "term",
-      "terminology_ref": "COUNTRY"
+      "terminology_ref": "TERM-000005"
     },
     {
       "name": "tax_id",
-      "type": "string",
-      "mandatory": false
+      "label": "Tax ID",
+      "type": "string"
     },
     {
       "name": "addresses",
+      "label": "Addresses",
       "type": "array",
-      "items": {
-        "name": "address",
-        "type": "object",
-        "template_ref": "ADDRESS"
-      }
+      "array_item_type": "object",
+      "array_template_ref": "TPL-000008"
+    },
+    {
+      "name": "supervisor",
+      "label": "Supervisor",
+      "type": "reference",
+      "reference_type": "document",
+      "target_templates": ["TPL-000001"],
+      "version_strategy": "latest",
+      "include_subtypes": true
     }
   ],
   "rules": [
@@ -556,6 +607,11 @@ class RuleCondition(BaseModel):
       "error_message": "Tax ID is required for German residents"
     }
   ],
+  "metadata": {
+    "domain": "hr",
+    "category": "master_data",
+    "tags": ["person", "core"]
+  },
   "reporting": {
     "sync_enabled": true,
     "sync_strategy": "latest_only",
@@ -585,23 +641,31 @@ All versions share the same `code` but have different `template_id` values.
 
 ### Document
 
-The core data entity. Documents store both the original data and resolved term references.
+The core data entity. Documents store original data plus resolved term references, entity references, and file references.
 
 ```python
 class Document(BaseModel):
     """A validated document conforming to a template."""
 
+    pool_id: str = Field(
+        default="wip-documents",
+        description="Pool ID for data isolation"
+    )
     document_id: str = Field(
         ...,
         description="Unique document ID (UUID7 for time-ordering)"
     )
     template_id: str = Field(
         ...,
-        description="Template ID this document conforms to"
+        description="Template ID this document conforms to (TPL-XXXXXX)"
     )
-    template_code: str = Field(
-        ...,
-        description="Template code (for easier querying)"
+    template_pool_id: str = Field(
+        default="wip-templates",
+        description="Pool ID of the template"
+    )
+    template_code: str | None = Field(
+        None,
+        description="Template code for easier identification"
     )
     template_version: int = Field(
         ...,
@@ -618,25 +682,28 @@ class Document(BaseModel):
     status: Literal["active", "inactive", "archived"] = Field(
         default="active"
     )
-    is_latest_version: bool = Field(
-        ...,
-        description="Whether this is the current version"
-    )
-    latest_version: int = Field(
-        ...,
-        description="The highest version number for this identity"
-    )
-    latest_document_id: str = Field(
-        ...,
-        description="Document ID of the latest version"
-    )
     data: dict[str, Any] = Field(
         ...,
         description="Original submitted document content"
     )
-    term_references: dict[str, str | list[str]] = Field(
-        default_factory=dict,
-        description="Resolved term IDs for term fields"
+
+    # Resolved references (populated during validation)
+    term_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved term IDs: [{field_path, term_id, terminology_ref, matched_via}]"
+    )
+    references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved entity references: [{field_path, reference_type, resolved: {...}}]"
+    )
+    file_references: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Resolved file refs: [{field_path, file_id, filename, content_type, size_bytes}]"
+    )
+
+    metadata: DocumentMetadata = Field(
+        default_factory=DocumentMetadata,
+        description="Source system, warnings, custom metadata"
     )
     created_at: datetime
     created_by: str
@@ -647,13 +714,15 @@ class Document(BaseModel):
 **Key design decisions:**
 
 1. **`data`** stores the original submitted values (e.g., `"gender": "Female"`)
-2. **`term_references`** stores resolved term IDs (e.g., `"gender": "T-000002"`)
-3. Both are preserved for audit compliance - original values never migrated
-4. **`is_latest_version`** and **`latest_document_id`** enable navigation from old versions
+2. **`term_references`** stores resolved term IDs as an array of `{field_path, term_id, terminology_ref, matched_via}`
+3. **`references`** stores resolved entity references (documents, terms, terminologies, templates)
+4. **`file_references`** stores resolved file metadata for file fields
+5. Both original data and resolved references are preserved for audit compliance
 
 **Example:**
 ```json
 {
+  "pool_id": "wip-documents",
   "document_id": "0192abc1-def2-7abc-8def-123456789abc",
   "template_id": "TPL-000001",
   "template_code": "PERSON",
@@ -661,9 +730,6 @@ class Document(BaseModel):
   "identity_hash": "a1b2c3d4e5f6g7h8i9j0...",
   "version": 2,
   "status": "active",
-  "is_latest_version": true,
-  "latest_version": 2,
-  "latest_document_id": "0192abc1-def2-7abc-8def-123456789abc",
   "data": {
     "first_name": "Alice",
     "last_name": "Schmidt",
@@ -678,13 +744,28 @@ class Document(BaseModel):
         "postal_code": "10115",
         "country": "Germany"
       }
-    ]
+    ],
+    "supervisor": "0192abc1-aaaa-7abc-8def-111111111111"
   },
-  "term_references": {
-    "gender": "T-000002",
-    "country": "T-000042",
-    "addresses.0.country": "T-000042"
-  },
+  "term_references": [
+    { "field_path": "gender", "term_id": "T-000002", "terminology_ref": "TERM-000001", "matched_via": "value" },
+    { "field_path": "country", "term_id": "T-000042", "terminology_ref": "TERM-000005", "matched_via": "value" }
+  ],
+  "references": [
+    {
+      "field_path": "supervisor",
+      "reference_type": "document",
+      "lookup_value": "0192abc1-aaaa-7abc-8def-111111111111",
+      "version_strategy": "latest",
+      "resolved": {
+        "document_id": "0192abc1-aaaa-7abc-8def-111111111111",
+        "identity_hash": "f5e6d7c8...",
+        "template_id": "TPL-000001",
+        "version": 1
+      }
+    }
+  ],
+  "file_references": [],
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "user:admin-001",
   "updated_at": "2024-02-20T14:30:00Z",
@@ -819,6 +900,8 @@ class EventType(str, Enum):
     DOCUMENT_DELETED = "document.deleted"
     TEMPLATE_CREATED = "template.created"
     TEMPLATE_UPDATED = "template.updated"
+    TEMPLATE_DELETED = "template.deleted"
+    TEMPLATE_ACTIVATED = "template.activated"
 
 
 class DocumentEvent(BaseModel):
@@ -931,23 +1014,14 @@ class ValidationResult(BaseModel):
 
     valid: bool
     identity_hash: str | None = None
-    is_update: bool = False
-    existing_document_id: str | None = None
-    errors: list[ValidationError] = []
-    warnings: list[ValidationWarning] = []
-    term_references: dict[str, str] = {}
-
-
-class ValidationError(BaseModel):
-    field: str | None = None
-    code: str
-    message: str
-
-
-class ValidationWarning(BaseModel):
-    field: str | None = None
-    code: str
-    message: str
+    template_version: int | None = None
+    template_code: str | None = None
+    errors: list[dict] = []       # [{field, code, message, details}]
+    warnings: list[str] = []
+    term_references: list[dict] = []   # [{field_path, term_id, terminology_ref, matched_via}]
+    references: list[dict] = []        # [{field_path, reference_type, resolved: {...}}]
+    file_references: list[dict] = []   # [{field_path, file_id, filename, ...}]
+    timing: dict[str, float] = {}      # stage -> milliseconds
 ```
 
 ### Error Codes
