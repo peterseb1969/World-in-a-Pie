@@ -127,21 +127,17 @@ class TerminologyListResponse(BaseModel):
 class CreateTermRequest(StrictModel):
     """Request to create a new term."""
 
-    code: str = Field(
-        ...,
-        description="Human-readable code (e.g., 'APPROVED')"
-    )
     value: str = Field(
         ...,
-        description="The value stored in documents"
+        description="The value stored in documents (unique within terminology)"
     )
     aliases: list[str] = Field(
         default_factory=list,
         description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
     )
-    label: str = Field(
-        ...,
-        description="Display label for UI"
+    label: Optional[str] = Field(
+        None,
+        description="Display label for UI. Defaults to value if not provided."
     )
     description: Optional[str] = Field(
         None,
@@ -172,13 +168,9 @@ class CreateTermRequest(StrictModel):
 class UpdateTermRequest(StrictModel):
     """Request to update an existing term."""
 
-    code: Optional[str] = Field(
-        None,
-        description="New code (triggers Registry synonym)"
-    )
     value: Optional[str] = Field(
         None,
-        description="New value"
+        description="New value (unique within terminology)"
     )
     aliases: Optional[list[str]] = Field(
         None,
@@ -237,10 +229,9 @@ class TermResponse(BaseModel):
     term_id: str
     terminology_id: str
     terminology_code: Optional[str] = None
-    code: str
     value: str
     aliases: list[str] = []
-    label: str
+    label: Optional[str] = None
     description: Optional[str] = None
     sort_order: int = 0
     parent_term_id: Optional[str] = None
@@ -289,7 +280,7 @@ class BulkOperationResult(BaseModel):
     index: int
     status: str  # created, updated, error, skipped
     id: Optional[str] = None
-    code: Optional[str] = None
+    value: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -381,7 +372,7 @@ class ValidateValueResponse(BaseModel):
     matched_term: Optional[TermResponse] = None
     matched_via: Optional[str] = Field(
         None,
-        description="How the match was made: 'code', 'value', or 'alias'"
+        description="How the match was made: 'value' or 'alias'"
     )
     suggestion: Optional[TermResponse] = Field(
         None,

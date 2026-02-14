@@ -90,9 +90,8 @@ class ImportExportService:
         term_data = []
         for t in terms:
             term_dict = {
-                "code": t.code,
                 "value": t.value,
-                "label": t.label,
+                "label": t.label or t.value,
                 "description": t.description,
                 "sort_order": t.sort_order,
                 "status": t.status,
@@ -148,7 +147,7 @@ class ImportExportService:
         output = io.StringIO()
 
         # Define columns
-        columns = ["code", "value", "label", "description", "sort_order", "status"]
+        columns = ["value", "label", "description", "sort_order", "status"]
         if include_metadata:
             columns.append("metadata")
 
@@ -157,9 +156,8 @@ class ImportExportService:
 
         for t in terms:
             row = {
-                "code": t.code,
                 "value": t.value,
-                "label": t.label,
+                "label": t.label or t.value,
                 "description": t.description or "",
                 "sort_order": t.sort_order,
                 "status": t.status,
@@ -281,10 +279,9 @@ class ImportExportService:
                 for tr in term_data.get("translations", [])
             ]
             term_requests.append(CreateTermRequest(
-                code=term_data["code"],
                 value=term_data["value"],
                 aliases=term_data.get("aliases", []),
-                label=term_data.get("label", term_data["value"]),
+                label=term_data.get("label"),
                 description=term_data.get("description"),
                 sort_order=term_data.get("sort_order", i),
                 parent_term_id=term_data.get("parent_term_id"),
@@ -353,9 +350,8 @@ class ImportExportService:
 
         for row in reader:
             term = {
-                "code": row.get("code", "").strip(),
                 "value": row.get("value", "").strip(),
-                "label": row.get("label", row.get("value", "")).strip(),
+                "label": row.get("label", "").strip() or None,
                 "description": row.get("description", "").strip() or None,
                 "sort_order": int(row.get("sort_order", 0) or 0),
             }
@@ -365,7 +361,7 @@ class ImportExportService:
                 except json.JSONDecodeError:
                     pass
 
-            if term["code"] and term["value"]:
+            if term["value"]:
                 terms_data.append(term)
 
         # Convert to JSON format and use JSON import

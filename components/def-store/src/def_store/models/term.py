@@ -63,16 +63,10 @@ class Term(Document):
         description="Code of the parent terminology (e.g., 'GENDER'). Denormalized for efficient lookups."
     )
 
-    # Human-friendly identifier (mutable, unique within terminology)
-    code: str = Field(
-        ...,
-        description="Human-readable code (e.g., 'APPROVED'). Unique within terminology."
-    )
-
-    # The actual value used in documents
+    # The actual value used in documents (unique within terminology)
     value: str = Field(
         ...,
-        description="The value stored in documents (e.g., 'approved')"
+        description="The value stored in documents (e.g., 'approved'). Unique within terminology."
     )
 
     # Alternative values that resolve to this term
@@ -82,9 +76,9 @@ class Term(Document):
     )
 
     # Display information
-    label: str = Field(
-        ...,
-        description="Display label for UI (e.g., 'Approved')"
+    label: Optional[str] = Field(
+        None,
+        description="Display label for UI (e.g., 'Approved'). Defaults to value if not set."
     )
     description: Optional[str] = Field(
         None,
@@ -146,10 +140,8 @@ class Term(Document):
         indexes = [
             # Unique ID within pool
             IndexModel([("pool_id", 1), ("term_id", 1)], unique=True, name="pool_term_id_unique_idx"),
-            # Unique code within terminology within pool
-            IndexModel([("pool_id", 1), ("terminology_id", 1), ("code", 1)], unique=True, name="pool_terminology_code_unique_idx"),
-            # Value lookup within terminology
-            IndexModel([("pool_id", 1), ("terminology_id", 1), ("value", 1)], name="pool_terminology_value_idx"),
+            # Unique value within terminology within pool
+            IndexModel([("pool_id", 1), ("terminology_id", 1), ("value", 1)], unique=True, name="pool_terminology_value_unique_idx"),
             # Alias lookup within terminology
             IndexModel([("pool_id", 1), ("terminology_id", 1), ("aliases", 1)], name="pool_terminology_aliases_idx"),
             # Sort order within terminology
@@ -161,5 +153,5 @@ class Term(Document):
             # Parent term lookup
             IndexModel([("parent_term_id", 1)], name="parent_term_idx"),
             # Text search (global)
-            IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
+            IndexModel([("value", "text"), ("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

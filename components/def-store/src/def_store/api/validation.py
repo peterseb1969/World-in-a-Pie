@@ -19,10 +19,9 @@ def term_to_response(term) -> TermResponse:
     return TermResponse(
         term_id=term.term_id,
         terminology_id=term.terminology_id,
-        code=term.code,
         value=term.value,
         aliases=term.aliases,
-        label=term.label,
+        label=term.label or term.value,
         description=term.description,
         sort_order=term.sort_order,
         parent_term_id=term.parent_term_id,
@@ -62,7 +61,7 @@ async def validate_value(request: ValidateValueRequest) -> ValidateValueResponse
         if request.terminology_id:
             terminology = await TerminologyService.get_terminology(request.terminology_id)
         else:
-            terminology = await TerminologyService.get_terminology_by_code(request.terminology_code)
+            terminology = await TerminologyService.get_terminology(code=request.terminology_code)
 
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
@@ -112,7 +111,7 @@ async def validate_bulk(request: BulkValidateRequest) -> BulkValidateResponse:
             if item.terminology_id:
                 terminology = await TerminologyService.get_terminology(item.terminology_id)
             else:
-                terminology = await TerminologyService.get_terminology_by_code(item.terminology_code)
+                terminology = await TerminologyService.get_terminology(code=item.terminology_code)
 
             if not terminology:
                 results.append(ValidateValueResponse(

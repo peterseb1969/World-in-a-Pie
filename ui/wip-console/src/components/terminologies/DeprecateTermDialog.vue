@@ -30,7 +30,7 @@ const replacementOptions = computed(() => {
   return props.terms
     .filter(t => t.term_id !== props.term.term_id && t.status === 'active')
     .map(t => ({
-      label: `${t.label} (${t.code})`,
+      label: `${t.label || t.value} (${t.value})`,
       value: t.term_id
     }))
 })
@@ -86,7 +86,7 @@ function cancel() {
         <p>You are about to deprecate:</p>
         <div class="term-badge">
           <strong>{{ term.label }}</strong>
-          <span class="term-code">({{ term.code }})</span>
+          <span class="term-code">({{ term.value }})</span>
         </div>
       </div>
 

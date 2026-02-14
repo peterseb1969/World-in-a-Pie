@@ -54,10 +54,9 @@ function parseJSON() {
     const data = JSON.parse(jsonInput.value)
     const terms = Array.isArray(data) ? data : data.terms || [data]
     parsedTerms.value = terms.map((t: CreateTermRequest, i: number) => ({
-      code: t.code || '',
       value: t.value || '',
       aliases: t.aliases || [],
-      label: t.label || '',
+      label: t.label,
       description: t.description,
       sort_order: t.sort_order ?? i
     }))
@@ -75,7 +74,7 @@ function parseCSV() {
   }
 
   const headers = lines[0].split(',').map(h => h.trim().toLowerCase())
-  const requiredHeaders = ['code', 'value', 'label']
+  const requiredHeaders = ['value']
   const missingHeaders = requiredHeaders.filter(h => !headers.includes(h))
 
   if (missingHeaders.length > 0) {
@@ -91,14 +90,13 @@ function parseCSV() {
     const aliases = aliasesRaw ? aliasesRaw.split('|').map(a => a.trim()).filter(a => a) : []
 
     const term: CreateTermRequest = {
-      code: values[headers.indexOf('code')] || '',
       value: values[headers.indexOf('value')] || '',
       aliases: aliases.length > 0 ? aliases : undefined,
-      label: values[headers.indexOf('label')] || '',
+      label: headers.includes('label') ? values[headers.indexOf('label')] || undefined : undefined,
       description: headers.includes('description') ? values[headers.indexOf('description')] : undefined,
       sort_order: headers.includes('sort_order') ? parseInt(values[headers.indexOf('sort_order')]) : i - 1
     }
-    if (term.code && term.value && term.label) {
+    if (term.value) {
       terms.push(term)
     }
   }
@@ -184,8 +182,8 @@ function getResultSeverity(status: string): 'success' | 'warn' | 'danger' | 'inf
             v-model="jsonInput"
             rows="10"
             placeholder='[
-  { "code": "MR", "value": "Mr", "label": "Mister", "aliases": ["Mr.", "MR.", "mr"] },
-  { "code": "MS", "value": "Ms", "label": "Ms", "aliases": ["Ms.", "MS.", "ms"] }
+  { "value": "Mr", "label": "Mister", "aliases": ["Mr.", "MR.", "mr"] },
+  { "value": "Ms", "label": "Ms", "aliases": ["Ms.", "MS.", "ms"] }
 ]'
             class="input-textarea"
           />
@@ -202,9 +200,9 @@ function getResultSeverity(status: string): 'success' | 'warn' | 'danger' | 'inf
           <Textarea
             v-model="csvInput"
             rows="10"
-            placeholder="code,value,label,aliases,description
-MR,Mr,Mister,Mr.|MR.|mr,Male title
-MS,Ms,Ms,Ms.|MS.|ms,Female title"
+            placeholder="value,label,aliases,description
+Mr,Mister,Mr.|MR.|mr,Male title
+Ms,Ms,Ms.|MS.|ms,Female title"
             class="input-textarea"
           />
           <Button
@@ -232,8 +230,7 @@ MS,Ms,Ms,Ms.|MS.|ms,Female title"
       </div>
 
       <DataTable :value="parsedTerms" striped-rows size="small" scrollable scroll-height="300px">
-        <Column field="code" header="Code" style="width: 15%" />
-        <Column field="value" header="Value" style="width: 15%" />
+        <Column field="value" header="Value" style="width: 20%" />
         <Column field="label" header="Label" style="width: 20%" />
         <Column field="aliases" header="Aliases" style="width: 20%">
           <template #body="{ data }">
@@ -268,7 +265,7 @@ MS,Ms,Ms,Ms.|MS.|ms,Female title"
         striped-rows
         size="small"
       >
-        <Column field="code" header="Code" style="width: 30%" />
+        <Column field="value" header="Value" style="width: 30%" />
         <Column field="status" header="Status" style="width: 20%">
           <template #body="{ data }">
             <Tag :value="data.status" :severity="getResultSeverity(data.status)" />

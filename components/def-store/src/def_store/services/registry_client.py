@@ -113,7 +113,7 @@ class RegistryClient:
 
         Args:
             terminology_id: Parent terminology ID
-            code: Term code (e.g., 'APPROVED')
+            code: Registry composite key code (typically the term value)
             value: Term value
             created_by: User or system creating this
             pool_id: Pool ID for the term (default: wip-terms)
@@ -173,7 +173,7 @@ class RegistryClient:
 
         Args:
             terminology_id: Parent terminology ID
-            terms: List of term dicts with 'code' and 'value'
+            terms: List of term dicts with 'value' (and optional 'code' for composite key)
             created_by: User or system creating these
             timeout: Request timeout in seconds per sub-batch (default 120)
             registry_batch_size: Number of terms per registry HTTP call (default 100)
@@ -204,7 +204,7 @@ class RegistryClient:
                         "pool_id": pool_id,
                         "composite_key": {
                             "terminology_id": terminology_id,
-                            "code": term["code"],
+                            "code": term.get("code", term["value"]),
                             "value": term["value"]
                         },
                         "created_by": created_by,

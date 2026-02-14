@@ -405,25 +405,28 @@ class TerminologyService:
         if not terminology:
             raise ValueError(f"Terminology '{terminology_id}' not found")
 
-        # Check code uniqueness within terminology and pool
+        # Check value uniqueness within terminology and pool
         existing = await Term.find_one({
             "pool_id": pool_id,
             "terminology_id": terminology_id,
-            "code": request.code
+            "value": request.value
         })
         if existing:
             raise ValueError(
-                f"Term with code '{request.code}' already exists in terminology"
+                f"Term with value '{request.value}' already exists in terminology"
             )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
+        # Default label to value if not provided
+        label = request.label or request.value
+
         # Register with Registry to get ID
         client = get_registry_client()
         term_id = await client.register_term(
             terminology_id=terminology_id,
-            code=request.code,
+            code=request.value,
             value=request.value,
             created_by=actor,
             pool_id=pool_id
@@ -436,10 +439,9 @@ class TerminologyService:
             terminology_id=terminology_id,
             terminology_pool_id=terminology.pool_id,
             terminology_code=terminology.code,
-            code=request.code,
             value=request.value,
             aliases=request.aliases,
-            label=request.label,
+            label=label,
             description=request.description,
             sort_order=request.sort_order,
             parent_term_id=request.parent_term_id,
@@ -456,10 +458,9 @@ class TerminologyService:
             action="created",
             changed_by=actor,
             new_values={
-                "code": request.code,
                 "value": request.value,
                 "aliases": request.aliases,
-                "label": request.label,
+                "label": label,
             },
             pool_id=pool_id
         )
@@ -537,7 +538,7 @@ class TerminologyService:
             logger.debug(f"Registering {len(batch_terms)} terms with registry...")
             batch_registry_results = await client.register_terms_bulk(
                 terminology_id=terminology_id,
-                terms=[{"code": t.code, "value": t.value} for t in batch_terms],
+                terms=[{"code": t.value, "value": t.value} for t in batch_terms],
                 created_by=actor,
                 registry_batch_size=registry_batch_size,
                 pool_id=pool_id,
@@ -549,22 +550,22 @@ class TerminologyService:
                 r["registry_id"] for r in batch_registry_results
                 if r.get("status") != "error" and r.get("registry_id")
             ]
-            batch_codes = [t.code for t in batch_terms]
+            batch_values = [t.value for t in batch_terms]
 
             existing_by_id = {}
-            existing_by_code = {}
+            existing_by_value = {}
             if batch_ids:
                 existing_terms = await Term.find(
                     {"term_id": {"$in": batch_ids}}
                 ).to_list()
                 existing_by_id = {t.term_id: t for t in existing_terms}
-            if batch_codes:
-                code_matches = await Term.find({
+            if batch_values:
+                value_matches = await Term.find({
                     "pool_id": pool_id,
                     "terminology_id": terminology_id,
-                    "code": {"$in": batch_codes}
+                    "value": {"$in": batch_values}
                 }).to_list()
-                existing_by_code = {t.code: t for t in code_matches}
+                existing_by_value = {t.value: t for t in value_matches}
 
             # Phase D: Partition this batch into create/skip/error
             terms_to_insert: list[Term] = []
@@ -577,32 +578,35 @@ class TerminologyService:
                     results[global_idx] = BulkOperationResult(
                         index=global_idx,
                         status="error",
-                        code=term_req.code,
+                        value=term_req.value,
                         error=reg_result.get("error")
                     )
                     continue
 
                 term_id = reg_result["registry_id"]
 
-                # Check duplicates by term_id or by code within terminology
-                existing = existing_by_id.get(term_id) or existing_by_code.get(term_req.code)
+                # Check duplicates by term_id or by value within terminology
+                existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
                 if existing:
                     if skip_duplicates or update_existing:
                         results[global_idx] = BulkOperationResult(
                             index=global_idx,
                             status="skipped" if skip_duplicates else "updated",
                             id=existing.term_id,
-                            code=term_req.code,
+                            value=term_req.value,
                             error="Already exists" if skip_duplicates else None
                         )
                     else:
                         results[global_idx] = BulkOperationResult(
                             index=global_idx,
                             status="error",
-                            code=term_req.code,
-                            error=f"Term with code '{term_req.code}' already exists"
+                            value=term_req.value,
+                            error=f"Term with value '{term_req.value}' already exists"
                         )
                     continue
+
+                # Default label to value if not provided
+                label = term_req.label or term_req.value
 
                 # Build Term document for batch insert
                 term = Term(
@@ -611,10 +615,9 @@ class TerminologyService:
                     terminology_id=terminology_id,
                     terminology_pool_id=terminology.pool_id,
                     terminology_code=terminology.code,
-                    code=term_req.code,
                     value=term_req.value,
                     aliases=term_req.aliases,
-                    label=term_req.label,
+                    label=label,
                     description=term_req.description,
                     sort_order=term_req.sort_order,
                     parent_term_id=term_req.parent_term_id,
@@ -637,7 +640,7 @@ class TerminologyService:
                             index=idx,
                             status="created",
                             id=term.term_id,
-                            code=term.code,
+                            value=term.value,
                         )
                         batch_created += 1
                 except BulkWriteError as bwe:
@@ -655,7 +658,7 @@ class TerminologyService:
                             results[idx] = BulkOperationResult(
                                 index=idx,
                                 status="error",
-                                code=term.code,
+                                value=term.value,
                                 error=error_messages.get(pos, "Insert failed"),
                             )
                         else:
@@ -663,7 +666,7 @@ class TerminologyService:
                                 index=idx,
                                 status="created",
                                 id=term.term_id,
-                                code=term.code,
+                                value=term.value,
                             )
                             batch_created += 1
 
@@ -677,7 +680,6 @@ class TerminologyService:
                     changed_by=actor,
                     changed_at=now,
                     new_values={
-                        "code": terms_to_insert[pos].code,
                         "value": terms_to_insert[pos].value,
                         "aliases": terms_to_insert[pos].aliases,
                         "label": terms_to_insert[pos].label,
@@ -714,30 +716,20 @@ class TerminologyService:
     @staticmethod
     async def get_term(
         term_id: Optional[str] = None,
-        terminology_id: Optional[str] = None,
-        code: Optional[str] = None
     ) -> Optional[TermResponse]:
         """
-        Get a term by ID or by terminology+code.
+        Get a term by ID.
 
         Args:
             term_id: Term ID
-            terminology_id: Terminology ID (with code)
-            code: Term code (with terminology_id)
 
         Returns:
             Term if found, None otherwise
         """
-        if term_id:
-            term = await Term.find_one({"term_id": term_id})
-        elif terminology_id and code:
-            term = await Term.find_one({
-                "terminology_id": terminology_id,
-                "code": code
-            })
-        else:
+        if not term_id:
             return None
 
+        term = await Term.find_one({"term_id": term_id})
         if term:
             return TerminologyService._to_term_response(term)
         return None
@@ -773,9 +765,7 @@ class TerminologyService:
 
         # Add search filter if provided
         if search:
-            search_lower = search.lower()
             query["$or"] = [
-                {"code": {"$regex": search, "$options": "i"}},
                 {"value": {"$regex": search, "$options": "i"}},
                 {"aliases": {"$regex": search, "$options": "i"}}
             ]
@@ -786,7 +776,7 @@ class TerminologyService:
         # Get paginated results
         skip = (page - 1) * page_size
         terms = await Term.find(query) \
-            .sort([("sort_order", 1), ("code", 1)]) \
+            .sort([("sort_order", 1), ("value", 1)]) \
             .skip(skip) \
             .limit(page_size) \
             .to_list()
@@ -801,7 +791,6 @@ class TerminologyService:
         """
         Update a term.
 
-        If code changes, adds a synonym in the Registry.
         Creates an audit log entry for all changes.
         """
         term = await Term.find_one({"term_id": term_id})
@@ -813,39 +802,17 @@ class TerminologyService:
         previous_values = {}
         new_values = {}
 
-        # Track if code is changing
-        old_code = term.code
-        code_changed = request.code and request.code != old_code
-
-        if code_changed:
-            # Check new code doesn't exist within same pool
+        # Check value uniqueness if value is changing
+        if request.value is not None and request.value != term.value:
             existing = await Term.find_one({
                 "pool_id": term.pool_id,
                 "terminology_id": term.terminology_id,
-                "code": request.code
+                "value": request.value
             })
             if existing:
-                raise ValueError(f"Term with code '{request.code}' already exists")
-
-            # Add synonym
-            client = get_registry_client()
-            await client.add_synonym(
-                pool_id=term.pool_id,
-                target_id=term_id,
-                new_code=request.code,
-                additional_fields={
-                    "terminology_id": term.terminology_id,
-                    "value": request.value or term.value
-                }
-            )
+                raise ValueError(f"Term with value '{request.value}' already exists")
 
         # Apply updates and track changes
-        if request.code is not None and request.code != term.code:
-            changed_fields.append("code")
-            previous_values["code"] = term.code
-            new_values["code"] = request.code
-            term.code = request.code
-
         if request.value is not None and request.value != term.value:
             changed_fields.append("value")
             previous_values["value"] = term.value
@@ -991,7 +958,7 @@ class TerminologyService:
         """
         Validate a value against a terminology.
 
-        Matches against code, value, OR aliases.
+        Matches against value OR aliases.
 
         Args:
             terminology_id: Terminology ID
@@ -1000,7 +967,7 @@ class TerminologyService:
 
         Returns:
             Tuple of (is_valid, matched_term, matched_via, suggestion)
-            matched_via is 'code', 'value', or 'alias' if matched
+            matched_via is 'value' or 'alias' if matched
         """
         # Find terminology
         if terminology_id:
@@ -1022,12 +989,9 @@ class TerminologyService:
             "status": "active"
         }).to_list()
 
-        # Try to find match by code, value, or alias
+        # Try to find match by value or alias
         for term in terms:
             if terminology.case_sensitive:
-                # Check code
-                if term.code == value:
-                    return (True, term, "code", None)
                 # Check value
                 if term.value == value:
                     return (True, term, "value", None)
@@ -1036,8 +1000,6 @@ class TerminologyService:
                     return (True, term, "alias", None)
             else:
                 # Case-insensitive matching
-                if term.code.lower() == compare_value:
-                    return (True, term, "code", None)
                 if term.value.lower() == compare_value:
                     return (True, term, "value", None)
                 if any(alias.lower() == compare_value for alias in term.aliases):
@@ -1086,10 +1048,9 @@ class TerminologyService:
             term_id=t.term_id,
             terminology_id=t.terminology_id,
             terminology_code=t.terminology_code,
-            code=t.code,
             value=t.value,
             aliases=t.aliases,
-            label=t.label,
+            label=t.label or t.value,
             description=t.description,
             sort_order=t.sort_order,
             parent_term_id=t.parent_term_id,

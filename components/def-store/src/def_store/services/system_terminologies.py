@@ -38,7 +38,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
         },
         "terms": [
             {
-                "code": "SECONDS",
                 "value": "seconds",
                 "label": "Seconds",
                 "aliases": ["sec", "s", "second"],
@@ -46,7 +45,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "sort_order": 1
             },
             {
-                "code": "MINUTES",
                 "value": "minutes",
                 "label": "Minutes",
                 "aliases": ["min", "m", "minute"],
@@ -54,7 +52,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "sort_order": 2
             },
             {
-                "code": "HOURS",
                 "value": "hours",
                 "label": "Hours",
                 "aliases": ["hr", "h", "hour"],
@@ -62,7 +59,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "sort_order": 3
             },
             {
-                "code": "DAYS",
                 "value": "days",
                 "label": "Days",
                 "aliases": ["d", "day"],
@@ -70,7 +66,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "sort_order": 4
             },
             {
-                "code": "WEEKS",
                 "value": "weeks",
                 "label": "Weeks",
                 "aliases": ["wk", "w", "week"],
@@ -162,7 +157,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 # Check if term already exists
                 existing_term = await Term.find_one({
                     "terminology_id": terminology_id,
-                    "code": term_data["code"]
+                    "value": term_data["value"]
                 })
 
                 if existing_term:
@@ -176,7 +171,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 try:
                     results = await registry.register_terms_bulk(
                         terminology_id=terminology_id,
-                        terms=[{"code": t["code"], "value": t["value"]} for t in terms_to_create],
+                        terms=[{"value": t["value"]} for t in terms_to_create],
                         created_by="system:bootstrap"
                     )
                 except RegistryError as e:
@@ -193,7 +188,6 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                         term_id=term_id,
                         terminology_id=terminology_id,
                         terminology_code=term_def["code"],
-                        code=term_data["code"],
                         value=term_data["value"],
                         aliases=term_data.get("aliases", []),
                         label=term_data.get("label", term_data["value"]),
@@ -228,7 +222,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
     return summary
 
 
-def get_time_unit_factor(term_code: str) -> int | None:
+def get_time_unit_factor(term_value: str) -> int | None:
     """
     Get the conversion factor for a time unit term.
 
@@ -236,7 +230,7 @@ def get_time_unit_factor(term_code: str) -> int | None:
     looks up the factor from the system terminology definition.
 
     Args:
-        term_code: The term code (e.g., 'DAYS', 'HOURS')
+        term_value: The term value (e.g., 'days', 'hours')
 
     Returns:
         Factor in seconds, or None if not found
@@ -244,7 +238,7 @@ def get_time_unit_factor(term_code: str) -> int | None:
     for term_def in SYSTEM_TERMINOLOGIES:
         if term_def["code"] == "_TIME_UNITS":
             for term in term_def["terms"]:
-                if term["code"] == term_code:
+                if term["value"] == term_value:
                     return term["metadata"]["factor"]
     return None
 

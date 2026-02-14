@@ -69,10 +69,9 @@ export interface TermTranslation {
 export interface Term {
   term_id: string
   terminology_id: string
-  code: string
   value: string
   aliases: string[]
-  label: string
+  label?: string
   description?: string
   sort_order: number
   parent_term_id?: string
@@ -88,10 +87,9 @@ export interface Term {
 }
 
 export interface CreateTermRequest {
-  code: string
   value: string
   aliases?: string[]
-  label: string
+  label?: string
   description?: string
   sort_order?: number
   parent_term_id?: string
@@ -101,7 +99,6 @@ export interface CreateTermRequest {
 }
 
 export interface UpdateTermRequest {
-  code?: string
   value?: string
   aliases?: string[]
   label?: string
@@ -141,7 +138,7 @@ export interface BulkOperationResult {
   index: number
   status: 'created' | 'updated' | 'error' | 'skipped'
   id?: string
-  code?: string
+  value?: string
   error?: string
 }
 

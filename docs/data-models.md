@@ -29,10 +29,10 @@ This document defines the conceptual data structures used throughout World In a 
 │   │    Term      │                   ▼                                      │
 │   │              │            ┌──────────────────┐                          │
 │   │ • term_id    │            │  FieldDefinition │                          │
-│   │ • code       │            │                  │                          │
 │   │ • value      │◄───────────│ • name, label    │                          │
 │   │ • aliases[]  │  canonical │ • type           │                          │
-│   │ • parent_id  │  IDs       │ • terminology_ref│                          │
+│   │ • label?     │  IDs       │ • terminology_ref│                          │
+│   │ • parent_id  │            │ • template_ref   │                          │
 │   └──────────────┘            │ • template_ref   │                          │
 │                               │ • version_strategy│                         │
 │                               └──────────────────┘                          │
@@ -122,20 +122,19 @@ class Term(BaseModel):
         ...,
         description="Parent terminology reference"
     )
-    code: str = Field(
-        ...,
-        description="Short code for the term",
-        examples=["M", "F", "OTHER"]
-    )
     value: str = Field(
         ...,
-        description="Primary display value",
+        description="Primary value (unique within terminology)",
         examples=["Male", "Female"]
     )
     aliases: list[str] = Field(
         default_factory=list,
         description="Alternative values that resolve to this term",
         examples=[["MR", "Mr", "Mr.", "MALE"]]
+    )
+    label: str | None = Field(
+        None,
+        description="Display label (defaults to value if not set)"
     )
     description: str | None = Field(
         None,
@@ -172,9 +171,9 @@ class Term(BaseModel):
 {
   "term_id": "T-000001",
   "terminology_id": "TERM-000001",
-  "code": "M",
   "value": "Male",
   "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"],
+  "label": "Male",
   "description": "Male gender identity",
   "status": "active",
   "parent_id": null,
@@ -195,9 +194,8 @@ class Term(BaseModel):
 ### Term Alias Resolution
 
 When validating a value against a terminology, the system checks in order:
-1. **code** - Exact match on term code
-2. **value** - Exact match on primary value
-3. **aliases** - Match against any alias
+1. **value** - Exact match on primary value
+2. **aliases** - Match against any alias
 
 The validation response indicates which match type was used:
 
@@ -258,7 +256,6 @@ class TermAuditEntry(BaseModel):
   {
     "term_id": "T-000010",
     "terminology_id": "TERM-000005",
-    "code": "ENG",
     "value": "Engineering",
     "parent_id": null,
     "sort_order": 1
@@ -266,7 +263,6 @@ class TermAuditEntry(BaseModel):
   {
     "term_id": "T-000011",
     "terminology_id": "TERM-000005",
-    "code": "FE",
     "value": "Frontend",
     "parent_id": "T-000010",
     "sort_order": 1
@@ -274,7 +270,6 @@ class TermAuditEntry(BaseModel):
   {
     "term_id": "T-000012",
     "terminology_id": "TERM-000005",
-    "code": "BE",
     "value": "Backend",
     "parent_id": "T-000010",
     "sort_order": 2

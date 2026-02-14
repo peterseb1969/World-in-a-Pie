@@ -197,27 +197,20 @@ class DefStoreClient:
         Build lookup indexes for fast term validation.
 
         Returns a dict mapping lowercase values to term data:
-        - code (lowercase) -> term
         - value (lowercase) -> term
         - each alias (lowercase) -> term
         """
         lookup = {}
         for term in terms:
             term_id = term.get("term_id")
-            code = term.get("code", "").lower()
             value = term.get("value", "").lower()
             aliases = term.get("aliases", [])
 
             # Create term reference data
             term_ref = {
                 "term_id": term_id,
-                "code": term.get("code"),
                 "value": term.get("value"),
             }
-
-            # Index by code
-            if code:
-                lookup[code] = {"term": term_ref, "matched_via": "code"}
 
             # Index by value
             if value:

@@ -176,13 +176,7 @@ async function onDeprecated() {
         </template>
       </Column>
 
-      <Column field="code" header="Code" sortable style="width: 12%">
-        <template #body="{ data }">
-          <span class="code-badge">{{ data.code }}</span>
-        </template>
-      </Column>
-
-      <Column field="value" header="Value" sortable style="width: 12%">
+      <Column field="value" header="Value" sortable style="width: 18%">
         <template #body="{ data }">
           <code class="value-text">{{ data.value }}</code>
         </template>
@@ -324,14 +318,6 @@ async function onDeprecated() {
 .id-badge {
   font-family: monospace;
   color: var(--p-text-muted-color);
-  font-size: 0.8rem;
-}
-
-.code-badge {
-  font-family: monospace;
-  background: var(--p-surface-100);
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
   font-size: 0.8rem;
 }
 

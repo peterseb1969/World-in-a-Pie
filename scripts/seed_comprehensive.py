@@ -226,7 +226,7 @@ class WIPSeeder:
         # Track created resources
         self.created_terminologies: dict[str, str] = {}  # code -> id
         self.created_templates: dict[str, str] = {}  # code -> id
-        self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_code -> {term_code -> term_id}
+        self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_code -> {term_value -> term_id}
         self.created_documents: list[str] = []
 
     def check_services(self, services: list[str]) -> bool:
@@ -280,7 +280,7 @@ class WIPSeeder:
                         params={"limit": 500}
                     )
                     self.created_term_ids[code] = {
-                        t["code"]: t["term_id"] for t in terms_resp.get("items", [])
+                        t["value"]: t["term_id"] for t in terms_resp.get("items", [])
                     }
                     stats["terms"] += len(self.created_term_ids[code])
                     continue
@@ -311,19 +311,18 @@ class WIPSeeder:
                 if terms:
                     self.created_term_ids[code] = {}
 
-                    # Need to handle parent_code references
+                    # Need to handle parent_value references
                     # First pass: create terms without parents
-                    terms_without_parents = [t for t in terms if "parent_code" not in t]
-                    terms_with_parents = [t for t in terms if "parent_code" in t]
+                    terms_without_parents = [t for t in terms if "parent_value" not in t]
+                    terms_with_parents = [t for t in terms if "parent_value" in t]
 
                     # Create non-parent terms in bulk
                     if terms_without_parents:
                         bulk_terms = []
                         for t in terms_without_parents:
                             term_data = {
-                                "code": t["code"],
                                 "value": t["value"],
-                                "label": t.get("label", t["value"]),
+                                "label": t.get("label"),
                                 "aliases": t.get("aliases", []),
                                 "sort_order": t.get("sort_order"),
                                 "metadata": t.get("metadata", {}),
@@ -339,22 +338,21 @@ class WIPSeeder:
 
                         for r in bulk_result.get("results", []):
                             if r.get("term_id"):
-                                # Find the term code from the index
+                                # Find the term value from the index
                                 idx = r.get("index", 0)
                                 if idx < len(bulk_terms):
-                                    term_code = bulk_terms[idx]["code"]
-                                    self.created_term_ids[code][term_code] = r["term_id"]
+                                    term_value = bulk_terms[idx]["value"]
+                                    self.created_term_ids[code][term_value] = r["term_id"]
                                     stats["terms"] += 1
 
                     # Create terms with parents (need parent term_id)
                     for t in terms_with_parents:
-                        parent_code = t["parent_code"]
-                        parent_term_id = self.created_term_ids[code].get(parent_code)
+                        parent_value = t["parent_value"]
+                        parent_term_id = self.created_term_ids[code].get(parent_value)
 
                         term_data = {
-                            "code": t["code"],
                             "value": t["value"],
-                            "label": t.get("label", t["value"]),
+                            "label": t.get("label"),
                             "aliases": t.get("aliases", []),
                             "sort_order": t.get("sort_order"),
                             "parent_term_id": parent_term_id,
@@ -368,10 +366,10 @@ class WIPSeeder:
                                 f"/api/def-store/terminologies/{terminology_id}/terms",
                                 term_data
                             )
-                            self.created_term_ids[code][t["code"]] = result["term_id"]
+                            self.created_term_ids[code][t["value"]] = result["term_id"]
                             stats["terms"] += 1
                         except Exception as e:
-                            print(f"    Error creating term {t['code']}: {e}")
+                            print(f"    Error creating term {t['value']}: {e}")
                             stats["errors"] += 1
 
             except Exception as e:

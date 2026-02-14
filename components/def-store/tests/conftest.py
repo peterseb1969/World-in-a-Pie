@@ -70,7 +70,7 @@ def create_mock_registry_client():
             results.append({
                 "status": "registered",
                 "registry_id": f"T-{_term_counter:06d}",
-                "code": term["code"]
+                "value": term["value"]
             })
         return results
 

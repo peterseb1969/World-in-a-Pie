@@ -583,7 +583,7 @@ class ValidationService:
         if not isinstance(value, str):
             result.add_error(
                 code="invalid_type",
-                message=f"Field '{field_path}' must be a string (term code)",
+                message=f"Field '{field_path}' must be a string (term value)",
                 field=field_path
             )
 

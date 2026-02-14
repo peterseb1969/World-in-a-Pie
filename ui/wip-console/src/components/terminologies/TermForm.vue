@@ -28,7 +28,6 @@ const isEdit = computed(() => !!props.term)
 const dialogTitle = computed(() => isEdit.value ? 'Edit Term' : 'Create Term')
 
 const form = ref({
-  code: '',
   value: '',
   aliases: [] as string[],
   label: '',
@@ -45,10 +44,9 @@ watch(
     if (visible) {
       if (props.term) {
         form.value = {
-          code: props.term.code,
           value: props.term.value,
           aliases: props.term.aliases || [],
-          label: props.term.label,
+          label: props.term.label || '',
           description: props.term.description || '',
           sort_order: props.term.sort_order
         }
@@ -64,7 +62,6 @@ function resetForm() {
   // Calculate next sort order
   const maxOrder = termStore.terms.reduce((max, t) => Math.max(max, t.sort_order), -1)
   form.value = {
-    code: '',
     value: '',
     aliases: [],
     label: '',
@@ -76,18 +73,8 @@ function resetForm() {
 function validate(): boolean {
   errors.value = {}
 
-  if (!form.value.code.trim()) {
-    errors.value.code = 'Code is required'
-  } else if (!/^[A-Z0-9_]+$/.test(form.value.code)) {
-    errors.value.code = 'Code must be uppercase letters, numbers, and underscores only'
-  }
-
   if (!form.value.value.trim()) {
     errors.value.value = 'Value is required'
-  }
-
-  if (!form.value.label.trim()) {
-    errors.value.label = 'Label is required'
   }
 
   return Object.keys(errors.value).length === 0
@@ -100,27 +87,25 @@ async function submit() {
   try {
     if (isEdit.value && props.term) {
       const updateData: UpdateTermRequest = {
-        code: form.value.code !== props.term.code ? form.value.code : undefined,
         value: form.value.value,
         aliases: form.value.aliases,
-        label: form.value.label,
+        label: form.value.label || undefined,
         description: form.value.description || undefined,
         sort_order: form.value.sort_order
       }
       await termStore.updateTerm(props.term.term_id, updateData)
-      uiStore.showSuccess('Term Updated', `"${form.value.label}" has been updated`)
+      uiStore.showSuccess('Term Updated', `"${form.value.label || form.value.value}" has been updated`)
       emit('updated')
     } else {
       const createData: CreateTermRequest = {
-        code: form.value.code,
         value: form.value.value,
         aliases: form.value.aliases.length > 0 ? form.value.aliases : undefined,
-        label: form.value.label,
+        label: form.value.label || undefined,
         description: form.value.description || undefined,
         sort_order: form.value.sort_order
       }
       await termStore.createTerm(props.terminologyId, createData)
-      uiStore.showSuccess('Term Created', `"${form.value.label}" has been created`)
+      uiStore.showSuccess('Term Created', `"${form.value.label || form.value.value}" has been created`)
       emit('created')
     }
     emit('update:visible', false)
@@ -135,16 +120,13 @@ function cancel() {
   emit('update:visible', false)
 }
 
-// Auto-fill value and label from code
-function onCodeChange() {
-  if (!isEdit.value && form.value.code && !form.value.value) {
-    form.value.value = form.value.code.toLowerCase()
-  }
-  if (!isEdit.value && form.value.code && !form.value.label) {
-    // Convert SNAKE_CASE to Title Case
-    form.value.label = form.value.code
-      .split('_')
-      .map(word => word.charAt(0) + word.slice(1).toLowerCase())
+// Auto-fill label from value (Title Case)
+function onValueBlur() {
+  if (!isEdit.value && form.value.value && !form.value.label) {
+    // Convert value to Title Case for label suggestion
+    form.value.label = form.value.value
+      .split(/[\s_-]+/)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ')
   }
 }
@@ -159,21 +141,6 @@ function onCodeChange() {
     modal
   >
     <form @submit.prevent="submit" class="term-form">
-      <div class="form-row">
-        <div class="form-field">
-          <label for="code">Code *</label>
-          <InputText
-            id="code"
-            v-model="form.code"
-            :class="{ 'p-invalid': errors.code }"
-            placeholder="e.g., APPROVED"
-            @blur="onCodeChange"
-          />
-          <small v-if="errors.code" class="p-error">{{ errors.code }}</small>
-          <small v-else class="help-text">Machine identifier (e.g., APPROVED). Uppercase letters, numbers, underscores.</small>
-        </div>
-      </div>
-
       <div class="form-row two-cols">
         <div class="form-field">
           <label for="value">Value *</label>
@@ -181,10 +148,11 @@ function onCodeChange() {
             id="value"
             v-model="form.value"
             :class="{ 'p-invalid': errors.value }"
-            placeholder="e.g., approved"
+            placeholder="e.g., Approved"
+            @blur="onValueBlur"
           />
           <small v-if="errors.value" class="p-error">{{ errors.value }}</small>
-          <small v-else class="help-text">The value stored in document data fields</small>
+          <small v-else class="help-text">The unique value stored in documents. Used for matching and validation.</small>
         </div>
 
         <div class="form-field">
@@ -200,15 +168,13 @@ function onCodeChange() {
 
       <div class="form-row">
         <div class="form-field">
-          <label for="label">Label *</label>
+          <label for="label">Label</label>
           <InputText
             id="label"
             v-model="form.label"
-            :class="{ 'p-invalid': errors.label }"
-            placeholder="e.g., Approved"
+            placeholder="Defaults to value if empty"
           />
-          <small v-if="errors.label" class="p-error">{{ errors.label }}</small>
-          <small v-else class="help-text">Human-readable display text shown in dropdowns and forms</small>
+          <small class="help-text">Human-readable display text shown in dropdowns and forms</small>
         </div>
       </div>
 

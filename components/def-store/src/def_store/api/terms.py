@@ -125,7 +125,7 @@ async def list_terms(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
-    search: Optional[str] = Query(None, description="Search in code, value, aliases"),
+    search: Optional[str] = Query(None, description="Search in value, aliases"),
     api_key: str = Depends(require_api_key)
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
@@ -174,33 +174,6 @@ async def get_term(
     return result
 
 
-@router.get(
-    "/terminologies/{terminology_id}/terms/by-code/{code}",
-    response_model=TermResponse,
-    summary="Get a term by code"
-)
-async def get_term_by_code(
-    terminology_id: str,
-    code: str,
-    api_key: str = Depends(require_api_key)
-) -> TermResponse:
-    """Get a term by its code within a terminology."""
-    # Resolve terminology ID if code was provided
-    terminology = await Terminology.find_one({"terminology_id": terminology_id})
-    if not terminology:
-        terminology = await Terminology.find_one({"code": terminology_id})
-        if not terminology:
-            raise HTTPException(status_code=404, detail="Terminology not found")
-
-    result = await TerminologyService.get_term(
-        terminology_id=terminology.terminology_id,
-        code=code
-    )
-    if not result:
-        raise HTTPException(status_code=404, detail="Term not found")
-    return result
-
-
 @router.put(
     "/terms/{term_id}",
     response_model=TermResponse,
@@ -211,11 +184,7 @@ async def update_term(
     request: UpdateTermRequest,
     api_key: str = Depends(require_api_key)
 ) -> TermResponse:
-    """
-    Update a term.
-
-    If the code changes, a synonym will be added in the Registry.
-    """
+    """Update a term."""
     try:
         result = await TerminologyService.update_term(term_id, request)
         if not result:
