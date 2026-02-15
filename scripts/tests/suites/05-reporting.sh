@@ -31,23 +31,27 @@ test_postgres_connection() {
 }
 
 test_postgres_schema_exists() {
-    local tables
-    tables=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null)
+    # Retry up to 10s for reporting-sync to create schema tables (slower on Pi)
+    local deadline=$(($(date +%s) + 10))
+    while true; do
+        local tables
+        tables=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'" 2>/dev/null)
 
-    # Reporting-sync creates doc_<template_value> tables per template, plus internal tables
-    # Check for internal tables and at least one doc_ table
-    if ! echo "$tables" | grep -q "_wip_sync_status"; then
-        echo "Required table missing: _wip_sync_status"
-        return 1
-    fi
+        if echo "$tables" | grep -q "_wip_sync_status" && echo "$tables" | grep -q "doc_"; then
+            return 0
+        fi
 
-    # Check for at least one doc_ table (created when documents are synced)
-    if ! echo "$tables" | grep -q "doc_"; then
-        echo "No doc_* tables found (documents not yet synced)"
-        return 1
-    fi
-    return 0
+        if [[ $(date +%s) -ge $deadline ]]; then
+            if ! echo "$tables" | grep -q "_wip_sync_status"; then
+                echo "Required table missing: _wip_sync_status"
+            else
+                echo "No doc_* tables found (documents not yet synced)"
+            fi
+            return 1
+        fi
+        sleep 1
+    done
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,24 +59,23 @@ test_postgres_schema_exists() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 test_documents_synced() {
-    # Count total rows across all doc_* tables
-    local count
-    count=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
-        "SELECT COALESCE(SUM(cnt), 0) FROM (
-            SELECT COUNT(*) as cnt FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_name LIKE 'doc_%'
-        ) t" 2>/dev/null | tr -d ' ')
+    # Retry up to 10s for reporting-sync to create and populate doc_* tables
+    local deadline=$(($(date +%s) + 10))
+    while true; do
+        local table_count
+        table_count=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
+            "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'doc_%'" 2>/dev/null | tr -d ' ')
 
-    # Check if we have at least one doc_ table
-    local table_count
-    table_count=$(podman exec wip-postgres psql -U wip -d wip_reporting -t -c \
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'doc_%'" 2>/dev/null | tr -d ' ')
+        if [[ "$table_count" -gt 0 ]]; then
+            return 0
+        fi
 
-    if [[ "$table_count" -gt 0 ]]; then
-        return 0
-    fi
-    echo "No doc_* tables found with data"
-    return 1
+        if [[ $(date +%s) -ge $deadline ]]; then
+            echo "No doc_* tables found with data"
+            return 1
+        fi
+        sleep 1
+    done
 }
 
 test_sync_status_tracking() {
