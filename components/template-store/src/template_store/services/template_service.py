@@ -70,10 +70,13 @@ class TemplateService:
         # Validate extends if provided
         parent_namespace: str | None = None
         if request.extends:
-            parent = await Template.find_one({"template_id": request.extends})
+            # Find latest version of parent (template_id is stable across versions)
+            parent_results = await Template.find({"template_id": request.extends}).sort([("version", -1)]).limit(1).to_list()
+            parent = parent_results[0] if parent_results else None
             if not parent:
                 # Try by value within same namespace
-                parent = await Template.find_one({"namespace": namespace, "value": request.extends})
+                parent_results = await Template.find({"namespace": namespace, "value": request.extends}).sort([("version", -1)]).limit(1).to_list()
+                parent = parent_results[0] if parent_results else None
                 if parent:
                     request.extends = parent.template_id
                 else:
@@ -103,11 +106,9 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register with Registry to get ID
+        # Register with Registry to get ID (empty composite key — always fresh)
         client = get_registry_client()
         template_id = await client.register_template(
-            value=request.value,
-            label=request.label,
             created_by=actor,
             namespace=namespace
         )
@@ -120,6 +121,7 @@ class TemplateService:
             label=request.label,
             description=request.description,
             extends=request.extends,
+            extends_version=request.extends_version,
             identity_fields=request.identity_fields,
             fields=request.fields,
             rules=request.rules,
@@ -144,6 +146,7 @@ class TemplateService:
     async def get_template(
         template_id: Optional[str] = None,
         value: Optional[str] = None,
+        version: Optional[int] = None,
         resolve_inheritance: bool = True,
         namespace: Optional[str] = None
     ) -> Optional[TemplateResponse]:
@@ -151,8 +154,9 @@ class TemplateService:
         Get a template by ID or value.
 
         Args:
-            template_id: Template ID
+            template_id: Template ID (stable across versions)
             value: Template value (e.g., 'PERSON')
+            version: Specific version number (default: latest)
             resolve_inheritance: Whether to resolve inheritance
             namespace: Namespace to search in (if None, searches globally by ID)
 
@@ -161,14 +165,26 @@ class TemplateService:
         """
         if template_id:
             # ID lookups can be global (for cross-namespace refs in open mode)
-            query = {"template_id": template_id}
+            query: dict = {"template_id": template_id}
             if namespace:
                 query["namespace"] = namespace
-            template = await Template.find_one(query)
+            if version is not None:
+                query["version"] = version
+                template = await Template.find_one(query)
+            else:
+                # Return latest version (highest version number)
+                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                template = results[0] if results else None
         elif value:
             # Value lookups require namespace (defaults to wip)
             ns = namespace or "wip"
-            template = await Template.find_one({"namespace": ns, "value": value})
+            query = {"namespace": ns, "value": value}
+            if version is not None:
+                query["version"] = version
+                template = await Template.find_one(query)
+            else:
+                results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
+                template = results[0] if results else None
         else:
             return None
 
@@ -354,6 +370,8 @@ class TemplateService:
             return True
         if request.extends is not None and request.extends != original.extends:
             return True
+        if request.extends_version is not None and request.extends_version != original.extends_version:
+            return True
         if request.identity_fields is not None:
             if request.identity_fields != original.identity_fields:
                 return True
@@ -434,7 +452,9 @@ class TemplateService:
         Returns:
             Update response indicating if a new version was created, or None if not found
         """
-        original = await Template.find_one({"template_id": template_id})
+        # Find the latest version of this template
+        originals = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        original = originals[0] if originals else None
         if not original:
             return None
 
@@ -470,9 +490,11 @@ class TemplateService:
         # Validate extends if changing
         extends_value = request.extends if request.extends is not None else original.extends
         if extends_value and extends_value != original.extends:
-            parent = await Template.find_one({"template_id": extends_value})
+            parent_results = await Template.find({"template_id": extends_value}).sort([("version", -1)]).limit(1).to_list()
+            parent = parent_results[0] if parent_results else None
             if not parent:
-                parent = await Template.find_one({"value": extends_value})
+                parent_results = await Template.find({"value": extends_value}).sort([("version", -1)]).limit(1).to_list()
+                parent = parent_results[0] if parent_results else None
                 if parent:
                     extends_value = parent.template_id
                 else:
@@ -487,23 +509,16 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register new version with Registry to get a new template_id
-        client = get_registry_client()
-        new_template_id = await client.register_template(
-            value=new_value,
-            label=request.label if request.label is not None else original.label,
-            version=new_version,
-            created_by=actor
-        )
-
+        # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version
         new_template = Template(
-            template_id=new_template_id,
+            template_id=original.template_id,
             value=new_value,
             label=request.label if request.label is not None else original.label,
             description=request.description if request.description is not None else original.description,
             version=new_version,
             extends=extends_value if extends_value else None,
+            extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
             fields=request.fields if request.fields is not None else original.fields,
             rules=request.rules if request.rules is not None else original.rules,
@@ -525,7 +540,7 @@ class TemplateService:
         )
 
         return TemplateUpdateResponse(
-            template_id=new_template_id,
+            template_id=original.template_id,
             value=new_value,
             version=new_version,
             is_new_version=True,
@@ -535,21 +550,31 @@ class TemplateService:
     @staticmethod
     async def delete_template(
         template_id: str,
-        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        updated_by: Optional[str] = None,  # Deprecated: uses authenticated identity
+        version: Optional[int] = None
     ) -> bool:
         """
-        Soft-delete a template (set status to inactive).
+        Soft-delete a template version (set status to inactive).
 
         Args:
             template_id: Template to delete
             updated_by: Deprecated - uses authenticated identity
+            version: Specific version to deactivate (None = latest)
 
         Returns:
             True if deleted, False if not found
         """
-        template = await Template.find_one({"template_id": template_id})
+        # Find the specific version or latest
+        if version is not None:
+            template = await Template.find_one({"template_id": template_id, "version": version})
+        else:
+            results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+            template = results[0] if results else None
         if not template:
             return False
+
+        if template.status == "inactive":
+            return True  # Already inactive
 
         # Check if any templates extend this one
         children = await InheritanceService.get_children(template_id)
@@ -600,10 +625,10 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register all templates with Registry
+        # Register all templates with Registry (empty composite keys)
         client = get_registry_client()
         registry_results = await client.register_templates_bulk(
-            templates=[{"value": t.value, "label": t.label} for t in templates],
+            count=len(templates),
             created_by=actor,
             namespace=namespace,
         )
@@ -622,8 +647,9 @@ class TemplateService:
 
             template_id = reg_result["registry_id"]
 
-            # Check if template already exists in our DB
-            existing = await Template.find_one({"template_id": template_id})
+            # Check if template already exists in our DB (any version)
+            existing_list = await Template.find({"template_id": template_id}).limit(1).to_list()
+            existing = existing_list[0] if existing_list else None
             if existing:
                 results.append(BulkOperationResult(
                     index=i,
@@ -661,6 +687,7 @@ class TemplateService:
                 label=template_req.label,
                 description=template_req.description,
                 extends=template_req.extends,
+                extends_version=template_req.extends_version,
                 identity_fields=template_req.identity_fields,
                 fields=template_req.fields,
                 rules=template_req.rules,
@@ -714,7 +741,8 @@ class TemplateService:
         Returns:
             Validation response with errors and warnings
         """
-        template = await Template.find_one({"template_id": template_id})
+        results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        template = results[0] if results else None
         if not template:
             return ValidateTemplateResponse(
                 valid=False,
@@ -915,8 +943,9 @@ class TemplateService:
         Raises:
             ValueError: If template not found
         """
-        # Find the target parent template
-        parent = await Template.find_one({"template_id": template_id})
+        # Find the target parent template (latest version)
+        parent_results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        parent = parent_results[0] if parent_results else None
         if not parent:
             raise ValueError(f"Template '{template_id}' not found")
 
@@ -944,7 +973,6 @@ class TemplateService:
 
         # Get authenticated identity
         actor = get_identity_string()
-        client = get_registry_client()
 
         results = []
         updated = 0
@@ -976,17 +1004,10 @@ class TemplateService:
                 ).sort([("version", -1)]).limit(1).to_list()
                 new_version = max_ver[0].version + 1 if max_ver else 1
 
-                # Register new version with Registry
-                new_child_id = await client.register_template(
-                    value=child.value,
-                    label=child.label,
-                    version=new_version,
-                    created_by=actor
-                )
-
+                # Stable ID: reuse child's template_id (no Registry call)
                 # Create new child version with updated extends pointer
                 new_child = Template(
-                    template_id=new_child_id,
+                    template_id=child.template_id,
                     value=child.value,
                     label=child.label,
                     description=child.description,
@@ -1016,7 +1037,7 @@ class TemplateService:
                 results.append(CascadeResult(
                     value=child.value,
                     old_template_id=child.template_id,
-                    new_template_id=new_child_id,
+                    new_template_id=child.template_id,
                     new_version=new_version,
                     status="updated"
                 ))
@@ -1344,7 +1365,8 @@ class TemplateService:
         """
         from ..models.api_models import ActivateTemplateResponse, ActivationDetail
 
-        template = await Template.find_one({"template_id": template_id})
+        results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        template = results[0] if results else None
         if not template:
             raise ValueError(f"Template '{template_id}' not found")
         if template.status != "draft":
@@ -1453,6 +1475,7 @@ class TemplateService:
             "description": t.description,
             "version": t.version,
             "extends": t.extends,
+            "extends_version": t.extends_version,
             "identity_fields": t.identity_fields,
             "fields": [f.model_dump() for f in t.fields] if t.fields else [],
             "rules": [r.model_dump() for r in t.rules] if t.rules else [],
@@ -1476,6 +1499,7 @@ class TemplateService:
             description=t.description,
             version=t.version,
             extends=t.extends,
+            extends_version=t.extends_version,
             identity_fields=t.identity_fields,
             fields=t.fields,
             rules=t.rules,
@@ -1496,18 +1520,19 @@ class TemplateService:
         """
         Find a template by reference (ID or value).
 
-        Tries ID lookup first, then value lookup within namespace.
+        Returns the latest version. Tries ID lookup first, then value lookup within namespace.
 
         Args:
             ref: Template ID or value
             namespace: Namespace for value lookups
         """
-        # Try by template_id first
-        template = await Template.find_one({"template_id": ref})
-        if template:
-            return template
-        # Try by value within namespace
-        return await Template.find_one({"namespace": namespace, "value": ref})
+        # Try by template_id first (return latest version)
+        results = await Template.find({"template_id": ref}).sort([("version", -1)]).limit(1).to_list()
+        if results:
+            return results[0]
+        # Try by value within namespace (return latest version)
+        results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", -1)]).limit(1).to_list()
+        return results[0] if results else None
 
     @staticmethod
     async def _resolve_to_template_id(
@@ -1531,21 +1556,20 @@ class TemplateService:
         if known_templates and ref in known_templates:
             return known_templates[ref]
 
-        # Try by template_id
-        template = await Template.find_one({"template_id": ref})
-        if template:
+        # Try by template_id (stable ID — check if any version exists)
+        exists = await Template.find({"template_id": ref}).limit(1).to_list()
+        if exists:
             return ref
 
-        # It's a value — resolve to latest active template_id in the namespace
-        template = await Template.find_one(
-            {"namespace": namespace, "value": ref, "status": "active"},
-            sort=[("version", -1)]
-        )
-        if not template:
+        # It's a value — resolve to template_id of the latest active version
+        results = await Template.find(
+            {"namespace": namespace, "value": ref, "status": "active"}
+        ).sort([("version", -1)]).limit(1).to_list()
+        if not results:
             raise ValueError(
                 f"No active template with value '{ref}' found in namespace '{namespace}'"
             )
-        return template.template_id
+        return results[0].template_id
 
     @staticmethod
     async def _resolve_to_terminology_id(

@@ -101,7 +101,14 @@ abstract class BaseApiClient {
       (response) => response,
       (error: AxiosError<ApiError>) => {
         const status = error.response?.status
-        const message = error.response?.data?.detail || error.message
+        const detail = error.response?.data?.detail
+        let message: string
+        if (typeof detail === 'object' && detail !== null) {
+          const d = detail as Record<string, unknown>
+          message = String(d.message || d.error || JSON.stringify(detail))
+        } else {
+          message = String(detail || error.message)
+        }
 
         // Handle auth errors (401 Unauthorized, 403 Forbidden)
         if (status === 401 || status === 403) {
@@ -310,13 +317,15 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async getTemplate(id: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/${id}`)
+  async getTemplate(id: string, version?: number): Promise<Template> {
+    const params = version ? { version } : undefined
+    const response = await this.client.get<Template>(`/templates/${id}`, { params })
     return response.data
   }
 
-  async getTemplateRaw(id: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/${id}/raw`)
+  async getTemplateRaw(id: string, version?: number): Promise<Template> {
+    const params = version ? { version } : undefined
+    const response = await this.client.get<Template>(`/templates/${id}/raw`, { params })
     return response.data
   }
 
@@ -350,9 +359,12 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async deleteTemplate(id: string, updatedBy?: string): Promise<void> {
-    const params = updatedBy ? { updated_by: updatedBy } : undefined
-    await this.client.delete(`/templates/${id}`, { params })
+  async deleteTemplate(id: string, options?: { updatedBy?: string; version?: number; force?: boolean }): Promise<void> {
+    const params: Record<string, unknown> = {}
+    if (options?.updatedBy) params.updated_by = options.updatedBy
+    if (options?.version) params.version = options.version
+    if (options?.force) params.force = true
+    await this.client.delete(`/templates/${id}`, { params: Object.keys(params).length ? params : undefined })
   }
 
   async validateTemplate(
@@ -418,12 +430,16 @@ class DocumentStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async updateDocument(templateId: string, data: Record<string, unknown>): Promise<DocumentCreateResponse> {
+  async updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<DocumentCreateResponse> {
     // Document Store uses upsert - POST with same identity fields creates a new version
-    const response = await this.client.post<DocumentCreateResponse>('/documents', {
+    const payload: CreateDocumentRequest = {
       template_id: templateId,
       data: data
-    })
+    }
+    if (namespace) {
+      payload.namespace = namespace
+    }
+    const response = await this.client.post<DocumentCreateResponse>('/documents', payload)
     return response.data
   }
 

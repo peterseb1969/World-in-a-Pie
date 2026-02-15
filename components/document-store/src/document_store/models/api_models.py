@@ -25,6 +25,10 @@ class DocumentCreateRequest(StrictModel):
         ...,
         description="Template ID to validate against"
     )
+    template_version: Optional[int] = Field(
+        None,
+        description="Specific template version to validate against (default: latest)"
+    )
     namespace: str = Field(
         default="wip",
         description="Namespace for the document"
@@ -87,11 +91,7 @@ class DocumentResponse(BaseModel):
     )
     latest_version: Optional[int] = Field(
         None,
-        description="The latest version number for this identity"
-    )
-    latest_document_id: Optional[str] = Field(
-        None,
-        description="Document ID of the latest version"
+        description="The latest version number for this document_id"
     )
 
     model_config = ConfigDict(from_attributes=True)

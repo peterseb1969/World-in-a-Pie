@@ -46,24 +46,21 @@ class RegistryClient:
 
     async def register_template(
         self,
-        value: str,
-        label: str,
-        version: int = 1,
         created_by: Optional[str] = None,
         namespace: str = "wip"
     ) -> str:
         """
         Register a new template in the Registry.
 
+        Uses empty composite key — templates don't support upsert via Registry.
+        Each call always generates a fresh template ID.
+
         Args:
-            value: Template value (e.g., 'PERSON')
-            label: Template label
-            version: Template version (included in composite key for versioning)
             created_by: User or system creating this
             namespace: Namespace for the template (default: wip)
 
         Returns:
-            Generated template ID (UUID by default)
+            Generated template ID
 
         Raises:
             RegistryError: If registration fails
@@ -75,13 +72,9 @@ class RegistryClient:
                 json=[{
                     "namespace": namespace,
                     "entity_type": "templates",
-                    "composite_key": {
-                        "value": value,
-                        "label": label,
-                        "version": version
-                    },
+                    "composite_key": {},
                     "created_by": created_by,
-                    "metadata": {"type": "template", "version": version}
+                    "metadata": {"type": "template"}
                 }]
             )
 
@@ -96,23 +89,21 @@ class RegistryClient:
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
-            if result["status"] == "already_exists":
-                # Return existing ID
-                return result["registry_id"]
-
             return result["registry_id"]
 
     async def register_templates_bulk(
         self,
-        templates: list[dict[str, Any]],
+        count: int,
         created_by: Optional[str] = None,
         namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple templates in the Registry.
 
+        Uses empty composite keys — each template gets a fresh ID.
+
         Args:
-            templates: List of template dicts with 'value', 'label', and optional 'version'
+            count: Number of template IDs to generate
             created_by: User or system creating these
             namespace: Namespace for the templates (default: wip)
 
@@ -126,15 +117,11 @@ class RegistryClient:
             {
                 "namespace": namespace,
                 "entity_type": "templates",
-                "composite_key": {
-                    "value": template["value"],
-                    "label": template["label"],
-                    "version": template.get("version", 1)
-                },
+                "composite_key": {},
                 "created_by": created_by,
-                "metadata": {"type": "template", "version": template.get("version", 1)}
+                "metadata": {"type": "template"}
             }
-            for template in templates
+            for _ in range(count)
         ]
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:

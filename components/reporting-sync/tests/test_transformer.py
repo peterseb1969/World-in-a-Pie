@@ -1,10 +1,17 @@
 """
-Tests for the document transformer.
+Tests for the document transformer and schema manager.
 """
 
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 from reporting_sync.transformer import DocumentTransformer
-from reporting_sync.models import ReportingConfig
+from reporting_sync.models import (
+    FieldType,
+    ReportingConfig,
+    SyncStrategy,
+    TemplateField,
+)
+from reporting_sync.schema_manager import SchemaManager
 
 
 class TestDocumentTransformer:
@@ -165,8 +172,8 @@ class TestDocumentTransformer:
         assert len(rows) == 1
         assert rows[0]["languages"] == '["English", "Spanish"]'
 
-    def test_upsert_sql_generation(self):
-        """Test UPSERT SQL generation."""
+    def test_upsert_sql_generation_latest_only(self):
+        """Test UPSERT SQL generation for latest_only strategy."""
         transformer = DocumentTransformer()
 
         row = {
@@ -182,4 +189,109 @@ class TestDocumentTransformer:
         assert "ON CONFLICT (document_id)" in sql
         assert "DO UPDATE SET" in sql
         assert "WHERE" in sql
+        # latest_only uses version comparison for conditional update
+        assert "version < EXCLUDED.version" in sql
         assert values == ["doc-123", 1, "active", "John"]
+
+    def test_upsert_sql_generation_all_versions(self):
+        """Test INSERT SQL generation for all_versions strategy uses composite PK."""
+        transformer = DocumentTransformer()
+
+        row = {
+            "document_id": "doc-123",
+            "version": 1,
+            "status": "active",
+            "name": "John",
+        }
+
+        sql, values = transformer.generate_upsert_sql("doc_person", row, "all_versions")
+
+        assert "INSERT INTO" in sql
+        # all_versions uses composite PK (document_id, version) for conflict
+        assert "ON CONFLICT (document_id, version) DO NOTHING" in sql
+        # Should NOT have DO UPDATE or single-column conflict
+        assert "DO UPDATE SET" not in sql
+        assert values == ["doc-123", 1, "active", "John"]
+
+
+class TestSchemaManagerDDL:
+    """Tests for SchemaManager DDL generation."""
+
+    def _make_schema_manager(self):
+        """Create a SchemaManager with a mock pool."""
+        pool = MagicMock()
+        return SchemaManager(pool)
+
+    def test_all_versions_composite_pk(self):
+        """Test that all_versions strategy generates composite PK (document_id, version)."""
+        sm = self._make_schema_manager()
+        config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
+        fields = [
+            TemplateField(name="name", type=FieldType.STRING),
+        ]
+
+        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+
+        # Should have composite primary key
+        assert "PRIMARY KEY (document_id, version)" in ddl
+        # document_id column should NOT have inline PRIMARY KEY
+        assert "document_id\" TEXT NOT NULL" in ddl
+        assert "document_id\" TEXT PRIMARY KEY" not in ddl
+
+    def test_latest_only_single_pk(self):
+        """Test that latest_only strategy generates single-column PK on document_id."""
+        sm = self._make_schema_manager()
+        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
+        fields = [
+            TemplateField(name="name", type=FieldType.STRING),
+        ]
+
+        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+
+        # Should have single-column primary key inline
+        assert "document_id\" TEXT PRIMARY KEY" in ddl
+        # Should NOT have composite primary key constraint
+        assert "PRIMARY KEY (document_id, version)" not in ddl
+
+    def test_all_versions_no_active_identity_index(self):
+        """Test that all_versions strategy does NOT create the partial unique index."""
+        sm = self._make_schema_manager()
+        config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
+        fields = [
+            TemplateField(name="name", type=FieldType.STRING),
+        ]
+
+        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+
+        # Partial unique index should NOT exist for all_versions
+        assert "_ns_active_identity_idx" not in ddl
+
+    def test_latest_only_has_active_identity_index(self):
+        """Test that latest_only strategy creates the partial unique index."""
+        sm = self._make_schema_manager()
+        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
+        fields = [
+            TemplateField(name="name", type=FieldType.STRING),
+        ]
+
+        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+
+        # Partial unique index should exist for latest_only
+        assert "_ns_active_identity_idx" in ddl
+        assert "WHERE status = 'active'" in ddl
+
+    def test_default_strategy_is_latest_only(self):
+        """Test that default config (no explicit strategy) uses latest_only behavior."""
+        sm = self._make_schema_manager()
+        # No config means default ReportingConfig which is latest_only
+        fields = [
+            TemplateField(name="email", type=FieldType.STRING),
+        ]
+
+        ddl = sm.generate_create_table_ddl("contact", 1, fields)
+
+        # Default should be latest_only: single-column PK
+        assert "document_id\" TEXT PRIMARY KEY" in ddl
+        assert "PRIMARY KEY (document_id, version)" not in ddl
+        # Should have partial unique index
+        assert "_ns_active_identity_idx" in ddl

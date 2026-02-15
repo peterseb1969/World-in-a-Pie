@@ -2,7 +2,6 @@
 
 import hashlib
 import math
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -155,8 +154,7 @@ class FileService:
         created_by: Optional[str],
         namespace: str = "wip"
     ) -> str:
-        """Generate a file ID from the Registry."""
-        # Use checksum + UUID to ensure uniqueness (same file can be uploaded multiple times)
+        """Generate a file ID from the Registry (empty composite key — always fresh)."""
         async with httpx.AsyncClient(timeout=registry.timeout) as client:
             response = await client.post(
                 f"{registry.base_url}/api/registry/entries/register",
@@ -164,12 +162,9 @@ class FileService:
                 json=[{
                     "namespace": namespace,
                     "entity_type": "files",
-                    "composite_key": {
-                        "checksum": checksum,
-                        "upload_uuid": str(uuid.uuid4()),
-                    },
+                    "composite_key": {},
                     "created_by": created_by,
-                    "metadata": {"type": "file"}
+                    "metadata": {"type": "file", "checksum": checksum}
                 }]
             )
 

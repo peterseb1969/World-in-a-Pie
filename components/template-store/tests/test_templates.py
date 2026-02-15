@@ -178,7 +178,7 @@ async def test_list_templates_with_pagination(client: AsyncClient, auth_headers:
 
 @pytest.mark.asyncio
 async def test_update_template(client: AsyncClient, auth_headers: dict):
-    """Test updating a template."""
+    """Test updating a template creates a new version with the same template_id."""
     # Create a template
     create_response = await client.post(
         "/api/template-store/templates",
@@ -195,13 +195,27 @@ async def test_update_template(client: AsyncClient, auth_headers: dict):
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["label"] == "Updated Name"
+    # Stable ID: template_id stays the same across versions
+    assert data["template_id"] == template_id
     assert data["version"] == 2
+    assert data["is_new_version"] is True
+    assert data["previous_version"] == 1
+
+    # Fetching by template_id should return the latest version
+    get_response = await client.get(
+        f"/api/template-store/templates/{template_id}",
+        headers=auth_headers
+    )
+    assert get_response.status_code == 200
+    get_data = get_response.json()
+    assert get_data["template_id"] == template_id
+    assert get_data["label"] == "Updated Name"
+    assert get_data["version"] == 2
 
 
 @pytest.mark.asyncio
 async def test_update_template_add_fields(client: AsyncClient, auth_headers: dict):
-    """Test updating a template to add fields."""
+    """Test updating a template to add fields creates a new version with same ID."""
     # Create a template
     create_response = await client.post(
         "/api/template-store/templates",
@@ -229,7 +243,19 @@ async def test_update_template_add_fields(client: AsyncClient, auth_headers: dic
     )
     assert response.status_code == 200
     data = response.json()
-    assert len(data["fields"]) == 2
+    # Stable ID: same template_id, new version
+    assert data["template_id"] == template_id
+    assert data["version"] == 2
+    assert data["is_new_version"] is True
+
+    # Verify the latest version has both fields
+    get_response = await client.get(
+        f"/api/template-store/templates/{template_id}",
+        headers=auth_headers
+    )
+    assert get_response.status_code == 200
+    get_data = get_response.json()
+    assert len(get_data["fields"]) == 2
 
 
 @pytest.mark.asyncio

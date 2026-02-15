@@ -47,6 +47,57 @@ class TestRegistrationAPI:
         assert data["results"][0]["registry_id"] is not None
 
     @pytest.mark.asyncio
+    async def test_register_empty_composite_key(self, client: AsyncClient, auth_headers: dict):
+        """Test registering with empty composite key always generates unique IDs."""
+        # Register twice with empty composite key
+        response1 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "templates",
+                "composite_key": {}
+            }],
+            headers=auth_headers
+        )
+        assert response1.status_code == 200
+        data1 = response1.json()
+        assert data1["created"] == 1
+        id1 = data1["results"][0]["registry_id"]
+
+        response2 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "templates",
+                "composite_key": {}
+            }],
+            headers=auth_headers
+        )
+        assert response2.status_code == 200
+        data2 = response2.json()
+        assert data2["created"] == 1
+        id2 = data2["results"][0]["registry_id"]
+
+        # Must be different IDs — no dedup for empty composite keys
+        assert id1 != id2
+
+    @pytest.mark.asyncio
+    async def test_register_omitted_composite_key(self, client: AsyncClient, auth_headers: dict):
+        """Test registering without composite_key field (defaults to empty)."""
+        response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "templates"
+            }],
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == 1
+        assert data["results"][0]["status"] == "created"
+
+    @pytest.mark.asyncio
     async def test_register_duplicate_key(self, client: AsyncClient, auth_headers: dict):
         """Test that duplicate keys are detected."""
         key = {"product_id": "PROD-DUP", "region": "US"}

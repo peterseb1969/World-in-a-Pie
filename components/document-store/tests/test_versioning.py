@@ -6,7 +6,7 @@ from httpx import AsyncClient
 
 @pytest.mark.asyncio
 async def test_upsert_creates_new_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
-    """Test that upserting an existing document creates a new version."""
+    """Test that upserting an existing document creates a new version with the same stable document_id."""
     # Create initial document
     create_response = await client.post(
         "/api/document-store/documents",
@@ -41,6 +41,8 @@ async def test_upsert_creates_new_version(client: AsyncClient, auth_headers: dic
     assert updated["is_new"] is False
     assert updated["previous_version"] == 1
     assert updated["identity_hash"] == initial["identity_hash"]
+    # Stable document ID: same document_id across versions
+    assert updated["document_id"] == initial["document_id"]
 
 
 @pytest.mark.asyncio
@@ -55,13 +57,13 @@ async def test_upsert_deactivates_old_version(client: AsyncClient, auth_headers:
             "data": sample_person_data
         }
     )
-    initial_id = create_response.json()["document_id"]
+    document_id = create_response.json()["document_id"]
 
     # Update with same identity
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Jane"
 
-    await client.post(
+    update_response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
         json={
@@ -70,9 +72,21 @@ async def test_upsert_deactivates_old_version(client: AsyncClient, auth_headers:
         }
     )
 
-    # Check old version is inactive
+    # Stable ID: same document_id across versions
+    assert update_response.json()["document_id"] == document_id
+
+    # GET by document_id returns latest version (v2, active) by default
+    latest_response = await client.get(
+        f"/api/document-store/documents/{document_id}",
+        headers=auth_headers
+    )
+    assert latest_response.status_code == 200
+    assert latest_response.json()["version"] == 2
+    assert latest_response.json()["status"] == "active"
+
+    # Check old version (v1) is inactive via version-specific endpoint
     old_response = await client.get(
-        f"/api/document-store/documents/{initial_id}",
+        f"/api/document-store/documents/{document_id}/versions/1",
         headers=auth_headers
     )
 
@@ -131,6 +145,10 @@ async def test_get_document_versions(client: AsyncClient, auth_headers: dict, sa
     # Versions should be sorted by version number descending
     versions = [v["version"] for v in data["versions"]]
     assert versions == [3, 2, 1]
+
+    # All versions share the same stable document_id
+    version_ids = [v["document_id"] for v in data["versions"]]
+    assert all(vid == document_id for vid in version_ids)
 
 
 @pytest.mark.asyncio
@@ -201,6 +219,8 @@ async def test_different_identity_creates_new_document(client: AsyncClient, auth
     assert response1.json()["version"] == 1
     assert response2.json()["version"] == 1
     assert response2.json()["is_new"] is True
+    # Different identity = different stable document_id
+    assert response1.json()["document_id"] != response2.json()["document_id"]
 
 
 @pytest.mark.asyncio
@@ -236,6 +256,8 @@ async def test_multiple_identity_fields(client: AsyncClient, auth_headers: dict,
     assert update_response.status_code == 200
     assert update_response.json()["version"] == 2
     assert update_response.json()["identity_hash"] == initial["identity_hash"]
+    # Stable document ID across versions
+    assert update_response.json()["document_id"] == initial["document_id"]
 
 
 @pytest.mark.asyncio

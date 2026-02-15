@@ -70,7 +70,8 @@ class TemplateStoreClient:
         self,
         template_id: Optional[str] = None,
         template_value: Optional[str] = None,
-        resolve_inheritance: bool = True
+        resolve_inheritance: bool = True,
+        version: Optional[int] = None
     ) -> Optional[dict[str, Any]]:
         """
         Get a template by ID or value.
@@ -79,6 +80,7 @@ class TemplateStoreClient:
             template_id: Template ID
             template_value: Template value (e.g., 'PERSON')
             resolve_inheritance: If True, returns fully resolved template
+            version: Specific version (None = latest)
 
         Returns:
             Template data if found, None otherwise
@@ -91,15 +93,19 @@ class TemplateStoreClient:
             return None
 
         # The /{id} endpoint always resolves inheritance; /{id}/raw does not.
-        # No need to pass resolve= as a query param.
         if not resolve_inheritance and template_id:
             url = f"{self.base_url}/api/template-store/templates/{template_id}/raw"
+
+        params = {}
+        if version is not None:
+            params["version"] = version
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(
                     url,
                     headers=self._get_headers(),
+                    params=params if params else None,
                 )
 
                 if response.status_code == 404:
@@ -116,13 +122,14 @@ class TemplateStoreClient:
 
     async def get_template_resolved(
         self,
-        template_id: str
+        template_id: str,
+        version: Optional[int] = None
     ) -> Optional[dict[str, Any]]:
         """
         Get a template with inheritance fully resolved.
 
         This returns the template with all parent fields and rules merged.
-        Results are permanently cached since template_id is immutable.
+        Results are cached by (template_id, version).
 
         Args:
             template_id: Template ID
@@ -130,20 +137,22 @@ class TemplateStoreClient:
         Returns:
             Resolved template data if found, None otherwise
         """
-        # Check cache first
-        if template_id in self._template_cache:
+        # Check cache first (keyed by template_id + version)
+        cache_key = f"{template_id}:v{version}" if version else template_id
+        if cache_key in self._template_cache:
             self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-            return self._template_cache[template_id]
+            return self._template_cache[cache_key]
 
         # Cache miss - fetch from service
         self._cache_misses = getattr(self, '_cache_misses', 0) + 1
         template = await self.get_template(
             template_id=template_id,
-            resolve_inheritance=True
+            resolve_inheritance=True,
+            version=version
         )
 
         # Cache the result (including None for not found)
-        self._template_cache[template_id] = template
+        self._template_cache[cache_key] = template
         return template
 
     async def template_exists(

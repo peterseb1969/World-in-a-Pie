@@ -51,20 +51,19 @@ def create_mock_registry_client():
 
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_register_template(value: str, label: str, created_by=None):
+    async def mock_register_template(created_by=None, namespace="wip"):
         global _template_counter
         _template_counter += 1
         return f"TPL-{_template_counter:06d}"
 
-    async def mock_register_templates_bulk(templates: list, created_by=None):
+    async def mock_register_templates_bulk(count: int, created_by=None, namespace="wip"):
         global _template_counter
         results = []
-        for template in templates:
+        for _ in range(count):
             _template_counter += 1
             results.append({
                 "status": "registered",
                 "registry_id": f"TPL-{_template_counter:06d}",
-                "value": template["value"]
             })
         return results
 
@@ -90,7 +89,7 @@ def create_mock_def_store_client():
     """Create a mock Def-Store client for testing."""
     mock_client = AsyncMock(spec=DefStoreClient)
 
-    async def mock_terminology_exists(terminology_ref: str):
+    async def mock_terminology_exists(terminology_ref: str, namespace=None):
         # Return True for any terminology ref starting with "TERM-" or known codes
         if terminology_ref.startswith("TERM-"):
             return True
@@ -98,7 +97,7 @@ def create_mock_def_store_client():
             return True
         return False
 
-    async def mock_get_terminology(terminology_id=None, terminology_value=None):
+    async def mock_get_terminology(terminology_id=None, terminology_value=None, namespace=None):
         if terminology_id and terminology_id.startswith("TERM-"):
             return {"terminology_id": terminology_id, "status": "active"}
         if terminology_value in ["GENDER", "COUNTRY", "DOC_STATUS"]:

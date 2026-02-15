@@ -145,7 +145,7 @@ JSON Web Token. Used for user authentication via [Dex](#dex). Contains claims li
 ## L
 
 ### Latest Version
-For documents with multiple versions, the most recent active version. API responses include `is_latest_version` and `latest_document_id` to help clients work with version chains.
+For documents with multiple versions, the most recent active version. API responses include `is_latest_version` and `latest_version` to help clients work with version chains. Since `document_id` is stable across versions, there is no separate `latest_document_id`.
 
 ---
 

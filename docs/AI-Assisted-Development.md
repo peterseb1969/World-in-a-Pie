@@ -1159,19 +1159,20 @@ curl -s -H "X-API-Key: $API_KEY" \
 
 ## Template Versioning Awareness
 
-When a template is updated, WIP creates a **new template_id** with an incremented version. The original template remains active. This means:
+When a template is updated, WIP creates a **new version with the same `template_id`**. Multiple versions can be active simultaneously. This means:
 
-- Existing documents keep their original template reference
-- New documents can use either version
+- Existing documents keep their original template version reference
+- New documents can use any active version
 - The AI should always use the latest template version for new documents
 - Migration between template versions is the application's responsibility, not WIP's
 
 ### Versioning and Inheritance
 
-The `extends` field is stored as a resolved **template_id** (e.g., `TPL-000009`), not as a code — even though creation accepts a code. This has important consequences:
+The `extends` field is stored as a resolved **template_id** (e.g., `TPL-000009`), not as a code — even though creation accepts a code. Since template_id is now stable across versions, `extends` always points to the same parent. The `extends_version` field controls version pinning:
 
-- **When a parent template is updated** (creating a new version), child templates continue extending the **old** parent version. They do NOT automatically follow the new version.
-- **To propagate a parent change**, use `POST /api/template-store/templates/{parent_id}/cascade` to create new versions of all child templates pointing to the new parent. Alternatively, update each child individually with `"extends": "<PARENT_CODE>"`.
+- **`extends_version: null` (default)** — always resolves to the latest active parent version. When the parent is updated, child templates automatically inherit from the new version.
+- **`extends_version: N`** — pins to a specific parent version. Child templates continue using version N even when newer parent versions exist.
+- **To propagate a parent change to pinned children**, use `POST /api/template-store/templates/{parent_id}/cascade` to create new versions of all child templates.
 - **When updating a child template with PUT**, include ONLY the child's own fields. If you fetch a resolved template (which merges inherited + own fields) and send it back in an update, all inherited fields become overrides on the child, effectively **breaking inheritance** for those fields.
 - **Distinguishing inherited from own fields:** When fetching a resolved template (e.g., `GET /templates/{id}`), each field includes `inherited: true/false` and `inherited_from: "<template_id>"`. Use this to identify which fields belong to the child vs. which are inherited from parents. Only send non-inherited fields in PUT updates.
 

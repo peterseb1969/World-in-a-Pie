@@ -10,6 +10,7 @@ import Select from 'primevue/select'
 import Message from 'primevue/message'
 import Dialog from 'primevue/dialog'
 import { useDocumentStore, useTemplateStore, useAuthStore, useUiStore } from '@/stores'
+import { getDocumentTitle, hasDocumentTitle } from '@/utils/document'
 import DocumentForm from '@/components/documents/DocumentForm.vue'
 import VersionHistory from '@/components/documents/VersionHistory.vue'
 import type { Template, DocumentValidationError, DocumentValidationResponse, Document } from '@/types'
@@ -45,14 +46,25 @@ const showVersionDialog = ref(false)
 // Active tab
 const activeTab = ref(0)
 
-// Template options for create mode
+// Template options for create mode — show all active versions
 const templateOptions = computed(() => {
-  return templateStore.templates
-    .filter(t => t.status === 'active')
-    .map(t => ({
-      label: `${t.label} (${t.value})`,
-      value: t.template_id
-    }))
+  const active = templateStore.templates.filter(t => t.status === 'active')
+  // Check which templates have multiple active versions
+  const versionCounts = new Map<string, number>()
+  active.forEach(t => versionCounts.set(t.template_id, (versionCounts.get(t.template_id) || 0) + 1))
+
+  return active
+    .sort((a, b) => a.label.localeCompare(b.label) || b.version - a.version)
+    .map(t => {
+      const hasMultipleVersions = (versionCounts.get(t.template_id) || 0) > 1
+      return {
+        label: hasMultipleVersions
+          ? `${t.label} (${t.value}) v${t.version}`
+          : `${t.label} (${t.value})`,
+        // Composite key: template_id::version — parsed when selecting
+        value: `${t.template_id}::${t.version}`
+      }
+    })
 })
 
 // Current template (either from document or selected)
@@ -68,8 +80,21 @@ const pageTitle = computed(() => {
   if (isCreateMode.value) {
     return 'Create Document'
   }
+  const doc = documentStore.currentDocument
+  if (doc && hasDocumentTitle(doc)) {
+    return getDocumentTitle(doc)
+  }
   return `Document: ${props.id}`
 })
+
+// Parse composite template selection (template_id::version)
+function parseTemplateSelection(value: string): { templateId: string; version?: number } {
+  const parts = value.split('::')
+  return {
+    templateId: parts[0],
+    version: parts.length > 1 ? Number(parts[1]) : undefined
+  }
+}
 
 // Load template when selection changes (create mode)
 async function loadSelectedTemplate() {
@@ -79,7 +104,8 @@ async function loadSelectedTemplate() {
   }
 
   try {
-    selectedTemplate.value = await templateStoreClient.getTemplate(selectedTemplateId.value)
+    const { templateId, version } = parseTemplateSelection(selectedTemplateId.value)
+    selectedTemplate.value = await templateStoreClient.getTemplate(templateId, version)
     // Reset form data when template changes
     formData.value = {}
   } catch (e) {
@@ -155,6 +181,7 @@ async function saveDocument() {
       // Create new document
       const result = await documentStore.createDocument({
         template_id: currentTemplate.value.template_id,
+        template_version: currentTemplate.value.version,
         data: formData.value
       })
       uiStore.showSuccess('Document Created', 'Document has been created successfully')
@@ -163,7 +190,8 @@ async function saveDocument() {
       // Update existing document (upsert - creates new version if data changed)
       const result = await documentStore.updateDocument(
         currentTemplate.value.template_id,
-        formData.value
+        formData.value,
+        documentStore.currentDocument?.namespace
       )
 
       // Check if anything actually changed
@@ -173,13 +201,12 @@ async function saveDocument() {
       } else {
         // A new version was created
         uiStore.showSuccess('Document Updated', `New version ${result.version} created`)
-        // Navigate to the new document version if ID changed
-        if (result.document_id !== props.id) {
-          router.push(`/documents/${result.document_id}`)
-          return
-        }
       }
-      // Reload version history
+      // Reload document data and version history to reflect saved state
+      await documentStore.fetchDocument(props.id!)
+      if (documentStore.currentDocument) {
+        formData.value = { ...documentStore.currentDocument.data }
+      }
       await loadVersionHistory()
     }
   } catch (e) {
@@ -311,7 +338,9 @@ onMounted(async () => {
     // Check for template query param
     const templateParam = route.query.template as string
     if (templateParam) {
-      selectedTemplateId.value = templateParam
+      // Find the template in options to get the composite key (template_id::version)
+      const match = templateOptions.value.find(o => o.value.startsWith(templateParam + '::'))
+      selectedTemplateId.value = match ? match.value : templateParam
       await loadSelectedTemplate()
     }
   } else {
@@ -370,6 +399,10 @@ onMounted(async () => {
     <Card v-if="!isCreateMode && documentStore.currentDocument" class="document-info-card">
       <template #content>
         <div class="document-info">
+          <div v-if="hasDocumentTitle(documentStore.currentDocument)" class="info-item">
+            <span class="label">Title</span>
+            <span class="doc-title">{{ getDocumentTitle(documentStore.currentDocument) }}</span>
+          </div>
           <div class="info-item">
             <span class="label">Document ID</span>
             <code>{{ documentStore.currentDocument.document_id }}</code>
@@ -560,7 +593,7 @@ onMounted(async () => {
                   <router-link :to="{ path: '/templates/' + selectedTemplate }" class="template-link">
                     <i class="pi pi-external-link"></i> View Template
                   </router-link>
-                  <router-link :to="{ path: '/documents/table', query: { template: selectedTemplateId } }" class="template-link">
+                  <router-link :to="{ path: '/documents/table', query: { template: currentTemplate?.template_id } }" class="template-link">
                     <i class="pi pi-table"></i> View as Table
                   </router-link>
                 </div>
@@ -697,6 +730,11 @@ onMounted(async () => {
   border-radius: var(--p-border-radius);
   font-size: 0.75rem;
   word-break: break-all;
+}
+
+.doc-title {
+  font-weight: 600;
+  font-size: 0.9375rem;
 }
 
 .info-item code.hash {

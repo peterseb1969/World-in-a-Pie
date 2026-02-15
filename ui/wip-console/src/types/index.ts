@@ -9,5 +9,5 @@ export * from './file'
 // =============================================================================
 
 export interface ApiError {
-  detail: string
+  detail: string | Record<string, unknown>
 }

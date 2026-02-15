@@ -166,20 +166,55 @@ SAMPLE_TEMPLATES = {
 
 
 def create_mock_registry_client():
-    """Create a mock registry client for testing."""
+    """Create a mock registry client for testing.
+
+    Simulates stable document IDs:
+    - With identity fields: composite key = {identity_hash, template_id}
+      returns the same ID on repeat calls (is_new=False)
+    - Without identity fields: always generates a fresh ID (is_new=True)
+    """
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_generate_document_id(identity_hash, template_id, created_by=None):
-        # Generate a UUID7-like ID (just use uuid4 for testing)
-        return str(uuid.uuid4())
+    # Track registered composite keys → document IDs for stable ID simulation
+    _registry: dict[str, str] = {}
 
-    async def mock_generate_document_ids_bulk(items, created_by=None):
+    async def mock_generate_document_id(
+        identity_hash, template_id, has_identity_fields=True,
+        created_by=None, namespace="wip"
+    ):
+        if has_identity_fields:
+            composite_key = f"{identity_hash}:{template_id}"
+            if composite_key in _registry:
+                return _registry[composite_key], False  # existing
+            doc_id = str(uuid.uuid4())
+            _registry[composite_key] = doc_id
+            return doc_id, True  # new
+        else:
+            return str(uuid.uuid4()), True  # always new
+
+    async def mock_generate_document_ids_bulk(items, created_by=None, namespace="wip"):
         results = []
         for item in items:
-            results.append({
-                "status": "registered",
-                "registry_id": str(uuid.uuid4())
-            })
+            has_identity = item.get("has_identity_fields", True)
+            if has_identity:
+                composite_key = f"{item['identity_hash']}:{item['template_id']}"
+                if composite_key in _registry:
+                    results.append({
+                        "status": "already_exists",
+                        "registry_id": _registry[composite_key]
+                    })
+                else:
+                    doc_id = str(uuid.uuid4())
+                    _registry[composite_key] = doc_id
+                    results.append({
+                        "status": "created",
+                        "registry_id": doc_id
+                    })
+            else:
+                results.append({
+                    "status": "created",
+                    "registry_id": str(uuid.uuid4())
+                })
         return results
 
     async def mock_health_check():

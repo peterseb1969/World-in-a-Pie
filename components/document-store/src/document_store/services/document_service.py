@@ -102,10 +102,11 @@ class DocumentService:
         """
         Create or update a document.
 
-        Implements upsert logic based on identity hash:
-        - Validates document against template
-        - Computes identity hash
-        - Creates new document or new version
+        Stable ID semantics — Registry drives upsert detection:
+        1. Validate document → get identity_hash, identity_fields
+        2. Call Registry with composite key (or empty if no identity_fields)
+        3. If is_new: create document with version=1
+        4. If existing: find current version, create new version
 
         Args:
             request: Document creation request
@@ -121,12 +122,12 @@ class DocumentService:
         start = time.perf_counter()
         validation_result = await self.validation_service.validate(
             request.template_id,
-            request.data
+            request.data,
+            template_version=request.template_version
         )
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
         if not validation_result.valid:
-            # Return validation errors
             return None, self._format_validation_errors(validation_result.errors)
 
         # Validate cross-namespace references (isolation mode check)
@@ -141,27 +142,49 @@ class DocumentService:
         except ReferenceValidationError as e:
             return None, f"Cross-namespace reference violation: {e.violations}"
 
-        # Check for existing active document with same identity within pool
-        start = time.perf_counter()
+        # Determine if template has identity fields
+        has_identity_fields = bool(validation_result.identity_fields)
         identity_hash = validation_result.identity_hash
-        existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
-        timing["2_find_existing"] = (time.perf_counter() - start) * 1000
 
-        if existing:
-            # Upsert: deactivate old, create new version
-            start = time.perf_counter()
-            result = await self._create_new_version(
-                request, existing, validation_result, namespace=namespace
+        # Call Registry — composite key drives upsert detection
+        start = time.perf_counter()
+        try:
+            registry = get_registry_client()
+            document_id, is_new = await registry.generate_document_id(
+                identity_hash=identity_hash,
+                template_id=request.template_id,
+                has_identity_fields=has_identity_fields,
+                created_by=get_identity_string(),
+                namespace=namespace
             )
-            timing["3_create_version"] = (time.perf_counter() - start) * 1000
-        else:
-            # Create new document
+        except RegistryError as e:
+            return None, f"Failed to generate document ID: {str(e)}"
+        timing["2_registry"] = (time.perf_counter() - start) * 1000
+
+        if is_new:
+            # Brand new document
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, namespace=namespace,
-                synonyms=request.synonyms
+                request, validation_result, document_id=document_id,
+                namespace=namespace, synonyms=request.synonyms
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
+        else:
+            # Existing identity — find current active version and create new version
+            start = time.perf_counter()
+            existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+            if existing:
+                result = await self._create_new_version(
+                    request, existing, validation_result,
+                    document_id=document_id, namespace=namespace
+                )
+            else:
+                # No active version found (all inactive?) — create as version 1
+                result = await self._create_new_document(
+                    request, validation_result, document_id=document_id,
+                    namespace=namespace, synonyms=request.synonyms
+                )
+            timing["3_create_version"] = (time.perf_counter() - start) * 1000
 
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
@@ -172,103 +195,82 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         validation_result: Any,
+        document_id: str,
         namespace: str = "wip",
         synonyms: Optional[list[dict]] = None
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
-        """Create a brand new document."""
-        try:
-            # Get authenticated identity (not client-provided)
-            actor = get_identity_string()
+        """Create a brand new document with the given stable document_id."""
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
 
-            # Generate document ID from Registry
-            start = time.perf_counter()
-            registry = get_registry_client()
-            document_id = await registry.generate_document_id(
-                identity_hash=validation_result.identity_hash,
-                template_id=request.template_id,
-                created_by=actor,
-                namespace=namespace
-            )
-            registry_ms = (time.perf_counter() - start) * 1000
+        # Register synonyms if provided
+        if synonyms:
+            try:
+                registry = get_registry_client()
+                await registry.add_synonyms(
+                    entry_id=document_id,
+                    namespace=namespace,
+                    entity_type="documents",
+                    synonyms=synonyms
+                )
+            except RegistryError as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to register synonyms for {document_id}: {e}"
+                )
 
-            # Register synonyms if provided
-            if synonyms:
-                try:
-                    await registry.add_synonyms(
-                        entry_id=document_id,
-                        namespace=namespace,
-                        entity_type="documents",
-                        synonyms=synonyms
-                    )
-                except RegistryError as e:
-                    import logging
-                    logging.getLogger(__name__).warning(
-                        f"Failed to register synonyms for {document_id}: {e}"
-                    )
+        # Create document
+        now = datetime.now(timezone.utc)
+        metadata = DocumentMetadata(
+            warnings=validation_result.warnings,
+            custom=request.metadata or {}
+        )
 
-            # Create document
-            now = datetime.now(timezone.utc)
-            metadata = DocumentMetadata(
-                warnings=validation_result.warnings,
-                custom=request.metadata or {}
-            )
+        document = Document(
+            namespace=namespace,
+            document_id=document_id,
+            template_id=request.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=validation_result.identity_hash,
+            version=1,
+            data=request.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            status=DocumentStatus.ACTIVE,
+            created_at=now,
+            created_by=actor,
+            updated_at=now,
+            updated_by=actor,
+            metadata=metadata
+        )
 
-            document = Document(
-                namespace=namespace,
-                document_id=document_id,
-                template_id=request.template_id,
-                template_version=validation_result.template_version,
-                template_value=validation_result.template_value,
-                identity_hash=validation_result.identity_hash,
-                version=1,
-                data=request.data,
-                term_references=validation_result.term_references,
-                references=validation_result.references,
-                file_references=validation_result.file_references,
-                status=DocumentStatus.ACTIVE,
-                created_at=now,
-                created_by=actor,
-                updated_at=now,
-                updated_by=actor,
-                metadata=metadata
-            )
+        await document.insert()
 
-            start = time.perf_counter()
-            await document.insert()
-            mongo_ms = (time.perf_counter() - start) * 1000
+        # Publish document created event
+        await publish_document_event(
+            EventType.DOCUMENT_CREATED,
+            self._document_to_event_payload(document),
+            changed_by=actor
+        )
 
-            # Record detailed timing
-            self._record_creation_timing({
-                "3a_registry_id": registry_ms,
-                "3b_mongo_insert": mongo_ms,
-            })
+        # Update file reference counts (increment for new document)
+        await self._update_file_reference_counts(
+            validation_result.file_references, delta=1
+        )
 
-            # Publish document created event
-            await publish_document_event(
-                EventType.DOCUMENT_CREATED,
-                self._document_to_event_payload(document),
-                changed_by=actor
-            )
-
-            # Update file reference counts (increment for new document)
-            await self._update_file_reference_counts(
-                validation_result.file_references, delta=1
-            )
-
-            return DocumentCreateResponse(
-                document_id=document_id,
-                namespace=namespace,
-                template_id=request.template_id,
-                template_value=validation_result.template_value,
-                identity_hash=validation_result.identity_hash,
-                version=1,
-                is_new=True,
-                previous_version=None,
-                warnings=validation_result.warnings
-            ), None
-
-        except RegistryError as e:
-            return None, f"Failed to generate document ID: {str(e)}"
+        return DocumentCreateResponse(
+            document_id=document_id,
+            namespace=namespace,
+            template_id=request.template_id,
+            template_value=validation_result.template_value,
+            identity_hash=validation_result.identity_hash,
+            version=1,
+            is_new=True,
+            previous_version=None,
+            warnings=validation_result.warnings
+        ), None
 
     def _data_has_changed(
         self,
@@ -322,9 +324,10 @@ class DocumentService:
         request: DocumentCreateRequest,
         existing: Document,
         validation_result: Any,
+        document_id: str,
         namespace: str = "wip"
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
-        """Create a new version of an existing document."""
+        """Create a new version of an existing document with stable document_id."""
         # Check if data has actually changed
         if not self._data_has_changed(
             existing,
@@ -346,86 +349,67 @@ class DocumentService:
                 warnings=validation_result.warnings
             ), None
 
-        try:
-            # Get authenticated identity (not client-provided)
-            actor = get_identity_string()
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
 
-            # Generate new document ID from Registry
-            registry = get_registry_client()
-            document_id = await registry.generate_document_id(
-                identity_hash=validation_result.identity_hash,
-                template_id=request.template_id,
-                created_by=actor,
-                namespace=namespace
-            )
+        # Deactivate old version
+        existing.status = DocumentStatus.INACTIVE
+        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_by = actor
+        await existing.save()
 
-            # Deactivate old version
-            existing.status = DocumentStatus.INACTIVE
-            existing.updated_at = datetime.now(timezone.utc)
-            existing.updated_by = actor
-            await existing.save()
+        # Create new version with SAME document_id (stable)
+        now = datetime.now(timezone.utc)
+        new_version = existing.version + 1
+        metadata = DocumentMetadata(
+            warnings=validation_result.warnings,
+            custom=request.metadata or {}
+        )
 
-            # Create new version
-            now = datetime.now(timezone.utc)
-            new_version = existing.version + 1
-            metadata = DocumentMetadata(
-                warnings=validation_result.warnings,
-                custom=request.metadata or {}
-            )
+        document = Document(
+            namespace=namespace,
+            document_id=document_id,  # Same stable ID
+            template_id=request.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=validation_result.identity_hash,
+            version=new_version,
+            data=request.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            status=DocumentStatus.ACTIVE,
+            created_at=now,
+            created_by=actor,
+            updated_at=now,
+            updated_by=actor,
+            metadata=metadata
+        )
 
-            document = Document(
-                namespace=namespace,
-                document_id=document_id,
-                template_id=request.template_id,
-                template_version=validation_result.template_version,
-                template_value=validation_result.template_value,
-                identity_hash=validation_result.identity_hash,
-                version=new_version,
-                data=request.data,
-                term_references=validation_result.term_references,
-                references=validation_result.references,
-                file_references=validation_result.file_references,
-                status=DocumentStatus.ACTIVE,
-                created_at=now,
-                created_by=actor,
-                updated_at=now,
-                updated_by=actor,
-                metadata=metadata
-            )
+        await document.insert()
 
-            await document.insert()
+        # Publish document updated event
+        await publish_document_event(
+            EventType.DOCUMENT_UPDATED,
+            self._document_to_event_payload(document),
+            changed_by=actor
+        )
 
-            # Publish document updated event
-            await publish_document_event(
-                EventType.DOCUMENT_UPDATED,
-                self._document_to_event_payload(document),
-                changed_by=actor
-            )
+        # Update file reference counts
+        await self._update_file_reference_counts(existing.file_references, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
-            # Update file reference counts
-            # Decrement for old version (now inactive)
-            await self._update_file_reference_counts(
-                existing.file_references, delta=-1
-            )
-            # Increment for new version
-            await self._update_file_reference_counts(
-                validation_result.file_references, delta=1
-            )
-
-            return DocumentCreateResponse(
-                document_id=document_id,
-                namespace=namespace,
-                template_id=request.template_id,
-                template_value=validation_result.template_value,
-                identity_hash=validation_result.identity_hash,
-                version=new_version,
-                is_new=False,
-                previous_version=existing.version,
-                warnings=validation_result.warnings
-            ), None
-
-        except RegistryError as e:
-            return None, f"Failed to generate document ID: {str(e)}"
+        return DocumentCreateResponse(
+            document_id=document_id,
+            namespace=namespace,
+            template_id=request.template_id,
+            template_value=validation_result.template_value,
+            identity_hash=validation_result.identity_hash,
+            version=new_version,
+            is_new=False,
+            previous_version=existing.version,
+            warnings=validation_result.warnings
+        ), None
 
     async def _find_active_by_identity(
         self,
@@ -469,10 +453,21 @@ class DocumentService:
 
     async def get_document(
         self,
-        document_id: str
+        document_id: str,
+        version: Optional[int] = None
     ) -> Optional[DocumentResponse]:
-        """Get a document by ID."""
-        document = await Document.find_one({"document_id": document_id})
+        """Get a document by ID (stable across versions). Returns latest version by default."""
+        if version is not None:
+            document = await Document.find_one({
+                "document_id": document_id, "version": version
+            })
+        else:
+            # Return latest version
+            results = await Document.find(
+                {"document_id": document_id}
+            ).sort([("version", -1)]).limit(1).to_list()
+            document = results[0] if results else None
+
         if not document:
             return None
         return await self._to_response(document)
@@ -534,19 +529,17 @@ class DocumentService:
         self,
         document_id: str
     ) -> Optional[DocumentVersionResponse]:
-        """Get all versions of a document."""
-        # Find the document first to get identity_hash
-        document = await Document.find_one({"document_id": document_id})
-        if not document:
-            return None
-
-        # Find all versions with same identity_hash
+        """Get all versions of a document by its stable document_id."""
+        # document_id is stable — query directly
         versions = await Document.find(
-            {"identity_hash": document.identity_hash}
+            {"document_id": document_id}
         ).sort([("version", -1)]).to_list()
 
+        if not versions:
+            return None
+
         return DocumentVersionResponse(
-            identity_hash=document.identity_hash,
+            identity_hash=versions[0].identity_hash,
             current_version=max(v.version for v in versions),
             versions=[
                 DocumentVersionSummary(
@@ -565,15 +558,9 @@ class DocumentService:
         document_id: str,
         version: int
     ) -> Optional[DocumentResponse]:
-        """Get a specific version of a document."""
-        # Find the document first to get identity_hash
-        document = await Document.find_one({"document_id": document_id})
-        if not document:
-            return None
-
-        # Find specific version
+        """Get a specific version of a document by stable document_id."""
         version_doc = await Document.find_one({
-            "identity_hash": document.identity_hash,
+            "document_id": document_id,
             "version": version
         })
 
@@ -589,24 +576,17 @@ class DocumentService:
         """
         Get the latest version of a document.
 
-        Given any document_id (even an old version), returns the latest version.
-        This is useful when you have a reference to an old version but want
-        the current data.
+        With stable IDs, document_id is the same across all versions,
+        so this just returns the highest version.
 
         Args:
-            document_id: Any document ID from the version chain
+            document_id: The stable document ID
 
         Returns:
             The latest version of the document, or None if not found
         """
-        # Find the document first to get identity_hash
-        document = await Document.find_one({"document_id": document_id})
-        if not document:
-            return None
-
-        # Find the latest version with same identity_hash
         latest = await Document.find(
-            {"identity_hash": document.identity_hash}
+            {"document_id": document_id}
         ).sort([("version", -1)]).limit(1).to_list()
 
         if not latest:
@@ -619,8 +599,12 @@ class DocumentService:
         document_id: str,
         deleted_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
-        """Soft-delete a document (set status to inactive)."""
-        document = await Document.find_one({"document_id": document_id})
+        """Soft-delete a document (set latest active version to inactive)."""
+        # Find latest active version
+        results = await Document.find(
+            {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
+        ).sort([("version", -1)]).limit(1).to_list()
+        document = results[0] if results else None
         if not document:
             return False
 
@@ -654,8 +638,11 @@ class DocumentService:
         document_id: str,
         archived_by: Optional[str] = None  # Deprecated: uses authenticated identity
     ) -> bool:
-        """Archive a document."""
-        document = await Document.find_one({"document_id": document_id})
+        """Archive a document (latest version)."""
+        results = await Document.find(
+            {"document_id": document_id}
+        ).sort([("version", -1)]).limit(1).to_list()
+        document = results[0] if results else None
         if not document:
             return False
 
@@ -817,7 +804,8 @@ class DocumentService:
             try:
                 validation_result = await self.validation_service.validate(
                     item.template_id,
-                    item.data
+                    item.data,
+                    template_version=getattr(item, 'template_version', None)
                 )
                 if validation_result.valid:
                     validation_results.append((i, item, validation_result))
@@ -888,6 +876,7 @@ class DocumentService:
         start = time.perf_counter()
         identity_hashes = [vr[2].identity_hash for vr in validation_results]
         existing_docs = await Document.find({
+            "namespace": namespace,
             "identity_hash": {"$in": identity_hashes},
             "status": DocumentStatus.ACTIVE.value
         }).to_list()
@@ -897,15 +886,14 @@ class DocumentService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Stage 3: Bulk request IDs from Registry
+        # Stage 3: Bulk request IDs from Registry (composite key for identity-based upsert)
         start = time.perf_counter()
         registry = get_registry_client()
         registry_items = [
             {
                 "identity_hash": vr[2].identity_hash,
                 "template_id": vr[1].template_id,
-                "version": (existing_by_hash[vr[2].identity_hash].version + 1
-                           if vr[2].identity_hash in existing_by_hash else 1)
+                "has_identity_fields": bool(vr[2].identity_fields),
             }
             for vr in validation_results
         ]
@@ -952,7 +940,10 @@ class DocumentService:
 
                 document_id = registry_result.get("registry_id")
                 identity_hash = validation_result.identity_hash
-                existing = existing_by_hash.get(identity_hash)
+                is_new_from_registry = registry_result.get("status") == "created"
+
+                # For existing identity (Registry returned already_exists), check DB
+                existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
 
                 if existing:
                     # Check if data has actually changed
@@ -1107,21 +1098,17 @@ class DocumentService:
 
     async def _to_response(self, document: Document) -> DocumentResponse:
         """Convert Document to DocumentResponse with latest version info."""
-        # Find the latest version for this identity
+        # Find the latest version for this document_id (stable)
         latest = await Document.find(
-            {"identity_hash": document.identity_hash}
+            {"document_id": document.document_id}
         ).sort([("version", -1)]).limit(1).to_list()
 
         if latest:
-            latest_doc = latest[0]
-            is_latest = document.version == latest_doc.version
-            latest_version = latest_doc.version
-            latest_document_id = latest_doc.document_id
+            is_latest = document.version == latest[0].version
+            latest_version = latest[0].version
         else:
-            # This shouldn't happen, but handle gracefully
             is_latest = True
             latest_version = document.version
-            latest_document_id = document.document_id
 
         return DocumentResponse(
             document_id=document.document_id,
@@ -1143,7 +1130,6 @@ class DocumentService:
             metadata=document.metadata,
             is_latest_version=is_latest,
             latest_version=latest_version,
-            latest_document_id=latest_document_id
         )
 
     async def _update_file_reference_counts(

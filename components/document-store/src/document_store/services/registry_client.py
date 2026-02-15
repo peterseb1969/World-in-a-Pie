@@ -1,7 +1,6 @@
 """Client for communicating with the WIP Registry service."""
 
 import os
-import uuid
 from typing import Any, Optional
 
 import httpx
@@ -13,6 +12,12 @@ class RegistryClient:
 
     Handles UUID7 ID generation for documents.
     Documents use UUID7 IDs for time-based ordering.
+
+    Stable ID semantics:
+    - With identity_fields: composite key = {identity_hash, template_id}
+      → Registry returns existing ID on match (is_new=False)
+    - Without identity_fields: empty composite key {}
+      → Registry always generates fresh ID (is_new=True)
     """
 
     def __init__(
@@ -50,29 +55,40 @@ class RegistryClient:
         self,
         identity_hash: str,
         template_id: str,
+        has_identity_fields: bool = True,
         created_by: Optional[str] = None,
         namespace: str = "wip"
-    ) -> str:
+    ) -> tuple[str, bool]:
         """
-        Generate a new document ID from the Registry.
+        Generate or retrieve a document ID from the Registry.
 
-        Uses UUID7 IDs for time-based ordering.
+        With identity_fields: uses composite key {identity_hash, template_id}
+        for dedup — Registry returns existing ID if same identity exists.
+
+        Without identity_fields: uses empty composite key — Registry always
+        generates a fresh ID.
 
         Args:
             identity_hash: Document identity hash
             template_id: Template ID the document conforms to
+            has_identity_fields: Whether the template has identity fields
             created_by: User or system creating this
             namespace: Namespace for the document (default: wip)
 
         Returns:
-            Generated document ID (UUID7)
+            Tuple of (document_id, is_new) — is_new=False means existing identity
 
         Raises:
             RegistryError: If registration fails
         """
-        # Include a unique element to ensure each version gets a new ID
-        # The Registry returns the same ID for duplicate composite_keys
-        version_uuid = str(uuid.uuid4())
+        if has_identity_fields:
+            composite_key = {
+                "namespace": namespace,
+                "identity_hash": identity_hash,
+                "template_id": template_id
+            }
+        else:
+            composite_key = {}
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -81,11 +97,7 @@ class RegistryClient:
                 json=[{
                     "namespace": namespace,
                     "entity_type": "documents",
-                    "composite_key": {
-                        "identity_hash": identity_hash,
-                        "template_id": template_id,
-                        "version_uuid": version_uuid
-                    },
+                    "composite_key": composite_key,
                     "created_by": created_by,
                     "metadata": {"type": "document"}
                 }]
@@ -102,9 +114,8 @@ class RegistryClient:
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
-            # For documents, we always want a new ID (even if same identity_hash)
-            # because each version is a separate registry entry
-            return result["registry_id"]
+            is_new = result["status"] == "created"
+            return result["registry_id"], is_new
 
     async def generate_document_ids_bulk(
         self,
@@ -115,35 +126,38 @@ class RegistryClient:
         """
         Generate multiple document IDs from the Registry in a single call.
 
+        Items with has_identity_fields=True use composite key for dedup.
+        Items without use empty composite key.
+
         Args:
-            items: List of dicts with identity_hash, template_id, and version
+            items: List of dicts with identity_hash, template_id, has_identity_fields
             created_by: User or system creating these
             namespace: Namespace for the documents (default: wip)
 
         Returns:
-            List of registration results with IDs
+            List of registration results with IDs and status (created/already_exists)
 
         Raises:
             RegistryError: If registration fails
         """
-        # Each document needs a unique composite key to get a unique ID
-        # We use a UUID for each to guarantee uniqueness in the batch
-        registry_items = [
-            {
-                "namespace": namespace,
-                "entity_type": "documents",
-                "composite_key": {
+        registry_items = []
+        for item in items:
+            if item.get("has_identity_fields", True):
+                composite_key = {
+                    "namespace": namespace,
                     "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],
-                    "version": item.get("version", 1),
-                    # Unique per request to ensure Registry always generates new ID
-                    "version_uuid": str(uuid.uuid4())
-                },
+                }
+            else:
+                composite_key = {}
+
+            registry_items.append({
+                "namespace": namespace,
+                "entity_type": "documents",
+                "composite_key": composite_key,
                 "created_by": created_by,
                 "metadata": {"type": "document"}
-            }
-            for item in items
-        ]
+            })
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(

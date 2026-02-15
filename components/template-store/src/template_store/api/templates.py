@@ -83,28 +83,37 @@ async def list_templates(
 
 
 @router.get("/{template_id}", response_model=TemplateResponse)
-async def get_template(template_id: str):
+async def get_template(
+    template_id: str,
+    version: Optional[int] = Query(None, description="Specific version (default: latest)")
+):
     """
     Get a template by ID.
 
-    Returns the template with inheritance resolved (all fields from parent
-    templates merged).
+    Template IDs are stable across versions. Without a version parameter,
+    returns the latest version. Returns the template with inheritance resolved
+    (all fields from parent templates merged).
     """
-    template = await TemplateService.get_template(template_id=template_id)
+    template = await TemplateService.get_template(template_id=template_id, version=version)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
 
 
 @router.get("/{template_id}/raw", response_model=TemplateResponse)
-async def get_template_raw(template_id: str):
+async def get_template_raw(
+    template_id: str,
+    version: Optional[int] = Query(None, description="Specific version (default: latest)")
+):
     """
     Get a template by ID without inheritance resolution.
 
     Returns the template as stored in the database, without merging
     fields from parent templates.
     """
-    template = await TemplateService.get_template_raw(template_id=template_id)
+    template = await TemplateService.get_template(
+        template_id=template_id, version=version, resolve_inheritance=False
+    )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
@@ -180,19 +189,19 @@ async def update_template(template_id: str, request: UpdateTemplateRequest):
     """
     Update a template by creating a new version.
 
-    This creates a NEW template document with a new template_id and incremented
-    version number. The original version remains unchanged, allowing documents
-    to continue referencing it. This supports gradual migration scenarios where
-    different systems may use different template versions.
+    The template_id is stable across versions — updates create a new version
+    document with the same template_id but incremented version number.
+    The original version remains unchanged, allowing documents to continue
+    referencing it.
 
     If no changes are detected, returns the current template info without
     creating a new version.
 
     Returns:
         TemplateUpdateResponse with:
-        - template_id: The ID of the template (new if changed, existing if unchanged)
+        - template_id: The stable template ID (same across all versions)
         - value: The template value
-        - version: The version number
+        - version: The new version number
         - is_new_version: True if a new version was created
         - previous_version: Previous version number if created, None if unchanged
     """
@@ -227,11 +236,12 @@ async def get_template_dependencies(template_id: str):
 @router.delete("/{template_id}")
 async def delete_template(
     template_id: str,
+    version: Optional[int] = Query(None, description="Specific version to deactivate (default: latest)"),
     updated_by: Optional[str] = Query(None, description="User performing deletion"),
     force: bool = Query(False, description="Force deletion even if documents exist")
 ):
     """
-    Soft-delete a template.
+    Soft-delete a template (specific version or latest).
 
     Sets the template status to 'inactive'. Cannot delete templates that
     have other templates extending them.
@@ -247,31 +257,23 @@ async def delete_template(
         if deps.child_template_count > 0:
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "error": "Cannot deactivate: template has children",
-                    "message": deps.warning_message,
-                    "child_count": deps.child_template_count,
-                    "children": deps.child_templates
-                }
+                detail=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template"
             )
 
         # Warn if documents exist (unless force)
         if deps.document_count > 0 and not force:
             raise HTTPException(
                 status_code=409,
-                detail={
-                    "error": "Template has dependent documents",
-                    "message": deps.warning_message,
-                    "document_count": deps.document_count,
-                    "hint": "Use force=true to deactivate anyway"
-                }
+                detail=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway."
             )
 
-        deleted = await TemplateService.delete_template(template_id, updated_by)
+        deleted = await TemplateService.delete_template(template_id, updated_by, version=version)
         if not deleted:
             raise HTTPException(status_code=404, detail="Template not found")
 
         response = {"status": "deleted", "template_id": template_id}
+        if version:
+            response["version"] = version
         if deps.document_count > 0:
             response["warning"] = f"{deps.document_count} documents still reference this template"
 

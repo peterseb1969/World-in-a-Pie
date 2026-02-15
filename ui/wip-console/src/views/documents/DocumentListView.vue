@@ -11,6 +11,7 @@ import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import TruncatedId from '@/components/common/TruncatedId.vue'
 import { useDocumentStore, useTemplateStore, useAuthStore, useUiStore } from '@/stores'
+import { getDocumentTitle } from '@/utils/document'
 import type { Document } from '@/types'
 
 const router = useRouter()
@@ -42,7 +43,8 @@ const filteredDocuments = computed(() => {
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(
-      d => d.document_id.toLowerCase().includes(query)
+      d => d.document_id.toLowerCase().includes(query) ||
+           getDocumentTitle(d).toLowerCase().includes(query)
     )
   }
 
@@ -188,9 +190,13 @@ function formatDateTime(dateString: string): string {
   return new Date(dateString).toLocaleString()
 }
 
-// Watch for filter changes
+// Watch for filter and namespace changes (preserving filters)
 watch([statusFilter, templateFilter], () => {
   loadDocuments()
+})
+watch(() => documentStore.namespaceParam, () => {
+  loadDocuments()
+  loadTemplates()
 })
 
 onMounted(async () => {
@@ -225,7 +231,7 @@ onMounted(async () => {
           <i class="pi pi-search" />
           <InputText
             v-model="searchQuery"
-            placeholder="Search by document ID..."
+            placeholder="Search by ID or title..."
             class="w-full"
           />
         </span>
@@ -270,6 +276,14 @@ onMounted(async () => {
         <Column field="document_id" header="Document ID" sortable style="width: 140px">
           <template #body="{ data }">
             <TruncatedId :id="data.document_id" />
+          </template>
+        </Column>
+        <Column header="Title" style="min-width: 150px">
+          <template #body="{ data }">
+            <span v-if="getDocumentTitle(data) !== data.document_id" class="doc-title">
+              {{ getDocumentTitle(data) }}
+            </span>
+            <span v-else class="no-title">-</span>
           </template>
         </Column>
         <Column field="template_id" header="Template" sortable style="min-width: 200px">
@@ -460,6 +474,14 @@ onMounted(async () => {
   border-radius: var(--p-border-radius);
   font-size: 0.75rem;
   word-break: break-all;
+}
+
+.doc-title {
+  font-weight: 500;
+}
+
+.no-title {
+  color: var(--p-text-muted-color);
 }
 
 .template-name {

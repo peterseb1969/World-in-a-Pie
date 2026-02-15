@@ -22,6 +22,7 @@ class ValidationResult:
         self.errors: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
+        self.identity_fields: list[str] = []
         self.template_version: Optional[int] = None
         self.template_value: Optional[str] = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
@@ -161,7 +162,8 @@ class ValidationService:
     async def validate(
         self,
         template_id: str,
-        data: dict[str, Any]
+        data: dict[str, Any],
+        template_version: Optional[int] = None
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -186,7 +188,7 @@ class ValidationService:
 
         # Stage 2: Template resolution
         start = time.perf_counter()
-        template = await self._resolve_template(template_id, result)
+        template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
         if template is None:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -269,7 +271,8 @@ class ValidationService:
     async def _resolve_template(
         self,
         template_id: str,
-        result: ValidationResult
+        result: ValidationResult,
+        version: Optional[int] = None
     ) -> Optional[dict[str, Any]]:
         """
         Stage 2: Template resolution.
@@ -278,7 +281,7 @@ class ValidationService:
         """
         try:
             client = get_template_store_client()
-            template = await client.get_template_resolved(template_id)
+            template = await client.get_template_resolved(template_id, version=version)
 
             if template is None:
                 result.add_error(
@@ -1986,6 +1989,7 @@ class ValidationService:
         Computes the identity hash from identity fields.
         """
         identity_fields = template.get("identity_fields", [])
+        result.identity_fields = identity_fields
 
         if not identity_fields:
             result.add_warning(

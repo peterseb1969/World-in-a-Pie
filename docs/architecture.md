@@ -316,7 +316,7 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   POST /api/registry/ids                                                     │
 │   {                                                                          │
 │     "pool_id": "wip-templates",                                            │
-│     "composite_key": {"code": "PERSON", "version": 1}                       │
+│     "composite_key": {}                                                      │
 │   }                                                                          │
 │                                                                              │
 │   Response: {"id": "TPL-000001", "composite_key_hash": "abc123..."}         │
@@ -340,45 +340,45 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │                           VERSION MANAGEMENT                                 │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   DOCUMENT VERSIONING (Identity-based)                                       │
-│   ═════════════════════════════════════                                     │
+│   DOCUMENT VERSIONING (Identity-based, stable IDs)                           │
+│   ═════════════════════════════════════════════════                         │
 │                                                                              │
-│   Same identity_hash = new version, old version deactivated                 │
+│   Same identity_hash = same document_id, new version, old deactivated       │
 │                                                                              │
 │   ┌─────────┐   update    ┌─────────┐   update    ┌─────────┐              │
 │   │ Doc v1  │ ──────────► │ Doc v2  │ ──────────► │ Doc v3  │              │
 │   │ ACTIVE  │             │ ACTIVE  │             │ ACTIVE  │              │
-│   │ id: A   │             │ id: B   │             │ id: C   │              │
+│   │ id: A   │             │ id: A   │             │ id: A   │              │
 │   └────┬────┘             └────┬────┘             └─────────┘              │
 │        │                       │                                            │
 │        ▼                       ▼                                            │
 │   ┌─────────┐             ┌─────────┐                                       │
 │   │ Doc v1  │             │ Doc v2  │                                       │
 │   │INACTIVE │             │INACTIVE │                                       │
-│   │ id: A   │             │ id: B   │                                       │
+│   │ id: A   │             │ id: A   │                                       │
 │   └─────────┘             └─────────┘                                       │
 │                                                                              │
-│   All versions share same identity_hash                                     │
-│   Each version has unique document_id (UUID7)                               │
+│   All versions share same document_id AND identity_hash                     │
+│   (document_id, version) is the unique key                                  │
 │                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   TEMPLATE VERSIONING (Multi-version active)                                 │
-│   ══════════════════════════════════════════                                │
+│   TEMPLATE VERSIONING (Multi-version active, stable IDs)                     │
+│   ══════════════════════════════════════════════════════                    │
 │                                                                              │
 │   Multiple versions can be active simultaneously for gradual migration      │
 │                                                                              │
 │   ┌─────────┐   update    ┌─────────┐   update    ┌─────────┐              │
 │   │ TPL v1  │ ──────────► │ TPL v2  │ ──────────► │ TPL v3  │              │
 │   │ ACTIVE  │             │ ACTIVE  │             │ ACTIVE  │              │
-│   │TPL-0001 │             │TPL-0002 │             │TPL-0003 │              │
+│   │TPL-0001 │             │TPL-0001 │             │TPL-0001 │              │
 │   └─────────┘             └─────────┘             └─────────┘              │
 │        │                       │                       │                    │
 │   Still active!           Still active!           Current                   │
 │   (legacy docs)           (migrating)                                       │
 │                                                                              │
-│   All versions share same code (e.g., "PERSON")                             │
-│   Each version has unique template_id                                       │
+│   All versions share same template_id AND code (e.g., "PERSON")            │
+│   (template_id, version) is the unique key                                  │
 │                                                                              │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │

@@ -116,6 +116,10 @@ class Template(Document):
         None,
         description="Parent template ID for inheritance"
     )
+    extends_version: Optional[int] = Field(
+        None,
+        description="Pinned parent version (None = always use latest active parent version)"
+    )
 
     # Identity fields for document upsert
     identity_fields: list[str] = Field(
@@ -170,8 +174,8 @@ class Template(Document):
     class Settings:
         name = "templates"
         indexes = [
-            # Unique ID within namespace
-            IndexModel([("namespace", 1), ("template_id", 1)], unique=True, name="ns_template_id_unique_idx"),
+            # Unique (template_id, version) within namespace — stable ID across versions
+            IndexModel([("namespace", 1), ("template_id", 1), ("version", 1)], unique=True, name="ns_template_id_version_unique_idx"),
             # Unique value+version within namespace
             IndexModel([("namespace", 1), ("value", 1), ("version", 1)], unique=True, name="ns_value_version_unique_idx"),
             # Value lookup within namespace
@@ -180,8 +184,10 @@ class Template(Document):
             IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
             # Extends lookup within namespace
             IndexModel([("namespace", 1), ("extends", 1)], name="ns_extends_idx"),
-            # Global template_id lookup (for cross-namespace refs in open mode)
-            IndexModel([("template_id", 1)], unique=True, name="template_id_unique_idx"),
+            # Global (template_id, version) lookup (for cross-namespace refs in open mode)
+            IndexModel([("template_id", 1), ("version", 1)], unique=True, name="template_id_version_unique_idx"),
+            # template_id lookup (non-unique, for finding all versions)
+            IndexModel([("template_id", 1)], name="template_id_idx"),
             # Text search (global)
             IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

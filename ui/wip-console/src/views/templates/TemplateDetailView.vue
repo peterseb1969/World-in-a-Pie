@@ -44,6 +44,7 @@ const form = ref<{
   label: string
   description: string
   extends: string | null
+  extends_version: number | null
   identity_fields: string[]
   fields: FieldDefinition[]
   rules: ValidationRule[]
@@ -65,6 +66,7 @@ const form = ref<{
   label: '',
   description: '',
   extends: null,
+  extends_version: null,
   identity_fields: [],
   fields: [],
   rules: [],
@@ -113,6 +115,32 @@ const parentTemplateName = computed(() => {
   return parent ? parent.label : ''
 })
 
+// Version selector options for navigating between versions of the same template
+const versionOptions = computed(() => {
+  return templateStore.templateVersions.map(t => ({
+    label: `v${t.version}${t.status === 'inactive' ? ' (inactive)' : ''}`,
+    value: t.version
+  }))
+})
+
+// Parent version options for extends_version pin
+const parentVersionOptions = computed(() => {
+  if (!form.value.extends) return []
+  const parent = templateStore.templates.find(t => t.template_id === form.value.extends)
+  if (!parent) return [{ label: 'Latest (unpinned)', value: null as number | null }]
+  // Find all versions of the parent by value
+  const parentVersions = templateStore.templates
+    .filter(t => t.value === parent.value)
+    .sort((a, b) => b.version - a.version)
+  return [
+    { label: 'Latest (unpinned)', value: null as number | null },
+    ...parentVersions.map(t => ({
+      label: `v${t.version}${t.status === 'inactive' ? ' (inactive)' : ''}`,
+      value: t.version as number | null
+    }))
+  ]
+})
+
 // Current template being viewed
 const template = computed(() =>
   showRawView.value ? templateStore.currentTemplateRaw : templateStore.currentTemplate
@@ -131,10 +159,14 @@ async function loadTemplate() {
     await templateStore.fetchTerminologies()
 
     if (props.id) {
-      await templateStore.fetchTemplateWithRaw(props.id)
+      const versionParam = route.query.version ? Number(route.query.version) : undefined
+      await templateStore.fetchTemplateWithRaw(props.id, versionParam)
 
       if (templateStore.currentTemplateRaw) {
         resetForm(templateStore.currentTemplateRaw)
+
+        // Load version history for version selector
+        await templateStore.fetchTemplateVersions(templateStore.currentTemplateRaw.value)
       }
     }
   } catch (e) {
@@ -148,6 +180,7 @@ function resetForm(t: Template) {
     label: t.label,
     description: t.description || '',
     extends: t.extends || null,
+    extends_version: t.extends_version ?? null,
     identity_fields: [...t.identity_fields],
     fields: JSON.parse(JSON.stringify(t.fields)),
     rules: JSON.parse(JSON.stringify(t.rules)),
@@ -190,6 +223,7 @@ async function saveTemplate() {
         label: form.value.label,
         description: form.value.description || undefined,
         extends: form.value.extends || undefined,
+        extends_version: form.value.extends_version ?? undefined,
         identity_fields: form.value.identity_fields,
         fields: form.value.fields,
         rules: form.value.rules,
@@ -210,6 +244,7 @@ async function saveTemplate() {
         label: form.value.label,
         description: form.value.description || undefined,
         extends: form.value.extends || undefined,
+        extends_version: form.value.extends_version ?? undefined,
         identity_fields: form.value.identity_fields,
         fields: form.value.fields,
         rules: form.value.rules,
@@ -224,12 +259,14 @@ async function saveTemplate() {
       const result = await templateStore.updateTemplate(props.id, updateData)
 
       clearDraft()
+      isEditing.value = false
+
       if (result.is_new_version) {
         uiStore.showSuccess('Template Updated', `New version v${result.version} created`)
         // Offer to deactivate previous version
-        const previousId = props.id
+        const previousVersion = result.previous_version || (result.version - 1)
         confirm.require({
-          message: `Deactivate previous version (v${(result.version || 1) - 1})? Documents using it will still reference it, but no new documents can be created with it.`,
+          message: `Deactivate previous version (v${previousVersion})? Documents using it will still reference it, but no new documents can be created with it.`,
           header: 'Deactivate Previous Version?',
           icon: 'pi pi-question-circle',
           rejectLabel: 'Keep Active',
@@ -237,27 +274,27 @@ async function saveTemplate() {
           rejectClass: 'p-button-secondary p-button-text',
           accept: async () => {
             try {
-              if (previousId) {
-                await templateStore.deleteTemplate(previousId)
-                uiStore.showSuccess('Previous Version Deactivated', 'The old version has been deactivated')
+              await templateStore.deleteTemplate(result.template_id, previousVersion)
+              uiStore.showSuccess('Previous Version Deactivated', `Version v${previousVersion} has been deactivated`)
+              // Refresh version history after deactivation
+              if (templateStore.currentTemplateRaw) {
+                await templateStore.fetchTemplateVersions(templateStore.currentTemplateRaw.value)
               }
             } catch (e) {
               uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
             }
           }
         })
-        // Navigate to the new template version
-        router.push(`/templates/${result.template_id}`)
       } else {
         uiStore.showInfo('No Changes', 'Template was not modified - no new version created')
       }
-      isEditing.value = false
 
-      // Reload to get updated resolved view (use new ID if created)
-      const templateId = result.is_new_version ? result.template_id : props.id
-      await templateStore.fetchTemplateWithRaw(templateId)
+      // Reload to get updated resolved view
+      await templateStore.fetchTemplateWithRaw(result.template_id)
       if (templateStore.currentTemplateRaw) {
         resetForm(templateStore.currentTemplateRaw)
+        // Reload version history
+        await templateStore.fetchTemplateVersions(templateStore.currentTemplateRaw.value)
       }
     }
   } catch (e) {
@@ -290,6 +327,33 @@ function confirmDeactivate() {
         uiStore.showSuccess('Template Deactivated', `Template has been deactivated`)
         router.push('/templates')
       } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Unknown error'
+        if (msg.includes('dependent document')) {
+          confirmForceDeactivate(msg)
+        } else {
+          uiStore.showError('Deactivation Failed', msg)
+        }
+      }
+    }
+  })
+}
+
+function confirmForceDeactivate(warningMessage: string) {
+  if (!template.value) return
+
+  confirm.require({
+    message: `${warningMessage}\n\nDo you want to force-deactivate this template? Existing documents will keep their data but won't be editable against this template.`,
+    header: 'Force Deactivate Template',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: 'Cancel',
+    acceptLabel: 'Force Deactivate',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        await templateStore.deleteTemplate(template.value!.template_id, undefined, true)
+        uiStore.showSuccess('Template Deactivated', 'Template has been force-deactivated')
+        router.push('/templates')
+      } catch (e) {
         uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
       }
     }
@@ -309,6 +373,18 @@ async function validateTemplate() {
     }
   } catch (e) {
     uiStore.showError('Validation Error', e instanceof Error ? e.message : 'Unknown error')
+  }
+}
+
+async function switchVersion(version: number) {
+  if (!template.value) return
+  try {
+    const t = await templateStore.fetchTemplateByCodeAndVersion(template.value.value, version)
+    if (t) {
+      router.push(`/templates/${t.template_id}`)
+    }
+  } catch (e) {
+    uiStore.showError('Failed to load version', e instanceof Error ? e.message : 'Unknown error')
   }
 }
 
@@ -413,8 +489,9 @@ const validationErrors = computed(() => {
   return errs
 })
 
-// Watch for route changes (when navigating between templates)
+// Watch for route changes (when navigating between templates or versions)
 watch(() => props.id, loadTemplate)
+watch(() => route.query.version, loadTemplate)
 
 onMounted(async () => {
   if (!authStore.isAuthenticated) {
@@ -436,6 +513,7 @@ onMounted(async () => {
       label: '',
       description: '',
       extends: null,
+      extends_version: null,
       identity_fields: [],
       fields: [],
       rules: [],
@@ -480,7 +558,16 @@ onMounted(async () => {
           <div class="header-meta">
             <code>{{ template.value }}</code>
             <Tag :value="template.status" :severity="getStatusSeverity(template.status)" />
-            <span class="version">v{{ template.version }}</span>
+            <Select
+              v-if="versionOptions.length > 1"
+              :modelValue="template.version"
+              :options="versionOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="version-select"
+              @update:modelValue="switchVersion"
+            />
+            <span v-else class="version">v{{ template.version }}</span>
           </div>
         </div>
         <h1 v-else>New Template</h1>
@@ -626,6 +713,22 @@ onMounted(async () => {
                     class="w-full"
                   />
                   <small v-if="form.extends">This template inherits fields from the parent</small>
+                </div>
+
+                <div v-if="form.extends" class="form-field">
+                  <label for="extends_version">Parent Version <small class="label-hint">Pin to a specific parent version, or use latest</small></label>
+                  <Select
+                    id="extends_version"
+                    v-model="form.extends_version"
+                    :options="parentVersionOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    :disabled="!isEditing && !isNew"
+                    placeholder="Latest (unpinned)"
+                    class="w-full"
+                  />
+                  <small v-if="form.extends_version">Pinned to v{{ form.extends_version }} of the parent template</small>
+                  <small v-else>Will always inherit from the latest active version of the parent</small>
                 </div>
 
                 <div class="form-field">
@@ -882,6 +985,16 @@ onMounted(async () => {
 
 .version {
   color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
+.version-select {
+  min-width: 120px;
+  font-size: 0.875rem;
+}
+
+.version-select :deep(.p-select-label) {
+  padding: 0.25rem 0.5rem;
   font-size: 0.875rem;
 }
 

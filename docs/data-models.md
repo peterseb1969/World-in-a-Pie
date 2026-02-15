@@ -320,6 +320,10 @@ class Template(BaseModel):
         None,
         description="Parent template_id for inheritance (TPL-XXXXXX)"
     )
+    extends_version: int | None = Field(
+        None,
+        description="Pinned parent version (None = always use latest parent version)"
+    )
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key"
@@ -620,15 +624,15 @@ class RuleCondition(BaseModel):
 
 ### Template Versioning
 
-When a template is updated, a **new document with a new template_id** is created. The original remains active.
+When a template is updated, a **new version is created with the same `template_id`**. The `(template_id, version)` pair is the unique key. Multiple versions can be active simultaneously for gradual migration.
 
 | Operation | Result |
 |-----------|--------|
 | Create template (code=PERSON) | TPL-000001, version=1 |
-| Update TPL-000001 | NEW TPL-000002, version=2, **TPL-000001 still active** |
-| Update TPL-000002 | NEW TPL-000003, version=3, **all still active** |
+| Update TPL-000001 | TPL-000001, version=2, **version 1 still active** |
+| Update TPL-000001 | TPL-000001, version=3, **all versions still active** |
 
-All versions share the same `code` but have different `template_id` values.
+All versions share the same `template_id` and `code`. The `extends_version` field allows pinning inheritance to a specific parent version (None = always resolve latest active parent version).
 
 ---
 
@@ -770,11 +774,15 @@ class Document(BaseModel):
 
 ### Document Versioning
 
-Documents use identity-based versioning. When a document with the same identity_hash is submitted:
+Documents use identity-based versioning with **stable document IDs**. The `document_id` remains the same across all versions; the `(document_id, version)` pair is the unique key.
 
-1. The existing active document is deactivated
-2. A new document is created with an incremented version number
-3. Both share the same `identity_hash`
+When a document with the same identity_hash is submitted:
+
+1. The Registry returns the existing `document_id` (composite key match on `{identity_hash, template_id}`)
+2. The existing active document is deactivated
+3. A new version is created with the same `document_id` and incremented version number
+
+Documents without identity fields always get a fresh `document_id` (empty composite key → no dedup).
 
 ```
 Document v1 (identity_hash: abc123)
@@ -782,14 +790,12 @@ Document v1 (identity_hash: abc123)
     document_id: 0192aaa...
     version: 1
     is_latest_version: false
-    latest_document_id: 0192bbb...
 
 Document v2 (identity_hash: abc123)
     status: active
-    document_id: 0192bbb...
+    document_id: 0192aaa...    ← SAME document_id
     version: 2
     is_latest_version: true
-    latest_document_id: 0192bbb...
 ```
 
 ---

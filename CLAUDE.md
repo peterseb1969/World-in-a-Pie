@@ -133,11 +133,20 @@ cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
 
 ## Key Technical Concepts
 
+### Stable Registry IDs
+
+All entities get a **stable ID** from the Registry that persists across versions:
+- `template_id` (TPL-XXXXXX) stays the same across all template versions
+- `document_id` (UUID7) stays the same across all document versions
+- `(entity_id, version)` is the unique key for versioned entities
+- Entities without upsert (templates, files, docs without identity_fields) register with empty composite key
+
 ### Document Identity & Versioning
 
 Documents use identity fields (defined in template) to determine uniqueness:
-- Same identity_hash → new version of existing document
-- Different identity_hash → new document
+- Same identity_hash → Registry returns existing `document_id`, new version created
+- Different identity_hash → Registry returns new `document_id`
+- No identity_fields → always new `document_id` (empty composite key)
 
 ```json
 {
@@ -150,9 +159,9 @@ Documents use identity fields (defined in template) to determine uniqueness:
 ### Template Versioning
 
 Templates support multi-version operation (for gradual migration):
-- Update creates NEW template_id with incremented version
-- Original template remains active
-- Documents reference specific template_id
+- Update keeps the SAME `template_id`, increments `version`
+- Multiple versions can be active simultaneously
+- `extends_version` field pins inheritance to a specific parent version (None = latest)
 
 ### Template Draft Mode
 

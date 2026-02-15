@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, watch, computed } from 'vue'
+import { ref, computed } from 'vue'
 import { defStoreClient } from '@/api/client'
 import { useNamespaceStore } from './namespace'
 import type {
@@ -51,10 +51,8 @@ export const useTerminologyStore = defineStore('terminology', () => {
     return isOpen && !isWip
   })
 
-  // Watch for namespace changes and refetch
-  watch(() => namespaceStore.currentNamespaceParam, () => {
-    fetchTerminologies()
-  })
+  // Expose namespace param for components to watch
+  const namespaceParam = computed(() => namespaceStore.currentNamespaceParam)
 
   async function fetchTerminologies(params?: {
     page?: number
@@ -186,6 +184,7 @@ export const useTerminologyStore = defineStore('terminology', () => {
     error,
     // Computed
     showWipSection,
+    namespaceParam,
     // Actions
     fetchTerminologies,
     fetchTerminology,

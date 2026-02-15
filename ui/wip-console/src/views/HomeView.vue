@@ -9,6 +9,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore } from '@/stores'
+import { getDocumentTitle, hasDocumentTitle } from '@/utils/document'
 import { isReportingEnabled } from '@/config/modules'
 import { reportingSyncClient, documentStoreClient, type IntegrityCheckResult } from '@/api/client'
 import type { Terminology, Template, Document } from '@/types'
@@ -439,9 +440,10 @@ watch(() => namespaceStore.current, () => {
               class="clickable-rows"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
-              <Column field="document_id" header="ID" style="width: 100px">
+              <Column header="Title">
                 <template #body="{ data }">
-                  <code class="doc-id">{{ data.document_id?.slice(0, 8) }}...</code>
+                  <span v-if="hasDocumentTitle(data)" class="doc-title">{{ getDocumentTitle(data) }}</span>
+                  <code v-else class="doc-id">{{ data.document_id?.slice(0, 8) }}...</code>
                 </template>
               </Column>
               <Column field="template_id" header="Template">
@@ -687,6 +689,10 @@ watch(() => namespaceStore.current, () => {
 
 .clickable-rows :deep(.p-datatable-tbody > tr:hover) {
   background-color: var(--p-surface-100);
+}
+
+.doc-title {
+  font-weight: 500;
 }
 
 .doc-id {

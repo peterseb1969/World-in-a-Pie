@@ -447,11 +447,11 @@ class DocumentTransformer:
                 WHERE "{table_name}".version < EXCLUDED.version
             """
         else:
-            # Simple INSERT for all_versions strategy
+            # INSERT for all_versions strategy — composite PK (document_id, version)
             sql = f"""
                 INSERT INTO "{table_name}" ({', '.join(quoted_columns)})
                 VALUES ({', '.join(placeholders)})
-                ON CONFLICT (document_id) DO NOTHING
+                ON CONFLICT (document_id, version) DO NOTHING
             """
 
         return sql.strip(), values

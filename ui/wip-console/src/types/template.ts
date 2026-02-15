@@ -278,6 +278,7 @@ export interface Template {
   description?: string
   version: number
   extends?: string
+  extends_version?: number
   identity_fields: string[]
   fields: FieldDefinition[]
   rules: ValidationRule[]
@@ -296,6 +297,7 @@ export interface CreateTemplateRequest {
   description?: string
   namespace?: string
   extends?: string
+  extends_version?: number
   identity_fields?: string[]
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
@@ -309,6 +311,7 @@ export interface UpdateTemplateRequest {
   label?: string
   description?: string
   extends?: string
+  extends_version?: number
   identity_fields?: string[]
   fields?: FieldDefinition[]
   rules?: ValidationRule[]

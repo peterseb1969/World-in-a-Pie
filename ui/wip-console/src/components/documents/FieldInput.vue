@@ -14,6 +14,7 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import { useDocumentStore, useTemplateStore } from '@/stores'
 import { templateStoreClient, documentStoreClient } from '@/api/client'
+import { getDocumentTitle } from '@/utils/document'
 import type { FieldDefinition, Term, Template } from '@/types'
 import { SEMANTIC_TYPES } from '@/types'
 
@@ -235,8 +236,9 @@ async function searchDocuments() {
       const q = refSearchQuery.value.toLowerCase()
       items = items.filter(doc => {
         const id = (doc.document_id as string || '').toLowerCase()
+        const title = getDocumentTitle(doc as any).toLowerCase()
         const data = JSON.stringify(doc.data || {}).toLowerCase()
-        return id.includes(q) || data.includes(q)
+        return id.includes(q) || title.includes(q) || data.includes(q)
       })
     }
     refSearchResults.value = items
@@ -622,6 +624,12 @@ onMounted(() => {
               scrollable
               scrollHeight="350px"
             >
+              <Column header="Title / ID" style="width: 160px">
+                <template #body="{ data }">
+                  <span v-if="getDocumentTitle(data) !== data.document_id" class="ref-doc-title">{{ getDocumentTitle(data) }}</span>
+                  <code v-else class="ref-doc-id">{{ (data.document_id as string)?.slice(0, 10) }}</code>
+                </template>
+              </Column>
               <Column header="Template" style="width: 130px">
                 <template #body="{ data }">
                   <span class="ref-template-name">{{ getDocTemplateName(data) }}</span>
@@ -633,11 +641,6 @@ onMounted(() => {
                 </template>
               </Column>
               <Column field="version" header="Ver" style="width: 50px" />
-              <Column field="document_id" header="ID" style="width: 110px">
-                <template #body="{ data }">
-                  <code class="ref-doc-id">{{ (data.document_id as string)?.slice(0, 10) }}</code>
-                </template>
-              </Column>
               <template #empty>
                 <div style="text-align: center; padding: 1rem; color: var(--p-text-muted-color)">
                   {{ refSearchLoading ? 'Searching...' : 'No documents found. Try a different search or template filter.' }}
@@ -850,6 +853,11 @@ onMounted(() => {
 .ref-template-name {
   font-size: 0.8rem;
   font-weight: 500;
+}
+
+.ref-doc-title {
+  font-weight: 500;
+  font-size: 0.8rem;
 }
 
 .ref-doc-id {

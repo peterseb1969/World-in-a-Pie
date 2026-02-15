@@ -16,6 +16,7 @@ import Column from 'primevue/column'
 import Paginator from 'primevue/paginator'
 import { fileStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
+import { getDocumentTitle } from '@/utils/document'
 import type { FileEntity } from '@/types'
 
 const route = useRoute()
@@ -443,9 +444,10 @@ onMounted(async () => {
                 @row-click="(e) => navigateToDocument(e.data.document_id)"
                 :pt="{ bodyRow: { style: 'cursor: pointer' } }"
               >
-                <Column field="document_id" header="Document ID" style="width: 240px">
+                <Column field="document_id" header="Document" style="width: 240px">
                   <template #body="{ data }">
-                    <code class="doc-id">{{ data.document_id }}</code>
+                    <span v-if="getDocumentTitle(data) !== data.document_id" class="doc-title">{{ getDocumentTitle(data) }}</span>
+                    <code v-else class="doc-id">{{ data.document_id }}</code>
                   </template>
                 </Column>
                 <Column field="template_id" header="Template" style="width: 180px">
@@ -780,6 +782,10 @@ onMounted(async () => {
 
 .referencing-docs-table :deep(.p-datatable-tbody > tr:hover) {
   background-color: var(--p-surface-100);
+}
+
+.doc-title {
+  font-weight: 500;
 }
 
 .doc-id {

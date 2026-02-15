@@ -13,7 +13,7 @@ from typing import Any
 
 import asyncpg
 
-from .models import FieldType, FileFieldConfig, ReportingConfig, SemanticType, TemplateField
+from .models import FieldType, FileFieldConfig, ReportingConfig, SemanticType, SyncStrategy, TemplateField
 
 logger = logging.getLogger(__name__)
 
@@ -168,19 +168,33 @@ class SchemaManager:
         """Generate CREATE TABLE statement for a template."""
         table_name = self.get_table_name(template_value, config)
         include_metadata = config.include_metadata if config else True
+        strategy = config.sync_strategy if config else SyncStrategy.LATEST_ONLY
 
         columns = []
 
         # System columns (always present)
-        columns.extend([
-            ("document_id", "TEXT PRIMARY KEY"),
-            ("namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip'"),
-            ("template_id", "TEXT NOT NULL"),
-            ("template_version", "INTEGER NOT NULL"),
-            ("version", "INTEGER NOT NULL"),
-            ("status", "VARCHAR(20) NOT NULL"),
-            ("identity_hash", "TEXT NOT NULL"),
-        ])
+        # For all_versions strategy, PK is composite (document_id, version)
+        # so document_id column does not carry PRIMARY KEY inline
+        if strategy == SyncStrategy.ALL_VERSIONS:
+            columns.extend([
+                ("document_id", "TEXT NOT NULL"),
+                ("namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip'"),
+                ("template_id", "TEXT NOT NULL"),
+                ("template_version", "INTEGER NOT NULL"),
+                ("version", "INTEGER NOT NULL"),
+                ("status", "VARCHAR(20) NOT NULL"),
+                ("identity_hash", "TEXT NOT NULL"),
+            ])
+        else:
+            columns.extend([
+                ("document_id", "TEXT PRIMARY KEY"),
+                ("namespace", "VARCHAR(255) NOT NULL DEFAULT 'wip'"),
+                ("template_id", "TEXT NOT NULL"),
+                ("template_version", "INTEGER NOT NULL"),
+                ("version", "INTEGER NOT NULL"),
+                ("status", "VARCHAR(20) NOT NULL"),
+                ("identity_hash", "TEXT NOT NULL"),
+            ])
 
         if include_metadata:
             columns.extend([
@@ -212,6 +226,10 @@ class SchemaManager:
         # Build the DDL
         column_defs = ",\n    ".join(f'"{name}" {col_type}' for name, col_type in columns)
 
+        # For all_versions strategy, add composite primary key constraint
+        if strategy == SyncStrategy.ALL_VERSIONS:
+            column_defs += ",\n    PRIMARY KEY (document_id, version)"
+
         ddl = f"""
 CREATE TABLE IF NOT EXISTS "{table_name}" (
     {column_defs}
@@ -223,7 +241,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_template_id_idx" ON "{table_name}"(n
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx" ON "{table_name}"(namespace, status);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_identity_hash_idx" ON "{table_name}"(namespace, identity_hash);
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(namespace, created_at);
+"""
 
+        # Partial unique index only applies to latest_only strategy
+        # (all_versions tables store multiple versions per document_id)
+        if strategy != SyncStrategy.ALL_VERSIONS:
+            ddl += f"""
 -- Partial unique index for active documents by identity within namespace
 CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
 ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';

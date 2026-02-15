@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, watch, computed } from 'vue'
+import { ref, computed } from 'vue'
 import { templateStoreClient, defStoreClient } from '@/api/client'
 import { useNamespaceStore } from './namespace'
 import type {
@@ -38,10 +38,8 @@ export const useTemplateStore = defineStore('template', () => {
     return isOpen && !isWip
   })
 
-  // Watch for namespace changes and refetch
-  watch(() => namespaceStore.currentNamespaceParam, () => {
-    fetchTemplates()
-  })
+  // Expose namespace param for components to watch
+  const namespaceParam = computed(() => namespaceStore.currentNamespaceParam)
 
   async function fetchTemplates(params?: {
     page?: number
@@ -115,13 +113,13 @@ export const useTemplateStore = defineStore('template', () => {
     }
   }
 
-  async function fetchTemplateWithRaw(id: string) {
+  async function fetchTemplateWithRaw(id: string, version?: number) {
     loading.value = true
     error.value = null
     try {
       const [resolved, raw] = await Promise.all([
-        templateStoreClient.getTemplate(id),
-        templateStoreClient.getTemplateRaw(id)
+        templateStoreClient.getTemplate(id, version),
+        templateStoreClient.getTemplateRaw(id, version)
       ])
       currentTemplate.value = resolved
       currentTemplateRaw.value = raw
@@ -177,14 +175,26 @@ export const useTemplateStore = defineStore('template', () => {
     }
   }
 
-  async function deleteTemplate(id: string) {
+  async function deleteTemplate(id: string, version?: number, force?: boolean) {
     loading.value = true
     error.value = null
     try {
-      await templateStoreClient.deleteTemplate(id)
-      ownTemplates.value = ownTemplates.value.filter(t => t.template_id !== id)
-      total.value--
-      if (currentTemplate.value?.template_id === id) {
+      const opts: { version?: number; force?: boolean } = {}
+      if (version) opts.version = version
+      if (force) opts.force = true
+      await templateStoreClient.deleteTemplate(id, Object.keys(opts).length ? opts : undefined)
+      if (version) {
+        // Version-specific deactivation: update the version's status in the local list
+        const idx = ownTemplates.value.findIndex(t => t.template_id === id && t.version === version)
+        if (idx >= 0) {
+          ownTemplates.value[idx] = { ...ownTemplates.value[idx], status: 'inactive' }
+        }
+      } else {
+        // Full deactivation: remove from list
+        ownTemplates.value = ownTemplates.value.filter(t => t.template_id !== id)
+        total.value--
+      }
+      if (currentTemplate.value?.template_id === id && (!version || currentTemplate.value.version === version)) {
         currentTemplate.value = null
         currentTemplateRaw.value = null
       }
@@ -303,6 +313,7 @@ export const useTemplateStore = defineStore('template', () => {
     terminologies,
     // Computed
     showWipSection,
+    namespaceParam,
     // Actions
     fetchTemplates,
     fetchTemplate,

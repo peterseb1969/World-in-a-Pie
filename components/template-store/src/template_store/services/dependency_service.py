@@ -52,7 +52,9 @@ class DependencyService:
             TemplateDependencies with counts and details
         """
         # Get template info
-        template = await Template.find_one(Template.template_id == template_id)
+        # Get latest version (template_id is stable across versions)
+        results = await Template.find(Template.template_id == template_id).sort([("version", -1)]).limit(1).to_list()
+        template = results[0] if results else None
         if not template:
             raise ValueError(f"Template {template_id} not found")
 

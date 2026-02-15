@@ -104,14 +104,28 @@ class InheritanceService:
                     f"Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded"
                 )
 
-            # Look up parent template
-            parent = await Template.find_one({"template_id": current.extends})
+            # Look up parent template — respect extends_version pin
+            if current.extends_version is not None:
+                # Pinned: find exact version
+                parent = await Template.find_one({
+                    "template_id": current.extends,
+                    "version": current.extends_version
+                })
+            else:
+                # Unpinned: find latest active version
+                results = await Template.find({
+                    "template_id": current.extends,
+                    "status": "active"
+                }).sort([("version", -1)]).limit(1).to_list()
+                parent = results[0] if results else None
+
             if not parent:
                 raise InheritanceError(
                     f"Parent template '{current.extends}' not found"
+                    + (f" at version {current.extends_version}" if current.extends_version else "")
                 )
 
-            # Check for circular inheritance
+            # Check for circular inheritance (use template_id, not template_id+version)
             if parent.template_id in seen_ids:
                 raise InheritanceError(
                     f"Circular inheritance detected: {parent.template_id}"
@@ -240,11 +254,12 @@ class InheritanceService:
 
             seen_ids.add(current_id)
 
-            parent = await Template.find_one({"template_id": current_id})
-            if not parent:
+            # Get latest version of the parent
+            results = await Template.find({"template_id": current_id}).sort([("version", -1)]).limit(1).to_list()
+            if not results:
                 break
 
-            current_id = parent.extends
+            current_id = results[0].extends
 
         return False
 

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { documentStoreClient, templateStoreClient, defStoreClient } from '@/api/client'
 import { useNamespaceStore } from './namespace'
 import type {
@@ -30,10 +30,11 @@ export const useDocumentStore = defineStore('document', () => {
   // Cache for terminology terms (keyed by terminology_id)
   const termsCache = ref<Record<string, Term[]>>({})
 
-  // Watch for namespace changes and refetch
-  watch(() => namespaceStore.currentNamespaceParam, () => {
-    fetchDocuments()
-    // Clear terms cache when namespace changes
+  // Expose namespace param for components to watch
+  const namespaceParam = computed(() => namespaceStore.currentNamespaceParam)
+
+  // Clear terms cache when namespace changes
+  watch(namespaceParam, () => {
     termsCache.value = {}
   })
 
@@ -104,12 +105,12 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function updateDocument(templateId: string, data: Record<string, unknown>): Promise<DocumentCreateResponse> {
+  async function updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<DocumentCreateResponse> {
     loading.value = true
     error.value = null
     try {
       // Document Store uses upsert - POST with same identity fields creates a new version
-      const result = await documentStoreClient.updateDocument(templateId, data)
+      const result = await documentStoreClient.updateDocument(templateId, data, namespace)
       // Don't update documents array here - let the view handle navigation/refresh
       return result
     } catch (e) {
@@ -257,6 +258,7 @@ export const useDocumentStore = defineStore('document', () => {
     error,
     versionHistory,
     termsCache,
+    namespaceParam,
     fetchDocuments,
     fetchDocument,
     fetchTemplate,

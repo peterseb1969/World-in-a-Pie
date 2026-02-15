@@ -51,12 +51,19 @@ const filteredWipTerminologies = computed(() => {
 // Get namespace prefix for display
 const currentNamespacePrefix = computed(() => namespaceStore.current.toUpperCase())
 
-onMounted(async () => {
+async function loadTerminologies() {
   try {
     await terminologyStore.fetchTerminologies()
   } catch (e) {
     uiStore.showError('Failed to load terminologies', (e as Error).message)
   }
+}
+
+// Reload when namespace changes
+watch(() => terminologyStore.namespaceParam, loadTerminologies)
+
+onMounted(async () => {
+  await loadTerminologies()
   // Auto-open create dialog if ?create=true
   if (route.query.create === 'true') {
     showCreateDialog.value = true

@@ -60,7 +60,6 @@ export interface Document {
   // Version tracking
   is_latest_version?: boolean
   latest_version?: number
-  latest_document_id?: string
 }
 
 // =============================================================================
@@ -69,6 +68,7 @@ export interface Document {
 
 export interface CreateDocumentRequest {
   template_id: string
+  template_version?: number
   namespace?: string
   data: Record<string, unknown>
   created_by?: string

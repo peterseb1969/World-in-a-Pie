@@ -99,24 +99,29 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
-    # Phase 1: Compute all hashes upfront
+    # Phase 1: Compute hashes for items with composite keys
     hashes = []
     for item in items:
-        hashes.append(HashService.compute_composite_key_hash(item.composite_key))
+        if item.composite_key:
+            hashes.append(HashService.compute_composite_key_hash(item.composite_key))
+        else:
+            hashes.append("")  # Empty composite key = no dedup
 
-    # Phase 2: Batch check for existing entries
-    existing_entries = await RegistryEntry.find({
-        "$or": [
-            {"primary_composite_key_hash": {"$in": hashes}},
-            {"synonyms.composite_key_hash": {"$in": hashes}}
-        ]
-    }).to_list()
-
+    # Phase 2: Batch check for existing entries (only for non-empty hashes)
+    dedup_hashes = [h for h in hashes if h]
     existing_by_hash = {}
-    for entry in existing_entries:
-        existing_by_hash[entry.primary_composite_key_hash] = entry
-        for syn in entry.synonyms:
-            existing_by_hash[syn.composite_key_hash] = entry
+    if dedup_hashes:
+        existing_entries = await RegistryEntry.find({
+            "$or": [
+                {"primary_composite_key_hash": {"$in": dedup_hashes}},
+                {"synonyms.composite_key_hash": {"$in": dedup_hashes}}
+            ]
+        }).to_list()
+
+        for entry in existing_entries:
+            existing_by_hash[entry.primary_composite_key_hash] = entry
+            for syn in entry.synonyms:
+                existing_by_hash[syn.composite_key_hash] = entry
 
     # Phase 3: Build entries to insert
     entries_to_insert: List[RegistryEntry] = []
@@ -134,18 +139,19 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists
-            existing = existing_by_hash.get(key_hash)
-            if existing:
-                results[i] = RegisterKeyResponse(
-                    input_index=i,
-                    status="already_exists",
-                    registry_id=existing.entry_id,
-                    namespace=existing.namespace,
-                    entity_type=existing.entity_type,
-                )
-                exists_count += 1
-                continue
+            # Check if exists (only when composite key is non-empty)
+            if key_hash:
+                existing = existing_by_hash.get(key_hash)
+                if existing:
+                    results[i] = RegisterKeyResponse(
+                        input_index=i,
+                        status="already_exists",
+                        registry_id=existing.entry_id,
+                        namespace=existing.namespace,
+                        entity_type=existing.entity_type,
+                    )
+                    exists_count += 1
+                    continue
 
             # Generate or use provided ID
             if item.entry_id:

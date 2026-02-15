@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import DataTable from 'primevue/datatable'
@@ -116,12 +116,12 @@ function createNewTemplate() {
 }
 
 function viewTemplate(template: Template) {
-  router.push(`/templates/${template.template_id}`)
+  router.push({ path: `/templates/${template.template_id}`, query: { version: String(template.version) } })
 }
 
-function confirmDeactivate(template: Template) {
+function confirmDeactivate(tpl: Template) {
   confirm.require({
-    message: `Are you sure you want to deactivate "${template.label}"? It can be restored later.`,
+    message: `Are you sure you want to deactivate "${tpl.label}" v${tpl.version}? It can be restored later.`,
     header: 'Deactivate Template',
     icon: 'pi pi-exclamation-triangle',
     rejectLabel: 'Cancel',
@@ -129,8 +129,34 @@ function confirmDeactivate(template: Template) {
     acceptClass: 'p-button-danger',
     accept: async () => {
       try {
-        await templateStore.deleteTemplate(template.template_id)
-        uiStore.showSuccess('Template Deactivated', `Template "${template.label}" has been deactivated`)
+        await templateStore.deleteTemplate(tpl.template_id, tpl.version)
+        uiStore.showSuccess('Template Deactivated', `Template "${tpl.label}" v${tpl.version} has been deactivated`)
+        await loadTemplates()
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Unknown error'
+        if (msg.includes('dependent document')) {
+          confirmForceDeactivate(tpl, msg)
+        } else {
+          uiStore.showError('Deactivation Failed', msg)
+        }
+      }
+    }
+  })
+}
+
+function confirmForceDeactivate(tpl: Template, warningMessage: string) {
+  confirm.require({
+    message: `${warningMessage}\n\nDo you want to force-deactivate "${tpl.label}" v${tpl.version}? Existing documents will keep their data but won't be editable against this template.`,
+    header: 'Force Deactivate Template',
+    icon: 'pi pi-exclamation-triangle',
+    rejectLabel: 'Cancel',
+    acceptLabel: 'Force Deactivate',
+    acceptClass: 'p-button-danger',
+    accept: async () => {
+      try {
+        await templateStore.deleteTemplate(tpl.template_id, tpl.version, true)
+        uiStore.showSuccess('Template Deactivated', `Template "${tpl.label}" v${tpl.version} has been force-deactivated`)
+        await loadTemplates()
       } catch (e) {
         uiStore.showError('Deactivation Failed', e instanceof Error ? e.message : 'Unknown error')
       }
@@ -154,6 +180,9 @@ function getStatusSeverity(status: string): "success" | "info" | "warn" | "dange
 function formatDate(dateString: string): string {
   return new Date(dateString).toLocaleDateString()
 }
+
+// Reload when namespace changes (preserving current filters)
+watch(() => templateStore.namespaceParam, loadTemplates)
 
 onMounted(loadTemplates)
 </script>

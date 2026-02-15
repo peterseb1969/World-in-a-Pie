@@ -79,15 +79,16 @@ async def list_documents(
     "/{document_id}",
     response_model=DocumentResponse,
     summary="Get document by ID",
-    description="Retrieve a document by its unique ID."
+    description="Retrieve a document by its stable ID. Returns latest version by default."
 )
 async def get_document(
     document_id: str,
+    version: Optional[int] = Query(None, description="Specific version (default: latest)"),
     _: str = Depends(require_api_key)
 ):
-    """Get a document by ID."""
+    """Get a document by stable ID. Returns latest version by default."""
     service = get_document_service()
-    document = await service.get_document(document_id)
+    document = await service.get_document(document_id, version=version)
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")

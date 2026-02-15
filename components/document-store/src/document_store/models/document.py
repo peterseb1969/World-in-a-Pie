@@ -139,8 +139,8 @@ class Document(BeanieDocument):
     class Settings:
         name = "documents"
         indexes = [
-            # Unique document ID within namespace
-            IndexModel([("namespace", 1), ("document_id", 1)], unique=True, name="ns_document_id_unique_idx"),
+            # Unique (document_id, version) within namespace — stable ID across versions
+            IndexModel([("namespace", 1), ("document_id", 1), ("version", 1)], unique=True, name="ns_document_id_version_unique_idx"),
             # Version lookup by identity within namespace
             IndexModel([("namespace", 1), ("identity_hash", 1), ("version", 1)], name="ns_identity_version_idx"),
             # Active document lookup by identity within namespace
@@ -154,8 +154,10 @@ class Document(BeanieDocument):
                 [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
                 name="ns_template_status_time_idx"
             ),
-            # Global document_id lookup (for cross-namespace refs in open mode)
-            IndexModel([("document_id", 1)], unique=True, name="document_id_unique_idx"),
+            # Global (document_id, version) lookup (for cross-namespace refs in open mode)
+            IndexModel([("document_id", 1), ("version", 1)], unique=True, name="document_id_version_unique_idx"),
+            # document_id lookup (non-unique, for finding all versions)
+            IndexModel([("document_id", 1)], name="document_id_idx"),
             # Term reference reverse lookups (find documents referencing a term)
             IndexModel(
                 [("term_references.term_id", 1)],

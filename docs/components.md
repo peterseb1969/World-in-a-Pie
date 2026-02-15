@@ -297,8 +297,8 @@ When fetching a resolved template, each field includes `inherited: true/false` a
 | Operation | Result |
 |-----------|--------|
 | Create template (code=PERSON) | TPL-000001, version=1 |
-| Update TPL-000001 | NEW TPL-000002, version=2, **original still active** |
-| Update TPL-000002 | NEW TPL-000003, version=3, **all versions still active** |
+| Update TPL-000001 | TPL-000001, version=2, **version 1 still active** |
+| Update TPL-000001 | TPL-000001, version=3, **all versions still active** |
 
 ### Draft Mode
 
@@ -388,7 +388,6 @@ The Document Store holds **actual data** that conforms to templates. It is the p
   "status": "active",
   "is_latest_version": true,
   "latest_version": 2,
-  "latest_document_id": "0192abc1-def2-7abc-8def-123456789abc",
   "data": {
     "first_name": "Alice",
     "last_name": "Smith",
@@ -411,7 +410,7 @@ The Document Store holds **actual data** that conforms to templates. It is the p
 - `term_references` - Resolved term IDs for term fields (stores both original value AND term_id)
 - `identity_hash` - SHA-256 of identity field values
 - `is_latest_version` - Whether this is the current version
-- `latest_document_id` - ID of the latest version (for navigation from old versions)
+- `latest_version` - Latest version number (document_id is stable across versions)
 
 ### Identity and Versioning
 

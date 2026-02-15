@@ -86,7 +86,7 @@ class RegisterKeyItem(StrictModel):
     namespace: str = Field(default="wip", description="Namespace")
     entity_type: str = Field(default="terms", description="Entity type")
     entry_id: Optional[str] = Field(None, description="Client-provided ID (if not provided, registry generates one)")
-    composite_key: dict[str, Any] = Field(..., description="Composite key values")
+    composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
     source_info: Optional[SourceInfo] = Field(None, description="Source system info")
     created_by: Optional[str] = Field(None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)

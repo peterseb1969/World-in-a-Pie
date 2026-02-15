@@ -42,6 +42,10 @@ class CreateTemplateRequest(StrictModel):
         None,
         description="Parent template ID for inheritance"
     )
+    extends_version: Optional[int] = Field(
+        None,
+        description="Pinned parent version (None = always use latest active parent version)"
+    )
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key"
@@ -95,6 +99,10 @@ class UpdateTemplateRequest(StrictModel):
         None,
         description="Parent template ID (changing creates new version)"
     )
+    extends_version: Optional[int] = Field(
+        None,
+        description="Pinned parent version (None = always use latest active parent version)"
+    )
     identity_fields: Optional[list[str]] = Field(
         None,
         description="Update identity fields"
@@ -131,6 +139,7 @@ class TemplateResponse(BaseModel):
     description: Optional[str] = None
     version: int = 1
     extends: Optional[str] = None
+    extends_version: Optional[int] = None
     identity_fields: list[str] = []
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []
