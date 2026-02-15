@@ -261,6 +261,7 @@ class ImportExportService:
                 value=terminology_data["value"],
                 label=terminology_data["label"],
                 description=terminology_data.get("description"),
+                namespace=terminology_data.get("namespace", "wip"),
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
                 extensible=terminology_data.get("extensible", False),
