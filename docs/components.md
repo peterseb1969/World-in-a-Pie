@@ -58,14 +58,14 @@ An individual concept within a terminology. **Terms do not have versioning** —
   "aliases": ["APPROVED", "Approved", "OK"],
   "description": "Document has been reviewed and approved",
   "status": "active",
-  "parent_id": null,
+  "parent_term_id": null,
   "metadata": {
     "workflow_order": "3"
   },
-  "translations": {
-    "de": "Genehmigt",
-    "fr": "Approuvé"
-  },
+  "translations": [
+    { "language": "de", "value": "Genehmigt" },
+    { "language": "fr", "value": "Approuvé" }
+  ],
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy"
 }
@@ -108,9 +108,10 @@ DEPARTMENT (terminology)
 
 ### API Endpoints
 
+**Terminologies**
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| **Terminologies** | | |
 | GET | `/api/def-store/terminologies` | List all terminologies |
 | GET | `/api/def-store/terminologies/{id}` | Get terminology details |
 | POST | `/api/def-store/terminologies` | Create terminology |
@@ -120,7 +121,11 @@ DEPARTMENT (terminology)
 | GET | `/api/def-store/terminologies/by-value/{value}` | Get terminology by value |
 | POST | `/api/def-store/terminologies/bulk` | Bulk create terminologies |
 | GET | `/api/def-store/terminologies/{id}/dependencies` | Get dependent templates |
-| **Terms** | | |
+
+**Terms**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/def-store/terminologies/{term_id}/terms` | List terms in terminology |
 | GET | `/api/def-store/terms/{id}` | Get single term |
 | POST | `/api/def-store/terminologies/{term_id}/terms` | Create term |
@@ -128,13 +133,25 @@ DEPARTMENT (terminology)
 | DELETE | `/api/def-store/terms/{id}` | Deactivate term |
 | POST | `/api/def-store/terms/bulk` | Bulk create/update terms |
 | GET | `/api/def-store/terms/{id}/audit` | Get term audit log |
-| **Validation** | | |
+
+**Validation**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/def-store/validate` | Validate single value |
 | POST | `/api/def-store/validate/bulk` | Bulk validate values |
-| **Import/Export** | | |
+
+**Import/Export**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/def-store/terminologies/{id}/export` | Export to JSON/CSV |
 | POST | `/api/def-store/terminologies/{id}/import` | Import from JSON/CSV |
-| **Health** | | |
+
+**Health**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/def-store/health/integrity` | Check referential integrity |
 
 ### Validation Response
@@ -324,9 +341,10 @@ See `docs/design/template-draft-mode.md` for the full design.
 
 ### API Endpoints
 
+**Templates**
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| **Templates** | | |
 | GET | `/api/template-store/templates` | List all templates |
 | GET | `/api/template-store/templates?latest_only=true` | List only latest versions |
 | GET | `/api/template-store/templates/{id}` | Get template (resolved if extends) |
@@ -344,13 +362,25 @@ See `docs/design/template-draft-mode.md` for the full design.
 | GET | `/api/template-store/templates/{id}/descendants` | Get all descendant templates |
 | POST | `/api/template-store/templates/{id}/cascade` | Cascade parent update to child templates |
 | POST | `/api/template-store/templates/{id}/activate` | Activate a draft template (cascading) |
-| **By Value** | | |
+
+**By Value**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/template-store/templates/by-value/{value}` | Get latest version by value |
 | GET | `/api/template-store/templates/by-value/{value}/versions` | List all versions |
 | GET | `/api/template-store/templates/by-value/{value}/versions/{v}` | Get specific version |
-| **Validation** | | |
+
+**Validation**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/template-store/templates/{id}/validate` | Validate template references |
-| **Health** | | |
+
+**Health**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/template-store/health/integrity` | Check referential integrity |
 
 ### Reporting Configuration
@@ -408,9 +438,14 @@ The Document Store holds **actual data** that conforms to templates. It is the p
     "status": "approved",
     "email": "alice@example.com"
   },
-  "term_references": {
-    "status": "019abc13-def4-7abc-8def-123456789abc"
-  },
+  "term_references": [
+    {
+      "field_path": "status",
+      "term_id": "019abc13-def4-7abc-8def-123456789abc",
+      "terminology_ref": "019abc12-def3-7abc-8def-123456789abc",
+      "matched_via": "value"
+    }
+  ],
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "user:admin-001",
   "updated_at": "2024-02-20T14:30:00Z",
@@ -516,26 +551,43 @@ For templates **without identity fields**, the Registry receives an empty compos
 
 ### API Endpoints
 
+**Documents**
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| **Documents** | | |
 | GET | `/api/document-store/documents` | List documents (filter by `template_id`, `template_value`, `status`) |
 | GET | `/api/document-store/documents/{id}` | Get document (latest version) |
 | GET | `/api/document-store/documents/{id}?version=N` | Get specific version |
 | POST | `/api/document-store/documents` | Create/update document (upsert) |
 | DELETE | `/api/document-store/documents/{id}` | Soft-delete (set status=inactive) |
 | POST | `/api/document-store/documents/bulk` | Bulk create/update |
-| **Versions** | | |
+
+**Versions**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/document-store/documents/{id}/versions` | Get all versions |
 | GET | `/api/document-store/documents/{id}/versions/{v}` | Get specific version |
 | GET | `/api/document-store/documents/{id}/latest` | Get latest version |
 | POST | `/api/document-store/documents/{id}/restore/{v}` | Restore specific version |
-| **Table View** | | |
+
+**Table View**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/document-store/table/{template_id}` | Flattened table view |
 | GET | `/api/document-store/table/{template_id}/csv` | Export as CSV |
-| **Query** | | |
+
+**Query**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/document-store/documents/query` | Complex query |
-| **Files** | | |
+
+**Files**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/document-store/files` | Upload file (multipart/form-data) |
 | GET | `/api/document-store/files/{id}` | Get file metadata |
 | GET | `/api/document-store/files/{id}/download` | Get pre-signed download URL |
@@ -543,7 +595,11 @@ For templates **without identity fields**, the Registry receives an empty compos
 | DELETE | `/api/document-store/files/{id}` | Soft-delete file |
 | GET | `/api/document-store/files/orphans/list` | List orphan files |
 | GET | `/api/document-store/files/health/integrity` | File integrity check |
-| **Health** | | |
+
+**Health**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/api/document-store/health/integrity` | Check referential integrity |
 
 ### Table View Response
@@ -649,9 +705,10 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 
 ### API Endpoints
 
+**Namespaces**
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| **Namespaces** | | |
 | GET | `/api/registry/namespaces` | List all namespaces |
 | GET | `/api/registry/namespaces/{prefix}` | Get namespace details |
 | GET | `/api/registry/namespaces/{prefix}/stats` | Get entity counts |
@@ -662,18 +719,34 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 | POST | `/api/registry/namespaces/{prefix}/restore` | Restore archived namespace |
 | DELETE | `/api/registry/namespaces/{prefix}` | Delete namespace (must be archived first) |
 | POST | `/api/registry/namespaces/initialize-wip` | Initialize default WIP namespace |
-| **Entries** | | |
+
+**Entries**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/registry/entries/register` | Register composite keys (bulk) |
 | POST | `/api/registry/entries/lookup/by-id` | Lookup by ID with 3-step cascade |
 | POST | `/api/registry/entries/lookup/by-key` | Lookup by composite key (bulk) |
-| **Synonyms** | | |
+
+**Synonyms**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/registry/synonyms/add` | Add synonyms (bulk) |
 | POST | `/api/registry/synonyms/remove` | Remove synonyms (bulk) |
 | POST | `/api/registry/synonyms/merge` | Merge entries (bulk) |
-| **Search** | | |
+
+**Search**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/registry/search/by-fields` | Search by field criteria |
 | POST | `/api/registry/search/by-term` | Free-text search |
-| **Export/Import** | | |
+
+**Export/Import**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/api/registry/namespaces/{prefix}/export` | Export namespace |
 | POST | `/api/registry/namespaces/import` | Import namespace |
 
@@ -685,7 +758,7 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 2. **Step 2 — `additional_ids`:** Match against merged IDs accumulated from entry merge operations.
 3. **Step 3 — `search_values`:** Match against the flat `search_values` array, which contains synonym values, external IDs, and business keys from composite key fields.
 
-The `pool_id` parameter is **optional**. Omit it to search across all pools/namespaces; provide it to constrain the search to a single pool.
+The `namespace` parameter is **optional**. Omit it to search across all namespaces; provide it to constrain the search to a single namespace.
 
 The response includes a `matched_via` field indicating how the match was found (e.g., `entry_id`, `additional_ids`, or `search_values`). This enables the Document Store to resolve any identifier — canonical ID, synonym, or external ID — in a single call.
 
@@ -791,34 +864,55 @@ Events contain the full document (self-contained):
     "version": 1,
     "status": "active",
     "data": { "..." },
-    "term_references": { "..." }
+    "term_references": [ "..." ]
   }
 }
 ```
 
 ### API Endpoints
 
+**Health**
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| **Health** | | |
 | GET | `/health` | Health check (NATS/PostgreSQL status) |
 | GET | `/status` | Sync worker status |
-| **Metrics** | | |
+
+**Metrics**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/metrics` | Latency, throughput, per-template stats |
 | GET | `/metrics/consumer` | NATS queue depth, pending messages |
-| **Alerts** | | |
+
+**Alerts**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/alerts` | Active alerts and configuration |
 | PUT | `/alerts/config` | Update thresholds and webhook |
 | POST | `/alerts/test` | Trigger manual alert check |
-| **Schema** | | |
+
+**Schema**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/schema/{template_value}` | View generated schema |
-| **Batch Sync** | | |
+
+**Batch Sync**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | POST | `/sync/batch/{template_value}` | Sync all docs for template |
 | POST | `/sync/batch` | Sync all templates |
 | GET | `/sync/batch/jobs` | List batch jobs |
 | GET | `/sync/batch/jobs/{id}` | Get job status |
 | DELETE | `/sync/batch/jobs/{id}` | Cancel job |
-| **Integrity** | | |
+
+**Integrity**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
 | GET | `/health/integrity` | Aggregated integrity check |
 
 ### Alert Types

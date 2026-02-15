@@ -8,41 +8,40 @@ This document defines the conceptual data structures used throughout World In a 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                           DATA MODEL HIERARCHY                               │
+│                           DATA MODEL HIERARCHY                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   DEF-STORE                    TEMPLATE STORE              DOCUMENT STORE   │
+│                                                                            │
+│   DEF-STORE                    TEMPLATE STORE              DOCUMENT STORE  │
 │   ══════════                   ══════════════              ══════════════   │
-│                                                                              │
-│   ┌──────────────┐            ┌──────────────┐            ┌──────────────┐  │
-│   │ Terminology  │            │   Template   │            │   Document   │  │
-│   │              │◄───────────│              │◄───────────│              │  │
-│   │ • term_id    │  canonical │ • template_id│  conforms  │ • document_id│  │
-│   │ • code       │  IDs       │ • code       │  to        │ • template_id│  │
-│   │ • name       │            │ • version    │            │ • version    │  │
-│   │              │            │ • fields[]   │            │ • data{}     │  │
-│   └──────────────┘            │ • rules[]    │            │ • term_refs[]│  │
-│          │                    │ • reporting{}│            │ • refs[]     │  │
-│          │ contains           └──────────────┘            └──────────────┘  │
-│          ▼                           │                                      │
-│   ┌──────────────┐                   │ contains                             │
-│   │    Term      │                   ▼                                      │
-│   │              │            ┌──────────────────┐                          │
-│   │ • term_id    │            │  FieldDefinition │                          │
-│   │ • value      │◄───────────│ • name, label    │                          │
-│   │ • aliases[]  │  canonical │ • type           │                          │
-│   │ • label?     │  IDs       │ • terminology_ref│                          │
-│   │ • parent_id  │            │ • template_ref   │                          │
-│   └──────────────┘            │ • template_ref   │                          │
-│                               │ • version_strategy│                         │
-│                               └──────────────────┘                          │
-│                                                                              │
-│   Note: Terms have NO versioning - changes tracked via audit log            │
-│   Note: Templates can have multiple active versions simultaneously          │
-│   Note: Documents store both original data AND resolved term_references     │
-│   Note: All entity references stored as canonical IDs (TPL-/TERM-),         │
-│         resolved from user-supplied codes at template creation time          │
-│                                                                              │
+│                                                                            │
+│   ┌──────────────┐            ┌──────────────┐            ┌──────────────┐ │
+│   │ Terminology  │            │   Template   │            │   Document   │ │
+│   │              │◄───────────│              │◄───────────│              │ │
+│   │ • term_id    │  canonical │ • template_id│  conforms  │ • document_id│ │
+│   │ • value      │  IDs       │ • value      │  to        │ • template_id│ │
+│   │ • label      │            │ • version    │            │ • version    │ │
+│   │              │            │ • fields[]   │            │ • data{}     │ │
+│   └──────────────┘            │ • rules[]    │            │ • term_refs[]│ │
+│          │                    │ • reporting{}│            │ • refs[]     │ │
+│          │ contains           └──────────────┘            └──────────────┘ │
+│          ▼                           │                                     │
+│   ┌──────────────┐                   │ contains                            │
+│   │    Term      │                   ▼                                     │
+│   │              │            ┌──────────────────┐                         │
+│   │ • term_id    │            │  FieldDefinition │                         │
+│   │ • value      │◄───────────│ • name, label    │                         │
+│   │ • aliases[]  │  canonical │ • type           │                         │
+│   │ • label?     │  IDs       │ • terminology_ref│                         │
+│   │ • parent_id  │            │ • template_ref   │                         │
+│   └──────────────┘            │ • version_strategy│                        │
+│                               └──────────────────┘                         │
+│                                                                            │
+│   Note: Terms have NO versioning - changes tracked via audit log           │
+│   Note: Templates can have multiple active versions simultaneously         │
+│   Note: Documents store both original data AND resolved term_references    │
+│   Note: All IDs are UUID7 by default; custom namespaces can configure      │
+│         prefixed or other ID algorithms per entity type                    │
+│                                                                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -58,28 +57,51 @@ A terminology is a controlled vocabulary containing related terms. **Terminologi
 class Terminology(BaseModel):
     """A controlled vocabulary containing related terms."""
 
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation"
+    )
     terminology_id: str = Field(
         ...,
-        description="Unique identifier (format: TERM-XXXXXX)",
-        examples=["TERM-000001"]
+        description="Unique identifier from Registry (UUID7 by default)"
     )
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Short code for the terminology",
-        examples=["GENDER", "COUNTRY", "DEPARTMENT"]
+        description="Short identifier for the terminology (unique within namespace)",
+        examples=["DOC_STATUS", "COUNTRY", "DEPARTMENT"]
     )
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Human-readable name",
-        examples=["Gender"]
+        description="Human-readable display label",
+        examples=["Document Status", "Country", "Department"]
     )
     description: str | None = Field(
         None,
         description="Detailed description of the terminology"
     )
-    status: Literal["active", "deprecated", "inactive"] = Field(
+    case_sensitive: bool = Field(
+        default=False,
+        description="Whether term matching is case-sensitive"
+    )
+    allow_multiple: bool = Field(
+        default=False,
+        description="Whether multiple terms can be selected"
+    )
+    extensible: bool = Field(
+        default=False,
+        description="Whether new terms can be added by users"
+    )
+    status: Literal["active", "inactive"] = Field(
         default="active",
         description="Lifecycle status"
+    )
+    term_count: int = Field(
+        default=0,
+        description="Denormalized count of active terms"
+    )
+    metadata: TerminologyMetadata = Field(
+        default_factory=TerminologyMetadata,
+        description="Additional metadata (source, version, language, custom)"
     )
     created_at: datetime
     created_by: str = Field(
@@ -93,11 +115,20 @@ class Terminology(BaseModel):
 **Example:**
 ```json
 {
-  "terminology_id": "TERM-000001",
-  "code": "GENDER",
-  "name": "Gender",
-  "description": "Controlled vocabulary for gender identification",
+  "namespace": "wip",
+  "terminology_id": "019469a0-1234-7abc-8def-abcdef123456",
+  "value": "DOC_STATUS",
+  "label": "Document Status",
+  "description": "Controlled vocabulary for document lifecycle states",
+  "case_sensitive": false,
+  "allow_multiple": false,
+  "extensible": false,
   "status": "active",
+  "term_count": 4,
+  "metadata": {
+    "source": "system",
+    "language": "en"
+  },
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy",
   "updated_at": "2024-02-01T14:30:00Z",
@@ -107,30 +138,37 @@ class Terminology(BaseModel):
 
 ### Term
 
-A single concept within a terminology. **Terms do not have versioning - all changes are tracked in an audit log.**
+A single concept within a terminology. **Terms do not have versioning — all changes are tracked in an audit log.**
 
 ```python
 class Term(BaseModel):
     """An individual concept within a terminology."""
 
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation"
+    )
     term_id: str = Field(
         ...,
-        description="Unique identifier (format: T-XXXXXX)",
-        examples=["T-000001"]
+        description="Unique identifier from Registry (UUID7 by default)"
     )
     terminology_id: str = Field(
         ...,
         description="Parent terminology reference"
     )
+    terminology_value: str | None = Field(
+        None,
+        description="Denormalized parent terminology value for efficient lookups"
+    )
     value: str = Field(
         ...,
         description="Primary value (unique within terminology)",
-        examples=["Male", "Female"]
+        examples=["Draft", "Under Review", "Approved", "Archived"]
     )
     aliases: list[str] = Field(
         default_factory=list,
         description="Alternative values that resolve to this term",
-        examples=[["MR", "Mr", "Mr.", "MALE"]]
+        examples=[["DRAFT", "draft", "New"]]
     )
     label: str | None = Field(
         None,
@@ -143,7 +181,7 @@ class Term(BaseModel):
     status: Literal["active", "deprecated", "inactive"] = Field(
         default="active"
     )
-    parent_id: str | None = Field(
+    parent_term_id: str | None = Field(
         None,
         description="Parent term ID for hierarchical taxonomies"
     )
@@ -155,11 +193,12 @@ class Term(BaseModel):
         default_factory=dict,
         description="Additional metadata (mappings, etc.)"
     )
-    translations: dict[str, str] = Field(
-        default_factory=dict,
-        description="Translations by language code",
-        examples=[{"de": "Männlich", "fr": "Masculin"}]
+    translations: list[TermTranslation] = Field(
+        default_factory=list,
+        description="Multi-language translations"
     )
+    deprecated_reason: str | None = None
+    replaced_by_term_id: str | None = None
     created_at: datetime
     created_by: str
     updated_at: datetime | None = None
@@ -169,23 +208,24 @@ class Term(BaseModel):
 **Example:**
 ```json
 {
-  "term_id": "T-000001",
-  "terminology_id": "TERM-000001",
-  "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"],
-  "label": "Male",
-  "description": "Male gender identity",
+  "namespace": "wip",
+  "term_id": "019469a0-5678-7abc-8def-abcdef567890",
+  "terminology_id": "019469a0-1234-7abc-8def-abcdef123456",
+  "terminology_value": "DOC_STATUS",
+  "value": "Draft",
+  "aliases": ["DRAFT", "draft", "New"],
+  "label": "Draft",
+  "description": "Document is in draft state, not yet submitted for review",
   "status": "active",
-  "parent_id": null,
+  "parent_term_id": null,
   "sort_order": 1,
   "metadata": {
-    "iso_5218": "1",
-    "hl7_v3": "M"
+    "workflow_step": 1
   },
-  "translations": {
-    "de": "Männlich",
-    "fr": "Masculin"
-  },
+  "translations": [
+    { "language": "de", "value": "Entwurf" },
+    { "language": "fr", "value": "Brouillon" }
+  ],
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy"
 }
@@ -194,19 +234,19 @@ class Term(BaseModel):
 ### Term Alias Resolution
 
 When validating a value against a terminology, the system checks in order:
-1. **value** - Exact match on primary value
-2. **aliases** - Match against any alias
+1. **value** — Exact match on primary value
+2. **aliases** — Match against any alias
 
 The validation response indicates which match type was used:
 
 ```json
 {
-  "terminology_code": "GENDER",
-  "input_value": "Mr.",
+  "terminology_value": "DOC_STATUS",
+  "input_value": "DRAFT",
   "valid": true,
-  "term_id": "T-000001",
+  "term_id": "019469a0-5678-7abc-8def-abcdef567890",
   "matched_via": "alias",
-  "normalized_value": "Male"
+  "normalized_value": "Draft"
 }
 ```
 
@@ -238,14 +278,14 @@ class TermAuditEntry(BaseModel):
 **Example:**
 ```json
 {
-  "term_id": "T-000001",
-  "terminology_id": "TERM-000001",
+  "term_id": "019469a0-5678-7abc-8def-abcdef567890",
+  "terminology_id": "019469a0-1234-7abc-8def-abcdef123456",
   "action": "updated",
   "changed_at": "2024-01-30T10:00:00Z",
   "changed_by": "user:admin-001",
   "changed_fields": ["aliases"],
-  "previous_values": {"aliases": ["MR", "MR."]},
-  "new_values": {"aliases": ["MR", "MR.", "Mr.", "mr"]}
+  "previous_values": {"aliases": ["DRAFT"]},
+  "new_values": {"aliases": ["DRAFT", "draft", "New"]}
 }
 ```
 
@@ -254,24 +294,24 @@ class TermAuditEntry(BaseModel):
 ```json
 [
   {
-    "term_id": "T-000010",
-    "terminology_id": "TERM-000005",
+    "term_id": "019469a0-aaaa-7abc-8def-000000000001",
+    "terminology_id": "019469a0-aaaa-7abc-8def-000000000000",
     "value": "Engineering",
-    "parent_id": null,
+    "parent_term_id": null,
     "sort_order": 1
   },
   {
-    "term_id": "T-000011",
-    "terminology_id": "TERM-000005",
+    "term_id": "019469a0-aaaa-7abc-8def-000000000002",
+    "terminology_id": "019469a0-aaaa-7abc-8def-000000000000",
     "value": "Frontend",
-    "parent_id": "T-000010",
+    "parent_term_id": "019469a0-aaaa-7abc-8def-000000000001",
     "sort_order": 1
   },
   {
-    "term_id": "T-000012",
-    "terminology_id": "TERM-000005",
+    "term_id": "019469a0-aaaa-7abc-8def-000000000003",
+    "terminology_id": "019469a0-aaaa-7abc-8def-000000000000",
     "value": "Backend",
-    "parent_id": "T-000010",
+    "parent_term_id": "019469a0-aaaa-7abc-8def-000000000001",
     "sort_order": 2
   }
 ]
@@ -283,42 +323,41 @@ class TermAuditEntry(BaseModel):
 
 ### Template
 
-A schema definition for documents. **Multiple template versions can be active simultaneously** for gradual migration scenarios.
+A schema definition for documents. **Multiple template versions can be active simultaneously** — for gradual migration, or when genuinely different versions serve different use cases (e.g., ongoing projects use v1 while new projects adopt v2).
 
 ```python
 class Template(BaseModel):
     """A schema definition that documents must conform to."""
 
-    pool_id: str = Field(
-        default="wip-templates",
-        description="Pool ID for data isolation"
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation"
     )
     template_id: str = Field(
         ...,
-        description="Unique identifier (format: TPL-XXXXXX)",
-        examples=["TPL-000001"]
+        description="Unique identifier from Registry (UUID7 by default)"
     )
-    code: str = Field(
+    value: str = Field(
         ...,
-        description="Template code (shared across versions)",
-        examples=["PERSON", "EMPLOYEE"]
+        description="Template value (shared across versions, unique within namespace)",
+        examples=["PERSON", "EMPLOYEE", "PLANNED_VISIT"]
     )
-    name: str = Field(
+    label: str = Field(
         ...,
-        description="Human-readable name",
-        examples=["Person"]
+        description="Human-readable display label",
+        examples=["Person", "Employee Record", "Planned Visit"]
     )
     description: str | None = None
     version: int = Field(
         default=1,
         description="Version number (incremented on updates)"
     )
-    status: Literal["draft", "active", "deprecated", "inactive"] = Field(
+    status: Literal["draft", "active", "inactive"] = Field(
         default="active"
     )
     extends: str | None = Field(
         None,
-        description="Parent template_id for inheritance (TPL-XXXXXX)"
+        description="Parent template_id for inheritance"
     )
     extends_version: int | None = Field(
         None,
@@ -350,7 +389,7 @@ class Template(BaseModel):
 
 ### FieldDefinition
 
-A field definition within a template. All entity reference fields store **canonical IDs** (resolved from user-supplied codes at template creation time).
+A field definition within a template. Entity reference fields store **canonical IDs** (resolved from user-supplied values at template creation time).
 
 ```python
 class FieldType(str, Enum):
@@ -398,23 +437,23 @@ class FieldDefinition(BaseModel):
     mandatory: bool = False
     default_value: Any | None = None
 
-    # For type=term: terminology reference (stored as canonical TERM-XXXXXX)
+    # For type=term: terminology reference (resolved from value at creation)
     terminology_ref: str | None = Field(
         None,
-        description="Canonical terminology_id (TERM-XXXXXX), resolved from code at creation"
+        description="Canonical terminology_id, resolved from terminology value at creation"
     )
 
-    # For type=object: nested template (stored as canonical TPL-XXXXXX)
+    # For type=object: nested template (resolved from value at creation)
     template_ref: str | None = Field(
         None,
-        description="Canonical template_id (TPL-XXXXXX), resolved from code at creation"
+        description="Canonical template_id, resolved from template value at creation"
     )
 
     # For type=reference: unified reference configuration
     reference_type: ReferenceType | None = None
     target_templates: list[str] | None = Field(
         None,
-        description="Canonical template_ids for document references (resolved from codes at creation)"
+        description="Canonical template_ids for document references (resolved from values at creation)"
     )
     include_subtypes: bool | None = Field(
         None,
@@ -422,7 +461,7 @@ class FieldDefinition(BaseModel):
     )
     target_terminologies: list[str] | None = Field(
         None,
-        description="Canonical terminology_ids for term references (resolved from codes at creation)"
+        description="Canonical terminology_ids for term references (resolved from values at creation)"
     )
     version_strategy: VersionStrategy | None = Field(
         None,
@@ -436,11 +475,11 @@ class FieldDefinition(BaseModel):
     array_item_type: FieldType | None = None
     array_terminology_ref: str | None = Field(
         None,
-        description="Canonical terminology_id (TERM-XXXXXX) for array term items"
+        description="Canonical terminology_id for array term items"
     )
     array_template_ref: str | None = Field(
         None,
-        description="Canonical template_id (TPL-XXXXXX) for array object items"
+        description="Canonical template_id for array object items"
     )
     array_file_config: FileFieldConfig | None = None
 
@@ -488,7 +527,7 @@ class ReportingConfig(BaseModel):
     )
     table_name: str | None = Field(
         None,
-        description="Custom table name (default: doc_{code})"
+        description="Custom table name (default: doc_{value})"
     )
     include_metadata: bool = Field(default=True)
     flatten_arrays: bool = Field(default=True)
@@ -529,14 +568,15 @@ class RuleCondition(BaseModel):
 **Template Example (as stored — all references are canonical IDs):**
 ```json
 {
-  "pool_id": "wip-templates",
-  "template_id": "TPL-000001",
-  "code": "PERSON",
-  "name": "Person",
+  "namespace": "wip",
+  "template_id": "019469a0-cccc-7abc-8def-000000000001",
+  "value": "PERSON",
+  "label": "Person",
   "description": "Template for person records",
   "version": 3,
   "status": "active",
   "extends": null,
+  "extends_version": null,
   "identity_fields": ["email"],
   "fields": [
     {
@@ -560,16 +600,16 @@ class RuleCondition(BaseModel):
       "semantic_type": "email"
     },
     {
-      "name": "gender",
-      "label": "Gender",
+      "name": "status",
+      "label": "Status",
       "type": "term",
-      "terminology_ref": "TERM-000001"
+      "terminology_ref": "019469a0-1234-7abc-8def-abcdef123456"
     },
     {
       "name": "country",
       "label": "Country",
       "type": "term",
-      "terminology_ref": "TERM-000005"
+      "terminology_ref": "019469a0-1234-7abc-8def-abcdef999999"
     },
     {
       "name": "tax_id",
@@ -581,14 +621,14 @@ class RuleCondition(BaseModel):
       "label": "Addresses",
       "type": "array",
       "array_item_type": "object",
-      "array_template_ref": "TPL-000008"
+      "array_template_ref": "019469a0-cccc-7abc-8def-000000000008"
     },
     {
       "name": "supervisor",
       "label": "Supervisor",
       "type": "reference",
       "reference_type": "document",
-      "target_templates": ["TPL-000001"],
+      "target_templates": ["019469a0-cccc-7abc-8def-000000000001"],
       "version_strategy": "latest",
       "include_subtypes": true
     }
@@ -624,15 +664,15 @@ class RuleCondition(BaseModel):
 
 ### Template Versioning
 
-When a template is updated, a **new version is created with the same `template_id`**. The `(template_id, version)` pair is the unique key. Multiple versions can be active simultaneously for gradual migration.
+When a template is updated, a **new version is created with the same `template_id`**. The `(template_id, version)` pair is the unique key. Multiple versions can be active simultaneously — for gradual migration, or when genuinely different versions serve different use cases (e.g., ongoing projects use v1 while new projects adopt v2).
 
 | Operation | Result |
 |-----------|--------|
-| Create template (code=PERSON) | TPL-000001, version=1 |
-| Update TPL-000001 | TPL-000001, version=2, **version 1 still active** |
-| Update TPL-000001 | TPL-000001, version=3, **all versions still active** |
+| Create template (value=PERSON) | `019469a0-cccc-...`, version=1 |
+| Update template | Same `019469a0-cccc-...`, version=2, **version 1 still active** |
+| Update template | Same `019469a0-cccc-...`, version=3, **all versions still active** |
 
-All versions share the same `template_id` and `code`. The `extends_version` field allows pinning inheritance to a specific parent version (None = always resolve latest active parent version).
+All versions share the same `template_id` and `value`. The `extends_version` field allows pinning inheritance to a specific parent version (None = always resolve latest active parent version).
 
 ---
 
@@ -646,33 +686,29 @@ The core data entity. Documents store original data plus resolved term reference
 class Document(BaseModel):
     """A validated document conforming to a template."""
 
-    pool_id: str = Field(
-        default="wip-documents",
-        description="Pool ID for data isolation"
+    namespace: str = Field(
+        default="wip",
+        description="Namespace for data isolation"
     )
     document_id: str = Field(
         ...,
-        description="Unique document ID (UUID7 for time-ordering)"
+        description="Unique document ID from Registry (UUID7)"
     )
     template_id: str = Field(
         ...,
-        description="Template ID this document conforms to (TPL-XXXXXX)"
-    )
-    template_pool_id: str = Field(
-        default="wip-templates",
-        description="Pool ID of the template"
-    )
-    template_code: str | None = Field(
-        None,
-        description="Template code for easier identification"
+        description="Template ID this document conforms to"
     )
     template_version: int = Field(
         ...,
         description="Version of template used for validation"
     )
+    template_value: str | None = Field(
+        None,
+        description="Template value (e.g., PERSON) for easier identification"
+    )
     identity_hash: str = Field(
         ...,
-        description="SHA-256 hash of identity fields"
+        description="SHA-256 hash of identity field values"
     )
     version: int = Field(
         default=1,
@@ -712,7 +748,7 @@ class Document(BaseModel):
 
 **Key design decisions:**
 
-1. **`data`** stores the original submitted values (e.g., `"gender": "Female"`)
+1. **`data`** stores the original submitted values (e.g., `"country": "Germany"`)
 2. **`term_references`** stores resolved term IDs as an array of `{field_path, term_id, terminology_ref, matched_via}`
 3. **`references`** stores resolved entity references (documents, terms, terminologies, templates)
 4. **`file_references`** stores resolved file metadata for file fields
@@ -721,10 +757,10 @@ class Document(BaseModel):
 **Example:**
 ```json
 {
-  "pool_id": "wip-documents",
+  "namespace": "wip",
   "document_id": "0192abc1-def2-7abc-8def-123456789abc",
-  "template_id": "TPL-000001",
-  "template_code": "PERSON",
+  "template_id": "019469a0-cccc-7abc-8def-000000000001",
+  "template_value": "PERSON",
   "template_version": 3,
   "identity_hash": "a1b2c3d4e5f6g7h8i9j0...",
   "version": 2,
@@ -733,7 +769,7 @@ class Document(BaseModel):
     "first_name": "Alice",
     "last_name": "Schmidt",
     "email": "alice@example.com",
-    "gender": "Female",
+    "status": "Approved",
     "country": "Germany",
     "tax_id": "12345678901",
     "addresses": [
@@ -747,8 +783,18 @@ class Document(BaseModel):
     "supervisor": "0192abc1-aaaa-7abc-8def-111111111111"
   },
   "term_references": [
-    { "field_path": "gender", "term_id": "T-000002", "terminology_ref": "TERM-000001", "matched_via": "value" },
-    { "field_path": "country", "term_id": "T-000042", "terminology_ref": "TERM-000005", "matched_via": "value" }
+    {
+      "field_path": "status",
+      "term_id": "019469a0-5678-7abc-8def-abcdef567893",
+      "terminology_ref": "019469a0-1234-7abc-8def-abcdef123456",
+      "matched_via": "value"
+    },
+    {
+      "field_path": "country",
+      "term_id": "019469a0-5678-7abc-8def-abcdef999042",
+      "terminology_ref": "019469a0-1234-7abc-8def-abcdef999999",
+      "matched_via": "value"
+    }
   ],
   "references": [
     {
@@ -759,7 +805,7 @@ class Document(BaseModel):
       "resolved": {
         "document_id": "0192abc1-aaaa-7abc-8def-111111111111",
         "identity_hash": "f5e6d7c8...",
-        "template_id": "TPL-000001",
+        "template_id": "019469a0-cccc-7abc-8def-000000000001",
         "version": 1
       }
     }
@@ -778,11 +824,11 @@ Documents use identity-based versioning with **stable document IDs**. The `docum
 
 When a document with the same identity_hash is submitted:
 
-1. The Registry returns the existing `document_id` (composite key match on `{identity_hash, template_id}`)
+1. The Registry returns the existing `document_id` (composite key match on `{namespace, identity_hash, template_id}`)
 2. The existing active document is deactivated
 3. A new version is created with the same `document_id` and incremented version number
 
-Documents without identity fields always get a fresh `document_id` (empty composite key → no dedup).
+Documents without identity fields always get a fresh `document_id` (empty composite key — no dedup).
 
 ```
 Document v1 (identity_hash: abc123)
@@ -804,50 +850,105 @@ Document v2 (identity_hash: abc123)
 
 ### Namespace
 
-A logical partition for IDs to prevent collisions across systems.
+A logical partition for IDs to prevent collisions across systems. Each namespace can configure ID generation algorithms per entity type.
 
 ```python
-class IdGeneratorConfig(BaseModel):
+class IdAlgorithmConfig(BaseModel):
     """Configuration for ID generation within a namespace."""
 
-    type: Literal["uuid4", "uuid7", "prefixed", "external"] = Field(
-        default="uuid4"
+    algorithm: str = Field(
+        default="uuid7",
+        description="ID algorithm: uuid7 (default), uuid4, prefixed, nanoid, pattern, any"
     )
     prefix: str | None = Field(
         None,
-        description="Prefix for prefixed generator (e.g., 'TERM-', 'TPL-')"
+        description="Prefix for 'prefixed' algorithm (e.g., 'TERM-', 'TPL-')"
+    )
+    pad: int = Field(
+        default=6,
+        description="Zero-padding width for 'prefixed' algorithm (e.g., TERM-000042)"
+    )
+    length: int = Field(
+        default=21,
+        description="Character length for 'nanoid' algorithm"
+    )
+    pattern: str | None = Field(
+        None,
+        description="Regex pattern for 'pattern' algorithm validation"
     )
 
 
 class Namespace(BaseModel):
     """A logical partition in the Registry for ID isolation."""
 
-    namespace_id: str = Field(
+    prefix: str = Field(
         ...,
-        description="Unique namespace identifier",
-        examples=["default", "wip-terminologies"]
+        description="Unique namespace identifier (e.g., 'wip', 'dev', 'customer-abc')"
     )
-    name: str
-    description: str | None = None
-    id_generator: IdGeneratorConfig = Field(
-        default_factory=IdGeneratorConfig
+    description: str = Field(default="")
+    isolation_mode: Literal["open", "strict"] = Field(
+        default="open",
+        description="open allows cross-namespace refs; strict requires same-namespace"
     )
-    status: Literal["active", "inactive"] = Field(default="active")
+    allowed_external_refs: list[str] = Field(
+        default_factory=list,
+        description="For open mode, optional allowlist of external namespaces"
+    )
+    id_config: dict[str, IdAlgorithmConfig] = Field(
+        default_factory=dict,
+        description="Per-entity-type ID algorithm config (omitted types default to UUID7)"
+    )
+    status: Literal["active", "archived", "deleted"] = Field(default="active")
     created_at: datetime
+    created_by: str
+    updated_at: datetime | None = None
+    updated_by: str | None = None
 ```
 
-### WIP Internal Namespaces
+### WIP Default Namespace
 
-The Registry pre-configures namespaces for WIP components:
+The `wip` namespace is auto-created by `POST /initialize-wip` with an empty `id_config`, meaning all entity types default to **UUID7**:
 
-| Namespace | ID Generator | Format | Used By |
-|-----------|--------------|--------|---------|
-| `wip-terminologies` | prefixed | `TERM-000001` | Def-Store |
-| `wip-terms` | prefixed | `T-000001` | Def-Store |
-| `wip-templates` | prefixed | `TPL-000001` | Template Store |
-| `wip-documents` | uuid7 | `0192abc1-def2-7abc-...` | Document Store |
-| `wip-files` | prefixed | `FILE-000001` | File Storage |
-| `default` | uuid4 | `550e8400-e29b-41d4-...` | General use |
+| Entity Type | Default Algorithm | Example ID |
+|-------------|-------------------|------------|
+| `terminologies` | uuid7 | `019469a0-1234-7abc-8def-abcdef123456` |
+| `terms` | uuid7 | `019469a0-5678-7abc-8def-abcdef567890` |
+| `templates` | uuid7 | `019469a0-cccc-7abc-8def-000000000001` |
+| `documents` | uuid7 | `0192abc1-def2-7abc-8def-123456789abc` |
+| `files` | uuid7 | `019469a0-ffff-7abc-8def-000000000001` |
+
+### Custom Namespace with Prefixed IDs
+
+To create a namespace with prefixed IDs (or any other algorithm), configure `id_config` per entity type:
+
+```bash
+curl -X POST http://localhost:8001/api/registry/namespaces \
+  -H "X-API-Key: dev_master_key_for_testing" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prefix": "legacy-erp",
+    "description": "Legacy ERP system with sequential IDs",
+    "isolation_mode": "open",
+    "id_config": {
+      "terminologies": { "algorithm": "prefixed", "prefix": "TERM-", "pad": 6 },
+      "terms": { "algorithm": "prefixed", "prefix": "T-", "pad": 6 },
+      "templates": { "algorithm": "prefixed", "prefix": "TPL-", "pad": 6 },
+      "documents": { "algorithm": "uuid7" },
+      "files": { "algorithm": "prefixed", "prefix": "FILE-", "pad": 6 }
+    }
+  }'
+```
+
+Entity types omitted from `id_config` automatically default to UUID7. The available algorithms are:
+
+| Algorithm | Description | Example |
+|-----------|-------------|---------|
+| `uuid7` | Time-ordered UUID (default) | `019469a0-1234-7abc-8def-abcdef123456` |
+| `uuid4` | Random UUID | `550e8400-e29b-41d4-a716-446655440000` |
+| `prefixed` | Sequential with prefix | `TERM-000042` |
+| `nanoid` | Compact random ID | `V1StGXR8_Z5jdHi6B-myT` |
+| `pattern` | Regex-validated external ID | (matches provided pattern) |
+| `any` | Accept any external ID | (no validation) |
 
 ### Registry Entry
 
@@ -855,8 +956,8 @@ A registry entry stores a canonical ID with its composite key and optional synon
 
 ```python
 class RegistryEntry(BaseModel):
-    entry_id: str          # Canonical ID (e.g., UUID7, TPL-000001)
-    primary_pool_id: str   # Pool this entry belongs to
+    entry_id: str          # Canonical ID (e.g., UUID7)
+    primary_namespace: str # Namespace this entry belongs to
     primary_composite_key: dict[str, Any]  # Original composite key
     additional_ids: list[dict[str, str]]   # Merged IDs from entry merges
     synonyms: list[Synonym]               # Alternative composite keys
@@ -871,19 +972,19 @@ class RegistryEntry(BaseModel):
 **Example:**
 ```json
 {
-  "entry_id": "0192abc1-def2-7abc-...",
-  "primary_pool_id": "wip-documents",
+  "entry_id": "0192abc1-def2-7abc-8def-123456789abc",
+  "primary_namespace": "wip",
   "primary_composite_key": {
     "identity_hash": "abc123...",
-    "template_id": "TPL-000001"
+    "template_id": "019469a0-cccc-7abc-8def-000000000001"
   },
   "synonyms": [
     {
-      "pool_id": "wip-documents",
+      "namespace": "wip",
       "composite_key": { "external_id": "ERP-CUS-001" }
     }
   ],
-  "search_values": ["ERP-CUS-001", "TPL-000001", "abc123..."],
+  "search_values": ["ERP-CUS-001", "019469a0-cccc-7abc-8def-000000000001", "abc123..."],
   "additional_ids": []
 }
 ```
@@ -921,16 +1022,17 @@ class DocumentEvent(BaseModel):
   "event_type": "document.created",
   "timestamp": "2024-01-15T10:00:00Z",
   "document": {
-    "document_id": "0192abc...",
-    "template_id": "TPL-000001",
-    "template_code": "PERSON",
+    "namespace": "wip",
+    "document_id": "0192abc1-def2-7abc-8def-123456789abc",
+    "template_id": "019469a0-cccc-7abc-8def-000000000001",
+    "template_value": "PERSON",
     "version": 1,
     "status": "active",
     "data": {
       "first_name": "Alice",
       "email": "alice@example.com"
     },
-    "term_references": {}
+    "term_references": []
   }
 }
 ```
@@ -943,6 +1045,8 @@ class DocumentEvent(BaseModel):
 ---
 
 ## Identity Hash Algorithm
+
+The identity hash determines whether a newly submitted document is a new entity or a new version of an existing entity.
 
 ```python
 import hashlib
@@ -990,6 +1094,8 @@ hash = compute_identity_hash(data, identity_fields)
 # → "a1b2c3d4e5f6..."
 ```
 
+**Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
+
 ---
 
 ## API Response Models
@@ -1016,7 +1122,7 @@ class ValidationResult(BaseModel):
     valid: bool
     identity_hash: str | None = None
     template_version: int | None = None
-    template_code: str | None = None
+    template_value: str | None = None
     errors: list[dict] = []       # [{field, code, message, details}]
     warnings: list[str] = []
     term_references: list[dict] = []   # [{field_path, term_id, terminology_ref, matched_via}]
