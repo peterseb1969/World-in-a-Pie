@@ -32,11 +32,12 @@ A collection of related terms forming a controlled vocabulary.
 
 ```json
 {
-  "terminology_id": "TERM-000001",
-  "code": "GENDER",
-  "name": "Gender",
-  "description": "Controlled vocabulary for gender identification",
+  "terminology_id": "019abc12-def3-7abc-8def-123456789abc",
+  "value": "DOC_STATUS",
+  "label": "Document Status",
+  "description": "Controlled vocabulary for document lifecycle states",
   "status": "active",
+  "namespace": "wip",
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy",
   "updated_at": "2024-01-15T10:00:00Z",
@@ -46,25 +47,24 @@ A collection of related terms forming a controlled vocabulary.
 
 #### Term
 
-An individual concept within a terminology. **Terms do not have versioning** - changes are tracked via audit log.
+An individual concept within a terminology. **Terms do not have versioning** — changes are tracked via audit log.
 
 ```json
 {
-  "term_id": "T-000001",
-  "terminology_id": "TERM-000001",
-  "code": "M",
-  "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE"],
-  "description": "Male gender identity",
+  "term_id": "019abc13-def4-7abc-8def-123456789abc",
+  "terminology_id": "019abc12-def3-7abc-8def-123456789abc",
+  "value": "approved",
+  "label": "Approved",
+  "aliases": ["APPROVED", "Approved", "OK"],
+  "description": "Document has been reviewed and approved",
   "status": "active",
   "parent_id": null,
   "metadata": {
-    "iso_5218": "1",
-    "hl7_v3": "M"
+    "workflow_order": "3"
   },
   "translations": {
-    "de": "Männlich",
-    "fr": "Masculin"
+    "de": "Genehmigt",
+    "fr": "Approuvé"
   },
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy"
@@ -79,17 +79,17 @@ Multiple input values can resolve to the same term:
 
 ```json
 {
-  "term_id": "T-000001",
-  "code": "M",
-  "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
+  "term_id": "019abc13-def4-7abc-8def-123456789abc",
+  "value": "approved",
+  "label": "Approved",
+  "aliases": ["APPROVED", "Approved", "OK", "ok"]
 }
 ```
 
-When validating, all these inputs resolve to `T-000001`:
-- "Male" → matched via `value`
-- "M" → matched via `code`
-- "Mr." → matched via `alias`
+When validating, all these inputs resolve to the same term:
+- "approved" → matched via `value`
+- "APPROVED" → matched via `alias`
+- "OK" → matched via `alias`
 
 ### Hierarchical Terms
 
@@ -97,13 +97,13 @@ Terms can form hierarchies (e.g., location taxonomies, departments):
 
 ```
 DEPARTMENT (terminology)
-├── T-000010 Engineering (parent: null)
-│   ├── T-000011 Frontend (parent: T-000010)
-│   ├── T-000012 Backend (parent: T-000010)
-│   └── T-000013 DevOps (parent: T-000010)
-└── T-000020 Sales (parent: null)
-    ├── T-000021 Enterprise (parent: T-000020)
-    └── T-000022 SMB (parent: T-000020)
+├── Engineering (parent: null)
+│   ├── Frontend (parent: Engineering)
+│   ├── Backend (parent: Engineering)
+│   └── DevOps (parent: Engineering)
+└── Sales (parent: null)
+    ├── Enterprise (parent: Sales)
+    └── SMB (parent: Sales)
 ```
 
 ### API Endpoints
@@ -117,7 +117,7 @@ DEPARTMENT (terminology)
 | PUT | `/api/def-store/terminologies/{id}` | Update terminology |
 | DELETE | `/api/def-store/terminologies/{id}` | Deactivate terminology |
 | POST | `/api/def-store/terminologies/{id}/restore` | Restore inactive terminology |
-| GET | `/api/def-store/terminologies/by-code/{code}` | Get terminology by code |
+| GET | `/api/def-store/terminologies/by-value/{value}` | Get terminology by value |
 | POST | `/api/def-store/terminologies/bulk` | Bulk create terminologies |
 | GET | `/api/def-store/terminologies/{id}/dependencies` | Get dependent templates |
 | **Terms** | | |
@@ -141,12 +141,12 @@ DEPARTMENT (terminology)
 
 ```json
 {
-  "terminology_code": "GENDER",
-  "input_value": "Mr.",
+  "terminology_value": "DOC_STATUS",
+  "input_value": "OK",
   "valid": true,
-  "term_id": "T-000001",
+  "term_id": "019abc13-def4-7abc-8def-123456789abc",
   "matched_via": "alias",
-  "normalized_value": "Male"
+  "normalized_value": "approved"
 }
 ```
 
@@ -156,14 +156,14 @@ All term changes are recorded:
 
 ```json
 {
-  "term_id": "T-000001",
-  "terminology_id": "TERM-000001",
+  "term_id": "019abc13-def4-7abc-8def-123456789abc",
+  "terminology_id": "019abc12-def3-7abc-8def-123456789abc",
   "action": "updated",
   "changed_at": "2024-01-30T10:00:00Z",
   "changed_by": "user:admin-001",
   "changed_fields": ["aliases"],
-  "previous_values": {"aliases": ["MR", "MR."]},
-  "new_values": {"aliases": ["MR", "MR.", "Mr.", "mr"]}
+  "previous_values": {"aliases": ["APPROVED"]},
+  "new_values": {"aliases": ["APPROVED", "Approved", "OK", "ok"]}
 }
 ```
 
@@ -181,17 +181,18 @@ The Template Store defines **how concepts from the Def-Store combine** into reus
 
 #### Template
 
-A schema definition for documents. **Multiple template versions can be active simultaneously** for gradual migration.
+A schema definition for documents. Templates use **stable IDs** — the `template_id` persists across all versions. Multiple template versions can be active simultaneously, supporting both gradual migration and scenarios where different versions serve different purposes (e.g., ongoing vs new projects).
 
 ```json
 {
-  "template_id": "TPL-000001",
-  "code": "PERSON",
-  "name": "Person",
+  "template_id": "019abc14-def5-7abc-8def-123456789abc",
+  "value": "PERSON",
+  "label": "Person",
   "description": "Template for person records",
   "version": 3,
   "status": "active",
   "extends": null,
+  "extends_version": null,
   "identity_fields": ["email"],
   "fields": [
     {
@@ -201,10 +202,10 @@ A schema definition for documents. **Multiple template versions can be active si
       "description": "Person's first name"
     },
     {
-      "name": "gender",
+      "name": "status",
       "type": "term",
       "mandatory": false,
-      "terminology_ref": "GENDER"
+      "terminology_ref": "DOC_STATUS"
     },
     {
       "name": "address",
@@ -234,17 +235,17 @@ A schema definition for documents. **Multiple template versions can be active si
 
 | Type | Description | Example | Additional Config |
 |------|-------------|---------|-------------------|
-| `string` | Free text | "John" | `min_length`, `max_length`, `pattern` |
-| `number` | Numeric value | 42, 3.14 | `minimum`, `maximum` |
-| `integer` | Whole number | 42 | `minimum`, `maximum` |
-| `boolean` | True/false | true | - |
-| `date` | ISO 8601 date | "2024-01-15" | - |
-| `datetime` | ISO 8601 datetime | "2024-01-15T10:30:00Z" | - |
-| `term` | Reference to terminology | "Male" | `terminology_ref` |
-| `object` | Nested object | {...} | `template_ref` |
-| `array` | List of items | [...] | `items` (field definition) |
-| `reference` | Cross-document reference | "DOC-..." | `reference_type`, `target_templates`, `include_subtypes` |
-| `file` | Binary file attachment | "FILE-000001" | `file_config` (`allowed_types`, `max_size_mb`, `multiple`) |
+| string | Free text | "John" | `min_length`, `max_length`, `pattern` |
+| number | Numeric value | 42, 3.14 | `minimum`, `maximum` |
+| integer | Whole number | 42 | `minimum`, `maximum` |
+| boolean | True/false | true | — |
+| date | ISO 8601 date | "2024-01-15" | — |
+| datetime | ISO 8601 datetime | "2024-01-15T10:30:00Z" | — |
+| term | Reference to terminology | "approved" | `terminology_ref` |
+| object | Nested object | {...} | `template_ref` |
+| array | List of items | [...] | `items` (field definition) |
+| reference | Cross-document reference | "019abc..." | `reference_type`, `target_templates`, `include_subtypes` |
+| file | Binary file attachment | "019abc..." | `file_config` (`allowed_types`, `max_size_mb`, `multiple`) |
 
 #### Rule Types
 
@@ -261,10 +262,11 @@ Templates can extend other templates:
 
 ```json
 {
-  "template_id": "TPL-000002",
-  "code": "EMPLOYEE",
-  "name": "Employee",
+  "template_id": "019abc15-def6-7abc-8def-123456789abc",
+  "value": "EMPLOYEE",
+  "label": "Employee",
   "extends": "PERSON",
+  "extends_version": null,
   "fields": [
     {
       "name": "employee_id",
@@ -288,17 +290,26 @@ Inheritance resolution:
 4. Child defines its own identity fields (replaces parent's)
 5. Rules are merged (child rules evaluated after parent rules)
 
+The `extends_version` field controls parent version resolution:
+- `null` (default): always resolves against the **latest active** parent version
+- A specific number (e.g., `2`): pins inheritance to that exact parent version
+
 When fetching a resolved template, each field includes `inherited: true/false` and `inherited_from: "<template_id>"` to indicate whether it comes from a parent template or is defined directly on the child.
 
 ### Template Versioning
 
-**Key difference from document versioning:** Multiple template versions can be active simultaneously.
+Templates use **stable IDs** — the `template_id` stays the same across all versions. The unique key is `(template_id, version)`.
 
 | Operation | Result |
 |-----------|--------|
-| Create template (code=PERSON) | TPL-000001, version=1 |
-| Update TPL-000001 | TPL-000001, version=2, **version 1 still active** |
-| Update TPL-000001 | TPL-000001, version=3, **all versions still active** |
+| Create template (value=PERSON) | New `template_id`, version=1 |
+| Update template | Same `template_id`, version=2, **version 1 still active** |
+| Update template | Same `template_id`, version=3, **all versions still active** |
+
+Multiple active versions support:
+- **Gradual migration** — transition documents from v1 to v2 at your own pace
+- **Parallel use cases** — e.g., ongoing projects use v1 while new projects use v2 with additional fields
+- **Selective deactivation** — deactivate individual versions independently
 
 ### Draft Mode
 
@@ -319,10 +330,13 @@ See `docs/design/template-draft-mode.md` for the full design.
 | GET | `/api/template-store/templates` | List all templates |
 | GET | `/api/template-store/templates?latest_only=true` | List only latest versions |
 | GET | `/api/template-store/templates/{id}` | Get template (resolved if extends) |
+| GET | `/api/template-store/templates/{id}?version=N` | Get specific version |
 | GET | `/api/template-store/templates/{id}?resolve=false` | Get template without inheritance |
 | POST | `/api/template-store/templates` | Create template |
 | PUT | `/api/template-store/templates/{id}` | Update template (creates new version) |
-| DELETE | `/api/template-store/templates/{id}` | Deactivate template |
+| DELETE | `/api/template-store/templates/{id}` | Deactivate template (latest version) |
+| DELETE | `/api/template-store/templates/{id}?version=N` | Deactivate specific version |
+| DELETE | `/api/template-store/templates/{id}?force=true` | Force deactivate even with dependent documents |
 | POST | `/api/template-store/templates/bulk` | Bulk create templates |
 | GET | `/api/template-store/templates/{id}/dependencies` | Get dependent documents |
 | GET | `/api/template-store/templates/{id}/raw` | Get template without inheritance resolution |
@@ -330,10 +344,10 @@ See `docs/design/template-draft-mode.md` for the full design.
 | GET | `/api/template-store/templates/{id}/descendants` | Get all descendant templates |
 | POST | `/api/template-store/templates/{id}/cascade` | Cascade parent update to child templates |
 | POST | `/api/template-store/templates/{id}/activate` | Activate a draft template (cascading) |
-| **By Code** | | |
-| GET | `/api/template-store/templates/by-code/{code}` | Get latest version by code |
-| GET | `/api/template-store/templates/by-code/{code}/versions` | List all versions |
-| GET | `/api/template-store/templates/by-code/{code}/versions/{v}` | Get specific version |
+| **By Value** | | |
+| GET | `/api/template-store/templates/by-value/{value}` | Get latest version by value |
+| GET | `/api/template-store/templates/by-value/{value}/versions` | List all versions |
+| GET | `/api/template-store/templates/by-value/{value}/versions/{v}` | Get specific version |
 | **Validation** | | |
 | POST | `/api/template-store/templates/{id}/validate` | Validate template references |
 | **Health** | | |
@@ -360,7 +374,7 @@ Templates include configuration for PostgreSQL sync:
 |---------|---------|-------------|
 | `sync_enabled` | true/false | Whether to sync to PostgreSQL |
 | `sync_strategy` | `latest_only`, `all_versions`, `disabled` | Version handling |
-| `table_name` | string | Custom table name (default: `doc_{code}`) |
+| `table_name` | string | Custom table name (default: `doc_{value}` lowercase) |
 | `flatten_arrays` | true/false | Flatten arrays into multiple rows |
 
 ---
@@ -379,9 +393,9 @@ The Document Store holds **actual data** that conforms to templates. It is the p
 
 ```json
 {
-  "document_id": "0192abc1-def2-7abc-8def-123456789abc",
-  "template_id": "TPL-000001",
-  "template_code": "PERSON",
+  "document_id": "019abc16-def7-7abc-8def-123456789abc",
+  "template_id": "019abc14-def5-7abc-8def-123456789abc",
+  "template_value": "PERSON",
   "template_version": 3,
   "identity_hash": "a1b2c3d4e5f6...",
   "version": 2,
@@ -391,11 +405,11 @@ The Document Store holds **actual data** that conforms to templates. It is the p
   "data": {
     "first_name": "Alice",
     "last_name": "Smith",
-    "gender": "Female",
+    "status": "approved",
     "email": "alice@example.com"
   },
   "term_references": {
-    "gender": "T-000002"
+    "status": "019abc13-def4-7abc-8def-123456789abc"
   },
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "user:admin-001",
@@ -405,16 +419,20 @@ The Document Store holds **actual data** that conforms to templates. It is the p
 ```
 
 **Key fields:**
-- `template_code` - Template code (e.g., "PERSON") for convenient filtering without needing the template_id
-- `data` - Original submitted values
-- `term_references` - Resolved term IDs for term fields (stores both original value AND term_id)
-- `identity_hash` - SHA-256 of identity field values
-- `is_latest_version` - Whether this is the current version
-- `latest_version` - Latest version number (document_id is stable across versions)
+- `template_value` — Template value (e.g., "PERSON") for convenient filtering without needing the template_id
+- `data` — Original submitted values
+- `term_references` — Resolved term IDs for term fields (stores both original value AND term_id)
+- `identity_hash` — SHA-256 of identity field values (see below for computation details)
+- `is_latest_version` — Whether this is the current version
+- `latest_version` — Latest version number (`document_id` is stable across versions)
 
 ### Identity and Versioning
 
+Documents use **stable IDs** — the `document_id` persists across all versions. The unique key is `(document_id, version)`.
+
 #### Identity Hash Computation
+
+The identity hash determines whether a document submission creates a new document or a new version of an existing one. It is computed from the **identity fields** defined in the template:
 
 ```python
 def compute_identity_hash(data: dict, identity_fields: list) -> str:
@@ -422,10 +440,24 @@ def compute_identity_hash(data: dict, identity_fields: list) -> str:
     parts = []
     for field in sorted_fields:
         value = data.get(field, "")
-        parts.append(f"{field}={value}")
+        parts.append(f"{field}={normalize(value)}")
     normalized = "|".join(parts)
     return hashlib.sha256(normalized.encode()).hexdigest()
 ```
+
+Values are normalized before hashing: strings are stripped and lowercased, so `"Alice@Example.com"` and `"alice@example.com"` produce the same hash.
+
+**Namespace scoping:** The identity hash itself covers only the identity field values. However, the **Registry composite key** includes the namespace alongside the identity hash and template_id:
+
+```json
+{
+  "namespace": "wip",
+  "identity_hash": "a1b2c3...",
+  "template_id": "019abc14-..."
+}
+```
+
+This means the same identity field values in different namespaces produce different documents — identity uniqueness is scoped per namespace and per template.
 
 #### Upsert Behavior (Single POST Endpoint)
 
@@ -436,12 +468,14 @@ POST /api/document-store/documents
 Compute identity_hash from identity fields
         │
         ▼
-Search for active document with same hash
+Register with Registry (composite key: namespace + hash + template_id)
         │
-        ├── Not found ──► CREATE new document (version 1)
+        ├── New ID returned ──► CREATE new document (version 1)
         │
-        └── Found ──► CREATE new version, deactivate old
+        └── Existing ID returned ──► CREATE new version, deactivate old
 ```
+
+For templates **without identity fields**, the Registry receives an empty composite key and always generates a fresh document_id (each submission is a new document).
 
 ### Six-Stage Validation Pipeline
 
@@ -475,7 +509,7 @@ Search for active document with same hash
 │  6. IDENTITY COMPUTATION                                          │
 │     • Are all identity fields present?                            │
 │     • Compute identity hash                                       │
-│     • Determine if CREATE or UPDATE                               │
+│     • Register with Registry to determine CREATE or UPDATE        │
 │                                                                   │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -485,8 +519,9 @@ Search for active document with same hash
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | **Documents** | | |
-| GET | `/api/document-store/documents` | List documents (filter by `template_id`, `template_code`, `status`) |
-| GET | `/api/document-store/documents/{id}` | Get document |
+| GET | `/api/document-store/documents` | List documents (filter by `template_id`, `template_value`, `status`) |
+| GET | `/api/document-store/documents/{id}` | Get document (latest version) |
+| GET | `/api/document-store/documents/{id}?version=N` | Get specific version |
 | POST | `/api/document-store/documents` | Create/update document (upsert) |
 | DELETE | `/api/document-store/documents/{id}` | Soft-delete (set status=inactive) |
 | POST | `/api/document-store/documents/bulk` | Bulk create/update |
@@ -515,16 +550,16 @@ Search for active document with same hash
 
 ```json
 {
-  "template_id": "TPL-000001",
-  "template_code": "PERSON",
+  "template_id": "019abc14-def5-7abc-8def-123456789abc",
+  "template_value": "PERSON",
   "columns": [
     {"name": "_document_id", "type": "string", "is_array": false},
     {"name": "first_name", "type": "string", "is_array": false},
     {"name": "languages", "type": "string", "is_array": true}
   ],
   "rows": [
-    {"_document_id": "...", "first_name": "John", "languages": "English"},
-    {"_document_id": "...", "first_name": "John", "languages": "Spanish"}
+    {"_document_id": "019abc...", "first_name": "John", "languages": "English"},
+    {"_document_id": "019abc...", "first_name": "John", "languages": "Spanish"}
   ],
   "total_documents": 100,
   "total_rows": 150,
@@ -542,30 +577,69 @@ Search for active document with same hash
 
 The Registry provides **federated identity management** and is the **ID generator for all WIP entities**.
 
-### WIP Namespaces
+### ID Generation
 
-| Namespace | ID Generator | Purpose |
-|-----------|--------------|---------|
-| `wip-terminologies` | Prefixed (TERM-) | Terminology IDs |
-| `wip-terms` | Prefixed (T-) | Term IDs |
-| `wip-templates` | Prefixed (TPL-) | Template IDs |
-| `wip-documents` | UUID7 | Document IDs (time-ordered) |
-| `default` | UUID4 | General use |
+By default, the Registry generates **UUID7** identifiers (time-ordered UUIDs) for all entity types. This is the default for the `wip` namespace and any new namespace created without explicit configuration.
 
-### ID Generators
+For namespaces that require human-readable IDs, the Registry supports **prefixed sequential IDs** (e.g., `TERM-000001`, `TPL-000002`) and other algorithms.
 
-| Generator | Format | Use Case |
+### ID Algorithms
+
+| Algorithm | Format | Use Case |
 |-----------|--------|----------|
-| `uuid4` | `550e8400-e29b-41d4-a716-446655440000` | Default, universally unique |
-| `uuid7` | Time-ordered UUID | Sortable by creation time |
-| `prefixed` | `TERM-000001`, `TPL-000002` | Human-readable with prefix |
+| `uuid7` | `019abc12-def3-7abc-8def-123456789abc` | **Default.** Time-ordered, sortable by creation time |
+| `uuid4` | `550e8400-e29b-41d4-a716-446655440000` | Universally unique, random |
+| `prefixed` | `TERM-000001`, `TPL-000002` | Human-readable with prefix and sequential counter |
+| `nanoid` | `V1StGXR8_Z5jdHi6B-myT` | URL-safe compact IDs |
+| `pattern` | (custom regex) | Validated against a regex pattern |
+| `any` | (any string) | No format enforcement |
+
+### Namespace Configuration
+
+Each namespace has its own ID algorithm configuration **per entity type**. When creating a namespace, you can specify which algorithm to use for terminologies, terms, templates, documents, and files.
+
+**Default WIP namespace** (created by `initialize-wip`):
+- All entity types use UUID7 (the global default)
+
+**Example: Custom namespace with prefixed IDs:**
+
+```bash
+curl -X POST http://localhost:8001/api/registry/namespaces \
+  -H "X-API-Key: dev_master_key_for_testing" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "prefix": "my-project",
+    "description": "Project with human-readable IDs",
+    "id_config": {
+      "terminologies": {"algorithm": "prefixed", "prefix": "TERM-", "pad": 6},
+      "terms": {"algorithm": "prefixed", "prefix": "T-", "pad": 6},
+      "templates": {"algorithm": "prefixed", "prefix": "TPL-", "pad": 6},
+      "documents": {"algorithm": "uuid7"},
+      "files": {"algorithm": "uuid7"}
+    }
+  }'
+```
+
+Entity types not specified in `id_config` default to UUID7. You can query a namespace's ID configuration:
+
+```bash
+GET /api/registry/namespaces/{prefix}/id-config
+```
+
+### Composite Keys and Stable IDs
+
+The Registry uses **composite keys** for idempotent ID generation. When a service registers an entity with a composite key, the Registry either returns the existing ID (if the key matches) or generates a new one.
+
+- **Templates and files**: registered with an empty composite key `{}` — always get a new ID. Updates reuse the existing `template_id`.
+- **Documents with identity fields**: composite key includes `{namespace, identity_hash, template_id}` — same identity returns the same `document_id`.
+- **Documents without identity fields**: empty composite key — always get a new `document_id`.
 
 ### Synonyms
 
 Multiple identifiers can resolve to the same entity:
 
 ```
-Registry ID: TPL-000001 (preferred)
+Registry ID: 019abc14-... (preferred)
     │
     ├── Synonym: legacy_system:OLD-TPL-42
     └── Synonym: external_api:template_abc
@@ -579,11 +653,18 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 |--------|----------|-------------|
 | **Namespaces** | | |
 | GET | `/api/registry/namespaces` | List all namespaces |
-| POST | `/api/registry/namespaces` | Create namespace |
-| POST | `/api/registry/namespaces/initialize-wip` | Initialize WIP namespaces |
+| GET | `/api/registry/namespaces/{prefix}` | Get namespace details |
+| GET | `/api/registry/namespaces/{prefix}/stats` | Get entity counts |
+| GET | `/api/registry/namespaces/{prefix}/id-config` | Get ID algorithm config |
+| POST | `/api/registry/namespaces` | Create namespace (with optional `id_config`) |
+| PUT | `/api/registry/namespaces/{prefix}` | Update namespace |
+| POST | `/api/registry/namespaces/{prefix}/archive` | Archive namespace |
+| POST | `/api/registry/namespaces/{prefix}/restore` | Restore archived namespace |
+| DELETE | `/api/registry/namespaces/{prefix}` | Delete namespace (must be archived first) |
+| POST | `/api/registry/namespaces/initialize-wip` | Initialize default WIP namespace |
 | **Entries** | | |
 | POST | `/api/registry/entries/register` | Register composite keys (bulk) |
-| POST | `/api/registry/entries/lookup/by-id` | Lookup by ID with 3-step cascade (`entry_id` → `additional_ids` → composite key values). `pool_id` is optional for cross-namespace search. |
+| POST | `/api/registry/entries/lookup/by-id` | Lookup by ID with 3-step cascade |
 | POST | `/api/registry/entries/lookup/by-key` | Lookup by composite key (bulk) |
 | **Synonyms** | | |
 | POST | `/api/registry/synonyms/add` | Add synonyms (bulk) |
@@ -592,6 +673,9 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 | **Search** | | |
 | POST | `/api/registry/search/by-fields` | Search by field criteria |
 | POST | `/api/registry/search/by-term` | Free-text search |
+| **Export/Import** | | |
+| POST | `/api/registry/namespaces/{prefix}/export` | Export namespace |
+| POST | `/api/registry/namespaces/import` | Import namespace |
 
 ### Extended Identifier Lookup
 
@@ -648,11 +732,13 @@ Synchronize document data from MongoDB to PostgreSQL for SQL-based analytics and
 
 ### Table Generation
 
-For each template, a corresponding PostgreSQL table is generated:
+For each template with `sync_enabled: true`, a corresponding PostgreSQL table is generated. The table name defaults to `doc_{template_value}` (lowercase), e.g., template value `PERSON` → table `doc_person`.
+
+For `latest_only` strategy, `document_id` is the primary key (upserts replace old version data). For `all_versions` strategy, the primary key is `(document_id, version)`.
 
 ```sql
+-- latest_only strategy
 CREATE TABLE doc_person (
-    -- System columns
     document_id TEXT PRIMARY KEY,
     template_id TEXT NOT NULL,
     template_version INTEGER NOT NULL,
@@ -668,8 +754,8 @@ CREATE TABLE doc_person (
     first_name TEXT,
     last_name TEXT,
     email TEXT,
-    gender TEXT,
-    gender_term_id TEXT,
+    status TEXT,
+    status_term_id TEXT,
 
     -- Nested objects flattened
     address_street TEXT,
@@ -678,6 +764,14 @@ CREATE TABLE doc_person (
     -- Original JSON
     data_json JSONB,
     term_references_json JSONB
+);
+
+-- all_versions strategy
+CREATE TABLE doc_audit_log (
+    document_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    -- ... same columns ...
+    PRIMARY KEY (document_id, version)
 );
 ```
 
@@ -691,9 +785,9 @@ Events contain the full document (self-contained):
   "event_type": "document.created",
   "timestamp": "2024-01-30T10:00:00Z",
   "document": {
-    "document_id": "0192abc...",
-    "template_id": "TPL-000001",
-    "template_code": "PERSON",
+    "document_id": "019abc16-...",
+    "template_id": "019abc14-...",
+    "template_value": "PERSON",
     "version": 1,
     "status": "active",
     "data": { "..." },
@@ -717,9 +811,9 @@ Events contain the full document (self-contained):
 | PUT | `/alerts/config` | Update thresholds and webhook |
 | POST | `/alerts/test` | Trigger manual alert check |
 | **Schema** | | |
-| GET | `/schema/{template_code}` | View generated schema |
+| GET | `/schema/{template_value}` | View generated schema |
 | **Batch Sync** | | |
-| POST | `/sync/batch/{template_code}` | Sync all docs for template |
+| POST | `/sync/batch/{template_value}` | Sync all docs for template |
 | POST | `/sync/batch` | Sync all templates |
 | GET | `/sync/batch/jobs` | List batch jobs |
 | GET | `/sync/batch/jobs/{id}` | Get job status |
@@ -768,10 +862,10 @@ Unified web UI for managing all WIP components.
 - Validation rules configuration
 - Template inheritance visualization
 - Reporting sync configuration
-- Version history
+- Version history with version-specific navigation
 
 #### Document Management
-- List documents by template
+- List documents by template with soft title display (shows "title" field value when available)
 - Dynamic form generation based on template fields
 - Real-time validation feedback
 - Version history viewing and restore
@@ -802,7 +896,7 @@ Primary document store. Databases:
 **Port:** 5432
 
 Reporting database. Tables auto-generated from templates:
-- `doc_{template_code}` for each template with sync enabled
+- `doc_{template_value}` (lowercase) for each template with sync enabled
 - `_wip_schema_migrations` for tracking schema changes
 
 ### NATS
@@ -825,7 +919,7 @@ Message queue with JetStream for event persistence.
 **Port:** 9000 (API) / 9001 (Console)
 
 S3-compatible object storage for binary files. Used by Document Store for file uploads.
-- Files stored with Registry IDs (FILE-XXXXXX)
+- Files stored with Registry IDs (UUID7 by default)
 - Reference tracking (documents → files)
 - Orphan detection for unlinked files
 - SHA-256 checksums for duplicate detection
