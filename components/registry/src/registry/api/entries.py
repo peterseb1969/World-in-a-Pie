@@ -2,9 +2,10 @@
 
 from datetime import datetime, timezone
 from typing import List, Optional
+import math
 
 import httpx
-from fastapi import APIRouter, HTTPException, Body, Depends
+from fastapi import APIRouter, HTTPException, Body, Depends, Query
 
 from ..models.namespace import Namespace
 from ..models.id_algorithm import IdAlgorithmConfig, IdFormatValidator, VALID_ENTITY_TYPES
@@ -30,6 +31,8 @@ from ..models.api_models import (
     UpdateEntryResponse,
     DeleteItem,
     DeleteResponse,
+    BrowseEntryItem,
+    BrowseEntriesResponse,
 )
 from ..services.id_generator import IdGeneratorService
 from ..services.hash import HashService
@@ -72,6 +75,65 @@ def build_lookup_response(
         source_info=entry.source_info,
         source_data=source_data,
         error=error
+    )
+
+
+@router.get(
+    "",
+    response_model=BrowseEntriesResponse,
+    summary="Browse registry entries"
+)
+async def browse_entries(
+    namespace: Optional[str] = Query(None, description="Filter by namespace"),
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    status: Optional[str] = Query(None, description="Filter by status (active, reserved, inactive)"),
+    q: Optional[str] = Query(None, description="Search across entry IDs and composite key values"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(25, ge=1, le=100, description="Page size"),
+    api_key: str = Depends(require_api_key)
+) -> BrowseEntriesResponse:
+    """Browse registry entries with pagination and optional filters."""
+    query: dict = {}
+
+    if namespace:
+        query["namespace"] = namespace
+    if entity_type:
+        query["entity_type"] = entity_type
+    if status:
+        query["status"] = status
+
+    if q:
+        q_stripped = q.strip()
+        query["$or"] = [
+            {"entry_id": {"$regex": q_stripped, "$options": "i"}},
+            {"search_values": {"$regex": q_stripped, "$options": "i"}},
+        ]
+
+    total = await RegistryEntry.find(query).count()
+    skip = (page - 1) * page_size
+    entries = await RegistryEntry.find(query).sort("-created_at").skip(skip).limit(page_size).to_list()
+
+    items = [
+        BrowseEntryItem(
+            entry_id=e.entry_id,
+            namespace=e.namespace,
+            entity_type=e.entity_type,
+            primary_composite_key=e.primary_composite_key,
+            synonyms_count=len(e.synonyms),
+            additional_ids_count=len(e.additional_ids),
+            status=e.status,
+            created_at=e.created_at,
+            created_by=e.created_by,
+            updated_at=e.updated_at,
+        )
+        for e in entries
+    ]
+
+    return BrowseEntriesResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
     )
 
 

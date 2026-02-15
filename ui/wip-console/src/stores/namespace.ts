@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { registryClient } from '@/api/client'
+import { registryClient, type IdAlgorithmConfig } from '@/api/client'
 
 /**
  * User-facing namespace for organizing data.
@@ -75,6 +75,7 @@ export const useNamespaceStore = defineStore('namespace', () => {
     prefix: string
     description?: string
     isolation_mode?: 'open' | 'strict'
+    id_config?: Record<string, IdAlgorithmConfig>
     created_by?: string
   }): Promise<Namespace> {
     loading.value = true
@@ -132,7 +133,12 @@ export const useNamespaceStore = defineStore('namespace', () => {
 
   async function updateNamespace(
     prefix: string,
-    data: { description?: string; isolation_mode?: 'open' | 'strict'; updated_by?: string }
+    data: {
+      description?: string
+      isolation_mode?: 'open' | 'strict'
+      id_config?: Record<string, IdAlgorithmConfig>
+      updated_by?: string
+    }
   ): Promise<Namespace> {
     loading.value = true
     error.value = null
@@ -155,6 +161,10 @@ export const useNamespaceStore = defineStore('namespace', () => {
     return await registryClient.getNamespaceStats(prefix)
   }
 
+  async function getIdConfig(prefix: string): Promise<Record<string, unknown>> {
+    return await registryClient.getIdConfig(prefix)
+  }
+
   return {
     // State
     namespaces,
@@ -174,5 +184,6 @@ export const useNamespaceStore = defineStore('namespace', () => {
     archiveNamespace,
     restoreNamespace,
     getNamespaceStats,
+    getIdConfig,
   }
 })

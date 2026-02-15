@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed } from 'vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
+import InputNumber from 'primevue/inputnumber'
 import Dropdown from 'primevue/dropdown'
 import Textarea from 'primevue/textarea'
 import Tag from 'primevue/tag'
 import Card from 'primevue/card'
+import Panel from 'primevue/panel'
 import { useNamespaceStore, useUiStore, useAuthStore } from '@/stores'
 import type { Namespace, NamespaceStats } from '@/stores/namespace'
+import type { IdAlgorithmConfig } from '@/api/client'
 
 const namespaceStore = useNamespaceStore()
 const uiStore = useUiStore()
@@ -20,12 +23,33 @@ const authStore = useAuthStore()
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const showStatsDialog = ref(false)
+const showIdConfigDialog = ref(false)
 const selectedStats = ref<NamespaceStats | null>(null)
 const loadingStats = ref(false)
+const loadingIdConfig = ref(false)
 
 // Inline stats per namespace
 const inlineStats = ref<Record<string, Record<string, number>>>({})
 const loadingInlineStats = ref(false)
+
+// Entity types for ID configuration
+const entityTypes = ['terminologies', 'terms', 'templates', 'documents', 'files']
+const algorithmOptions = [
+  { label: 'UUID7 (default)', value: 'uuid7' },
+  { label: 'Prefixed Sequential', value: 'prefixed' },
+  { label: 'NanoID', value: 'nanoid' }
+]
+
+interface IdConfigEntry {
+  algorithm: 'uuid7' | 'prefixed' | 'nanoid'
+  prefix: string
+  pad: number
+  length: number
+}
+
+function defaultIdConfigEntry(): IdConfigEntry {
+  return { algorithm: 'uuid7', prefix: '', pad: 6, length: 21 }
+}
 
 // Create form
 const createForm = ref({
@@ -34,11 +58,19 @@ const createForm = ref({
   isolation_mode: 'open' as 'open' | 'strict'
 })
 
+const createIdConfig = reactive<Record<string, IdConfigEntry>>({})
+
 // Edit form
 const editForm = ref({
   prefix: '',
   description: '',
   isolation_mode: 'open' as 'open' | 'strict'
+})
+
+// ID Config edit form (separate dialog)
+const idConfigForm = reactive<{ prefix: string; config: Record<string, IdConfigEntry> }>({
+  prefix: '',
+  config: {}
 })
 
 const isolationModeOptions = [
@@ -90,6 +122,9 @@ function getModeSeverity(mode: string): 'info' | 'warn' {
 // Actions
 function openCreateDialog() {
   createForm.value = { prefix: '', description: '', isolation_mode: 'open' }
+  for (const et of entityTypes) {
+    createIdConfig[et] = defaultIdConfigEntry()
+  }
   showCreateDialog.value = true
 }
 
@@ -106,14 +141,18 @@ async function createNamespace() {
   }
 
   try {
+    // Build id_config from non-default entries
+    const idConfig = buildIdConfigPayload(createIdConfig)
     await namespaceStore.createNamespace({
       prefix: createForm.value.prefix,
       description: createForm.value.description,
       isolation_mode: createForm.value.isolation_mode,
+      id_config: Object.keys(idConfig).length > 0 ? idConfig : undefined,
       created_by: authStore.currentUser?.email || undefined
     })
     uiStore.showSuccess('Success', `Namespace "${createForm.value.prefix}" created`)
     showCreateDialog.value = false
+    loadAllInlineStats()
   } catch (e) {
     uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to create namespace')
   }
@@ -176,6 +215,69 @@ async function restoreNamespace(ns: Namespace) {
     uiStore.showSuccess('Success', `Namespace "${ns.prefix}" restored`)
   } catch (e) {
     uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to restore namespace')
+  }
+}
+
+function buildIdConfigPayload(config: Record<string, IdConfigEntry>): Record<string, IdAlgorithmConfig> {
+  const result: Record<string, IdAlgorithmConfig> = {}
+  for (const [et, entry] of Object.entries(config)) {
+    if (entry.algorithm !== 'uuid7') {
+      const cfg: IdAlgorithmConfig = { algorithm: entry.algorithm }
+      if (entry.algorithm === 'prefixed') {
+        cfg.prefix = entry.prefix
+        cfg.pad = entry.pad
+      } else if (entry.algorithm === 'nanoid') {
+        cfg.length = entry.length
+      }
+      result[et] = cfg
+    }
+  }
+  return result
+}
+
+function parseIdConfig(raw: Record<string, unknown>): Record<string, IdConfigEntry> {
+  const result: Record<string, IdConfigEntry> = {}
+  for (const et of entityTypes) {
+    const cfg = raw[et] as Record<string, unknown> | undefined
+    if (cfg && cfg.algorithm && cfg.algorithm !== 'uuid7') {
+      result[et] = {
+        algorithm: cfg.algorithm as IdConfigEntry['algorithm'],
+        prefix: (cfg.prefix as string) || '',
+        pad: (cfg.pad as number) || 6,
+        length: (cfg.length as number) || 21
+      }
+    } else {
+      result[et] = defaultIdConfigEntry()
+    }
+  }
+  return result
+}
+
+async function openIdConfigDialog(ns: Namespace) {
+  idConfigForm.prefix = ns.prefix
+  loadingIdConfig.value = true
+  showIdConfigDialog.value = true
+  try {
+    const config = await namespaceStore.getIdConfig(ns.prefix)
+    idConfigForm.config = parseIdConfig(config)
+  } catch {
+    idConfigForm.config = Object.fromEntries(entityTypes.map(et => [et, defaultIdConfigEntry()]))
+  } finally {
+    loadingIdConfig.value = false
+  }
+}
+
+async function saveIdConfig() {
+  try {
+    const idConfig = buildIdConfigPayload(idConfigForm.config)
+    await namespaceStore.updateNamespace(idConfigForm.prefix, {
+      id_config: idConfig,
+      updated_by: authStore.currentUser?.email || undefined
+    })
+    uiStore.showSuccess('Success', `ID configuration for "${idConfigForm.prefix}" updated`)
+    showIdConfigDialog.value = false
+  } catch (e) {
+    uiStore.showError('Error', e instanceof Error ? e.message : 'Failed to update ID config')
   }
 }
 
@@ -276,6 +378,14 @@ function getTotalEntities(stats: NamespaceStats): number {
                   @click="openEditDialog(data)"
                 />
                 <Button
+                  icon="pi pi-cog"
+                  text
+                  rounded
+                  size="small"
+                  v-tooltip.top="'ID Config'"
+                  @click="openIdConfigDialog(data)"
+                />
+                <Button
                   icon="pi pi-chart-bar"
                   text
                   rounded
@@ -363,6 +473,43 @@ function getTotalEntities(stats: NamespaceStats): number {
             class="w-full"
           />
         </div>
+
+        <Panel header="ID Configuration" toggleable :collapsed="true" class="id-config-panel">
+          <small class="help-text id-config-help">Configure how IDs are generated per entity type. Default is UUID7 for all types.</small>
+          <div v-for="et in entityTypes" :key="et" class="id-config-row">
+            <label class="id-config-label">{{ et }}</label>
+            <Dropdown
+              v-model="createIdConfig[et].algorithm"
+              :options="algorithmOptions"
+              optionLabel="label"
+              optionValue="value"
+              class="id-config-algo"
+            />
+            <template v-if="createIdConfig[et]?.algorithm === 'prefixed'">
+              <InputText
+                v-model="createIdConfig[et].prefix"
+                placeholder="Prefix"
+                class="id-config-prefix"
+              />
+              <InputNumber
+                v-model="createIdConfig[et].pad"
+                :min="1"
+                :max="12"
+                placeholder="Pad"
+                class="id-config-num"
+              />
+            </template>
+            <template v-if="createIdConfig[et]?.algorithm === 'nanoid'">
+              <InputNumber
+                v-model="createIdConfig[et].length"
+                :min="6"
+                :max="36"
+                placeholder="Length"
+                class="id-config-num"
+              />
+            </template>
+          </div>
+        </Panel>
       </div>
 
       <template #footer>
@@ -481,6 +628,70 @@ function getTotalEntities(stats: NamespaceStats): number {
           severity="secondary"
           text
           @click="showStatsDialog = false"
+        />
+      </template>
+    </Dialog>
+    <!-- ID Config Dialog -->
+    <Dialog
+      v-model:visible="showIdConfigDialog"
+      :header="`ID Configuration — ${idConfigForm.prefix}`"
+      :modal="true"
+      :style="{ width: '600px' }"
+    >
+      <div v-if="loadingIdConfig" class="loading-stats">
+        <i class="pi pi-spin pi-spinner"></i>
+        Loading configuration...
+      </div>
+      <div v-else class="id-config-content">
+        <small class="help-text id-config-help">
+          Changes only affect newly generated IDs. Existing entries keep their current IDs.
+        </small>
+        <div v-for="et in entityTypes" :key="et" class="id-config-row">
+          <label class="id-config-label">{{ et }}</label>
+          <Dropdown
+            v-model="idConfigForm.config[et].algorithm"
+            :options="algorithmOptions"
+            optionLabel="label"
+            optionValue="value"
+            class="id-config-algo"
+          />
+          <template v-if="idConfigForm.config[et]?.algorithm === 'prefixed'">
+            <InputText
+              v-model="idConfigForm.config[et].prefix"
+              placeholder="Prefix (e.g. TPL-)"
+              class="id-config-prefix"
+            />
+            <InputNumber
+              v-model="idConfigForm.config[et].pad"
+              :min="1"
+              :max="12"
+              placeholder="Pad"
+              class="id-config-num"
+            />
+          </template>
+          <template v-if="idConfigForm.config[et]?.algorithm === 'nanoid'">
+            <InputNumber
+              v-model="idConfigForm.config[et].length"
+              :min="6"
+              :max="36"
+              placeholder="Length"
+              class="id-config-num"
+            />
+          </template>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button
+          label="Cancel"
+          severity="secondary"
+          text
+          @click="showIdConfigDialog = false"
+        />
+        <Button
+          label="Save"
+          @click="saveIdConfig"
+          :loading="namespaceStore.loading"
         />
       </template>
     </Dialog>
@@ -634,5 +845,48 @@ function getTotalEntities(stats: NamespaceStats): number {
 
 .pool-count {
   font-weight: 600;
+}
+
+.id-config-panel {
+  margin-top: 0.5rem;
+}
+
+.id-config-help {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+
+.id-config-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.id-config-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.id-config-label {
+  width: 110px;
+  font-family: monospace;
+  font-size: 0.875rem;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.id-config-algo {
+  width: 180px;
+  flex-shrink: 0;
+}
+
+.id-config-prefix {
+  width: 120px;
+}
+
+.id-config-num {
+  width: 80px;
 }
 </style>

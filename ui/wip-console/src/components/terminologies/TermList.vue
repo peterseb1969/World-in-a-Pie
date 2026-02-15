@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import DataTable, { type DataTablePageEvent } from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
@@ -69,6 +69,15 @@ function onPage(event: DataTablePageEvent) {
   rowsPerPage.value = event.rows
   loadTerms()
 }
+
+// Map of term_id to label/value for parent display
+const termLabelMap = computed(() => {
+  const map: Record<string, string> = {}
+  for (const t of termStore.terms) {
+    map[t.term_id] = t.label || t.value
+  }
+  return map
+})
 
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'info' | 'secondary' | 'contrast' | undefined {
   switch (status) {
@@ -179,6 +188,15 @@ async function onDeprecated() {
       <Column field="value" header="Value" sortable style="width: 18%">
         <template #body="{ data }">
           <code class="value-text">{{ data.value }}</code>
+        </template>
+      </Column>
+
+      <Column field="parent_term_id" header="Parent" style="width: 12%">
+        <template #body="{ data }">
+          <span v-if="data.parent_term_id" class="parent-term">
+            {{ termLabelMap[data.parent_term_id] || data.parent_term_id }}
+          </span>
+          <span v-else class="no-parent">&mdash;</span>
         </template>
       </Column>
 
@@ -350,8 +368,13 @@ async function onDeprecated() {
   color: var(--p-text-muted-color);
 }
 
-.no-aliases {
+.no-aliases,
+.no-parent {
   color: var(--p-text-muted-color);
+}
+
+.parent-term {
+  font-size: 0.875rem;
 }
 
 .description-text {

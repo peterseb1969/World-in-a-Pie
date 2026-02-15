@@ -51,7 +51,11 @@ import type {
   FileIntegrityResponse,
   FileQueryParams,
   // Shared types
-  ApiError
+  ApiError,
+  // Registry types
+  RegistryEntryListResponse,
+  RegistryLookupResponse,
+  RegistryBrowseParams
 } from '@/types'
 
 // =============================================================================
@@ -919,7 +923,15 @@ export interface CreateNamespaceRequest {
   description?: string
   isolation_mode?: 'open' | 'strict'
   allowed_external_refs?: string[]
+  id_config?: Record<string, IdAlgorithmConfig>
   created_by?: string
+}
+
+export interface IdAlgorithmConfig {
+  algorithm: 'uuid7' | 'prefixed' | 'nanoid'
+  prefix?: string
+  pad?: number
+  length?: number
 }
 
 class RegistryClient extends BaseApiClient {
@@ -955,10 +967,20 @@ class RegistryClient extends BaseApiClient {
 
   async updateNamespace(
     prefix: string,
-    data: { description?: string; isolation_mode?: 'open' | 'strict'; updated_by?: string }
+    data: {
+      description?: string
+      isolation_mode?: 'open' | 'strict'
+      id_config?: Record<string, IdAlgorithmConfig>
+      updated_by?: string
+    }
   ): Promise<Namespace> {
     const response = await this.client.put<Namespace>(`/namespaces/${prefix}`, data)
     return response.data
+  }
+
+  async getIdConfig(prefix: string): Promise<Record<string, unknown>> {
+    const ns = await this.getNamespace(prefix)
+    return ns.id_config
   }
 
   async archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace> {
@@ -988,6 +1010,41 @@ class RegistryClient extends BaseApiClient {
   async initializeWipNamespace(): Promise<Namespace> {
     const response = await this.client.post<Namespace>('/namespaces/initialize-wip')
     return response.data
+  }
+
+  // ===========================================================================
+  // ENTRY BROWSE & LOOKUP ENDPOINTS
+  // ===========================================================================
+
+  async listEntries(params?: RegistryBrowseParams): Promise<RegistryEntryListResponse> {
+    const response = await this.client.get<RegistryEntryListResponse>('/entries', { params })
+    return response.data
+  }
+
+  async lookupEntry(entryId: string): Promise<RegistryLookupResponse> {
+    const response = await this.client.post<{ results: RegistryLookupResponse[] }>(
+      '/entries/lookup/by-id',
+      [{ entry_id: entryId }]
+    )
+    const result = response.data.results[0]
+    return result
+  }
+
+  async searchEntries(term: string, options?: {
+    namespaces?: string[]
+    entityTypes?: string[]
+    includeInactive?: boolean
+  }): Promise<RegistryLookupResponse[]> {
+    const response = await this.client.post<{ results: Array<{ results: Array<Record<string, unknown>> }> }>(
+      '/entries/search/by-term',
+      [{
+        term,
+        restrict_to_namespaces: options?.namespaces,
+        restrict_to_entity_types: options?.entityTypes,
+        include_inactive: options?.includeInactive ?? false,
+      }]
+    )
+    return response.data.results[0]?.results as unknown as RegistryLookupResponse[] ?? []
   }
 }
 

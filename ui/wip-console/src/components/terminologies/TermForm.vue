@@ -5,6 +5,7 @@ import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import Chips from 'primevue/chips'
+import Dropdown from 'primevue/dropdown'
 import Button from 'primevue/button'
 import { useTermStore, useUiStore } from '@/stores'
 import type { Term, CreateTermRequest, UpdateTermRequest } from '@/types'
@@ -32,7 +33,16 @@ const form = ref({
   aliases: [] as string[],
   label: '',
   description: '',
-  sort_order: 0
+  sort_order: 0,
+  parent_term_id: null as string | null
+})
+
+// Parent term options: all terms in the terminology except the current term (when editing)
+const parentTermOptions = computed(() => {
+  const options = termStore.terms
+    .filter(t => t.status === 'active' && (!props.term || t.term_id !== props.term.term_id))
+    .map(t => ({ label: t.label || t.value, value: t.term_id }))
+  return options
 })
 
 const loading = ref(false)
@@ -48,7 +58,8 @@ watch(
           aliases: props.term.aliases || [],
           label: props.term.label || '',
           description: props.term.description || '',
-          sort_order: props.term.sort_order
+          sort_order: props.term.sort_order,
+          parent_term_id: props.term.parent_term_id || null
         }
       } else {
         resetForm()
@@ -66,7 +77,8 @@ function resetForm() {
     aliases: [],
     label: '',
     description: '',
-    sort_order: maxOrder + 1
+    sort_order: maxOrder + 1,
+    parent_term_id: null
   }
 }
 
@@ -91,7 +103,8 @@ async function submit() {
         aliases: form.value.aliases,
         label: form.value.label || undefined,
         description: form.value.description || undefined,
-        sort_order: form.value.sort_order
+        sort_order: form.value.sort_order,
+        parent_term_id: form.value.parent_term_id || undefined
       }
       await termStore.updateTerm(props.term.term_id, updateData)
       uiStore.showSuccess('Term Updated', `"${form.value.label || form.value.value}" has been updated`)
@@ -102,7 +115,8 @@ async function submit() {
         aliases: form.value.aliases.length > 0 ? form.value.aliases : undefined,
         label: form.value.label || undefined,
         description: form.value.description || undefined,
-        sort_order: form.value.sort_order
+        sort_order: form.value.sort_order,
+        parent_term_id: form.value.parent_term_id || undefined
       }
       await termStore.createTerm(props.terminologyId, createData)
       uiStore.showSuccess('Term Created', `"${form.value.label || form.value.value}" has been created`)
@@ -190,6 +204,23 @@ function onValueBlur() {
             :addOnBlur="true"
           />
           <small class="help-text">Alternative values that resolve to this term (e.g., Mr., MR, mr)</small>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-field">
+          <label for="parent_term">Parent Term</label>
+          <Dropdown
+            id="parent_term"
+            v-model="form.parent_term_id"
+            :options="parentTermOptions"
+            optionLabel="label"
+            optionValue="value"
+            placeholder="None (root term)"
+            :showClear="true"
+            class="w-full"
+          />
+          <small class="help-text">Optional parent for hierarchical term structures</small>
         </div>
       </div>
 

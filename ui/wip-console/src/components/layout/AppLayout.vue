@@ -95,6 +95,7 @@ const menuSections: MenuSection[] = [
   {
     items: [
       { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' },
+      { label: 'Registry', icon: 'pi pi-id-card', route: '/registry' },
       {
         label: 'Audit Trail',
         icon: 'pi pi-history',

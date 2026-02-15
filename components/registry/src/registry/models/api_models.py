@@ -77,6 +77,34 @@ class NamespaceStatsResponse(BaseModel):
 
 
 # =============================================================================
+# Browse API Models
+# =============================================================================
+
+class BrowseEntryItem(BaseModel):
+    """A single entry in the browse response."""
+
+    entry_id: str
+    namespace: str
+    entity_type: str
+    primary_composite_key: dict[str, Any]
+    synonyms_count: int
+    additional_ids_count: int
+    status: str
+    created_at: datetime
+    created_by: Optional[str] = None
+    updated_at: datetime
+
+
+class BrowseEntriesResponse(BaseModel):
+    """Response model for browsing registry entries."""
+
+    items: list[BrowseEntryItem]
+    total: int
+    page: int
+    page_size: int
+
+
+# =============================================================================
 # Registration API Models
 # =============================================================================
 

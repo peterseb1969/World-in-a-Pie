@@ -120,6 +120,11 @@ const router = createRouter({
       path: '/namespaces',
       name: 'namespaces',
       component: () => import('@/views/NamespacesView.vue')
+    },
+    {
+      path: '/registry',
+      name: 'registry',
+      component: () => import('@/views/RegistryView.vue')
     }
   ]
 })
