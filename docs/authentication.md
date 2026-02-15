@@ -986,6 +986,6 @@ Expired keys will receive a 401 response with the message "API key has expired".
 
 ### Further Reading
 
-- [Production Deployment Guide](security/production-deployment.md) - Complete deployment walkthrough
+- [Production Deployment Guide](production-deployment.md) - Complete deployment walkthrough
 - [Encryption at Rest](security/encryption-at-rest.md) - Data encryption options
 - [Key Rotation](security/key-rotation.md) - Secret rotation procedures

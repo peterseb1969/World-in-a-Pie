@@ -72,9 +72,7 @@ WIP is designed for a diverse audience:
 | Audience | Use Case |
 |----------|----------|
 | **Hobbyists** | Personal data management, home automation logs |
-| **Small businesses** | Custom forms, inventory tracking, simple workflows |
 | **Developers** | Rapid prototyping with validated data storage |
-| **Enterprises** | Standardized data layer with SQL reporting |
 | **AI/Automation** | Backend for AI-generated solutions |
 
 The common requirement: **willingness to learn**. WIP rewards understanding of its primitives with flexibility and power.
@@ -87,31 +85,26 @@ The common requirement: **willingness to learn**. WIP rewards understanding of i
 
 Applications connect to WIP via its REST APIs:
 
-**Single Page Applications (SPAs):**
 ```
 Browser → Custom SPA → WIP APIs
-                   ↘ Same OIDC provider (Dex/Authentik)
+                   ↘ Same OIDC provider (any OIDC-compliant provider)
 ```
 
-**Server-Side Applications:**
-```
-Browser → App Server → WIP APIs (with API key)
-              ↓
-        Business Logic Layer
-```
+Applications with server-side business logic can also proxy WIP API calls using API key authentication.
 
 ### Authentication
 
-- **User authentication**: OIDC via Dex (development) or Authentik (enterprise)
+- **User authentication**: OIDC via any compliant provider (Dex ships as the default)
 - **Service authentication**: API keys for system-to-system calls
 - **Custom apps**: Share the same OIDC provider for SSO experience
 
 ### Event-Driven Integration
 
-NATS powers internal event-driven sync (MongoDB → PostgreSQL). Future enhancements:
+NATS JetStream powers event-driven sync from MongoDB to PostgreSQL. All document and entity changes publish events that consumers can subscribe to:
 
 | Direction | Status | Use Case |
 |-----------|--------|----------|
+| WIP internal | Implemented | MongoDB → PostgreSQL reporting sync via NATS JetStream |
 | WIP → External | Available via NATS subscription | React to document changes |
 | External → WIP | Planned (streaming ingest) | High-volume data ingestion |
 
@@ -142,18 +135,20 @@ At the heart of WIP lies the **Registry**—a service that may seem simple but e
 
 Every entity in WIP receives its ID from the Registry:
 
-| Namespace | ID Format | Used By |
-|-----------|-----------|---------|
-| `wip-terminologies` | `TERM-000001` | Terminologies |
-| `wip-terms` | `T-000001` | Terms |
-| `wip-templates` | `TPL-000001` | Templates |
-| `wip-documents` | UUID7 (time-ordered) | Documents |
-| `wip-files` | `FILE-000001` | Files |
+| Entity Type | Default ID Format | Configurable |
+|-------------|-------------------|--------------|
+| Terminologies | UUID7 | Per namespace (e.g., `TERM-000001`) |
+| Terms | UUID7 | Per namespace (e.g., `T-000001`) |
+| Templates | UUID7 | Per namespace (e.g., `TPL-000001`) |
+| Documents | UUID7 | Per namespace |
+| Files | UUID7 | Per namespace (e.g., `FILE-000001`) |
+
+All IDs default to UUID7 (time-ordered, globally unique). Custom namespaces can configure sequential prefixed formats (e.g., the default `wip` namespace uses `TERM-`, `T-`, `TPL-`, `FILE-` prefixes).
 
 This centralization provides:
 - **Guaranteed uniqueness** across all services
-- **Predictable formats** (prefixed IDs are human-readable)
-- **Time-ordering** for documents (UUID7 enables chronological sorting)
+- **Predictable formats** supported as a configuration option per namespace (prefixed IDs are human-readable)
+- **Time-ordering** (UUID7 enables chronological sorting by default)
 - **Single source of truth** for identity
 
 ### The Synonym Philosophy
@@ -174,39 +169,9 @@ Registry ID: TPL-000001 (preferred/canonical)
 
 2. **External References**: Partner systems can reference entities using their own naming conventions. The Registry maps these to canonical WIP IDs.
 
-3. **Code Changes Without Migration**: If a term code changes from `M` to `MALE`, add the old code as a synonym. Existing documents remain valid.
+3. **Vendor Onboarding**: A new supplier uses their own product catalog IDs (`VENDOR-A:SKU-9821`). Their products already exist in your Registry under canonical IDs. By adding synonyms, the vendor's IDs resolve to existing entries without requiring the vendor to adopt your naming scheme.
 
 4. **Cross-System Identity**: The same real-world entity (a customer, a product) can be referenced by different IDs in different systems—all mapped to one canonical ID.
-
-**Example: Term Aliases as Synonyms**
-
-The Def-Store uses this pattern for term aliases:
-
-```json
-{
-  "term_id": "T-000001",
-  "code": "M",
-  "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
-}
-```
-
-All these inputs resolve to `T-000001`:
-- "Male" → matched via `value`
-- "M" → matched via `code`
-- "Mr." → matched via `alias`
-
-The validation response tells you **how** it matched:
-
-```json
-{
-  "input_value": "Mr.",
-  "valid": true,
-  "term_id": "T-000001",
-  "matched_via": "alias",
-  "normalized_value": "Male"
-}
-```
 
 ### Federation Potential
 
@@ -252,7 +217,8 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
 ```python
 # Terminology composite key
 {
-    "pool_id": "wip-terminologies",
+    "namespace": "wip",
+    "entity_type": "terminologies",
     "composite_key": {
         "code": "GENDER",
         "name": "Gender"
@@ -262,7 +228,8 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
 
 # Term composite key
 {
-    "pool_id": "wip-terms",
+    "namespace": "wip",
+    "entity_type": "terms",
     "composite_key": {
         "terminology_id": "TERM-000001",
         "code": "M",
@@ -272,7 +239,58 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
 # → Generates: T-000001
 ```
 
-The composite key is hashed (SHA-256) and stored. If the same composite key is registered again, the **existing ID is returned** (idempotent). This prevents duplicates and enables upsert behavior.
+Composite keys serve three purposes:
+
+1. **Identity**: The composite key establishes what makes an entity unique. Two registrations with the same composite key refer to the same entity.
+
+2. **Upsert behavior**: If the same composite key is registered again, the **existing ID is returned** (idempotent). This drives the create-or-update decision — the caller knows whether they created a new entity or matched an existing one.
+
+3. **Efficient search**: The composite key is hashed (SHA-256) into a single value. This enables fast lookups even when composite keys have different structures (e.g., a terminology keyed on `{code, name}` vs. a term keyed on `{terminology_id, code, value}`). The hash provides a uniform index regardless of key shape.
+
+---
+
+## Term Aliases vs Registry Synonyms
+
+WIP has two distinct mechanisms for mapping alternative names to canonical entities. They operate at different levels and serve different purposes:
+
+| Feature | Term Aliases (Def-Store) | Registry Synonyms |
+|---------|--------------------------|-------------------|
+| **Scope** | Within a terminology | Across all entity types |
+| **Purpose** | Accept variant user input for a term | Map external/legacy IDs to canonical IDs |
+| **Example** | "Mr.", "MR", "MALE" all resolve to term "Male" | `legacy_system:OLD-TPL-42` resolves to `TPL-000001` |
+| **Stored in** | Term record (`aliases` array) | Registry synonym table |
+| **Used during** | Document validation (matching user input) | Cross-system integration and migration |
+
+### Term Aliases
+
+Term aliases handle the problem of **user input variation**. A term for "Male" might be entered as "M", "Mr", "Mr.", or "MALE". Rather than rejecting these, the Def-Store resolves them:
+
+```json
+{
+  "term_id": "T-000001",
+  "code": "M",
+  "value": "Male",
+  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
+}
+```
+
+During validation, the response tells you **how** the input was matched:
+
+```json
+{
+  "input_value": "Mr.",
+  "valid": true,
+  "term_id": "T-000001",
+  "matched_via": "alias",
+  "normalized_value": "Male"
+}
+```
+
+### Registry Synonyms
+
+Registry synonyms solve a different problem: **cross-system identity**. When external systems use their own identifiers for entities that already exist in WIP, synonyms map those external IDs to canonical WIP IDs without requiring the external system to change.
+
+This is essential for legacy migrations, partner integrations, and multi-system environments where the same real-world entity has different identifiers in different systems.
 
 ---
 
@@ -341,7 +359,7 @@ Backend selection, auth providers, and sync behavior are configured via environm
 
 Every major component has an abstraction layer:
 - Storage: MongoDB now, SQLite later
-- Auth: Dex now, Authentik/other OIDC providers interchangeable
+- Auth: Dex ships as default, any OIDC-compliant provider works
 - Reporting: PostgreSQL now, other SQL databases possible
 
 ---

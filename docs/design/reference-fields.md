@@ -2,7 +2,7 @@
 
 ## Status
 
-**Draft** - Pending review
+**Partially Implemented** (Phase 1-2 core infrastructure complete)
 
 ## Overview
 
@@ -575,26 +575,35 @@ GET /terms/{id}/referenced-by
 
 ### Implementation Phases
 
-#### Phase 1: Core Infrastructure
+#### Phase 1: Core Infrastructure — COMPLETE
 
-1. Update Template Store field validation for `type: "reference"`
-2. Add `references` storage to Document model
-3. Implement document reference resolution in Document Store
-4. Update document validation pipeline
+1. ~~Update Template Store field validation for `type: "reference"`~~
+2. ~~Add `references` storage to Document model~~
+3. ~~Implement document reference resolution in Document Store~~
+4. ~~Update document validation pipeline~~
 
-#### Phase 2: Term Reference Migration
+Also implemented:
+- Template-reference-pinning: all reference fields store canonical IDs (resolved from codes at creation). See [template-reference-pinning.md](template-reference-pinning.md).
+- `reference_type` enum: `document`, `term`, `terminology`, `template`
+- `target_templates` and `target_terminologies` validation
+- `version_strategy`: `latest` and `pinned`
+- `include_subtypes` for inheritance-aware document references
 
-1. Support both `type: "term"` and `type: "reference"` with `reference_type: "term"`
-2. Store term references in new `references` format
-3. Maintain `term_references` in API for backward compatibility
+#### Phase 2: Term Reference Migration — PARTIALLY COMPLETE
 
-#### Phase 3: Referential Integrity
+1. ~~Support both `type: "term"` and `type: "reference"` with `reference_type: "term"`~~
+2. Both `term_references` and `references` stored on documents
+3. ~~Maintain `term_references` in API for backward compatibility~~
+
+**Note:** The existing `type: "term"` with `terminology_ref` continues to work alongside the new `type: "reference"` system. Both are fully functional. A full migration of existing `term_references` to the unified `references` format has not been done.
+
+#### Phase 3: Referential Integrity — NOT STARTED
 
 1. Add `referenced-by` endpoints
 2. Enhance health check with new issue types
 3. Add deactivation warnings with audit logging
 
-#### Phase 4: Advanced Features
+#### Phase 4: Advanced Features — NOT STARTED
 
 1. Reference expansion (`?expand_references=true`)
 2. Terminology and template reference types

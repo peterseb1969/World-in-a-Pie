@@ -537,15 +537,15 @@ The Registry is a **standalone service** that provides ID generation and namespa
 
 ## Deployment Architecture
 
-### Deployment Profiles
+### Deployment Presets
 
-| Profile | Target | Services | Auth | RAM |
-|---------|--------|----------|------|-----|
-| **mac** | Mac development | All + Mongo Express | Dex OIDC | ~1.2GB |
-| **dev-minimal** | Quick testing | Core only | API keys | ~800MB |
-| **pi-minimal** | Pi 4 (1-2GB) | Core only | API keys | ~800MB |
-| **pi-standard** | Pi 4 (2-4GB) | All services | Dex OIDC | ~1GB |
-| **pi-large** | Pi 5 (8GB+) | All + Mongo Express | Dex OIDC | ~1.2GB |
+Presets are selected via `./scripts/setup.sh --preset <name>`. Add `--localhost` for local development.
+
+| Preset | Modules | Auth | Target | RAM |
+|--------|---------|------|--------|-----|
+| **core** | Registry, Def-Store, Template-Store, Document-Store, Console | API keys only | Minimal setups, Pi 4 | ~800MB |
+| **standard** | Core + OIDC (Dex/Caddy), Reporting (PostgreSQL), Files (MinIO) | Dual (API key + JWT) | Pi 5, development | ~1.2GB |
+| **full** | Standard + Mongo Express, dev tools | Dual (API key + JWT) | Pi 5 8GB, cloud | ~1.5GB |
 
 ### Docker/Podman Compose Architecture
 
@@ -599,16 +599,14 @@ The Registry is a **standalone service** that provides ID generation and namespa
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Kubernetes Deployment
+### Kubernetes Deployment (Future)
 
-WIP also supports Kubernetes deployment via manifests in the `k8s/` directory. Key differences from compose:
-- Images must be self-contained (wip-auth baked in via `k8s/build-images.sh`)
-- NGINX Ingress replaces Caddy for routing and TLS
-- StatefulSets for infrastructure (MongoDB, PostgreSQL, NATS, MinIO)
-- Deployments for application services
-- `kubectl apply -k k8s/` for one-command deployment
+Kubernetes support is planned but not yet complete. Early work exists in the `k8s/` directory:
+- Image build scripts (`k8s/build-images.sh`) — bakes wip-auth into self-contained images
+- Initial manifests for StatefulSets (infrastructure) and Deployments (services)
+- NGINX Ingress for routing and TLS (replacing Caddy)
 
-See `k8s/README.md` for full instructions.
+This is **not production-ready**. Podman Compose is the supported deployment method.
 
 ### Network Modes
 
@@ -663,11 +661,12 @@ See `k8s/README.md` for full instructions.
 
 ---
 
-## Next Steps
+## Related Documentation
 
-See related documentation:
-- [Components](components.md) — detailed component specifications
-- [Technology Stack](technology-stack.md) — technology choices and rationale
-- [Deployment](deployment.md) — deployment configurations
 - [Data Models](data-models.md) — conceptual data structures
 - [Authentication](authentication.md) — auth configuration and security
+- [Network Configuration](network-configuration.md) — hostnames, TLS, OIDC setup
+- [Production Deployment](production-deployment.md) — secure production setup
+- [Namespace Implementation](namespace-implementation.md) — namespace scoping and data isolation
+- [Components](components.md) — detailed component specifications
+- [Technology Stack](technology-stack.md) — technology choices and rationale

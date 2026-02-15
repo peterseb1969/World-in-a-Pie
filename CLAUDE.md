@@ -64,7 +64,7 @@ See `docs/` for detailed specifications:
 - `docs/reporting-layer.md` - Reporting sync details
 - `docs/authentication.md` - Auth configuration
 - `docs/network-configuration.md` - **Network & OIDC setup (4 deployment scenarios)**
-- `docs/security/production-deployment.md` - Production security guide
+- `docs/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
 - `docs/design/event-replay.md` - Event replay for consumer onboarding
 

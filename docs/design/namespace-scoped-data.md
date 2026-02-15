@@ -2,7 +2,7 @@
 
 Design document for adding namespace support to all WIP services, enabling namespace-scoped backup/restore, data migration between instances, and dev/test workflows.
 
-## Status: Draft
+## Status: Partially Implemented (Phase 1-2 complete)
 
 ## Goals
 
@@ -12,18 +12,34 @@ Design document for adding namespace support to all WIP services, enabling names
 4. **Dev/test workflows**: Create `-dev` or `-test` suffixed namespaces for experimentation
 5. **Namespace archival**: Soft-delete entire namespaces while preserving data
 
-## Current State
+## Current State (as of Feb 2025)
 
-### Registry (Full Namespace Support)
+### What's Implemented
+
+**Registry** — Full namespace support:
 - Namespaces are first-class entities with configurable ID generation
-- Each entry stores `primary_namespace` and `entry_id`
-- Pre-configured: `wip-terminologies`, `wip-terms`, `wip-templates`, `wip-documents`, `wip-files`
+- Each entry stores `primary_pool_id` and `entry_id`
+- Custom namespaces auto-created on first use (e.g., `seed-terminologies`)
+- ID prefixes scoped by namespace (e.g., `TERM-` for wip, `SEED-TERM-` for seed)
 
-### Services (No Namespace Awareness)
-- Models don't store namespace information
-- Hardcoded namespace names in registry client calls
-- No namespace parameter in APIs
-- Cross-namespace queries require Registry join
+**All Services** — Namespace stored on every entity:
+- All MongoDB models have a `namespace` field (short prefix, e.g., `"wip"`, `"seed"`)
+- Registry client calls derive `pool_id` from namespace (e.g., `namespace="seed"` → `pool_id="seed-terminologies"`)
+- All list/filter APIs accept `namespace` as a query parameter
+- Create endpoints accept `namespace` in the request body (defaults to `"wip"`)
+- By-value lookups default to `namespace=None` (search all namespaces)
+- Seed script uses `--namespace seed` to isolate test data from production data
+
+**Implementation note:** This design document originally proposed using the full pool name (e.g., `"wip-terminologies"`) as the namespace field value. The actual implementation uses a short prefix (e.g., `"wip"`) and derives the pool name in the registry client. See [Namespace Implementation](../namespace-implementation.md) for current details.
+
+### What's NOT Implemented
+
+- Namespace Group management API (Phase 3)
+- Export/Import for namespaces (Phase 4)
+- Archive/Delete namespaces (Phase 5)
+- CLI commands
+- Per-namespace permissions
+- Cross-namespace reference validation
 
 ## Proposed Architecture
 
@@ -481,32 +497,25 @@ curl -X DELETE .../namespace-groups/dev?confirm=true
 
 ## Migration Path
 
-### Phase 1: Add Namespace Fields (Non-Breaking)
+### Phase 1: Add Namespace Fields (Non-Breaking) — COMPLETE
 
-1. Add `namespace` field with default value to all models
-2. Add indexes for namespace + existing unique constraints
-3. Deploy updated services
-4. **No API changes yet** - all requests use default namespace
+1. ~~Add `namespace` field with default value to all models~~
+2. ~~Add indexes for namespace + existing unique constraints~~
+3. ~~Deploy updated services~~
+4. ~~**No API changes yet** - all requests use default namespace~~
 
-```python
-# Migration script
-async def add_namespace_field():
-    # Terminologies
-    await Terminology.get_motor_collection().update_many(
-        {"pool_id": {"$exists": False}},
-        {"$set": {"pool_id": "wip-terminologies"}}
-    )
-    # Repeat for terms, templates, documents, files
-```
+**Implementation note:** The field is named `namespace` (not `pool_id` as originally proposed) and stores the short prefix (e.g., `"wip"`) rather than the full pool name. The Registry client derives pool names by appending the entity type suffix (e.g., `"seed"` → `"seed-terminologies"`).
 
-### Phase 2: API Namespace Parameter (Backward Compatible)
+### Phase 2: API Namespace Parameter (Backward Compatible) — COMPLETE
 
-1. Add optional `namespace` query parameter to all endpoints
-2. Default to `wip-*` namespaces if not specified
-3. Update registry client to accept namespace parameter
-4. Deploy and test
+1. ~~Add optional `namespace` query parameter to all endpoints~~
+2. ~~Default to `wip` namespace if not specified~~
+3. ~~Update registry client to accept namespace parameter~~
+4. ~~Deploy and test~~
 
-### Phase 3: Namespace Group Management
+**Implementation note:** Create endpoints accept `namespace` in the JSON request body (default: `"wip"`). List/filter endpoints accept it as a query parameter. By-value lookups default to `namespace=None` (search all namespaces) to avoid silent 404s when callers don't know which namespace holds the entity.
+
+### Phase 3: Namespace Group Management — NOT STARTED
 
 1. Add `NamespaceGroup` model to Registry
 2. Implement namespace group CRUD endpoints

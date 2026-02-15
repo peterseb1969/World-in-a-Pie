@@ -41,29 +41,30 @@ WIP is built on three principles:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                         WEB UIs                             │
-│  Ontology Editor │ Template Editor │ Admin │ Query Builder  │
+│                     WIP Console (Vue 3 + PrimeVue)          │
+│  Terminologies │ Templates │ Documents │ Files │ Reporting  │
 └────────────────────────────┬────────────────────────────────┘
-                             │
+                             │ HTTPS via Caddy (:8443)
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      FastAPI Backend                        │
-│              (REST API + Pydantic Validation)               │
-└────────────────────────────┬────────────────────────────────┘
+│                   FastAPI Microservices                      │
+│              (REST API + Pydantic Validation)                │
+├──────────┬──────────┬──────────┬──────────┬────────────────┤
+│ Registry │Def-Store │ Template │ Document │ Reporting-Sync │
+│  :8001   │  :8002   │  Store   │  Store   │     :8005      │
+│          │          │  :8003   │  :8004   │                │
+│ ID gen   │ Terms    │ Schemas  │ Storage  │ MongoDB→PgSQL  │
+│ Synonyms │ Aliases  │ Rules    │ Files    │ via NATS       │
+└────┬─────┴────┬─────┴────┬─────┴────┬─────┴───────┬────────┘
+     │          │          │          │             │
+     └──────────┴──────────┴──────────┴─────────────┘
                              │
-        ┌────────────────────┼────────────────────┐
-        ▼                    ▼                    ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  Def-Store   │    │  Template    │    │  Document    │
-│ (Ontologies) │───►│    Store     │───►│    Store     │
-└──────────────┘    └──────────────┘    └──────────────┘
-                                               │
-                             ┌─────────────────┴─────────────┐
-                             ▼                               ▼
-                    ┌──────────────┐                ┌──────────────┐
-                    │   Registry   │                │  Reporting   │
-                    │  (Identity)  │                │    Layer     │
-                    └──────────────┘                └──────────────┘
+        ┌────────────┬───────┼───────┬──────────────┐
+        ▼            ▼       ▼       ▼              ▼
+   ┌─────────┐ ┌─────────┐ ┌────┐ ┌─────┐    ┌─────────┐
+   │ MongoDB │ │PostgreSQL│ │NATS│ │MinIO│    │   Dex   │
+   │ :27017  │ │  :5432   │ │    │ │     │    │  (OIDC) │
+   └─────────┘ └─────────┘ └────┘ └─────┘    └─────────┘
 ```
 
 ---
@@ -72,12 +73,15 @@ WIP is built on three principles:
 
 | Document | Description |
 |----------|-------------|
+| [Vision](docs/Vision.md) | Philosophy, design principles, and use cases |
 | [Architecture](docs/architecture.md) | Detailed system architecture |
-| [Authentication](docs/authentication.md) | API keys, JWT/OIDC, Dex configuration |
-| [Production Deployment](docs/security/production-deployment.md) | Secure production setup guide |
-| [FAQ](docs/faq.md) | Common issues and solutions |
 | [Data Models](docs/data-models.md) | Conceptual data structures |
+| [Authentication](docs/authentication.md) | API keys, JWT/OIDC, Dex configuration |
+| [Network Configuration](docs/network-configuration.md) | Hostnames, TLS, and OIDC setup |
 | [Reporting Layer](docs/reporting-layer.md) | PostgreSQL sync for analytics |
+| [Production Deployment](docs/production-deployment.md) | Secure production setup guide |
+| [Namespace Implementation](docs/namespace-implementation.md) | Namespace scoping and data isolation |
+| [FAQ](docs/faq.md) | Common issues and solutions |
 
 ---
 
@@ -116,7 +120,7 @@ For internet-exposed deployments with Let's Encrypt TLS:
   --email admin@example.com -y
 ```
 
-See [Production Deployment Guide](docs/security/production-deployment.md) for complete instructions.
+See [Production Deployment Guide](docs/production-deployment.md) for complete instructions.
 
 ---
 
@@ -126,19 +130,20 @@ See [Production Deployment Guide](docs/security/production-deployment.md) for co
 |-------|------------|
 | Frontend | Vue 3 + PrimeVue |
 | Backend | Python 3.11+ / FastAPI |
-| Auth | Authentik (or Authelia) |
-| Document Store | MongoDB (pluggable) |
-| Reporting Store | PostgreSQL (pluggable) |
-| Message Queue | NATS |
-| Deployment | Docker / MicroK8s |
+| Auth | Dex OIDC (pluggable — any OIDC provider) |
+| Document Store | MongoDB |
+| Reporting Store | PostgreSQL |
+| Object Storage | MinIO (S3-compatible) |
+| Message Queue | NATS JetStream |
+| Deployment | Podman Compose (primary) / Kubernetes |
 
 ---
 
 ## Project Status
 
-**Core functionality complete** — All services operational with OIDC authentication, bulk operations, and PostgreSQL reporting sync.
+**Core functionality complete** — All services operational with OIDC authentication, bulk operations, PostgreSQL reporting sync, binary file storage (MinIO), semantic types, and template draft mode.
 
-Current focus: Binary file storage, semantic types, and BI dashboard integration.
+Current focus: Namespace scoping improvements and data isolation.
 
 ---
 
