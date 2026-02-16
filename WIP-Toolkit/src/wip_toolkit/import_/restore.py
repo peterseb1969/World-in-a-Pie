@@ -488,6 +488,7 @@ def _create_documents(
                 "template_id": d["template_id"],
                 "template_version": d.get("template_version"),
                 "document_id": d["document_id"],
+                "version": d.get("version"),
                 "namespace": namespace,
                 "data": d["data"],
                 "created_by": "wip-toolkit-restore",

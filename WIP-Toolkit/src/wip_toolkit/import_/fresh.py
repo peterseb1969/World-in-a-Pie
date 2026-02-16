@@ -117,13 +117,7 @@ def _create_terminologies(
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Create terminologies, building the ID map.
-
-    Registry composite key dedup is cross-namespace: same {value, label} always
-    returns the same terminology_id. If the terminology already exists (from
-    another namespace), creation fails but the entity is shared — we map
-    old_id → existing_id (often identity).
-    """
+    """Create terminologies with new IDs, building the ID map."""
     for t in terminologies:
         old_id = t["terminology_id"]
         try:
@@ -142,19 +136,14 @@ def _create_terminologies(
             new_id = result["terminology_id"]
             remapper.add_terminology_mapping(old_id, new_id)
             stats.created.terminologies += 1
-        except WIPClientError:
-            # Terminology likely already exists (same composite key from another
-            # namespace). Look up by value in the source namespace, or fall back
-            # to identity mapping since Registry returns the same ID.
-            resolved = _resolve_existing_terminology(client, t, namespace)
-            if resolved:
-                remapper.add_terminology_mapping(old_id, resolved)
+        except WIPClientError as e:
+            if e.status_code == 409:
                 stats.skipped.terminologies += 1
             else:
-                # Last resort: identity mapping — Registry composite key dedup
-                # means same {value,label} → same ID across namespaces
-                remapper.add_terminology_mapping(old_id, old_id)
-                stats.skipped.terminologies += 1
+                stats.failed.terminologies += 1
+                stats.errors.append(f"Failed to create terminology {old_id}: {e}")
+                if not continue_on_error:
+                    raise
 
     console.print(
         f"  Created {stats.created.terminologies}, "
@@ -162,27 +151,6 @@ def _create_terminologies(
         f"failed {stats.failed.terminologies} "
         f"({len(remapper.terminology_map)} mapped)"
     )
-
-
-def _resolve_existing_terminology(
-    client: WIPClient, t: dict, target_namespace: str,
-) -> str | None:
-    """Try to find an existing terminology by value. Returns ID or None."""
-    value = t["value"]
-    # Try target namespace first, then source namespace, then unscoped
-    for ns in [target_namespace, t.get("_namespace", t.get("namespace"))]:
-        if not ns:
-            continue
-        try:
-            existing = client.get(
-                "def-store",
-                f"/terminologies/by-value/{value}",
-                params={"namespace": ns},
-            )
-            return existing["terminology_id"]
-        except WIPClientError:
-            continue
-    return None
 
 
 def _create_terms(
@@ -194,12 +162,7 @@ def _create_terms(
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Create terms, building the ID map.
-
-    Like terminologies, term IDs are derived from composite key
-    {terminology_id, value} which is cross-namespace. If a terminology was
-    shared (identity-mapped), its terms are also shared.
-    """
+    """Create terms with new IDs, building the ID map."""
     # Group terms by OLD terminology_id, then remap to new
     by_old_tid: dict[str, list[dict]] = {}
     for t in terms:
@@ -210,13 +173,6 @@ def _create_terms(
         new_tid = remapper.terminology_map.get(old_tid)
         if not new_tid:
             stats.warnings.append(f"No mapping for terminology {old_tid}, skipping {len(term_group)} terms")
-            stats.skipped.terms += len(term_group)
-            continue
-
-        # If terminology is identity-mapped (shared), terms are also shared
-        if new_tid == old_tid:
-            for t in term_group:
-                remapper.add_term_mapping(t["term_id"], t["term_id"])
             stats.skipped.terms += len(term_group)
             continue
 
