@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from ..models.terminology import Terminology, TerminologyMetadata
 from ..models.term import Term
@@ -88,7 +88,12 @@ class TerminologyService:
             metadata=request.metadata or TerminologyMetadata(),
             created_by=actor,
         )
-        await terminology.insert()
+        try:
+            await terminology.insert()
+        except DuplicateKeyError:
+            raise ValueError(
+                f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
+            )
 
         # Create audit log entry for terminology creation
         await TerminologyService._create_audit_log(
@@ -451,7 +456,12 @@ class TerminologyService:
             metadata=request.metadata,
             created_by=actor,
         )
-        await term.insert()
+        try:
+            await term.insert()
+        except DuplicateKeyError:
+            raise ValueError(
+                f"Term ID '{term_id}' already exists (collision across namespaces)"
+            )
 
         # Create audit log entry
         await TerminologyService._create_audit_log(

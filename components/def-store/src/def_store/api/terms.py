@@ -50,7 +50,9 @@ async def create_term(
     try:
         return await TerminologyService.create_term(terminology_id, request)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        msg = str(e)
+        status = 409 if "already exists" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
     except RegistryError as e:
         raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
 

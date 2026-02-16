@@ -139,7 +139,9 @@ async def import_terminology(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        msg = str(e)
+        status = 409 if "already exists" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
@@ -196,6 +198,8 @@ async def import_from_url(
         return JSONResponse(content=result)
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        msg = str(e)
+        status = 409 if "already exists" in msg else 400
+        raise HTTPException(status_code=status, detail=msg)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
