@@ -1,0 +1,103 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Components that need MongoDB
+  test-services:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        component: [registry, def-store, template-store, document-store]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Start MongoDB
+        run: |
+          docker start test-mongo 2>/dev/null || \
+            docker run -d --name test-mongo -p 27017:27017 mongo:7
+          for i in $(seq 1 10); do
+            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
+            sleep 1
+          done
+
+      - name: Install dependencies
+        working-directory: components/${{ matrix.component }}
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run tests
+        working-directory: components/${{ matrix.component }}
+        env:
+          MONGO_URI: mongodb://localhost:27017/
+          PYTHONPATH: src
+        run: pytest tests/ -v --tb=short
+
+  # Reporting-sync (no DB needed)
+  test-reporting-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: components/reporting-sync
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run tests
+        working-directory: components/reporting-sync
+        env:
+          PYTHONPATH: src
+        run: pytest tests/ -v --tb=short
+
+  # wip-auth library
+  test-wip-auth:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pip install -e "libs/wip-auth[dev]"
+
+      - name: Run tests
+        run: pytest libs/wip-auth/tests/ -v --tb=short
+
+  # WIP-Toolkit
+  test-wip-toolkit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          pip install -e WIP-Toolkit
+          pip install pytest
+
+      - name: Run tests
+        run: pytest WIP-Toolkit/tests/ -v --tb=short
