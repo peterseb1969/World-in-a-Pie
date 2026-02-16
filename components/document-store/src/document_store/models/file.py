@@ -146,8 +146,6 @@ class File(BeanieDocument):
             ),
             # Time-based queries within namespace
             IndexModel([("namespace", 1), ("uploaded_at", DESCENDING)], name="ns_file_uploaded_at_idx"),
-            # Global file_id lookup (for cross-namespace refs in open mode)
-            IndexModel([("file_id", 1)], unique=True, name="file_id_unique_idx"),
             # Tag search (global - typically tags are namespace-agnostic)
             IndexModel([("metadata.tags", 1)], name="file_tags_idx", sparse=True),
             # Category filter

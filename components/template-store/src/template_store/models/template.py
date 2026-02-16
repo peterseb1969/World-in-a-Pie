@@ -184,8 +184,6 @@ class Template(Document):
             IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
             # Extends lookup within namespace
             IndexModel([("namespace", 1), ("extends", 1)], name="ns_extends_idx"),
-            # Global (template_id, version) lookup (for cross-namespace refs in open mode)
-            IndexModel([("template_id", 1), ("version", 1)], unique=True, name="template_id_version_unique_idx"),
             # template_id lookup (non-unique, for finding all versions)
             IndexModel([("template_id", 1)], name="template_id_idx"),
             # Text search (global)

@@ -154,8 +154,6 @@ class Document(BeanieDocument):
                 [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
                 name="ns_template_status_time_idx"
             ),
-            # Global (document_id, version) lookup (for cross-namespace refs in open mode)
-            IndexModel([("document_id", 1), ("version", 1)], unique=True, name="document_id_version_unique_idx"),
             # document_id lookup (non-unique, for finding all versions)
             IndexModel([("document_id", 1)], name="document_id_idx"),
             # Term reference reverse lookups (find documents referencing a term)
