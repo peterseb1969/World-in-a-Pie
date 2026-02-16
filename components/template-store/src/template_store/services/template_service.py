@@ -62,10 +62,13 @@ class TemplateService:
         if request.status is not None and request.status not in ("active", "draft"):
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
 
-        # Check if value already exists within namespace
-        existing = await Template.find_one({"namespace": namespace, "value": request.value})
-        if existing:
-            raise ValueError(f"Template with value '{request.value}' already exists in namespace '{namespace}'")
+        # Check if value already exists within namespace — skip in restore mode
+        # (restoring version 2+ of a template will find version 1 already present)
+        is_restore = request.template_id and request.version is not None
+        if not is_restore:
+            existing = await Template.find_one({"namespace": namespace, "value": request.value})
+            if existing:
+                raise ValueError(f"Template with value '{request.value}' already exists in namespace '{namespace}'")
 
         # Validate extends if provided
         parent_namespace: str | None = None
@@ -106,19 +109,26 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register with Registry to get ID (empty composite key — always fresh,
-        # unless a pre-assigned template_id is provided for restore/migration)
-        client = get_registry_client()
-        template_id = await client.register_template(
-            created_by=actor,
-            namespace=namespace,
-            entry_id=request.template_id,
-        )
+        # Restore mode: both template_id and version provided — skip Registry,
+        # insert directly with the given ID and version
+        if request.template_id and request.version is not None:
+            template_id = request.template_id
+            version = request.version
+        else:
+            # Normal mode: Register with Registry to get ID
+            client = get_registry_client()
+            template_id = await client.register_template(
+                created_by=actor,
+                namespace=namespace,
+                entry_id=request.template_id,
+            )
+            version = 1
 
         # Create template document
         template = Template(
             namespace=namespace,
             template_id=template_id,
+            version=version,
             value=request.value,
             label=request.label,
             description=request.description,
