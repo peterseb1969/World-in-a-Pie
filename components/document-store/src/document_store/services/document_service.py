@@ -146,47 +146,58 @@ class DocumentService:
         has_identity_fields = bool(validation_result.identity_fields)
         identity_hash = validation_result.identity_hash
 
-        # Call Registry — composite key drives upsert detection
-        # If request.document_id is provided (restore/migration), Registry uses it as-is
-        start = time.perf_counter()
-        try:
-            registry = get_registry_client()
-            document_id, is_new = await registry.generate_document_id(
-                identity_hash=identity_hash,
-                template_id=request.template_id,
-                has_identity_fields=has_identity_fields,
-                created_by=get_identity_string(),
-                namespace=namespace,
-                entry_id=request.document_id,
-            )
-        except RegistryError as e:
-            return None, f"Failed to generate document ID: {str(e)}"
-        timing["2_registry"] = (time.perf_counter() - start) * 1000
-
-        if is_new:
-            # Brand new document
+        # Restore mode: both document_id and version provided — skip Registry,
+        # insert directly with the given ID and version
+        if request.document_id and request.version is not None:
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, document_id=document_id,
-                namespace=namespace, synonyms=request.synonyms
+                request, validation_result, document_id=request.document_id,
+                namespace=namespace, synonyms=request.synonyms,
+                version_override=request.version,
             )
-            timing["3_create_new"] = (time.perf_counter() - start) * 1000
+            timing["3_restore"] = (time.perf_counter() - start) * 1000
         else:
-            # Existing identity — find current active version and create new version
+            # Normal mode: Registry drives ID generation and upsert detection
+            # If request.document_id is provided without version, Registry uses it as entry_id
             start = time.perf_counter()
-            existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
-            if existing:
-                result = await self._create_new_version(
-                    request, existing, validation_result,
-                    document_id=document_id, namespace=namespace
+            try:
+                registry = get_registry_client()
+                document_id, is_new = await registry.generate_document_id(
+                    identity_hash=identity_hash,
+                    template_id=request.template_id,
+                    has_identity_fields=has_identity_fields,
+                    created_by=get_identity_string(),
+                    namespace=namespace,
+                    entry_id=request.document_id,
                 )
-            else:
-                # No active version found (all inactive?) — create as version 1
+            except RegistryError as e:
+                return None, f"Failed to generate document ID: {str(e)}"
+            timing["2_registry"] = (time.perf_counter() - start) * 1000
+
+            if is_new:
+                # Brand new document
+                start = time.perf_counter()
                 result = await self._create_new_document(
                     request, validation_result, document_id=document_id,
                     namespace=namespace, synonyms=request.synonyms
                 )
-            timing["3_create_version"] = (time.perf_counter() - start) * 1000
+                timing["3_create_new"] = (time.perf_counter() - start) * 1000
+            else:
+                # Existing identity — find current active version and create new version
+                start = time.perf_counter()
+                existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+                if existing:
+                    result = await self._create_new_version(
+                        request, existing, validation_result,
+                        document_id=document_id, namespace=namespace
+                    )
+                else:
+                    # No active version found (all inactive?) — create as version 1
+                    result = await self._create_new_document(
+                        request, validation_result, document_id=document_id,
+                        namespace=namespace, synonyms=request.synonyms
+                    )
+                timing["3_create_version"] = (time.perf_counter() - start) * 1000
 
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
@@ -199,7 +210,8 @@ class DocumentService:
         validation_result: Any,
         document_id: str,
         namespace: str = "wip",
-        synonyms: Optional[list[dict]] = None
+        synonyms: Optional[list[dict]] = None,
+        version_override: Optional[int] = None,
     ) -> tuple[DocumentCreateResponse, Optional[str]]:
         """Create a brand new document with the given stable document_id."""
         # Get authenticated identity (not client-provided)
@@ -228,6 +240,8 @@ class DocumentService:
             custom=request.metadata or {}
         )
 
+        version = version_override if version_override is not None else 1
+
         document = Document(
             namespace=namespace,
             document_id=document_id,
@@ -235,7 +249,7 @@ class DocumentService:
             template_version=validation_result.template_version,
             template_value=validation_result.template_value,
             identity_hash=validation_result.identity_hash,
-            version=1,
+            version=version,
             data=request.data,
             term_references=validation_result.term_references,
             references=validation_result.references,
@@ -268,7 +282,7 @@ class DocumentService:
             template_id=request.template_id,
             template_value=validation_result.template_value,
             identity_hash=validation_result.identity_hash,
-            version=1,
+            version=version,
             is_new=True,
             previous_version=None,
             warnings=validation_result.warnings
@@ -512,9 +526,11 @@ class DocumentService:
         # Count total
         total = await Document.find(query).count()
 
-        # Fetch page
+        # Fetch page — sort by created_at DESC for stable offset pagination
         skip = (page - 1) * page_size
-        documents = await Document.find(query).skip(skip).limit(page_size).to_list()
+        documents = await Document.find(query).sort(
+            [("created_at", -1)]
+        ).skip(skip).limit(page_size).to_list()
 
         # Convert to responses (async)
         items = [await self._to_response(d) for d in documents]

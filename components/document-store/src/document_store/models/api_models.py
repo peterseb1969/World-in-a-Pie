@@ -33,6 +33,10 @@ class DocumentCreateRequest(StrictModel):
         None,
         description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
     )
+    version: Optional[int] = Field(
+        None,
+        description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)"
+    )
     namespace: str = Field(
         default="wip",
         description="Namespace for the document"
