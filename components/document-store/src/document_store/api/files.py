@@ -78,6 +78,7 @@ Metadata can be provided as form fields:
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
     namespace: str = Form(default="wip", description="Namespace for the file"),
+    file_id: Optional[str] = Form(None, description="Pre-assigned file ID (for restore/migration)"),
     description: Optional[str] = Form(None, description="File description"),
     tags: Optional[str] = Form(None, description="Comma-separated tags"),
     category: Optional[str] = Form(None, description="Classification category"),
@@ -107,6 +108,7 @@ async def upload_file(
             content_type=file.content_type or "application/octet-stream",
             metadata=metadata,
             namespace=namespace,
+            file_id=file_id,
         )
     except FileServiceError as e:
         raise HTTPException(status_code=500, detail=str(e))

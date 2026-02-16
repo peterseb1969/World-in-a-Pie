@@ -57,6 +57,7 @@ class FileService:
         content_type: str,
         metadata: Optional[FileUploadMetadata] = None,
         namespace: str = "wip",
+        file_id: Optional[str] = None,
     ) -> FileResponse:
         """
         Upload a file to storage.
@@ -88,10 +89,12 @@ class FileService:
         # Compute checksum
         checksum = hashlib.sha256(content).hexdigest()
 
-        # Generate file ID from Registry
+        # Generate file ID from Registry (or use pre-assigned ID for restore/migration)
         try:
             registry = get_registry_client()
-            file_id = await self._generate_file_id(registry, checksum, actor, namespace=namespace)
+            file_id = await self._generate_file_id(
+                registry, checksum, actor, namespace=namespace, entry_id=file_id,
+            )
         except RegistryError as e:
             raise FileServiceError(f"Failed to generate file ID: {e}")
 
@@ -152,20 +155,26 @@ class FileService:
         registry,
         checksum: str,
         created_by: Optional[str],
-        namespace: str = "wip"
+        namespace: str = "wip",
+        entry_id: Optional[str] = None,
     ) -> str:
-        """Generate a file ID from the Registry (empty composite key — always fresh)."""
+        """Generate a file ID from the Registry (empty composite key — always fresh,
+        unless entry_id is provided for restore/migration)."""
+        item = {
+            "namespace": namespace,
+            "entity_type": "files",
+            "composite_key": {},
+            "created_by": created_by,
+            "metadata": {"type": "file", "checksum": checksum},
+        }
+        if entry_id:
+            item["entry_id"] = entry_id
+
         async with httpx.AsyncClient(timeout=registry.timeout) as client:
             response = await client.post(
                 f"{registry.base_url}/api/registry/entries/register",
                 headers=registry._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "files",
-                    "composite_key": {},
-                    "created_by": created_by,
-                    "metadata": {"type": "file", "checksum": checksum}
-                }]
+                json=[item]
             )
 
             if response.status_code != 200:

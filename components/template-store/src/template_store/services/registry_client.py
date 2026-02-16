@@ -47,35 +47,41 @@ class RegistryClient:
     async def register_template(
         self,
         created_by: Optional[str] = None,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        entry_id: Optional[str] = None,
     ) -> str:
         """
         Register a new template in the Registry.
 
         Uses empty composite key — templates don't support upsert via Registry.
-        Each call always generates a fresh template ID.
+        Each call always generates a fresh template ID unless entry_id is provided.
 
         Args:
             created_by: User or system creating this
             namespace: Namespace for the template (default: wip)
+            entry_id: Pre-assigned ID (for restore/migration)
 
         Returns:
-            Generated template ID
+            Generated or pre-assigned template ID
 
         Raises:
             RegistryError: If registration fails
         """
+        item = {
+            "namespace": namespace,
+            "entity_type": "templates",
+            "composite_key": {},
+            "created_by": created_by,
+            "metadata": {"type": "template"},
+        }
+        if entry_id:
+            item["entry_id"] = entry_id
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "templates",
-                    "composite_key": {},
-                    "created_by": created_by,
-                    "metadata": {"type": "template"}
-                }]
+                json=[item]
             )
 
             if response.status_code != 200:

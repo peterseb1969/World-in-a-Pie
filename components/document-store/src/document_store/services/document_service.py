@@ -147,6 +147,7 @@ class DocumentService:
         identity_hash = validation_result.identity_hash
 
         # Call Registry — composite key drives upsert detection
+        # If request.document_id is provided (restore/migration), Registry uses it as-is
         start = time.perf_counter()
         try:
             registry = get_registry_client()
@@ -155,7 +156,8 @@ class DocumentService:
                 template_id=request.template_id,
                 has_identity_fields=has_identity_fields,
                 created_by=get_identity_string(),
-                namespace=namespace
+                namespace=namespace,
+                entry_id=request.document_id,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {str(e)}"

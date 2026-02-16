@@ -29,6 +29,10 @@ class DocumentCreateRequest(StrictModel):
         None,
         description="Specific template version to validate against (default: latest)"
     )
+    document_id: Optional[str] = Field(
+        None,
+        description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
+    )
     namespace: str = Field(
         default="wip",
         description="Namespace for the document"

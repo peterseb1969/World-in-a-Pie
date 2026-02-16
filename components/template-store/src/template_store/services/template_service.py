@@ -106,11 +106,13 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register with Registry to get ID (empty composite key — always fresh)
+        # Register with Registry to get ID (empty composite key — always fresh,
+        # unless a pre-assigned template_id is provided for restore/migration)
         client = get_registry_client()
         template_id = await client.register_template(
             created_by=actor,
-            namespace=namespace
+            namespace=namespace,
+            entry_id=request.template_id,
         )
 
         # Create template document

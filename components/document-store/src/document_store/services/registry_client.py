@@ -57,7 +57,8 @@ class RegistryClient:
         template_id: str,
         has_identity_fields: bool = True,
         created_by: Optional[str] = None,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        entry_id: Optional[str] = None,
     ) -> tuple[str, bool]:
         """
         Generate or retrieve a document ID from the Registry.
@@ -66,7 +67,7 @@ class RegistryClient:
         for dedup — Registry returns existing ID if same identity exists.
 
         Without identity_fields: uses empty composite key — Registry always
-        generates a fresh ID.
+        generates a fresh ID (unless entry_id is provided).
 
         Args:
             identity_hash: Document identity hash
@@ -74,6 +75,7 @@ class RegistryClient:
             has_identity_fields: Whether the template has identity fields
             created_by: User or system creating this
             namespace: Namespace for the document (default: wip)
+            entry_id: Pre-assigned ID (for restore/migration)
 
         Returns:
             Tuple of (document_id, is_new) — is_new=False means existing identity
@@ -90,17 +92,21 @@ class RegistryClient:
         else:
             composite_key = {}
 
+        item = {
+            "namespace": namespace,
+            "entity_type": "documents",
+            "composite_key": composite_key,
+            "created_by": created_by,
+            "metadata": {"type": "document"},
+        }
+        if entry_id:
+            item["entry_id"] = entry_id
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "documents",
-                    "composite_key": composite_key,
-                    "created_by": created_by,
-                    "metadata": {"type": "document"}
-                }]
+                json=[item]
             )
 
             if response.status_code != 200:

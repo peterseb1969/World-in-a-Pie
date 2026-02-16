@@ -34,6 +34,10 @@ class CreateTemplateRequest(StrictModel):
         None,
         description="Detailed description"
     )
+    template_id: Optional[str] = Field(
+        None,
+        description="Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)"
+    )
     namespace: str = Field(
         default="wip",
         description="Namespace for the template"
