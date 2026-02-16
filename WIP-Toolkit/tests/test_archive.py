@@ -1,0 +1,216 @@
+"""Tests for archive read/write round-trip."""
+
+import json
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from wip_toolkit.archive import ArchiveReader, ArchiveWriter, ENTITY_FILES
+from wip_toolkit.models import EntityCounts, Manifest
+
+
+class TestArchiveRoundTrip:
+    """Test that entities survive a write/read round-trip."""
+
+    def test_empty_archive(self, tmp_path):
+        """Empty archive has valid manifest and zero entities."""
+        output = tmp_path / "empty.zip"
+        writer = ArchiveWriter(output)
+        manifest = Manifest(namespace="test")
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            m = reader.read_manifest()
+            assert m.namespace == "test"
+            assert m.counts.total == 0
+            for entity_type in ENTITY_FILES:
+                assert list(reader.read_entities(entity_type)) == []
+
+    def test_terminology_round_trip(self, tmp_path):
+        """Terminologies survive write/read."""
+        output = tmp_path / "terms.zip"
+        writer = ArchiveWriter(output)
+
+        terminology = {
+            "terminology_id": "TERM-000001",
+            "value": "COUNTRY",
+            "label": "Country",
+            "_source": "primary",
+        }
+        writer.add_entity("terminologies", terminology)
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(terminologies=1),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            entities = list(reader.read_entities("terminologies"))
+            assert len(entities) == 1
+            assert entities[0]["terminology_id"] == "TERM-000001"
+            assert entities[0]["value"] == "COUNTRY"
+            assert entities[0]["_source"] == "primary"
+
+    def test_multiple_entity_types(self, tmp_path):
+        output = tmp_path / "multi.zip"
+        writer = ArchiveWriter(output)
+
+        writer.add_entity("terminologies", {"terminology_id": "TERM-1", "value": "A"})
+        writer.add_entity("terms", {"term_id": "T-1", "value": "a"})
+        writer.add_entity("templates", {"template_id": "TPL-1", "value": "X"})
+        writer.add_entity("documents", {"document_id": "DOC-1", "data": {"x": 1}})
+        writer.add_entity("files", {"file_id": "FILE-1", "filename": "test.txt"})
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(
+                terminologies=1, terms=1, templates=1, documents=1, files=1,
+            ),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            m = reader.read_manifest()
+            assert m.counts.total == 5
+
+            assert reader.entity_count("terminologies") == 1
+            assert reader.entity_count("terms") == 1
+            assert reader.entity_count("templates") == 1
+            assert reader.entity_count("documents") == 1
+            assert reader.entity_count("files") == 1
+
+    def test_large_batch(self, tmp_path):
+        """Many entities survive round-trip."""
+        output = tmp_path / "large.zip"
+        writer = ArchiveWriter(output)
+
+        count = 500
+        for i in range(count):
+            writer.add_entity("terms", {
+                "term_id": f"T-{i:06d}",
+                "value": f"term_{i}",
+                "terminology_id": "TERM-000001",
+            })
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(terms=count),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            entities = list(reader.read_entities("terms"))
+            assert len(entities) == count
+            assert entities[0]["term_id"] == "T-000000"
+            assert entities[-1]["term_id"] == f"T-{count - 1:06d}"
+
+    def test_blob_round_trip(self, tmp_path):
+        """Binary blobs survive round-trip."""
+        output = tmp_path / "blobs.zip"
+        writer = ArchiveWriter(output)
+
+        blob_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        writer.add_blob("FILE-000001", blob_data)
+        writer.add_entity("files", {
+            "file_id": "FILE-000001",
+            "filename": "test.png",
+            "content_type": "image/png",
+        })
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(files=1),
+            include_files=True,
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            blobs = reader.list_blobs()
+            assert blobs == ["FILE-000001"]
+
+            data = reader.read_blob("FILE-000001")
+            assert data == blob_data
+
+            assert reader.read_blob("NONEXISTENT") is None
+
+    def test_manifest_fields_preserved(self, tmp_path):
+        """All manifest fields survive round-trip."""
+        output = tmp_path / "manifest.zip"
+        writer = ArchiveWriter(output)
+
+        manifest = Manifest(
+            source_host="pi-poe-8gb.local",
+            namespace="custom-ns",
+            include_inactive=True,
+            include_files=True,
+            counts=EntityCounts(terminologies=5, terms=100, templates=3),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            m = reader.read_manifest()
+            assert m.source_host == "pi-poe-8gb.local"
+            assert m.namespace == "custom-ns"
+            assert m.include_inactive is True
+            assert m.include_files is True
+            assert m.counts.terminologies == 5
+            assert m.counts.terms == 100
+            assert m.counts.templates == 3
+
+    def test_special_characters_in_data(self, tmp_path):
+        """JSON special characters survive round-trip."""
+        output = tmp_path / "special.zip"
+        writer = ArchiveWriter(output)
+
+        writer.add_entity("documents", {
+            "document_id": "DOC-1",
+            "data": {
+                "name": 'O\'Brien "the great"',
+                "notes": "line1\nline2\ttab",
+                "emoji": "\U0001f600",
+                "unicode": "\u00e9\u00e8\u00ea",
+            },
+        })
+
+        manifest = Manifest(namespace="wip", counts=EntityCounts(documents=1))
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            docs = list(reader.read_entities("documents"))
+            assert len(docs) == 1
+            assert docs[0]["data"]["name"] == 'O\'Brien "the great"'
+            assert docs[0]["data"]["emoji"] == "\U0001f600"
+
+    def test_nonexistent_archive_raises(self):
+        with pytest.raises(FileNotFoundError):
+            ArchiveReader("/tmp/nonexistent_archive_xyz.zip")
+
+    def test_entity_count(self, tmp_path):
+        output = tmp_path / "count.zip"
+        writer = ArchiveWriter(output)
+        for i in range(7):
+            writer.add_entity("terms", {"term_id": f"T-{i}"})
+
+        manifest = Manifest(namespace="wip", counts=EntityCounts(terms=7))
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            assert reader.entity_count("terms") == 7
+            assert reader.entity_count("documents") == 0
+
+    def test_archive_sizes(self, tmp_path):
+        output = tmp_path / "sizes.zip"
+        writer = ArchiveWriter(output)
+        for i in range(100):
+            writer.add_entity("terms", {"term_id": f"T-{i}", "value": f"term_{i}" * 10})
+
+        manifest = Manifest(namespace="wip", counts=EntityCounts(terms=100))
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            assert reader.total_size() > 0
+            assert reader.compressed_size() > 0
+            # Compressed should be smaller
+            assert reader.compressed_size() <= reader.total_size()
