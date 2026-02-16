@@ -129,8 +129,6 @@ class Terminology(Document):
             IndexModel([("namespace", 1), ("value", 1)], unique=True, name="ns_value_unique_idx"),
             # Filter by status within namespace
             IndexModel([("namespace", 1), ("status", 1)], name="ns_status_idx"),
-            # Global terminology_id lookup (for cross-namespace refs in open mode)
-            IndexModel([("terminology_id", 1)], unique=True, name="terminology_id_unique_idx"),
             # Text search (global)
             IndexModel([("label", "text"), ("description", "text")], name="text_search_idx"),
         ]

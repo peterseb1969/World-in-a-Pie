@@ -144,8 +144,6 @@ class Term(Document):
             IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
             # Status filter within terminology
             IndexModel([("namespace", 1), ("terminology_id", 1), ("status", 1)], name="ns_terminology_status_idx"),
-            # Global term_id lookup (for cross-namespace refs in open mode)
-            IndexModel([("term_id", 1)], unique=True, name="term_id_unique_idx"),
             # Parent term lookup
             IndexModel([("parent_term_id", 1)], name="parent_term_idx"),
             # Text search (global)
