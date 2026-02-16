@@ -180,8 +180,10 @@ def create_mock_registry_client():
 
     async def mock_generate_document_id(
         identity_hash, template_id, has_identity_fields=True,
-        created_by=None, namespace="wip"
+        created_by=None, namespace="wip", entry_id=None
     ):
+        if entry_id:
+            return entry_id, False
         if has_identity_fields:
             composite_key = f"{identity_hash}:{template_id}"
             if composite_key in _registry:
@@ -236,7 +238,7 @@ def create_mock_template_store_client():
             return SAMPLE_TEMPLATES[template_id]
         return None
 
-    async def mock_get_template_resolved(template_id):
+    async def mock_get_template_resolved(template_id, version=None):
         return await mock_get_template(template_id=template_id)
 
     async def mock_template_exists(template_ref):
@@ -305,27 +307,18 @@ def create_mock_def_store_client():
     return mock_client
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create an async HTTP client for testing the API."""
     _reset_counters()
 
-    # Connect to MongoDB and initialize Beanie
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
         document_models=[Document]
     )
 
-    # Clean up any leftover data from previous interrupted test runs
+    # Clean up data from previous test
     await Document.delete_all()
 
     # Store client in app state (needed by health check)
@@ -340,21 +333,18 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mock_def_store = create_mock_def_store_client()
 
     # Patch where the clients are actually used
-    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry):
-        with patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store):
-            with patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store):
-                with patch('document_store.main.get_registry_client', return_value=mock_registry):
-                    with patch('document_store.main.get_template_store_client', return_value=mock_template_store):
-                        with patch('document_store.main.get_def_store_client', return_value=mock_def_store):
-                            # Create test HTTP client
-                            transport = ASGITransport(app=app)
-                            async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                                yield ac
-
-    # Cleanup
-    await Document.delete_all()
-    await mongo_client.drop_database(os.environ["DATABASE_NAME"])
-    mongo_client.close()
+    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry), \
+         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store), \
+         patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store), \
+         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store), \
+         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store), \
+         patch('document_store.main.get_registry_client', return_value=mock_registry), \
+         patch('document_store.main.get_template_store_client', return_value=mock_template_store), \
+         patch('document_store.main.get_def_store_client', return_value=mock_def_store):
+        # Create test HTTP client
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
 
 
 @pytest.fixture

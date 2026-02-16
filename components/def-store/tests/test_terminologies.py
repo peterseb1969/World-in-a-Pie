@@ -52,7 +52,7 @@ async def test_create_terminology_duplicate_code(client: AsyncClient, auth_heade
         }
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert "already exists" in response.json()["detail"]
 
 
@@ -199,4 +199,4 @@ async def test_authentication_required(client: AsyncClient):
         "/api/def-store/terminologies",
         headers={"X-API-Key": "wrong_key"}
     )
-    assert response.status_code == 403
+    assert response.status_code == 401

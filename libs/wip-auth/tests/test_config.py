@@ -17,9 +17,10 @@ def reset_config():
 class TestAuthConfig:
     """Tests for AuthConfig."""
 
-    def test_default_mode(self):
+    def test_default_mode(self, monkeypatch):
         """Default mode should be api_key_only."""
-        config = AuthConfig()
+        monkeypatch.delenv("WIP_AUTH_MODE", raising=False)
+        config = AuthConfig(_env_file=None)
         assert config.mode == "api_key_only"
 
     def test_mode_from_env(self, monkeypatch):
@@ -36,9 +37,10 @@ class TestAuthConfig:
         assert config.jwt_issuer_url == "http://auth.example.com"
         assert config.jwt_audience == "my-app"
 
-    def test_jwks_url_from_issuer(self):
+    def test_jwks_url_from_issuer(self, monkeypatch):
         """JWKS URL should be derived from issuer."""
-        config = AuthConfig(jwt_issuer_url="http://auth.example.com")
+        monkeypatch.delenv("WIP_AUTH_JWT_JWKS_URI", raising=False)
+        config = AuthConfig(jwt_issuer_url="http://auth.example.com", _env_file=None)
         assert config.jwks_url == "http://auth.example.com/.well-known/jwks.json"
 
     def test_explicit_jwks_url(self):

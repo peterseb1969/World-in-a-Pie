@@ -127,7 +127,7 @@ async def test_import_terminology_json(client: AsyncClient, auth_headers: dict):
     assert response.status_code == 200
     data = response.json()
     assert data["terminology"]["value"] == "IMPORTED"
-    assert data["terms"]["created"] == 2
+    assert data["terms_result"]["succeeded"] == 2
 
     # Verify terminology was created
     verify_response = await client.get(
@@ -170,7 +170,7 @@ async def test_import_terminology_with_update(client: AsyncClient, auth_headers:
     assert response.status_code == 200
     data = response.json()
     # Should have created 1 new term (V2), skipped 1 (V1 - still skips with update_existing)
-    assert data["terms"]["created"] >= 1
+    assert data["terms_result"]["succeeded"] >= 1
 
 
 @pytest.mark.asyncio

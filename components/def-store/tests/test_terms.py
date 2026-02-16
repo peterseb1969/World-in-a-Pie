@@ -68,7 +68,7 @@ async def test_create_term_duplicate_code(client: AsyncClient, auth_headers: dic
         }
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert "already exists" in response.json()["detail"]
 
 
@@ -104,7 +104,7 @@ async def test_list_terms(client: AsyncClient, auth_headers: dict, test_terminol
 
 @pytest.mark.asyncio
 async def test_get_term_by_value(client: AsyncClient, auth_headers: dict, test_terminology):
-    """Test getting a term by value."""
+    """Test finding a term by searching for its value."""
     terminology_id = test_terminology["terminology_id"]
 
     # Create term
@@ -117,14 +117,16 @@ async def test_get_term_by_value(client: AsyncClient, auth_headers: dict, test_t
         }
     )
 
-    # Get by value
+    # Search by value using the list endpoint
     response = await client.get(
-        f"/api/def-store/terminologies/{terminology_id}/terms/by-value/archived",
+        f"/api/def-store/terminologies/{terminology_id}/terms?search=archived",
         headers=auth_headers
     )
 
     assert response.status_code == 200
-    assert response.json()["value"] == "archived"
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["value"] == "archived"
 
 
 @pytest.mark.asyncio

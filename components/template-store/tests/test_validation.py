@@ -49,6 +49,7 @@ async def test_validate_template_invalid_terminology(client: AsyncClient, auth_h
         json={
             "value": "INVALID_TERM_REF",
             "label": "Invalid Term Ref",
+            "status": "draft",
             "fields": [
                 {
                     "name": "invalid_field",
@@ -98,6 +99,7 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
         json={
             "value": "NESTED_REF",
             "label": "Nested Ref",
+            "status": "draft",
             "fields": [
                 {
                     "name": "nested",
@@ -208,15 +210,21 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
 
 
 @pytest.mark.asyncio
-async def test_validate_template_skip_terminology_check(client: AsyncClient, auth_headers: dict):
-    """Test validating template with terminology check disabled."""
-    # Create a template with invalid terminology ref
+async def test_validate_draft_template_reports_invalid_refs(client: AsyncClient, auth_headers: dict):
+    """Test that validating a draft template with invalid refs reports errors.
+
+    Draft templates skip validation at creation (to allow circular refs),
+    but the validate endpoint always does full activation-set validation
+    to preview what would fail on activation.
+    """
+    # Create a draft template with invalid terminology ref
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
         json={
-            "value": "SKIP_TERM_CHECK",
-            "label": "Skip Term Check",
+            "value": "DRAFT_INVALID_REF",
+            "label": "Draft Invalid Ref",
+            "status": "draft",
             "fields": [
                 {
                     "name": "field",
@@ -229,16 +237,16 @@ async def test_validate_template_skip_terminology_check(client: AsyncClient, aut
     )
     template_id = create_response.json()["template_id"]
 
-    # Validate template with terminology check disabled
+    # Validate — should report the invalid ref
     response = await client.post(
         f"/api/template-store/templates/{template_id}/validate",
         headers=auth_headers,
-        json={"check_terminologies": False, "check_templates": False}
+        json={}
     )
     assert response.status_code == 200
     data = response.json()
-    # Should be valid because we skipped the terminology check
-    assert data["valid"] == True
+    assert data["valid"] == False
+    assert len(data["errors"]) > 0
 
 
 @pytest.mark.asyncio
@@ -353,6 +361,7 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
         json={
             "value": "MULTI_ERROR",
             "label": "Multiple Errors",
+            "status": "draft",
             "fields": [
                 {
                     "name": "field1",

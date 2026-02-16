@@ -241,7 +241,7 @@ class TestLegacyCompatibility:
     """Tests for backward compatibility."""
 
     def test_require_api_key_alias(self):
-        """require_api_key should work as alias for require_identity."""
+        """require_api_key should work as a direct dependency (no factory call)."""
         keys = [APIKeyRecord(name="test", key_hash=hash_api_key("secret"))]
         provider = APIKeyProvider(keys)
 
@@ -250,7 +250,7 @@ class TestLegacyCompatibility:
         app.add_middleware(middleware_class)
 
         @app.get("/test")
-        async def test_route(identity: UserIdentity = Depends(require_api_key())):
+        async def test_route(identity: UserIdentity = Depends(require_api_key)):
             return {"user": identity.username}
 
         client = TestClient(app)
@@ -260,7 +260,10 @@ class TestLegacyCompatibility:
         assert response.json()["user"] == "test"
 
     def test_identity_string_format(self):
-        """Identity string should match expected format."""
+        """Identity string should match expected format.
+
+        JWT priority: email > username > "user:{user_id}"
+        """
         # API key identity
         api_identity = UserIdentity(
             user_id="apikey:service",
@@ -269,13 +272,30 @@ class TestLegacyCompatibility:
         )
         assert api_identity.identity_string == "apikey:service"
 
-        # JWT identity
-        jwt_identity = UserIdentity(
+        # JWT identity with email — email wins
+        jwt_with_email = UserIdentity(
+            user_id="user-123",
+            username="john",
+            email="john@example.com",
+            auth_method="jwt",
+        )
+        assert jwt_with_email.identity_string == "john@example.com"
+
+        # JWT identity without email — username wins
+        jwt_no_email = UserIdentity(
             user_id="user-123",
             username="john",
             auth_method="jwt",
         )
-        assert jwt_identity.identity_string == "user:user-123"
+        assert jwt_no_email.identity_string == "john"
+
+        # JWT identity with neither — falls back to user:{id}
+        jwt_minimal = UserIdentity(
+            user_id="user-123",
+            username="",
+            auth_method="jwt",
+        )
+        assert jwt_minimal.identity_string == "user:user-123"
 
         # Anonymous
         anon_identity = UserIdentity(

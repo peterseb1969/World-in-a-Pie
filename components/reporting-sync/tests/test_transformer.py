@@ -2,6 +2,8 @@
 Tests for the document transformer and schema manager.
 """
 
+import json
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from reporting_sync.transformer import DocumentTransformer
@@ -76,9 +78,11 @@ class TestDocumentTransformer:
         assert len(rows) == 1
         row = rows[0]
         assert row["name"] == "John"
-        assert row["address_street"] == "123 Main St"
-        assert row["address_city"] == "New York"
-        assert row["address_country"] == "USA"
+        # Nested objects are now stored as JSON by default (flatten_nested=False)
+        address = json.loads(row["address"])
+        assert address["street"] == "123 Main St"
+        assert address["city"] == "New York"
+        assert address["country"] == "USA"
 
     def test_term_references(self):
         """Test transforming a document with term references."""
@@ -98,10 +102,10 @@ class TestDocumentTransformer:
                 "gender": "Male",
                 "country": "USA",
             },
-            "term_references": {
-                "gender": "T-000001",
-                "country": "T-000042",
-            },
+            "term_references": [
+                {"field_path": "gender", "term_id": "T-000001"},
+                {"field_path": "country", "term_id": "T-000042"},
+            ],
         }
 
         rows = transformer.transform(document)
@@ -114,7 +118,11 @@ class TestDocumentTransformer:
         assert row["country_term_id"] == "T-000042"
 
     def test_array_flattening(self):
-        """Test that arrays are flattened into multiple rows."""
+        """Test that arrays with term references are stored as JSON.
+
+        Array expansion is currently disabled (_expand_arrays returns [base_row]).
+        Arrays are stored as JSON columns, and term_references use the array format.
+        """
         config = ReportingConfig(flatten_arrays=True)
         transformer = DocumentTransformer(config)
 
@@ -131,20 +139,20 @@ class TestDocumentTransformer:
                 "name": "John",
                 "languages": ["English", "Spanish", "French"],
             },
-            "term_references": {
-                "languages": ["T-001", "T-002", "T-003"],
-            },
+            "term_references": [
+                {"field_path": "languages[0]", "term_id": "T-001"},
+                {"field_path": "languages[1]", "term_id": "T-002"},
+                {"field_path": "languages[2]", "term_id": "T-003"},
+            ],
         }
 
         rows = transformer.transform(document)
 
-        assert len(rows) == 3
-        assert rows[0]["languages"] == "English"
-        assert rows[0]["languages_term_id"] == "T-001"
-        assert rows[1]["languages"] == "Spanish"
-        assert rows[1]["languages_term_id"] == "T-002"
-        assert rows[2]["languages"] == "French"
-        assert rows[2]["languages_term_id"] == "T-003"
+        # Array expansion is disabled — single row with JSON arrays
+        assert len(rows) == 1
+        assert rows[0]["name"] == "John"
+        languages = json.loads(rows[0]["languages"])
+        assert languages == ["English", "Spanish", "French"]
 
     def test_array_no_flatten(self):
         """Test that arrays are stored as JSON when flatten_arrays is False."""

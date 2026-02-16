@@ -38,14 +38,6 @@ def _reset_counters():
     _terminology_counter = 0
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 def create_mock_registry_client():
     """Create a mock registry client for testing."""
     global _term_counter, _terminology_counter
@@ -98,14 +90,13 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create an async HTTP client for testing the API."""
     _reset_counters()
 
-    # Connect to MongoDB and initialize Beanie
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
         document_models=[Terminology, Term, TermAuditLog]
     )
 
-    # Clean up any leftover data from previous interrupted test runs
+    # Clean up data from previous test
     await Term.delete_all()
     await Terminology.delete_all()
     await TermAuditLog.delete_all()
@@ -126,13 +117,6 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
                 yield ac
-
-    # Cleanup
-    await Term.delete_all()
-    await Terminology.delete_all()
-    await TermAuditLog.delete_all()
-    await mongo_client.drop_database(os.environ["DATABASE_NAME"])
-    mongo_client.close()
 
 
 @pytest.fixture

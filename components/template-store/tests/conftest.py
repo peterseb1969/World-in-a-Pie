@@ -37,22 +37,16 @@ def _reset_counters():
     _template_counter = 0
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
 def create_mock_registry_client():
     """Create a mock registry client for testing."""
     global _template_counter
 
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_register_template(created_by=None, namespace="wip"):
+    async def mock_register_template(created_by=None, namespace="wip", entry_id=None):
         global _template_counter
+        if entry_id:
+            return entry_id
         _template_counter += 1
         return f"TPL-{_template_counter:06d}"
 
@@ -123,14 +117,13 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create an async HTTP client for testing the API."""
     _reset_counters()
 
-    # Connect to MongoDB and initialize Beanie
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
         document_models=[Template]
     )
 
-    # Clean up any leftover data from previous interrupted test runs
+    # Clean up data from previous test
     await Template.delete_all()
 
     # Store client in app state (needed by health check)
@@ -152,11 +145,6 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
                     transport = ASGITransport(app=app)
                     async with AsyncClient(transport=transport, base_url="http://test") as ac:
                         yield ac
-
-    # Cleanup
-    await Template.delete_all()
-    await mongo_client.drop_database(os.environ["DATABASE_NAME"])
-    mongo_client.close()
 
 
 @pytest.fixture

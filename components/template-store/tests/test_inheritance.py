@@ -409,7 +409,7 @@ async def test_delete_template_with_children_fails(client: AsyncClient, auth_hea
         f"/api/template-store/templates/{parent_id}",
         headers=auth_headers
     )
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert "extend" in response.json()["detail"].lower()
 
 

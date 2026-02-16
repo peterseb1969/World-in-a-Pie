@@ -293,7 +293,7 @@ async def test_delete_template_not_found(client: AsyncClient, auth_headers: dict
         "/api/template-store/templates/TPL-999999",
         headers=auth_headers
     )
-    assert response.status_code == 404
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio

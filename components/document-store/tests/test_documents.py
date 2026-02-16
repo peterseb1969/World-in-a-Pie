@@ -297,4 +297,4 @@ async def test_invalid_api_key(client: AsyncClient, sample_person_data: dict):
         }
     )
 
-    assert response.status_code == 403
+    assert response.status_code == 401
