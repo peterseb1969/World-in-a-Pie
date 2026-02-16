@@ -1202,7 +1202,11 @@ generate_caddy_config() {
     fi
 
     # Determine TLS mode
-    local tls_config="tls internal"
+    local tls_config="tls {
+        issuer internal {
+            lifetime 720h
+        }
+    }"
     local global_options="{
     auto_https disable_redirects
 }"

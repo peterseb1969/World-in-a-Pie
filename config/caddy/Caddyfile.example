@@ -11,7 +11,11 @@
 
 # HTTPS server with internal TLS (self-signed)
 localhost, *.local, 127.0.0.1, 192.168.*.* {
-    tls internal
+    tls {
+        issuer internal {
+            lifetime 720h
+        }
+    }
 
     # Dex OIDC provider
     handle /dex/* {

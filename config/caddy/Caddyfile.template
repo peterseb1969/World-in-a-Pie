@@ -13,7 +13,11 @@
 
 # HTTPS server with internal TLS (self-signed)
 ${WIP_CADDY_HOSTS} {
-    tls internal
+    tls {
+        issuer internal {
+            lifetime 720h
+        }
+    }
 
     # Dex OIDC provider
     handle /dex/* {
