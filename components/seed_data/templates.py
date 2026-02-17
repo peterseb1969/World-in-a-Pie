@@ -83,6 +83,7 @@ ADDRESS = {
         {"name": "state", "type": "string", "mandatory": False, "validation": {"max_length": 100}},
         {"name": "postal_code", "type": "string", "mandatory": True, "validation": {"min_length": 1, "max_length": 20}},
         {"name": "country", "type": "term", "terminology_ref": "COUNTRY", "mandatory": True},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -128,6 +129,7 @@ CONTACT_INFO = {
             }
         },
         {"name": "preferred_contact", "type": "string", "mandatory": False, "validation": {"enum": ["email", "phone", "mobile"]}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -153,6 +155,7 @@ MONEY = {
     "fields": [
         {"name": "currency", "type": "term", "terminology_ref": "CURRENCY", "mandatory": True},
         {"name": "amount", "type": "number", "mandatory": True, "validation": {"minimum": 0}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -197,6 +200,7 @@ PERSON = {
         {"name": "address", "type": "object", "template_ref": "ADDRESS", "mandatory": False},
         {"name": "active", "type": "boolean", "mandatory": False, "default_value": True},
         {"name": "notes", "type": "string", "mandatory": False, "validation": {"max_length": 5000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -237,6 +241,7 @@ PRODUCT = {
         {"name": "in_stock", "type": "boolean", "mandatory": False, "default_value": True},
         {"name": "stock_quantity", "type": "integer", "mandatory": False, "validation": {"minimum": 0}},
         {"name": "tags", "type": "array", "array_item_type": "string", "mandatory": False},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -267,6 +272,7 @@ ORDER_LINE = {
         {"name": "unit_price", "type": "number", "mandatory": True, "validation": {"minimum": 0}},
         {"name": "discount_percent", "type": "number", "mandatory": False, "validation": {"minimum": 0, "maximum": 100}},
         {"name": "line_total", "type": "number", "mandatory": False},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -307,6 +313,7 @@ ORDER = {
         {"name": "payment_method", "type": "term", "terminology_ref": "PAYMENT_METHOD", "mandatory": False},
         {"name": "tracking_number", "type": "string", "mandatory": False, "validation": {"max_length": 100}},
         {"name": "notes", "type": "string", "mandatory": False, "validation": {"max_length": 2000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -350,6 +357,7 @@ CUSTOMER = {
         {"name": "active", "type": "boolean", "mandatory": False, "default_value": True},
         {"name": "created_date", "type": "datetime", "mandatory": False},
         {"name": "notes", "type": "string", "mandatory": False, "validation": {"max_length": 5000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -395,6 +403,7 @@ INVOICE = {
         {"name": "payment_method", "type": "term", "terminology_ref": "PAYMENT_METHOD", "mandatory": False},
         {"name": "payment_reference", "type": "string", "mandatory": False, "validation": {"max_length": 100}},
         {"name": "notes", "type": "string", "mandatory": False, "validation": {"max_length": 2000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -451,6 +460,7 @@ MEDICAL_RECORD = {
         {"name": "priority", "type": "term", "terminology_ref": "PRIORITY", "mandatory": False},
         {"name": "follow_up_date", "type": "date", "mandatory": False},
         {"name": "confidential_notes", "type": "string", "mandatory": False, "validation": {"max_length": 5000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         {
@@ -739,6 +749,7 @@ MINIMAL = {
     "identity_fields": ["id"],
     "fields": [
         {"name": "id", "type": "string", "mandatory": True},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": []
 }
@@ -761,6 +772,7 @@ ALL_TYPES = {
         {"name": "number_array", "type": "array", "array_item_type": "number", "mandatory": False},
         {"name": "term_array", "type": "array", "array_item_type": "term", "array_terminology_ref": "LANGUAGE", "mandatory": False},
         {"name": "object_array", "type": "array", "array_item_type": "object", "array_template_ref": "MONEY", "mandatory": False},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": []
 }
@@ -773,6 +785,7 @@ DEEP_NEST = {
     "fields": [
         {"name": "root_id", "type": "string", "mandatory": True},
         {"name": "level1", "type": "object", "mandatory": False},  # Free-form for nested testing
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": []
 }
@@ -782,6 +795,7 @@ def _generate_large_fields() -> dict[str, Any]:
     """Generate a template with 50+ fields for performance testing."""
     fields = [
         {"name": "id", "type": "string", "mandatory": True},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ]
 
     # Add 10 string fields
@@ -870,6 +884,7 @@ COMPLEX_RULES = {
         {"name": "end_date", "type": "date", "mandatory": False},
         {"name": "amount", "type": "number", "mandatory": False},
         {"name": "quantity", "type": "integer", "mandatory": False},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": [
         # 1. conditional_required
@@ -934,6 +949,7 @@ ARRAY_HEAVY = {
         {"name": "countries", "type": "array", "array_item_type": "term", "array_terminology_ref": "COUNTRY", "mandatory": False},
         {"name": "addresses", "type": "array", "array_item_type": "object", "array_template_ref": "ADDRESS", "mandatory": False},
         {"name": "money_amounts", "type": "array", "array_item_type": "object", "array_template_ref": "MONEY", "mandatory": False},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": []
 }
@@ -952,6 +968,7 @@ EVENT_LOG = {
         {"name": "actor", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
         {"name": "entity_ref", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
         {"name": "details", "type": "string", "mandatory": False, "validation": {"max_length": 10000}},
+        {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
     ],
     "rules": []
 }

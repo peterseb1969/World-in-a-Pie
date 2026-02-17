@@ -221,6 +221,12 @@ class DocumentGenerator:
         rules = template.get("rules", [])
         self._apply_rules(doc, rules, template["fields"])
 
+        # Compute contextual title from generated data
+        if "title" in doc:
+            computed = self._compute_title(doc, template_value)
+            if computed:
+                doc["title"] = computed
+
         return doc
 
     def _generate_fields(
@@ -237,8 +243,8 @@ class DocumentGenerator:
             name = field["name"]
             mandatory = field.get("mandatory", False)
 
-            # Always generate mandatory fields, sometimes generate optional
-            if mandatory or random.random() < 0.7:
+            # Always generate mandatory fields and title; sometimes generate other optional
+            if mandatory or name == "title" or random.random() < 0.7:
                 value = self._generate_field_value(field, index, template_value, prefix)
                 if value is not None:
                     doc[name] = value
@@ -479,6 +485,121 @@ class DocumentGenerator:
             return [random.choice([True, False]) for _ in range(count)]
 
         return []
+
+    def _compute_title(self, doc: dict, template_value: str) -> str | None:
+        """Compute a contextual title from generated document data."""
+        first = doc.get("first_name", "")
+        last = doc.get("last_name", "")
+        full_name = f"{first} {last}".strip()
+
+        if template_value == "PERSON":
+            email = doc.get("email", "")
+            return f"{full_name} <{email}>" if email else full_name or None
+
+        if template_value in ("EMPLOYEE", "MANAGER", "INTERN"):
+            job = doc.get("job_title", "")
+            emp_id = doc.get("employee_id", "")
+            parts = [full_name, f"- {job}" if job else "", f"({emp_id})" if emp_id else ""]
+            return " ".join(p for p in parts if p) or None
+
+        if template_value == "CONTRACTOR":
+            company = doc.get("company_name", "")
+            con_id = doc.get("contractor_id", "")
+            if company:
+                return f"{full_name} @ {company} ({con_id})"
+            return f"{full_name} ({con_id})" if con_id else full_name or None
+
+        if template_value in ("PRODUCT", "PHYSICAL_PRODUCT", "DIGITAL_PRODUCT"):
+            name = doc.get("name", "")
+            sku = doc.get("sku", "")
+            category = doc.get("category", "")
+            parts = [name]
+            if category:
+                parts.append(f"[{category}]")
+            if sku:
+                parts.append(f"({sku})")
+            return " ".join(parts) or None
+
+        if template_value == "ORDER":
+            order_num = doc.get("order_number", "")
+            status = doc.get("status", "")
+            total = doc.get("total", "")
+            currency = doc.get("currency", "")
+            parts = [f"Order {order_num}"]
+            if status:
+                parts.append(f"- {status}")
+            if total and currency:
+                parts.append(f"({currency} {total})")
+            return " ".join(parts)
+
+        if template_value == "CUSTOMER":
+            company = doc.get("company_name", "")
+            cust_num = doc.get("customer_number", "")
+            if company:
+                return f"{company} - {full_name} ({cust_num})"
+            return f"{full_name} ({cust_num})" if cust_num else full_name or None
+
+        if template_value == "INVOICE":
+            inv_num = doc.get("invoice_number", "")
+            total = doc.get("total", "")
+            currency = doc.get("currency", "")
+            status = doc.get("status", "")
+            parts = [f"Invoice {inv_num}"]
+            if total and currency:
+                parts.append(f"- {currency} {total}")
+            if status:
+                parts.append(f"({status})")
+            return " ".join(parts)
+
+        if template_value == "MEDICAL_RECORD":
+            record_type = doc.get("record_type", "Record")
+            patient = doc.get("patient_name", "")
+            patient_id = doc.get("patient_id", "")
+            return f"{record_type.title()}: {patient} ({patient_id})"
+
+        if template_value == "ISSUE_TICKET":
+            return None  # Keep the auto-generated title
+
+        if template_value == "EVENT_LOG":
+            event_type = doc.get("event_type", "Event")
+            source = doc.get("source", "")
+            severity = doc.get("severity", "")
+            parts = []
+            if severity:
+                parts.append(f"[{severity}]")
+            parts.append(event_type)
+            if source:
+                parts.append(f"from {source}")
+            return " ".join(parts)
+
+        if template_value == "ADDRESS":
+            city = doc.get("city", "")
+            country = doc.get("country", "")
+            street = doc.get("street", "")
+            return f"{street}, {city}, {country}" if street and city else None
+
+        if template_value == "BILLING_ADDRESS":
+            billing_name = doc.get("billing_name", "")
+            city = doc.get("city", "")
+            return f"Billing: {billing_name} - {city}" if billing_name else None
+
+        if template_value == "CONTACT_INFO":
+            email = doc.get("email", "")
+            preferred = doc.get("preferred_contact", "")
+            return f"Contact: {email} (prefer {preferred})" if preferred else f"Contact: {email}"
+
+        if template_value == "MONEY":
+            currency = doc.get("currency", "")
+            amount = doc.get("amount", "")
+            return f"{currency} {amount}" if currency and amount else None
+
+        if template_value == "ORDER_LINE":
+            product = doc.get("product_name", "")
+            qty = doc.get("quantity", "")
+            return f"{qty}x {product}" if product else None
+
+        # Edge case templates: keep the auto-generated Faker title
+        return None
 
     def _apply_rules(self, doc: dict, rules: list[dict], fields: list[dict]):
         """Apply validation rules to ensure document validity."""
