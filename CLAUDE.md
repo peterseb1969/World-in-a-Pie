@@ -152,7 +152,7 @@ Two tiers of uniqueness:
 
 **ID generation flow:** Service computes a composite key → calls Registry → Registry hashes the key and checks for existing entries → returns existing ID (upsert) or generates a new ID. For versioned entities (templates, documents), the entity_id stays the same across versions; `(entity_id, version)` is the true unique key.
 
-**Document identity hash:** Template defines `identity_fields` (e.g., `["email"]`). Document-Store computes SHA-256 of sorted field values → composite key `{namespace, identity_hash, template_id}` → Registry dedup. Same hash = same `document_id`, new version. No identity_fields = empty composite key = always new `document_id`.
+**Document identity hash:** Template defines `identity_fields` (e.g., `["email"]`). Document-Store sends raw `identity_values` to Registry, which computes SHA-256 hash, injects it into the composite key `{namespace, identity_hash, template_id}`, and creates a synonym with the raw values. Same hash = same `document_id`, new version. No identity_fields = empty composite key = always new `document_id`.
 
 **Registry synonyms:** An entry can have multiple composite keys (synonyms) that all resolve to the same canonical `entry_id`. The Registry is a standalone registrar; WIP services are its primary consumer. Synonyms enable cross-namespace linking, ID merging, and external/vendor ID mapping.
 
@@ -162,7 +162,7 @@ See `docs/uniqueness-and-identity.md` for detailed rules, examples, and synonym 
 
 ### Template Versioning
 
-Templates support multi-version operation (for gradual migration):
+Templates support multi-version operation (e.g., different data model versions for different vendors):
 - Update keeps the SAME `template_id`, increments `version`
 - Multiple versions can be active simultaneously
 - `extends_version` field pins inheritance to a specific parent version (None = latest)
@@ -216,7 +216,15 @@ WorldInPie/
 │   ├── template-store/    # Document schemas
 │   ├── document-store/    # Document storage
 │   ├── reporting-sync/    # PostgreSQL sync
+│   ├── ingest-gateway/    # Ingest gateway
 │   └── seed_data/         # Test data generation
+├── deploy/
+│   └── optional/          # Optional services (e.g., Metabase)
+├── docker-compose/        # Compose overrides
+├── k8s/                   # Kubernetes manifests
+├── data/                  # Runtime data (volumes)
+├── testdata/              # Test fixtures
+├── WIP-Toolkit/           # CLI toolkit
 └── ui/wip-console/        # Vue 3 + PrimeVue UI
 ```
 
