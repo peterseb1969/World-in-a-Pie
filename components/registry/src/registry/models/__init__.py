@@ -51,8 +51,6 @@ from .api_models import (
     # Update API models
     UpdateEntryItem,
     UpdateEntryResponse,
-    SetPreferredItem,
-    SetPreferredResponse,
     # Delete API models
     DeleteItem,
     DeleteResponse,
@@ -113,8 +111,6 @@ __all__ = [
     "SearchBulkResponse",
     "UpdateEntryItem",
     "UpdateEntryResponse",
-    "SetPreferredItem",
-    "SetPreferredResponse",
     "DeleteItem",
     "DeleteResponse",
     "ExportResponse",

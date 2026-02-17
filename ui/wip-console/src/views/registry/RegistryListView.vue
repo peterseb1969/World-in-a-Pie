@@ -292,13 +292,6 @@ async function executeBulkDeactivate() {
             </template>
           </Column>
 
-          <Column header="IDs" style="width: 50px" class="text-center">
-            <template #body="{ data }">
-              <span v-if="data.additional_ids_count > 0" class="count-badge">{{ data.additional_ids_count }}</span>
-              <span v-else class="count-zero">-</span>
-            </template>
-          </Column>
-
           <Column field="status" header="Status" sortable style="width: 100px">
             <template #body="{ data }">
               <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />

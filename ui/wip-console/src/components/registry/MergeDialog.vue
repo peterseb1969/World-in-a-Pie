@@ -258,7 +258,6 @@ const synonymsToTransfer = computed(() => {
         <h4>What will happen:</h4>
         <ul>
           <li>{{ synonymsToTransfer }} synonym(s) will be transferred to the preferred entry</li>
-          <li>{{ deprecatedDetail.additional_ids.length }} additional ID(s) will be transferred</li>
           <li>{{ deprecatedDetail.entry_id }} will become <Tag value="inactive" severity="danger" /></li>
           <li>All lookups for {{ deprecatedDetail.entry_id }} will resolve to {{ preferredEntry.entry_id }}</li>
         </ul>

@@ -58,7 +58,6 @@ class RegistryEntry(Document):
     A registered identity in the central registry.
 
     Supports multiple synonyms (composite keys) that all resolve to the same entity.
-    One entry is marked as preferred, with additional_ids storing merged duplicates.
 
     Lifecycle: reserved → active → inactive
     """
@@ -81,12 +80,6 @@ class RegistryEntry(Document):
         description="Entity type: terminologies, terms, templates, documents, files"
     )
 
-    # Is this the preferred entry when multiple entries were merged?
-    is_preferred: bool = Field(
-        default=True,
-        description="Whether this is the preferred ID for the entity"
-    )
-
     # The primary composite key
     primary_composite_key: dict[str, Any] = Field(
         ...,
@@ -102,12 +95,6 @@ class RegistryEntry(Document):
     synonyms: list[Synonym] = Field(
         default_factory=list,
         description="Alternative composite keys that resolve to this entry"
-    )
-
-    # IDs that were merged into this entry (from ID-as-synonym merges)
-    additional_ids: list[dict[str, str]] = Field(
-        default_factory=list,
-        description="Other IDs that are synonyms [{'namespace': '...', 'entity_type': '...', 'id': '...'}]"
     )
 
     # Source system that owns this entry

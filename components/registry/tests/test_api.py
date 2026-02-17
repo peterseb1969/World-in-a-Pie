@@ -144,7 +144,7 @@ class TestLookupAPI:
         assert response.status_code == 200
         data = response.json()
         assert data["found"] == 1
-        assert data["results"][0]["preferred_id"] == registry_id
+        assert data["results"][0]["entry_id"] == registry_id
 
 
 class TestSynonymAPI:
@@ -189,7 +189,7 @@ class TestSynonymAPI:
             }],
             headers=auth_headers
         )
-        assert lookup_response.json()["results"][0]["preferred_id"] == registry_id
+        assert lookup_response.json()["results"][0]["entry_id"] == registry_id
 
 
 class TestUnifiedSearchAPI:
@@ -334,8 +334,8 @@ class TestUnifiedSearchAPI:
         assert data["page_size"] == 2
 
     @pytest.mark.asyncio
-    async def test_search_by_additional_id(self, client: AsyncClient, auth_headers: dict):
-        """Test that unified search finds entries by merged additional_id."""
+    async def test_search_by_merged_entry_id(self, client: AsyncClient, auth_headers: dict):
+        """Test that unified search finds entries by merged entry_id (now a synonym)."""
         # Register two entries and merge them
         reg1 = await client.post(
             "/api/registry/entries/register",
@@ -360,13 +360,27 @@ class TestUnifiedSearchAPI:
         deprecated_id = reg2.json()["results"][0]["registry_id"]
 
         # Merge
-        await client.post(
+        merge_resp = await client.post(
             "/api/registry/synonyms/merge",
             json=[{"preferred_id": preferred_id, "deprecated_id": deprecated_id}],
             headers=auth_headers
         )
+        assert merge_resp.json()[0]["status"] == "merged"
 
-        # Search for the deprecated ID — should find the preferred entry
+        # Verify deprecated entry_id is now a synonym on the preferred entry
+        detail = await client.get(
+            f"/api/registry/entries/{preferred_id}",
+            headers=auth_headers
+        )
+        assert detail.status_code == 200
+        entry = detail.json()
+        entry_id_synonyms = [
+            s for s in entry["synonyms"]
+            if s["composite_key"].get("entry_id") == deprecated_id
+        ]
+        assert len(entry_id_synonyms) == 1
+
+        # Search for the deprecated ID — should find the preferred entry via search_values
         response = await client.get(
             "/api/registry/entries/search",
             params={"q": deprecated_id},
@@ -376,7 +390,7 @@ class TestUnifiedSearchAPI:
         data = response.json()
         found = [item for item in data["items"] if item["entry_id"] == preferred_id]
         assert len(found) == 1
-        assert found[0]["matched_via"] == "additional_id"
+        assert found[0]["matched_via"] == "synonym_key_value"
 
 
 class TestEntryDetailAPI:
@@ -406,11 +420,9 @@ class TestEntryDetailAPI:
         assert data["namespace"] == "default"
         assert data["entity_type"] == "terms"
         assert data["status"] == "active"
-        assert data["is_preferred"] is True
         assert data["primary_composite_key"]["detail_test"] == "DetailValue123"
         assert "primary_composite_key_hash" in data
         assert isinstance(data["synonyms"], list)
-        assert isinstance(data["additional_ids"], list)
         assert isinstance(data["search_values"], list)
         assert "DetailValue123" in data["search_values"]
 

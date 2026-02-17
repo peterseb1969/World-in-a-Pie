@@ -66,10 +66,9 @@ def build_lookup_response(
     return LookupResponse(
         input_index=input_index,
         status=status,
-        preferred_id=entry.entry_id,
+        entry_id=entry.entry_id,
         namespace=entry.namespace,
         entity_type=entry.entity_type,
-        additional_ids=entry.additional_ids,
         matched_namespace=matched_namespace or entry.namespace,
         matched_entity_type=matched_entity_type or entry.entity_type,
         matched_composite_key=matched_composite_key or entry.primary_composite_key,
@@ -123,7 +122,6 @@ async def browse_entries(
             entity_type=e.entity_type,
             primary_composite_key=e.primary_composite_key,
             synonyms_count=len(e.synonyms),
-            additional_ids_count=len(e.additional_ids),
             status=e.status,
             created_at=e.created_at,
             created_by=e.created_by,
@@ -163,11 +161,10 @@ async def unified_search(
     q_stripped = q.strip()
     escaped_q = re.escape(q_stripped)
 
-    # Build the search query — search across entry_id, additional_ids, and search_values
+    # Build the search query — search across entry_id and search_values
     or_conditions = [
         {"entry_id": {"$regex": escaped_q, "$options": "i"}},
         {"search_values": {"$regex": escaped_q, "$options": "i"}},
-        {"additional_ids.id": {"$regex": escaped_q, "$options": "i"}},
     ]
 
     query: dict = {"$or": or_conditions}
@@ -197,63 +194,45 @@ async def unified_search(
             matched_value = entry.entry_id
             resolution_path = f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
         else:
-            # Check additional_ids
-            aid_match = False
-            for aid in entry.additional_ids:
-                aid_id = aid.get("id", "")
-                if q_lower in aid_id.lower():
-                    matched_via = "additional_id"
-                    matched_value = aid_id
-                    aid_ns = aid.get("namespace", "?")
+            # Check primary composite key values
+            primary_match = False
+            for v in entry.primary_composite_key.values():
+                if isinstance(v, str) and q_lower in v.lower():
+                    matched_value = v
                     resolution_path = (
-                        f"{aid_id} ({aid_ns}) → merged into → "
+                        f"{v} → primary key → "
                         f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
                     )
-                    aid_match = True
+                    primary_match = True
                     break
 
-            if not aid_match:
-                # Check primary composite key values
-                primary_match = False
-                for v in entry.primary_composite_key.values():
-                    if isinstance(v, str) and q_lower in v.lower():
-                        matched_value = v
-                        resolution_path = (
-                            f"{v} → primary key → "
-                            f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
-                        )
-                        primary_match = True
+            if not primary_match:
+                # Check synonym composite key values
+                for syn in entry.synonyms:
+                    for v in syn.composite_key.values():
+                        if isinstance(v, str) and q_lower in v.lower():
+                            matched_via = "synonym_key_value"
+                            matched_value = v
+                            resolution_path = (
+                                f"{v} → synonym ({syn.namespace}/{syn.entity_type}) → "
+                                f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+                            )
+                            break
+                    if matched_value:
                         break
 
-                if not primary_match:
-                    # Check synonym composite key values
-                    for syn in entry.synonyms:
-                        for v in syn.composite_key.values():
-                            if isinstance(v, str) and q_lower in v.lower():
-                                matched_via = "synonym_key_value"
-                                matched_value = v
-                                resolution_path = (
-                                    f"{v} → synonym ({syn.namespace}/{syn.entity_type}) → "
-                                    f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
-                                )
-                                break
-                        if matched_value:
-                            break
-
-                    # Fallback if no specific match found
-                    if not matched_value:
-                        matched_value = q_stripped
-                        resolution_path = f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+                # Fallback if no specific match found
+                if not matched_value:
+                    matched_value = q_stripped
+                    resolution_path = f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
 
         items.append(UnifiedSearchResultItem(
             entry_id=entry.entry_id,
             namespace=entry.namespace,
             entity_type=entry.entity_type,
             status=entry.status,
-            is_preferred=entry.is_preferred,
             primary_composite_key=entry.primary_composite_key,
             synonyms=entry.synonyms,
-            additional_ids=entry.additional_ids,
             source_info=entry.source_info,
             metadata=entry.metadata,
             created_at=entry.created_at,
@@ -293,11 +272,9 @@ async def get_entry_detail(
         entry_id=entry.entry_id,
         namespace=entry.namespace,
         entity_type=entry.entity_type,
-        is_preferred=entry.is_preferred,
         primary_composite_key=entry.primary_composite_key,
         primary_composite_key_hash=entry.primary_composite_key_hash,
         synonyms=entry.synonyms,
-        additional_ids=entry.additional_ids,
         source_info=entry.source_info,
         search_values=entry.search_values,
         metadata=entry.metadata,
@@ -726,17 +703,7 @@ async def lookup_by_ids(
                 if entry:
                     matched_via = "entry_id"
 
-                # 2. Check additional_ids
-                if not entry:
-                    elem_match: dict = {"id": item.entry_id}
-                    q2: dict = {"additional_ids": {"$elemMatch": elem_match}, "status": "active"}
-                    if item.namespace:
-                        q2["namespace"] = item.namespace
-                    entry = await RegistryEntry.find_one(q2)
-                    if entry:
-                        matched_via = "additional_id"
-
-                # 3. Composite key value search
+                # 2. Composite key value search (covers merged IDs via search_values)
                 if not entry:
                     q3: dict = {"search_values": item.entry_id, "status": "active"}
                     if item.namespace:

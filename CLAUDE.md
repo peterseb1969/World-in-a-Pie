@@ -226,11 +226,11 @@ WorldInPie/
 
 | Namespace | ID Format | Service |
 |-----------|-----------|---------|
-| wip-terminologies | TERM-XXXXXX | Def-Store |
-| wip-terms | T-XXXXXX | Def-Store |
-| wip-templates | TPL-XXXXXX | Template Store |
+| wip-terminologies | UUID7 | Def-Store |
+| wip-terms | UUID7 | Def-Store |
+| wip-templates | UUID7 | Template Store |
 | wip-documents | UUID7 | Document Store |
-| wip-files | FILE-XXXXXX | Document Store |
+| wip-files | UUID7 | Document Store |
 
 ---
 

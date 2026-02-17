@@ -88,7 +88,6 @@ class BrowseEntryItem(BaseModel):
     entity_type: str
     primary_composite_key: dict[str, Any]
     synonyms_count: int
-    additional_ids_count: int
     status: str
     created_at: datetime
     created_by: Optional[str] = None
@@ -333,10 +332,9 @@ class LookupResponse(BaseModel):
     input_index: int
     status: str  # found, not_found, error
 
-    preferred_id: Optional[str] = None
+    entry_id: Optional[str] = None
     namespace: Optional[str] = None
     entity_type: Optional[str] = None
-    additional_ids: list[dict[str, str]] = Field(default_factory=list)
 
     matched_namespace: Optional[str] = None
     matched_entity_type: Optional[str] = None
@@ -346,7 +344,7 @@ class LookupResponse(BaseModel):
 
     matched_via: Optional[str] = Field(
         None,
-        description="How the match was found: entry_id, additional_id, or composite_key_value"
+        description="How the match was found: entry_id or composite_key_value"
     )
 
     source_info: Optional[SourceInfo] = None
@@ -413,7 +411,6 @@ class SearchResult(BaseModel):
     matched_entity_type: str
     matched_composite_key: dict[str, Any]
     all_synonyms: list[Synonym]
-    additional_ids: list[dict[str, str]]
 
 
 class SearchResponse(BaseModel):
@@ -452,23 +449,6 @@ class UpdateEntryResponse(BaseModel):
     error: Optional[str] = None
 
 
-class SetPreferredItem(StrictModel):
-    """Request model for setting the preferred ID."""
-
-    entry_id: str
-    new_preferred_id: str
-    updated_by: Optional[str] = None
-
-
-class SetPreferredResponse(BaseModel):
-    """Response model for setting preferred ID."""
-
-    input_index: int
-    status: str  # updated, not_found, id_not_in_entry, error
-    new_preferred_id: Optional[str] = None
-    error: Optional[str] = None
-
-
 # =============================================================================
 # Delete API Models
 # =============================================================================
@@ -504,10 +484,8 @@ class UnifiedSearchResultItem(BaseModel):
     namespace: str
     entity_type: str
     status: str
-    is_preferred: bool
     primary_composite_key: dict[str, Any]
     synonyms: list[Synonym] = Field(default_factory=list)
-    additional_ids: list[dict[str, str]] = Field(default_factory=list)
     source_info: Optional[SourceInfo] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
@@ -516,7 +494,7 @@ class UnifiedSearchResultItem(BaseModel):
     updated_by: Optional[str] = None
     matched_via: str = Field(
         ...,
-        description="How the match was found: entry_id, additional_id, composite_key_value, synonym_key_value"
+        description="How the match was found: entry_id, composite_key_value, synonym_key_value"
     )
     matched_value: str = Field(
         ...,
@@ -548,11 +526,9 @@ class EntryDetailResponse(BaseModel):
     entry_id: str
     namespace: str
     entity_type: str
-    is_preferred: bool
     primary_composite_key: dict[str, Any]
     primary_composite_key_hash: str
     synonyms: list[Synonym] = Field(default_factory=list)
-    additional_ids: list[dict[str, str]] = Field(default_factory=list)
     source_info: Optional[SourceInfo] = None
     search_values: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)

@@ -5,8 +5,6 @@ import Card from 'primevue/card'
 import Tag from 'primevue/tag'
 import Button from 'primevue/button'
 import Breadcrumb from 'primevue/breadcrumb'
-import DataTable from 'primevue/datatable'
-import Column from 'primevue/column'
 import ConfirmDialog from 'primevue/confirmdialog'
 import { useConfirm } from 'primevue/useconfirm'
 import { registryClient } from '@/api/client'
@@ -187,9 +185,6 @@ async function executeDeactivate() {
               {{ entry.entity_type }}
             </span>
 
-            <span class="detail-label">Is Preferred</span>
-            <Tag :value="entry.is_preferred ? 'Yes' : 'No'" :severity="entry.is_preferred ? 'success' : 'warn'" />
-
             <span class="detail-label">Status</span>
             <Tag :value="entry.status" :severity="getStatusSeverity(entry.status)" />
 
@@ -224,30 +219,6 @@ async function executeDeactivate() {
             @remove="handleRemoveSynonym"
             @add="showAddSynonym = true"
           />
-        </template>
-      </Card>
-
-      <!-- Additional IDs -->
-      <Card v-if="entry.additional_ids.length > 0" class="section-card">
-        <template #title>Additional IDs ({{ entry.additional_ids.length }})</template>
-        <template #content>
-          <DataTable :value="entry.additional_ids" size="small" stripedRows>
-            <Column header="ID" style="width: 200px">
-              <template #body="{ data }">
-                <code>{{ data.id }}</code>
-              </template>
-            </Column>
-            <Column header="Namespace">
-              <template #body="{ data }">
-                <code class="namespace-badge">{{ data.namespace }}</code>
-              </template>
-            </Column>
-            <Column header="Entity Type">
-              <template #body="{ data }">
-                {{ data.entity_type }}
-              </template>
-            </Column>
-          </DataTable>
         </template>
       </Card>
 

@@ -324,7 +324,7 @@ class RegistryClient:
 
             data = response.json()
             if data["found"] > 0:
-                return data["results"][0].get("preferred_id")
+                return data["results"][0].get("entry_id")
 
             return None
 

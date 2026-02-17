@@ -13,8 +13,6 @@ from ..models.api_models import (
     RemoveSynonymResponse,
     MergeItem,
     MergeResponse,
-    SetPreferredItem,
-    SetPreferredResponse,
 )
 from ..services.hash import HashService
 from ..services.auth import require_api_key
@@ -198,29 +196,25 @@ async def merge_entries(
                 ))
                 continue
 
-            preferred.additional_ids.append({
-                "namespace": deprecated.namespace,
-                "entity_type": deprecated.entity_type,
-                "id": deprecated.entry_id
-            })
-            preferred.additional_ids.extend(deprecated.additional_ids)
-
-            deprecated_as_synonym = Synonym(
+            # Add deprecated entry_id as a synonym (so lookups by old ID resolve)
+            entry_id_key = {"entry_id": deprecated.entry_id}
+            entry_id_hash = HashService.compute_composite_key_hash(entry_id_key)
+            entry_id_synonym = Synonym(
                 namespace=deprecated.namespace,
                 entity_type=deprecated.entity_type,
-                composite_key=deprecated.primary_composite_key,
-                composite_key_hash=deprecated.primary_composite_key_hash,
-                source_info=deprecated.source_info,
+                composite_key=entry_id_key,
+                composite_key_hash=entry_id_hash,
                 created_by=item.updated_by,
             )
-            preferred.synonyms.append(deprecated_as_synonym)
+            if not any(s.composite_key_hash == entry_id_hash for s in preferred.synonyms):
+                preferred.synonyms.append(entry_id_synonym)
 
+            # Transfer all deprecated synonyms
             for syn in deprecated.synonyms:
                 if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
                     preferred.synonyms.append(syn)
 
             deprecated.status = "inactive"
-            deprecated.is_preferred = False
             deprecated.updated_at = datetime.now(timezone.utc)
             deprecated.updated_by = item.updated_by
             await deprecated.save()
@@ -238,84 +232,6 @@ async def merge_entries(
 
         except Exception as e:
             results.append(MergeResponse(
-                input_index=i, status="error", error=str(e)
-            ))
-
-    return results
-
-
-@router.post(
-    "/set-preferred",
-    response_model=List[SetPreferredResponse],
-    summary="Change the preferred ID (bulk)"
-)
-async def set_preferred_ids(
-    items: List[SetPreferredItem] = Body(...),
-    api_key: str = Depends(require_api_key)
-) -> List[SetPreferredResponse]:
-    """Change which ID is preferred for an entry."""
-    results = []
-
-    for i, item in enumerate(items):
-        try:
-            entry = await RegistryEntry.find_one({
-                "entry_id": item.entry_id, "status": "active"
-            })
-
-            if not entry:
-                results.append(SetPreferredResponse(
-                    input_index=i, status="not_found",
-                ))
-                continue
-
-            if item.new_preferred_id == entry.entry_id:
-                results.append(SetPreferredResponse(
-                    input_index=i, status="updated",
-                    new_preferred_id=entry.entry_id,
-                ))
-                continue
-
-            found_in_additional = None
-            for idx, add_id in enumerate(entry.additional_ids):
-                if add_id["id"] == item.new_preferred_id:
-                    found_in_additional = idx
-                    break
-
-            if found_in_additional is None:
-                results.append(SetPreferredResponse(
-                    input_index=i, status="id_not_in_entry",
-                    error="New preferred ID not found in entry's additional_ids"
-                ))
-                continue
-
-            old_id = entry.entry_id
-            old_ns = entry.namespace
-            old_et = entry.entity_type
-
-            new_add_id = entry.additional_ids.pop(found_in_additional)
-            entry.additional_ids.append({
-                "namespace": old_ns,
-                "entity_type": old_et,
-                "id": old_id
-            })
-
-            entry.entry_id = item.new_preferred_id
-            if "namespace" in new_add_id:
-                entry.namespace = new_add_id["namespace"]
-            if "entity_type" in new_add_id:
-                entry.entity_type = new_add_id["entity_type"]
-
-            entry.updated_at = datetime.now(timezone.utc)
-            entry.updated_by = item.updated_by
-            await entry.save()
-
-            results.append(SetPreferredResponse(
-                input_index=i, status="updated",
-                new_preferred_id=item.new_preferred_id,
-            ))
-
-        except Exception as e:
-            results.append(SetPreferredResponse(
                 input_index=i, status="error", error=str(e)
             ))
 

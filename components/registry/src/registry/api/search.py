@@ -55,7 +55,6 @@ async def search_by_fields(
                     matched_entity_type=matched_et,
                     matched_composite_key=matched_key,
                     all_synonyms=entry.synonyms,
-                    additional_ids=entry.additional_ids,
                 ))
 
             results.append(SearchResponse(
@@ -138,7 +137,6 @@ async def search_by_term(
                     matched_entity_type=matched_et,
                     matched_composite_key=matched_key,
                     all_synonyms=entry.synonyms,
-                    additional_ids=entry.additional_ids,
                 ))
 
             results.append(SearchResponse(

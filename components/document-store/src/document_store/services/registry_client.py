@@ -98,7 +98,7 @@ class RegistryClient:
             "composite_key": composite_key,
             "identity_values": identity_values if has_identity_fields else None,
             "created_by": created_by,
-            "metadata": {"type": "document"},
+            "source_info": {"system_id": "document-store"},
         }
         if entry_id:
             item["entry_id"] = entry_id
@@ -168,7 +168,7 @@ class RegistryClient:
                 "composite_key": composite_key,
                 "identity_values": identity_values,
                 "created_by": created_by,
-                "metadata": {"type": "document"},
+                "source_info": {"system_id": "document-store"},
             })
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -243,7 +243,7 @@ class RegistryClient:
         """
         Resolve any identifier to a canonical entry_id via POST /api/registry/entries/lookup/by-id.
 
-        Uses the extended lookup which searches entry_id, additional_ids,
+        Uses the extended lookup which searches entry_id
         and composite key values.
 
         Args:
@@ -273,7 +273,7 @@ class RegistryClient:
             data = response.json()
             results = data.get("results", [])
             if results and results[0].get("status") == "found":
-                return results[0].get("preferred_id")
+                return results[0].get("entry_id")
 
             return None
 

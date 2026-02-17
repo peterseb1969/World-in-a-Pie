@@ -8,7 +8,6 @@ export interface RegistryEntry {
   entity_type: string
   primary_composite_key: Record<string, unknown>
   synonyms_count: number
-  additional_ids_count: number
   status: 'active' | 'reserved' | 'inactive'
   created_at: string
   created_by: string | null
@@ -29,7 +28,6 @@ export interface RegistryEntryDetail {
   primary_composite_key: Record<string, unknown>
   primary_composite_key_hash: string
   synonyms: RegistrySynonym[]
-  additional_ids: Array<Record<string, string>>
   source_info: RegistrySourceInfo | null
   search_values: string[]
   metadata: Record<string, unknown>
@@ -58,10 +56,9 @@ export interface RegistrySourceInfo {
 export interface RegistryLookupResponse {
   input_index: number
   status: string
-  preferred_id: string | null
+  entry_id: string | null
   namespace: string | null
   entity_type: string | null
-  additional_ids: Array<Record<string, string>>
   matched_namespace: string | null
   matched_entity_type: string | null
   matched_composite_key: Record<string, unknown> | null
@@ -90,17 +87,15 @@ export interface RegistrySearchResult {
   namespace: string
   entity_type: string
   status: string
-  is_preferred: boolean
   primary_composite_key: Record<string, unknown>
   synonyms: RegistrySynonym[]
-  additional_ids: Array<Record<string, string>>
   source_info: RegistrySourceInfo | null
   metadata: Record<string, unknown>
   created_at: string
   created_by: string | null
   updated_at: string
   updated_by: string | null
-  matched_via: 'entry_id' | 'additional_id' | 'composite_key_value' | 'synonym_key_value'
+  matched_via: 'entry_id' | 'composite_key_value' | 'synonym_key_value'
   matched_value: string
   resolution_path: string
 }
@@ -130,11 +125,9 @@ export interface RegistryEntryFull {
   entry_id: string
   namespace: string
   entity_type: string
-  is_preferred: boolean
   primary_composite_key: Record<string, unknown>
   primary_composite_key_hash: string
   synonyms: RegistrySynonym[]
-  additional_ids: Array<Record<string, string>>
   source_info: RegistrySourceInfo | null
   search_values: string[]
   metadata: Record<string, unknown>
