@@ -143,4 +143,6 @@ SUPPORTED_TEMPLATES = [
     "LARGE_FIELDS",
     "COMPLEX_RULES",
     "ARRAY_HEAVY",
+    # Append-only (no identity_fields)
+    "EVENT_LOG",
 ]

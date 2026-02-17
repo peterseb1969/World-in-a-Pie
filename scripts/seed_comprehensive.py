@@ -655,6 +655,183 @@ class WIPSeeder:
 
         return stats
 
+    def seed_template_versions(self) -> dict[str, int]:
+        """Create v2 of selected templates to exercise multi-version operation."""
+        stats = {"versions_created": 0, "errors": 0}
+
+        print("\nSeeding template versions...")
+
+        # Templates to version and the field to add in v2
+        version_targets = {
+            "PERSON": {
+                "name": "nickname",
+                "type": "string",
+                "mandatory": False,
+                "label": "Nickname",
+                "validation": {"max_length": 100},
+            },
+            "PRODUCT": {
+                "name": "warranty_months",
+                "type": "integer",
+                "mandatory": False,
+                "label": "Warranty (months)",
+                "validation": {"minimum": 0, "maximum": 120},
+            },
+        }
+
+        for template_value, new_field in version_targets.items():
+            template_id = self.created_templates.get(template_value)
+            if not template_id:
+                print(f"  {template_value}: SKIPPED (template not found)")
+                continue
+
+            if self.dry_run:
+                print(f"  [DRY-RUN] Would create v2 of {template_value}")
+                stats["versions_created"] += 1
+                continue
+
+            try:
+                # Fetch current template to get its fields
+                current = self.template_store.get(
+                    f"/api/template-store/templates/{template_id}",
+                    params=self._ns_params(),
+                )
+
+                # Build updated field list (current fields + new field)
+                updated_fields = list(current.get("fields", []))
+                # Strip any resolved metadata that the API doesn't accept back
+                for f in updated_fields:
+                    f.pop("terminology_label", None)
+                    f.pop("template_ref_label", None)
+                updated_fields.append(new_field)
+
+                result = self.template_store.put(
+                    f"/api/template-store/templates/{template_id}",
+                    {
+                        "fields": updated_fields,
+                        "updated_by": "seed_script",
+                    },
+                )
+
+                new_version = result.get("version", "?")
+                is_new = result.get("is_new_version", False)
+                if is_new:
+                    stats["versions_created"] += 1
+                    print(f"  {template_value}: created v{new_version} (+{new_field['name']})")
+                else:
+                    print(f"  {template_value}: no changes detected (v{new_version})")
+
+            except Exception as e:
+                print(f"  {template_value}: ERROR - {e}")
+                stats["errors"] += 1
+
+        return stats
+
+    def seed_versioning_tests(self) -> dict[str, int]:
+        """Submit documents with same identity multiple times to exercise upsert versioning."""
+        stats = {"versions_created": 0, "errors": 0}
+
+        print("\nSeeding versioning test documents...")
+
+        # Only run if PERSON template exists (it has identity_fields: ["email"])
+        person_template_id = self.created_templates.get("PERSON")
+        if not person_template_id:
+            print("  SKIPPED (PERSON template not found)")
+            return stats
+
+        if self.dry_run:
+            print("  [DRY-RUN] Would create 3 versions of a PERSON document")
+            print("  [DRY-RUN] Would create 2 versions of an EMPLOYEE document")
+            stats["versions_created"] = 5
+            return stats
+
+        # Submit same PERSON (same email) 3 times with different data
+        # This should create document_id v1, then v2, then v3
+        versions = [
+            {"first_name": "Version", "last_name": "Test", "email": "version.test@example.com",
+             "birth_date": "1990-01-15", "notes": "Version 1 - Initial creation"},
+            {"first_name": "Version", "last_name": "Test-Updated", "email": "version.test@example.com",
+             "birth_date": "1990-01-15", "notes": "Version 2 - Name updated"},
+            {"first_name": "Version", "last_name": "Test-Final", "email": "version.test@example.com",
+             "birth_date": "1990-01-15", "notes": "Version 3 - Final update", "active": False},
+        ]
+
+        prev_doc_id = None
+        for i, data in enumerate(versions, 1):
+            try:
+                result = self.document_store.post(
+                    "/api/document-store/documents",
+                    {
+                        "template_id": person_template_id,
+                        "namespace": self.namespace,
+                        "data": data,
+                        "created_by": "seed_script",
+                    },
+                )
+                doc_id = result.get("document_id", "?")
+                version = result.get("version", "?")
+
+                if prev_doc_id and doc_id == prev_doc_id:
+                    print(f"  PERSON v{version}: upsert OK (same document_id {doc_id})")
+                elif prev_doc_id:
+                    print(f"  PERSON v{version}: WARNING - new document_id {doc_id} (expected {prev_doc_id})")
+                else:
+                    print(f"  PERSON v{version}: created {doc_id}")
+
+                prev_doc_id = doc_id
+                stats["versions_created"] += 1
+
+            except Exception as e:
+                print(f"  PERSON version {i}: ERROR - {e}")
+                stats["errors"] += 1
+
+        # Also test EMPLOYEE if available
+        employee_template_id = self.created_templates.get("EMPLOYEE")
+        if employee_template_id:
+            emp_versions = [
+                {"employee_id": "EMP-VERSION-TEST", "first_name": "Emp", "last_name": "Version",
+                 "email": "emp.version@example.com", "birth_date": "1985-06-15",
+                 "hire_date": "2020-01-15", "department": "Human Resources",
+                 "job_title": "Analyst", "employment_type": "Full-time",
+                 "notes": "Employee v1"},
+                {"employee_id": "EMP-VERSION-TEST", "first_name": "Emp", "last_name": "Version",
+                 "email": "emp.version@example.com", "birth_date": "1985-06-15",
+                 "hire_date": "2020-01-15", "department": "Human Resources",
+                 "job_title": "Senior Analyst", "employment_type": "Full-time",
+                 "notes": "Employee v2 - Promoted"},
+            ]
+
+            prev_doc_id = None
+            for i, data in enumerate(emp_versions, 1):
+                try:
+                    result = self.document_store.post(
+                        "/api/document-store/documents",
+                        {
+                            "template_id": employee_template_id,
+                            "namespace": self.namespace,
+                            "data": data,
+                            "created_by": "seed_script",
+                        },
+                    )
+                    doc_id = result.get("document_id", "?")
+                    version = result.get("version", "?")
+
+                    if prev_doc_id and doc_id == prev_doc_id:
+                        print(f"  EMPLOYEE v{version}: upsert OK (same document_id {doc_id})")
+                    elif prev_doc_id:
+                        print(f"  EMPLOYEE v{version}: WARNING - new document_id {doc_id} (expected {prev_doc_id})")
+                    else:
+                        print(f"  EMPLOYEE v{version}: created {doc_id}")
+
+                    prev_doc_id = doc_id
+                    stats["versions_created"] += 1
+
+                except Exception as e:
+                    print(f"  EMPLOYEE version {i}: ERROR - {e}")
+                    stats["errors"] += 1
+
+        return stats
+
     def run_benchmarks(self) -> performance.BenchmarkReport:
         """Run performance benchmarks."""
         print("\nRunning performance benchmarks...")
@@ -1003,6 +1180,20 @@ def main():
         total_stats["documents"] = stats
         print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
+    # Seed template versions (v2 of selected templates)
+    if "template-store" in services and not args.skip_templates:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_template_versions()
+        total_stats["template_versions"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
+    # Seed versioning test documents (upsert: same identity → new version)
+    if "document-store" in services:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_versioning_tests()
+        total_stats["versioning_tests"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
     elapsed = time.time() - start_time
 
     # Summary
@@ -1019,9 +1210,17 @@ def main():
         s = total_stats["templates"]
         print(f"Templates: {s['templates']} created, {s['errors']} errors")
 
+    if "template_versions" in total_stats:
+        s = total_stats["template_versions"]
+        print(f"Template versions: {s['versions_created']} created, {s['errors']} errors")
+
     if "documents" in total_stats:
         s = total_stats["documents"]
         print(f"Documents: {s['documents']} created, {s['errors']} errors")
+
+    if "versioning_tests" in total_stats:
+        s = total_stats["versioning_tests"]
+        print(f"Versioning tests: {s['versions_created']} document versions created, {s['errors']} errors")
 
     # Per-service HTTP timing reports
     seeder.def_store.print_timing_report("Def-Store")

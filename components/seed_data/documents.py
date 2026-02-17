@@ -23,6 +23,8 @@ DOCUMENT_PROFILES = {
         "MINIMAL": 5,
         "ALL_TYPES": 5,
         "ARRAY_HEAVY": 5,
+        # Append-only (no identity_fields)
+        "EVENT_LOG": 10,
     },
     "standard": {
         # Domain templates
@@ -48,6 +50,8 @@ DOCUMENT_PROFILES = {
         "DEEP_NEST": 10,
         "LARGE_FIELDS": 10,
         "COMPLEX_RULES": 20,
+        # Append-only (no identity_fields)
+        "EVENT_LOG": 20,
     },
     "full": {
         # Domain templates
@@ -73,6 +77,8 @@ DOCUMENT_PROFILES = {
         "DEEP_NEST": 50,
         "LARGE_FIELDS": 50,
         "COMPLEX_RULES": 100,
+        # Append-only (no identity_fields)
+        "EVENT_LOG": 100,
     },
     "performance": {
         # Domain templates
@@ -98,6 +104,8 @@ DOCUMENT_PROFILES = {
         "DEEP_NEST": 500,
         "LARGE_FIELDS": 500,
         "COMPLEX_RULES": 2000,
+        # Append-only (no identity_fields)
+        "EVENT_LOG": 5000,
     }
 }
 

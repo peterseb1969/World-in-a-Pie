@@ -66,6 +66,7 @@ See `docs/` for detailed specifications:
 - `docs/network-configuration.md` - **Network & OIDC setup (4 deployment scenarios)**
 - `docs/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
+- `docs/uniqueness-and-identity.md` - **Uniqueness rules, Registry synonyms, ID generation**
 - `docs/design/event-replay.md` - Event replay for consumer onboarding
 
 ---
@@ -133,28 +134,31 @@ cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
 
 ## Key Technical Concepts
 
-### Stable Registry IDs
+### Uniqueness & Identity
 
-All entities get a **stable ID** from the Registry that persists across versions:
-- `template_id` (TPL-XXXXXX) stays the same across all template versions
-- `document_id` (UUID7) stays the same across all document versions
-- `(entity_id, version)` is the unique key for versioned entities
-- Entities without upsert (templates, files, docs without identity_fields) register with empty composite key
+Two tiers of uniqueness:
+- **Global:** Registry `entry_id` and namespace `prefix` are unique across the entire instance
+- **Namespace-scoped:** All domain entities use `(namespace, ...)` compound keys
 
-### Document Identity & Versioning
+| Entity | Unique Key(s) | Scope |
+|--------|--------------|-------|
+| Namespace | `prefix` | Global |
+| Registry Entry | `entry_id` | Global |
+| Terminology | `(ns, terminology_id)`, `(ns, value)` | Namespace |
+| Term | `(ns, term_id)`, `(ns, terminology_id, value)` | Namespace |
+| Template | `(ns, template_id, version)`, `(ns, value, version)` | Namespace |
+| Document | `(ns, document_id, version)` | Namespace |
+| File | `(ns, file_id)` | Namespace |
 
-Documents use identity fields (defined in template) to determine uniqueness:
-- Same identity_hash → Registry returns existing `document_id`, new version created
-- Different identity_hash → Registry returns new `document_id`
-- No identity_fields → always new `document_id` (empty composite key)
+**ID generation flow:** Service computes a composite key → calls Registry → Registry hashes the key and checks for existing entries → returns existing ID (upsert) or generates a new ID. For versioned entities (templates, documents), the entity_id stays the same across versions; `(entity_id, version)` is the true unique key.
 
-```json
-{
-  "template_id": "TPL-000001",
-  "identity_fields": ["email"],  // SHA-256 hash of these fields
-  "data": { "email": "john@example.com", ... }
-}
-```
+**Document identity hash:** Template defines `identity_fields` (e.g., `["email"]`). Document-Store computes SHA-256 of sorted field values → composite key `{namespace, identity_hash, template_id}` → Registry dedup. Same hash = same `document_id`, new version. No identity_fields = empty composite key = always new `document_id`.
+
+**Registry synonyms:** An entry can have multiple composite keys (synonyms) that all resolve to the same canonical `entry_id`. The Registry is a standalone registrar; WIP services are its primary consumer. Synonyms enable cross-namespace linking, ID merging, and external/vendor ID mapping.
+
+**Cross-namespace:** Same entity_id can exist in different namespaces (by design, for restore/migration). Uniqueness is enforced per-namespace, not globally.
+
+See `docs/uniqueness-and-identity.md` for detailed rules, examples, and synonym use cases.
 
 ### Template Versioning
 

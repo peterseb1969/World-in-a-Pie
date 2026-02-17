@@ -1,11 +1,12 @@
 """
 Template definitions for comprehensive testing.
 
-Contains 20+ templates covering:
+Contains 25 templates covering:
 - Base templates (ADDRESS, CONTACT_INFO, MONEY)
 - Domain templates (PERSON, EMPLOYEE, PRODUCT, ORDER, etc.)
 - Inheritance testing (EMPLOYEE -> PERSON, MANAGER -> EMPLOYEE)
 - Edge cases (MINIMAL, ALL_TYPES, DEEP_NEST, LARGE_FIELDS, COMPLEX_RULES)
+- Append-only (EVENT_LOG — no identity_fields, every POST creates a new document)
 """
 from __future__ import annotations
 
@@ -43,6 +44,8 @@ def get_template_definitions() -> list[dict[str, Any]]:
         LARGE_FIELDS,
         COMPLEX_RULES,
         ARRAY_HEAVY,
+        # Append-only (no identity_fields)
+        EVENT_LOG,
     ]
 
 
@@ -931,6 +934,24 @@ ARRAY_HEAVY = {
         {"name": "countries", "type": "array", "array_item_type": "term", "array_terminology_ref": "COUNTRY", "mandatory": False},
         {"name": "addresses", "type": "array", "array_item_type": "object", "array_template_ref": "ADDRESS", "mandatory": False},
         {"name": "money_amounts", "type": "array", "array_item_type": "object", "array_template_ref": "MONEY", "mandatory": False},
+    ],
+    "rules": []
+}
+
+EVENT_LOG = {
+    "value": "EVENT_LOG",
+    "label": "Event Log",
+    "description": "Append-only event log for audit trails and system events. No identity_fields — every submission creates a new document.",
+    "identity_fields": [],
+    "fields": [
+        {"name": "timestamp", "type": "datetime", "mandatory": True},
+        {"name": "event_type", "type": "string", "mandatory": True, "validation": {"max_length": 100}},
+        {"name": "description", "type": "string", "mandatory": True, "validation": {"max_length": 5000}},
+        {"name": "severity", "type": "term", "terminology_ref": "SEVERITY", "mandatory": False},
+        {"name": "source", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
+        {"name": "actor", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
+        {"name": "entity_ref", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
+        {"name": "details", "type": "string", "mandatory": False, "validation": {"max_length": 10000}},
     ],
     "rules": []
 }
