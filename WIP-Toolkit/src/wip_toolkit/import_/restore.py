@@ -70,13 +70,11 @@ def restore_import(
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
     if not skip_documents:
-        # Step 8: Pre-register document IDs (for identity-based docs)
-        console.print("\n[bold cyan]Step 7:[/bold cyan] Pre-registering document IDs")
+        # Step 8: Create documents (with document_id + version pass-through)
+        # Both document_id and version are passed, so the document-store
+        # skips Registry registration entirely (restore-mode bypass).
+        console.print("\n[bold cyan]Step 7:[/bold cyan] Creating documents")
         documents = list(reader.read_entities("documents"))
-        _preregister_documents(client, target_namespace, documents, stats, continue_on_error)
-
-        # Step 9: Create documents
-        console.print("\n[bold cyan]Step 8:[/bold cyan] Creating documents")
         _create_documents(client, target_namespace, documents, batch_size, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
@@ -339,12 +337,17 @@ def _create_templates(
 
 
 def _template_create_payload(tpl: dict, namespace: str) -> dict[str, Any]:
-    """Build a CreateTemplateRequest payload."""
+    """Build a CreateTemplateRequest payload.
+
+    Includes both template_id and version so the template-store
+    skips Registry registration (restore-mode bypass).
+    """
     return {
         "value": tpl["value"],
         "label": tpl.get("label", tpl["value"]),
         "description": tpl.get("description", ""),
         "template_id": tpl["template_id"],
+        "version": tpl.get("version", 1),
         "namespace": namespace,
         "extends": tpl.get("extends"),
         "extends_version": tpl.get("extends_version"),

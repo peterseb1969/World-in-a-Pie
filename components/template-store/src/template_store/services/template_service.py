@@ -1377,7 +1377,10 @@ class TemplateService:
         """
         from ..models.api_models import ActivateTemplateResponse, ActivationDetail
 
-        results = await Template.find({"template_id": template_id}).sort([("version", -1)]).limit(1).to_list()
+        query: dict = {"template_id": template_id}
+        if namespace:
+            query["namespace"] = namespace
+        results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
             raise ValueError(f"Template '{template_id}' not found")
@@ -1538,7 +1541,11 @@ class TemplateService:
             ref: Template ID or value
             namespace: Namespace for value lookups
         """
-        # Try by template_id first (return latest version)
+        # Try by template_id within namespace first (return latest version)
+        results = await Template.find({"template_id": ref, "namespace": namespace}).sort([("version", -1)]).limit(1).to_list()
+        if results:
+            return results[0]
+        # Fallback: try by template_id cross-namespace (for external refs)
         results = await Template.find({"template_id": ref}).sort([("version", -1)]).limit(1).to_list()
         if results:
             return results[0]
