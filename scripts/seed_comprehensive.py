@@ -694,15 +694,26 @@ class WIPSeeder:
                 # Fetch current template to get its fields
                 current = self.template_store.get(
                     f"/api/template-store/templates/{template_id}",
-                    params=self._ns_params(),
                 )
 
                 # Build updated field list (current fields + new field)
                 updated_fields = list(current.get("fields", []))
-                # Strip any resolved metadata that the API doesn't accept back
+                # Strip resolved/computed metadata that the API doesn't accept back
+                strip_keys = [
+                    "terminology_label", "template_ref_label",
+                    "inherited", "inherited_from",
+                ]
                 for f in updated_fields:
-                    f.pop("terminology_label", None)
-                    f.pop("template_ref_label", None)
+                    for k in strip_keys:
+                        f.pop(k, None)
+                    # Strip null values — the API doesn't need them
+                    for k in list(f.keys()):
+                        if f[k] is None:
+                            del f[k]
+                    # Ensure validation is not all-None (simplify to empty or omit)
+                    v = f.get("validation")
+                    if isinstance(v, dict) and all(val is None for val in v.values()):
+                        del f["validation"]
                 updated_fields.append(new_field)
 
                 result = self.template_store.put(
@@ -789,12 +800,12 @@ class WIPSeeder:
         employee_template_id = self.created_templates.get("EMPLOYEE")
         if employee_template_id:
             emp_versions = [
-                {"employee_id": "EMP-VERSION-TEST", "first_name": "Emp", "last_name": "Version",
+                {"employee_id": "EMP-999999", "first_name": "Emp", "last_name": "Version",
                  "email": "emp.version@example.com", "birth_date": "1985-06-15",
                  "hire_date": "2020-01-15", "department": "Human Resources",
                  "job_title": "Analyst", "employment_type": "Full-time",
                  "notes": "Employee v1"},
-                {"employee_id": "EMP-VERSION-TEST", "first_name": "Emp", "last_name": "Version",
+                {"employee_id": "EMP-999999", "first_name": "Emp", "last_name": "Version",
                  "email": "emp.version@example.com", "birth_date": "1985-06-15",
                  "hire_date": "2020-01-15", "department": "Human Resources",
                  "job_title": "Senior Analyst", "employment_type": "Full-time",
