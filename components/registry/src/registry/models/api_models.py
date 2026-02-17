@@ -115,6 +115,11 @@ class RegisterKeyItem(StrictModel):
     entity_type: str = Field(default="terms", description="Entity type")
     entry_id: Optional[str] = Field(None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
+    identity_values: Optional[dict[str, Any]] = Field(
+        None,
+        description="Raw identity field values. Registry computes identity_hash, "
+                    "injects it into composite_key, and creates a synonym with the raw values."
+    )
     source_info: Optional[SourceInfo] = Field(None, description="Source system info")
     created_by: Optional[str] = Field(None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -128,6 +133,7 @@ class RegisterKeyResponse(BaseModel):
     registry_id: Optional[str] = None
     namespace: Optional[str] = None
     entity_type: Optional[str] = None
+    identity_hash: Optional[str] = None
     error: Optional[str] = None
 
 

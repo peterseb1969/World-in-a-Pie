@@ -168,54 +168,70 @@ SAMPLE_TEMPLATES = {
 def create_mock_registry_client():
     """Create a mock registry client for testing.
 
-    Simulates stable document IDs:
-    - With identity fields: composite key = {identity_hash, template_id}
-      returns the same ID on repeat calls (is_new=False)
+    Simulates stable document IDs with centralized identity hashing:
+    - With identity fields: sends identity_values to Registry, which computes
+      identity_hash, uses it for dedup, and returns it
     - Without identity fields: always generates a fresh ID (is_new=True)
     """
     mock_client = AsyncMock(spec=RegistryClient)
 
-    # Track registered composite keys → document IDs for stable ID simulation
-    _registry: dict[str, str] = {}
+    # Track registered composite keys → (document_id, identity_hash) for stable ID simulation
+    _registry: dict[str, tuple[str, str]] = {}
+
+    def _compute_mock_identity_hash(identity_values):
+        """Compute a simple mock hash from identity values."""
+        import hashlib
+        import json
+        canonical = json.dumps(identity_values, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
 
     async def mock_generate_document_id(
-        identity_hash, template_id, has_identity_fields=True,
+        template_id, identity_values=None, has_identity_fields=True,
         created_by=None, namespace="wip", entry_id=None
     ):
         if entry_id:
-            return entry_id, False
-        if has_identity_fields:
-            composite_key = f"{identity_hash}:{template_id}"
+            id_hash = _compute_mock_identity_hash(identity_values) if identity_values else None
+            return entry_id, False, id_hash
+        if has_identity_fields and identity_values:
+            id_hash = _compute_mock_identity_hash(identity_values)
+            composite_key = f"{id_hash}:{template_id}"
             if composite_key in _registry:
-                return _registry[composite_key], False  # existing
+                doc_id, _ = _registry[composite_key]
+                return doc_id, False, id_hash  # existing
             doc_id = str(uuid.uuid4())
-            _registry[composite_key] = doc_id
-            return doc_id, True  # new
+            _registry[composite_key] = (doc_id, id_hash)
+            return doc_id, True, id_hash  # new
         else:
-            return str(uuid.uuid4()), True  # always new
+            return str(uuid.uuid4()), True, None  # always new, no identity
 
     async def mock_generate_document_ids_bulk(items, created_by=None, namespace="wip"):
         results = []
         for item in items:
             has_identity = item.get("has_identity_fields", True)
-            if has_identity:
-                composite_key = f"{item['identity_hash']}:{item['template_id']}"
+            identity_values = item.get("identity_values")
+            if has_identity and identity_values:
+                id_hash = _compute_mock_identity_hash(identity_values)
+                composite_key = f"{id_hash}:{item['template_id']}"
                 if composite_key in _registry:
+                    doc_id, _ = _registry[composite_key]
                     results.append({
                         "status": "already_exists",
-                        "registry_id": _registry[composite_key]
+                        "registry_id": doc_id,
+                        "identity_hash": id_hash,
                     })
                 else:
                     doc_id = str(uuid.uuid4())
-                    _registry[composite_key] = doc_id
+                    _registry[composite_key] = (doc_id, id_hash)
                     results.append({
                         "status": "created",
-                        "registry_id": doc_id
+                        "registry_id": doc_id,
+                        "identity_hash": id_hash,
                     })
             else:
                 results.append({
                     "status": "created",
-                    "registry_id": str(uuid.uuid4())
+                    "registry_id": str(uuid.uuid4()),
+                    "identity_hash": None,
                 })
         return results
 

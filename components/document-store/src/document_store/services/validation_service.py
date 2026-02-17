@@ -22,6 +22,7 @@ class ValidationResult:
         self.errors: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.identity_hash: Optional[str] = None
+        self.identity_values: dict[str, Any] = {}
         self.identity_fields: list[str] = []
         self.template_version: Optional[int] = None
         self.template_value: Optional[str] = None
@@ -1984,9 +1985,10 @@ class ValidationService:
         result: ValidationResult
     ):
         """
-        Stage 6: Identity computation.
+        Stage 7: Identity extraction.
 
-        Computes the identity hash from identity fields.
+        Extracts identity field values from document data.
+        The registry computes the actual identity_hash from these values.
         """
         identity_fields = template.get("identity_fields", [])
         result.identity_fields = identity_fields
@@ -1995,12 +1997,11 @@ class ValidationService:
             result.add_warning(
                 "Template has no identity fields. Document will not support upsert logic."
             )
-            # Generate a hash from all data
-            result.identity_hash = IdentityService.compute_hash(data)
+            result.identity_values = {}
             return
 
         try:
-            result.identity_hash = IdentityService.compute_identity_hash(
+            result.identity_values = IdentityService.extract_identity_values(
                 data, identity_fields
             )
         except ValueError as e:

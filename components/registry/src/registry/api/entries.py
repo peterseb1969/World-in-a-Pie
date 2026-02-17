@@ -333,12 +333,24 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
-    # Phase 1: Compute hashes for items with composite keys
+    # Phase 1: Compute hashes for items with composite keys.
+    # When identity_values is provided, compute identity_hash and inject it
+    # into composite_key before hashing the full key for dedup.
     hashes = []
+    identity_hashes: List[Optional[str]] = []
     for item in items:
-        if item.composite_key:
+        if item.identity_values:
+            # Compute identity_hash from raw values
+            id_hash = HashService.compute_composite_key_hash(item.identity_values)
+            identity_hashes.append(id_hash)
+            # Inject identity_hash into composite_key for dedup
+            item.composite_key["identity_hash"] = id_hash
+            hashes.append(HashService.compute_composite_key_hash(item.composite_key))
+        elif item.composite_key:
+            identity_hashes.append(None)
             hashes.append(HashService.compute_composite_key_hash(item.composite_key))
         else:
+            identity_hashes.append(None)
             hashes.append("")  # Empty composite key = no dedup
 
     # Phase 2: Batch check for existing entries (only for non-empty hashes)
@@ -361,7 +373,7 @@ async def register_keys(
     entries_to_insert: List[RegistryEntry] = []
     insert_indices: List[int] = []
 
-    for i, (item, key_hash) in enumerate(zip(items, hashes)):
+    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes)):
         try:
             # Validate entity_type
             if item.entity_type not in VALID_ENTITY_TYPES:
@@ -383,6 +395,7 @@ async def register_keys(
                         registry_id=existing.entry_id,
                         namespace=existing.namespace,
                         entity_type=existing.entity_type,
+                        identity_hash=id_hash,
                     )
                     exists_count += 1
                     continue
@@ -393,12 +406,24 @@ async def register_keys(
             else:
                 entry_id = await IdGeneratorService.generate(item.namespace, item.entity_type)
 
+            # Build synonyms list — add identity_values as a synonym if provided
+            synonyms = []
+            if item.identity_values and id_hash:
+                synonyms.append(Synonym(
+                    namespace=item.namespace,
+                    entity_type=item.entity_type,
+                    composite_key=item.identity_values,
+                    composite_key_hash=id_hash,
+                    created_by=item.created_by,
+                ))
+
             entry = RegistryEntry(
                 entry_id=entry_id,
                 namespace=item.namespace,
                 entity_type=item.entity_type,
                 primary_composite_key=item.composite_key,
                 primary_composite_key_hash=key_hash,
+                synonyms=synonyms,
                 source_info=item.source_info,
                 status="active",
                 created_by=item.created_by,
@@ -428,6 +453,7 @@ async def register_keys(
                     registry_id=entry.entry_id,
                     namespace=entry.namespace,
                     entity_type=entry.entity_type,
+                    identity_hash=identity_hashes[idx],
                 )
                 created_count += 1
         except Exception as e:

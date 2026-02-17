@@ -102,11 +102,12 @@ class DocumentService:
         """
         Create or update a document.
 
-        Stable ID semantics — Registry drives upsert detection:
-        1. Validate document → get identity_hash, identity_fields
-        2. Call Registry with composite key (or empty if no identity_fields)
-        3. If is_new: create document with version=1
-        4. If existing: find current version, create new version
+        Every document goes through Registry — no exceptions:
+        1. Validate document → extract identity_values
+        2. Call Registry with identity_values → get (document_id, is_new, identity_hash)
+        3. If restore (version provided): create with exact version
+        4. If is_new: create document with version=1
+        5. If existing: find current version, create new version
 
         Args:
             request: Document creation request
@@ -144,60 +145,64 @@ class DocumentService:
 
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)
-        identity_hash = validation_result.identity_hash
 
-        # Restore mode: both document_id and version provided — skip Registry,
-        # insert directly with the given ID and version
-        if request.document_id and request.version is not None:
+        # Whether this is a restore (client provides both ID and version)
+        version_override = request.version if (request.document_id and request.version is not None) else None
+
+        # Every document goes through Registry — no exceptions.
+        # For restore: entry_id=request.document_id tells Registry to use that exact ID.
+        # For normal: entry_id=None lets Registry generate one.
+        start = time.perf_counter()
+        try:
+            registry = get_registry_client()
+            document_id, is_new, identity_hash = await registry.generate_document_id(
+                template_id=request.template_id,
+                identity_values=validation_result.identity_values or None,
+                has_identity_fields=has_identity_fields,
+                created_by=get_identity_string(),
+                namespace=namespace,
+                entry_id=request.document_id,
+            )
+        except RegistryError as e:
+            return None, f"Failed to generate document ID: {str(e)}"
+        timing["2_registry"] = (time.perf_counter() - start) * 1000
+
+        # Store the registry-returned identity_hash on the validation result
+        validation_result.identity_hash = identity_hash
+
+        if version_override is not None:
+            # Restore: use the exact version provided
             start = time.perf_counter()
             result = await self._create_new_document(
-                request, validation_result, document_id=request.document_id,
+                request, validation_result, document_id=document_id,
                 namespace=namespace, synonyms=request.synonyms,
-                version_override=request.version,
+                version_override=version_override,
             )
             timing["3_restore"] = (time.perf_counter() - start) * 1000
-        else:
-            # Normal mode: Registry drives ID generation and upsert detection
-            # If request.document_id is provided without version, Registry uses it as entry_id
+        elif is_new:
+            # Brand new document
             start = time.perf_counter()
-            try:
-                registry = get_registry_client()
-                document_id, is_new = await registry.generate_document_id(
-                    identity_hash=identity_hash,
-                    template_id=request.template_id,
-                    has_identity_fields=has_identity_fields,
-                    created_by=get_identity_string(),
-                    namespace=namespace,
-                    entry_id=request.document_id,
+            result = await self._create_new_document(
+                request, validation_result, document_id=document_id,
+                namespace=namespace, synonyms=request.synonyms
+            )
+            timing["3_create_new"] = (time.perf_counter() - start) * 1000
+        else:
+            # Existing identity — find current active version and create new version
+            start = time.perf_counter()
+            existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+            if existing:
+                result = await self._create_new_version(
+                    request, existing, validation_result,
+                    document_id=document_id, namespace=namespace
                 )
-            except RegistryError as e:
-                return None, f"Failed to generate document ID: {str(e)}"
-            timing["2_registry"] = (time.perf_counter() - start) * 1000
-
-            if is_new:
-                # Brand new document
-                start = time.perf_counter()
+            else:
+                # No active version found (all inactive?) — create as version 1
                 result = await self._create_new_document(
                     request, validation_result, document_id=document_id,
                     namespace=namespace, synonyms=request.synonyms
                 )
-                timing["3_create_new"] = (time.perf_counter() - start) * 1000
-            else:
-                # Existing identity — find current active version and create new version
-                start = time.perf_counter()
-                existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
-                if existing:
-                    result = await self._create_new_version(
-                        request, existing, validation_result,
-                        document_id=document_id, namespace=namespace
-                    )
-                else:
-                    # No active version found (all inactive?) — create as version 1
-                    result = await self._create_new_document(
-                        request, validation_result, document_id=document_id,
-                        namespace=namespace, synonyms=request.synonyms
-                    )
-                timing["3_create_version"] = (time.perf_counter() - start) * 1000
+            timing["3_create_version"] = (time.perf_counter() - start) * 1000
 
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
@@ -890,26 +895,16 @@ class DocumentService:
                 results=sorted(results, key=lambda r: r.index)
             )
 
-        # Stage 2: Batch check for existing documents
-        start = time.perf_counter()
-        identity_hashes = [vr[2].identity_hash for vr in validation_results]
-        existing_docs = await Document.find({
-            "namespace": namespace,
-            "identity_hash": {"$in": identity_hashes},
-            "status": DocumentStatus.ACTIVE.value
-        }).to_list()
-        existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
-        timing["2_find_existing"] = (time.perf_counter() - start) * 1000
-
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Stage 3: Bulk request IDs from Registry (composite key for identity-based upsert)
+        # Stage 2: Bulk request IDs from Registry (sends identity_values,
+        # gets back identity_hash for each item)
         start = time.perf_counter()
         registry = get_registry_client()
         registry_items = [
             {
-                "identity_hash": vr[2].identity_hash,
+                "identity_values": vr[2].identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
             }
@@ -929,7 +924,7 @@ class DocumentService:
                 results.append(BulkCreateResult(
                     index=i, status="error", error=f"Registry error: {str(e)}"
                 ))
-            timing["3_registry_bulk"] = (time.perf_counter() - start) * 1000
+            timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
             timing["total"] = (time.perf_counter() - total_start) * 1000
             self._record_creation_timing(timing)
             return BulkCreateResponse(
@@ -938,7 +933,23 @@ class DocumentService:
                 results=sorted(results, key=lambda r: r.index)
             )
 
-        timing["3_registry_bulk"] = (time.perf_counter() - start) * 1000
+        timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
+
+        # Assign registry-returned identity_hashes back to validation results
+        for (_, _, vr), reg_result in zip(validation_results, registry_results):
+            if reg_result.get("status") != "error":
+                vr.identity_hash = reg_result.get("identity_hash")
+
+        # Stage 3: Batch check for existing documents using registry-returned hashes
+        start = time.perf_counter()
+        identity_hashes = [vr[2].identity_hash for vr in validation_results if vr[2].identity_hash]
+        existing_docs = await Document.find({
+            "namespace": namespace,
+            "identity_hash": {"$in": identity_hashes},
+            "status": DocumentStatus.ACTIVE.value
+        }).to_list() if identity_hashes else []
+        existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
+        timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
         start = time.perf_counter()
@@ -1093,7 +1104,14 @@ class DocumentService:
         data: dict[str, Any]
     ) -> ValidationResponse:
         """Validate document without saving."""
+        from .identity_service import IdentityService
+
         result = await self.validation_service.validate(template_id, data)
+
+        # Dry-run: compute identity_hash locally (no Registry side effects)
+        identity_hash = None
+        if result.valid and result.identity_values:
+            identity_hash = IdentityService.compute_hash(result.identity_values)
 
         return ValidationResponse(
             valid=result.valid,
@@ -1107,7 +1125,7 @@ class DocumentService:
                 for e in result.errors
             ],
             warnings=result.warnings,
-            identity_hash=result.identity_hash,
+            identity_hash=identity_hash,
             template_version=result.template_version,
             term_references=result.term_references,
             references=result.references,

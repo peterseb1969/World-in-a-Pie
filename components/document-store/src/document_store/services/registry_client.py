@@ -53,32 +53,33 @@ class RegistryClient:
 
     async def generate_document_id(
         self,
-        identity_hash: str,
         template_id: str,
+        identity_values: Optional[dict[str, Any]] = None,
         has_identity_fields: bool = True,
         created_by: Optional[str] = None,
         namespace: str = "wip",
         entry_id: Optional[str] = None,
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, Optional[str]]:
         """
         Generate or retrieve a document ID from the Registry.
 
-        With identity_fields: uses composite key {identity_hash, template_id}
-        for dedup — Registry returns existing ID if same identity exists.
+        With identity_fields: sends identity_values to Registry which computes
+        identity_hash, injects it into composite_key for dedup, and creates a
+        synonym with the raw values.
 
         Without identity_fields: uses empty composite key — Registry always
         generates a fresh ID (unless entry_id is provided).
 
         Args:
-            identity_hash: Document identity hash
             template_id: Template ID the document conforms to
+            identity_values: Raw identity field values (Registry computes hash)
             has_identity_fields: Whether the template has identity fields
             created_by: User or system creating this
             namespace: Namespace for the document (default: wip)
             entry_id: Pre-assigned ID (for restore/migration)
 
         Returns:
-            Tuple of (document_id, is_new) — is_new=False means existing identity
+            Tuple of (document_id, is_new, identity_hash)
 
         Raises:
             RegistryError: If registration fails
@@ -86,16 +87,16 @@ class RegistryClient:
         if has_identity_fields:
             composite_key = {
                 "namespace": namespace,
-                "identity_hash": identity_hash,
-                "template_id": template_id
+                "template_id": template_id,
             }
         else:
             composite_key = {}
 
-        item = {
+        item: dict[str, Any] = {
             "namespace": namespace,
             "entity_type": "documents",
             "composite_key": composite_key,
+            "identity_values": identity_values if has_identity_fields else None,
             "created_by": created_by,
             "metadata": {"type": "document"},
         }
@@ -121,7 +122,8 @@ class RegistryClient:
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
             is_new = result["status"] == "created"
-            return result["registry_id"], is_new
+            identity_hash = result.get("identity_hash")
+            return result["registry_id"], is_new, identity_hash
 
     async def generate_document_ids_bulk(
         self,
@@ -132,37 +134,41 @@ class RegistryClient:
         """
         Generate multiple document IDs from the Registry in a single call.
 
-        Items with has_identity_fields=True use composite key for dedup.
+        Items with has_identity_fields=True send identity_values for the Registry
+        to compute identity_hash, inject into composite_key, and create synonyms.
         Items without use empty composite key.
 
         Args:
-            items: List of dicts with identity_hash, template_id, has_identity_fields
+            items: List of dicts with identity_values, template_id, has_identity_fields
             created_by: User or system creating these
             namespace: Namespace for the documents (default: wip)
 
         Returns:
-            List of registration results with IDs and status (created/already_exists)
+            List of registration results with IDs, status, and identity_hash
 
         Raises:
             RegistryError: If registration fails
         """
         registry_items = []
         for item in items:
-            if item.get("has_identity_fields", True):
+            has_identity = item.get("has_identity_fields", True)
+            if has_identity:
                 composite_key = {
                     "namespace": namespace,
-                    "identity_hash": item["identity_hash"],
                     "template_id": item["template_id"],
                 }
+                identity_values = item.get("identity_values")
             else:
                 composite_key = {}
+                identity_values = None
 
             registry_items.append({
                 "namespace": namespace,
                 "entity_type": "documents",
                 "composite_key": composite_key,
+                "identity_values": identity_values,
                 "created_by": created_by,
-                "metadata": {"type": "document"}
+                "metadata": {"type": "document"},
             })
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:

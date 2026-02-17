@@ -460,6 +460,143 @@ class TestEntryDetailAPI:
         assert data["synonyms"][0]["composite_key"]["alt_key"] == "VendorDetailSynTest"
 
 
+class TestIdentityValuesRegistration:
+    """Tests for the identity_values registration flow."""
+
+    @pytest.mark.asyncio
+    async def test_register_with_identity_values_creates_synonym(self, client: AsyncClient, auth_headers: dict):
+        """Test that identity_values creates a synonym with raw values."""
+        response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "documents",
+                "composite_key": {"namespace": "default", "template_id": "TPL-000001"},
+                "identity_values": {"email": "john@example.com", "name": "John Doe"},
+            }],
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == 1
+        result = data["results"][0]
+        assert result["status"] == "created"
+        assert result["identity_hash"] is not None
+        entry_id = result["registry_id"]
+        identity_hash = result["identity_hash"]
+
+        # Verify the entry has a synonym with raw identity values
+        detail = await client.get(
+            f"/api/registry/entries/{entry_id}",
+            headers=auth_headers
+        )
+        assert detail.status_code == 200
+        entry = detail.json()
+        assert len(entry["synonyms"]) == 1
+        syn = entry["synonyms"][0]
+        assert syn["composite_key"] == {"email": "john@example.com", "name": "John Doe"}
+
+        # Verify identity_hash was injected into primary composite key
+        assert entry["primary_composite_key"]["identity_hash"] == identity_hash
+
+        # Verify raw values appear in search_values
+        assert "john@example.com" in entry["search_values"]
+        assert "John Doe" in entry["search_values"]
+
+    @pytest.mark.asyncio
+    async def test_register_same_identity_values_returns_existing(self, client: AsyncClient, auth_headers: dict):
+        """Test that registering same identity_values returns already_exists with same identity_hash."""
+        identity_values = {"email": "jane@example.com"}
+        composite_key = {"namespace": "default", "template_id": "TPL-000002"}
+
+        # First registration
+        resp1 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "documents",
+                "composite_key": composite_key.copy(),
+                "identity_values": identity_values,
+            }],
+            headers=auth_headers
+        )
+        assert resp1.status_code == 200
+        r1 = resp1.json()["results"][0]
+        assert r1["status"] == "created"
+        first_id = r1["registry_id"]
+        first_hash = r1["identity_hash"]
+
+        # Second registration with same identity_values
+        resp2 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "documents",
+                "composite_key": composite_key.copy(),
+                "identity_values": identity_values,
+            }],
+            headers=auth_headers
+        )
+        assert resp2.status_code == 200
+        r2 = resp2.json()["results"][0]
+        assert r2["status"] == "already_exists"
+        assert r2["registry_id"] == first_id
+        assert r2["identity_hash"] == first_hash
+
+    @pytest.mark.asyncio
+    async def test_register_without_identity_values_no_synonym(self, client: AsyncClient, auth_headers: dict):
+        """Test backwards compatibility: no identity_values means no synonym created."""
+        response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"product_id": "PROD-BW-001"},
+            }],
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["created"] == 1
+        result = data["results"][0]
+        assert result["identity_hash"] is None
+        entry_id = result["registry_id"]
+
+        # Verify no synonyms
+        detail = await client.get(
+            f"/api/registry/entries/{entry_id}",
+            headers=auth_headers
+        )
+        assert detail.status_code == 200
+        entry = detail.json()
+        assert len(entry["synonyms"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_identity_values_searchable_via_unified_search(self, client: AsyncClient, auth_headers: dict):
+        """Test that identity_values are searchable via unified search."""
+        await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "documents",
+                "composite_key": {"namespace": "default", "template_id": "TPL-000001"},
+                "identity_values": {"employee_id": "EMP-SEARCHTEST-42"},
+            }],
+            headers=auth_headers
+        )
+
+        # Search for identity value
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": "EMP-SEARCHTEST"},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        assert any("EMP-SEARCHTEST-42" in item.get("matched_value", "") for item in data["items"])
+
+
 class TestSearchAPI:
     """Tests for search API."""
 
