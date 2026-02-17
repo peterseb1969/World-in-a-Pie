@@ -124,7 +124,13 @@ const router = createRouter({
     {
       path: '/registry',
       name: 'registry',
-      component: () => import('@/views/RegistryView.vue')
+      component: () => import('@/views/registry/RegistryListView.vue')
+    },
+    {
+      path: '/registry/:id',
+      name: 'registry-detail',
+      component: () => import('@/views/registry/RegistryDetailView.vue'),
+      props: true
     }
   ]
 })

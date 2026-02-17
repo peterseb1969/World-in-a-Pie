@@ -487,6 +487,80 @@ class DeleteResponse(BaseModel):
 # Export/Import API Models
 # =============================================================================
 
+# =============================================================================
+# Unified Search API Models
+# =============================================================================
+
+class UnifiedSearchResultItem(BaseModel):
+    """A single result from unified search."""
+
+    entry_id: str
+    namespace: str
+    entity_type: str
+    status: str
+    is_preferred: bool
+    primary_composite_key: dict[str, Any]
+    synonyms: list[Synonym] = Field(default_factory=list)
+    additional_ids: list[dict[str, str]] = Field(default_factory=list)
+    source_info: Optional[SourceInfo] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    created_by: Optional[str] = None
+    updated_at: datetime
+    updated_by: Optional[str] = None
+    matched_via: str = Field(
+        ...,
+        description="How the match was found: entry_id, additional_id, composite_key_value, synonym_key_value"
+    )
+    matched_value: str = Field(
+        ...,
+        description="The actual value that matched the query"
+    )
+    resolution_path: str = Field(
+        ...,
+        description="Human-readable resolution path (e.g., 'V1-001 → synonym → T-000042 (wip-terms)')"
+    )
+
+
+class UnifiedSearchResponse(BaseModel):
+    """Response model for unified search."""
+
+    items: list[UnifiedSearchResultItem]
+    total: int
+    page: int
+    page_size: int
+    query: str
+
+
+# =============================================================================
+# Entry Detail API Models
+# =============================================================================
+
+class EntryDetailResponse(BaseModel):
+    """Full detail response for a single registry entry."""
+
+    entry_id: str
+    namespace: str
+    entity_type: str
+    is_preferred: bool
+    primary_composite_key: dict[str, Any]
+    primary_composite_key_hash: str
+    synonyms: list[Synonym] = Field(default_factory=list)
+    additional_ids: list[dict[str, str]] = Field(default_factory=list)
+    source_info: Optional[SourceInfo] = None
+    search_values: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    created_at: datetime
+    created_by: Optional[str] = None
+    updated_at: datetime
+    updated_by: Optional[str] = None
+
+
+# =============================================================================
+# Export/Import API Models
+# =============================================================================
+
 class ExportResponse(BaseModel):
     """Response model for namespace export."""
 

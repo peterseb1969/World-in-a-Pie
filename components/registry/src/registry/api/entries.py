@@ -33,6 +33,9 @@ from ..models.api_models import (
     DeleteResponse,
     BrowseEntryItem,
     BrowseEntriesResponse,
+    UnifiedSearchResultItem,
+    UnifiedSearchResponse,
+    EntryDetailResponse,
 )
 from ..services.id_generator import IdGeneratorService
 from ..services.hash import HashService
@@ -134,6 +137,175 @@ async def browse_entries(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get(
+    "/search",
+    response_model=UnifiedSearchResponse,
+    summary="Unified search across entry IDs, composite keys, and synonyms"
+)
+async def unified_search(
+    q: str = Query(..., min_length=1, description="Search query string"),
+    namespace: Optional[str] = Query(None, description="Filter by namespace"),
+    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(25, ge=1, le=100, description="Page size"),
+    api_key: str = Depends(require_api_key)
+) -> UnifiedSearchResponse:
+    """
+    Unified search across entry IDs, additional IDs, and all composite key values
+    (primary + synonyms). Returns rich results with match context and resolution paths.
+    """
+    import re
+
+    q_stripped = q.strip()
+    escaped_q = re.escape(q_stripped)
+
+    # Build the search query — search across entry_id, additional_ids, and search_values
+    or_conditions = [
+        {"entry_id": {"$regex": escaped_q, "$options": "i"}},
+        {"search_values": {"$regex": escaped_q, "$options": "i"}},
+        {"additional_ids.id": {"$regex": escaped_q, "$options": "i"}},
+    ]
+
+    query: dict = {"$or": or_conditions}
+
+    if namespace:
+        query["namespace"] = namespace
+    if entity_type:
+        query["entity_type"] = entity_type
+    if status:
+        query["status"] = status
+
+    total = await RegistryEntry.find(query).count()
+    skip = (page - 1) * page_size
+    entries = await RegistryEntry.find(query).sort("-created_at").skip(skip).limit(page_size).to_list()
+
+    items = []
+    q_lower = q_stripped.lower()
+
+    for entry in entries:
+        matched_via = "composite_key_value"
+        matched_value = ""
+        resolution_path = ""
+
+        # Determine how the match occurred
+        if q_lower in entry.entry_id.lower():
+            matched_via = "entry_id"
+            matched_value = entry.entry_id
+            resolution_path = f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+        else:
+            # Check additional_ids
+            aid_match = False
+            for aid in entry.additional_ids:
+                aid_id = aid.get("id", "")
+                if q_lower in aid_id.lower():
+                    matched_via = "additional_id"
+                    matched_value = aid_id
+                    aid_ns = aid.get("namespace", "?")
+                    resolution_path = (
+                        f"{aid_id} ({aid_ns}) → merged into → "
+                        f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+                    )
+                    aid_match = True
+                    break
+
+            if not aid_match:
+                # Check primary composite key values
+                primary_match = False
+                for v in entry.primary_composite_key.values():
+                    if isinstance(v, str) and q_lower in v.lower():
+                        matched_value = v
+                        resolution_path = (
+                            f"{v} → primary key → "
+                            f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+                        )
+                        primary_match = True
+                        break
+
+                if not primary_match:
+                    # Check synonym composite key values
+                    for syn in entry.synonyms:
+                        for v in syn.composite_key.values():
+                            if isinstance(v, str) and q_lower in v.lower():
+                                matched_via = "synonym_key_value"
+                                matched_value = v
+                                resolution_path = (
+                                    f"{v} → synonym ({syn.namespace}/{syn.entity_type}) → "
+                                    f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+                                )
+                                break
+                        if matched_value:
+                            break
+
+                    # Fallback if no specific match found
+                    if not matched_value:
+                        matched_value = q_stripped
+                        resolution_path = f"{entry.entry_id} ({entry.namespace}/{entry.entity_type})"
+
+        items.append(UnifiedSearchResultItem(
+            entry_id=entry.entry_id,
+            namespace=entry.namespace,
+            entity_type=entry.entity_type,
+            status=entry.status,
+            is_preferred=entry.is_preferred,
+            primary_composite_key=entry.primary_composite_key,
+            synonyms=entry.synonyms,
+            additional_ids=entry.additional_ids,
+            source_info=entry.source_info,
+            metadata=entry.metadata,
+            created_at=entry.created_at,
+            created_by=entry.created_by,
+            updated_at=entry.updated_at,
+            updated_by=entry.updated_by,
+            matched_via=matched_via,
+            matched_value=matched_value,
+            resolution_path=resolution_path,
+        ))
+
+    return UnifiedSearchResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        query=q_stripped,
+    )
+
+
+@router.get(
+    "/{entry_id}",
+    response_model=EntryDetailResponse,
+    summary="Get a single registry entry by ID"
+)
+async def get_entry_detail(
+    entry_id: str,
+    api_key: str = Depends(require_api_key)
+) -> EntryDetailResponse:
+    """Get full details for a single registry entry by its entry_id."""
+    entry = await RegistryEntry.find_one({"entry_id": entry_id})
+
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"Entry not found: {entry_id}")
+
+    return EntryDetailResponse(
+        entry_id=entry.entry_id,
+        namespace=entry.namespace,
+        entity_type=entry.entity_type,
+        is_preferred=entry.is_preferred,
+        primary_composite_key=entry.primary_composite_key,
+        primary_composite_key_hash=entry.primary_composite_key_hash,
+        synonyms=entry.synonyms,
+        additional_ids=entry.additional_ids,
+        source_info=entry.source_info,
+        search_values=entry.search_values,
+        metadata=entry.metadata,
+        status=entry.status,
+        created_at=entry.created_at,
+        created_by=entry.created_by,
+        updated_at=entry.updated_at,
+        updated_by=entry.updated_by,
     )
 
 

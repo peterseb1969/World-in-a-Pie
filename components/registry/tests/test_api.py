@@ -192,6 +192,274 @@ class TestSynonymAPI:
         assert lookup_response.json()["results"][0]["preferred_id"] == registry_id
 
 
+class TestUnifiedSearchAPI:
+    """Tests for the unified search endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_search_by_entry_id(self, client: AsyncClient, auth_headers: dict):
+        """Test that unified search finds entries by entry_id substring."""
+        reg_response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"name": "Alpha Widget"}
+            }],
+            headers=auth_headers
+        )
+        entry_id = reg_response.json()["results"][0]["registry_id"]
+
+        # Search by a substring of the entry_id
+        search_q = entry_id[:6]
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": search_q},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        found = [item for item in data["items"] if item["entry_id"] == entry_id]
+        assert len(found) == 1
+        assert found[0]["matched_via"] == "entry_id"
+
+    @pytest.mark.asyncio
+    async def test_search_by_composite_key_value(self, client: AsyncClient, auth_headers: dict):
+        """Test that unified search finds entries by composite key value."""
+        await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"product_name": "Titanium Gizmo"}
+            }],
+            headers=auth_headers
+        )
+
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": "Titanium"},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        assert any("Titanium" in item["matched_value"] for item in data["items"])
+
+    @pytest.mark.asyncio
+    async def test_search_by_synonym_value(self, client: AsyncClient, auth_headers: dict):
+        """Test that unified search finds entries via synonym composite key values."""
+        reg_response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"code": "MAIN-X1"}
+            }],
+            headers=auth_headers
+        )
+        entry_id = reg_response.json()["results"][0]["registry_id"]
+
+        # Add a synonym
+        await client.post(
+            "/api/registry/synonyms/add",
+            json=[{
+                "target_id": entry_id,
+                "synonym_namespace": "vendor1",
+                "synonym_entity_type": "terms",
+                "synonym_composite_key": {"vendor_code": "VENDOR-SPECIAL-99"}
+            }],
+            headers=auth_headers
+        )
+
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": "VENDOR-SPECIAL"},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] >= 1
+        found = [item for item in data["items"] if item["entry_id"] == entry_id]
+        assert len(found) == 1
+        assert found[0]["matched_via"] == "synonym_key_value"
+        assert "VENDOR-SPECIAL" in found[0]["resolution_path"]
+
+    @pytest.mark.asyncio
+    async def test_search_with_namespace_filter(self, client: AsyncClient, auth_headers: dict):
+        """Test search filtering by namespace."""
+        await client.post(
+            "/api/registry/entries/register",
+            json=[
+                {"namespace": "default", "entity_type": "terms", "composite_key": {"item": "FilterTestItem"}},
+                {"namespace": "vendor1", "entity_type": "terms", "composite_key": {"item": "FilterTestItem"}},
+            ],
+            headers=auth_headers
+        )
+
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": "FilterTestItem", "namespace": "vendor1"},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert all(item["namespace"] == "vendor1" for item in data["items"])
+
+    @pytest.mark.asyncio
+    async def test_search_pagination(self, client: AsyncClient, auth_headers: dict):
+        """Test search pagination."""
+        # Register 3 entries
+        for i in range(3):
+            await client.post(
+                "/api/registry/entries/register",
+                json=[{
+                    "namespace": "default",
+                    "entity_type": "terms",
+                    "composite_key": {"batch_item": f"PaginationTest-{i}"}
+                }],
+                headers=auth_headers
+            )
+
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": "PaginationTest", "page": 1, "page_size": 2},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+        assert len(data["items"]) == 2
+        assert data["page"] == 1
+        assert data["page_size"] == 2
+
+    @pytest.mark.asyncio
+    async def test_search_by_additional_id(self, client: AsyncClient, auth_headers: dict):
+        """Test that unified search finds entries by merged additional_id."""
+        # Register two entries and merge them
+        reg1 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"name": "Preferred Entry For Merge Search"}
+            }],
+            headers=auth_headers
+        )
+        preferred_id = reg1.json()["results"][0]["registry_id"]
+
+        reg2 = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"name": "Deprecated Entry For Merge Search"}
+            }],
+            headers=auth_headers
+        )
+        deprecated_id = reg2.json()["results"][0]["registry_id"]
+
+        # Merge
+        await client.post(
+            "/api/registry/synonyms/merge",
+            json=[{"preferred_id": preferred_id, "deprecated_id": deprecated_id}],
+            headers=auth_headers
+        )
+
+        # Search for the deprecated ID — should find the preferred entry
+        response = await client.get(
+            "/api/registry/entries/search",
+            params={"q": deprecated_id},
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        found = [item for item in data["items"] if item["entry_id"] == preferred_id]
+        assert len(found) == 1
+        assert found[0]["matched_via"] == "additional_id"
+
+
+class TestEntryDetailAPI:
+    """Tests for the entry detail endpoint."""
+
+    @pytest.mark.asyncio
+    async def test_get_entry_detail(self, client: AsyncClient, auth_headers: dict):
+        """Test fetching full entry details."""
+        reg_response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"detail_test": "DetailValue123"}
+            }],
+            headers=auth_headers
+        )
+        entry_id = reg_response.json()["results"][0]["registry_id"]
+
+        response = await client.get(
+            f"/api/registry/entries/{entry_id}",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["entry_id"] == entry_id
+        assert data["namespace"] == "default"
+        assert data["entity_type"] == "terms"
+        assert data["status"] == "active"
+        assert data["is_preferred"] is True
+        assert data["primary_composite_key"]["detail_test"] == "DetailValue123"
+        assert "primary_composite_key_hash" in data
+        assert isinstance(data["synonyms"], list)
+        assert isinstance(data["additional_ids"], list)
+        assert isinstance(data["search_values"], list)
+        assert "DetailValue123" in data["search_values"]
+
+    @pytest.mark.asyncio
+    async def test_get_entry_detail_not_found(self, client: AsyncClient, auth_headers: dict):
+        """Test 404 for non-existent entry."""
+        response = await client.get(
+            "/api/registry/entries/NONEXISTENT-ID-999",
+            headers=auth_headers
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_get_entry_detail_with_synonyms(self, client: AsyncClient, auth_headers: dict):
+        """Test detail includes synonyms."""
+        reg_response = await client.post(
+            "/api/registry/entries/register",
+            json=[{
+                "namespace": "default",
+                "entity_type": "terms",
+                "composite_key": {"main_key": "DetailSynTest"}
+            }],
+            headers=auth_headers
+        )
+        entry_id = reg_response.json()["results"][0]["registry_id"]
+
+        # Add synonym
+        await client.post(
+            "/api/registry/synonyms/add",
+            json=[{
+                "target_id": entry_id,
+                "synonym_namespace": "vendor1",
+                "synonym_entity_type": "terms",
+                "synonym_composite_key": {"alt_key": "VendorDetailSynTest"}
+            }],
+            headers=auth_headers
+        )
+
+        response = await client.get(
+            f"/api/registry/entries/{entry_id}",
+            headers=auth_headers
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["synonyms"]) == 1
+        assert data["synonyms"][0]["namespace"] == "vendor1"
+        assert data["synonyms"][0]["composite_key"]["alt_key"] == "VendorDetailSynTest"
+
+
 class TestSearchAPI:
     """Tests for search API."""
 

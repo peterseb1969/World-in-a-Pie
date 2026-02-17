@@ -55,7 +55,13 @@ import type {
   // Registry types
   RegistryEntryListResponse,
   RegistryLookupResponse,
-  RegistryBrowseParams
+  RegistryBrowseParams,
+  RegistrySearchResponse,
+  RegistrySearchParams,
+  RegistryEntryFull,
+  AddSynonymRequest,
+  RemoveSynonymRequest,
+  MergeRequest
 } from '@/types'
 
 // =============================================================================
@@ -1045,6 +1051,64 @@ class RegistryClient extends BaseApiClient {
       }]
     )
     return response.data.results[0]?.results as unknown as RegistryLookupResponse[] ?? []
+  }
+
+  // ===========================================================================
+  // UNIFIED SEARCH & DETAIL ENDPOINTS
+  // ===========================================================================
+
+  async unifiedSearch(params: RegistrySearchParams): Promise<RegistrySearchResponse> {
+    const response = await this.client.get<RegistrySearchResponse>('/entries/search', { params })
+    return response.data
+  }
+
+  async getEntry(entryId: string): Promise<RegistryEntryFull> {
+    const response = await this.client.get<RegistryEntryFull>(`/entries/${entryId}`)
+    return response.data
+  }
+
+  // ===========================================================================
+  // MUTATION ENDPOINTS
+  // ===========================================================================
+
+  async addSynonym(request: AddSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
+    const response = await this.client.post<Array<{ status: string; registry_id?: string; error?: string }>>(
+      '/synonyms/add',
+      [request]
+    )
+    return response.data[0]
+  }
+
+  async removeSynonym(request: RemoveSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
+    const response = await this.client.post<Array<{ status: string; registry_id?: string; error?: string }>>(
+      '/synonyms/remove',
+      [request]
+    )
+    return response.data[0]
+  }
+
+  async mergeEntries(request: MergeRequest): Promise<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> {
+    const response = await this.client.post<Array<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }>>(
+      '/synonyms/merge',
+      [request]
+    )
+    return response.data[0]
+  }
+
+  async deactivateEntry(entryId: string, updatedBy?: string): Promise<{ status: string }> {
+    const response = await this.client.delete<Array<{ status: string }>>(
+      '/entries',
+      { data: [{ entry_id: entryId, updated_by: updatedBy }] }
+    )
+    return response.data[0]
+  }
+
+  async deactivateEntries(entryIds: string[], updatedBy?: string): Promise<Array<{ status: string; registry_id?: string }>> {
+    const response = await this.client.delete<Array<{ status: string; registry_id?: string }>>(
+      '/entries',
+      { data: entryIds.map(id => ({ entry_id: id, updated_by: updatedBy })) }
+    )
+    return response.data
   }
 }
 
