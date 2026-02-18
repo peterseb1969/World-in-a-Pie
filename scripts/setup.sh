@@ -1589,7 +1589,8 @@ start_infrastructure() {
     log_debug "Compose files: $compose_files"
 
     # Start infrastructure (use absolute path for env file too)
-    podman-compose --env-file "$PROJECT_ROOT/.env" $compose_files up -d
+    # --force-recreate ensures containers pick up changed .env values
+    podman-compose --env-file "$PROJECT_ROOT/.env" $compose_files up -d --force-recreate
 
     # Wait for MongoDB
     log_info "Waiting for MongoDB..."
@@ -1675,7 +1676,7 @@ start_service() {
 
     log_info "Starting $name..."
     cd "$PROJECT_ROOT/components/$dir"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
 
     # Wait for health
     local retries=30
@@ -1694,7 +1695,7 @@ start_services() {
     log_step "Starting Registry and initializing namespaces..."
 
     cd "$PROJECT_ROOT/components/registry"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
 
     # Wait for Registry
     local retries=30
@@ -1736,7 +1737,7 @@ start_services() {
 
     log_step "Starting WIP Console..."
     cd "$PROJECT_ROOT/ui/wip-console"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
     log_info "Waiting for Console to start..."
     sleep 8
 }
