@@ -8,6 +8,7 @@ import Divider from 'primevue/divider'
 import Message from 'primevue/message'
 import { useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import { oidcProviderName, isOidcEnabled } from '@/config/auth'
+import { isFilesEnabled, isReportingEnabled } from '@/config/modules'
 import NamespaceSelector from './NamespaceSelector.vue'
 
 const oidcEnabled = isOidcEnabled()
@@ -46,74 +47,81 @@ interface MenuSection {
   items: MenuItem[]
 }
 
-const menuSections: MenuSection[] = [
-  {
-    items: [
-      { label: 'Dashboard', icon: 'pi pi-home', route: '/' }
-    ]
-  },
-  {
-    items: [
-      {
-        label: 'Terminologies',
-        icon: 'pi pi-book',
-        children: [
-          { label: 'Browse', icon: 'pi pi-list', route: '/terminologies' },
-          { label: 'New Terminology', icon: 'pi pi-plus', route: '/terminologies?create=true' },
-          { label: 'Import', icon: 'pi pi-upload', route: '/terminologies/import' },
-          { label: 'Validate', icon: 'pi pi-check-circle', route: '/terminologies/validate' }
-        ]
-      },
-      {
-        label: 'Templates',
-        icon: 'pi pi-file',
-        children: [
-          { label: 'Browse', icon: 'pi pi-list', route: '/templates' },
-          { label: 'New Template', icon: 'pi pi-plus', route: '/templates/new' }
-        ]
-      },
-      {
-        label: 'Documents',
-        icon: 'pi pi-folder',
-        children: [
-          { label: 'Browse', icon: 'pi pi-list', route: '/documents' },
-          { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
-          { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
-        ]
-      },
-      {
-        label: 'Files',
-        icon: 'pi pi-images',
-        children: [
-          { label: 'Browse', icon: 'pi pi-list', route: '/files' },
-          { label: 'Orphans', icon: 'pi pi-exclamation-triangle', route: '/files/orphans' },
-          { label: 'Upload', icon: 'pi pi-upload', route: '/files/upload' }
-        ]
-      }
-    ]
-  },
-  {
-    items: [
-      { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' },
-      { label: 'Registry', icon: 'pi pi-id-card', route: '/registry' },
-      {
-        label: 'Audit Trail',
-        icon: 'pi pi-history',
-        children: [
-          { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
-          { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
-        ]
-      }
-    ]
+const filesEnabled = isFilesEnabled()
+const reportingEnabled = isReportingEnabled()
+
+const menuSections = computed<MenuSection[]>(() => {
+  const dataItems: MenuItem[] = [
+    {
+      label: 'Terminologies',
+      icon: 'pi pi-book',
+      children: [
+        { label: 'Browse', icon: 'pi pi-list', route: '/terminologies' },
+        { label: 'New Terminology', icon: 'pi pi-plus', route: '/terminologies?create=true' },
+        { label: 'Import', icon: 'pi pi-upload', route: '/terminologies/import' },
+        { label: 'Validate', icon: 'pi pi-check-circle', route: '/terminologies/validate' }
+      ]
+    },
+    {
+      label: 'Templates',
+      icon: 'pi pi-file',
+      children: [
+        { label: 'Browse', icon: 'pi pi-list', route: '/templates' },
+        { label: 'New Template', icon: 'pi pi-plus', route: '/templates/new' }
+      ]
+    },
+    {
+      label: 'Documents',
+      icon: 'pi pi-folder',
+      children: [
+        { label: 'Browse', icon: 'pi pi-list', route: '/documents' },
+        { label: 'Table View', icon: 'pi pi-table', route: '/documents/table' },
+        { label: 'New Document', icon: 'pi pi-plus', route: '/documents/new' }
+      ]
+    },
+  ]
+
+  if (filesEnabled) {
+    dataItems.push({
+      label: 'Files',
+      icon: 'pi pi-images',
+      children: [
+        { label: 'Browse', icon: 'pi pi-list', route: '/files' },
+        { label: 'Orphans', icon: 'pi pi-exclamation-triangle', route: '/files/orphans' },
+        { label: 'Upload', icon: 'pi pi-upload', route: '/files/upload' }
+      ]
+    })
   }
-]
+
+  const adminItems: MenuItem[] = [
+    { label: 'Namespaces', icon: 'pi pi-database', route: '/namespaces' },
+    { label: 'Registry', icon: 'pi pi-id-card', route: '/registry' },
+  ]
+
+  if (reportingEnabled) {
+    adminItems.push({
+      label: 'Audit Trail',
+      icon: 'pi pi-history',
+      children: [
+        { label: 'Overview', icon: 'pi pi-chart-bar', route: '/audit' },
+        { label: 'Explorer', icon: 'pi pi-search', route: '/audit/explorer' }
+      ]
+    })
+  }
+
+  return [
+    { items: [{ label: 'Dashboard', icon: 'pi pi-home', route: '/' }] },
+    { items: dataItems },
+    { items: adminItems },
+  ]
+})
 
 const expandedMenus = ref<Record<string, boolean>>({
   'Terminologies': true,
   'Templates': true,
   'Documents': true,
-  'Files': true,
-  'Audit Trail': true
+  ...(filesEnabled ? { 'Files': true } : {}),
+  ...(reportingEnabled ? { 'Audit Trail': true } : {}),
 })
 
 function toggleMenu(label: string) {
