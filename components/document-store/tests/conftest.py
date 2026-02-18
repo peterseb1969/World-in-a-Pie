@@ -356,7 +356,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
          patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store), \
          patch('document_store.main.get_registry_client', return_value=mock_registry), \
          patch('document_store.main.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.main.get_def_store_client', return_value=mock_def_store):
+         patch('document_store.main.get_def_store_client', return_value=mock_def_store), \
+         patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store):
         # Create test HTTP client
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:

@@ -1000,8 +1000,10 @@ class TemplateService:
 
         for child in children_by_value.values():
             try:
-                # Skip if already extending the target parent
-                if child.extends == template_id:
+                # Skip if already extending the target parent AND the child
+                # was created/updated after the parent's latest version
+                # (meaning this child version already accounts for the parent update)
+                if child.extends == template_id and child.created_at and parent.created_at and child.created_at >= parent.created_at:
                     unchanged += 1
                     results.append(CascadeResult(
                         value=child.value,
