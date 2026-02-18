@@ -105,11 +105,12 @@ async function saveChanges() {
 
   saving.value = true
   try {
-    file.value = await fileStoreClient.updateMetadata(fileId.value, {
+    await fileStoreClient.updateMetadata(fileId.value, {
       description: editDescription.value || undefined,
       tags: editTags.value.length > 0 ? editTags.value : undefined,
       category: editCategory.value || undefined
     })
+    file.value = await fileStoreClient.getFile(fileId.value)
     editMode.value = false
     uiStore.showSuccess('Saved', 'File metadata updated')
   } catch (e) {

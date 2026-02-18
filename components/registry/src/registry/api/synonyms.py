@@ -13,6 +13,9 @@ from ..models.api_models import (
     RemoveSynonymResponse,
     MergeItem,
     MergeResponse,
+    BulkSynonymAddResponse,
+    BulkSynonymRemoveResponse,
+    BulkMergeResponse,
 )
 from ..services.hash import HashService
 from ..services.auth import require_api_key
@@ -22,13 +25,13 @@ router = APIRouter()
 
 @router.post(
     "/add",
-    response_model=List[AddSynonymResponse],
+    response_model=BulkSynonymAddResponse,
     summary="Add synonyms to existing entries (bulk)"
 )
 async def add_synonyms(
     items: List[AddSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> List[AddSynonymResponse]:
+) -> BulkSynonymAddResponse:
     """Add one or more synonyms to existing registry entries."""
     results = []
 
@@ -93,18 +96,22 @@ async def add_synonyms(
                 input_index=i, status="error", error=str(e)
             ))
 
-    return results
+    return BulkSynonymAddResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status == "added"),
+        failed=sum(1 for r in results if r.status in ("target_not_found", "error")),
+    )
 
 
 @router.post(
     "/remove",
-    response_model=List[RemoveSynonymResponse],
+    response_model=BulkSynonymRemoveResponse,
     summary="Remove synonyms from entries (bulk)"
 )
 async def remove_synonyms(
     items: List[RemoveSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> List[RemoveSynonymResponse]:
+) -> BulkSynonymRemoveResponse:
     """Remove one or more synonyms from registry entries."""
     results = []
 
@@ -152,18 +159,22 @@ async def remove_synonyms(
                 input_index=i, status="error", error=str(e)
             ))
 
-    return results
+    return BulkSynonymRemoveResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status == "removed"),
+        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )
 
 
 @router.post(
     "/merge",
-    response_model=List[MergeResponse],
+    response_model=BulkMergeResponse,
     summary="Merge entries (ID-as-synonym) (bulk)"
 )
 async def merge_entries(
     items: List[MergeItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> List[MergeResponse]:
+) -> BulkMergeResponse:
     """Merge two entries, making the deprecated one a synonym of the preferred."""
     results = []
 
@@ -235,4 +246,8 @@ async def merge_entries(
                 input_index=i, status="error", error=str(e)
             ))
 
-    return results
+    return BulkMergeResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status == "merged"),
+        failed=sum(1 for r in results if r.status in ("preferred_not_found", "deprecated_not_found", "error")),
+    )

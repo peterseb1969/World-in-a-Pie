@@ -167,6 +167,7 @@ class TemplateListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+    pages: int = 0
 
 
 class TemplateUpdateResponse(BaseModel):
@@ -189,36 +190,40 @@ class TemplateUpdateResponse(BaseModel):
 # BULK OPERATION MODELS
 # =============================================================================
 
-class BulkCreateTemplateRequest(StrictModel):
-    """Request to create multiple templates at once."""
-
-    templates: list[CreateTemplateRequest] = Field(
-        ...,
-        description="Templates to create"
-    )
-    created_by: Optional[str] = Field(
-        None,
-        description="User or system creating these templates"
-    )
-
-
-class BulkOperationResult(BaseModel):
+class BulkResultItem(BaseModel):
     """Result of a bulk operation for a single item."""
 
     index: int
-    status: str  # created, updated, error, skipped
+    status: str  # created, updated, deleted, skipped, error
     id: Optional[str] = None
     value: Optional[str] = None
+    version: Optional[int] = None
+    is_new_version: Optional[bool] = None
     error: Optional[str] = None
 
 
-class BulkOperationResponse(BaseModel):
+class BulkResponse(BaseModel):
     """Response for bulk operations."""
 
-    results: list[BulkOperationResult]
+    results: list[BulkResultItem]
     total: int
     succeeded: int
     failed: int
+
+
+class UpdateTemplateItem(UpdateTemplateRequest):
+    """Item in a bulk template update request — includes the ID."""
+
+    template_id: str = Field(..., description="ID of template to update")
+
+
+class DeleteItem(StrictModel):
+    """Item in a bulk delete request."""
+
+    id: str = Field(..., description="ID of entity to delete")
+    version: Optional[int] = Field(None, description="Specific version to deactivate (default: latest)")
+    force: bool = Field(default=False, description="Force deletion even if documents exist")
+    updated_by: Optional[str] = Field(None, description="User performing deletion")
 
 
 # =============================================================================

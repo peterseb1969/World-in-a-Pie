@@ -20,9 +20,10 @@ ACTION_ENDPOINTS: dict[IngestAction, dict[str, Any]] = {
     },
     IngestAction.TERMS_BULK: {
         "base_url_attr": "def_store_url",
-        "path": "/api/def-store/terminologies/{terminology_id}/terms/bulk",
+        "path": "/api/def-store/terminologies/{terminology_id}/terms",
         "method": "POST",
         "path_params": ["terminology_id"],
+        "payload_key": "terms",  # Extract list from payload["terms"]
     },
     IngestAction.TEMPLATES_CREATE: {
         "base_url_attr": "template_store_url",
@@ -31,8 +32,9 @@ ACTION_ENDPOINTS: dict[IngestAction, dict[str, Any]] = {
     },
     IngestAction.TEMPLATES_BULK: {
         "base_url_attr": "template_store_url",
-        "path": "/api/template-store/templates/bulk",
+        "path": "/api/template-store/templates",
         "method": "POST",
+        "payload_key": "templates",  # Extract list from payload["templates"]
     },
     IngestAction.DOCUMENTS_CREATE: {
         "base_url_attr": "document_store_url",
@@ -41,8 +43,9 @@ ACTION_ENDPOINTS: dict[IngestAction, dict[str, Any]] = {
     },
     IngestAction.DOCUMENTS_BULK: {
         "base_url_attr": "document_store_url",
-        "path": "/api/document-store/documents/bulk",
+        "path": "/api/document-store/documents",
         "method": "POST",
+        "payload_key": "documents",  # Extract list from payload["documents"]
     },
 }
 
@@ -108,13 +111,24 @@ class IngestHTTPClient:
 
         url = f"{base_url}{path}"
 
+        # Convert payload to bulk format — all write endpoints expect JSON arrays.
+        # Single-entity actions: wrap dict as [dict].
+        # Bulk actions with payload_key: extract list from payload[key].
+        payload_key = endpoint_config.get("payload_key")
+        if payload_key:
+            request_body = working_payload.get(payload_key, [])
+            if not isinstance(request_body, list):
+                request_body = [request_body]
+        else:
+            request_body = [working_payload]
+
         try:
             logger.debug(f"Forwarding {action.value} to {url}")
 
             response = await self._client.request(
                 method=endpoint_config["method"],
                 url=url,
-                json=working_payload,
+                json=request_body,
                 headers={
                     "X-API-Key": settings.api_key,
                     "Content-Type": "application/json",
@@ -128,7 +142,7 @@ class IngestHTTPClient:
             except Exception:
                 response_data = {"raw": response.text[:1000]}
 
-            # Handle errors
+            # Handle HTTP-level errors (e.g., 422 validation, 401 auth)
             if response.status_code >= 400:
                 error_detail = response_data.get("detail") if response_data else response.text[:500]
                 return IngestResult(
@@ -140,12 +154,17 @@ class IngestHTTPClient:
                     error=f"HTTP {response.status_code}: {error_detail}",
                 )
 
-            # Check for partial success in bulk operations
+            # Check BulkResponse for per-item failures.
+            # All write endpoints return BulkResponse with {results, total, succeeded, failed}.
             status = IngestResultStatus.SUCCESS
-            if "bulk" in action.value and response_data:
+            if response_data and isinstance(response_data, dict):
                 failed_count = response_data.get("failed", 0)
+                total_count = response_data.get("total", 0)
                 if failed_count > 0:
-                    status = IngestResultStatus.PARTIAL
+                    if failed_count >= total_count:
+                        status = IngestResultStatus.FAILED
+                    else:
+                        status = IngestResultStatus.PARTIAL
 
             logger.debug(
                 f"Forwarded {action.value} correlation_id={correlation_id} "

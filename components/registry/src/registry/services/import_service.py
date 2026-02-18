@@ -260,14 +260,14 @@ class ImportService:
 
                 try:
                     response = await client.post(
-                        f"{self.def_store_url}/api/def-store/terminologies/{terminology_id}/terms/bulk",
-                        json={"items": bulk_items},
+                        f"{self.def_store_url}/api/def-store/terminologies/{terminology_id}/terms",
+                        json=bulk_items,
                         headers={"X-API-Key": self.api_key},
                     )
 
                     if response.status_code == 200:
                         result = response.json()
-                        count += result.get("created", 0)
+                        count += result.get("succeeded", 0)
                     else:
                         logger.warning(
                             f"Failed to import terms for {terminology_id}: {response.status_code}"

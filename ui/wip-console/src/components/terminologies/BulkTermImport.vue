@@ -10,7 +10,7 @@ import Tag from 'primevue/tag'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import { useTermStore, useUiStore } from '@/stores'
-import type { CreateTermRequest, BulkOperationResponse } from '@/types'
+import type { CreateTermRequest, BulkResponse } from '@/types'
 
 const props = defineProps<{
   visible: boolean
@@ -30,7 +30,7 @@ const jsonInput = ref('')
 const csvInput = ref('')
 const parsedTerms = ref<CreateTermRequest[]>([])
 const importing = ref(false)
-const importResult = ref<BulkOperationResponse | null>(null)
+const importResult = ref<BulkResponse | null>(null)
 
 watch(
   () => props.visible,
@@ -127,9 +127,7 @@ async function doImport() {
 
   importing.value = true
   try {
-    importResult.value = await termStore.bulkCreateTerms(props.terminologyId, {
-      terms: parsedTerms.value
-    })
+    importResult.value = await termStore.bulkCreateTerms(props.terminologyId, parsedTerms.value)
     step.value = 'result'
     uiStore.showSuccess('Import Complete', `Created ${importResult.value.succeeded} terms`)
   } catch (e) {

@@ -239,14 +239,12 @@ class DocumentQueryResponse(BaseModel):
 # Bulk Operations
 # ============================================================================
 
-class BulkCreateResult(BaseModel):
-    """Result for a single item in bulk create."""
+class BulkResultItem(BaseModel):
+    """Result of a bulk operation for a single item."""
 
     index: int
-    status: str = Field(
-        ...,
-        description="created, updated, unchanged, skipped, or error"
-    )
+    status: str  # created, updated, unchanged, deleted, skipped, error
+    id: Optional[str] = None
     document_id: Optional[str] = None
     identity_hash: Optional[str] = None
     version: Optional[int] = None
@@ -255,34 +253,32 @@ class BulkCreateResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class BulkCreateRequest(StrictModel):
-    """Request for bulk document creation."""
+class BulkResponse(BaseModel):
+    """Response for bulk operations."""
 
-    items: list[DocumentCreateRequest] = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="Documents to create (max 100)"
-    )
-    continue_on_error: bool = Field(
-        default=True,
-        description="Continue processing if an item fails"
-    )
-
-
-class BulkCreateResponse(BaseModel):
-    """Response for bulk document creation."""
-
+    results: list[BulkResultItem]
     total: int
-    created: int
-    updated: int
-    unchanged: int = 0
+    succeeded: int
     failed: int
-    results: list[BulkCreateResult]
     timing: Optional[dict[str, float]] = Field(
         default=None,
         description="Server-side timing breakdown in milliseconds"
     )
+
+
+class DeleteItem(StrictModel):
+    """Item in a bulk delete request."""
+
+    id: str = Field(..., description="ID of entity to delete")
+    force: bool = Field(default=False, description="Force deletion even if referenced")
+    updated_by: Optional[str] = Field(None, description="User performing deletion")
+
+
+class ArchiveItem(StrictModel):
+    """Item in a bulk archive request."""
+
+    id: str = Field(..., description="ID of document to archive")
+    archived_by: Optional[str] = Field(None, description="User performing the archive")
 
 
 # ============================================================================
@@ -414,6 +410,12 @@ class UpdateFileMetadataRequest(StrictModel):
     )
 
 
+class UpdateFileItem(UpdateFileMetadataRequest):
+    """Item in a bulk file metadata update request — includes the ID."""
+
+    file_id: str = Field(..., description="ID of file to update")
+
+
 class FileResponse(BaseModel):
     """Response containing a file entity."""
 
@@ -457,38 +459,6 @@ class FileDownloadResponse(BaseModel):
         ...,
         description="URL expiration time in seconds"
     )
-
-
-class FileBulkResult(BaseModel):
-    """Result for a single item in bulk file operations."""
-
-    index: int
-    status: str = Field(
-        ...,
-        description="success or error"
-    )
-    file_id: Optional[str] = None
-    error: Optional[str] = None
-
-
-class FileBulkDeleteRequest(StrictModel):
-    """Request for bulk file deletion."""
-
-    file_ids: list[str] = Field(
-        ...,
-        min_length=1,
-        max_length=100,
-        description="File IDs to delete (max 100)"
-    )
-
-
-class FileBulkDeleteResponse(BaseModel):
-    """Response for bulk file deletion."""
-
-    total: int
-    deleted: int
-    failed: int
-    results: list[FileBulkResult]
 
 
 class FileIntegrityIssue(BaseModel):

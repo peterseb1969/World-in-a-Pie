@@ -123,6 +123,7 @@ class TerminologyListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+    pages: int = 0
 
 
 # =============================================================================
@@ -259,6 +260,7 @@ class TermListResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+    pages: int = 0
     terminology_id: str
     terminology_value: str
 
@@ -267,36 +269,49 @@ class TermListResponse(BaseModel):
 # BULK OPERATION MODELS
 # =============================================================================
 
-class BulkCreateTermRequest(StrictModel):
-    """Request to create multiple terms at once."""
-
-    terms: list[CreateTermRequest] = Field(
-        ...,
-        description="Terms to create"
-    )
-    created_by: Optional[str] = Field(
-        None,
-        description="User or system creating these terms"
-    )
-
-
-class BulkOperationResult(BaseModel):
+class BulkResultItem(BaseModel):
     """Result of a bulk operation for a single item."""
 
     index: int
-    status: str  # created, updated, error, skipped
+    status: str  # created, updated, deleted, skipped, error
     id: Optional[str] = None
     value: Optional[str] = None
     error: Optional[str] = None
 
 
-class BulkOperationResponse(BaseModel):
+class BulkResponse(BaseModel):
     """Response for bulk operations."""
 
-    results: list[BulkOperationResult]
+    results: list[BulkResultItem]
     total: int
     succeeded: int
     failed: int
+
+
+class UpdateTerminologyItem(UpdateTerminologyRequest):
+    """Item in a bulk terminology update request — includes the ID."""
+
+    terminology_id: str = Field(..., description="ID of terminology to update")
+
+
+class DeleteItem(StrictModel):
+    """Item in a bulk delete request."""
+
+    id: str = Field(..., description="ID of entity to delete")
+    force: bool = Field(default=False, description="Force deletion even if dependencies exist")
+    updated_by: Optional[str] = Field(None, description="User performing deletion")
+
+
+class UpdateTermItem(UpdateTermRequest):
+    """Item in a bulk term update request — includes the ID."""
+
+    term_id: str = Field(..., description="ID of term to update")
+
+
+class DeprecateTermItem(DeprecateTermRequest):
+    """Item in a bulk term deprecate request — includes the ID."""
+
+    term_id: str = Field(..., description="ID of term to deprecate")
 
 
 # =============================================================================

@@ -2,19 +2,20 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ..models.document import DocumentStatus
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     DocumentCreateRequest,
     DocumentResponse,
-    DocumentCreateResponse,
     DocumentListResponse,
     DocumentVersionResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
-    BulkCreateRequest,
-    BulkCreateResponse,
+    DeleteItem,
+    ArchiveItem,
 )
 from ..services.document_service import get_document_service
 from .auth import require_api_key
@@ -24,28 +25,49 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 
 @router.post(
     "",
-    response_model=DocumentCreateResponse,
-    summary="Create or update document",
+    response_model=BulkResponse,
+    summary="Create or update documents",
     description="""
-Create a new document or update an existing one based on identity hash.
+Create one or more documents, or update existing ones based on identity hash.
 
-The document is validated against the specified template before creation.
-If a document with the same identity hash already exists, a new version
-is created and the previous version is marked as inactive.
+Each document is validated against the specified template before creation.
+For single items, uses direct creation. For multiple items, uses optimized
+batch operations with cache warmup.
     """
 )
-async def create_document(
-    request: DocumentCreateRequest,
+async def create_documents(
+    items: list[DocumentCreateRequest] = Body(...),
+    continue_on_error: bool = Query(True, description="Continue processing if an item fails"),
     _: str = Depends(require_api_key)
 ):
-    """Create or update a document. Namespace is specified in the request body (default: "wip")."""
+    """Create or update documents. Namespace is read from each item (default: "wip")."""
     service = get_document_service()
-    response, error = await service.create_document(request, namespace=request.namespace)
 
-    if error:
-        raise HTTPException(status_code=400, detail=error)
-
-    return response
+    if len(items) == 1:
+        # Single item — use direct create path
+        response, error = await service.create_document(items[0], namespace=items[0].namespace)
+        if error:
+            results = [BulkResultItem(index=0, status="error", error=error)]
+        else:
+            if response.is_new:
+                status = "created"
+            elif response.previous_version is not None:
+                status = "updated"
+            else:
+                status = "skipped"
+            results = [BulkResultItem(
+                index=0, status=status,
+                id=response.document_id, document_id=response.document_id,
+                identity_hash=response.identity_hash, version=response.version,
+                is_new=response.is_new, warnings=response.warnings,
+            )]
+        succeeded = sum(1 for r in results if r.status != "error")
+        failed = sum(1 for r in results if r.status == "error")
+        return BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
+    else:
+        # Bulk path — uses cache warmup and batch Registry calls
+        namespace = items[0].namespace if items else "wip"
+        return await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
 
 
 @router.get(
@@ -60,7 +82,7 @@ async def list_documents(
     template_value: Optional[str] = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
 ):
     """List documents with pagination."""
@@ -163,43 +185,55 @@ async def get_latest_document(
 
 
 @router.delete(
-    "/{document_id}",
-    summary="Soft-delete document",
-    description="Soft-delete a document by setting its status to inactive."
+    "",
+    response_model=BulkResponse,
+    summary="Soft-delete documents",
+    description="Soft-delete one or more documents by setting their status to inactive."
 )
-async def delete_document(
-    document_id: str,
-    deleted_by: Optional[str] = Query(None, description="User performing the deletion"),
+async def delete_documents(
+    items: list[DeleteItem] = Body(...),
     _: str = Depends(require_api_key)
 ):
-    """Soft-delete a document."""
+    """Soft-delete one or more documents."""
     service = get_document_service()
-    success = await service.delete_document(document_id, deleted_by)
-
-    if not success:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    return {"status": "deleted", "document_id": document_id}
+    results = []
+    for i, item in enumerate(items):
+        success = await service.delete_document(item.id, item.updated_by)
+        if not success:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+        else:
+            results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.post(
-    "/{document_id}/archive",
-    summary="Archive document",
-    description="Archive a document by setting its status to archived."
+    "/archive",
+    response_model=BulkResponse,
+    summary="Archive documents",
+    description="Archive one or more documents by setting their status to archived."
 )
-async def archive_document(
-    document_id: str,
-    archived_by: Optional[str] = Query(None, description="User performing the archive"),
+async def archive_documents(
+    items: list[ArchiveItem] = Body(...),
     _: str = Depends(require_api_key)
 ):
-    """Archive a document."""
+    """Archive one or more documents."""
     service = get_document_service()
-    success = await service.archive_document(document_id, archived_by)
-
-    if not success:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    return {"status": "archived", "document_id": document_id}
+    results = []
+    for i, item in enumerate(items):
+        success = await service.archive_document(item.id, item.archived_by)
+        if not success:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+        else:
+            results.append(BulkResultItem(index=i, status="updated", id=item.id))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.post(
@@ -223,28 +257,6 @@ async def query_documents(
     """Query documents with filters."""
     service = get_document_service()
     return await service.query_documents(request)
-
-
-@router.post(
-    "/bulk",
-    response_model=BulkCreateResponse,
-    summary="Bulk create documents",
-    description="""
-Create multiple documents in a single request.
-
-Each document is validated and created/updated independently.
-By default, processing continues even if some items fail.
-    """
-)
-async def bulk_create_documents(
-    request: BulkCreateRequest,
-    _: str = Depends(require_api_key)
-):
-    """Bulk create documents. Namespace is read from each item's namespace field (default: "wip")."""
-    service = get_document_service()
-    # Determine namespace from first item (all items in a bulk request share namespace)
-    namespace = request.items[0].namespace if request.items else "wip"
-    return await service.bulk_create(request, namespace=namespace)
 
 
 @router.get(

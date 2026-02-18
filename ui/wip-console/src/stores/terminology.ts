@@ -116,7 +116,8 @@ export const useTerminologyStore = defineStore('terminology', () => {
     error.value = null
     try {
       const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
-      const created = await defStoreClient.createTerminology(payload)
+      const result = await defStoreClient.createTerminology(payload)
+      const created = await defStoreClient.getTerminology(result.id!)
       terminologies.value.unshift(created)
       total.value++
       return created
@@ -132,7 +133,8 @@ export const useTerminologyStore = defineStore('terminology', () => {
     loading.value = true
     error.value = null
     try {
-      const updated = await defStoreClient.updateTerminology(id, data)
+      await defStoreClient.updateTerminology(id, data)
+      const updated = await defStoreClient.getTerminology(id)
       const index = terminologies.value.findIndex(t => t.terminology_id === id)
       if (index !== -1) {
         terminologies.value[index] = updated

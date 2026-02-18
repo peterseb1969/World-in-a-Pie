@@ -81,7 +81,7 @@ def fresh_import(
     # Step 8: Register synonyms
     if register_synonyms:
         console.print("\n[bold cyan]Step 7:[/bold cyan] Registering ID synonyms")
-        _register_synonyms(client, target_namespace, remapper, stats, continue_on_error)
+        _register_synonyms(client, target_namespace, reader, remapper, stats, continue_on_error)
 
     stats.id_mappings = remapper.total_mappings
     return stats
@@ -132,18 +132,22 @@ def _create_terminologies(
                 "metadata": t.get("metadata"),
                 "created_by": "wip-toolkit-fresh",
             }
-            result = client.post("def-store", "/terminologies", json=payload)
-            new_id = result["terminology_id"]
-            remapper.add_terminology_mapping(old_id, new_id)
-            stats.created.terminologies += 1
-        except WIPClientError as e:
-            if e.status_code == 409:
+            result = client.post("def-store", "/terminologies", json=[payload])
+            r = result["results"][0]
+            if r["status"] == "created":
+                new_id = r["id"]
+                remapper.add_terminology_mapping(old_id, new_id)
+                stats.created.terminologies += 1
+            elif r["status"] == "error" and "already exists" in r.get("error", ""):
                 stats.skipped.terminologies += 1
             else:
                 stats.failed.terminologies += 1
-                stats.errors.append(f"Failed to create terminology {old_id}: {e}")
+                stats.errors.append(f"Failed to create terminology {old_id}: {r.get('error')}")
                 if not continue_on_error:
-                    raise
+                    raise WIPClientError(r.get("error", "Unknown error"))
+        except WIPClientError:
+            if not continue_on_error:
+                raise
 
     console.print(
         f"  Created {stats.created.terminologies}, "
@@ -195,13 +199,14 @@ def _create_terms(
                     "parent_term_id": parent,
                     "translations": t.get("translations", []),
                     "metadata": t.get("metadata", {}),
+                    "created_by": "wip-toolkit-fresh",
                 })
 
             try:
                 result = client.post(
                     "def-store",
-                    f"/terminologies/{new_tid}/terms/bulk",
-                    json={"terms": term_payloads, "created_by": "wip-toolkit-fresh"},
+                    f"/terminologies/{new_tid}/terms",
+                    json=term_payloads,
                 )
                 # Map old IDs to new IDs from results
                 for r in result.get("results", []):
@@ -264,8 +269,17 @@ def _create_templates(
                         "created_by": "wip-toolkit-fresh",
                         "status": "draft",
                     }
-                    result = client.post("template-store", "/templates", json=payload)
-                    new_tid = result["template_id"]
+                    result = client.post("template-store", "/templates", json=[payload])
+                    r = result["results"][0]
+                    if r["status"] == "error":
+                        stats.failed.templates += 1
+                        stats.errors.append(
+                            f"Failed to create template {old_tid} v{tpl.get('version', '?')}: {r.get('error')}"
+                        )
+                        if not continue_on_error:
+                            raise WIPClientError(r.get("error", "Unknown error"))
+                        continue
+                    new_tid = r["id"]
                     remapper.add_template_mapping(old_tid, new_tid)
                 else:
                     # Subsequent versions: PUT to create new version
@@ -283,14 +297,20 @@ def _create_templates(
                         "reporting": remapped.get("reporting"),
                         "updated_by": "wip-toolkit-fresh",
                     }
-                    client.put("template-store", f"/templates/{new_tid}", json=payload)
+                    payload["template_id"] = new_tid
+                    result = client.put("template-store", "/templates", json=[payload])
+                    r = result["results"][0]
+                    if r["status"] == "error":
+                        stats.failed.templates += 1
+                        stats.errors.append(
+                            f"Failed to update template {old_tid} v{tpl.get('version', '?')}: {r.get('error')}"
+                        )
+                        if not continue_on_error:
+                            raise WIPClientError(r.get("error", "Unknown error"))
+                        continue
 
                 stats.created.templates += 1
-            except WIPClientError as e:
-                stats.failed.templates += 1
-                stats.errors.append(
-                    f"Failed to create template {old_tid} v{tpl.get('version', '?')}: {e}"
-                )
+            except WIPClientError:
                 if not continue_on_error:
                     raise
 
@@ -384,8 +404,9 @@ def _create_documents(
 
         try:
             result = client.post(
-                "document-store", "/documents/bulk",
-                json={"items": items, "continue_on_error": continue_on_error},
+                "document-store", "/documents",
+                json=items,
+                params={"continue_on_error": str(continue_on_error).lower()},
             )
             for r in result.get("results", []):
                 idx = r.get("index", 0)
@@ -397,7 +418,7 @@ def _create_documents(
                     stats.errors.append(
                         f"Document {old_doc_ids[idx]}: {r['error']}"
                     )
-            stats.created.documents += result.get("created", 0) + result.get("updated", 0)
+            stats.created.documents += result.get("succeeded", 0)
             stats.failed.documents += result.get("failed", 0)
         except WIPClientError as e:
             stats.failed.documents += len(batch)
@@ -467,35 +488,86 @@ def _upload_files(
 def _register_synonyms(
     client: WIPClient,
     namespace: str,
+    reader: ArchiveReader,
     remapper: IDRemapper,
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Register all old→new ID mappings as Registry synonyms."""
+    """Register old→new ID mappings and restore _registry synonyms with remapped IDs."""
+    all_items: list[dict] = []
+
+    # Part 1: old→new ID mapping synonyms
     pairs = remapper.all_synonym_pairs()
-    if not pairs:
+    for old_id, new_id, entity_type in pairs:
+        all_items.append({
+            "target_id": new_id,
+            "synonym_namespace": namespace,
+            "synonym_entity_type": entity_type,
+            "synonym_composite_key": {"original_id": old_id},
+            "created_by": "wip-toolkit-fresh",
+        })
+
+    # Part 2: Restore _registry synonyms with remapped IDs
+    # Build a combined remap lookup for scanning composite key values
+    all_maps = [
+        remapper.terminology_map,
+        remapper.term_map,
+        remapper.template_map,
+        remapper.document_map,
+        remapper.file_map,
+    ]
+
+    id_field_for_type = {
+        "terminologies": "terminology_id",
+        "terms": "term_id",
+        "templates": "template_id",
+        "documents": "document_id",
+        "files": "file_id",
+    }
+
+    seen_ids: set[str] = set()
+    for entity_type in id_field_for_type:
+        for entity in reader.read_entities(entity_type):
+            id_field = id_field_for_type[entity_type]
+            old_eid = entity.get(id_field)
+            if not old_eid or old_eid in seen_ids:
+                continue
+
+            registry = entity.get("_registry", {})
+            synonyms = registry.get("synonyms", [])
+            if not synonyms:
+                continue
+
+            seen_ids.add(old_eid)
+
+            # Get the new ID for this entity
+            new_eid = _remap_id(old_eid, all_maps)
+
+            for syn in synonyms:
+                # Remap any ID values in the composite key
+                remapped_key = _remap_composite_key(
+                    syn.get("composite_key", {}), all_maps,
+                )
+                all_items.append({
+                    "target_id": new_eid,
+                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_entity_type": syn.get("entity_type", ""),
+                    "synonym_composite_key": remapped_key,
+                    "created_by": "wip-toolkit-fresh",
+                })
+
+    if not all_items:
         console.print("  No synonyms to register")
         return
 
     batch_size = 100
     total_registered = 0
 
-    for i in range(0, len(pairs), batch_size):
-        batch = pairs[i:i + batch_size]
-        items = [
-            {
-                "target_id": new_id,
-                "synonym_namespace": namespace,
-                "synonym_entity_type": entity_type,
-                "synonym_composite_key": {"original_id": old_id},
-                "created_by": "wip-toolkit-fresh",
-            }
-            for old_id, new_id, entity_type in batch
-        ]
-
+    for i in range(0, len(all_items), batch_size):
+        batch = all_items[i:i + batch_size]
         try:
-            results = client.post("registry", "/synonyms/add", json=items)
-            for r in results if isinstance(results, list) else []:
+            response = client.post("registry", "/synonyms/add", json=batch)
+            for r in response.get("results", []):
                 if r.get("status") in ("added", "already_exists"):
                     total_registered += 1
         except WIPClientError as e:
@@ -505,3 +577,25 @@ def _register_synonyms(
 
     stats.synonyms_registered = total_registered
     console.print(f"  Registered {total_registered} synonym(s)")
+
+
+def _remap_id(old_id: str, all_maps: list[dict[str, str]]) -> str:
+    """Look up an ID across all remap maps. Returns remapped ID or original."""
+    for m in all_maps:
+        if old_id in m:
+            return m[old_id]
+    return old_id
+
+
+def _remap_composite_key(
+    composite_key: dict[str, Any],
+    all_maps: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Remap any ID values found in a composite key dict."""
+    result: dict[str, Any] = {}
+    for k, v in composite_key.items():
+        if isinstance(v, str):
+            result[k] = _remap_id(v, all_maps)
+        else:
+            result[k] = v
+    return result

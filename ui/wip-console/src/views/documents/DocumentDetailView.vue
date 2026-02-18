@@ -195,7 +195,7 @@ async function saveDocument() {
       )
 
       // Check if anything actually changed
-      if (result.previous_version === null && !result.is_new) {
+      if (result.status === 'skipped') {
         // No changes were made
         uiStore.showInfo('No Changes', 'Document was not modified - no new version created')
       } else {

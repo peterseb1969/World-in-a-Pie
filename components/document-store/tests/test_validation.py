@@ -252,16 +252,21 @@ async def test_validate_conditional_required_passes(client: AsyncClient, auth_he
 
 @pytest.mark.asyncio
 async def test_create_document_validation_error(client: AsyncClient, auth_headers: dict):
-    """Test that creating a document with invalid data returns error."""
+    """Test that creating a document with invalid data returns error in BulkResponse."""
     response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
-        json={
+        json=[{
             "template_id": "TPL-000001",
             "data": {
                 "national_id": "invalid"  # Missing required fields and invalid format
             }
-        }
+        }]
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    bulk = response.json()
+    assert bulk["failed"] == 1
+    assert bulk["succeeded"] == 0
+    assert bulk["results"][0]["status"] == "error"
+    assert bulk["results"][0]["error"] is not None

@@ -10,8 +10,6 @@ import type {
   CreateTermRequest,
   UpdateTermRequest,
   DeprecateTermRequest,
-  BulkCreateTermRequest,
-  BulkOperationResponse,
   ImportTerminologyRequest,
   ExportTerminologyResponse,
   ValidateValueRequest,
@@ -23,22 +21,16 @@ import type {
   TemplateListResponse,
   CreateTemplateRequest,
   UpdateTemplateRequest,
-  TemplateUpdateResponse,
-  BulkCreateTemplateRequest,
-  TemplateBulkOperationResponse,
   ValidateTemplateRequest,
   ValidateTemplateResponse,
   // Document types
   Document,
   DocumentListResponse,
   CreateDocumentRequest,
-  DocumentCreateResponse,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
   DocumentQueryParams,
-  BulkCreateDocumentRequest,
-  DocumentBulkOperationResponse,
   TableViewResponse,
   TableViewParams,
   // File types
@@ -46,12 +38,12 @@ import type {
   FileListResponse,
   FileDownloadResponse,
   UpdateFileMetadataRequest,
-  FileBulkDeleteRequest,
-  FileBulkDeleteResponse,
   FileIntegrityResponse,
   FileQueryParams,
   // Shared types
   ApiError,
+  BulkResultItem,
+  BulkResponse,
   // Registry types
   RegistryEntryListResponse,
   RegistryLookupResponse,
@@ -151,6 +143,23 @@ abstract class BaseApiClient {
     this.auth = auth
   }
 
+  protected async bulkWrite<T>(url: string, items: T[], method: 'post' | 'put' | 'patch' | 'delete' = 'post'): Promise<BulkResponse> {
+    let response
+    if (method === 'delete') {
+      response = await this.client.delete<BulkResponse>(url, { data: items })
+    } else {
+      response = await this.client[method]<BulkResponse>(url, items)
+    }
+    return response.data
+  }
+
+  protected async bulkWriteOne<T>(url: string, item: T, method: 'post' | 'put' | 'patch' | 'delete' = 'post'): Promise<BulkResultItem> {
+    const resp = await this.bulkWrite(url, [item], method)
+    const result = resp.results[0]
+    if (result.status === 'error') throw new Error(result.error || 'Operation failed')
+    return result
+  }
+
   // Legacy method for backward compatibility
   setApiKey(key: string) {
     if (key) {
@@ -194,18 +203,16 @@ class DefStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async createTerminology(data: CreateTerminologyRequest): Promise<Terminology> {
-    const response = await this.client.post<Terminology>('/terminologies', data)
-    return response.data
+  async createTerminology(data: CreateTerminologyRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', data)
   }
 
-  async updateTerminology(id: string, data: UpdateTerminologyRequest): Promise<Terminology> {
-    const response = await this.client.put<Terminology>(`/terminologies/${id}`, data)
-    return response.data
+  async updateTerminology(id: string, data: UpdateTerminologyRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'put')
   }
 
-  async deleteTerminology(id: string): Promise<void> {
-    await this.client.delete(`/terminologies/${id}`)
+  async deleteTerminology(id: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', { id }, 'delete')
   }
 
   // ===========================================================================
@@ -230,37 +237,27 @@ class DefStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async createTerm(terminologyId: string, data: CreateTermRequest): Promise<Term> {
-    const response = await this.client.post<Term>(
-      `/terminologies/${terminologyId}/terms`,
-      data
-    )
-    return response.data
+  async createTerm(terminologyId: string, data: CreateTermRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne(`/terminologies/${terminologyId}/terms`, data)
   }
 
-  async updateTerm(termId: string, data: UpdateTermRequest): Promise<Term> {
-    const response = await this.client.put<Term>(`/terms/${termId}`, data)
-    return response.data
+  async updateTerm(termId: string, data: UpdateTermRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', { ...data, term_id: termId }, 'put')
   }
 
-  async deprecateTerm(termId: string, data: DeprecateTermRequest): Promise<Term> {
-    const response = await this.client.post<Term>(`/terms/${termId}/deprecate`, data)
-    return response.data
+  async deprecateTerm(termId: string, data: DeprecateTermRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
   }
 
-  async deleteTerm(termId: string): Promise<void> {
-    await this.client.delete(`/terms/${termId}`)
+  async deleteTerm(termId: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', { id: termId }, 'delete')
   }
 
   async bulkCreateTerms(
     terminologyId: string,
-    data: BulkCreateTermRequest
-  ): Promise<BulkOperationResponse> {
-    const response = await this.client.post<BulkOperationResponse>(
-      `/terminologies/${terminologyId}/terms/bulk`,
-      data
-    )
-    return response.data
+    terms: CreateTermRequest[]
+  ): Promise<BulkResponse> {
+    return this.bulkWrite(`/terminologies/${terminologyId}/terms`, terms)
   }
 
   // ===========================================================================
@@ -269,7 +266,7 @@ class DefStoreClient extends BaseApiClient {
 
   async importTerminology(data: ImportTerminologyRequest): Promise<{
     terminology: Terminology
-    terms_result: BulkOperationResponse
+    terms_result: BulkResponse
   }> {
     const response = await this.client.post('/import-export/import', data)
     return response.data
@@ -359,22 +356,21 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async createTemplate(data: CreateTemplateRequest): Promise<Template> {
-    const response = await this.client.post<Template>('/templates', data)
-    return response.data
+  async createTemplate(data: CreateTemplateRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/templates', data)
   }
 
-  async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<TemplateUpdateResponse> {
-    const response = await this.client.put<TemplateUpdateResponse>(`/templates/${id}`, data)
-    return response.data
+  async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/templates', { ...data, template_id: id }, 'put')
   }
 
-  async deleteTemplate(id: string, options?: { updatedBy?: string; version?: number; force?: boolean }): Promise<void> {
-    const params: Record<string, unknown> = {}
-    if (options?.updatedBy) params.updated_by = options.updatedBy
-    if (options?.version) params.version = options.version
-    if (options?.force) params.force = true
-    await this.client.delete(`/templates/${id}`, { params: Object.keys(params).length ? params : undefined })
+  async deleteTemplate(id: string, options?: { updatedBy?: string; version?: number; force?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/templates', {
+      id,
+      version: options?.version,
+      force: options?.force,
+      updated_by: options?.updatedBy
+    }, 'delete')
   }
 
   async validateTemplate(
@@ -402,14 +398,6 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  // ===========================================================================
-  // BULK ENDPOINTS
-  // ===========================================================================
-
-  async createTemplatesBulk(data: BulkCreateTemplateRequest): Promise<TemplateBulkOperationResponse> {
-    const response = await this.client.post<TemplateBulkOperationResponse>('/templates/bulk', data)
-    return response.data
-  }
 }
 
 // =============================================================================
@@ -435,12 +423,11 @@ class DocumentStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async createDocument(data: CreateDocumentRequest): Promise<DocumentCreateResponse> {
-    const response = await this.client.post<DocumentCreateResponse>('/documents', data)
-    return response.data
+  async createDocument(data: CreateDocumentRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents', data)
   }
 
-  async updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<DocumentCreateResponse> {
+  async updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<BulkResultItem> {
     // Document Store uses upsert - POST with same identity fields creates a new version
     const payload: CreateDocumentRequest = {
       template_id: templateId,
@@ -449,19 +436,15 @@ class DocumentStoreClient extends BaseApiClient {
     if (namespace) {
       payload.namespace = namespace
     }
-    const response = await this.client.post<DocumentCreateResponse>('/documents', payload)
-    return response.data
+    return this.bulkWriteOne('/documents', payload)
   }
 
-  async deleteDocument(id: string, updatedBy?: string): Promise<void> {
-    const params = updatedBy ? { updated_by: updatedBy } : undefined
-    await this.client.delete(`/documents/${id}`, { params })
+  async deleteDocument(id: string, updatedBy?: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents', { id, updated_by: updatedBy }, 'delete')
   }
 
-  async archiveDocument(id: string, updatedBy?: string): Promise<Document> {
-    const params = updatedBy ? { updated_by: updatedBy } : undefined
-    const response = await this.client.post<Document>(`/documents/${id}/archive`, null, { params })
-    return response.data
+  async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents/archive', { id, archived_by: archivedBy })
   }
 
   async restoreDocument(id: string, updatedBy?: string): Promise<Document> {
@@ -490,15 +473,6 @@ class DocumentStoreClient extends BaseApiClient {
 
   async getVersion(id: string, version: number): Promise<Document> {
     const response = await this.client.get<Document>(`/documents/${id}/versions/${version}`)
-    return response.data
-  }
-
-  // ===========================================================================
-  // BULK ENDPOINTS
-  // ===========================================================================
-
-  async createDocumentsBulk(data: BulkCreateDocumentRequest): Promise<DocumentBulkOperationResponse> {
-    const response = await this.client.post<DocumentBulkOperationResponse>('/documents/bulk', data)
     return response.data
   }
 
@@ -592,27 +566,20 @@ class FileStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async updateMetadata(fileId: string, data: UpdateFileMetadataRequest): Promise<FileEntity> {
-    const response = await this.client.patch<FileEntity>(`/${fileId}`, data)
-    return response.data
+  async updateMetadata(fileId: string, data: UpdateFileMetadataRequest): Promise<BulkResultItem> {
+    return this.bulkWriteOne('', { ...data, file_id: fileId }, 'patch')
   }
 
-  async deleteFile(fileId: string, force?: boolean): Promise<void> {
-    const params = force ? { force: true } : undefined
-    await this.client.delete(`/${fileId}`, { params })
+  async deleteFile(fileId: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('', { id: fileId }, 'delete')
+  }
+
+  async deleteFiles(fileIds: string[]): Promise<BulkResponse> {
+    return this.bulkWrite('', fileIds.map(id => ({ id })), 'delete')
   }
 
   async hardDeleteFile(fileId: string): Promise<void> {
     await this.client.delete(`/${fileId}/hard`)
-  }
-
-  // ===========================================================================
-  // BULK ENDPOINTS
-  // ===========================================================================
-
-  async bulkDelete(request: FileBulkDeleteRequest): Promise<FileBulkDeleteResponse> {
-    const response = await this.client.post<FileBulkDeleteResponse>('/bulk/delete', request)
-    return response.data
   }
 
   // ===========================================================================
@@ -1072,43 +1039,43 @@ class RegistryClient extends BaseApiClient {
   // ===========================================================================
 
   async addSynonym(request: AddSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
-    const response = await this.client.post<Array<{ status: string; registry_id?: string; error?: string }>>(
+    const response = await this.client.post<{ results: Array<{ status: string; registry_id?: string; error?: string }> }>(
       '/synonyms/add',
       [request]
     )
-    return response.data[0]
+    return response.data.results[0]
   }
 
   async removeSynonym(request: RemoveSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
-    const response = await this.client.post<Array<{ status: string; registry_id?: string; error?: string }>>(
+    const response = await this.client.post<{ results: Array<{ status: string; registry_id?: string; error?: string }> }>(
       '/synonyms/remove',
       [request]
     )
-    return response.data[0]
+    return response.data.results[0]
   }
 
   async mergeEntries(request: MergeRequest): Promise<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> {
-    const response = await this.client.post<Array<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }>>(
+    const response = await this.client.post<{ results: Array<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> }>(
       '/synonyms/merge',
       [request]
     )
-    return response.data[0]
+    return response.data.results[0]
   }
 
   async deactivateEntry(entryId: string, updatedBy?: string): Promise<{ status: string }> {
-    const response = await this.client.delete<Array<{ status: string }>>(
+    const response = await this.client.delete<{ results: Array<{ status: string }> }>(
       '/entries',
       { data: [{ entry_id: entryId, updated_by: updatedBy }] }
     )
-    return response.data[0]
+    return response.data.results[0]
   }
 
   async deactivateEntries(entryIds: string[], updatedBy?: string): Promise<Array<{ status: string; registry_id?: string }>> {
-    const response = await this.client.delete<Array<{ status: string; registry_id?: string }>>(
+    const response = await this.client.delete<{ results: Array<{ status: string; registry_id?: string }> }>(
       '/entries',
       { data: entryIds.map(id => ({ entry_id: id, updated_by: updatedBy })) }
     )
-    return response.data
+    return response.data.results
   }
 }
 

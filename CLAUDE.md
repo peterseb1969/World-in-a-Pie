@@ -44,6 +44,7 @@ All core services are implemented and working:
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point) with validation, reporting sync, UI
 - Metabase optional deployment (`deploy/optional/metabase/`) with PostgreSQL reporting infrastructure
 - Template draft mode — create templates with `status: "draft"`, cascading activation with full validation
+- Bulk-first API convention — all write endpoints accept `List[Item]`, return `BulkResponse`; no single-entity write endpoints
 
 ---
 
@@ -67,6 +68,7 @@ See `docs/` for detailed specifications:
 - `docs/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
 - `docs/uniqueness-and-identity.md` - **Uniqueness rules, Registry synonyms, ID generation**
+- `docs/api-conventions.md` - **Bulk-first API convention, BulkResponse contract, client examples**
 - `docs/design/event-replay.md` - Event replay for consumer onboarding
 
 ---
@@ -194,10 +196,41 @@ See `docs/reporting-layer.md` for architecture details.
 
 ## API Conventions
 
-- All endpoints support bulk operations
+### Bulk-First: Every Write Endpoint is Bulk
+
+All write endpoints (POST/PUT/DELETE) accept a JSON array and return `BulkResponse`. Single operations are just `[item]`. There are no single-entity write endpoints.
+
+**Request:** `List[ItemRequest]` via `Body(...)`
+**Response:** `BulkResponse { results: List[BulkResultItem], total, succeeded, failed }`
+
+```python
+# Creating one terminology
+POST /api/def-store/terminologies
+Body: [{"value": "GENDER", "label": "Gender"}]
+→ {"results": [{"index": 0, "status": "created", "id": "..."}], "total": 1, "succeeded": 1, "failed": 0}
+
+# Creating multiple
+POST /api/def-store/terminologies
+Body: [{"value": "GENDER", ...}, {"value": "COUNTRY", ...}]
+→ {"results": [...], "total": 2, "succeeded": 2, "failed": 0}
+```
+
+**Key rules:**
+- Write endpoints always return HTTP 200 — errors are per-item in `results[i].status == "error"`
+- Never check HTTP status codes for duplicates/conflicts; check `result.status` and `result.error`
+- `BulkResultItem` is subclassed per service for extra fields (e.g., `version`, `identity_hash`)
+- Updates use PUT with entity ID in the body (not URL): `PUT /templates` with `[{"template_id": "...", ...}]`
+- Deletes use DELETE with body: `DELETE /templates` with `[{"id": "..."}]`
+- GET endpoints (single by ID, list with pagination) are NOT bulk — they stay as-is
+- Pagination: default 50, max 100 for all services
+- All list responses include `pages: int` (computed `ceil(total / page_size)`)
+
+### Other Conventions
+
 - Authentication: `X-API-Key` header or `Authorization: Bearer <token>`
 - RESTful design with OpenAPI docs at `/docs`
 - Data is never deleted, only soft-deleted (status: inactive)
+- Upstream service errors return HTTP 502 (Bad Gateway)
 
 ---
 

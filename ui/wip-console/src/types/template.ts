@@ -325,6 +325,7 @@ export interface TemplateListResponse {
   total: number
   page: number
   page_size: number
+  pages: number
 }
 
 export interface TemplateUpdateResponse {
@@ -333,30 +334,6 @@ export interface TemplateUpdateResponse {
   version: number
   is_new_version: boolean
   previous_version: number | null
-}
-
-// =============================================================================
-// BULK OPERATION TYPES
-// =============================================================================
-
-export interface BulkCreateTemplateRequest {
-  templates: CreateTemplateRequest[]
-  created_by?: string
-}
-
-export interface TemplateBulkOperationResult {
-  index: number
-  status: 'created' | 'updated' | 'error' | 'skipped'
-  id?: string
-  value?: string
-  error?: string
-}
-
-export interface TemplateBulkOperationResponse {
-  results: TemplateBulkOperationResult[]
-  total: number
-  succeeded: number
-  failed: number
 }
 
 // =============================================================================

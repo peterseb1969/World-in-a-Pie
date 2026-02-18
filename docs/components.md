@@ -108,31 +108,32 @@ DEPARTMENT (terminology)
 
 ### API Endpoints
 
+> All write endpoints are **bulk-first**: accept `List[Item]`, return `BulkResponse`. See [API Conventions](api-conventions.md).
+
 **Terminologies**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/def-store/terminologies` | List all terminologies |
 | GET | `/api/def-store/terminologies/{id}` | Get terminology details |
-| POST | `/api/def-store/terminologies` | Create terminology |
-| PUT | `/api/def-store/terminologies/{id}` | Update terminology |
-| DELETE | `/api/def-store/terminologies/{id}` | Deactivate terminology |
-| POST | `/api/def-store/terminologies/{id}/restore` | Restore inactive terminology |
 | GET | `/api/def-store/terminologies/by-value/{value}` | Get terminology by value |
-| POST | `/api/def-store/terminologies/bulk` | Bulk create terminologies |
 | GET | `/api/def-store/terminologies/{id}/dependencies` | Get dependent templates |
+| POST | `/api/def-store/terminologies` | Create terminologies `[{...}]` → `BulkResponse` |
+| PUT | `/api/def-store/terminologies` | Update terminologies `[{terminology_id, ...}]` → `BulkResponse` |
+| DELETE | `/api/def-store/terminologies` | Deactivate terminologies `[{id}]` → `BulkResponse` |
+| POST | `/api/def-store/terminologies/{id}/restore` | Restore inactive terminology |
 
 **Terms**
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/def-store/terminologies/{term_id}/terms` | List terms in terminology |
+| GET | `/api/def-store/terminologies/{tid}/terms` | List terms in terminology |
 | GET | `/api/def-store/terms/{id}` | Get single term |
-| POST | `/api/def-store/terminologies/{term_id}/terms` | Create term |
-| PUT | `/api/def-store/terms/{id}` | Update term |
-| DELETE | `/api/def-store/terms/{id}` | Deactivate term |
-| POST | `/api/def-store/terms/bulk` | Bulk create/update terms |
 | GET | `/api/def-store/terms/{id}/audit` | Get term audit log |
+| POST | `/api/def-store/terminologies/{tid}/terms` | Create terms `[{...}]` → `BulkResponse` |
+| PUT | `/api/def-store/terms` | Update terms `[{term_id, ...}]` → `BulkResponse` |
+| DELETE | `/api/def-store/terms` | Deactivate terms `[{id}]` → `BulkResponse` |
+| POST | `/api/def-store/terms/deprecate` | Deprecate terms `[{term_id, ...}]` → `BulkResponse` |
 
 **Validation**
 
@@ -341,6 +342,8 @@ See `docs/design/template-draft-mode.md` for the full design.
 
 ### API Endpoints
 
+> All write endpoints are **bulk-first**: accept `List[Item]`, return `BulkResponse`. See [API Conventions](api-conventions.md).
+
 **Templates**
 
 | Method | Endpoint | Description |
@@ -349,17 +352,13 @@ See `docs/design/template-draft-mode.md` for the full design.
 | GET | `/api/template-store/templates?latest_only=true` | List only latest versions |
 | GET | `/api/template-store/templates/{id}` | Get template (resolved if extends) |
 | GET | `/api/template-store/templates/{id}?version=N` | Get specific version |
-| GET | `/api/template-store/templates/{id}?resolve=false` | Get template without inheritance |
-| POST | `/api/template-store/templates` | Create template |
-| PUT | `/api/template-store/templates/{id}` | Update template (creates new version) |
-| DELETE | `/api/template-store/templates/{id}` | Deactivate template (latest version) |
-| DELETE | `/api/template-store/templates/{id}?version=N` | Deactivate specific version |
-| DELETE | `/api/template-store/templates/{id}?force=true` | Force deactivate even with dependent documents |
-| POST | `/api/template-store/templates/bulk` | Bulk create templates |
-| GET | `/api/template-store/templates/{id}/dependencies` | Get dependent documents |
 | GET | `/api/template-store/templates/{id}/raw` | Get template without inheritance resolution |
+| GET | `/api/template-store/templates/{id}/dependencies` | Get dependent documents |
 | GET | `/api/template-store/templates/{id}/children` | Get direct child templates |
 | GET | `/api/template-store/templates/{id}/descendants` | Get all descendant templates |
+| POST | `/api/template-store/templates` | Create templates `[{...}]` → `BulkResponse` |
+| PUT | `/api/template-store/templates` | Update templates `[{template_id, ...}]` → `BulkResponse` (creates new version) |
+| DELETE | `/api/template-store/templates` | Deactivate templates `[{id}]` → `BulkResponse` |
 | POST | `/api/template-store/templates/{id}/cascade` | Cascade parent update to child templates |
 | POST | `/api/template-store/templates/{id}/activate` | Activate a draft template (cascading) |
 
@@ -551,6 +550,8 @@ For templates **without identity fields**, the Registry receives an empty compos
 
 ### API Endpoints
 
+> All write endpoints are **bulk-first**: accept `List[Item]`, return `BulkResponse`. See [API Conventions](api-conventions.md).
+
 **Documents**
 
 | Method | Endpoint | Description |
@@ -558,9 +559,9 @@ For templates **without identity fields**, the Registry receives an empty compos
 | GET | `/api/document-store/documents` | List documents (filter by `template_id`, `template_value`, `status`) |
 | GET | `/api/document-store/documents/{id}` | Get document (latest version) |
 | GET | `/api/document-store/documents/{id}?version=N` | Get specific version |
-| POST | `/api/document-store/documents` | Create/update document (upsert) |
-| DELETE | `/api/document-store/documents/{id}` | Soft-delete (set status=inactive) |
-| POST | `/api/document-store/documents/bulk` | Bulk create/update |
+| POST | `/api/document-store/documents` | Create/update documents (upsert) `[{...}]` → `BulkResponse` |
+| DELETE | `/api/document-store/documents` | Soft-delete documents `[{id}]` → `BulkResponse` |
+| POST | `/api/document-store/documents/archive` | Archive documents `[{id}]` → `BulkResponse` |
 
 **Versions**
 
@@ -588,11 +589,13 @@ For templates **without identity fields**, the Registry receives an empty compos
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/document-store/files` | Upload file (multipart/form-data) |
+| POST | `/api/document-store/files` | Upload file (multipart/form-data — single file) |
+| GET | `/api/document-store/files` | List files |
 | GET | `/api/document-store/files/{id}` | Get file metadata |
 | GET | `/api/document-store/files/{id}/download` | Get pre-signed download URL |
 | GET | `/api/document-store/files/{id}/content` | Stream file content directly |
-| DELETE | `/api/document-store/files/{id}` | Soft-delete file |
+| PATCH | `/api/document-store/files` | Update file metadata `[{file_id, ...}]` → `BulkResponse` |
+| DELETE | `/api/document-store/files` | Soft-delete files `[{id}]` → `BulkResponse` |
 | GET | `/api/document-store/files/orphans/list` | List orphan files |
 | GET | `/api/document-store/files/health/integrity` | File integrity check |
 

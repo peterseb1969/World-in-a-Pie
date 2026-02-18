@@ -4,21 +4,27 @@ import pytest
 from httpx import AsyncClient
 
 
+# Helper to create a single document and extract the result from BulkResponse
+async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, data: dict, **extra):
+    """Create a single document via the bulk-first API and return the result item."""
+    payload = {"template_id": template_id, "data": data, **extra}
+    response = await client.post(
+        "/api/document-store/documents",
+        headers=auth_headers,
+        json=[payload]
+    )
+    assert response.status_code == 200, f"Create failed: {response.text}"
+    bulk = response.json()
+    assert bulk["total"] == 1
+    assert bulk["succeeded"] == 1
+    return bulk["results"][0]
+
+
 @pytest.mark.asyncio
 async def test_upsert_creates_new_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test that upserting an existing document creates a new version with the same stable document_id."""
     # Create initial document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-
-    assert create_response.status_code == 200
-    initial = create_response.json()
+    initial = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
     assert initial["version"] == 1
     assert initial["is_new"] is True
 
@@ -26,20 +32,9 @@ async def test_upsert_creates_new_version(client: AsyncClient, auth_headers: dic
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Jane"
 
-    update_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": updated_data
-        }
-    )
-
-    assert update_response.status_code == 200
-    updated = update_response.json()
+    updated = await create_one(client, auth_headers, "TPL-000001", updated_data)
     assert updated["version"] == 2
     assert updated["is_new"] is False
-    assert updated["previous_version"] == 1
     assert updated["identity_hash"] == initial["identity_hash"]
     # Stable document ID: same document_id across versions
     assert updated["document_id"] == initial["document_id"]
@@ -49,31 +44,17 @@ async def test_upsert_creates_new_version(client: AsyncClient, auth_headers: dic
 async def test_upsert_deactivates_old_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test that old version is deactivated on upsert."""
     # Create initial document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
+    initial = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = initial["document_id"]
 
     # Update with same identity
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Jane"
 
-    update_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": updated_data
-        }
-    )
+    updated = await create_one(client, auth_headers, "TPL-000001", updated_data)
 
     # Stable ID: same document_id across versions
-    assert update_response.json()["document_id"] == document_id
+    assert updated["document_id"] == document_id
 
     # GET by document_id returns latest version (v2, active) by default
     latest_response = await client.get(
@@ -98,38 +79,17 @@ async def test_upsert_deactivates_old_version(client: AsyncClient, auth_headers:
 async def test_get_document_versions(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting all versions of a document."""
     # Create initial document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
+    initial = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = initial["document_id"]
 
     # Create version 2
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Jane"
-    await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": updated_data
-        }
-    )
+    await create_one(client, auth_headers, "TPL-000001", updated_data)
 
     # Create version 3
     updated_data["first_name"] = "Jack"
-    await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": updated_data
-        }
-    )
+    await create_one(client, auth_headers, "TPL-000001", updated_data)
 
     # Get all versions
     response = await client.get(
@@ -155,27 +115,13 @@ async def test_get_document_versions(client: AsyncClient, auth_headers: dict, sa
 async def test_get_specific_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting a specific version of a document."""
     # Create initial document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
+    initial = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = initial["document_id"]
 
     # Create version 2 with different name
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "UpdatedName"
-    await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": updated_data
-        }
-    )
+    await create_one(client, auth_headers, "TPL-000001", updated_data)
 
     # Get version 1
     response = await client.get(
@@ -193,117 +139,63 @@ async def test_get_specific_version(client: AsyncClient, auth_headers: dict, sam
 async def test_different_identity_creates_new_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test that different identity creates a new document, not a new version."""
     # Create document 1
-    response1 = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
+    result1 = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
 
     # Create document 2 with different national_id
     data2 = sample_person_data.copy()
     data2["national_id"] = "987654321"
 
-    response2 = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": data2
-        }
-    )
+    result2 = await create_one(client, auth_headers, "TPL-000001", data2)
 
-    assert response1.json()["identity_hash"] != response2.json()["identity_hash"]
-    assert response1.json()["version"] == 1
-    assert response2.json()["version"] == 1
-    assert response2.json()["is_new"] is True
+    assert result1["identity_hash"] != result2["identity_hash"]
+    assert result1["version"] == 1
+    assert result2["version"] == 1
+    assert result2["is_new"] is True
     # Different identity = different stable document_id
-    assert response1.json()["document_id"] != response2.json()["document_id"]
+    assert result1["document_id"] != result2["document_id"]
 
 
 @pytest.mark.asyncio
 async def test_multiple_identity_fields(client: AsyncClient, auth_headers: dict, sample_employee_data: dict):
     """Test versioning with multiple identity fields."""
     # Create initial employee
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000002",
-            "data": sample_employee_data
-        }
-    )
-
-    assert create_response.status_code == 200
-    initial = create_response.json()
+    initial = await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
     assert initial["version"] == 1
 
     # Same employee_id + company_id should create new version
     updated_data = sample_employee_data.copy()
     updated_data["name"] = "Updated Name"
 
-    update_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000002",
-            "data": updated_data
-        }
-    )
-
-    assert update_response.status_code == 200
-    assert update_response.json()["version"] == 2
-    assert update_response.json()["identity_hash"] == initial["identity_hash"]
+    updated = await create_one(client, auth_headers, "TPL-000002", updated_data)
+    assert updated["version"] == 2
+    assert updated["identity_hash"] == initial["identity_hash"]
     # Stable document ID across versions
-    assert update_response.json()["document_id"] == initial["document_id"]
+    assert updated["document_id"] == initial["document_id"]
 
 
 @pytest.mark.asyncio
 async def test_different_company_is_different_identity(client: AsyncClient, auth_headers: dict, sample_employee_data: dict):
     """Test that different company_id creates new identity."""
     # Create employee for company 1
-    await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000002",
-            "data": sample_employee_data
-        }
-    )
+    await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
 
     # Create same employee for company 2
     data2 = sample_employee_data.copy()
     data2["company_id"] = "COMP002"
 
-    response2 = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000002",
-            "data": data2
-        }
-    )
+    result2 = await create_one(client, auth_headers, "TPL-000002", data2)
 
     # Should be a new document, not a new version
-    assert response2.json()["version"] == 1
-    assert response2.json()["is_new"] is True
+    assert result2["version"] == 1
+    assert result2["is_new"] is True
 
 
 @pytest.mark.asyncio
 async def test_version_not_found(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting a non-existent version."""
     # Create document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
+    initial = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = initial["document_id"]
 
     # Try to get version 99
     response = await client.get(

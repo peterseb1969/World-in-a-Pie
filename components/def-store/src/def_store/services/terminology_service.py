@@ -18,7 +18,7 @@ from ..models.api_models import (
     UpdateTermRequest,
     DeprecateTermRequest,
     TermResponse,
-    BulkOperationResult,
+    BulkResultItem,
 )
 from .registry_client import get_registry_client, RegistryError
 
@@ -493,7 +493,7 @@ class TerminologyService:
         update_existing: bool = False,
         batch_size: int = 1000,
         registry_batch_size: int = 100,
-    ) -> list[BulkOperationResult]:
+    ) -> list[BulkResultItem]:
         """
         Create multiple terms in a terminology using batch operations.
 
@@ -534,7 +534,7 @@ class TerminologyService:
         now = datetime.now(timezone.utc)
 
         # Initialize results array
-        results: list[BulkOperationResult | None] = [None] * len(terms)
+        results: list[BulkResultItem | None] = [None] * len(terms)
         total_created = 0
         client = get_registry_client()
         num_batches = (total_terms + batch_size - 1) // batch_size
@@ -589,7 +589,7 @@ class TerminologyService:
                 global_idx = batch_start + i
 
                 if reg_result.get("status") == "error":
-                    results[global_idx] = BulkOperationResult(
+                    results[global_idx] = BulkResultItem(
                         index=global_idx,
                         status="error",
                         value=term_req.value,
@@ -603,7 +603,7 @@ class TerminologyService:
                 existing = existing_by_id.get(term_id) or existing_by_value.get(term_req.value)
                 if existing:
                     if skip_duplicates or update_existing:
-                        results[global_idx] = BulkOperationResult(
+                        results[global_idx] = BulkResultItem(
                             index=global_idx,
                             status="skipped" if skip_duplicates else "updated",
                             id=existing.term_id,
@@ -611,7 +611,7 @@ class TerminologyService:
                             error="Already exists" if skip_duplicates else None
                         )
                     else:
-                        results[global_idx] = BulkOperationResult(
+                        results[global_idx] = BulkResultItem(
                             index=global_idx,
                             status="error",
                             value=term_req.value,
@@ -649,7 +649,7 @@ class TerminologyService:
                     # All succeeded
                     for pos, idx in enumerate(insert_indices):
                         term = terms_to_insert[pos]
-                        results[idx] = BulkOperationResult(
+                        results[idx] = BulkResultItem(
                             index=idx,
                             status="created",
                             id=term.term_id,
@@ -668,14 +668,14 @@ class TerminologyService:
                     for pos, idx in enumerate(insert_indices):
                         term = terms_to_insert[pos]
                         if pos in failed_indices:
-                            results[idx] = BulkOperationResult(
+                            results[idx] = BulkResultItem(
                                 index=idx,
                                 status="error",
                                 value=term.value,
                                 error=error_messages.get(pos, "Insert failed"),
                             )
                         else:
-                            results[idx] = BulkOperationResult(
+                            results[idx] = BulkResultItem(
                                 index=idx,
                                 status="created",
                                 id=term.term_id,

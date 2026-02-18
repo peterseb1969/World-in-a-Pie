@@ -4,43 +4,40 @@ import pytest
 from httpx import AsyncClient
 
 
-@pytest.mark.asyncio
-async def test_create_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
-    """Test creating a new document."""
+# Helper to create a single document and extract the result from BulkResponse
+async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, data: dict, **extra):
+    """Create a single document via the bulk-first API and return the result item."""
+    payload = {"template_id": template_id, "data": data, **extra}
     response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data,
-            "created_by": "test_user"
-        }
+        json=[payload]
     )
+    assert response.status_code == 200, f"Create failed: {response.text}"
+    bulk = response.json()
+    assert bulk["total"] == 1
+    assert bulk["succeeded"] == 1
+    return bulk["results"][0]
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["document_id"] is not None
-    assert data["template_id"] == "TPL-000001"
-    assert data["identity_hash"] is not None
-    assert data["version"] == 1
-    assert data["is_new"] is True
-    assert data["previous_version"] is None
+
+@pytest.mark.asyncio
+async def test_create_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
+    """Test creating a new document."""
+    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data, created_by="test_user")
+
+    assert result["document_id"] is not None
+    assert result["identity_hash"] is not None
+    assert result["version"] == 1
+    assert result["is_new"] is True
+    assert result["status"] == "created"
 
 
 @pytest.mark.asyncio
 async def test_get_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test retrieving a document by ID."""
     # Create document first
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    assert create_response.status_code == 200
-    document_id = create_response.json()["document_id"]
+    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = result["document_id"]
 
     # Get the document
     response = await client.get(
@@ -77,10 +74,10 @@ async def test_list_documents(client: AsyncClient, auth_headers: dict, sample_pe
         await client.post(
             "/api/document-store/documents",
             headers=auth_headers,
-            json={
+            json=[{
                 "template_id": "TPL-000001",
                 "data": data
-            }
+            }]
         )
 
     # List documents
@@ -99,24 +96,23 @@ async def test_list_documents(client: AsyncClient, auth_headers: dict, sample_pe
 async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dict, sample_person_data: dict, sample_employee_data: dict):
     """Test listing documents with template filter."""
     # Create person document
-    person_data = sample_person_data.copy()
     await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
-        json={
+        json=[{
             "template_id": "TPL-000001",
-            "data": person_data
-        }
+            "data": sample_person_data.copy()
+        }]
     )
 
     # Create employee document
     await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
-        json={
+        json=[{
             "template_id": "TPL-000002",
             "data": sample_employee_data
-        }
+        }]
     )
 
     # List only person documents
@@ -135,24 +131,21 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
 async def test_delete_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test soft-deleting a document."""
     # Create document
-    create_response = await client.post(
+    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = result["document_id"]
+
+    # Delete document via bulk-first DELETE
+    response = await client.request(
+        "DELETE",
         "/api/document-store/documents",
         headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
-
-    # Delete document
-    response = await client.delete(
-        f"/api/document-store/documents/{document_id}?deleted_by=test_user",
-        headers=auth_headers
+        json=[{"id": document_id, "updated_by": "test_user"}]
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "deleted"
+    bulk = response.json()
+    assert bulk["succeeded"] == 1
+    assert bulk["results"][0]["status"] == "deleted"
 
     # Verify document is inactive
     get_response = await client.get(
@@ -167,39 +160,35 @@ async def test_delete_document(client: AsyncClient, auth_headers: dict, sample_p
 async def test_archive_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test archiving a document."""
     # Create document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    document_id = create_response.json()["document_id"]
+    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    document_id = result["document_id"]
 
-    # Archive document
+    # Archive document via bulk-first POST /documents/archive
     response = await client.post(
-        f"/api/document-store/documents/{document_id}/archive",
-        headers=auth_headers
+        "/api/document-store/documents/archive",
+        headers=auth_headers,
+        json=[{"id": document_id}]
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "archived"
+    bulk = response.json()
+    assert bulk["succeeded"] == 1
+
+    # Verify document is archived
+    get_response = await client.get(
+        f"/api/document-store/documents/{document_id}",
+        headers=auth_headers
+    )
+    assert get_response.status_code == 200
+    assert get_response.json()["status"] == "archived"
 
 
 @pytest.mark.asyncio
 async def test_get_document_by_identity(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting a document by identity hash."""
     # Create document
-    create_response = await client.post(
-        "/api/document-store/documents",
-        headers=auth_headers,
-        json={
-            "template_id": "TPL-000001",
-            "data": sample_person_data
-        }
-    )
-    identity_hash = create_response.json()["identity_hash"]
+    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    identity_hash = result["identity_hash"]
 
     # Get by identity
     response = await client.get(
@@ -223,10 +212,10 @@ async def test_query_documents(client: AsyncClient, auth_headers: dict, sample_p
         await client.post(
             "/api/document-store/documents",
             headers=auth_headers,
-            json={
+            json=[{
                 "template_id": "TPL-000001",
                 "data": data
-            }
+            }]
         )
 
     # Query for age >= 30
@@ -259,15 +248,15 @@ async def test_bulk_create_documents(client: AsyncClient, auth_headers: dict, sa
         })
 
     response = await client.post(
-        "/api/document-store/documents/bulk",
+        "/api/document-store/documents",
         headers=auth_headers,
-        json={"items": items}
+        json=items
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 3
-    assert data["created"] == 3
+    assert data["succeeded"] == 3
     assert data["failed"] == 0
 
 
@@ -276,10 +265,10 @@ async def test_auth_required(client: AsyncClient, sample_person_data: dict):
     """Test that authentication is required."""
     response = await client.post(
         "/api/document-store/documents",
-        json={
+        json=[{
             "template_id": "TPL-000001",
             "data": sample_person_data
-        }
+        }]
     )
 
     assert response.status_code == 401
@@ -291,10 +280,10 @@ async def test_invalid_api_key(client: AsyncClient, sample_person_data: dict):
     response = await client.post(
         "/api/document-store/documents",
         headers={"X-API-Key": "invalid_key"},
-        json={
+        json=[{
             "template_id": "TPL-000001",
             "data": sample_person_data
-        }
+        }]
     )
 
     assert response.status_code == 401

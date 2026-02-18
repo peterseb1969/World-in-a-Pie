@@ -1,17 +1,19 @@
 """API endpoints for term management."""
 
+import math
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, Body, HTTPException, Query, Depends
 
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     CreateTermRequest,
-    UpdateTermRequest,
-    DeprecateTermRequest,
+    UpdateTermItem,
+    DeleteItem,
+    DeprecateTermItem,
     TermResponse,
     TermListResponse,
-    BulkCreateTermRequest,
-    BulkOperationResponse,
     ValidateValueRequest,
     ValidateValueResponse,
     BulkValidateRequest,
@@ -31,41 +33,12 @@ router = APIRouter(tags=["Terms"])
 
 @router.post(
     "/terminologies/{terminology_id}/terms",
-    response_model=TermResponse,
-    status_code=201,
-    summary="Create a term"
+    response_model=BulkResponse,
+    summary="Create terms"
 )
-async def create_term(
+async def create_terms(
     terminology_id: str,
-    request: CreateTermRequest,
-    api_key: str = Depends(require_api_key)
-) -> TermResponse:
-    """
-    Create a new term in a terminology.
-
-    Namespace is inherited from the parent terminology.
-    The term will be registered with the Registry service to get
-    a unique ID.
-    """
-    try:
-        return await TerminologyService.create_term(terminology_id, request)
-    except ValueError as e:
-        msg = str(e)
-        status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
-    except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
-
-
-@router.post(
-    "/terminologies/{terminology_id}/terms/bulk",
-    response_model=BulkOperationResponse,
-    status_code=201,
-    summary="Create multiple terms"
-)
-async def create_terms_bulk(
-    terminology_id: str,
-    request: BulkCreateTermRequest,
+    items: list[CreateTermRequest] = Body(...),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -76,40 +49,50 @@ async def create_terms_bulk(
         "Reduce if experiencing timeouts on large imports."
     ),
     api_key: str = Depends(require_api_key)
-) -> BulkOperationResponse:
+) -> BulkResponse:
     """
-    Create multiple terms in a terminology at once.
+    Create one or more terms in a terminology.
 
     Namespace is inherited from the parent terminology.
-    Useful for importing terms or seeding data.
+    For single items, uses direct creation. For multiple items, uses
+    optimized batch operations.
 
     For very large imports (100k+ terms), you may need to tune the batch sizes:
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
-
-    If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
-    try:
-        results = await TerminologyService.create_terms_bulk(
-            terminology_id=terminology_id,
-            terms=request.terms,
-            created_by=request.created_by,
-            batch_size=batch_size,
-            registry_batch_size=registry_batch_size,
-        )
-        succeeded = sum(1 for r in results if r.status in ("created", "updated"))
-        failed = sum(1 for r in results if r.status == "error")
+    if len(items) == 1:
+        # Single item — use direct create path
+        try:
+            result = await TerminologyService.create_term(terminology_id, items[0])
+            results = [BulkResultItem(index=0, status="created", id=result.term_id, value=items[0].value)]
+        except ValueError as e:
+            msg = str(e)
+            if "not found" in msg:
+                raise HTTPException(status_code=404, detail=msg)
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=msg)]
+        except RegistryError as e:
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {str(e)}")]
+    else:
+        # Bulk path — uses batch Registry calls and insert_many
+        try:
+            results = await TerminologyService.create_terms_bulk(
+                terminology_id=terminology_id,
+                terms=items,
+                batch_size=batch_size,
+                registry_batch_size=registry_batch_size,
+            )
+        except ValueError as e:
+            msg = str(e)
+            if "not found" in msg:
+                raise HTTPException(status_code=404, detail=msg)
+            raise HTTPException(status_code=400, detail=msg)
+        except RegistryError as e:
+            raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
 
-        return BulkOperationResponse(
-            results=results,
-            total=len(results),
-            succeeded=succeeded,
-            failed=failed
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+    succeeded = sum(1 for r in results if r.status != "error")
+    failed = sum(1 for r in results if r.status == "error")
+    return BulkResponse(results=results, total=len(results), succeeded=succeeded, failed=failed)
 
 
 @router.get(
@@ -121,7 +104,7 @@ async def list_terms(
     terminology_id: str,
     namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=500, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search in value, aliases"),
     api_key: str = Depends(require_api_key)
@@ -152,6 +135,7 @@ async def list_terms(
         total=total,
         page=page,
         page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
         terminology_id=terminology.terminology_id,
         terminology_value=terminology.value
     )
@@ -174,67 +158,93 @@ async def get_term(
 
 
 @router.put(
-    "/terms/{term_id}",
-    response_model=TermResponse,
-    summary="Update a term"
+    "/terms",
+    response_model=BulkResponse,
+    summary="Update terms"
 )
-async def update_term(
-    term_id: str,
-    request: UpdateTermRequest,
+async def update_terms(
+    items: list[UpdateTermItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> TermResponse:
-    """Update a term."""
-    try:
-        result = await TerminologyService.update_term(term_id, request)
-        if not result:
-            raise HTTPException(status_code=404, detail="Term not found")
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+) -> BulkResponse:
+    """Update one or more terms."""
+    results = []
+    for i, item in enumerate(items):
+        try:
+            result = await TerminologyService.update_term(item.term_id, item)
+            if not result:
+                results.append(BulkResultItem(index=i, status="error", id=item.term_id, error="Term not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
+        except RegistryError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=f"Registry error: {str(e)}"))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.post(
-    "/terms/{term_id}/deprecate",
-    response_model=TermResponse,
-    summary="Deprecate a term"
+    "/terms/deprecate",
+    response_model=BulkResponse,
+    summary="Deprecate terms"
 )
-async def deprecate_term(
-    term_id: str,
-    request: DeprecateTermRequest,
+async def deprecate_terms(
+    items: list[DeprecateTermItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> TermResponse:
+) -> BulkResponse:
     """
-    Deprecate a term.
+    Deprecate one or more terms.
 
     Deprecated terms are kept for historical data but marked as deprecated.
-    Optionally specify a replacement term.
+    Optionally specify a replacement term per item.
     """
-    result = await TerminologyService.deprecate_term(term_id, request)
-    if not result:
-        raise HTTPException(status_code=404, detail="Term not found")
-    return result
+    results = []
+    for i, item in enumerate(items):
+        try:
+            result = await TerminologyService.deprecate_term(item.term_id, item)
+            if not result:
+                results.append(BulkResultItem(index=i, status="error", id=item.term_id, error="Term not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.delete(
-    "/terms/{term_id}",
-    summary="Delete a term"
+    "/terms",
+    response_model=BulkResponse,
+    summary="Delete terms"
 )
-async def delete_term(
-    term_id: str,
-    updated_by: Optional[str] = Query(None, description="User performing deletion"),
+async def delete_terms(
+    items: list[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> dict:
-    """Soft-delete a term (set status to inactive)."""
-    success = await TerminologyService.delete_term(
-        term_id=term_id,
-        updated_by=updated_by
+) -> BulkResponse:
+    """Soft-delete one or more terms (set status to inactive)."""
+    results = []
+    for i, item in enumerate(items):
+        try:
+            success = await TerminologyService.delete_term(
+                term_id=item.id, updated_by=item.updated_by
+            )
+            if not success:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Term not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
     )
-    if not success:
-        raise HTTPException(status_code=404, detail="Term not found")
-
-    return {"status": "deleted", "term_id": term_id}
 
 
 # =============================================================================

@@ -5,11 +5,11 @@ import { useNamespaceStore } from './namespace'
 import type {
   Document,
   CreateDocumentRequest,
-  DocumentCreateResponse,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
   DocumentQueryParams,
+  BulkResultItem,
   Template,
   Term
 } from '@/types'
@@ -86,7 +86,7 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function createDocument(data: CreateDocumentRequest): Promise<DocumentCreateResponse> {
+  async function createDocument(data: CreateDocumentRequest): Promise<BulkResultItem> {
     loading.value = true
     error.value = null
     try {
@@ -105,7 +105,7 @@ export const useDocumentStore = defineStore('document', () => {
     }
   }
 
-  async function updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<DocumentCreateResponse> {
+  async function updateDocument(templateId: string, data: Record<string, unknown>, namespace?: string): Promise<BulkResultItem> {
     loading.value = true
     error.value = null
     try {
@@ -144,7 +144,8 @@ export const useDocumentStore = defineStore('document', () => {
     loading.value = true
     error.value = null
     try {
-      const archived = await documentStoreClient.archiveDocument(id)
+      await documentStoreClient.archiveDocument(id)
+      const archived = await documentStoreClient.getDocument(id)
       const index = documents.value.findIndex(d => d.document_id === id)
       if (index !== -1) {
         documents.value[index] = archived

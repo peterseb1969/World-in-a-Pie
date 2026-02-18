@@ -11,13 +11,21 @@ async def test_terminology(client: AsyncClient, auth_headers: dict):
     response = await client.post(
         "/api/def-store/terminologies",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "DOC_STATUS",
             "label": "Document Status",
             "case_sensitive": False
-        }
+        }]
     )
-    return response.json()
+    data = response.json()
+    terminology_id = data["results"][0]["id"]
+
+    # Fetch the full terminology so callers get the complete object
+    get_response = await client.get(
+        f"/api/def-store/terminologies/{terminology_id}",
+        headers=auth_headers
+    )
+    return get_response.json()
 
 
 @pytest.mark.asyncio
@@ -28,19 +36,31 @@ async def test_create_term(client: AsyncClient, auth_headers: dict, test_termino
     response = await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "draft",
             "label": "Draft",
             "description": "Document is in draft state",
             "sort_order": 1
-        }
+        }]
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     data = response.json()
-    assert data["value"] == "draft"
-    assert data["term_id"].startswith("T-")
-    assert data["terminology_id"] == terminology_id
+    assert data["succeeded"] == 1
+    assert data["failed"] == 0
+    assert data["results"][0]["status"] == "created"
+    term_id = data["results"][0]["id"]
+    assert term_id.startswith("T-")
+
+    # Verify the created term via GET
+    get_response = await client.get(
+        f"/api/def-store/terms/{term_id}",
+        headers=auth_headers
+    )
+    assert get_response.status_code == 200
+    detail = get_response.json()
+    assert detail["value"] == "draft"
+    assert detail["terminology_id"] == terminology_id
 
 
 @pytest.mark.asyncio
@@ -52,24 +72,26 @@ async def test_create_term_duplicate_code(client: AsyncClient, auth_headers: dic
     await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "approved",
             "label": "Approved"
-        }
+        }]
     )
 
     # Try to create duplicate
     response = await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "approved",
             "label": "Different"
-        }
+        }]
     )
 
-    assert response.status_code == 409
-    assert "already exists" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["results"][0]["status"] == "error"
+    assert "already exists" in data["results"][0]["error"]
 
 
 @pytest.mark.asyncio
@@ -88,7 +110,7 @@ async def test_list_terms(client: AsyncClient, auth_headers: dict, test_terminol
         await client.post(
             f"/api/def-store/terminologies/{terminology_id}/terms",
             headers=auth_headers,
-            json=term
+            json=[term]
         )
 
     # List terms
@@ -111,10 +133,10 @@ async def test_get_term_by_value(client: AsyncClient, auth_headers: dict, test_t
     await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "archived",
             "label": "Archived"
-        }
+        }]
     )
 
     # Search by value using the list endpoint
@@ -138,26 +160,36 @@ async def test_update_term(client: AsyncClient, auth_headers: dict, test_termino
     create_response = await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "pending",
             "label": "Pending"
-        }
+        }]
     )
-    term_id = create_response.json()["term_id"]
+    term_id = create_response.json()["results"][0]["id"]
 
-    # Update (note: update endpoint is /terms/{term_id}, not under terminology)
+    # Update (bulk endpoint: PUT /terms with array body)
     response = await client.put(
-        f"/api/def-store/terms/{term_id}",
+        "/api/def-store/terms",
         headers=auth_headers,
-        json={
+        json=[{
+            "term_id": term_id,
             "label": "Pending Review",
             "description": "Waiting for review"
-        }
+        }]
     )
 
     assert response.status_code == 200
-    assert response.json()["label"] == "Pending Review"
-    assert response.json()["description"] == "Waiting for review"
+    data = response.json()
+    assert data["succeeded"] == 1
+    assert data["results"][0]["status"] == "updated"
+
+    # Verify the update via GET
+    get_response = await client.get(
+        f"/api/def-store/terms/{term_id}",
+        headers=auth_headers
+    )
+    assert get_response.json()["label"] == "Pending Review"
+    assert get_response.json()["description"] == "Waiting for review"
 
 
 @pytest.mark.asyncio
@@ -169,10 +201,10 @@ async def test_validate_value_valid(client: AsyncClient, auth_headers: dict, tes
     await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "active",
             "label": "Active"
-        }
+        }]
     )
 
     # Validate (note: validate endpoint is at /api/def-store/validate)
@@ -200,10 +232,10 @@ async def test_validate_value_invalid(client: AsyncClient, auth_headers: dict, t
     await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "active",
             "label": "Active"
-        }
+        }]
     )
 
     # Validate invalid value
@@ -231,10 +263,10 @@ async def test_validate_case_insensitive(client: AsyncClient, auth_headers: dict
     await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "complete",
             "label": "Complete"
-        }
+        }]
     )
 
     # Validate with different case
@@ -264,12 +296,12 @@ async def test_bulk_create_terms(client: AsyncClient, auth_headers: dict, test_t
     ]
 
     response = await client.post(
-        f"/api/def-store/terminologies/{terminology_id}/terms/bulk",
+        f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={"terms": terms}
+        json=terms
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     data = response.json()
     assert data["succeeded"] == 3
     assert data["failed"] == 0
@@ -284,20 +316,24 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
     create_response = await client.post(
         f"/api/def-store/terminologies/{terminology_id}/terms",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "obsolete",
             "label": "Obsolete"
-        }
+        }]
     )
-    term_id = create_response.json()["term_id"]
+    term_id = create_response.json()["results"][0]["id"]
 
-    # Delete (note: delete endpoint is /terms/{term_id})
+    # Delete (bulk endpoint: DELETE /terms with array body)
     response = await client.delete(
-        f"/api/def-store/terms/{term_id}",
-        headers=auth_headers
+        "/api/def-store/terms",
+        headers=auth_headers,
+        content='[{"id": "' + term_id + '"}]'
     )
 
     assert response.status_code == 200
+    data = response.json()
+    assert data["succeeded"] == 1
+    assert data["results"][0]["status"] == "deleted"
 
     # Verify it's inactive
     get_response = await client.get(

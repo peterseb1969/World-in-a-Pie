@@ -190,7 +190,7 @@ class ServiceClient:
         resp.raise_for_status()
         return resp.json()
 
-    def put(self, path: str, data: dict) -> dict:
+    def put(self, path: str, data: dict | list) -> dict:
         """HTTP PUT request."""
         start = time.perf_counter()
         resp = self.session.put(f"{self.base_url}{path}", json=data, timeout=30)
@@ -364,7 +364,7 @@ class WIPSeeder:
                     # Still need to track term IDs for document generation
                     terms_resp = self.def_store.get(
                         f"/api/def-store/terminologies/{terminology_id}/terms",
-                        params=self._ns_params(page_size=500),
+                        params=self._ns_params(page_size=100),
                     )
                     self.created_term_ids[value] = {
                         t["value"]: t["term_id"] for t in terms_resp.get("items", [])
@@ -390,9 +390,9 @@ class WIPSeeder:
 
                 result = self.def_store.post(
                     "/api/def-store/terminologies",
-                    create_data,
+                    [create_data],
                 )
-                terminology_id = result["terminology_id"]
+                terminology_id = result["results"][0]["id"]
                 self.created_terminologies[value] = terminology_id
                 stats["terminologies"] += 1
                 print(f"  {value}: created ({terminology_id})")
@@ -423,17 +423,17 @@ class WIPSeeder:
                             bulk_terms.append(term_data)
 
                         bulk_result = self.def_store.post(
-                            f"/api/def-store/terminologies/{terminology_id}/terms/bulk",
-                            {"terms": bulk_terms},
+                            f"/api/def-store/terminologies/{terminology_id}/terms",
+                            bulk_terms,
                         )
 
                         for r in bulk_result.get("results", []):
-                            if r.get("term_id"):
+                            if r.get("id"):
                                 # Find the term value from the index
                                 idx = r.get("index", 0)
                                 if idx < len(bulk_terms):
                                     term_value = bulk_terms[idx]["value"]
-                                    self.created_term_ids[value][term_value] = r["term_id"]
+                                    self.created_term_ids[value][term_value] = r["id"]
                                     stats["terms"] += 1
 
                     # Create terms with parents (need parent term_id)
@@ -455,9 +455,9 @@ class WIPSeeder:
                         try:
                             result = self.def_store.post(
                                 f"/api/def-store/terminologies/{terminology_id}/terms",
-                                term_data,
+                                [term_data],
                             )
-                            self.created_term_ids[value][t["value"]] = result["term_id"]
+                            self.created_term_ids[value][t["value"]] = result["results"][0]["id"]
                             stats["terms"] += 1
                         except Exception as e:
                             print(f"    Error creating term {t['value']}: {e}")
@@ -540,9 +540,9 @@ class WIPSeeder:
 
                 result = self.template_store.post(
                     "/api/template-store/templates",
-                    create_data,
+                    [create_data],
                 )
-                template_id = result["template_id"]
+                template_id = result["results"][0]["id"]
                 self.created_templates[value] = template_id
                 stats["templates"] += 1
                 print(f"  {value}: created ({template_id})")
@@ -601,8 +601,8 @@ class WIPSeeder:
 
                 try:
                     result = self.document_store.post(
-                        "/api/document-store/documents/bulk",
-                        {"items": batch_data, "continue_on_error": True},
+                        "/api/document-store/documents",
+                        batch_data,
                     )
 
                     # Log server-side timing if available
@@ -717,15 +717,17 @@ class WIPSeeder:
                 updated_fields.append(new_field)
 
                 result = self.template_store.put(
-                    f"/api/template-store/templates/{template_id}",
-                    {
+                    "/api/template-store/templates",
+                    [{
+                        "template_id": template_id,
                         "fields": updated_fields,
                         "updated_by": "seed_script",
-                    },
+                    }],
                 )
 
-                new_version = result.get("version", "?")
-                is_new = result.get("is_new_version", False)
+                r = result["results"][0]
+                new_version = r.get("version", "?")
+                is_new = r.get("is_new_version", False)
                 if is_new:
                     stats["versions_created"] += 1
                     print(f"  {template_value}: created v{new_version} (+{new_field['name']})")
@@ -772,15 +774,16 @@ class WIPSeeder:
             try:
                 result = self.document_store.post(
                     "/api/document-store/documents",
-                    {
+                    [{
                         "template_id": person_template_id,
                         "namespace": self.namespace,
                         "data": data,
                         "created_by": "seed_script",
-                    },
+                    }],
                 )
-                doc_id = result.get("document_id", "?")
-                version = result.get("version", "?")
+                r = result["results"][0]
+                doc_id = r.get("document_id", "?")
+                version = r.get("version", "?")
 
                 if prev_doc_id and doc_id == prev_doc_id:
                     print(f"  PERSON v{version}: upsert OK (same document_id {doc_id})")
@@ -817,15 +820,16 @@ class WIPSeeder:
                 try:
                     result = self.document_store.post(
                         "/api/document-store/documents",
-                        {
+                        [{
                             "template_id": employee_template_id,
                             "namespace": self.namespace,
                             "data": data,
                             "created_by": "seed_script",
-                        },
+                        }],
                     )
-                    doc_id = result.get("document_id", "?")
-                    version = result.get("version", "?")
+                    r = result["results"][0]
+                    doc_id = r.get("document_id", "?")
+                    version = r.get("version", "?")
 
                     if prev_doc_id and doc_id == prev_doc_id:
                         print(f"  EMPLOYEE v{version}: upsert OK (same document_id {doc_id})")
@@ -890,7 +894,7 @@ class WIPSeeder:
                     try:
                         self.document_store.post(
                             "/api/document-store/documents",
-                            {"template_id": min_template_id, "data": doc, "created_by": "benchmark"},
+                            [{"template_id": min_template_id, "namespace": self.namespace, "data": doc, "created_by": "benchmark"}],
                         )
                         elapsed = (time.perf_counter() - start) * 1000
                         create_result.times_ms.append(elapsed)

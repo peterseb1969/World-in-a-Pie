@@ -1,17 +1,19 @@
 """Template API endpoints."""
 
+import math
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     CreateTemplateRequest,
-    UpdateTemplateRequest,
+    UpdateTemplateItem,
+    DeleteItem,
     TemplateResponse,
     TemplateUpdateResponse,
     TemplateListResponse,
-    BulkCreateTemplateRequest,
-    BulkOperationResponse,
     ValidateTemplateRequest,
     ValidateTemplateResponse,
     CascadeResponse,
@@ -31,22 +33,39 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=TemplateResponse)
-async def create_template(
-    request: CreateTemplateRequest,
+@router.post("", response_model=BulkResponse)
+async def create_templates(
+    items: list[CreateTemplateRequest] = Body(...),
 ):
     """
-    Create a new template.
+    Create one or more templates.
 
-    The template is registered with the Registry service to get a unique ID.
-    Namespace is specified in the request body (default: "wip").
+    Each template is registered with the Registry service to get a unique ID.
+    Namespace is specified per item (default: "wip").
+    For single items, uses direct creation. For multiple items, uses batch path.
     """
-    try:
-        return await TemplateService.create_template(request, namespace=request.namespace)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RegistryError as e:
-        raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
+    if len(items) == 1:
+        # Single item — use direct create path
+        try:
+            result = await TemplateService.create_template(items[0], namespace=items[0].namespace)
+            results = [BulkResultItem(index=0, status="created", id=result.template_id, value=items[0].value, version=result.version)]
+        except ValueError as e:
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=str(e))]
+        except RegistryError as e:
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {str(e)}")]
+    else:
+        # Bulk path
+        try:
+            results = await TemplateService.create_templates_bulk(
+                templates=items,
+                namespace=items[0].namespace if items else "wip",
+            )
+        except RegistryError as e:
+            raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+
+    succeeded = sum(1 for r in results if r.status != "error")
+    failed = sum(1 for r in results if r.status == "error")
+    return BulkResponse(results=results, total=len(results), succeeded=succeeded, failed=failed)
 
 
 @router.get("", response_model=TemplateListResponse)
@@ -78,7 +97,8 @@ async def list_templates(
         items=templates,
         total=total,
         page=page,
-        page_size=page_size
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0
     )
 
 
@@ -184,36 +204,37 @@ async def get_template_by_value_and_version(value: str, version: int):
     return template
 
 
-@router.put("/{template_id}", response_model=TemplateUpdateResponse)
-async def update_template(template_id: str, request: UpdateTemplateRequest):
+@router.put("", response_model=BulkResponse)
+async def update_templates(
+    items: list[UpdateTemplateItem] = Body(...),
+):
     """
-    Update a template by creating a new version.
+    Update one or more templates by creating new versions.
 
     The template_id is stable across versions — updates create a new version
     document with the same template_id but incremented version number.
-    The original version remains unchanged, allowing documents to continue
-    referencing it.
-
-    If no changes are detected, returns the current template info without
-    creating a new version.
-
-    Returns:
-        TemplateUpdateResponse with:
-        - template_id: The stable template ID (same across all versions)
-        - value: The template value
-        - version: The new version number
-        - is_new_version: True if a new version was created
-        - previous_version: Previous version number if created, None if unchanged
     """
-    try:
-        result = await TemplateService.update_template(template_id, request)
-        if not result:
-            raise HTTPException(status_code=404, detail="Template not found")
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RegistryError as e:
-        raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
+    results = []
+    for i, item in enumerate(items):
+        try:
+            result = await TemplateService.update_template(item.template_id, item)
+            if not result:
+                results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found"))
+            else:
+                results.append(BulkResultItem(
+                    index=i, status="updated", id=result.template_id,
+                    value=result.value, version=result.version,
+                    is_new_version=result.is_new_version,
+                ))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=str(e)))
+        except RegistryError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=f"Registry error: {str(e)}"))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.get("/{template_id}/dependencies", response_model=TemplateDependencies)
@@ -233,55 +254,51 @@ async def get_template_dependencies(template_id: str):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.delete("/{template_id}")
-async def delete_template(
-    template_id: str,
-    version: Optional[int] = Query(None, description="Specific version to deactivate (default: latest)"),
-    updated_by: Optional[str] = Query(None, description="User performing deletion"),
-    force: bool = Query(False, description="Force deletion even if documents exist")
+@router.delete("", response_model=BulkResponse)
+async def delete_templates(
+    items: list[DeleteItem] = Body(...),
 ):
     """
-    Soft-delete a template (specific version or latest).
+    Soft-delete one or more templates.
 
     Sets the template status to 'inactive'. Cannot delete templates that
     have other templates extending them.
-
-    If documents exist that use this template, returns a warning unless force=true.
-    Use GET /{template_id}/dependencies to check dependencies first.
+    Set force=true per item to delete even if documents exist.
     """
-    try:
-        # Check dependencies first
-        deps = await DependencyService.check_template_dependencies(template_id)
+    results = []
+    for i, item in enumerate(items):
+        try:
+            # Check dependencies
+            deps = await DependencyService.check_template_dependencies(item.id)
 
-        # Block if child templates exist
-        if deps.child_template_count > 0:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template"
-            )
+            # Block if child templates exist
+            if deps.child_template_count > 0:
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template"
+                ))
+                continue
 
-        # Warn if documents exist (unless force)
-        if deps.document_count > 0 and not force:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway."
-            )
+            # Warn if documents exist (unless force)
+            if deps.document_count > 0 and not item.force:
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway."
+                ))
+                continue
 
-        deleted = await TemplateService.delete_template(template_id, updated_by, version=version)
-        if not deleted:
-            raise HTTPException(status_code=404, detail="Template not found")
-
-        response = {"status": "deleted", "template_id": template_id}
-        if version:
-            response["version"] = version
-        if deps.document_count > 0:
-            response["warning"] = f"{deps.document_count} documents still reference this template"
-
-        return response
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+            deleted = await TemplateService.delete_template(item.id, item.updated_by, version=item.version)
+            if not deleted:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Template not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.post("/{template_id}/validate", response_model=ValidateTemplateResponse)
@@ -330,36 +347,6 @@ async def activate_template(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/bulk", response_model=BulkOperationResponse)
-async def create_templates_bulk(
-    request: BulkCreateTemplateRequest,
-):
-    """
-    Create multiple templates at once.
-
-    Each template is registered with the Registry service.
-    Namespace is read from each template's namespace field (default: "wip").
-    """
-    try:
-        # Determine namespace: use the first template's namespace (all should share the same)
-        namespace = request.templates[0].namespace if request.templates else "wip"
-        results = await TemplateService.create_templates_bulk(
-            templates=request.templates,
-            created_by=request.created_by,
-            namespace=namespace,
-        )
-        succeeded = sum(1 for r in results if r.status == "created")
-        failed = sum(1 for r in results if r.status == "error")
-        return BulkOperationResponse(
-            results=results,
-            total=len(results),
-            succeeded=succeeded,
-            failed=failed
-        )
-    except RegistryError as e:
-        raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
-
-
 @router.post("/{template_id}/cascade", response_model=CascadeResponse)
 async def cascade_template(template_id: str):
     """
@@ -376,7 +363,7 @@ async def cascade_template(template_id: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RegistryError as e:
-        raise HTTPException(status_code=503, detail=f"Registry error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)

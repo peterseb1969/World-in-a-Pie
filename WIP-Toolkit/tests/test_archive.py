@@ -214,3 +214,109 @@ class TestArchiveRoundTrip:
             assert reader.compressed_size() > 0
             # Compressed should be smaller
             assert reader.compressed_size() <= reader.total_size()
+
+    def test_registry_metadata_round_trip(self, tmp_path, sample_registry_data):
+        """Entities with _registry metadata survive write/read round-trip."""
+        output = tmp_path / "registry.zip"
+        writer = ArchiveWriter(output)
+
+        terminology = {
+            "terminology_id": "TERM-000001",
+            "value": "COUNTRY",
+            "_source": "primary",
+            "_registry": sample_registry_data["terminology"],
+        }
+        writer.add_entity("terminologies", terminology)
+
+        document = {
+            "document_id": "019abc00-0000-7000-8000-000000000001",
+            "data": {"name": "John"},
+            "_source": "primary",
+            "_registry": sample_registry_data["document_with_identity"],
+        }
+        writer.add_entity("documents", document)
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(terminologies=1, documents=1),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            # Verify format version
+            m = reader.read_manifest()
+            assert m.format_version == "1.1"
+
+            # Terminology _registry round-trip
+            terms = list(reader.read_entities("terminologies"))
+            assert len(terms) == 1
+            reg = terms[0].get("_registry")
+            assert reg is not None
+            assert reg["entry_id"] == "TERM-000001"
+            assert reg["primary_composite_key"] == {"value": "COUNTRY", "label": "Country"}
+            assert len(reg["synonyms"]) == 1
+            assert reg["synonyms"][0]["composite_key"] == {"external_code": "ISO-3166"}
+
+            # Document _registry round-trip
+            docs = list(reader.read_entities("documents"))
+            assert len(docs) == 1
+            reg = docs[0].get("_registry")
+            assert reg is not None
+            assert reg["primary_composite_key"]["identity_hash"] == "abc123hash"
+            assert len(reg["synonyms"]) == 1
+
+    def test_format_1_0_backward_compat(self, tmp_path):
+        """Entities without _registry (format 1.0 style) load correctly."""
+        output = tmp_path / "legacy.zip"
+        writer = ArchiveWriter(output)
+
+        # Simulate format 1.0: no _registry field
+        writer.add_entity("templates", {
+            "template_id": "TPL-000001",
+            "value": "PERSON",
+            "version": 1,
+        })
+        writer.add_entity("documents", {
+            "document_id": "DOC-000001",
+            "data": {"x": 1},
+        })
+
+        manifest = Manifest(
+            format_version="1.0",
+            namespace="wip",
+            counts=EntityCounts(templates=1, documents=1),
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            m = reader.read_manifest()
+            assert m.format_version == "1.0"
+            # include_all_versions should default to False for old archives
+            assert m.include_all_versions is False
+
+            # .get("_registry", {}) pattern should work safely
+            templates = list(reader.read_entities("templates"))
+            assert len(templates) == 1
+            reg = templates[0].get("_registry", {})
+            assert reg == {}
+            assert reg.get("synonyms", []) == []
+            assert reg.get("primary_composite_key", {}) == {}
+
+            docs = list(reader.read_entities("documents"))
+            assert len(docs) == 1
+            assert docs[0].get("_registry", {}).get("synonyms", []) == []
+
+    def test_include_all_versions_manifest_field(self, tmp_path):
+        """Manifest include_all_versions field survives round-trip."""
+        output = tmp_path / "versions.zip"
+        writer = ArchiveWriter(output)
+
+        manifest = Manifest(
+            namespace="wip",
+            include_all_versions=True,
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            m = reader.read_manifest()
+            assert m.include_all_versions is True

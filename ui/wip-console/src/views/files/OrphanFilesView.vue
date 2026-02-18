@@ -108,12 +108,12 @@ function confirmBulkDelete() {
     accept: async () => {
       deleting.value = true
       try {
-        const response = await fileStoreClient.bulkDelete({
-          file_ids: selectedFiles.value.map(f => f.file_id)
-        })
+        const response = await fileStoreClient.deleteFiles(
+          selectedFiles.value.map(f => f.file_id)
+        )
         uiStore.showSuccess(
           'Bulk Delete Complete',
-          `Deleted ${response.deleted} file(s), ${response.failed} failed`
+          `Deleted ${response.succeeded} file(s), ${response.failed} failed`
         )
         selectedFiles.value = []
         loadOrphans()

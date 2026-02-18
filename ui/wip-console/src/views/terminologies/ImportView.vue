@@ -11,7 +11,7 @@ import Checkbox from 'primevue/checkbox'
 import Message from 'primevue/message'
 import { defStoreClient } from '@/api/client'
 import { useUiStore } from '@/stores'
-import type { ImportTerminologyRequest, CreateTerminologyRequest, CreateTermRequest, BulkOperationResponse } from '@/types'
+import type { ImportTerminologyRequest, CreateTerminologyRequest, CreateTermRequest, BulkResponse } from '@/types'
 
 const router = useRouter()
 const uiStore = useUiStore()
@@ -22,7 +22,7 @@ const fileName = ref('')
 const importing = ref(false)
 const importResult = ref<{
   terminology: { terminology_id: string; value: string; label: string }
-  terms_result: BulkOperationResponse
+  terms_result: BulkResponse
 } | null>(null)
 
 // Progress tracking
@@ -162,9 +162,7 @@ async function doImport() {
     for (let i = BATCH_SIZE; i < allTerms.length; i += BATCH_SIZE) {
       const batch = allTerms.slice(i, i + BATCH_SIZE)
 
-      const batchResult = await defStoreClient.bulkCreateTerms(terminologyId, {
-        terms: batch
-      })
+      const batchResult = await defStoreClient.bulkCreateTerms(terminologyId, batch)
 
       // Update progress
       progress.value.current = Math.min(i + batch.length, allTerms.length)

@@ -31,6 +31,8 @@ from ..models.api_models import (
     UpdateEntryResponse,
     DeleteItem,
     DeleteResponse,
+    BulkUpdateResponse,
+    BulkDeleteResponse,
     BrowseEntryItem,
     BrowseEntriesResponse,
     UnifiedSearchResultItem,
@@ -91,7 +93,7 @@ async def browse_entries(
     status: Optional[str] = Query(None, description="Filter by status (active, reserved, inactive)"),
     q: Optional[str] = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(25, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key)
 ) -> BrowseEntriesResponse:
     """Browse registry entries with pagination and optional filters."""
@@ -135,6 +137,7 @@ async def browse_entries(
         total=total,
         page=page,
         page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
     )
 
 
@@ -149,7 +152,7 @@ async def unified_search(
     entity_type: Optional[str] = Query(None, description="Filter by entity type"),
     status: Optional[str] = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(25, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """
@@ -839,13 +842,13 @@ async def lookup_by_keys(
 
 @router.put(
     "",
-    response_model=List[UpdateEntryResponse],
+    response_model=BulkUpdateResponse,
     summary="Update entries (bulk)"
 )
 async def update_entries(
     items: List[UpdateEntryItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> List[UpdateEntryResponse]:
+) -> BulkUpdateResponse:
     """Update one or more registry entries."""
     results = []
 
@@ -880,18 +883,22 @@ async def update_entries(
                 input_index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
-    return results
+    return BulkUpdateResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status == "updated"),
+        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )
 
 
 @router.delete(
     "",
-    response_model=List[DeleteResponse],
+    response_model=BulkDeleteResponse,
     summary="Delete entries (bulk, soft delete)"
 )
 async def delete_entries(
     items: List[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> List[DeleteResponse]:
+) -> BulkDeleteResponse:
     """Deactivate one or more registry entries (soft delete)."""
     results = []
 
@@ -919,4 +926,8 @@ async def delete_entries(
                 input_index=i, status="error", registry_id=item.entry_id, error=str(e)
             ))
 
-    return results
+    return BulkDeleteResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status == "deactivated"),
+        failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )

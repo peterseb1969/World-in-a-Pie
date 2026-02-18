@@ -14,7 +14,7 @@ from ..models.api_models import (
     TerminologyResponse,
     TermResponse,
     ExportTerminologyResponse,
-    BulkOperationResult,
+    BulkResultItem,
 )
 from .terminology_service import TerminologyService
 

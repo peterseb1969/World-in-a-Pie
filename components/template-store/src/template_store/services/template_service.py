@@ -9,7 +9,7 @@ from ..models.api_models import (
     UpdateTemplateRequest,
     TemplateResponse,
     TemplateUpdateResponse,
-    BulkOperationResult,
+    BulkResultItem,
     ValidateTemplateResponse,
     ValidationError,
     ValidationWarning,
@@ -622,7 +622,7 @@ class TemplateService:
         templates: list[CreateTemplateRequest],
         created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
         namespace: str = "wip",
-    ) -> list[BulkOperationResult]:
+    ) -> list[BulkResultItem]:
         """
         Create multiple templates.
 
@@ -649,7 +649,7 @@ class TemplateService:
 
         for i, (template_req, reg_result) in enumerate(zip(templates, registry_results)):
             if reg_result["status"] == "error":
-                results.append(BulkOperationResult(
+                results.append(BulkResultItem(
                     index=i,
                     status="error",
                     value=template_req.value,
@@ -663,7 +663,7 @@ class TemplateService:
             existing_list = await Template.find({"template_id": template_id}).limit(1).to_list()
             existing = existing_list[0] if existing_list else None
             if existing:
-                results.append(BulkOperationResult(
+                results.append(BulkResultItem(
                     index=i,
                     status="skipped",
                     id=template_id,
@@ -683,7 +683,7 @@ class TemplateService:
                         template_req.fields, namespace
                     )
                 except ValueError as e:
-                    results.append(BulkOperationResult(
+                    results.append(BulkResultItem(
                         index=i,
                         status="error",
                         value=template_req.value,
@@ -718,7 +718,7 @@ class TemplateService:
                     changed_by=actor
                 )
 
-            results.append(BulkOperationResult(
+            results.append(BulkResultItem(
                 index=i,
                 status="created",
                 id=template_id,

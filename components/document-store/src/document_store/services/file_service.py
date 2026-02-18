@@ -9,14 +9,14 @@ import httpx
 
 from ..models.file import File, FileStatus, FileMetadata, FileReference
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     FileResponse,
     FileListResponse,
     FileDownloadResponse,
     FileUploadMetadata,
     UpdateFileMetadataRequest,
-    FileBulkDeleteRequest,
-    FileBulkDeleteResponse,
-    FileBulkResult,
+    DeleteItem,
     FileIntegrityIssue,
     FileIntegrityResponse,
 )
@@ -596,57 +596,6 @@ class FileService:
             elif pattern == content_type:
                 return True
         return False
-
-    async def bulk_delete(
-        self,
-        request: FileBulkDeleteRequest
-    ) -> FileBulkDeleteResponse:
-        """
-        Delete multiple files.
-
-        Args:
-            request: Bulk delete request with file IDs
-
-        Returns:
-            FileBulkDeleteResponse with results
-        """
-        results = []
-        deleted = 0
-        failed = 0
-
-        for i, file_id in enumerate(request.file_ids):
-            try:
-                success = await self.delete_file(file_id)
-                if success:
-                    deleted += 1
-                    results.append(FileBulkResult(
-                        index=i,
-                        status="success",
-                        file_id=file_id,
-                    ))
-                else:
-                    failed += 1
-                    results.append(FileBulkResult(
-                        index=i,
-                        status="error",
-                        file_id=file_id,
-                        error="File not found",
-                    ))
-            except FileServiceError as e:
-                failed += 1
-                results.append(FileBulkResult(
-                    index=i,
-                    status="error",
-                    file_id=file_id,
-                    error=str(e),
-                ))
-
-        return FileBulkDeleteResponse(
-            total=len(request.file_ids),
-            deleted=deleted,
-            failed=failed,
-            results=results,
-        )
 
     async def check_integrity(self) -> FileIntegrityResponse:
         """

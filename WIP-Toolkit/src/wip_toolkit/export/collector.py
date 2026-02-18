@@ -18,6 +18,7 @@ class EntityCollector:
         self.client = client
         self.namespace = namespace
         self.include_inactive = include_inactive
+        self._template_cache: list[dict[str, Any]] | None = None
 
     # --- Def-Store ---
 
@@ -39,7 +40,7 @@ class EntityCollector:
             params["status"] = "active"
         return self.client.fetch_all_paginated(
             "def-store", f"/terminologies/{terminology_id}/terms",
-            params=params, page_size=500,
+            params=params, page_size=100,
         )
 
     def fetch_all_terms(self, terminologies: list[dict]) -> list[dict[str, Any]]:
@@ -138,32 +139,132 @@ class EntityCollector:
         except Exception:
             return None
 
+    def _ensure_template_cache(self) -> list[dict[str, Any]]:
+        """Fetch all templates once and cache for repeated lookups."""
+        if self._template_cache is None:
+            try:
+                self._template_cache = self.client.fetch_all_paginated(
+                    "template-store", "/templates",
+                    params={"latest_only": "false"},
+                    page_size=100,
+                )
+            except Exception:
+                self._template_cache = []
+        return self._template_cache
+
     def fetch_template_by_id(self, template_id: str) -> list[dict[str, Any]]:
         """Fetch all versions of a template by ID. Returns empty list if not found."""
-        try:
-            params: dict[str, Any] = {"latest_only": "false"}
-            items = self.client.fetch_all_paginated(
-                "template-store", "/templates",
-                params={**params, "value": ""},  # Can't filter by ID directly in list
-                page_size=100,
-            )
-            # Filter to the specific template_id
-            return [t for t in items if t.get("template_id") == template_id]
-        except Exception:
-            return []
+        all_templates = self._ensure_template_cache()
+        return [t for t in all_templates if t.get("template_id") == template_id]
 
     def fetch_template_versions_by_id(self, template_id: str) -> list[dict[str, Any]]:
         """Fetch all versions of a specific template by its ID."""
-        try:
-            # Use the list endpoint filtering, since there's no direct get-all-versions-by-id
-            all_templates = self.client.fetch_all_paginated(
-                "template-store", "/templates",
-                params={"latest_only": "false"},
-                page_size=100,
-            )
-            return [t for t in all_templates if t.get("template_id") == template_id]
-        except Exception:
-            return []
+        all_templates = self._ensure_template_cache()
+        return [t for t in all_templates if t.get("template_id") == template_id]
+
+    # --- Document version history ---
+
+    def fetch_all_document_versions(self, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Expand latest-only documents to include all versions.
+
+        For each unique document_id, fetches the version list and then
+        each individual version. Deduplicates by (document_id, version).
+        """
+        seen_ids: set[str] = set()
+        unique_doc_ids: list[str] = []
+        for doc in documents:
+            did = doc["document_id"]
+            if did not in seen_ids:
+                seen_ids.add(did)
+                unique_doc_ids.append(did)
+
+        all_versions: list[dict[str, Any]] = []
+        seen_versions: set[tuple[str, int]] = set()
+
+        for did in unique_doc_ids:
+            try:
+                version_list = self.fetch_document_versions(did)
+                for v_info in version_list:
+                    version = v_info.get("version", 1)
+                    key = (did, version)
+                    if key in seen_versions:
+                        continue
+                    seen_versions.add(key)
+                    try:
+                        full_doc = self.fetch_document_version(did, version)
+                        all_versions.append(full_doc)
+                    except Exception:
+                        # Fall back: if we already have this version from the
+                        # original fetch, it's already covered
+                        pass
+            except Exception:
+                # If version listing fails, keep whatever we have from the
+                # original documents list for this doc_id
+                pass
+
+        # Merge: ensure we haven't lost any documents from the original list
+        for doc in documents:
+            key = (doc["document_id"], doc.get("version", 1))
+            if key not in seen_versions:
+                seen_versions.add(key)
+                all_versions.append(doc)
+
+        console.print(
+            f"  Expanded to {len(all_versions)} document versions "
+            f"(from {len(unique_doc_ids)} unique documents)"
+        )
+        return all_versions
+
+    # --- Registry bulk lookup ---
+
+    def fetch_registry_entries(self, entity_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Bulk-fetch Registry entries by ID, returning {entry_id: registry_data}.
+
+        Batches IDs in groups of 100. For each found entry, extracts:
+        - entry_id, namespace, entity_type
+        - primary_composite_key (from matched_composite_key)
+        - synonyms (list of {namespace, entity_type, composite_key})
+        - source_info
+        """
+        result: dict[str, dict[str, Any]] = {}
+        batch_size = 100
+
+        for i in range(0, len(entity_ids), batch_size):
+            batch = entity_ids[i:i + batch_size]
+            try:
+                resp = self.client.post(
+                    "registry", "/entries/lookup/by-id",
+                    json=[{"entry_id": eid} for eid in batch],
+                )
+                for entry in resp.get("results", []):
+                    if entry.get("status") != "found":
+                        continue
+                    eid = entry.get("entry_id")
+                    if not eid:
+                        continue
+
+                    # Extract synonyms from the entry
+                    synonyms: list[dict[str, Any]] = []
+                    for syn in entry.get("synonyms", []):
+                        synonyms.append({
+                            "namespace": syn.get("namespace", ""),
+                            "entity_type": syn.get("entity_type", ""),
+                            "composite_key": syn.get("composite_key", {}),
+                        })
+
+                    result[eid] = {
+                        "entry_id": eid,
+                        "namespace": entry.get("namespace", ""),
+                        "entity_type": entry.get("entity_type", ""),
+                        "primary_composite_key": entry.get("matched_composite_key", {}),
+                        "synonyms": synonyms,
+                        "source_info": entry.get("source_info"),
+                    }
+            except Exception as e:
+                console.print(f"  [yellow]Warning: Registry lookup failed for batch at {i}: {e}[/yellow]")
+
+        console.print(f"  Fetched {len(result)} Registry entries for {len(entity_ids)} IDs")
+        return result
 
     # --- Registry ---
 

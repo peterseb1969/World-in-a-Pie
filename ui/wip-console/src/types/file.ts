@@ -66,28 +66,6 @@ export interface FileDownloadResponse {
 }
 
 // =============================================================================
-// BULK OPERATION TYPES
-// =============================================================================
-
-export interface FileBulkDeleteRequest {
-  file_ids: string[]
-}
-
-export interface FileBulkResult {
-  index: number
-  status: 'success' | 'error'
-  file_id: string | null
-  error: string | null
-}
-
-export interface FileBulkDeleteResponse {
-  total: number
-  deleted: number
-  failed: number
-  results: FileBulkResult[]
-}
-
-// =============================================================================
 // INTEGRITY TYPES
 // =============================================================================
 

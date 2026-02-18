@@ -101,6 +101,7 @@ class BrowseEntriesResponse(BaseModel):
     total: int
     page: int
     page_size: int
+    pages: int = 0
 
 
 # =============================================================================
@@ -467,6 +468,51 @@ class DeleteResponse(BaseModel):
     status: str  # deactivated, not_found, error
     registry_id: Optional[str] = None
     error: Optional[str] = None
+
+
+class BulkUpdateResponse(BaseModel):
+    """Wrapped response for bulk update operations."""
+
+    results: list[UpdateEntryResponse]
+    total: int
+    succeeded: int
+    failed: int
+
+
+class BulkDeleteResponse(BaseModel):
+    """Wrapped response for bulk delete operations."""
+
+    results: list[DeleteResponse]
+    total: int
+    succeeded: int
+    failed: int
+
+
+class BulkSynonymAddResponse(BaseModel):
+    """Wrapped response for bulk synonym add operations."""
+
+    results: list[AddSynonymResponse]
+    total: int
+    succeeded: int
+    failed: int
+
+
+class BulkSynonymRemoveResponse(BaseModel):
+    """Wrapped response for bulk synonym remove operations."""
+
+    results: list[RemoveSynonymResponse]
+    total: int
+    succeeded: int
+    failed: int
+
+
+class BulkMergeResponse(BaseModel):
+    """Wrapped response for bulk merge operations."""
+
+    results: list[MergeResponse]
+    total: int
+    succeeded: int
+    failed: int
 
 
 # =============================================================================

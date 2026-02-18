@@ -39,7 +39,7 @@ class EntityCounts(BaseModel):
 
 class Manifest(BaseModel):
     """Archive manifest describing the export."""
-    format_version: str = "1.0"
+    format_version: str = "1.1"
     tool_version: str = "0.1.0"
     exported_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_host: str = ""
@@ -47,6 +47,7 @@ class Manifest(BaseModel):
     namespace_config: NamespaceConfig | None = None
     include_inactive: bool = False
     include_files: bool = False
+    include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)
     counts: EntityCounts = Field(default_factory=EntityCounts)
 

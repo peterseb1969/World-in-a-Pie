@@ -3,19 +3,20 @@
 import math
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..models.file import FileStatus
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     FileResponse,
     FileListResponse,
     FileDownloadResponse,
     FileUploadMetadata,
-    UpdateFileMetadataRequest,
-    FileBulkDeleteRequest,
-    FileBulkDeleteResponse,
+    UpdateFileItem,
+    DeleteItem,
     FileIntegrityResponse,
 )
 from ..services.file_service import get_file_service, FileServiceError
@@ -233,54 +234,64 @@ async def download_file_content(
 
 
 @router.patch(
-    "/{file_id}",
-    response_model=FileResponse,
+    "",
+    response_model=BulkResponse,
     summary="Update file metadata",
-    description="Update file metadata (description, tags, category, etc.).",
+    description="Update metadata for one or more files (description, tags, category, etc.).",
     dependencies=[Depends(require_file_storage)]
 )
-async def update_file_metadata(
-    file_id: str,
-    request: UpdateFileMetadataRequest,
+async def update_files_metadata(
+    items: list[UpdateFileItem] = Body(...),
     _: str = Depends(require_api_key)
 ):
-    """Update file metadata."""
+    """Update metadata for one or more files."""
     service = get_file_service()
-
-    try:
-        response = await service.update_metadata(file_id, request)
-        if not response:
-            raise HTTPException(status_code=404, detail="File not found")
-        return response
-    except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    results = []
+    for i, item in enumerate(items):
+        try:
+            response = await service.update_metadata(item.file_id, item)
+            if not response:
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="updated", id=item.file_id))
+        except FileServiceError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.file_id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.delete(
-    "/{file_id}",
-    summary="Soft-delete file",
-    description="""
-Soft-delete a file by setting its status to inactive.
-
-If the file is referenced by documents, the deletion will fail unless force=true.
-    """,
+    "",
+    response_model=BulkResponse,
+    summary="Soft-delete files",
+    description="Soft-delete one or more files by setting their status to inactive. "
+                "Set force=true per item to delete even if referenced by documents.",
     dependencies=[Depends(require_file_storage)]
 )
-async def delete_file(
-    file_id: str,
-    force: bool = Query(False, description="Force delete even if file is referenced"),
+async def delete_files(
+    items: list[DeleteItem] = Body(...),
     _: str = Depends(require_api_key)
 ):
-    """Soft-delete a file."""
+    """Soft-delete one or more files."""
     service = get_file_service()
-
-    try:
-        success = await service.delete_file(file_id, force=force)
-        if not success:
-            raise HTTPException(status_code=404, detail="File not found")
-        return {"status": "deleted", "file_id": file_id}
-    except FileServiceError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    results = []
+    for i, item in enumerate(items):
+        try:
+            success = await service.delete_file(item.id, force=item.force)
+            if not success:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except FileServiceError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.get(
@@ -371,22 +382,6 @@ async def hard_delete_file(
         return {"status": "permanently_deleted", "file_id": file_id}
     except FileServiceError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post(
-    "/bulk/delete",
-    response_model=FileBulkDeleteResponse,
-    summary="Bulk delete files",
-    description="Delete multiple files in a single request.",
-    dependencies=[Depends(require_file_storage)]
-)
-async def bulk_delete_files(
-    request: FileBulkDeleteRequest,
-    _: str = Depends(require_api_key)
-):
-    """Bulk delete files."""
-    service = get_file_service()
-    return await service.bulk_delete(request)
 
 
 @router.get(

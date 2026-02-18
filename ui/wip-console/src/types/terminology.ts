@@ -56,6 +56,7 @@ export interface TerminologyListResponse {
   total: number
   page: number
   page_size: number
+  pages: number
 }
 
 // =============================================================================
@@ -124,33 +125,9 @@ export interface TermListResponse {
   total: number
   page: number
   page_size: number
+  pages: number
   terminology_id: string
   terminology_value: string
-}
-
-// =============================================================================
-// BULK OPERATION TYPES
-// =============================================================================
-
-export interface BulkCreateTermRequest {
-  terms: CreateTermRequest[]
-  created_by?: string
-}
-
-export interface BulkOperationResult {
-  index: number
-  status: 'created' | 'updated' | 'error' | 'skipped'
-  id?: string
-  value?: string
-  error?: string
-}
-
-export interface BulkOperationResponse {
-  results: BulkOperationResult[]
-  total: number
-  succeeded: number
-  failed: number
-  skipped?: number
 }
 
 // =============================================================================

@@ -11,7 +11,7 @@ async def test_validate_template_valid(client: AsyncClient, auth_headers: dict):
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "VALID_TEMPLATE",
             "label": "Valid Template",
             "fields": [
@@ -23,9 +23,9 @@ async def test_validate_template_valid(client: AsyncClient, auth_headers: dict):
                 },
                 {"name": "name", "label": "Name", "type": "string"}
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -46,7 +46,7 @@ async def test_validate_template_invalid_terminology(client: AsyncClient, auth_h
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "INVALID_TERM_REF",
             "label": "Invalid Term Ref",
             "status": "draft",
@@ -58,9 +58,9 @@ async def test_validate_template_invalid_terminology(client: AsyncClient, auth_h
                     "terminology_ref": "NONEXISTENT_TERMINOLOGY"  # Mocked to not exist
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -83,9 +83,9 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "ORPHAN", "label": "Orphan Template"}
+        json=[{"value": "ORPHAN", "label": "Orphan Template"}]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Manually corrupt the extends (simulating data corruption or external modification)
     # Since we can't do this easily via API, we'll create a template with extends
@@ -96,7 +96,7 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
     create_response2 = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "NESTED_REF",
             "label": "Nested Ref",
             "status": "draft",
@@ -108,9 +108,9 @@ async def test_validate_template_invalid_extends(client: AsyncClient, auth_heade
                     "template_ref": "NONEXISTENT_TEMPLATE"  # Invalid reference
                 }
             ]
-        }
+        }]
     )
-    template_id2 = create_response2.json()["template_id"]
+    template_id2 = create_response2.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -132,7 +132,7 @@ async def test_validate_template_array_terminology_ref(client: AsyncClient, auth
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "ARRAY_TERM",
             "label": "Array Terminology",
             "fields": [
@@ -144,9 +144,9 @@ async def test_validate_template_array_terminology_ref(client: AsyncClient, auth
                     "array_terminology_ref": "COUNTRY"  # Mocked to exist
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -166,22 +166,22 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
     addr_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "ADDRESS",
             "label": "Address",
             "fields": [
                 {"name": "street", "label": "Street", "type": "string"},
                 {"name": "city", "label": "City", "type": "string"}
             ]
-        }
+        }]
     )
-    addr_id = addr_response.json()["template_id"]
+    addr_id = addr_response.json()["results"][0]["id"]
 
     # Create template with array of objects
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "PERSON_ADDRESSES",
             "label": "Person with Addresses",
             "fields": [
@@ -194,9 +194,9 @@ async def test_validate_template_array_template_ref(client: AsyncClient, auth_he
                     "array_template_ref": addr_id
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -221,7 +221,7 @@ async def test_validate_draft_template_reports_invalid_refs(client: AsyncClient,
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "DRAFT_INVALID_REF",
             "label": "Draft Invalid Ref",
             "status": "draft",
@@ -233,9 +233,9 @@ async def test_validate_draft_template_reports_invalid_refs(client: AsyncClient,
                     "terminology_ref": "NONEXISTENT"
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate — should report the invalid ref
     response = await client.post(
@@ -270,22 +270,22 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
     nested_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "CONTACT_INFO",
             "label": "Contact Info",
             "fields": [
                 {"name": "email", "label": "Email", "type": "string"},
                 {"name": "phone", "label": "Phone", "type": "string"}
             ]
-        }
+        }]
     )
-    nested_id = nested_response.json()["template_id"]
+    nested_id = nested_response.json()["results"][0]["id"]
 
     # Create main template with nested object
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "PERSON_CONTACT",
             "label": "Person with Contact",
             "fields": [
@@ -297,9 +297,9 @@ async def test_validate_template_nested_object(client: AsyncClient, auth_headers
                     "template_ref": nested_id
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(
@@ -319,26 +319,26 @@ async def test_validate_template_with_extends(client: AsyncClient, auth_headers:
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "VAL_PARENT",
             "label": "Validation Parent",
             "fields": [{"name": "id", "label": "ID", "type": "string"}]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "VAL_CHILD",
             "label": "Validation Child",
             "extends": parent_id,
             "fields": [{"name": "name", "label": "Name", "type": "string"}]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Validate child template (extends reference should be valid)
     response = await client.post(
@@ -358,7 +358,7 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
     create_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "MULTI_ERROR",
             "label": "Multiple Errors",
             "status": "draft",
@@ -382,9 +382,9 @@ async def test_validate_template_multiple_errors(client: AsyncClient, auth_heade
                     "template_ref": "INVALID_TEMPLATE"
                 }
             ]
-        }
+        }]
     )
-    template_id = create_response.json()["template_id"]
+    template_id = create_response.json()["results"][0]["id"]
 
     # Validate template
     response = await client.post(

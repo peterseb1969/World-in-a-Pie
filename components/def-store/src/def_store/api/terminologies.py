@@ -1,12 +1,16 @@
 """API endpoints for terminology management."""
 
+import math
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, Body, HTTPException, Query, Depends
 
 from ..models.api_models import (
+    BulkResultItem,
+    BulkResponse,
     CreateTerminologyRequest,
-    UpdateTerminologyRequest,
+    UpdateTerminologyItem,
+    DeleteItem,
     TerminologyResponse,
     TerminologyListResponse,
 )
@@ -18,25 +22,31 @@ from .auth import require_api_key
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
 
 
-@router.post("", response_model=TerminologyResponse, status_code=201, summary="Create a terminology")
-async def create_terminology(
-    request: CreateTerminologyRequest,
+@router.post("", response_model=BulkResponse, summary="Create terminologies")
+async def create_terminologies(
+    items: list[CreateTerminologyRequest] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> TerminologyResponse:
+) -> BulkResponse:
     """
-    Create a new terminology (controlled vocabulary).
+    Create one or more terminologies (controlled vocabularies).
 
-    The terminology will be registered with the Registry service to get
-    a unique ID. Namespace is specified in the request body (default: "wip").
+    Each terminology will be registered with the Registry service to get
+    a unique ID. Namespace is specified per item (default: "wip").
     """
-    try:
-        return await TerminologyService.create_terminology(request, namespace=request.namespace)
-    except ValueError as e:
-        msg = str(e)
-        status = 409 if "already exists" in msg else 400
-        raise HTTPException(status_code=status, detail=msg)
-    except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+    results = []
+    for i, item in enumerate(items):
+        try:
+            result = await TerminologyService.create_terminology(item, namespace=item.namespace)
+            results.append(BulkResultItem(index=i, status="created", id=result.terminology_id))
+        except (ValueError, HTTPException) as e:
+            results.append(BulkResultItem(index=i, status="error", error=str(e)))
+        except RegistryError as e:
+            results.append(BulkResultItem(index=i, status="error", error=f"Registry error: {str(e)}"))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.get("", response_model=TerminologyListResponse, summary="List terminologies")
@@ -60,7 +70,8 @@ async def list_terminologies(
         items=terminologies,
         total=total,
         page=page,
-        page_size=page_size
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0
     )
 
 
@@ -100,27 +111,34 @@ async def get_terminology(
     return result
 
 
-@router.put("/{terminology_id}", response_model=TerminologyResponse, summary="Update a terminology")
-async def update_terminology(
-    terminology_id: str,
-    request: UpdateTerminologyRequest,
+@router.put("", response_model=BulkResponse, summary="Update terminologies")
+async def update_terminologies(
+    items: list[UpdateTerminologyItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> TerminologyResponse:
+) -> BulkResponse:
     """
-    Update a terminology.
+    Update one or more terminologies.
 
-    If the value changes, a synonym will be added in the Registry to allow
+    If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
-    try:
-        result = await TerminologyService.update_terminology(terminology_id, request)
-        if not result:
-            raise HTTPException(status_code=404, detail="Terminology not found")
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+    results = []
+    for i, item in enumerate(items):
+        try:
+            result = await TerminologyService.update_terminology(item.terminology_id, item)
+            if not result:
+                results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error="Terminology not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="updated", id=item.terminology_id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=str(e)))
+        except RegistryError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=f"Registry error: {str(e)}"))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
 
 
 @router.get(
@@ -167,51 +185,41 @@ async def restore_terminology(
     return result
 
 
-@router.delete("/{terminology_id}", summary="Delete a terminology")
-async def delete_terminology(
-    terminology_id: str,
-    updated_by: Optional[str] = Query(None, description="User performing deletion"),
-    force: bool = Query(False, description="Force deletion even if templates reference it"),
+@router.delete("", response_model=BulkResponse, summary="Delete terminologies")
+async def delete_terminologies(
+    items: list[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
-) -> dict:
+) -> BulkResponse:
     """
-    Soft-delete a terminology (set status to inactive).
+    Soft-delete one or more terminologies (set status to inactive).
 
-    All terms in the terminology will also be deactivated.
-
-    If templates reference this terminology, returns a warning unless force=true.
-    Use GET /{terminology_id}/dependencies to check dependencies first.
+    All terms in each terminology will also be deactivated.
+    Set force=true per item to delete even if templates reference it.
     """
-    try:
-        # Check dependencies first
-        deps = await DependencyService.check_terminology_dependencies(terminology_id)
+    results = []
+    for i, item in enumerate(items):
+        try:
+            # Check dependencies unless forcing
+            if not item.force:
+                deps = await DependencyService.check_terminology_dependencies(item.id)
+                if deps.template_count > 0:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway."
+                    ))
+                    continue
 
-        # Warn if templates reference this (unless force)
-        if deps.template_count > 0 and not force:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "Terminology has dependent templates",
-                    "message": deps.warning_message,
-                    "template_count": deps.template_count,
-                    "templates": deps.templates,
-                    "hint": "Use force=true to deactivate anyway"
-                }
+            success = await TerminologyService.delete_terminology(
+                terminology_id=item.id, updated_by=item.updated_by
             )
-
-        success = await TerminologyService.delete_terminology(
-            terminology_id=terminology_id,
-            updated_by=updated_by
-        )
-        if not success:
-            raise HTTPException(status_code=404, detail="Terminology not found")
-
-        response = {"status": "deleted", "terminology_id": terminology_id}
-        if deps.template_count > 0:
-            response["warning"] = f"{deps.template_count} templates still reference this terminology"
-
-        return response
-    except HTTPException:
-        raise
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+            if not success:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Terminology not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )

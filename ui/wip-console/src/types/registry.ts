@@ -19,6 +19,7 @@ export interface RegistryEntryListResponse {
   total: number
   page: number
   page_size: number
+  pages: number
 }
 
 export interface RegistryEntryDetail {

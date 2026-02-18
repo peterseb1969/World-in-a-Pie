@@ -6,8 +6,7 @@ import type {
   CreateTermRequest,
   UpdateTermRequest,
   DeprecateTermRequest,
-  BulkCreateTermRequest,
-  BulkOperationResponse
+  BulkResponse
 } from '@/types'
 
 export const useTermStore = defineStore('term', () => {
@@ -63,7 +62,8 @@ export const useTermStore = defineStore('term', () => {
     loading.value = true
     error.value = null
     try {
-      const created = await defStoreClient.createTerm(termologyId, data)
+      const result = await defStoreClient.createTerm(termologyId, data)
+      const created = await defStoreClient.getTerm(result.id!)
       terms.value.push(created)
       total.value++
       return created
@@ -79,7 +79,8 @@ export const useTermStore = defineStore('term', () => {
     loading.value = true
     error.value = null
     try {
-      const updated = await defStoreClient.updateTerm(termId, data)
+      await defStoreClient.updateTerm(termId, data)
+      const updated = await defStoreClient.getTerm(termId)
       const index = terms.value.findIndex(t => t.term_id === termId)
       if (index !== -1) {
         terms.value[index] = updated
@@ -100,7 +101,8 @@ export const useTermStore = defineStore('term', () => {
     loading.value = true
     error.value = null
     try {
-      const updated = await defStoreClient.deprecateTerm(termId, data)
+      await defStoreClient.deprecateTerm(termId, data)
+      const updated = await defStoreClient.getTerm(termId)
       const index = terms.value.findIndex(t => t.term_id === termId)
       if (index !== -1) {
         terms.value[index] = updated
@@ -137,12 +139,12 @@ export const useTermStore = defineStore('term', () => {
 
   async function bulkCreateTerms(
     termologyId: string,
-    data: BulkCreateTermRequest
-  ): Promise<BulkOperationResponse> {
+    terms: CreateTermRequest[]
+  ): Promise<BulkResponse> {
     loading.value = true
     error.value = null
     try {
-      const result = await defStoreClient.bulkCreateTerms(termologyId, data)
+      const result = await defStoreClient.bulkCreateTerms(termologyId, terms)
       // Refresh the terms list after bulk create
       await fetchTerms(termologyId)
       return result

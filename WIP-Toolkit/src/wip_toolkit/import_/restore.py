@@ -52,40 +52,57 @@ def restore_import(
     terms = list(reader.read_entities("terms"))
     _preregister_terms(client, target_namespace, terms, stats, continue_on_error)
 
-    # Step 4: Create terminologies via Def-Store
-    console.print("\n[bold cyan]Step 3:[/bold cyan] Creating terminologies")
+    # Step 4: Pre-register template IDs in Registry
+    console.print("\n[bold cyan]Step 3:[/bold cyan] Pre-registering template IDs")
+    templates = list(reader.read_entities("templates"))
+    _preregister_templates(client, target_namespace, templates, stats, continue_on_error)
+
+    # Step 5: Create terminologies via Def-Store
+    console.print("\n[bold cyan]Step 4:[/bold cyan] Creating terminologies")
     _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
 
-    # Step 5: Create terms via Def-Store
-    console.print("\n[bold cyan]Step 4:[/bold cyan] Creating terms")
+    # Step 6: Create terms via Def-Store
+    console.print("\n[bold cyan]Step 5:[/bold cyan] Creating terms")
     _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error)
 
-    # Step 6: Create templates as drafts with ID pass-through
-    console.print("\n[bold cyan]Step 5:[/bold cyan] Creating templates (as drafts)")
-    templates = list(reader.read_entities("templates"))
+    # Step 7: Create templates as drafts with ID pass-through
+    console.print("\n[bold cyan]Step 6:[/bold cyan] Creating templates (as drafts)")
     _create_templates(client, target_namespace, templates, stats, continue_on_error)
 
-    # Step 7: Activate all draft templates
-    console.print("\n[bold cyan]Step 6:[/bold cyan] Activating templates")
+    # Step 8: Activate all draft templates
+    console.print("\n[bold cyan]Step 7:[/bold cyan] Activating templates")
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
+    documents: list[dict] = []
     if not skip_documents:
-        # Step 8: Create documents (with document_id + version pass-through)
-        # Both document_id and version are passed, so the document-store
-        # skips Registry registration entirely (restore-mode bypass).
-        console.print("\n[bold cyan]Step 7:[/bold cyan] Creating documents")
+        # Step 9: Pre-register document IDs in Registry
+        console.print("\n[bold cyan]Step 8:[/bold cyan] Pre-registering document IDs")
         documents = list(reader.read_entities("documents"))
+        _preregister_documents(client, target_namespace, documents, stats, continue_on_error)
+
+        # Step 10: Create documents
+        console.print("\n[bold cyan]Step 9:[/bold cyan] Creating documents")
         _create_documents(client, target_namespace, documents, batch_size, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
 
+    files: list[dict] = []
     if not skip_files and not skip_documents:
-        # Step 10: Upload files with ID pass-through
-        console.print("\n[bold cyan]Step 9:[/bold cyan] Uploading files")
+        # Step 11: Pre-register file IDs in Registry
+        console.print("\n[bold cyan]Step 10:[/bold cyan] Pre-registering file IDs")
         files = list(reader.read_entities("files"))
+        _preregister_files(client, target_namespace, files, stats, continue_on_error)
+
+        # Step 12: Upload files
+        console.print("\n[bold cyan]Step 11:[/bold cyan] Uploading files")
         _upload_files(client, target_namespace, files, reader, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
+
+    # Step 13: Restore synonyms from _registry data
+    console.print("\n[bold cyan]Step 12:[/bold cyan] Restoring Registry synonyms")
+    all_entities = terminologies + terms + templates + documents + files
+    _restore_synonyms(client, target_namespace, all_entities, stats, continue_on_error)
 
     return stats
 
@@ -218,16 +235,20 @@ def _create_terminologies(
                 "metadata": t.get("metadata"),
                 "created_by": "wip-toolkit-restore",
             }
-            client.post("def-store", "/terminologies", json=payload)
-            stats.created.terminologies += 1
-        except WIPClientError as e:
-            if e.status_code == 409:
+            result = client.post("def-store", "/terminologies", json=[payload])
+            r = result["results"][0]
+            if r["status"] == "created":
+                stats.created.terminologies += 1
+            elif r["status"] == "error" and "already exists" in r.get("error", ""):
                 stats.skipped.terminologies += 1
             else:
                 stats.failed.terminologies += 1
-                stats.errors.append(f"Failed to create terminology {t['terminology_id']}: {e}")
+                stats.errors.append(f"Failed to create terminology {t['terminology_id']}: {r.get('error')}")
                 if not continue_on_error:
-                    raise
+                    raise WIPClientError(r.get("error", "Unknown error"))
+        except WIPClientError:
+            if not continue_on_error:
+                raise
 
     console.print(
         f"  Created {stats.created.terminologies}, "
@@ -265,13 +286,14 @@ def _create_terms(
                     "parent_term_id": t.get("parent_term_id"),
                     "translations": t.get("translations", []),
                     "metadata": t.get("metadata", {}),
+                    "created_by": "wip-toolkit-restore",
                 })
 
             try:
                 result = client.post(
                     "def-store",
-                    f"/terminologies/{tid}/terms/bulk",
-                    json={"terms": term_payloads, "created_by": "wip-toolkit-restore"},
+                    f"/terminologies/{tid}/terms",
+                    json=term_payloads,
                 )
                 stats.created.terms += result.get("succeeded", 0)
                 stats.failed.terms += result.get("failed", 0)
@@ -312,22 +334,28 @@ def _create_templates(
                 if idx == 0:
                     # First version: POST with template_id pass-through
                     payload = _template_create_payload(tpl, namespace)
-                    client.post("template-store", "/templates", json=payload)
+                    result = client.post("template-store", "/templates", json=[payload])
                 else:
                     # Subsequent versions: PUT to create new version
                     payload = _template_update_payload(tpl)
-                    client.put("template-store", f"/templates/{tid}", json=payload)
-                stats.created.templates += 1
-            except WIPClientError as e:
-                if e.status_code == 409:
-                    stats.skipped.templates += 1
+                    payload["template_id"] = tid
+                    result = client.put("template-store", "/templates", json=[payload])
+                r = result["results"][0]
+                if r["status"] == "error":
+                    if "already exists" in r.get("error", ""):
+                        stats.skipped.templates += 1
+                    else:
+                        stats.failed.templates += 1
+                        stats.errors.append(
+                            f"Failed to create template {tid} v{tpl.get('version', '?')}: {r.get('error')}"
+                        )
+                        if not continue_on_error:
+                            raise WIPClientError(r.get("error", "Unknown error"))
                 else:
-                    stats.failed.templates += 1
-                    stats.errors.append(
-                        f"Failed to create template {tid} v{tpl.get('version', '?')}: {e}"
-                    )
-                    if not continue_on_error:
-                        raise
+                    stats.created.templates += 1
+            except WIPClientError:
+                if not continue_on_error:
+                    raise
 
     console.print(
         f"  Created {stats.created.templates}, "
@@ -421,6 +449,43 @@ def _activate_templates(
     console.print(msg)
 
 
+def _preregister_templates(
+    client: WIPClient,
+    namespace: str,
+    templates: list[dict],
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Pre-register template IDs with composite keys from _registry data.
+
+    Deduplicates by template_id (multiple versions share one Registry entry).
+    """
+    if not templates:
+        return
+
+    seen: set[str] = set()
+    batch: list[dict] = []
+    for t in templates:
+        tid = t["template_id"]
+        if tid in seen:
+            continue
+        seen.add(tid)
+
+        registry = t.get("_registry", {})
+        composite_key = registry.get("primary_composite_key", {})
+
+        batch.append({
+            "namespace": namespace,
+            "entity_type": "templates",
+            "entry_id": tid,
+            "composite_key": composite_key,
+            "created_by": "wip-toolkit-restore",
+        })
+
+    result = _registry_register_batch(client, batch, "template", stats, continue_on_error)
+    console.print(f"  Pre-registered {result} template ID(s)")
+
+
 def _preregister_documents(
     client: WIPClient,
     namespace: str,
@@ -428,33 +493,129 @@ def _preregister_documents(
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Pre-register document IDs for documents with identity fields."""
-    identity_docs = [
-        d for d in documents
-        if d.get("identity_hash")
-    ]
+    """Pre-register document IDs with composite keys from _registry data.
 
-    if not identity_docs:
-        console.print("  No identity-based documents to pre-register")
+    Deduplicates by document_id (multiple versions share one Registry entry).
+    """
+    if not documents:
         return
 
-    batch = [
-        {
+    seen: set[str] = set()
+    batch: list[dict] = []
+    for d in documents:
+        did = d["document_id"]
+        if did in seen:
+            continue
+        seen.add(did)
+
+        registry = d.get("_registry", {})
+        composite_key = registry.get("primary_composite_key", {})
+
+        batch.append({
             "namespace": namespace,
             "entity_type": "documents",
-            "entry_id": d["document_id"],
-            "composite_key": {
-                "namespace": namespace,
-                "identity_hash": d["identity_hash"],
-                "template_id": d["template_id"],
-            },
+            "entry_id": did,
+            "composite_key": composite_key,
             "created_by": "wip-toolkit-restore",
-        }
-        for d in identity_docs
-    ]
+        })
 
     result = _registry_register_batch(client, batch, "document", stats, continue_on_error)
     console.print(f"  Pre-registered {result} document ID(s)")
+
+
+def _preregister_files(
+    client: WIPClient,
+    namespace: str,
+    files: list[dict],
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Pre-register file IDs with composite keys from _registry data."""
+    if not files:
+        return
+
+    batch: list[dict] = []
+    for f in files:
+        registry = f.get("_registry", {})
+        composite_key = registry.get("primary_composite_key", {})
+
+        batch.append({
+            "namespace": namespace,
+            "entity_type": "files",
+            "entry_id": f["file_id"],
+            "composite_key": composite_key,
+            "created_by": "wip-toolkit-restore",
+        })
+
+    result = _registry_register_batch(client, batch, "file", stats, continue_on_error)
+    console.print(f"  Pre-registered {result} file ID(s)")
+
+
+def _restore_synonyms(
+    client: WIPClient,
+    namespace: str,
+    all_entities: list[dict],
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Restore Registry synonyms from _registry data across all entity types.
+
+    Deduplicates by entry_id to avoid registering synonyms for the same
+    entity multiple times (e.g., multiple versions of a template/document).
+    """
+    # Collect synonym items, deduplicated by entry_id
+    seen_ids: set[str] = set()
+    synonym_items: list[dict] = []
+
+    id_fields = [
+        "terminology_id", "term_id", "template_id", "document_id", "file_id",
+    ]
+
+    for entity in all_entities:
+        # Find the entity's ID
+        eid = None
+        for field in id_fields:
+            if field in entity:
+                eid = entity[field]
+                break
+        if not eid or eid in seen_ids:
+            continue
+
+        registry = entity.get("_registry", {})
+        synonyms = registry.get("synonyms", [])
+        if not synonyms:
+            continue
+
+        seen_ids.add(eid)
+        for syn in synonyms:
+            synonym_items.append({
+                "target_id": eid,
+                "synonym_namespace": syn.get("namespace", namespace),
+                "synonym_entity_type": syn.get("entity_type", ""),
+                "synonym_composite_key": syn.get("composite_key", {}),
+                "created_by": "wip-toolkit-restore",
+            })
+
+    if not synonym_items:
+        console.print("  No synonyms to restore")
+        return
+
+    batch_size = 100
+    total_registered = 0
+    for i in range(0, len(synonym_items), batch_size):
+        batch = synonym_items[i:i + batch_size]
+        try:
+            response = client.post("registry", "/synonyms/add", json=batch)
+            for r in response.get("results", []):
+                if r.get("status") in ("added", "already_exists"):
+                    total_registered += 1
+        except WIPClientError as e:
+            stats.errors.append(f"Failed to restore synonym batch at index {i}: {e}")
+            if not continue_on_error:
+                raise
+
+    stats.synonyms_registered = total_registered
+    console.print(f"  Restored {total_registered} synonym(s)")
 
 
 def _create_documents(
@@ -500,10 +661,11 @@ def _create_documents(
 
         try:
             result = client.post(
-                "document-store", "/documents/bulk",
-                json={"items": items, "continue_on_error": continue_on_error},
+                "document-store", "/documents",
+                json=items,
+                params={"continue_on_error": str(continue_on_error).lower()},
             )
-            stats.created.documents += result.get("created", 0) + result.get("updated", 0)
+            stats.created.documents += result.get("succeeded", 0)
             stats.failed.documents += result.get("failed", 0)
             for r in result.get("results", []):
                 if r.get("error"):

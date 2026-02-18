@@ -88,15 +88,15 @@ async def create_test_terminology(client: httpx.AsyncClient, code: str, name: st
         response = await client.post(
             f"{DEF_STORE_URL}/api/def-store/terminologies",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
-            json={
+            json=[{
                 "value": code,
                 "label": name,
                 "description": f"Test terminology created by stress test {TEST_RUN_ID}"
-            }
+            }]
         )
-        if response.status_code in (200, 201):
+        if response.status_code == 200:
             data = response.json()
-            return data.get("terminology_id")
+            return data["results"][0].get("id")
         else:
             print(f"  Warning: Failed to create terminology {code}: {response.status_code}")
             return None
@@ -113,9 +113,9 @@ async def create_test_terms(
     """Create terms in a terminology via REST API."""
     try:
         response = await client.post(
-            f"{DEF_STORE_URL}/api/def-store/terminologies/{terminology_id}/terms/bulk",
+            f"{DEF_STORE_URL}/api/def-store/terminologies/{terminology_id}/terms",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
-            json={"terms": terms}
+            json=terms
         )
         return response.status_code in (200, 201)
     except Exception as e:
@@ -133,7 +133,7 @@ async def create_test_template(
         response = await client.post(
             f"{TEMPLATE_STORE_URL}/api/template-store/templates",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
-            json={
+            json=[{
                 "value": code,
                 "label": f"Ingest Test Template {code}",
                 "description": f"Test template for stress test {TEST_RUN_ID}",
@@ -149,11 +149,11 @@ async def create_test_template(
                         "terminology_ref": terminology_id
                     }
                 ]
-            }
+            }]
         )
-        if response.status_code in (200, 201):
+        if response.status_code == 200:
             data = response.json()
-            return data.get("template_id")
+            return data["results"][0].get("id")
         else:
             print(f"  Warning: Failed to create template {code}: {response.status_code}")
             return None

@@ -264,7 +264,7 @@ async function saveTemplate() {
       if (result.is_new_version) {
         uiStore.showSuccess('Template Updated', `New version v${result.version} created`)
         // Offer to deactivate previous version
-        const previousVersion = result.previous_version || (result.version - 1)
+        const previousVersion = (result.version ?? 1) - 1
         confirm.require({
           message: `Deactivate previous version (v${previousVersion})? Documents using it will still reference it, but no new documents can be created with it.`,
           header: 'Deactivate Previous Version?',
@@ -274,7 +274,7 @@ async function saveTemplate() {
           rejectClass: 'p-button-secondary p-button-text',
           accept: async () => {
             try {
-              await templateStore.deleteTemplate(result.template_id, previousVersion)
+              await templateStore.deleteTemplate(result.id!, previousVersion)
               uiStore.showSuccess('Previous Version Deactivated', `Version v${previousVersion} has been deactivated`)
               // Refresh version history after deactivation
               if (templateStore.currentTemplateRaw) {
@@ -290,7 +290,7 @@ async function saveTemplate() {
       }
 
       // Reload to get updated resolved view
-      await templateStore.fetchTemplateWithRaw(result.template_id)
+      await templateStore.fetchTemplateWithRaw(result.id!)
       if (templateStore.currentTemplateRaw) {
         resetForm(templateStore.currentTemplateRaw)
         // Reload version history

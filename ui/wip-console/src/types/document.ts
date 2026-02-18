@@ -162,30 +162,6 @@ export interface DocumentQueryParams {
 }
 
 // =============================================================================
-// BULK OPERATION TYPES
-// =============================================================================
-
-export interface BulkCreateDocumentRequest {
-  documents: CreateDocumentRequest[]
-  created_by?: string
-}
-
-export interface DocumentBulkOperationResult {
-  index: number
-  status: 'created' | 'updated' | 'error' | 'skipped'
-  document_id?: string
-  identity_hash?: string
-  error?: string
-}
-
-export interface DocumentBulkOperationResponse {
-  results: DocumentBulkOperationResult[]
-  total: number
-  succeeded: number
-  failed: number
-}
-
-// =============================================================================
 // TABLE VIEW TYPES
 // =============================================================================
 

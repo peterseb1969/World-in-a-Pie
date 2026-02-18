@@ -6,9 +6,9 @@ import type {
   Template,
   CreateTemplateRequest,
   UpdateTemplateRequest,
-  TemplateUpdateResponse,
   ValidateTemplateResponse,
-  Terminology
+  Terminology,
+  BulkResultItem
 } from '@/types'
 
 export const useTemplateStore = defineStore('template', () => {
@@ -137,7 +137,8 @@ export const useTemplateStore = defineStore('template', () => {
     error.value = null
     try {
       const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
-      const created = await templateStoreClient.createTemplate(payload)
+      const result = await templateStoreClient.createTemplate(payload)
+      const created = await templateStoreClient.getTemplate(result.id!)
       templates.value.unshift(created)
       total.value++
       return created
@@ -149,16 +150,15 @@ export const useTemplateStore = defineStore('template', () => {
     }
   }
 
-  async function updateTemplate(id: string, data: UpdateTemplateRequest): Promise<TemplateUpdateResponse> {
+  async function updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem> {
     loading.value = true
     error.value = null
     try {
-      // Note: updateTemplate creates a NEW version with a NEW template_id if changed
       const result = await templateStoreClient.updateTemplate(id, data)
       // Only update the list if a new version was created
       if (result.is_new_version) {
         // Fetch the new template to add to the list
-        const newTemplate = await templateStoreClient.getTemplate(result.template_id)
+        const newTemplate = await templateStoreClient.getTemplate(result.id!)
         if (newTemplate) {
           templates.value.unshift(newTemplate)
           total.value++

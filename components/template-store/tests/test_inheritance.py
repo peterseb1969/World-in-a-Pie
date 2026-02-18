@@ -11,7 +11,7 @@ async def test_create_template_with_extends(client: AsyncClient, auth_headers: d
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "PARENT",
             "label": "Parent Template",
             "identity_fields": ["id_field"],
@@ -19,26 +19,35 @@ async def test_create_template_with_extends(client: AsyncClient, auth_headers: d
                 {"name": "id_field", "label": "ID Field", "type": "string", "mandatory": True},
                 {"name": "parent_field", "label": "Parent Field", "type": "string"}
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "CHILD",
             "label": "Child Template",
             "extends": parent_id,
             "fields": [
                 {"name": "child_field", "label": "Child Field", "type": "string"}
             ]
-        }
+        }]
     )
     assert child_response.status_code == 200
     child_data = child_response.json()
-    assert child_data["extends"] == parent_id
+    assert child_data["succeeded"] == 1
+    child_id = child_data["results"][0]["id"]
+
+    # Verify extends via GET
+    get_resp = await client.get(
+        f"/api/template-store/templates/{child_id}/raw",
+        headers=auth_headers,
+    )
+    assert get_resp.status_code == 200
+    assert get_resp.json()["extends"] == parent_id
 
 
 @pytest.mark.asyncio
@@ -48,7 +57,7 @@ async def test_get_template_with_inheritance_resolved(client: AsyncClient, auth_
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RESOLVE_PARENT",
             "label": "Resolve Parent",
             "identity_fields": ["parent_id"],
@@ -56,24 +65,24 @@ async def test_get_template_with_inheritance_resolved(client: AsyncClient, auth_
                 {"name": "parent_id", "label": "Parent ID", "type": "string"},
                 {"name": "shared_field", "label": "Shared Field", "type": "string"}
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RESOLVE_CHILD",
             "label": "Resolve Child",
             "extends": parent_id,
             "fields": [
                 {"name": "child_only", "label": "Child Only", "type": "string"}
             ]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Get child template (resolved)
     response = await client.get(
@@ -101,30 +110,30 @@ async def test_get_template_raw(client: AsyncClient, auth_headers: dict):
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RAW_PARENT",
             "label": "Raw Parent",
             "fields": [
                 {"name": "parent_field", "label": "Parent Field", "type": "string"}
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RAW_CHILD",
             "label": "Raw Child",
             "extends": parent_id,
             "fields": [
                 {"name": "child_field", "label": "Child Field", "type": "string"}
             ]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Get child template raw
     response = await client.get(
@@ -148,7 +157,7 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "OVERRIDE_PARENT",
             "label": "Override Parent",
             "fields": [
@@ -159,15 +168,15 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
                     "mandatory": False
                 }
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template with override
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "OVERRIDE_CHILD",
             "label": "Override Child",
             "extends": parent_id,
@@ -179,9 +188,9 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
                     "mandatory": True
                 }
             ]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Get resolved child template
     response = await client.get(
@@ -203,7 +212,7 @@ async def test_rules_merged(client: AsyncClient, auth_headers: dict):
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RULES_PARENT",
             "label": "Rules Parent",
             "fields": [
@@ -218,15 +227,15 @@ async def test_rules_merged(client: AsyncClient, auth_headers: dict):
                     "conditions": [{"field": "field_a", "operator": "exists"}]
                 }
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template with additional rule
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "RULES_CHILD",
             "label": "Rules Child",
             "extends": parent_id,
@@ -240,9 +249,9 @@ async def test_rules_merged(client: AsyncClient, auth_headers: dict):
                     "target_fields": ["field_a", "field_c"]
                 }
             ]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Get resolved child template
     response = await client.get(
@@ -265,22 +274,22 @@ async def test_child_identity_fields_override(client: AsyncClient, auth_headers:
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "ID_PARENT",
             "label": "ID Parent",
             "identity_fields": ["parent_id"],
             "fields": [
                 {"name": "parent_id", "label": "Parent ID", "type": "string"}
             ]
-        }
+        }]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template with own identity_fields
     child_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "ID_CHILD",
             "label": "ID Child",
             "extends": parent_id,
@@ -288,9 +297,9 @@ async def test_child_identity_fields_override(client: AsyncClient, auth_headers:
             "fields": [
                 {"name": "child_id", "label": "Child ID", "type": "string"}
             ]
-        }
+        }]
     )
-    child_id = child_response.json()["template_id"]
+    child_id = child_response.json()["results"][0]["id"]
 
     # Get resolved child template
     response = await client.get(
@@ -309,14 +318,16 @@ async def test_create_with_invalid_extends(client: AsyncClient, auth_headers: di
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "INVALID_EXTENDS",
             "label": "Invalid Extends",
             "extends": "TPL-999999"
-        }
+        }]
     )
-    assert response.status_code == 400
-    assert "not found" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["results"][0]["status"] == "error"
+    assert "not found" in data["results"][0]["error"]
 
 
 @pytest.mark.asyncio
@@ -326,20 +337,20 @@ async def test_get_children(client: AsyncClient, auth_headers: dict):
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "CHILDREN_PARENT", "label": "Children Parent"}
+        json=[{"value": "CHILDREN_PARENT", "label": "Children Parent"}]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child templates
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "CHILDREN_CHILD_1", "label": "Child 1", "extends": parent_id}
+        json=[{"value": "CHILDREN_CHILD_1", "label": "Child 1", "extends": parent_id}]
     )
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "CHILDREN_CHILD_2", "label": "Child 2", "extends": parent_id}
+        json=[{"value": "CHILDREN_CHILD_2", "label": "Child 2", "extends": parent_id}]
     )
 
     # Get children
@@ -359,21 +370,21 @@ async def test_get_descendants(client: AsyncClient, auth_headers: dict):
     grandparent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "GRANDPARENT", "label": "Grandparent"}
+        json=[{"value": "GRANDPARENT", "label": "Grandparent"}]
     )
-    grandparent_id = grandparent_response.json()["template_id"]
+    grandparent_id = grandparent_response.json()["results"][0]["id"]
 
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "MIDDLE_PARENT", "label": "Parent", "extends": grandparent_id}
+        json=[{"value": "MIDDLE_PARENT", "label": "Parent", "extends": grandparent_id}]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "GRANDCHILD", "label": "Grandchild", "extends": parent_id}
+        json=[{"value": "GRANDCHILD", "label": "Grandchild", "extends": parent_id}]
     )
 
     # Get descendants of grandparent
@@ -393,24 +404,28 @@ async def test_delete_template_with_children_fails(client: AsyncClient, auth_hea
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "DELETE_PARENT", "label": "Delete Parent"}
+        json=[{"value": "DELETE_PARENT", "label": "Delete Parent"}]
     )
-    parent_id = parent_response.json()["template_id"]
+    parent_id = parent_response.json()["results"][0]["id"]
 
     # Create child template
     await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={"value": "DELETE_CHILD", "label": "Delete Child", "extends": parent_id}
+        json=[{"value": "DELETE_CHILD", "label": "Delete Child", "extends": parent_id}]
     )
 
     # Try to delete parent - should fail
-    response = await client.delete(
-        f"/api/template-store/templates/{parent_id}",
-        headers=auth_headers
+    response = await client.request(
+        "DELETE",
+        "/api/template-store/templates",
+        headers=auth_headers,
+        json=[{"id": parent_id}],
     )
-    assert response.status_code == 409
-    assert "extend" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    data = response.json()
+    assert data["results"][0]["status"] == "error"
+    assert "extend" in data["results"][0]["error"].lower()
 
 
 @pytest.mark.asyncio
@@ -420,37 +435,37 @@ async def test_multi_level_inheritance(client: AsyncClient, auth_headers: dict):
     level1_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "LEVEL1",
             "label": "Level 1",
             "fields": [{"name": "field1", "label": "Field 1", "type": "string"}]
-        }
+        }]
     )
-    level1_id = level1_response.json()["template_id"]
+    level1_id = level1_response.json()["results"][0]["id"]
 
     level2_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "LEVEL2",
             "label": "Level 2",
             "extends": level1_id,
             "fields": [{"name": "field2", "label": "Field 2", "type": "string"}]
-        }
+        }]
     )
-    level2_id = level2_response.json()["template_id"]
+    level2_id = level2_response.json()["results"][0]["id"]
 
     level3_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "LEVEL3",
             "label": "Level 3",
             "extends": level2_id,
             "fields": [{"name": "field3", "label": "Field 3", "type": "string"}]
-        }
+        }]
     )
-    level3_id = level3_response.json()["template_id"]
+    level3_id = level3_response.json()["results"][0]["id"]
 
     # Get level 3 template - should have all 3 fields
     response = await client.get(

@@ -15,9 +15,8 @@ from ..models.api_models import (
     DocumentVersionResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
-    BulkCreateRequest,
-    BulkCreateResponse,
-    BulkCreateResult,
+    BulkResultItem,
+    BulkResponse,
     ValidationResponse,
     ValidationError,
 )
@@ -766,9 +765,10 @@ class DocumentService:
 
     async def bulk_create(
         self,
-        request: BulkCreateRequest,
+        items: list[DocumentCreateRequest],
         namespace: str = "wip",
-    ) -> BulkCreateResponse:
+        continue_on_error: bool = True,
+    ) -> BulkResponse:
         """
         Create multiple documents with optimized bulk operations.
 
@@ -780,7 +780,7 @@ class DocumentService:
         timing = {}
         total_start = time.perf_counter()
 
-        results: list[BulkCreateResult] = []
+        results: list[BulkResultItem] = []
         created = 0
         updated = 0
         unchanged = 0
@@ -793,7 +793,7 @@ class DocumentService:
         start = time.perf_counter()
         template_client = get_template_store_client()
         def_store_client = get_def_store_client()
-        unique_template_ids = {item.template_id for item in request.items}
+        unique_template_ids = {item.template_id for item in items}
         warmed_templates: set[str] = set()
 
         async def warm_template(tid: str):
@@ -823,7 +823,7 @@ class DocumentService:
         validation_results = []
         valid_indices = []  # Indices of valid documents
 
-        for i, item in enumerate(request.items):
+        for i, item in enumerate(items):
             try:
                 validation_result = await self.validation_service.validate(
                     item.template_id,
@@ -835,42 +835,46 @@ class DocumentService:
                     valid_indices.append(i)
                 else:
                     failed += 1
-                    results.append(BulkCreateResult(
+                    results.append(BulkResultItem(
                         index=i,
                         status="error",
                         error=self._format_validation_errors(validation_result.errors)
                     ))
-                    if not request.continue_on_error:
+                    if not continue_on_error:
                         # Fill in remaining as skipped
-                        for j in range(i + 1, len(request.items)):
-                            results.append(BulkCreateResult(
+                        for j in range(i + 1, len(items)):
+                            results.append(BulkResultItem(
                                 index=j, status="skipped", error="Stopped due to previous error"
                             ))
                         timing["1_validation"] = (time.perf_counter() - start) * 1000
                         timing["total"] = (time.perf_counter() - total_start) * 1000
                         self._record_creation_timing(timing)
-                        return BulkCreateResponse(
-                            total=len(request.items),
-                            created=0, updated=0, unchanged=0, failed=failed,
-                            results=sorted(results, key=lambda r: r.index)
+                        return BulkResponse(
+                            results=sorted(results, key=lambda r: r.index),
+                            total=len(items),
+                            succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
+                            failed=sum(1 for r in results if r.status == "error"),
+                            timing=timing,
                         )
             except Exception as e:
                 failed += 1
-                results.append(BulkCreateResult(
+                results.append(BulkResultItem(
                     index=i, status="error", error=str(e)
                 ))
-                if not request.continue_on_error:
-                    for j in range(i + 1, len(request.items)):
-                        results.append(BulkCreateResult(
+                if not continue_on_error:
+                    for j in range(i + 1, len(items)):
+                        results.append(BulkResultItem(
                             index=j, status="skipped", error="Stopped due to previous error"
                         ))
                     timing["1_validation"] = (time.perf_counter() - start) * 1000
                     timing["total"] = (time.perf_counter() - total_start) * 1000
                     self._record_creation_timing(timing)
-                    return BulkCreateResponse(
-                        total=len(request.items),
-                        created=0, updated=0, unchanged=0, failed=failed,
-                        results=sorted(results, key=lambda r: r.index)
+                    return BulkResponse(
+                        results=sorted(results, key=lambda r: r.index),
+                        total=len(items),
+                        succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
+                        failed=sum(1 for r in results if r.status == "error"),
+                        timing=timing,
                     )
 
         timing["1_validation"] = (time.perf_counter() - start) * 1000
@@ -889,10 +893,11 @@ class DocumentService:
         if not validation_results:
             timing["total"] = (time.perf_counter() - total_start) * 1000
             self._record_creation_timing(timing)
-            return BulkCreateResponse(
-                total=len(request.items),
-                created=0, updated=0, unchanged=0, failed=failed,
-                results=sorted(results, key=lambda r: r.index)
+            return BulkResponse(
+                results=sorted(results, key=lambda r: r.index),
+                total=len(items),
+                succeeded=0, failed=failed,
+                timing=timing,
             )
 
         # Get authenticated identity (not client-provided)
@@ -921,16 +926,17 @@ class DocumentService:
             # All valid documents fail due to Registry error
             for i, item, _ in validation_results:
                 failed += 1
-                results.append(BulkCreateResult(
+                results.append(BulkResultItem(
                     index=i, status="error", error=f"Registry error: {str(e)}"
                 ))
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
             timing["total"] = (time.perf_counter() - total_start) * 1000
             self._record_creation_timing(timing)
-            return BulkCreateResponse(
-                total=len(request.items),
-                created=0, updated=0, unchanged=0, failed=failed,
-                results=sorted(results, key=lambda r: r.index)
+            return BulkResponse(
+                results=sorted(results, key=lambda r: r.index),
+                total=len(items),
+                succeeded=0, failed=failed,
+                timing=timing,
             )
 
         timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
@@ -961,7 +967,7 @@ class DocumentService:
             try:
                 if registry_result.get("status") == "error":
                     failed += 1
-                    results.append(BulkCreateResult(
+                    results.append(BulkResultItem(
                         index=i, status="error",
                         error=registry_result.get("error", "Failed to generate ID")
                     ))
@@ -985,7 +991,7 @@ class DocumentService:
                     ):
                         # No change - return existing document info without creating new version
                         unchanged += 1
-                        results.append(BulkCreateResult(
+                        results.append(BulkResultItem(
                             index=i,
                             status="unchanged",
                             document_id=existing.document_id,
@@ -1059,7 +1065,7 @@ class DocumentService:
                     updated += 1
                     status = "updated"
 
-                results.append(BulkCreateResult(
+                results.append(BulkResultItem(
                     index=i,
                     status=status,
                     document_id=document_id,
@@ -1071,14 +1077,14 @@ class DocumentService:
 
             except Exception as e:
                 failed += 1
-                results.append(BulkCreateResult(
+                results.append(BulkResultItem(
                     index=i, status="error", error=str(e)
                 ))
-                if not request.continue_on_error:
+                if not continue_on_error:
                     # Mark remaining as skipped
                     for remaining_idx in range(idx + 1, len(validation_results)):
                         remaining_i = validation_results[remaining_idx][0]
-                        results.append(BulkCreateResult(
+                        results.append(BulkResultItem(
                             index=remaining_i, status="skipped",
                             error="Stopped due to previous error"
                         ))
@@ -1088,13 +1094,12 @@ class DocumentService:
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
 
-        return BulkCreateResponse(
-            total=len(request.items),
-            created=created,
-            updated=updated,
-            unchanged=unchanged,
-            failed=failed,
-            results=sorted(results, key=lambda r: r.index),
+        sorted_results = sorted(results, key=lambda r: r.index)
+        return BulkResponse(
+            results=sorted_results,
+            total=len(items),
+            succeeded=sum(1 for r in sorted_results if r.status not in ("error", "skipped")),
+            failed=sum(1 for r in sorted_results if r.status == "error"),
             timing={k: round(v, 1) for k, v in timing.items()},
         )
 

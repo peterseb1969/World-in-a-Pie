@@ -3,6 +3,12 @@
 from .document import Document, DocumentMetadata, DocumentStatus
 from .file import File, FileMetadata, FileStatus, FileReference
 from .api_models import (
+    # Bulk operation models
+    BulkResultItem,
+    BulkResponse,
+    DeleteItem,
+    ArchiveItem,
+    UpdateFileItem,
     # Document models
     DocumentCreateRequest,
     DocumentResponse,
@@ -10,9 +16,6 @@ from .api_models import (
     DocumentVersionResponse,
     DocumentQueryRequest,
     DocumentQueryResponse,
-    BulkCreateRequest,
-    BulkCreateResponse,
-    BulkCreateResult,
     ValidationRequest,
     ValidationResponse,
     ValidationError,
@@ -22,14 +25,17 @@ from .api_models import (
     FileResponse,
     FileListResponse,
     FileDownloadResponse,
-    FileBulkResult,
-    FileBulkDeleteRequest,
-    FileBulkDeleteResponse,
     FileIntegrityIssue,
     FileIntegrityResponse,
 )
 
 __all__ = [
+    # Bulk operation models
+    "BulkResultItem",
+    "BulkResponse",
+    "DeleteItem",
+    "ArchiveItem",
+    "UpdateFileItem",
     # Document models
     "Document",
     "DocumentMetadata",
@@ -40,9 +46,6 @@ __all__ = [
     "DocumentVersionResponse",
     "DocumentQueryRequest",
     "DocumentQueryResponse",
-    "BulkCreateRequest",
-    "BulkCreateResponse",
-    "BulkCreateResult",
     "ValidationRequest",
     "ValidationResponse",
     "ValidationError",
@@ -56,9 +59,6 @@ __all__ = [
     "FileResponse",
     "FileListResponse",
     "FileDownloadResponse",
-    "FileBulkResult",
-    "FileBulkDeleteRequest",
-    "FileBulkDeleteResponse",
     "FileIntegrityIssue",
     "FileIntegrityResponse",
 ]

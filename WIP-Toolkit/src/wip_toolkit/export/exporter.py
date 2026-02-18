@@ -26,6 +26,7 @@ def run_export(
     include_inactive: bool = False,
     skip_documents: bool = False,
     skip_closure: bool = False,
+    latest_only: bool = False,
     dry_run: bool = False,
 ) -> ExportStats:
     """Run a full namespace export.
@@ -62,6 +63,11 @@ def run_export(
     if not skip_documents:
         documents = collector.fetch_documents()
         files = collector.fetch_files()
+
+        # Optionally expand to all document versions
+        if not latest_only:
+            console.print("  Expanding document version history...")
+            documents = collector.fetch_all_document_versions(documents)
 
     # Tag primary entities
     for entity in terminologies:
@@ -104,6 +110,10 @@ def run_export(
             console.print(f"  [yellow]Warning:[/yellow] {w}")
     else:
         console.print("\n[dim]Skipping closure (--skip-closure)[/dim]")
+
+    # Phase 2b: Registry enrichment
+    console.print("\n[bold cyan]Phase 2b:[/bold cyan] Enriching entities with Registry data")
+    _enrich_with_registry(collector, terminologies, terms, templates, documents, files)
 
     # Phase 3: Write archive
     counts = EntityCounts(
@@ -150,6 +160,7 @@ def run_export(
         namespace_config=ns_config,
         include_inactive=include_inactive,
         include_files=include_files,
+        include_all_versions=not latest_only,
         closure=closure_info,
         counts=counts,
     )
@@ -186,6 +197,50 @@ def _print_counts(counts: EntityCounts) -> None:
     console.print(f"  Documents:     {counts.documents}")
     console.print(f"  Files:         {counts.files}")
     console.print(f"  [bold]Total:       {counts.total}[/bold]")
+
+
+def _enrich_with_registry(
+    collector: EntityCollector,
+    terminologies: list[dict[str, Any]],
+    terms: list[dict[str, Any]],
+    templates: list[dict[str, Any]],
+    documents: list[dict[str, Any]],
+    files: list[dict[str, Any]],
+) -> None:
+    """Inject `_registry` metadata into each entity from Registry bulk lookup."""
+    # Collect all unique entity IDs
+    id_fields = {
+        "terminologies": ("terminology_id", terminologies),
+        "terms": ("term_id", terms),
+        "templates": ("template_id", templates),
+        "documents": ("document_id", documents),
+        "files": ("file_id", files),
+    }
+
+    unique_ids: list[str] = []
+    seen: set[str] = set()
+    for id_field, entities in id_fields.values():
+        for entity in entities:
+            eid = entity.get(id_field)
+            if eid and eid not in seen:
+                seen.add(eid)
+                unique_ids.append(eid)
+
+    if not unique_ids:
+        return
+
+    registry_map = collector.fetch_registry_entries(unique_ids)
+
+    # Inject _registry into each entity
+    enriched = 0
+    for id_field, entities in id_fields.values():
+        for entity in entities:
+            eid = entity.get(id_field)
+            if eid and eid in registry_map:
+                entity["_registry"] = registry_map[eid]
+                enriched += 1
+
+    console.print(f"  Enriched {enriched} entities with Registry data")
 
 
 def _build_stats(

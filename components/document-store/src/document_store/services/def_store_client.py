@@ -167,15 +167,16 @@ class DefStoreClient:
                 terminology = response.json()
                 terminology_id = terminology.get("terminology_id")
 
-                # Fetch ALL terms (paginate if >500)
+                # Fetch ALL terms (paginate)
                 all_terms = []
                 terms_url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}/terms"
                 page = 1
+                page_size = 100
                 while True:
                     terms_response = await client.get(
                         terms_url,
                         headers=headers,
-                        params={"page_size": 500, "page": page},
+                        params={"page_size": page_size, "page": page},
                     )
                     if terms_response.status_code != 200:
                         break
@@ -183,7 +184,7 @@ class DefStoreClient:
                     items = terms_data.get("items", [])
                     all_terms.extend(items)
                     # Stop when we got fewer than page_size (last page)
-                    if len(items) < 500:
+                    if len(items) < page_size:
                         break
                     page += 1
 
