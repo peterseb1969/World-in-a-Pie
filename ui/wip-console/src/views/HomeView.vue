@@ -8,10 +8,10 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
-import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore } from '@/stores'
+import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore, useIntegrityStore } from '@/stores'
 import { getDocumentTitle, hasDocumentTitle } from '@/utils/document'
 import { isReportingEnabled } from '@/config/modules'
-import { reportingSyncClient, documentStoreClient, type IntegrityCheckResult } from '@/api/client'
+import { documentStoreClient } from '@/api/client'
 import type { Terminology, Template, Document } from '@/types'
 
 const router = useRouter()
@@ -20,6 +20,7 @@ const terminologyStore = useTerminologyStore()
 const templateStore = useTemplateStore()
 const uiStore = useUiStore()
 const namespaceStore = useNamespaceStore()
+const integrityStore = useIntegrityStore()
 
 // Check if reporting module is enabled
 const reportingEnabled = isReportingEnabled()
@@ -39,11 +40,6 @@ const entityCounts = ref<Record<string, number>>({
 const recentTerminologies = ref<Terminology[]>([])
 const recentTemplates = ref<Template[]>([])
 const recentDocuments = ref<Document[]>([])
-
-// Data quality / integrity check
-const integrityLoading = ref(false)
-const integrityResult = ref<IntegrityCheckResult | null>(null)
-const integrityError = ref<string | null>(null)
 
 async function loadDashboard() {
   if (!authStore.isAuthenticated) {
@@ -93,27 +89,9 @@ async function loadDashboard() {
   // Integrity check is manual — user clicks Refresh in the Data Quality card
 }
 
-async function loadIntegrityCheck() {
-  if (!authStore.isAuthenticated) {
-    return
-  }
-
-  integrityLoading.value = true
-  integrityError.value = null
-
-  try {
-    integrityResult.value = await reportingSyncClient.getIntegrityCheck({
-      document_limit: 5000,
-      check_term_refs: true,
-      recent_first: true
-    })
-  } catch (error) {
-    console.error('Failed to load integrity check:', error)
-    integrityError.value = error instanceof Error ? error.message : 'Unknown error'
-    integrityResult.value = null
-  } finally {
-    integrityLoading.value = false
-  }
+function loadIntegrityCheck() {
+  if (!authStore.isAuthenticated) return
+  integrityStore.run({ document_limit: 5000, check_term_refs: true, recent_first: true })
 }
 
 function getStatusSeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
@@ -134,6 +112,16 @@ function navigateToTemplate(template: Template) {
 
 function navigateToDocument(doc: Document) {
   router.push(`/documents/${doc.document_id}`)
+}
+
+function formatTimeAgo(timestamp: string): string {
+  const diffMs = Date.now() - new Date(timestamp).getTime()
+  const diffMins = Math.floor(diffMs / 60000)
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  const diffHours = Math.floor(diffMs / 3600000)
+  if (diffHours < 24) return `${diffHours}h ago`
+  return `${Math.floor(diffMs / 86400000)}d ago`
 }
 
 function getIntegritySeverity(status: string): 'success' | 'warn' | 'danger' | 'secondary' {
@@ -264,26 +252,30 @@ watch(() => namespaceStore.current, () => {
             <div class="card-title">
               <i class="pi pi-shield"></i>
               <span>Data Quality</span>
-              <Tag
-                v-if="integrityResult"
-                :severity="getIntegritySeverity(integrityResult.status)"
-                class="status-tag"
-              >
-                {{ integrityResult.status }}
-              </Tag>
+              <template v-if="integrityStore.result">
+                <Tag
+                  :severity="getIntegritySeverity(integrityStore.result.status)"
+                  class="status-tag"
+                >
+                  {{ integrityStore.result.status }}
+                </Tag>
+                <span class="checked-at" :title="new Date(integrityStore.result.checked_at).toLocaleString()">
+                  {{ formatTimeAgo(integrityStore.result.checked_at) }}
+                </span>
+              </template>
             </div>
           </template>
           <template #content>
-            <div v-if="integrityLoading" class="quality-loading">
+            <div v-if="integrityStore.loading" class="quality-loading">
               <ProgressSpinner style="width: 30px; height: 30px" />
               <span>Checking data integrity...</span>
             </div>
 
-            <Message v-else-if="integrityError" severity="warn" :closable="false">
-              Could not check data integrity: {{ integrityError }}
+            <Message v-else-if="integrityStore.error" severity="warn" :closable="false">
+              Could not check data integrity: {{ integrityStore.error }}
             </Message>
 
-            <div v-else-if="!integrityResult" class="quality-prompt">
+            <div v-else-if="!integrityStore.result" class="quality-prompt">
               <i class="pi pi-info-circle"></i>
               <span>Click <strong>Refresh</strong> to run an integrity check.</span>
             </div>
@@ -292,31 +284,31 @@ watch(() => namespaceStore.current, () => {
               <div class="quality-summary">
                 <div class="quality-stat">
                   <span class="quality-label">Templates Checked</span>
-                  <span class="quality-value">{{ integrityResult.summary.total_templates }}</span>
+                  <span class="quality-value">{{ integrityStore.result.summary.total_templates }}</span>
                 </div>
                 <div class="quality-stat">
                   <span class="quality-label">Documents Checked</span>
                   <span class="quality-value">
-                    {{ integrityResult.summary.documents_checked ?? integrityResult.summary.total_documents }}
-                    <span v-if="integrityResult.summary.documents_checked && integrityResult.summary.documents_checked < integrityResult.summary.total_documents" class="quality-of-total">
-                      / {{ integrityResult.summary.total_documents }}
+                    {{ integrityStore.result.summary.documents_checked ?? integrityStore.result.summary.total_documents }}
+                    <span v-if="integrityStore.result.summary.documents_checked && integrityStore.result.summary.documents_checked < integrityStore.result.summary.total_documents" class="quality-of-total">
+                      / {{ integrityStore.result.summary.total_documents }}
                     </span>
                   </span>
                 </div>
-                <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.templates_with_issues > 0 }">
+                <div class="quality-stat" :class="{ 'has-issues': integrityStore.result.summary.templates_with_issues > 0 }">
                   <span class="quality-label">Templates with Issues</span>
-                  <span class="quality-value">{{ integrityResult.summary.templates_with_issues }}</span>
+                  <span class="quality-value">{{ integrityStore.result.summary.templates_with_issues }}</span>
                 </div>
-                <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.documents_with_issues > 0 }">
+                <div class="quality-stat" :class="{ 'has-issues': integrityStore.result.summary.documents_with_issues > 0 }">
                   <span class="quality-label">Documents with Issues</span>
-                  <span class="quality-value">{{ integrityResult.summary.documents_with_issues }}</span>
+                  <span class="quality-value">{{ integrityStore.result.summary.documents_with_issues }}</span>
                 </div>
               </div>
 
-              <div v-if="integrityResult.issues.length > 0" class="quality-issues-summary">
+              <div v-if="integrityStore.result.issues.length > 0" class="quality-issues-summary">
                 <Message severity="warn" :closable="false">
                   <div class="issues-message">
-                    <span>{{ integrityResult.issues.length }} issue{{ integrityResult.issues.length !== 1 ? 's' : '' }} found</span>
+                    <span>{{ integrityStore.result.issues.length }} issue{{ integrityStore.result.issues.length !== 1 ? 's' : '' }} found</span>
                     <Button
                       label="View Details"
                       icon="pi pi-arrow-right"
@@ -334,9 +326,9 @@ watch(() => namespaceStore.current, () => {
                 <span>All references are valid. No integrity issues found.</span>
               </div>
 
-              <div v-if="integrityResult.services_unavailable.length > 0" class="services-warning">
+              <div v-if="integrityStore.result.services_unavailable.length > 0" class="services-warning">
                 <Message severity="warn" :closable="false">
-                  Some services were unavailable: {{ integrityResult.services_unavailable.join(', ') }}
+                  Some services were unavailable: {{ integrityStore.result.services_unavailable.join(', ') }}
                 </Message>
               </div>
             </div>
@@ -347,7 +339,7 @@ watch(() => namespaceStore.current, () => {
               icon="pi pi-refresh"
               text
               size="small"
-              :loading="integrityLoading"
+              :loading="integrityStore.loading"
               @click="loadIntegrityCheck"
             />
           </template>
@@ -598,6 +590,12 @@ watch(() => namespaceStore.current, () => {
 
 .quality-card .status-tag {
   margin-left: auto;
+}
+
+.checked-at {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  font-weight: 400;
 }
 
 .quality-loading {

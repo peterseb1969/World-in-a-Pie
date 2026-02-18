@@ -11,30 +11,28 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Checkbox from 'primevue/checkbox'
 import Select from 'primevue/select'
-import { useAuthStore, useUiStore } from '@/stores'
+import { useAuthStore, useUiStore, useIntegrityStore } from '@/stores'
 import { isReportingEnabled } from '@/config/modules'
 import {
   reportingSyncClient,
   type ActivityItem,
-  type IntegrityCheckResult,
   type IntegrityIssue
 } from '@/api/client'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const integrityStore = useIntegrityStore()
 
 // Check if reporting module is enabled
 const reportingEnabled = isReportingEnabled()
 
 // Loading states
 const loading = ref(true)
-const integrityLoading = ref(false)
 
 // Data
 const activities = ref<ActivityItem[]>([])
-const integrityResult = ref<IntegrityCheckResult | null>(null)
-const integrityError = ref<string | null>(null)
+
 
 // Integrity check limit
 const integrityLimitOptions = [
@@ -106,26 +104,9 @@ async function loadActivity() {
   }
 }
 
-async function loadIntegrityCheck() {
-  if (!authStore.isAuthenticated) {
-    return
-  }
-
-  integrityLoading.value = true
-  integrityError.value = null
-
-  try {
-    integrityResult.value = await reportingSyncClient.getIntegrityCheck({
-      document_limit: integrityLimit.value,
-      check_term_refs: true
-    })
-  } catch (error) {
-    console.error('Failed to load integrity check:', error)
-    integrityError.value = error instanceof Error ? error.message : 'Unknown error'
-    integrityResult.value = null
-  } finally {
-    integrityLoading.value = false
-  }
+function loadIntegrityCheck() {
+  if (!authStore.isAuthenticated) return
+  integrityStore.run({ document_limit: integrityLimit.value, check_term_refs: true })
 }
 
 function getTypeSeverity(type: string): 'success' | 'info' | 'warn' | 'danger' | 'secondary' {
@@ -299,44 +280,48 @@ watch(
             <div class="card-title">
               <i class="pi pi-shield"></i>
               <span>Data Quality</span>
-              <Tag
-                v-if="integrityResult"
-                :severity="getIntegritySeverity(integrityResult.status)"
-                class="status-tag"
-              >
-                {{ integrityResult.status }}
-              </Tag>
+              <template v-if="integrityStore.result">
+                <Tag
+                  :severity="getIntegritySeverity(integrityStore.result.status)"
+                  class="status-tag"
+                >
+                  {{ integrityStore.result.status }}
+                </Tag>
+                <span class="checked-at" :title="new Date(integrityStore.result.checked_at).toLocaleString()">
+                  {{ formatTimestamp(integrityStore.result.checked_at) }}
+                </span>
+              </template>
             </div>
           </template>
           <template #content>
-            <div v-if="integrityLoading" class="loading-state">
+            <div v-if="integrityStore.loading" class="loading-state">
               <ProgressSpinner style="width: 24px; height: 24px" />
               <span>Checking...</span>
             </div>
-            <Message v-else-if="integrityError" severity="warn" :closable="false" class="compact-message">
-              {{ integrityError }}
+            <Message v-else-if="integrityStore.error" severity="warn" :closable="false" class="compact-message">
+              {{ integrityStore.error }}
             </Message>
-            <div v-else-if="!integrityResult" class="quality-prompt">
+            <div v-else-if="!integrityStore.result" class="quality-prompt">
               <i class="pi pi-info-circle"></i>
               <span>Click <strong>Refresh</strong> to check.</span>
             </div>
             <div v-else class="quality-stats">
               <div class="quality-stat">
                 <span class="label">Issues</span>
-                <span class="value" :class="{ 'has-issues': integrityResult.issues.length > 0 }">
-                  {{ integrityResult.issues.length }}
+                <span class="value" :class="{ 'has-issues': integrityStore.result.issues.length > 0 }">
+                  {{ integrityStore.result.issues.length }}
                 </span>
               </div>
               <div class="quality-stat">
                 <span class="label">Templates</span>
-                <span class="value">{{ integrityResult.summary.total_templates }}</span>
+                <span class="value">{{ integrityStore.result.summary.total_templates }}</span>
               </div>
               <div class="quality-stat">
                 <span class="label">Documents</span>
                 <span class="value">
-                  {{ integrityResult.summary.documents_checked ?? integrityResult.summary.total_documents }}
-                  <span v-if="integrityResult.summary.documents_checked && integrityResult.summary.documents_checked < integrityResult.summary.total_documents" class="of-total">
-                    / {{ integrityResult.summary.total_documents }}
+                  {{ integrityStore.result.summary.documents_checked ?? integrityStore.result.summary.total_documents }}
+                  <span v-if="integrityStore.result.summary.documents_checked && integrityStore.result.summary.documents_checked < integrityStore.result.summary.total_documents" class="of-total">
+                    / {{ integrityStore.result.summary.total_documents }}
                   </span>
                 </span>
               </div>
@@ -350,14 +335,14 @@ watch(
                 optionLabel="label"
                 optionValue="value"
                 class="integrity-limit-select"
-                :disabled="integrityLoading"
+                :disabled="integrityStore.loading"
               />
               <Button
                 label="Run Check"
                 icon="pi pi-refresh"
                 text
                 size="small"
-                :loading="integrityLoading"
+                :loading="integrityStore.loading"
                 @click="loadIntegrityCheck"
               />
             </div>
@@ -417,20 +402,20 @@ watch(
       </div>
 
       <!-- Data Quality Issues (detailed) -->
-      <Card v-if="integrityResult && integrityResult.issues.length > 0" class="issues-card">
+      <Card v-if="integrityStore.result && integrityStore.result.issues.length > 0" class="issues-card">
         <template #title>
           <div class="card-title">
             <i class="pi pi-exclamation-circle"></i>
             <span>Data Quality Issues</span>
             <Tag severity="danger" class="issues-count">
-              {{ integrityResult.issues.length }}
+              {{ integrityStore.result.issues.length }}
             </Tag>
           </div>
         </template>
         <template #content>
           <DataTable
-            :value="integrityResult.issues"
-            :paginator="integrityResult.issues.length > 10"
+            :value="integrityStore.result.issues"
+            :paginator="integrityStore.result.issues.length > 10"
             :rows="10"
             :rowsPerPageOptions="[10, 25, 50]"
             size="small"
@@ -669,6 +654,12 @@ watch(
 
 .status-tag {
   margin-left: auto;
+}
+
+.checked-at {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  font-weight: 400;
 }
 
 .loading-state {
