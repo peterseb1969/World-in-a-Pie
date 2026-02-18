@@ -10,6 +10,7 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Checkbox from 'primevue/checkbox'
+import Select from 'primevue/select'
 import { useAuthStore, useUiStore } from '@/stores'
 import { isReportingEnabled } from '@/config/modules'
 import {
@@ -34,6 +35,16 @@ const integrityLoading = ref(false)
 const activities = ref<ActivityItem[]>([])
 const integrityResult = ref<IntegrityCheckResult | null>(null)
 const integrityError = ref<string | null>(null)
+
+// Integrity check limit
+const integrityLimitOptions = [
+  { label: '1,000', value: 1000 },
+  { label: '5,000', value: 5000 },
+  { label: '10,000', value: 10000 },
+  { label: '50,000', value: 50000 },
+  { label: 'All', value: 0 },
+]
+const integrityLimit = ref(10000)
 
 // Filters
 const selectedTypes = ref<string[]>(['terminology', 'term', 'template', 'document', 'file'])
@@ -105,6 +116,7 @@ async function loadIntegrityCheck() {
 
   try {
     integrityResult.value = await reportingSyncClient.getIntegrityCheck({
+      document_limit: integrityLimit.value,
       check_term_refs: true
     })
   } catch (error) {
@@ -225,7 +237,7 @@ function getIssueSeverity(severity: string): 'success' | 'warn' | 'danger' | 'se
 onMounted(() => {
   if (reportingEnabled) {
     loadActivity()
-    loadIntegrityCheck()
+    // Integrity check is manual — user clicks Refresh in the Data Quality card
   }
 })
 
@@ -235,7 +247,6 @@ watch(
   (isAuth, wasAuth) => {
     if (reportingEnabled && isAuth && !wasAuth) {
       loadActivity()
-      loadIntegrityCheck()
     }
   }
 )
@@ -305,7 +316,11 @@ watch(
             <Message v-else-if="integrityError" severity="warn" :closable="false" class="compact-message">
               {{ integrityError }}
             </Message>
-            <div v-else-if="integrityResult" class="quality-stats">
+            <div v-else-if="!integrityResult" class="quality-prompt">
+              <i class="pi pi-info-circle"></i>
+              <span>Click <strong>Refresh</strong> to check.</span>
+            </div>
+            <div v-else class="quality-stats">
               <div class="quality-stat">
                 <span class="label">Issues</span>
                 <span class="value" :class="{ 'has-issues': integrityResult.issues.length > 0 }">
@@ -318,19 +333,34 @@ watch(
               </div>
               <div class="quality-stat">
                 <span class="label">Documents</span>
-                <span class="value">{{ integrityResult.summary.total_documents }}</span>
+                <span class="value">
+                  {{ integrityResult.summary.documents_checked ?? integrityResult.summary.total_documents }}
+                  <span v-if="integrityResult.summary.documents_checked && integrityResult.summary.documents_checked < integrityResult.summary.total_documents" class="of-total">
+                    / {{ integrityResult.summary.total_documents }}
+                  </span>
+                </span>
               </div>
             </div>
           </template>
           <template #footer>
-            <Button
-              label="Refresh"
-              icon="pi pi-refresh"
-              text
-              size="small"
-              :loading="integrityLoading"
-              @click="loadIntegrityCheck"
-            />
+            <div class="integrity-actions">
+              <Select
+                v-model="integrityLimit"
+                :options="integrityLimitOptions"
+                optionLabel="label"
+                optionValue="value"
+                class="integrity-limit-select"
+                :disabled="integrityLoading"
+              />
+              <Button
+                label="Run Check"
+                icon="pi pi-refresh"
+                text
+                size="small"
+                :loading="integrityLoading"
+                @click="loadIntegrityCheck"
+              />
+            </div>
           </template>
         </Card>
 
@@ -653,6 +683,14 @@ watch(
   margin: 0;
 }
 
+.quality-prompt {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
 /* Quality stats */
 .quality-stats {
   display: flex;
@@ -678,6 +716,28 @@ watch(
 
 .quality-stat .value.has-issues {
   color: var(--p-red-500);
+}
+
+.of-total {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--p-text-muted-color);
+}
+
+.integrity-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.integrity-limit-select {
+  width: 100px;
+  font-size: 0.875rem;
+}
+
+.integrity-limit-select :deep(.p-select-label) {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.875rem;
 }
 
 /* Activity counts */

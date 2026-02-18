@@ -90,10 +90,7 @@ async function loadDashboard() {
     loading.value = false
   }
 
-  // Load integrity check separately (don't block dashboard)
-  if (reportingEnabled) {
-    loadIntegrityCheck()
-  }
+  // Integrity check is manual — user clicks Refresh in the Data Quality card
 }
 
 async function loadIntegrityCheck() {
@@ -106,7 +103,9 @@ async function loadIntegrityCheck() {
 
   try {
     integrityResult.value = await reportingSyncClient.getIntegrityCheck({
-      check_term_refs: true
+      document_limit: 5000,
+      check_term_refs: true,
+      recent_first: true
     })
   } catch (error) {
     console.error('Failed to load integrity check:', error)
@@ -284,7 +283,12 @@ watch(() => namespaceStore.current, () => {
               Could not check data integrity: {{ integrityError }}
             </Message>
 
-            <div v-else-if="integrityResult" class="quality-content">
+            <div v-else-if="!integrityResult" class="quality-prompt">
+              <i class="pi pi-info-circle"></i>
+              <span>Click <strong>Refresh</strong> to run an integrity check.</span>
+            </div>
+
+            <div v-else class="quality-content">
               <div class="quality-summary">
                 <div class="quality-stat">
                   <span class="quality-label">Templates Checked</span>
@@ -292,7 +296,12 @@ watch(() => namespaceStore.current, () => {
                 </div>
                 <div class="quality-stat">
                   <span class="quality-label">Documents Checked</span>
-                  <span class="quality-value">{{ integrityResult.summary.total_documents }}</span>
+                  <span class="quality-value">
+                    {{ integrityResult.summary.documents_checked ?? integrityResult.summary.total_documents }}
+                    <span v-if="integrityResult.summary.documents_checked && integrityResult.summary.documents_checked < integrityResult.summary.total_documents" class="quality-of-total">
+                      / {{ integrityResult.summary.total_documents }}
+                    </span>
+                  </span>
                 </div>
                 <div class="quality-stat" :class="{ 'has-issues': integrityResult.summary.templates_with_issues > 0 }">
                   <span class="quality-label">Templates with Issues</span>
@@ -599,6 +608,15 @@ watch(() => namespaceStore.current, () => {
   color: var(--p-text-muted-color);
 }
 
+.quality-prompt {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
+}
+
 .quality-content {
   display: flex;
   flex-direction: column;
@@ -637,6 +655,12 @@ watch(() => namespaceStore.current, () => {
 
 .quality-stat.has-issues .quality-value {
   color: var(--p-red-500);
+}
+
+.quality-of-total {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--p-text-muted-color);
 }
 
 .quality-issues-summary :deep(.p-message) {

@@ -665,6 +665,7 @@ export interface IntegrityIssue {
 export interface IntegritySummary {
   total_templates: number
   total_documents: number
+  documents_checked: number
   templates_with_issues: number
   documents_with_issues: number
   orphaned_terminology_refs: number
@@ -796,6 +797,7 @@ class ReportingSyncClient extends BaseApiClient {
     template_limit?: number
     document_limit?: number
     check_term_refs?: boolean
+    recent_first?: boolean
   }): Promise<IntegrityCheckResult> {
     const response = await this.client.get<IntegrityCheckResult>('/health/integrity', { params })
     return response.data

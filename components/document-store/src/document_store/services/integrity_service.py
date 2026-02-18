@@ -4,8 +4,11 @@ Referential Integrity Service for Document Store.
 Checks for orphaned references:
 - Template references (template_id)
 - Term references (term_references dictionary values)
+
+Uses batched cursor iteration to avoid loading all documents into memory.
 """
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -14,6 +17,9 @@ from pydantic import BaseModel, Field
 from ..models.document import Document, DocumentStatus
 from .template_store_client import get_template_store_client, TemplateStoreError
 from .def_store_client import get_def_store_client, DefStoreError
+
+# Batch size for cursor iteration — bounds memory usage
+BATCH_SIZE = 500
 
 
 class IntegrityIssue(BaseModel):
@@ -224,16 +230,21 @@ async def check_all_documents(
     status_filter: Optional[str] = None,
     template_id_filter: Optional[str] = None,
     limit: int = 0,
-    check_term_refs: bool = True
+    check_term_refs: bool = True,
+    recent_first: bool = False
 ) -> IntegrityCheckResult:
     """
     Check referential integrity for documents.
+
+    Uses batched cursor iteration to keep memory bounded — never loads
+    more than BATCH_SIZE documents at a time.
 
     Args:
         status_filter: Optional filter by document status ('active', 'inactive', 'archived')
         template_id_filter: Optional filter by template_id
         limit: Maximum number of documents to check (0 = all)
         check_term_refs: Whether to check term references (can be slow for many documents)
+        recent_first: Sort by created_at descending so the most recent documents are checked first
 
     Returns:
         IntegrityCheckResult with summary and issues
@@ -256,35 +267,54 @@ async def check_all_documents(
     else:
         query = {}
 
-    # Get all documents (or limited subset if explicitly requested)
-    find_query = Document.find(query)
-    if limit > 0:
-        find_query = find_query.limit(limit)
-    documents = await find_query.to_list()
+    # Get total count (cheap — uses index)
+    total_count = await Document.find(query).count()
 
+    # limit=0 means check all (still batched for memory safety)
+    effective_limit = limit if limit > 0 else total_count
+
+    # Process in batches to bound memory usage
     all_issues: list[IntegrityIssue] = []
     documents_with_issues: set[str] = set()
+    documents_checked = 0
+    skip = 0
 
-    for document in documents:
-        issues = []
+    while documents_checked < effective_limit:
+        batch_size = min(BATCH_SIZE, effective_limit - documents_checked)
+        find_q = Document.find(query).skip(skip).limit(batch_size)
+        if recent_first:
+            find_q = find_q.sort([("created_at", -1)])
+        batch = await find_q.to_list()
 
-        # Always check template reference
-        await check_template_reference(document.template_id, document, issues)
+        if not batch:
+            break
 
-        # Optionally check term references
-        if check_term_refs and document.term_references:
-            term_refs = extract_term_ids(document.term_references)
-            for field_path, term_id in term_refs:
-                await check_term_reference(term_id, document, field_path, issues)
+        for document in batch:
+            issues = []
 
-        if issues:
-            documents_with_issues.add(document.document_id)
-            all_issues.extend(issues)
+            # Always check template reference
+            await check_template_reference(document.template_id, document, issues)
+
+            # Optionally check term references
+            if check_term_refs and document.term_references:
+                term_refs = extract_term_ids(document.term_references)
+                for field_path, term_id in term_refs:
+                    await check_term_reference(term_id, document, field_path, issues)
+
+            if issues:
+                documents_with_issues.add(document.document_id)
+                all_issues.extend(issues)
+
+        documents_checked += len(batch)
+        skip += len(batch)
+
+        # Yield to event loop between batches so other requests aren't starved
+        await asyncio.sleep(0)
 
     # Build summary
     summary = IntegritySummary(
-        total_documents=len(documents),
-        documents_checked=len(documents),
+        total_documents=total_count,
+        documents_checked=documents_checked,
         documents_with_issues=len(documents_with_issues),
         orphaned_template_refs=sum(
             1 for i in all_issues if i.type == "orphaned_template_ref"

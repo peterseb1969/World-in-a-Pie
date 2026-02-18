@@ -431,7 +431,8 @@ async def integrity_check(
     status: str = None,
     template_id: str = None,
     limit: int = 0,
-    check_term_refs: bool = True
+    check_term_refs: bool = True,
+    recent_first: bool = False
 ):
     """
     Check referential integrity of document references.
@@ -446,6 +447,7 @@ async def integrity_check(
         template_id: Filter documents by template_id
         limit: Maximum number of documents to check (0 = all, default: all)
         check_term_refs: Whether to check term references (default true, can be slow)
+        recent_first: Check most recently created documents first (default false)
 
     Returns:
         IntegrityCheckResult with status, summary, and list of issues
@@ -454,5 +456,6 @@ async def integrity_check(
         status_filter=status,
         template_id_filter=template_id,
         limit=limit,
-        check_term_refs=check_term_refs
+        check_term_refs=check_term_refs,
+        recent_first=recent_first
     )

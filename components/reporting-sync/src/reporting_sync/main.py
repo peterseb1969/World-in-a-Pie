@@ -690,6 +690,7 @@ async def aggregated_integrity_check(
     template_limit: int = 0,
     document_limit: int = 0,
     check_term_refs: bool = True,
+    recent_first: bool = False,
 ) -> AggregatedIntegrityResult:
     """
     Aggregated referential integrity check across all services.
@@ -765,8 +766,8 @@ async def aggregated_integrity_check(
     # Check Document Store
     document_store_url = settings.document_store_url
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:  # Longer timeout for documents
-            params = {"limit": document_limit, "check_term_refs": check_term_refs}
+        async with httpx.AsyncClient(timeout=120.0) as client:  # Longer timeout for documents
+            params = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
             if document_status:
                 params["status"] = document_status
 
