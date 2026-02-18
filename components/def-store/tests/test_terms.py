@@ -324,7 +324,8 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
     term_id = create_response.json()["results"][0]["id"]
 
     # Delete (bulk endpoint: DELETE /terms with array body)
-    response = await client.delete(
+    response = await client.request(
+        "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
         content='[{"id": "' + term_id + '"}]'

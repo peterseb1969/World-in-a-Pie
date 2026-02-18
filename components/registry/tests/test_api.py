@@ -177,7 +177,7 @@ class TestSynonymAPI:
             headers=auth_headers
         )
         assert response.status_code == 200
-        assert response.json()[0]["status"] == "added"
+        assert response.json()["results"][0]["status"] == "added"
 
         # Verify synonym can be looked up
         lookup_response = await client.post(
@@ -365,7 +365,7 @@ class TestUnifiedSearchAPI:
             json=[{"preferred_id": preferred_id, "deprecated_id": deprecated_id}],
             headers=auth_headers
         )
-        assert merge_resp.json()[0]["status"] == "merged"
+        assert merge_resp.json()["results"][0]["status"] == "merged"
 
         # Verify deprecated entry_id is now a synonym on the preferred entry
         detail = await client.get(

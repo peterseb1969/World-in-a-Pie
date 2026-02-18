@@ -198,7 +198,8 @@ async def test_delete_terminology(client: AsyncClient, auth_headers: dict):
     terminology_id = create_response.json()["results"][0]["id"]
 
     # Delete
-    response = await client.delete(
+    response = await client.request(
+        "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
         content='[{"id": "' + terminology_id + '"}]'

@@ -12,14 +12,13 @@ async def populated_terminology(client: AsyncClient, auth_headers: dict):
     term_response = await client.post(
         "/api/def-store/terminologies",
         headers=auth_headers,
-        json={
+        json=[{
             "value": "EXPORT_TEST",
             "label": "Export Test Terminology",
             "description": "For testing export functionality"
-        }
+        }]
     )
-    terminology = term_response.json()
-    terminology_id = terminology["terminology_id"]
+    terminology_id = term_response.json()["results"][0]["id"]
 
     # Add terms
     terms = [
@@ -28,14 +27,18 @@ async def populated_terminology(client: AsyncClient, auth_headers: dict):
         {"value": "option3", "label": "Option 3", "sort_order": 3},
     ]
 
-    for term in terms:
-        await client.post(
-            f"/api/def-store/terminologies/{terminology_id}/terms",
-            headers=auth_headers,
-            json=term
-        )
+    await client.post(
+        f"/api/def-store/terminologies/{terminology_id}/terms",
+        headers=auth_headers,
+        json=terms
+    )
 
-    return terminology
+    # Fetch the full terminology for the fixture return value
+    get_response = await client.get(
+        f"/api/def-store/terminologies/{terminology_id}",
+        headers=auth_headers
+    )
+    return get_response.json()
 
 
 @pytest.mark.asyncio
@@ -86,10 +89,10 @@ async def test_export_all_terminologies(client: AsyncClient, auth_headers: dict)
         await client.post(
             "/api/def-store/terminologies",
             headers=auth_headers,
-            json={
+            json=[{
                 "value": f"EXPORT_ALL_{i}",
                 "label": f"Export All Test {i}"
-            }
+            }]
         )
 
     response = await client.get(
