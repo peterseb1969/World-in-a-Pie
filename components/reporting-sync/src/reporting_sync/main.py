@@ -764,9 +764,11 @@ async def aggregated_integrity_check(
         services_unavailable.append("template-store")
 
     # Check Document Store
+    # Timeout scales with limit: ~2min for 10k, ~10min for 50k, 30min for "all" (0)
+    doc_timeout = 1800.0 if document_limit == 0 else max(120.0, document_limit * 0.012)
     document_store_url = settings.document_store_url
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:  # Longer timeout for documents
+        async with httpx.AsyncClient(timeout=doc_timeout) as client:
             params = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
             if document_status:
                 params["status"] = document_status
