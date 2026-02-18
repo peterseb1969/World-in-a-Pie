@@ -43,6 +43,29 @@ jobs:
           PYTHONPATH: src
         run: pytest tests/ -v --tb=short
 
+  # Ingest gateway (no DB needed)
+  test-ingest-gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: components/ingest-gateway
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio httpx
+
+      - name: Run tests
+        working-directory: components/ingest-gateway
+        env:
+          PYTHONPATH: src:tests
+        run: pytest tests/ -v --tb=short
+
   # Reporting-sync (no DB needed)
   test-reporting-sync:
     runs-on: ubuntu-latest
