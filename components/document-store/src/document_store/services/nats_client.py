@@ -3,8 +3,12 @@ NATS client for publishing document events.
 
 Publishes events to NATS JetStream for consumption by the Reporting Sync service.
 Events are published after successful document operations (create, update, delete, archive).
+
+Includes adaptive backpressure: when the reporting-sync consumer falls behind,
+write endpoints add a small delay before returning, naturally slowing callers.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -17,6 +21,10 @@ logger = logging.getLogger(__name__)
 _nats_client = None
 _jetstream = None
 _nats_enabled = False
+
+# Backpressure — updated by background monitor, read by write endpoints
+_throttle_delay: float = 0.0  # seconds
+_backpressure_task: Optional[asyncio.Task] = None
 
 
 class EventType(str, Enum):
@@ -86,9 +94,75 @@ async def configure_nats_client(nats_url: str) -> bool:
         return False
 
 
+def get_throttle_delay() -> float:
+    """Return the current backpressure delay in seconds.
+
+    Returns 0.0 when NATS is not configured or the pipeline is healthy.
+    Write endpoints should ``await asyncio.sleep(get_throttle_delay())``
+    after processing — when the delay is 0 this is a no-op.
+    """
+    return _throttle_delay
+
+
+async def start_backpressure_monitor(
+    nats_url: str,
+    stream: str = "WIP_EVENTS",
+    consumer: str = "reporting-sync-durable",
+) -> None:
+    """Start a background task that polls NATS consumer lag and adjusts throttle.
+
+    Uses the JetStream API (already connected) to query the reporting-sync
+    consumer's pending message count.  If the consumer doesn't exist yet
+    (reporting-sync not deployed), the throttle stays at 0.
+    """
+    global _backpressure_task
+
+    async def _monitor_loop():
+        global _throttle_delay
+
+        while True:
+            try:
+                if _jetstream:
+                    info = await _jetstream.consumer_info(stream, consumer)
+                    pending = info.num_pending + info.num_ack_pending
+
+                    prev = _throttle_delay
+                    if pending > 50_000:
+                        _throttle_delay = 0.5      # 500ms — heavy backlog
+                    elif pending > 10_000:
+                        _throttle_delay = 0.1      # 100ms — moderate backlog
+                    elif pending > 1_000:
+                        _throttle_delay = 0.05     # 50ms — mild backlog
+                    else:
+                        _throttle_delay = 0.0      # healthy
+
+                    if _throttle_delay != prev:
+                        if _throttle_delay > 0:
+                            logger.info(
+                                f"Backpressure: {pending} pending events, "
+                                f"throttle {_throttle_delay*1000:.0f}ms"
+                            )
+                        else:
+                            logger.info("Backpressure: pipeline caught up, throttle removed")
+
+            except Exception:
+                # Consumer doesn't exist or NATS unreachable — don't throttle
+                _throttle_delay = 0.0
+
+            await asyncio.sleep(5)
+
+    _backpressure_task = asyncio.create_task(_monitor_loop())
+    logger.info("Backpressure monitor started")
+
+
 async def close_nats_client():
-    """Close the NATS connection."""
-    global _nats_client, _jetstream, _nats_enabled
+    """Close the NATS connection and stop the backpressure monitor."""
+    global _nats_client, _jetstream, _nats_enabled, _backpressure_task, _throttle_delay
+
+    if _backpressure_task:
+        _backpressure_task.cancel()
+        _backpressure_task = None
+        _throttle_delay = 0.0
 
     if _nats_client:
         try:

@@ -1,5 +1,6 @@
 """File API endpoints for binary file storage."""
 
+import asyncio
 import math
 from typing import Optional
 
@@ -20,6 +21,7 @@ from ..models.api_models import (
     FileIntegrityResponse,
 )
 from ..services.file_service import get_file_service, FileServiceError
+from ..services.nats_client import get_throttle_delay
 from ..services.file_storage_client import (
     get_file_storage_client,
     is_file_storage_enabled,
@@ -103,7 +105,7 @@ async def upload_file(
     )
 
     try:
-        return await service.upload_file(
+        result = await service.upload_file(
             content=content,
             filename=file.filename or "unnamed",
             content_type=file.content_type or "application/octet-stream",
@@ -111,6 +113,8 @@ async def upload_file(
             namespace=namespace,
             file_id=file_id,
         )
+        await asyncio.sleep(get_throttle_delay())
+        return result
     except FileServiceError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -256,6 +260,7 @@ async def update_files_metadata(
                 results.append(BulkResultItem(index=i, status="updated", id=item.file_id))
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.file_id, error=str(e)))
+    await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -287,6 +292,7 @@ async def delete_files(
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
+    await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),

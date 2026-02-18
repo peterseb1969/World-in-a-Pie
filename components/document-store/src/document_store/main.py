@@ -21,7 +21,10 @@ from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.template_store_client import configure_template_store_client, get_template_store_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
-from .services.nats_client import configure_nats_client, close_nats_client, health_check as nats_health_check
+from .services.nats_client import (
+    configure_nats_client, close_nats_client, health_check as nats_health_check,
+    start_backpressure_monitor,
+)
 from .services.file_storage_client import (
     configure_file_storage_client,
     get_file_storage_client,
@@ -123,6 +126,7 @@ async def lifespan(app: FastAPI):
         nats_connected = await configure_nats_client(settings.NATS_URL)
         if nats_connected:
             print(f"NATS client connected to {settings.NATS_URL}")
+            await start_backpressure_monitor(settings.NATS_URL)
         else:
             print("WARNING: NATS not available. Document events will not be published.")
     else:

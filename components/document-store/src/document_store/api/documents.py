@@ -1,5 +1,6 @@
 """Document API endpoints."""
 
+import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -18,6 +19,7 @@ from ..models.api_models import (
     ArchiveItem,
 )
 from ..services.document_service import get_document_service
+from ..services.nats_client import get_throttle_delay
 from .auth import require_api_key
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -63,11 +65,14 @@ async def create_documents(
             )]
         succeeded = sum(1 for r in results if r.status != "error")
         failed = sum(1 for r in results if r.status == "error")
-        return BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
+        result = BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
     else:
         # Bulk path — uses cache warmup and batch Registry calls
         namespace = items[0].namespace if items else "wip"
-        return await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
+        result = await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
+
+    await asyncio.sleep(get_throttle_delay())
+    return result
 
 
 @router.get(
@@ -203,6 +208,7 @@ async def delete_documents(
             results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
         else:
             results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+    await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -229,6 +235,7 @@ async def archive_documents(
             results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
         else:
             results.append(BulkResultItem(index=i, status="updated", id=item.id))
+    await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
