@@ -979,19 +979,22 @@ class TestRestoreSynonyms:
         }
         stats = _make_stats()
 
-        entities = [
-            _terminology("TERM-001", _registry={
-                "primary_composite_key": {},
-                "synonyms": [
-                    {"namespace": "wip", "entity_type": "terminologies",
-                     "composite_key": {"external_code": "ISO-3166"}},
-                    {"namespace": "wip", "entity_type": "terminologies",
-                     "composite_key": {"vendor_id": "V-001"}},
-                ],
-            }),
-        ]
+        entities_by_type = {
+            "terminologies": [
+                _terminology("TERM-001", _registry={
+                    "primary_composite_key": {},
+                    "synonyms": [
+                        {"namespace": "wip", "entity_type": "terminologies",
+                         "composite_key": {"external_code": "ISO-3166"}},
+                        {"namespace": "wip", "entity_type": "terminologies",
+                         "composite_key": {"vendor_id": "V-001"}},
+                    ],
+                }),
+            ],
+            "terms": [], "templates": [], "documents": [], "files": [],
+        }
 
-        _restore_synonyms(client, "target-ns", entities, stats, False)
+        _restore_synonyms(client, "target-ns", entities_by_type, stats, False)
 
         client.post.assert_called_once()
         args, kwargs = client.post.call_args
@@ -1019,13 +1022,17 @@ class TestRestoreSynonyms:
                  "composite_key": {"alias": "person-tpl"}},
             ],
         }
-        entities = [
-            _template("TPL-001", "PERSON", version=1, registry=reg_data),
-            _template("TPL-001", "PERSON", version=2, registry=reg_data),
-            _template("TPL-001", "PERSON", version=3, registry=reg_data),
-        ]
+        entities_by_type = {
+            "terminologies": [], "terms": [],
+            "templates": [
+                _template("TPL-001", "PERSON", version=1, registry=reg_data),
+                _template("TPL-001", "PERSON", version=2, registry=reg_data),
+                _template("TPL-001", "PERSON", version=3, registry=reg_data),
+            ],
+            "documents": [], "files": [],
+        }
 
-        _restore_synonyms(client, "target-ns", entities, stats, False)
+        _restore_synonyms(client, "target-ns", entities_by_type, stats, False)
 
         batch = client.post.call_args[1]["json"]
         # Only one synonym item despite 3 versions
@@ -1038,12 +1045,14 @@ class TestRestoreSynonyms:
         client = _make_client()
         stats = _make_stats()
 
-        entities = [
-            _terminology("TERM-001"),
-            _template("TPL-001"),
-        ]
+        entities_by_type = {
+            "terminologies": [_terminology("TERM-001")],
+            "terms": [],
+            "templates": [_template("TPL-001")],
+            "documents": [], "files": [],
+        }
 
-        _restore_synonyms(client, "target-ns", entities, stats, False)
+        _restore_synonyms(client, "target-ns", entities_by_type, stats, False)
 
         client.post.assert_not_called()
         assert stats.synonyms_registered == 0
@@ -1054,14 +1063,17 @@ class TestRestoreSynonyms:
         client = _make_client()
         stats = _make_stats()
 
-        entities = [
-            _terminology("TERM-001", _registry={
-                "primary_composite_key": {"value": "COUNTRY"},
-                "synonyms": [],
-            }),
-        ]
+        entities_by_type = {
+            "terminologies": [
+                _terminology("TERM-001", _registry={
+                    "primary_composite_key": {"value": "COUNTRY"},
+                    "synonyms": [],
+                }),
+            ],
+            "terms": [], "templates": [], "documents": [], "files": [],
+        }
 
-        _restore_synonyms(client, "target-ns", entities, stats, False)
+        _restore_synonyms(client, "target-ns", entities_by_type, stats, False)
 
         client.post.assert_not_called()
 
@@ -1077,32 +1089,35 @@ class TestRestoreSynonyms:
         }
         stats = _make_stats()
 
-        entities = [
-            _terminology("TERM-001", _registry={
-                "primary_composite_key": {},
-                "synonyms": [
-                    {"namespace": "wip", "entity_type": "terminologies",
-                     "composite_key": {"code": "X"}},
-                ],
-            }),
-            _document("DOC-001", registry={
-                "primary_composite_key": {},
-                "synonyms": [
-                    {"namespace": "wip", "entity_type": "documents",
-                     "composite_key": {"vendor": "V1"}},
-                ],
-            }),
-        ]
+        entities_by_type = {
+            "terminologies": [
+                _terminology("TERM-001", _registry={
+                    "primary_composite_key": {},
+                    "synonyms": [
+                        {"namespace": "wip", "entity_type": "terminologies",
+                         "composite_key": {"code": "X"}},
+                    ],
+                }),
+            ],
+            "terms": [], "templates": [],
+            "documents": [
+                _document("DOC-001", registry={
+                    "primary_composite_key": {},
+                    "synonyms": [
+                        {"namespace": "wip", "entity_type": "documents",
+                         "composite_key": {"vendor": "V1"}},
+                    ],
+                }),
+            ],
+            "files": [],
+        }
 
-        _restore_synonyms(client, "target-ns", entities, stats, False)
+        _restore_synonyms(client, "target-ns", entities_by_type, stats, False)
 
         batch = client.post.call_args[1]["json"]
         assert len(batch) == 2
         target_ids = {item["target_id"] for item in batch}
-        # Note: document entities also contain template_id, which comes before
-        # document_id in id_fields scan order, so the document's target_id is
-        # its template_id value rather than document_id.
-        assert target_ids == {"TERM-001", "TPL-000001"}
+        assert target_ids == {"TERM-001", "DOC-001"}
 
 
 # ---------------------------------------------------------------------------

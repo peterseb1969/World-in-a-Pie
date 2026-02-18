@@ -101,8 +101,14 @@ def restore_import(
 
     # Step 13: Restore synonyms from _registry data
     console.print("\n[bold cyan]Step 12:[/bold cyan] Restoring Registry synonyms")
-    all_entities = terminologies + terms + templates + documents + files
-    _restore_synonyms(client, target_namespace, all_entities, stats, continue_on_error)
+    entities_by_type = {
+        "terminologies": terminologies,
+        "terms": terms,
+        "templates": templates,
+        "documents": documents,
+        "files": files,
+    }
+    _restore_synonyms(client, target_namespace, entities_by_type, stats, continue_on_error)
 
     return stats
 
@@ -554,47 +560,52 @@ def _preregister_files(
 def _restore_synonyms(
     client: WIPClient,
     namespace: str,
-    all_entities: list[dict],
+    entities_by_type: dict[str, list[dict]],
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
     """Restore Registry synonyms from _registry data across all entity types.
 
+    Iterates by entity type so each entity's correct ID field is used
+    (e.g. document_id for documents, not template_id which is a reference).
     Deduplicates by entry_id to avoid registering synonyms for the same
     entity multiple times (e.g., multiple versions of a template/document).
     """
-    # Collect synonym items, deduplicated by entry_id
+    id_field_for_type = {
+        "terminologies": "terminology_id",
+        "terms": "term_id",
+        "templates": "template_id",
+        "documents": "document_id",
+        "files": "file_id",
+    }
+
     seen_ids: set[str] = set()
     synonym_items: list[dict] = []
 
-    id_fields = [
-        "terminology_id", "term_id", "template_id", "document_id", "file_id",
-    ]
-
-    for entity in all_entities:
-        # Find the entity's ID
-        eid = None
-        for field in id_fields:
-            if field in entity:
-                eid = entity[field]
-                break
-        if not eid or eid in seen_ids:
+    for entity_type, entities in entities_by_type.items():
+        id_field = id_field_for_type.get(entity_type)
+        if not id_field:
             continue
 
-        registry = entity.get("_registry", {})
-        synonyms = registry.get("synonyms", [])
-        if not synonyms:
-            continue
+        for entity in entities:
+            eid = entity.get(id_field)
+            if not eid or eid in seen_ids:
+                continue
 
-        seen_ids.add(eid)
-        for syn in synonyms:
-            synonym_items.append({
-                "target_id": eid,
-                "synonym_namespace": syn.get("namespace", namespace),
-                "synonym_entity_type": syn.get("entity_type", ""),
-                "synonym_composite_key": syn.get("composite_key", {}),
-                "created_by": "wip-toolkit-restore",
-            })
+            registry = entity.get("_registry", {})
+            synonyms = registry.get("synonyms", [])
+            if not synonyms:
+                continue
+
+            seen_ids.add(eid)
+            for syn in synonyms:
+                synonym_items.append({
+                    "target_id": eid,
+                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_entity_type": syn.get("entity_type", ""),
+                    "synonym_composite_key": syn.get("composite_key", {}),
+                    "created_by": "wip-toolkit-restore",
+                })
 
     if not synonym_items:
         console.print("  No synonyms to restore")
