@@ -229,7 +229,7 @@ Body: [{"value": "GENDER", ...}, {"value": "COUNTRY", ...}]
 
 - Authentication: `X-API-Key` header or `Authorization: Bearer <token>`
 - RESTful design with OpenAPI docs at `/docs`
-- Data is never deleted, only soft-deleted (status: inactive)
+- Data is never deleted, only soft-deleted (status: inactive). Exception: files support hard-delete (`DELETE /files/{id}/hard`) to reclaim MinIO storage after soft-delete.
 - Upstream service errors return HTTP 502 (Bad Gateway)
 
 ---

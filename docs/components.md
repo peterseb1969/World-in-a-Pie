@@ -596,6 +596,7 @@ For templates **without identity fields**, the Registry receives an empty compos
 | GET | `/api/document-store/files/{id}/content` | Stream file content directly |
 | PATCH | `/api/document-store/files` | Update file metadata `[{file_id, ...}]` → `BulkResponse` |
 | DELETE | `/api/document-store/files` | Soft-delete files `[{id}]` → `BulkResponse` |
+| DELETE | `/api/document-store/files/{id}/hard` | Hard-delete file (must be inactive; removes from MinIO) |
 | GET | `/api/document-store/files/orphans/list` | List orphan files |
 | GET | `/api/document-store/files/health/integrity` | File integrity check |
 

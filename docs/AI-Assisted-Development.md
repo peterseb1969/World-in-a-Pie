@@ -51,7 +51,7 @@ Key concepts the AI **must** internalize:
 | **Reporting Sync** | Real-time MongoDB to PostgreSQL sync via NATS | Enables SQL queries over document data. Must be configured per template. |
 | **Namespaces** | Logical partitions for IDs (pools) | Each namespace has its own ID sequence and format. Cross-namespace search is supported. |
 | **File Storage** | Binary files stored in MinIO (S3-compatible) | Files are first-class entities with Registry IDs (FILE-XXXXXX), reference tracking, and orphan detection. Linked to documents via `type: "file"` fields. |
-| **Soft Delete** | Nothing is ever physically deleted | Entities are set to `status: inactive`. Historical references always resolve. |
+| **Soft Delete** | Nothing is ever physically deleted | Entities are set to `status: inactive`. Historical references always resolve. Exception: files support hard-delete after soft-delete to reclaim MinIO storage. |
 
 ### Step 1.2: Ask the User for Connection Details
 
@@ -1016,7 +1016,7 @@ Synonyms are scoped to their namespace and entity type. The same synonym value i
 | **Wrong creation order** | Terminologies → Terms → Templates (referenced first) → Templates (referencing) → Documents (referenced first) → Documents (referencing). |
 | **Assuming API behavior from docs** | Test with curl first. Always. |
 | **Huge batch without tuning** | Use `batch_size=1000` and `registry_batch_size=50` for large imports. |
-| **Trying to delete data** | WIP uses soft-delete only. Deactivate, don't delete. |
+| **Trying to delete data** | WIP uses soft-delete only. Deactivate, don't delete. Only files support hard-delete (to reclaim MinIO storage). |
 | **Ignoring term aliases** | Real data is messy. Plan aliases when creating terminologies. |
 | **Too many identity fields** | Makes every minor change create a new document instead of a new version. |
 | **Too few identity fields** | Different real-world entities collide and overwrite each other. |

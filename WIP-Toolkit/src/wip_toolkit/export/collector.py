@@ -79,17 +79,24 @@ class EntityCollector:
 
     # --- Document-Store ---
 
-    def fetch_documents(self) -> list[dict[str, Any]]:
-        """Fetch all documents (latest versions) in the namespace."""
+    def fetch_documents(self, latest_only: bool = True) -> list[dict[str, Any]]:
+        """Fetch documents in the namespace.
+
+        Args:
+            latest_only: If True, return only the latest version of each
+                document_id. If False, return all versions.
+        """
         params: dict[str, Any] = {"namespace": self.namespace}
         if not self.include_inactive:
             params["status"] = "active"
+        if latest_only:
+            params["latest_only"] = "true"
         items = self.client.fetch_all_paginated(
             "document-store", "/documents", params=params, page_size=100,
         )
         # Deduplicate — Document-Store pagination can return duplicates across
-        # page boundaries (WIP bug: documents inserted during pagination shift
-        # offsets). Use (document_id, version) as the unique key.
+        # page boundaries (documents inserted during pagination shift offsets).
+        # Use (document_id, version) as the unique key.
         seen: set[tuple[str, int]] = set()
         deduped: list[dict[str, Any]] = []
         for doc in items:

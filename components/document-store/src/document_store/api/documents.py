@@ -86,11 +86,15 @@ async def list_documents(
     template_id: Optional[str] = Query(None, description="Filter by template ID"),
     template_value: Optional[str] = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
+    latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
 ):
-    """List documents with pagination."""
+    """List documents with pagination.
+
+    Use latest_only=true to return only the highest version of each document_id.
+    """
     service = get_document_service()
     return await service.list_documents(
         template_id=template_id,
@@ -98,7 +102,8 @@ async def list_documents(
         status=status,
         page=page,
         page_size=page_size,
-        namespace=namespace
+        namespace=namespace,
+        latest_only=latest_only,
     )
 
 

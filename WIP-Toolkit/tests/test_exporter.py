@@ -47,10 +47,6 @@ def mock_collector():
         {"document_id": "DOC-001", "namespace": "wip", "version": 1,
          "template_id": "TPL-001", "data": {}},
     ]
-    collector.fetch_all_document_versions.return_value = [
-        {"document_id": "DOC-001", "namespace": "wip", "version": 1,
-         "template_id": "TPL-001", "data": {}},
-    ]
     collector.fetch_files.return_value = [
         {"file_id": "FILE-001", "namespace": "wip", "filename": "test.pdf"},
     ]
@@ -386,11 +382,11 @@ class TestRunExportLatestOnly:
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")
-    def test_latest_only_skips_version_expansion(self, MockCollector,
-                                                   mock_closure, MockWriter,
-                                                   mock_client,
-                                                   mock_collector,
-                                                   mock_writer):
+    def test_latest_only_passes_flag_to_collector(self, MockCollector,
+                                                    mock_closure, MockWriter,
+                                                    mock_client,
+                                                    mock_collector,
+                                                    mock_writer):
         MockCollector.return_value = mock_collector
         MockWriter.return_value = mock_writer
         mock_closure.return_value = ([], [], [], [])
@@ -398,14 +394,14 @@ class TestRunExportLatestOnly:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", latest_only=True)
 
-        mock_collector.fetch_all_document_versions.assert_not_called()
+        mock_collector.fetch_documents.assert_called_once_with(latest_only=True)
 
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")
-    def test_default_expands_versions(self, MockCollector, mock_closure,
-                                       MockWriter, mock_client,
-                                       mock_collector, mock_writer):
+    def test_default_fetches_all_versions(self, MockCollector, mock_closure,
+                                           MockWriter, mock_client,
+                                           mock_collector, mock_writer):
         MockCollector.return_value = mock_collector
         MockWriter.return_value = mock_writer
         mock_closure.return_value = ([], [], [], [])
@@ -413,7 +409,7 @@ class TestRunExportLatestOnly:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip")
 
-        mock_collector.fetch_all_document_versions.assert_called_once()
+        mock_collector.fetch_documents.assert_called_once_with(latest_only=False)
 
 
 # ===========================================================================

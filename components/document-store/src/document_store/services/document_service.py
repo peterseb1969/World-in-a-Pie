@@ -515,9 +515,14 @@ class DocumentService:
         status: Optional[DocumentStatus] = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: Optional[str] = None
+        namespace: Optional[str] = None,
+        latest_only: bool = False,
     ) -> DocumentListResponse:
-        """List documents with pagination."""
+        """List documents with pagination.
+
+        When latest_only=True, uses aggregation to return only the highest
+        version of each document_id (like template-store's latest_only).
+        """
         query: dict = {}
         if namespace:
             query["namespace"] = namespace
@@ -528,14 +533,39 @@ class DocumentService:
         if status:
             query["status"] = status.value
 
-        # Count total
-        total = await Document.find(query).count()
+        if latest_only:
+            # Aggregation: group by document_id, keep highest version
+            pipeline: list[dict] = [
+                {"$match": query} if query else {"$match": {}},
+                {"$sort": {"document_id": 1, "version": -1}},
+                {"$group": {
+                    "_id": "$document_id",
+                    "doc": {"$first": "$$ROOT"},
+                }},
+                {"$replaceRoot": {"newRoot": "$doc"}},
+                {"$sort": {"created_at": -1}},
+            ]
 
-        # Fetch page — sort by created_at DESC for stable offset pagination
-        skip = (page - 1) * page_size
-        documents = await Document.find(query).sort(
-            [("created_at", -1)]
-        ).skip(skip).limit(page_size).to_list()
+            count_pipeline = pipeline + [{"$count": "total"}]
+            count_result = await Document.aggregate(count_pipeline).to_list()
+            total = count_result[0]["total"] if count_result else 0
+
+            skip = (page - 1) * page_size
+            paginated_pipeline = pipeline + [
+                {"$skip": skip},
+                {"$limit": page_size},
+            ]
+            results = await Document.aggregate(paginated_pipeline).to_list()
+            documents = [Document(**doc) for doc in results]
+        else:
+            # Count total
+            total = await Document.find(query).count()
+
+            # Fetch page — sort by created_at DESC for stable offset pagination
+            skip = (page - 1) * page_size
+            documents = await Document.find(query).sort(
+                [("created_at", -1)]
+            ).skip(skip).limit(page_size).to_list()
 
         # Convert to responses (async)
         items = [await self._to_response(d) for d in documents]

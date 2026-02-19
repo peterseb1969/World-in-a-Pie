@@ -340,6 +340,8 @@ Data is never physically deleted. Documents, templates, and terms are soft-delet
 - Audit trails remain complete
 - Recovery is always possible
 
+**Exception:** Binary files (stored in MinIO) support an optional hard-delete after soft-delete, to reclaim storage. Domain entities in MongoDB are never hard-deleted.
+
 ### 2. References Must Resolve
 
 Every reference (term_id, template_id, document_id) must point to an existing entity. The system validates references and warns about inactive targets.

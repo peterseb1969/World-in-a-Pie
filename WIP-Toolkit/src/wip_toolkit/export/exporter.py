@@ -61,13 +61,8 @@ def run_export(
     documents: list[dict[str, Any]] = []
     files: list[dict[str, Any]] = []
     if not skip_documents:
-        documents = collector.fetch_documents()
+        documents = collector.fetch_documents(latest_only=latest_only)
         files = collector.fetch_files()
-
-        # Optionally expand to all document versions
-        if not latest_only:
-            console.print("  Expanding document version history...")
-            documents = collector.fetch_all_document_versions(documents)
 
     # Tag primary entities
     for entity in terminologies:

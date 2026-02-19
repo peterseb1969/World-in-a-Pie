@@ -272,6 +272,8 @@ All endpoints (except `/health`) require authentication:
 
 Data is never physically deleted. All delete operations set `status: "inactive"`. Entities can be restored via dedicated restore endpoints (e.g., `POST /terminologies/{id}/restore`).
 
+**Exception: Files.** Binary files stored in MinIO support a two-step purge: soft-delete (`DELETE /files` → sets status to `inactive`) followed by hard-delete (`DELETE /files/{id}/hard` → permanently removes from MinIO and database). Hard-delete only works on files already in `inactive` status. This exists because binary storage has real cost, unlike soft-deleted MongoDB documents which are negligible.
+
 ---
 
 ## What is NOT Bulk

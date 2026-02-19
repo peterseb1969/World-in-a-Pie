@@ -204,6 +204,22 @@ class TestFetchDocuments:
         call_args = mock_client.fetch_all_paginated.call_args
         assert call_args[1]["params"]["status"] == "active"
 
+    def test_latest_only_passes_param(self, collector, mock_client):
+        mock_client.fetch_all_paginated.return_value = []
+
+        collector.fetch_documents(latest_only=True)
+
+        call_args = mock_client.fetch_all_paginated.call_args
+        assert call_args[1]["params"]["latest_only"] == "true"
+
+    def test_all_versions_omits_param(self, collector, mock_client):
+        mock_client.fetch_all_paginated.return_value = []
+
+        collector.fetch_documents(latest_only=False)
+
+        call_args = mock_client.fetch_all_paginated.call_args
+        assert "latest_only" not in call_args[1]["params"]
+
 
 class TestFetchRegistryEntries:
     """Test bulk Registry entry fetching."""
