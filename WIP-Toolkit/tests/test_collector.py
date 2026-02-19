@@ -172,15 +172,15 @@ class TestFetchDocuments:
         assert "DOC-1" in doc_ids
         assert "DOC-2" in doc_ids
 
-    def test_different_versions_not_deduped(self, collector, mock_client):
-        """Same document_id with different versions are kept."""
+    def test_different_versions_kept_when_all_versions(self, collector, mock_client):
+        """Same document_id with different versions are kept in all-versions mode."""
         docs = [
             {"document_id": "DOC-1", "version": 1, "data": {}},
             {"document_id": "DOC-1", "version": 2, "data": {}},
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
-        result = collector.fetch_documents()
+        result = collector.fetch_documents(latest_only=False)
 
         assert len(result) == 2
 
@@ -204,18 +204,39 @@ class TestFetchDocuments:
         call_args = mock_client.fetch_all_paginated.call_args
         assert call_args[1]["params"]["status"] == "active"
 
-    def test_latest_only_passes_param(self, collector, mock_client):
+    def test_latest_only_deduplicates_to_highest_version(self, collector, mock_client):
+        """latest_only keeps only the highest version per document_id."""
+        docs = [
+            {"document_id": "DOC-1", "version": 1, "data": {}},
+            {"document_id": "DOC-1", "version": 2, "data": {}},
+            {"document_id": "DOC-2", "version": 1, "data": {}},
+        ]
+        mock_client.fetch_all_paginated.return_value = docs
+
+        result = collector.fetch_documents(latest_only=True)
+
+        assert len(result) == 2
+        by_id = {d["document_id"]: d for d in result}
+        assert by_id["DOC-1"]["version"] == 2
+        assert by_id["DOC-2"]["version"] == 1
+
+    def test_all_versions_returns_everything(self, collector, mock_client):
+        """latest_only=False returns all versions."""
+        docs = [
+            {"document_id": "DOC-1", "version": 1, "data": {}},
+            {"document_id": "DOC-1", "version": 2, "data": {}},
+        ]
+        mock_client.fetch_all_paginated.return_value = docs
+
+        result = collector.fetch_documents(latest_only=False)
+
+        assert len(result) == 2
+
+    def test_never_passes_latest_only_to_api(self, collector, mock_client):
+        """Dedup is always client-side, never server-side aggregation."""
         mock_client.fetch_all_paginated.return_value = []
 
         collector.fetch_documents(latest_only=True)
-
-        call_args = mock_client.fetch_all_paginated.call_args
-        assert call_args[1]["params"]["latest_only"] == "true"
-
-    def test_all_versions_omits_param(self, collector, mock_client):
-        mock_client.fetch_all_paginated.return_value = []
-
-        collector.fetch_documents(latest_only=False)
 
         call_args = mock_client.fetch_all_paginated.call_args
         assert "latest_only" not in call_args[1]["params"]

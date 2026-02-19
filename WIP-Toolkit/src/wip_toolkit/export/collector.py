@@ -82,6 +82,10 @@ class EntityCollector:
     def fetch_documents(self, latest_only: bool = True) -> list[dict[str, Any]]:
         """Fetch documents in the namespace.
 
+        Always uses the fast indexed query path (no server-side aggregation).
+        When latest_only=True, deduplicates client-side keeping only the
+        highest version per document_id.
+
         Args:
             latest_only: If True, return only the latest version of each
                 document_id. If False, return all versions.
@@ -89,14 +93,13 @@ class EntityCollector:
         params: dict[str, Any] = {"namespace": self.namespace}
         if not self.include_inactive:
             params["status"] = "active"
-        if latest_only:
-            params["latest_only"] = "true"
+        # Always fetch all versions via the fast path — client-side dedup
+        # is much faster than server-side aggregation for large datasets.
         items = self.client.fetch_all_paginated(
             "document-store", "/documents", params=params, page_size=100,
         )
-        # Deduplicate — Document-Store pagination can return duplicates across
-        # page boundaries (documents inserted during pagination shift offsets).
-        # Use (document_id, version) as the unique key.
+        # Deduplicate by (document_id, version) — pagination can return
+        # duplicates across page boundaries.
         seen: set[tuple[str, int]] = set()
         deduped: list[dict[str, Any]] = []
         for doc in items:
@@ -104,6 +107,21 @@ class EntityCollector:
             if key not in seen:
                 seen.add(key)
                 deduped.append(doc)
+
+        if latest_only:
+            # Keep only the highest version per document_id
+            latest: dict[str, dict[str, Any]] = {}
+            for doc in deduped:
+                did = doc["document_id"]
+                if did not in latest or doc.get("version", 1) > latest[did].get("version", 1):
+                    latest[did] = doc
+            result = list(latest.values())
+            console.print(
+                f"  Fetched {len(items)} document versions, "
+                f"deduplicated to {len(result)} latest documents"
+            )
+            return result
+
         if len(deduped) < len(items):
             console.print(f"  Fetched {len(items)} documents ({len(items) - len(deduped)} duplicates removed)")
         else:
