@@ -210,8 +210,6 @@ class RegistryClient:
         """
         items = [
             {
-                "target_namespace": namespace,
-                "target_entity_type": entity_type,
                 "target_id": entry_id,
                 "synonym_namespace": namespace,
                 "synonym_entity_type": entity_type,

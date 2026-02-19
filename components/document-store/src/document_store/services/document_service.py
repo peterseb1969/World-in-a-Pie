@@ -123,7 +123,8 @@ class DocumentService:
         validation_result = await self.validation_service.validate(
             request.template_id,
             request.data,
-            template_version=request.template_version
+            template_version=request.template_version,
+            namespace=namespace
         )
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
@@ -828,7 +829,8 @@ class DocumentService:
                 validation_result = await self.validation_service.validate(
                     item.template_id,
                     item.data,
-                    template_version=getattr(item, 'template_version', None)
+                    template_version=getattr(item, 'template_version', None),
+                    namespace=namespace
                 )
                 if validation_result.valid:
                     validation_results.append((i, item, validation_result))

@@ -728,7 +728,7 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/api/registry/entries/register` | Register composite keys (bulk) |
-| POST | `/api/registry/entries/lookup/by-id` | Lookup by ID with 3-step cascade |
+| POST | `/api/registry/entries/lookup/by-id` | Lookup by ID with 2-step cascade |
 | POST | `/api/registry/entries/lookup/by-key` | Lookup by composite key (bulk) |
 
 **Synonyms**
@@ -755,15 +755,14 @@ Synonyms are indexed via a flat `search_values` array on each registry entry, ma
 
 ### Extended Identifier Lookup
 
-`POST /api/registry/entries/lookup/by-id` performs a **3-step resolution cascade**:
+`POST /api/registry/entries/lookup/by-id` performs a **2-step resolution cascade**:
 
 1. **Step 1 — `entry_id`:** Direct match on the canonical entry ID.
-2. **Step 2 — `additional_ids`:** Match against merged IDs accumulated from entry merge operations.
-3. **Step 3 — `search_values`:** Match against the flat `search_values` array, which contains synonym values, external IDs, and business keys from composite key fields.
+2. **Step 2 — `search_values`:** Match against the flat `search_values` array, which contains synonym values, merged/deprecated IDs, external IDs, and business keys from composite key fields.
 
-The `namespace` parameter is **optional**. Omit it to search across all namespaces; provide it to constrain the search to a single namespace.
+The `namespace` and `entity_type` parameters are **optional**. Omit them to search across all namespaces/types; provide them to constrain the search.
 
-The response includes a `matched_via` field indicating how the match was found (e.g., `entry_id`, `additional_ids`, or `search_values`). This enables the Document Store to resolve any identifier — canonical ID, synonym, or external ID — in a single call.
+The response includes a `matched_via` field indicating how the match was found (`entry_id` or `composite_key_value`). This enables the Document Store to resolve any identifier — canonical ID, synonym, or external ID — in a single call.
 
 ---
 

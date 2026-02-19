@@ -313,13 +313,14 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   ID GENERATION                                                              │
 │   ═════════════                                                             │
 │                                                                              │
-│   POST /api/registry/ids                                                     │
+│   POST /api/registry/entries/register                                        │
 │   {                                                                          │
-│     "pool_id": "wip-templates",                                            │
+│     "namespace": "wip",                                                      │
+│     "entity_type": "templates",                                              │
 │     "composite_key": {}                                                      │
 │   }                                                                          │
 │                                                                              │
-│   Response: {"id": "TPL-000001", "composite_key_hash": "abc123..."}         │
+│   Response: {"registry_id": "019abc...", "status": "created"}               │
 │                                                                              │
 │   SYNONYMS (Federated Identity)                                              │
 │   ═════════════════════════════                                             │

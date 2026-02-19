@@ -239,8 +239,8 @@ Now a lookup for `{"partner_patient_id": "P-8812"}` resolves to the canonical WI
 Two canonical entries turn out to represent the same entity. You can **merge** them by making one a synonym of the other:
 
 1. Choose which entry_id to keep as canonical (typically the newer or more complete one)
-2. Register the other entry_id as a synonym via `additional_ids`
-3. Deactivate the old entity in the domain service
+2. Merge via `POST /api/registry/synonyms/merge` with `preferred_id` and `deprecated_id`
+3. The deprecated entry's synonyms and ID are moved to the preferred entry's `search_values`
 
 Lookups by either ID now resolve to the surviving canonical entry.
 

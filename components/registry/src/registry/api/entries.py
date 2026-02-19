@@ -702,6 +702,8 @@ async def lookup_by_ids(
                 q1: dict = {"entry_id": item.entry_id, "status": "active"}
                 if item.namespace:
                     q1["namespace"] = item.namespace
+                if item.entity_type:
+                    q1["entity_type"] = item.entity_type
                 entry = await RegistryEntry.find_one(q1)
                 if entry:
                     matched_via = "entry_id"
@@ -711,6 +713,8 @@ async def lookup_by_ids(
                     q3: dict = {"search_values": item.entry_id, "status": "active"}
                     if item.namespace:
                         q3["namespace"] = item.namespace
+                    if item.entity_type:
+                        q3["entity_type"] = item.entity_type
                     entry = await RegistryEntry.find_one(q3)
                     if entry:
                         matched_via = "composite_key_value"

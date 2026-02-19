@@ -314,6 +314,7 @@ class LookupByIdItem(StrictModel):
 
     entry_id: str = Field(..., description="The entry ID to look up")
     namespace: Optional[str] = Field(default=None, description="Namespace filter")
+    entity_type: Optional[str] = Field(default=None, description="Entity type filter")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 

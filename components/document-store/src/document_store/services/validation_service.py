@@ -164,7 +164,8 @@ class ValidationService:
         self,
         template_id: str,
         data: dict[str, Any],
-        template_version: Optional[int] = None
+        template_version: Optional[int] = None,
+        namespace: str = "wip"
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -216,7 +217,7 @@ class ValidationService:
 
         # Stage 5: Reference validation - unified reference fields
         start = time.perf_counter()
-        await self._validate_references(data, template, result)
+        await self._validate_references(data, template, result, namespace=namespace)
         result.timing["5_reference_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -1193,7 +1194,8 @@ class ValidationService:
         self,
         data: dict[str, Any],
         template: dict[str, Any],
-        result: ValidationResult
+        result: ValidationResult,
+        namespace: str = "wip"
     ):
         """
         Validate and resolve reference fields.
@@ -1231,7 +1233,8 @@ class ValidationService:
                     # Resolve document reference
                     resolved = await self._resolve_document_reference(
                         value, target_templates, result, field_path,
-                        version_strategy=version_strategy
+                        version_strategy=version_strategy,
+                        namespace=namespace
                     )
                     if resolved:
                         result.references.append({
@@ -1473,7 +1476,8 @@ class ValidationService:
         target_templates: list[str],
         result: ValidationResult,
         field_path: str,
-        version_strategy: str = "latest"
+        version_strategy: str = "latest",
+        namespace: str = "wip"
     ) -> Optional[dict[str, Any]]:
         """Resolve a document reference by ID, hash, or business key."""
         from ..models.document import Document, DocumentStatus
@@ -1498,7 +1502,7 @@ class ValidationService:
                 })
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
-                doc = await self._resolve_via_registry(value, "wip", "documents")
+                doc = await self._resolve_via_registry(value, namespace, "documents")
 
                 if not doc:
                     # Fallback: Business key lookup

@@ -957,23 +957,25 @@ A registry entry stores a canonical ID with its composite key and optional synon
 ```python
 class RegistryEntry(BaseModel):
     entry_id: str          # Canonical ID (e.g., UUID7)
-    primary_namespace: str # Namespace this entry belongs to
+    namespace: str         # Namespace this entry belongs to
+    entity_type: str       # Entity type: terminologies, terms, templates, documents, files
     primary_composite_key: dict[str, Any]  # Original composite key
-    additional_ids: list[dict[str, str]]   # Merged IDs from entry merges
+    primary_composite_key_hash: str        # Hash of the primary composite key
     synonyms: list[Synonym]               # Alternative composite keys
     search_values: list[str]              # Flattened string values from all composite keys
-    status: str            # "active" or "inactive"
+    status: str            # "reserved", "active", or "inactive"
     source_info: SourceInfo | None
     metadata: dict[str, Any]
 ```
 
-**`search_values`** is a flat array containing all string values extracted from `primary_composite_key` and all `synonyms[].composite_key`. It is automatically rebuilt whenever synonyms are added, removed, or entries are merged. This enables efficient value-based lookups — any string value from any composite key can be resolved to its canonical entry via a single indexed query.
+**`search_values`** is a flat array containing all string values extracted from `primary_composite_key` and all `synonyms[].composite_key`. It is automatically rebuilt whenever synonyms are added, removed, or entries are merged. Merged/deprecated IDs are also added to `search_values`. This enables efficient value-based lookups — any string value from any composite key can be resolved to its canonical entry via a single indexed query.
 
 **Example:**
 ```json
 {
   "entry_id": "0192abc1-def2-7abc-8def-123456789abc",
-  "primary_namespace": "wip",
+  "namespace": "wip",
+  "entity_type": "documents",
   "primary_composite_key": {
     "identity_hash": "abc123...",
     "template_id": "019469a0-cccc-7abc-8def-000000000001"
@@ -981,11 +983,11 @@ class RegistryEntry(BaseModel):
   "synonyms": [
     {
       "namespace": "wip",
+      "entity_type": "documents",
       "composite_key": { "external_id": "ERP-CUS-001" }
     }
   ],
-  "search_values": ["ERP-CUS-001", "019469a0-cccc-7abc-8def-000000000001", "abc123..."],
-  "additional_ids": []
+  "search_values": ["ERP-CUS-001", "019469a0-cccc-7abc-8def-000000000001", "abc123..."]
 }
 ```
 

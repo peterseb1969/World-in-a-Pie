@@ -36,7 +36,7 @@ A bare code like `"PERSON"` or `"DOC_STATUS"` is none of these. It's an unqualif
 ### Consequences (Now Fixed)
 
 1. **No version pinning** — `target_templates: ["PERSON"]` silently accepted any version.
-2. **No pool scoping** — validation did `Template.find_one({"code": tpl_code})` without filtering by `pool_id`.
+2. **No namespace scoping** — validation did `Template.find_one({"code": tpl_code})` without filtering by namespace.
 3. **Inconsistency** — `extends` correctly stored a canonical ID while all other references stored codes.
 4. **Bypassed the Registry** — template references skipped the Registry entirely.
 5. **Broken nested validation** — `get_template_resolved(template_ref)` received a code, returned `None`, silently skipping nested object validation.
@@ -189,11 +189,11 @@ Works with both strategies. The stored IDs are always used as the starting point
 
 ### Key Methods
 
-**`_resolve_to_template_id(ref, pool_id, known_templates=None)`** — Resolves a template code or ID to a canonical `template_id`. If `ref` starts with `TPL-`, validates existence. Otherwise looks up latest active template by code in the pool. `known_templates` enables cross-resolution within an activation set.
+**`_resolve_to_template_id(ref, namespace, known_templates=None)`** — Resolves a template code or ID to a canonical `template_id`. If `ref` is a UUID7, validates existence. Otherwise looks up latest active template by value in the namespace. `known_templates` enables cross-resolution within an activation set.
 
-**`_resolve_to_terminology_id(ref, pool_id)`** — Resolves a terminology code or ID to a canonical `terminology_id`. If `ref` starts with `TERM-`, validates existence and active status. Otherwise looks up by code via def-store.
+**`_resolve_to_terminology_id(ref, namespace)`** — Resolves a terminology code or ID to a canonical `terminology_id`. If `ref` is a UUID7, validates existence and active status. Otherwise looks up by value via def-store.
 
-**`_normalize_field_references(fields, pool_id, known_templates=None)`** — Iterates all fields and normalizes the 6 reference fields to canonical IDs. Mutates fields in-place.
+**`_normalize_field_references(fields, namespace, known_templates=None)`** — Iterates all fields and normalizes the 6 reference fields to canonical IDs. Mutates fields in-place.
 
 ## What Doesn't Change
 

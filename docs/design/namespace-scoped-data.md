@@ -18,13 +18,13 @@ Design document for adding namespace support to all WIP services, enabling names
 
 **Registry** — Full namespace support:
 - Namespaces are first-class entities with configurable ID generation
-- Each entry stores `primary_pool_id` and `entry_id`
-- Custom namespaces auto-created on first use (e.g., `seed-terminologies`)
-- ID prefixes scoped by namespace (e.g., `TERM-` for wip, `SEED-TERM-` for seed)
+- Each entry stores `namespace`, `entity_type`, and `entry_id`
+- Custom namespaces auto-created on first use
+- ID algorithms configurable per entity type (UUID7 for all WIP types)
 
 **All Services** — Namespace stored on every entity:
 - All MongoDB models have a `namespace` field (short prefix, e.g., `"wip"`, `"seed"`)
-- Registry client calls derive `pool_id` from namespace (e.g., `namespace="seed"` → `pool_id="seed-terminologies"`)
+- Registry client calls pass `namespace` and `entity_type` directly
 - All list/filter APIs accept `namespace` as a query parameter
 - Create endpoints accept `namespace` in the request body (defaults to `"wip"`)
 - By-value lookups default to `namespace=None` (search all namespaces)
@@ -293,12 +293,11 @@ async def register_terminology(code: str, name: str, namespace: str = "wip-termi
 When a document references a template from a different namespace:
 
 ```python
-# Document in dev-documents referencing template in wip-templates
+# Document in "dev" namespace referencing template in "wip" namespace
 {
-    "document_id": "...",
-    "pool_id": "dev-documents",
-    "template_id": "TPL-000001",
-    "template_pool_id": "wip-templates",  # Cross-reference
+    "document_id": "019abc...",
+    "namespace": "dev",
+    "template_id": "019def...",  # Template lives in "wip" namespace
     "data": {...}
 }
 ```
@@ -429,16 +428,14 @@ When importing `dev` namespace as `staging`:
 ```python
 # Original (in export)
 {
-    "document_id": "...",
-    "pool_id": "dev-documents",
-    "template_pool_id": "dev-templates"
+    "document_id": "019abc...",
+    "namespace": "dev"
 }
 
 # After import with remap
 {
-    "document_id": "...",
-    "pool_id": "staging-documents",
-    "template_pool_id": "staging-templates"
+    "document_id": "019abc...",
+    "namespace": "staging"
 }
 ```
 
@@ -504,7 +501,7 @@ curl -X DELETE .../namespace-groups/dev?confirm=true
 3. ~~Deploy updated services~~
 4. ~~**No API changes yet** - all requests use default namespace~~
 
-**Implementation note:** The field is named `namespace` (not `pool_id` as originally proposed) and stores the short prefix (e.g., `"wip"`) rather than the full pool name. The Registry client derives pool names by appending the entity type suffix (e.g., `"seed"` → `"seed-terminologies"`).
+**Implementation note:** The field is named `namespace` (not `pool_id` as originally proposed) and stores the short prefix (e.g., `"wip"`). The Registry stores `namespace` and `entity_type` as separate fields on each entry.
 
 ### Phase 2: API Namespace Parameter (Backward Compatible) — COMPLETE
 

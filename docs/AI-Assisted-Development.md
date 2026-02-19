@@ -920,11 +920,10 @@ Input value provided in document's reference field
 
 ### Registry Lookup (Step 3) in Detail
 
-The Registry performs its own 3-step cascade:
+The Registry performs a 2-step cascade:
 
 1. **entry_id match** — Is the value a canonical WIP ID?
-2. **additional_ids match** — Is it a merged/deprecated ID?
-3. **search_values match** — Is it a synonym or composite key value?
+2. **search_values match** — Is it a synonym, merged/deprecated ID, or composite key value?
 
 The Registry's `search_values` is a flat array of all string values from an entry's composite keys and synonym keys, indexed for O(1) lookups. This is why synonym resolution is as fast as canonical ID lookup.
 
@@ -976,9 +975,9 @@ Synonyms bridge WIP's internal IDs with external system identifiers. Use them wh
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8001/api/registry/synonyms/add" \
   -d '[{
-    "target_pool_id": "wip-documents",
     "target_id": "<DOCUMENT-UUID7>",
-    "synonym_pool_id": "wip-documents",
+    "synonym_namespace": "wip",
+    "synonym_entity_type": "documents",
     "synonym_composite_key": {"erp_id": "SAP-CUST-001"}
   }]' | jq .
 ```
@@ -989,16 +988,16 @@ curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
 # Look up by synonym via Registry
 curl -s -X POST -H "X-API-Key: <key>" -H "Content-Type: application/json" \
   "http://<hostname>:8001/api/registry/entries/lookup/by-id" \
-  -d '[{"entry_id": "SAP-CUST-001", "pool_id": "wip-documents"}]' | jq .
+  -d '[{"entry_id": "SAP-CUST-001", "namespace": "wip", "entity_type": "documents"}]' | jq .
 
-# Expected: status="found", preferred_id=<DOCUMENT-UUID7>, matched_via="composite_key_value"
+# Expected: status="found", entry_id=<DOCUMENT-UUID7>, matched_via="composite_key_value"
 ```
 
 ### Namespace Safety
 
-Synonyms are scoped to their pool/namespace. The same synonym value in different pools won't collide:
-- `{"erp_id": "X"}` in `wip-documents` and `{"erp_id": "X"}` in `wip-templates` are independent
-- Omit `pool_id` in a Registry lookup to search across all pools
+Synonyms are scoped to their namespace and entity type. The same synonym value in different scopes won't collide:
+- `{"erp_id": "X"}` in `(wip, documents)` and `{"erp_id": "X"}` in `(wip, templates)` are independent
+- Omit `namespace` and `entity_type` in a Registry lookup to search across all scopes
 
 ---
 
