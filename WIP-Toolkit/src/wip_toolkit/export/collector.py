@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
 from rich.console import Console
 
@@ -96,7 +96,7 @@ class EntityCollector:
         # Always fetch all versions via the fast path — client-side dedup
         # is much faster than server-side aggregation for large datasets.
         items = self.client.fetch_all_paginated(
-            "document-store", "/documents", params=params, page_size=100,
+            "document-store", "/documents", params=params, page_size=1000,
         )
         # Deduplicate by (document_id, version) — pagination can return
         # duplicates across page boundaries.
@@ -127,6 +127,39 @@ class EntityCollector:
         else:
             console.print(f"  Fetched {len(deduped)} documents")
         return deduped
+
+    def stream_documents(
+        self,
+        latest_only: bool = True,
+        page_size: int = 1000,
+    ) -> Iterator[list[dict[str, Any]]]:
+        """Stream documents page-by-page using cursor-based pagination.
+
+        Yields one page (list of dicts) at a time for O(page_size) memory.
+        When latest_only=True, deduplicates within each page keeping only
+        the highest version per document_id.
+        """
+        params: dict[str, Any] = {"namespace": self.namespace}
+        if not self.include_inactive:
+            params["status"] = "active"
+
+        total_yielded = 0
+        for page_items in self.client.fetch_paginated_cursor(
+            "document-store", "/documents", params=params, page_size=page_size,
+        ):
+            if latest_only:
+                # Deduplicate within page: keep highest version per document_id
+                latest: dict[str, dict[str, Any]] = {}
+                for doc in page_items:
+                    did = doc["document_id"]
+                    if did not in latest or doc.get("version", 1) > latest[did].get("version", 1):
+                        latest[did] = doc
+                page_items = list(latest.values())
+
+            total_yielded += len(page_items)
+            yield page_items
+
+        console.print(f"  Streamed {total_yielded} documents")
 
     def fetch_document_versions(self, document_id: str) -> list[dict[str, Any]]:
         """Fetch all versions of a specific document."""

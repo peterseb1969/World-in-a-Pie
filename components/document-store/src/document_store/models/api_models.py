@@ -143,6 +143,11 @@ class DocumentListResponse(BaseModel):
     page: int
     page_size: int
     pages: int
+    next_cursor: Optional[str] = Field(
+        None,
+        description="Cursor for next page (MongoDB _id of last item). "
+                    "Null on last page or when using offset pagination."
+    )
 
 
 # ============================================================================

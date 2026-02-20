@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 from rich.console import Console
@@ -134,6 +134,35 @@ class WIPClient:
             page += 1
 
         return all_items
+
+    def fetch_paginated_cursor(
+        self,
+        service: str,
+        path: str,
+        params: dict | None = None,
+        page_size: int = 1000,
+        items_key: str = "items",
+    ) -> Iterator[list[dict]]:
+        """Yield pages of items using cursor-based pagination.
+
+        Each yield is one page (list of dicts). Stops when next_cursor is None
+        or the page has fewer items than page_size.
+        """
+        params = dict(params or {})
+        params["page_size"] = page_size
+        cursor = None
+
+        while True:
+            if cursor:
+                params["cursor"] = cursor
+            data = self.get(service, path, params)
+            page_items = data.get(items_key, [])
+            if page_items:
+                yield page_items
+            next_cursor = data.get("next_cursor")
+            if not next_cursor or len(page_items) < page_size:
+                break
+            cursor = next_cursor
 
     # --- Health checks ---
 

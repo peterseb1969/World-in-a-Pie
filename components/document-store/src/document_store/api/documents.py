@@ -88,12 +88,15 @@ async def list_documents(
     status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
     latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
     _: str = Depends(require_api_key)
 ):
     """List documents with pagination.
 
     Use latest_only=true to return only the highest version of each document_id.
+    Use cursor for efficient deep pagination (avoids skip/limit degradation).
+    When cursor is provided, page parameter is ignored and total is -1.
     """
     service = get_document_service()
     return await service.list_documents(
@@ -104,6 +107,7 @@ async def list_documents(
         page_size=page_size,
         namespace=namespace,
         latest_only=latest_only,
+        cursor=cursor,
     )
 
 

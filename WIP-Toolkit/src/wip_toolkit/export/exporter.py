@@ -1,4 +1,14 @@
-"""Export orchestrator — coordinates collection, closure, and archive writing."""
+"""Export orchestrator — coordinates collection, closure, and archive writing.
+
+Streaming architecture:
+- Phase 1a: Fetch small entities (terminologies, terms, templates) — fits in memory
+- Phase 1b: Stream documents page by page (cursor-based, 1000/page)
+- Phase 1c: Stream files metadata
+- Phase 2: (unless --skip-synonyms) Batch-fetch Registry synonyms
+- Phase 3: Write manifest + finalize ZIP
+
+Memory usage: O(page_size) regardless of dataset size.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +36,7 @@ def run_export(
     include_inactive: bool = False,
     skip_documents: bool = False,
     skip_closure: bool = False,
+    skip_synonyms: bool = False,
     latest_only: bool = False,
     dry_run: bool = False,
 ) -> ExportStats:
@@ -48,8 +59,8 @@ def run_export(
             id_config=ns_config_data.get("id_config"),
         )
 
-    # Phase 1: Collect primary entities
-    console.print("\n[bold cyan]Phase 1:[/bold cyan] Collecting primary entities")
+    # Phase 1a: Collect small entities (fit in memory)
+    console.print("\n[bold cyan]Phase 1a:[/bold cyan] Collecting terminologies, terms, templates")
 
     terminologies = collector.fetch_terminologies()
     terms = collector.fetch_all_terms(terminologies)
@@ -57,12 +68,6 @@ def run_export(
     templates = collector.fetch_templates()
     # Fetch raw (unresolved) versions of each template
     templates = _fetch_raw_templates(collector, templates)
-
-    documents: list[dict[str, Any]] = []
-    files: list[dict[str, Any]] = []
-    if not skip_documents:
-        documents = collector.fetch_documents(latest_only=latest_only)
-        files = collector.fetch_files()
 
     # Tag primary entities
     for entity in terminologies:
@@ -74,19 +79,19 @@ def run_export(
     for entity in templates:
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
-    for entity in documents:
-        entity.setdefault("_source", "primary")
-        entity.setdefault("_namespace", namespace)
-    for entity in files:
-        entity.setdefault("_source", "primary")
-        entity.setdefault("_namespace", namespace)
 
-    # Phase 2: Referential integrity closure
+    # Referential integrity closure (before documents)
     closure_info = ClosureInfo()
     if not skip_closure:
-        console.print("\n[bold cyan]Phase 2:[/bold cyan] Computing referential integrity closure")
+        console.print("\n[bold cyan]Closure:[/bold cyan] Computing referential integrity")
+        # For closure computation, we need documents in memory.
+        # If skip_documents, pass empty list.
+        closure_docs: list[dict[str, Any]] = []
+        if not skip_documents:
+            # Fetch a lightweight set for closure analysis
+            closure_docs = collector.fetch_documents(latest_only=latest_only)
         extra_terms_list, extra_terms_items, extra_templates, warnings = compute_closure(
-            client, namespace, terminologies, terms, templates, documents,
+            client, namespace, terminologies, terms, templates, closure_docs,
         )
 
         if extra_terms_list or extra_templates:
@@ -97,7 +102,7 @@ def run_export(
         closure_info = ClosureInfo(
             external_terminologies=[t["terminology_id"] for t in extra_terms_list],
             external_templates=[t["template_id"] for t in extra_templates],
-            iterations=0,  # Set by closure
+            iterations=0,
             warnings=warnings,
         )
 
@@ -106,25 +111,43 @@ def run_export(
     else:
         console.print("\n[dim]Skipping closure (--skip-closure)[/dim]")
 
-    # Phase 2b: Registry enrichment
-    console.print("\n[bold cyan]Phase 2b:[/bold cyan] Enriching entities with Registry data")
-    _enrich_with_registry(collector, terminologies, terms, templates, documents, files)
-
-    # Phase 3: Write archive
-    counts = EntityCounts(
-        terminologies=len(terminologies),
-        terms=len(terms),
-        templates=len(templates),
-        documents=len(documents),
-        files=len(files),
-    )
+    # Phase 1b: Count documents for dry run or prepare streaming
+    doc_count = 0
+    file_count = 0
 
     if dry_run:
+        if not skip_documents:
+            # Quick count via one page with page_size=1 to get total
+            try:
+                data = client.get(
+                    "document-store", "/documents",
+                    params={"namespace": namespace, "page_size": 1},
+                )
+                doc_count = data.get("total", 0)
+            except Exception:
+                doc_count = 0
+            try:
+                data = client.get(
+                    "document-store", "/files",
+                    params={"namespace": namespace, "page_size": 1},
+                )
+                file_count = data.get("total", 0)
+            except Exception:
+                file_count = 0
+
+        counts = EntityCounts(
+            terminologies=len(terminologies),
+            terms=len(terms),
+            templates=len(templates),
+            documents=doc_count,
+            files=file_count,
+        )
         console.print("\n[bold yellow]Dry run[/bold yellow] — would export:")
         _print_counts(counts)
         return _build_stats(namespace, counts, closure_info, start)
 
-    console.print("\n[bold cyan]Phase 3:[/bold cyan] Writing archive")
+    # Phase 1a: Write small entities to archive
+    console.print("\n[bold cyan]Phase 1:[/bold cyan] Writing entities to archive")
     writer = ArchiveWriter(output_path)
 
     for entity in terminologies:
@@ -133,22 +156,62 @@ def run_export(
         writer.add_entity("terms", entity)
     for entity in templates:
         writer.add_entity("templates", entity)
-    for entity in documents:
-        writer.add_entity("documents", entity)
-    for entity in files:
-        writer.add_entity("files", entity)
 
-    # Optionally download and include file blobs
-    if include_files and files:
-        console.print(f"  Downloading {len(files)} file(s)...")
-        for file_meta in files:
-            fid = file_meta["file_id"]
-            try:
-                content = collector.fetch_file_content(fid)
-                writer.add_blob(fid, content)
-            except Exception as e:
-                console.print(f"  [yellow]Warning: Could not download {fid}: {e}[/yellow]")
+    # Phase 1b: Stream documents
+    if not skip_documents:
+        console.print("\n[bold cyan]Phase 1b:[/bold cyan] Streaming documents")
+        for page in collector.stream_documents(latest_only=latest_only, page_size=1000):
+            for doc in page:
+                doc.setdefault("_source", "primary")
+                doc.setdefault("_namespace", namespace)
+                writer.add_entity("documents", doc)
+        doc_count = writer.entity_count("documents")
 
+        # Phase 1c: Files metadata
+        files = collector.fetch_files()
+        for entity in files:
+            entity.setdefault("_source", "primary")
+            entity.setdefault("_namespace", namespace)
+            writer.add_entity("files", entity)
+        file_count = len(files)
+
+        # Optionally download and include file blobs
+        if include_files and files:
+            console.print(f"  Downloading {len(files)} file(s)...")
+            for file_meta in files:
+                fid = file_meta["file_id"]
+                try:
+                    content = collector.fetch_file_content(fid)
+                    writer.add_blob(fid, content)
+                except Exception as e:
+                    console.print(f"  [yellow]Warning: Could not download {fid}: {e}[/yellow]")
+    else:
+        console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
+        files = []
+
+    # Phase 2: Registry synonyms (unless --skip-synonyms)
+    if not skip_synonyms:
+        console.print("\n[bold cyan]Phase 2:[/bold cyan] Fetching Registry synonyms")
+        synonyms = _fetch_synonyms(collector, terminologies, terms, templates,
+                                   writer, namespace)
+        if synonyms:
+            writer.write_synonyms_file(synonyms)
+            console.print(f"  Wrote {len(synonyms)} synonym(s) to archive")
+        else:
+            console.print("  No custom synonyms found")
+    else:
+        console.print("\n[dim]Skipping synonyms (--skip-synonyms)[/dim]")
+
+    # Phase 3: Write manifest + finalize ZIP
+    counts = EntityCounts(
+        terminologies=len(terminologies),
+        terms=len(terms),
+        templates=len(templates),
+        documents=doc_count,
+        files=file_count,
+    )
+
+    console.print("\n[bold cyan]Phase 3:[/bold cyan] Finalizing archive")
     manifest = Manifest(
         source_host=client.config.host,
         namespace=namespace,
@@ -185,31 +248,27 @@ def _fetch_raw_templates(
     return raw_templates
 
 
-def _print_counts(counts: EntityCounts) -> None:
-    console.print(f"  Terminologies: {counts.terminologies}")
-    console.print(f"  Terms:         {counts.terms}")
-    console.print(f"  Templates:     {counts.templates}")
-    console.print(f"  Documents:     {counts.documents}")
-    console.print(f"  Files:         {counts.files}")
-    console.print(f"  [bold]Total:       {counts.total}[/bold]")
-
-
-def _enrich_with_registry(
+def _fetch_synonyms(
     collector: EntityCollector,
     terminologies: list[dict[str, Any]],
     terms: list[dict[str, Any]],
     templates: list[dict[str, Any]],
-    documents: list[dict[str, Any]],
-    files: list[dict[str, Any]],
-) -> None:
-    """Inject `_registry` metadata into each entity from Registry bulk lookup."""
-    # Collect all unique entity IDs
+    writer: ArchiveWriter,
+    namespace: str,
+) -> list[dict[str, Any]]:
+    """Fetch custom Registry synonyms for all entities in the archive.
+
+    Reads document/file entity IDs from the writer's temp files to avoid
+    holding them all in memory. Returns a list of synonym dicts.
+    """
+    import json
+    from ..archive import ENTITY_FILES
+
+    # Collect all entity IDs from small entities (in memory)
     id_fields = {
         "terminologies": ("terminology_id", terminologies),
         "terms": ("term_id", terms),
         "templates": ("template_id", templates),
-        "documents": ("document_id", documents),
-        "files": ("file_id", files),
     }
 
     unique_ids: list[str] = []
@@ -221,21 +280,54 @@ def _enrich_with_registry(
                 seen.add(eid)
                 unique_ids.append(eid)
 
-    if not unique_ids:
-        return
+    # Read document/file IDs from temp files (O(scan) not O(memory))
+    from pathlib import Path
+    for entity_type, id_field in [("documents", "document_id"), ("files", "file_id")]:
+        tmp_path = Path(writer._tmp_dir) / ENTITY_FILES[entity_type]
+        if tmp_path.exists():
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    entity = json.loads(line)
+                    eid = entity.get(id_field)
+                    if eid and eid not in seen:
+                        seen.add(eid)
+                        unique_ids.append(eid)
 
+    if not unique_ids:
+        return []
+
+    # Bulk fetch registry entries
     registry_map = collector.fetch_registry_entries(unique_ids)
 
-    # Inject _registry into each entity
-    enriched = 0
-    for id_field, entities in id_fields.values():
-        for entity in entities:
-            eid = entity.get(id_field)
-            if eid and eid in registry_map:
-                entity["_registry"] = registry_map[eid]
-                enriched += 1
+    # Extract synonyms (only non-primary composite keys)
+    synonyms: list[dict[str, Any]] = []
+    for eid, reg_data in registry_map.items():
+        primary_key = reg_data.get("primary_composite_key", {})
+        for syn in reg_data.get("synonyms", []):
+            composite_key = syn.get("composite_key", {})
+            # Skip the primary key — it's not a "custom" synonym
+            if composite_key == primary_key:
+                continue
+            synonyms.append({
+                "entry_id": eid,
+                "namespace": syn.get("namespace", namespace),
+                "entity_type": syn.get("entity_type", ""),
+                "composite_key": composite_key,
+            })
 
-    console.print(f"  Enriched {enriched} entities with Registry data")
+    return synonyms
+
+
+def _print_counts(counts: EntityCounts) -> None:
+    console.print(f"  Terminologies: {counts.terminologies}")
+    console.print(f"  Terms:         {counts.terms}")
+    console.print(f"  Templates:     {counts.templates}")
+    console.print(f"  Documents:     {counts.documents}")
+    console.print(f"  Files:         {counts.files}")
+    console.print(f"  [bold]Total:       {counts.total}[/bold]")
 
 
 def _build_stats(

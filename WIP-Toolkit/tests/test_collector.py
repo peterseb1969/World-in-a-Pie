@@ -409,6 +409,66 @@ class TestTemplateCaching:
         assert collector._template_cache == []
 
 
+class TestStreamDocuments:
+    """Test cursor-based document streaming."""
+
+    def test_yields_pages(self, mock_client):
+        """stream_documents yields one list per page."""
+        collector = EntityCollector(mock_client, namespace="wip")
+        page1 = [
+            {"document_id": "DOC-1", "version": 1, "data": {}},
+            {"document_id": "DOC-2", "version": 1, "data": {}},
+        ]
+        page2 = [
+            {"document_id": "DOC-3", "version": 1, "data": {}},
+        ]
+        mock_client.fetch_paginated_cursor.return_value = iter([page1, page2])
+
+        pages = list(collector.stream_documents(latest_only=False, page_size=2))
+
+        assert len(pages) == 2
+        assert len(pages[0]) == 2
+        assert len(pages[1]) == 1
+
+    def test_latest_only_deduplicates_within_page(self, mock_client):
+        """latest_only keeps highest version per document_id within a page."""
+        collector = EntityCollector(mock_client, namespace="wip")
+        page = [
+            {"document_id": "DOC-1", "version": 1, "data": {}},
+            {"document_id": "DOC-1", "version": 2, "data": {}},
+            {"document_id": "DOC-2", "version": 1, "data": {}},
+        ]
+        mock_client.fetch_paginated_cursor.return_value = iter([page])
+
+        pages = list(collector.stream_documents(latest_only=True))
+
+        assert len(pages) == 1
+        by_id = {d["document_id"]: d for d in pages[0]}
+        assert by_id["DOC-1"]["version"] == 2
+        assert "DOC-2" in by_id
+
+    def test_empty_stream(self, mock_client):
+        """Empty result yields nothing."""
+        collector = EntityCollector(mock_client, namespace="wip")
+        mock_client.fetch_paginated_cursor.return_value = iter([])
+
+        pages = list(collector.stream_documents())
+
+        assert pages == []
+
+    def test_passes_namespace_and_status(self, mock_client):
+        """Correct params passed to client."""
+        collector = EntityCollector(mock_client, namespace="wip", include_inactive=False)
+        mock_client.fetch_paginated_cursor.return_value = iter([])
+
+        list(collector.stream_documents(page_size=500))
+
+        call_args = mock_client.fetch_paginated_cursor.call_args
+        assert call_args[1]["params"]["namespace"] == "wip"
+        assert call_args[1]["params"]["status"] == "active"
+        assert call_args[1]["page_size"] == 500
+
+
 class TestFetchDocumentVersions:
     """Test document version fetching."""
 

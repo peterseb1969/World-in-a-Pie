@@ -320,3 +320,94 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             m = reader.read_manifest()
             assert m.include_all_versions is True
+
+
+class TestArchiveWriterTempFiles:
+    """Test the temp-file-based writer specifically."""
+
+    def test_entity_count_tracking(self, tmp_path):
+        """Writer tracks entity counts correctly."""
+        output = tmp_path / "count.zip"
+        writer = ArchiveWriter(output)
+
+        for i in range(10):
+            writer.add_entity("documents", {"document_id": f"DOC-{i}"})
+        for i in range(3):
+            writer.add_entity("templates", {"template_id": f"TPL-{i}"})
+
+        assert writer.entity_count("documents") == 10
+        assert writer.entity_count("templates") == 3
+        assert writer.entity_count("terms") == 0
+
+        # Cleanup
+        writer.write(Manifest(namespace="wip"))
+
+    def test_temp_dir_cleaned_up_after_write(self, tmp_path):
+        """Temp directory is removed after write()."""
+        output = tmp_path / "cleanup.zip"
+        writer = ArchiveWriter(output)
+        writer.add_entity("terms", {"term_id": "T-1"})
+
+        tmp_dir = writer._tmp_dir
+        assert Path(tmp_dir).exists()
+
+        writer.write(Manifest(namespace="wip"))
+
+        assert not Path(tmp_dir).exists()
+
+    def test_synonyms_file_round_trip(self, tmp_path):
+        """Synonyms written via write_synonyms_file survive round-trip."""
+        output = tmp_path / "synonyms.zip"
+        writer = ArchiveWriter(output)
+
+        synonyms = [
+            {"entry_id": "TERM-001", "namespace": "wip",
+             "entity_type": "terminologies",
+             "composite_key": {"code": "ISO"}},
+            {"entry_id": "DOC-001", "namespace": "wip",
+             "entity_type": "documents",
+             "composite_key": {"vendor": "V1"}},
+        ]
+        writer.write_synonyms_file(synonyms)
+        writer.write(Manifest(namespace="wip"))
+
+        with ArchiveReader(output) as reader:
+            assert reader.has_synonyms()
+            read_syns = list(reader.read_synonyms())
+            assert len(read_syns) == 2
+            assert read_syns[0]["entry_id"] == "TERM-001"
+            assert read_syns[1]["composite_key"] == {"vendor": "V1"}
+
+    def test_no_synonyms_file(self, tmp_path):
+        """Archive without synonyms.jsonl reports has_synonyms=False."""
+        output = tmp_path / "no-synonyms.zip"
+        writer = ArchiveWriter(output)
+        writer.add_entity("terms", {"term_id": "T-1"})
+        writer.write(Manifest(namespace="wip"))
+
+        with ArchiveReader(output) as reader:
+            assert not reader.has_synonyms()
+            assert list(reader.read_synonyms()) == []
+
+    def test_constant_memory_for_large_writes(self, tmp_path):
+        """Writing many entities doesn't accumulate in memory.
+
+        The temp-file approach means we only hold one JSON line at a time.
+        We verify this by writing a large number and checking the file exists.
+        """
+        output = tmp_path / "large-stream.zip"
+        writer = ArchiveWriter(output)
+
+        count = 5000
+        for i in range(count):
+            writer.add_entity("documents", {
+                "document_id": f"DOC-{i:06d}",
+                "data": {"value": f"data_{i}" * 10},
+            })
+
+        assert writer.entity_count("documents") == count
+        writer.write(Manifest(namespace="wip", counts=EntityCounts(documents=count)))
+
+        with ArchiveReader(output) as reader:
+            entities = list(reader.read_entities("documents"))
+            assert len(entities) == count

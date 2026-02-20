@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import shutil
+import tempfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TextIO
 
 from .models import Manifest
 
@@ -18,6 +20,7 @@ TERMS_FILE = "terms.jsonl"
 TEMPLATES_FILE = "templates.jsonl"
 DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
+SYNONYMS_FILE = "synonyms.jsonl"
 BLOBS_DIR = "blobs/"
 
 ENTITY_FILES = {
@@ -30,26 +33,49 @@ ENTITY_FILES = {
 
 
 class ArchiveWriter:
-    """Writes entities to a ZIP archive with JSONL format."""
+    """Writes entities to a ZIP archive using temp files for O(1) memory.
+
+    Each entity type is appended as a JSONL line to a temp file on disk.
+    When write() is called, the temp files are streamed into the ZIP archive.
+    """
 
     def __init__(self, output_path: str | Path) -> None:
         self.output_path = Path(output_path)
-        self._buffers: dict[str, list[str]] = {
-            name: [] for name in ENTITY_FILES.values()
-        }
+        self._tmp_dir = tempfile.mkdtemp(prefix="wip-export-")
+        self._handles: dict[str, TextIO] = {}
+        self._counts: dict[str, int] = {name: 0 for name in ENTITY_FILES}
         self._blob_data: dict[str, bytes] = {}
 
+    def _get_handle(self, entity_type: str) -> TextIO:
+        """Get or create the temp file handle for an entity type."""
+        if entity_type not in self._handles:
+            filename = ENTITY_FILES[entity_type]
+            path = Path(self._tmp_dir) / filename
+            self._handles[entity_type] = open(path, "w", encoding="utf-8")
+        return self._handles[entity_type]
+
     def add_entity(self, entity_type: str, entity: dict[str, Any]) -> None:
-        """Add an entity to the archive buffer."""
-        filename = ENTITY_FILES[entity_type]
-        self._buffers[filename].append(json.dumps(entity, default=str))
+        """Append an entity as a JSONL line to the temp file."""
+        fh = self._get_handle(entity_type)
+        fh.write(json.dumps(entity, default=str))
+        fh.write("\n")
+        self._counts[entity_type] = self._counts.get(entity_type, 0) + 1
 
     def add_blob(self, file_id: str, data: bytes) -> None:
         """Add binary file content to the archive."""
         self._blob_data[file_id] = data
 
+    def entity_count(self, entity_type: str) -> int:
+        """Return the number of entities added for a given type."""
+        return self._counts.get(entity_type, 0)
+
     def write(self, manifest: Manifest) -> Path:
-        """Write the archive to disk."""
+        """Flush temp files and assemble the ZIP archive."""
+        # Close all open handles
+        for fh in self._handles.values():
+            fh.close()
+        self._handles.clear()
+
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
 
         with zipfile.ZipFile(self.output_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -59,16 +85,47 @@ class ArchiveWriter:
                 manifest.model_dump_json(indent=2),
             )
 
-            # Write JSONL files
-            for filename, lines in self._buffers.items():
-                if lines:
-                    zf.writestr(filename, "\n".join(lines) + "\n")
+            # Write JSONL files from temp dir
+            for entity_type, filename in ENTITY_FILES.items():
+                tmp_path = Path(self._tmp_dir) / filename
+                if tmp_path.exists() and tmp_path.stat().st_size > 0:
+                    zf.write(tmp_path, filename)
+
+            # Write synonyms.jsonl if present
+            synonyms_path = Path(self._tmp_dir) / SYNONYMS_FILE
+            if synonyms_path.exists() and synonyms_path.stat().st_size > 0:
+                zf.write(synonyms_path, SYNONYMS_FILE)
 
             # Write blobs
             for file_id, data in self._blob_data.items():
                 zf.writestr(f"{BLOBS_DIR}{file_id}", data)
 
+        self._cleanup()
         return self.output_path
+
+    def write_synonyms_file(self, synonyms: list[dict[str, Any]]) -> None:
+        """Write synonyms.jsonl to the temp directory."""
+        path = Path(self._tmp_dir) / SYNONYMS_FILE
+        with open(path, "w", encoding="utf-8") as f:
+            for syn in synonyms:
+                f.write(json.dumps(syn, default=str))
+                f.write("\n")
+
+    def _cleanup(self) -> None:
+        """Remove the temp directory."""
+        try:
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        # Safety cleanup if write() was never called
+        for fh in self._handles.values():
+            try:
+                fh.close()
+            except Exception:
+                pass
+        self._cleanup()
 
 
 class ArchiveReader:
@@ -106,6 +163,22 @@ class ArchiveReader:
             line = line.strip()
             if line:
                 yield json.loads(line)
+
+    def read_synonyms(self) -> Iterator[dict[str, Any]]:
+        """Iterate over synonyms from synonyms.jsonl (if present)."""
+        try:
+            content = self._zf.read(SYNONYMS_FILE).decode("utf-8")
+        except KeyError:
+            return
+
+        for line in content.splitlines():
+            line = line.strip()
+            if line:
+                yield json.loads(line)
+
+    def has_synonyms(self) -> bool:
+        """Check if the archive contains synonyms.jsonl."""
+        return SYNONYMS_FILE in self._zf.namelist()
 
     def read_blob(self, file_id: str) -> bytes | None:
         """Read binary file content from the archive."""

@@ -1,8 +1,17 @@
 """Restore mode import — preserves 100% of original IDs.
 
-Uses pre-registration for entities with deterministic composite keys
-(terminologies, terms, identity-based documents) and direct ID pass-through
-for entities with empty composite keys (templates, identity-less documents, files).
+Simplified flow (no pre-registration needed):
+1. Create terminologies with ID pass-through → service calls Registry.register()
+2. Create terms with ID pass-through
+3. Create templates as drafts with ID pass-through
+4. Activate templates
+5. Create documents with ID pass-through (streamed from archive)
+6. Upload files with ID pass-through
+7. (if synonyms.jsonl in archive) Bulk-register additional synonyms
+
+Services handle Registry registration during their create flows when
+document_id/template_id is passed through. No separate pre-registration
+step is needed.
 """
 
 from __future__ import annotations
@@ -39,76 +48,49 @@ def restore_import(
         _preview(reader, manifest, skip_documents, skip_files)
         return stats
 
-    # Step 1: Ensure namespace exists
+    # Step 0: Ensure namespace exists
     _ensure_namespace(client, target_namespace, stats)
 
-    # Step 2: Pre-register terminology IDs in Registry
-    console.print("\n[bold cyan]Step 1:[/bold cyan] Pre-registering terminology IDs")
+    # Step 1: Create terminologies via Def-Store (service handles Registry)
+    console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies")
     terminologies = list(reader.read_entities("terminologies"))
-    _preregister_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
-
-    # Step 3: Pre-register term IDs in Registry
-    console.print("\n[bold cyan]Step 2:[/bold cyan] Pre-registering term IDs")
-    terms = list(reader.read_entities("terms"))
-    _preregister_terms(client, target_namespace, terms, stats, continue_on_error)
-
-    # Step 4: Pre-register template IDs in Registry
-    console.print("\n[bold cyan]Step 3:[/bold cyan] Pre-registering template IDs")
-    templates = list(reader.read_entities("templates"))
-    _preregister_templates(client, target_namespace, templates, stats, continue_on_error)
-
-    # Step 5: Create terminologies via Def-Store
-    console.print("\n[bold cyan]Step 4:[/bold cyan] Creating terminologies")
     _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
 
-    # Step 6: Create terms via Def-Store
-    console.print("\n[bold cyan]Step 5:[/bold cyan] Creating terms")
+    # Step 2: Create terms via Def-Store
+    console.print("\n[bold cyan]Step 2:[/bold cyan] Creating terms")
+    terms = list(reader.read_entities("terms"))
     _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error)
 
-    # Step 7: Create templates as drafts with ID pass-through
-    console.print("\n[bold cyan]Step 6:[/bold cyan] Creating templates (as drafts)")
+    # Step 3: Create templates as drafts with ID pass-through
+    console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (as drafts)")
+    templates = list(reader.read_entities("templates"))
     _create_templates(client, target_namespace, templates, stats, continue_on_error)
 
-    # Step 8: Activate all draft templates
-    console.print("\n[bold cyan]Step 7:[/bold cyan] Activating templates")
+    # Step 4: Activate all draft templates
+    console.print("\n[bold cyan]Step 4:[/bold cyan] Activating templates")
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
-    documents: list[dict] = []
     if not skip_documents:
-        # Step 9: Pre-register document IDs in Registry
-        console.print("\n[bold cyan]Step 8:[/bold cyan] Pre-registering document IDs")
-        documents = list(reader.read_entities("documents"))
-        _preregister_documents(client, target_namespace, documents, stats, continue_on_error)
-
-        # Step 10: Create documents
-        console.print("\n[bold cyan]Step 9:[/bold cyan] Creating documents")
-        _create_documents(client, target_namespace, documents, batch_size, stats, continue_on_error)
+        # Step 5: Create documents (streamed from archive)
+        console.print("\n[bold cyan]Step 5:[/bold cyan] Creating documents")
+        _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
 
-    files: list[dict] = []
     if not skip_files and not skip_documents:
-        # Step 11: Pre-register file IDs in Registry
-        console.print("\n[bold cyan]Step 10:[/bold cyan] Pre-registering file IDs")
+        # Step 6: Upload files
+        console.print("\n[bold cyan]Step 6:[/bold cyan] Uploading files")
         files = list(reader.read_entities("files"))
-        _preregister_files(client, target_namespace, files, stats, continue_on_error)
-
-        # Step 12: Upload files
-        console.print("\n[bold cyan]Step 11:[/bold cyan] Uploading files")
         _upload_files(client, target_namespace, files, reader, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
 
-    # Step 13: Restore synonyms from _registry data
-    console.print("\n[bold cyan]Step 12:[/bold cyan] Restoring Registry synonyms")
-    entities_by_type = {
-        "terminologies": terminologies,
-        "terms": terms,
-        "templates": templates,
-        "documents": documents,
-        "files": files,
-    }
-    _restore_synonyms(client, target_namespace, entities_by_type, stats, continue_on_error)
+    # Step 7: Restore synonyms (from synonyms.jsonl if present)
+    console.print("\n[bold cyan]Step 7:[/bold cyan] Restoring Registry synonyms")
+    _restore_synonyms(
+        client, target_namespace, reader, stats, continue_on_error,
+        skip_documents=skip_documents, skip_files=skip_files,
+    )
 
     return stats
 
@@ -133,91 +115,6 @@ def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> 
                 raise
         else:
             raise
-
-
-def _preregister_terminologies(
-    client: WIPClient,
-    namespace: str,
-    terminologies: list[dict],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Pre-register terminology IDs with their composite keys."""
-    if not terminologies:
-        return
-
-    batch = [
-        {
-            "namespace": namespace,
-            "entity_type": "terminologies",
-            "entry_id": t["terminology_id"],
-            "composite_key": {"value": t["value"], "label": t.get("label", t["value"])},
-            "created_by": "wip-toolkit-restore",
-        }
-        for t in terminologies
-    ]
-
-    result = _registry_register_batch(client, batch, "terminology", stats, continue_on_error)
-    console.print(f"  Pre-registered {result} terminology ID(s)")
-
-
-def _preregister_terms(
-    client: WIPClient,
-    namespace: str,
-    terms: list[dict],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Pre-register term IDs with their composite keys."""
-    if not terms:
-        return
-
-    batch = [
-        {
-            "namespace": namespace,
-            "entity_type": "terms",
-            "entry_id": t["term_id"],
-            "composite_key": {
-                "terminology_id": t["terminology_id"],
-                "value": t["value"],
-            },
-            "created_by": "wip-toolkit-restore",
-        }
-        for t in terms
-    ]
-
-    result = _registry_register_batch(client, batch, "term", stats, continue_on_error)
-    console.print(f"  Pre-registered {result} term ID(s)")
-
-
-def _registry_register_batch(
-    client: WIPClient,
-    items: list[dict],
-    entity_label: str,
-    stats: ImportStats,
-    continue_on_error: bool,
-    batch_size: int = 100,
-) -> int:
-    """Register items in Registry in batches. Returns count of successful registrations."""
-    registered = 0
-    for i in range(0, len(items), batch_size):
-        batch = items[i:i + batch_size]
-        try:
-            result = client.post("registry", "/entries/register", json=batch)
-            registered += result.get("created", 0) + result.get("already_exists", 0)
-            errors = result.get("errors", 0)
-            if errors > 0:
-                for r in result.get("results", []):
-                    if r.get("status") == "error":
-                        msg = f"Registry error for {entity_label}: {r.get('error', 'unknown')}"
-                        stats.errors.append(msg)
-                        if not continue_on_error:
-                            raise WIPClientError(msg)
-        except WIPClientError:
-            if not continue_on_error:
-                raise
-            stats.errors.append(f"Batch registration failed for {entity_label}s at index {i}")
-    return registered
 
 
 def _create_terminologies(
@@ -455,195 +352,22 @@ def _activate_templates(
     console.print(msg)
 
 
-def _preregister_templates(
+def _create_documents_streamed(
     client: WIPClient,
     namespace: str,
-    templates: list[dict],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Pre-register template IDs with composite keys from _registry data.
-
-    Deduplicates by template_id (multiple versions share one Registry entry).
-    """
-    if not templates:
-        return
-
-    seen: set[str] = set()
-    batch: list[dict] = []
-    for t in templates:
-        tid = t["template_id"]
-        if tid in seen:
-            continue
-        seen.add(tid)
-
-        registry = t.get("_registry", {})
-        composite_key = registry.get("primary_composite_key", {})
-
-        batch.append({
-            "namespace": namespace,
-            "entity_type": "templates",
-            "entry_id": tid,
-            "composite_key": composite_key,
-            "created_by": "wip-toolkit-restore",
-        })
-
-    result = _registry_register_batch(client, batch, "template", stats, continue_on_error)
-    console.print(f"  Pre-registered {result} template ID(s)")
-
-
-def _preregister_documents(
-    client: WIPClient,
-    namespace: str,
-    documents: list[dict],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Pre-register document IDs with composite keys from _registry data.
-
-    Deduplicates by document_id (multiple versions share one Registry entry).
-    """
-    if not documents:
-        return
-
-    seen: set[str] = set()
-    batch: list[dict] = []
-    for d in documents:
-        did = d["document_id"]
-        if did in seen:
-            continue
-        seen.add(did)
-
-        registry = d.get("_registry", {})
-        composite_key = registry.get("primary_composite_key", {})
-
-        batch.append({
-            "namespace": namespace,
-            "entity_type": "documents",
-            "entry_id": did,
-            "composite_key": composite_key,
-            "created_by": "wip-toolkit-restore",
-        })
-
-    result = _registry_register_batch(client, batch, "document", stats, continue_on_error)
-    console.print(f"  Pre-registered {result} document ID(s)")
-
-
-def _preregister_files(
-    client: WIPClient,
-    namespace: str,
-    files: list[dict],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Pre-register file IDs with composite keys from _registry data."""
-    if not files:
-        return
-
-    batch: list[dict] = []
-    for f in files:
-        registry = f.get("_registry", {})
-        composite_key = registry.get("primary_composite_key", {})
-
-        batch.append({
-            "namespace": namespace,
-            "entity_type": "files",
-            "entry_id": f["file_id"],
-            "composite_key": composite_key,
-            "created_by": "wip-toolkit-restore",
-        })
-
-    result = _registry_register_batch(client, batch, "file", stats, continue_on_error)
-    console.print(f"  Pre-registered {result} file ID(s)")
-
-
-def _restore_synonyms(
-    client: WIPClient,
-    namespace: str,
-    entities_by_type: dict[str, list[dict]],
-    stats: ImportStats,
-    continue_on_error: bool,
-) -> None:
-    """Restore Registry synonyms from _registry data across all entity types.
-
-    Iterates by entity type so each entity's correct ID field is used
-    (e.g. document_id for documents, not template_id which is a reference).
-    Deduplicates by entry_id to avoid registering synonyms for the same
-    entity multiple times (e.g., multiple versions of a template/document).
-    """
-    id_field_for_type = {
-        "terminologies": "terminology_id",
-        "terms": "term_id",
-        "templates": "template_id",
-        "documents": "document_id",
-        "files": "file_id",
-    }
-
-    seen_ids: set[str] = set()
-    synonym_items: list[dict] = []
-
-    for entity_type, entities in entities_by_type.items():
-        id_field = id_field_for_type.get(entity_type)
-        if not id_field:
-            continue
-
-        for entity in entities:
-            eid = entity.get(id_field)
-            if not eid or eid in seen_ids:
-                continue
-
-            registry = entity.get("_registry", {})
-            synonyms = registry.get("synonyms", [])
-            if not synonyms:
-                continue
-
-            seen_ids.add(eid)
-            for syn in synonyms:
-                synonym_items.append({
-                    "target_id": eid,
-                    "synonym_namespace": syn.get("namespace", namespace),
-                    "synonym_entity_type": syn.get("entity_type", ""),
-                    "synonym_composite_key": syn.get("composite_key", {}),
-                    "created_by": "wip-toolkit-restore",
-                })
-
-    if not synonym_items:
-        console.print("  No synonyms to restore")
-        return
-
-    batch_size = 100
-    total_registered = 0
-    for i in range(0, len(synonym_items), batch_size):
-        batch = synonym_items[i:i + batch_size]
-        try:
-            response = client.post("registry", "/synonyms/add", json=batch)
-            for r in response.get("results", []):
-                if r.get("status") in ("added", "already_exists"):
-                    total_registered += 1
-        except WIPClientError as e:
-            stats.errors.append(f"Failed to restore synonym batch at index {i}: {e}")
-            if not continue_on_error:
-                raise
-
-    stats.synonyms_registered = total_registered
-    console.print(f"  Restored {total_registered} synonym(s)")
-
-
-def _create_documents(
-    client: WIPClient,
-    namespace: str,
-    documents: list[dict],
+    reader: ArchiveReader,
     batch_size: int,
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Create documents via Document-Store API.
+    """Create documents streamed from the archive.
 
-    Groups by document_id and creates in version order.
+    Reads documents from the JSONL file in the archive, groups by document_id
+    to ensure version ordering, then creates in batches.
     """
-    # Group by document_id, sort by version
+    # Read all documents, group by document_id for version ordering
     by_id: dict[str, list[dict]] = {}
-    for d in documents:
+    for d in reader.read_entities("documents"):
         did = d["document_id"]
         by_id.setdefault(did, []).append(d)
     for versions in by_id.values():
@@ -745,6 +469,134 @@ def _upload_files(
     )
 
 
+def _restore_synonyms(
+    client: WIPClient,
+    namespace: str,
+    reader: ArchiveReader,
+    stats: ImportStats,
+    continue_on_error: bool,
+    *,
+    skip_documents: bool = False,
+    skip_files: bool = False,
+) -> None:
+    """Restore Registry synonyms from synonyms.jsonl in the archive.
+
+    Falls back to _registry metadata on entities for backward compatibility
+    with archives that don't have synonyms.jsonl.
+    """
+    if reader.has_synonyms():
+        # New format: synonyms.jsonl
+        synonym_items: list[dict] = []
+        for syn in reader.read_synonyms():
+            synonym_items.append({
+                "target_id": syn["entry_id"],
+                "synonym_namespace": syn.get("namespace", namespace),
+                "synonym_entity_type": syn.get("entity_type", ""),
+                "synonym_composite_key": syn.get("composite_key", {}),
+                "created_by": "wip-toolkit-restore",
+            })
+
+        if not synonym_items:
+            console.print("  No synonyms to restore")
+            return
+
+        batch_size = 100
+        total_registered = 0
+        for i in range(0, len(synonym_items), batch_size):
+            batch = synonym_items[i:i + batch_size]
+            try:
+                response = client.post("registry", "/synonyms/add", json=batch)
+                for r in response.get("results", []):
+                    if r.get("status") in ("added", "already_exists"):
+                        total_registered += 1
+            except WIPClientError as e:
+                stats.errors.append(f"Failed to restore synonym batch at index {i}: {e}")
+                if not continue_on_error:
+                    raise
+
+        stats.synonyms_registered = total_registered
+        console.print(f"  Restored {total_registered} synonym(s)")
+    else:
+        # Legacy format: extract from _registry metadata on entities
+        _restore_synonyms_legacy(
+            client, namespace, reader, stats, continue_on_error,
+            skip_documents=skip_documents, skip_files=skip_files,
+        )
+
+
+def _restore_synonyms_legacy(
+    client: WIPClient,
+    namespace: str,
+    reader: ArchiveReader,
+    stats: ImportStats,
+    continue_on_error: bool,
+    *,
+    skip_documents: bool = False,
+    skip_files: bool = False,
+) -> None:
+    """Restore synonyms from _registry metadata (legacy archive format)."""
+    id_field_for_type = {
+        "terminologies": "terminology_id",
+        "terms": "term_id",
+        "templates": "template_id",
+        "documents": "document_id",
+        "files": "file_id",
+    }
+
+    seen_ids: set[str] = set()
+    synonym_items: list[dict] = []
+
+    skip_types = set()
+    if skip_documents:
+        skip_types.add("documents")
+    if skip_files:
+        skip_types.add("files")
+
+    for entity_type, id_field in id_field_for_type.items():
+        if entity_type in skip_types:
+            continue
+        for entity in reader.read_entities(entity_type):
+            eid = entity.get(id_field)
+            if not eid or eid in seen_ids:
+                continue
+
+            registry = entity.get("_registry", {})
+            synonyms = registry.get("synonyms", [])
+            if not synonyms:
+                continue
+
+            seen_ids.add(eid)
+            for syn in synonyms:
+                synonym_items.append({
+                    "target_id": eid,
+                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_entity_type": syn.get("entity_type", ""),
+                    "synonym_composite_key": syn.get("composite_key", {}),
+                    "created_by": "wip-toolkit-restore",
+                })
+
+    if not synonym_items:
+        console.print("  No synonyms to restore")
+        return
+
+    batch_size = 100
+    total_registered = 0
+    for i in range(0, len(synonym_items), batch_size):
+        batch = synonym_items[i:i + batch_size]
+        try:
+            response = client.post("registry", "/synonyms/add", json=batch)
+            for r in response.get("results", []):
+                if r.get("status") in ("added", "already_exists"):
+                    total_registered += 1
+        except WIPClientError as e:
+            stats.errors.append(f"Failed to restore synonym batch at index {i}: {e}")
+            if not continue_on_error:
+                raise
+
+    stats.synonyms_registered = total_registered
+    console.print(f"  Restored {total_registered} synonym(s)")
+
+
 def _preview(
     reader: ArchiveReader,
     manifest: Any,
@@ -764,3 +616,6 @@ def _preview(
         console.print(f"  Files:         {counts.files}")
     else:
         console.print(f"  Files:         [dim]skipped[/dim]")
+    if reader.has_synonyms():
+        syn_count = sum(1 for _ in reader.read_synonyms())
+        console.print(f"  Synonyms:      {syn_count}")

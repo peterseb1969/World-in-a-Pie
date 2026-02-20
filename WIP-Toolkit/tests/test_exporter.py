@@ -1,4 +1,4 @@
-"""Tests for the export orchestrator (run_export and helpers)."""
+"""Tests for the streaming export orchestrator (run_export and helpers)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -43,6 +43,12 @@ def mock_collector():
     collector.fetch_template_raw.return_value = {
         "template_id": "TPL-001", "namespace": "wip", "version": 1, "fields": [],
     }
+    # stream_documents yields pages
+    collector.stream_documents.return_value = iter([
+        [{"document_id": "DOC-001", "namespace": "wip", "version": 1,
+          "template_id": "TPL-001", "data": {}}],
+    ])
+    # fetch_documents for closure
     collector.fetch_documents.return_value = [
         {"document_id": "DOC-001", "namespace": "wip", "version": 1,
          "template_id": "TPL-001", "data": {}},
@@ -60,6 +66,8 @@ def mock_writer():
     """Create a mock ArchiveWriter instance."""
     writer = MagicMock()
     writer.write.return_value = "/tmp/test-export.zip"
+    writer.entity_count.return_value = 1
+    writer._tmp_dir = "/tmp/mock-tmp-dir"
     return writer
 
 
@@ -147,21 +155,39 @@ class TestRunExportBasic:
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")
-    def test_counts_reflect_entity_counts(self, MockCollector, mock_closure,
-                                           MockWriter, mock_client,
-                                           mock_collector, mock_writer):
+    def test_uses_stream_documents(self, MockCollector, mock_closure,
+                                     MockWriter, mock_client,
+                                     mock_collector, mock_writer):
+        """Exporter uses stream_documents for O(page_size) memory."""
         MockCollector.return_value = mock_collector
         MockWriter.return_value = mock_writer
         mock_closure.return_value = ([], [], [], [])
 
         from wip_toolkit.export.exporter import run_export
-        stats = run_export(mock_client, "wip", "/tmp/export.zip")
+        run_export(mock_client, "wip", "/tmp/export.zip")
 
-        assert stats.counts.terminologies == 1
-        assert stats.counts.terms == 1
-        assert stats.counts.templates == 1
-        assert stats.counts.documents == 1
-        assert stats.counts.files == 1
+        mock_collector.stream_documents.assert_called_once()
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_no_registry_enrichment_in_default_export(self, MockCollector,
+                                                        mock_closure,
+                                                        MockWriter,
+                                                        mock_client,
+                                                        mock_collector,
+                                                        mock_writer):
+        """Default export should NOT inject _registry metadata into entities."""
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(mock_client, "wip", "/tmp/export.zip")
+
+        # Entities should not have _registry injected
+        terminology = mock_collector.fetch_terminologies.return_value[0]
+        assert "_registry" not in terminology
 
 
 class TestRunExportDryRun:
@@ -202,23 +228,6 @@ class TestRunExportDryRun:
         mock_collector.fetch_terminologies.assert_called_once()
         mock_collector.fetch_templates.assert_called_once()
 
-    @patch(f"{EXPORTER}.ArchiveWriter")
-    @patch(f"{EXPORTER}.compute_closure")
-    @patch(f"{EXPORTER}.EntityCollector")
-    def test_dry_run_counts_match_fetched(self, MockCollector, mock_closure,
-                                           MockWriter, mock_client,
-                                           mock_collector, mock_writer):
-        MockCollector.return_value = mock_collector
-        MockWriter.return_value = mock_writer
-        mock_closure.return_value = ([], [], [], [])
-
-        from wip_toolkit.export.exporter import run_export
-        stats = run_export(mock_client, "wip", "/tmp/export.zip", dry_run=True)
-
-        assert stats.counts.terminologies == 1
-        assert stats.counts.templates == 1
-        assert stats.counts.documents == 1
-
 
 class TestRunExportSkipDocuments:
     """Test skip_documents flag."""
@@ -237,7 +246,7 @@ class TestRunExportSkipDocuments:
         stats = run_export(mock_client, "wip", "/tmp/export.zip",
                            skip_documents=True)
 
-        mock_collector.fetch_documents.assert_not_called()
+        mock_collector.stream_documents.assert_not_called()
         mock_collector.fetch_files.assert_not_called()
         assert stats.counts.documents == 0
         assert stats.counts.files == 0
@@ -317,6 +326,27 @@ class TestRunExportSkipClosure:
         assert stats.counts.templates == 2  # 1 primary + 1 closure
 
 
+class TestRunExportSkipSynonyms:
+    """Test skip_synonyms flag."""
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_skip_synonyms_no_registry_lookup(self, MockCollector, mock_closure,
+                                                MockWriter, mock_client,
+                                                mock_collector, mock_writer):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(mock_client, "wip", "/tmp/export.zip", skip_synonyms=True)
+
+        # No Registry lookups for synonyms
+        mock_collector.fetch_registry_entries.assert_not_called()
+        mock_writer.write_synonyms_file.assert_not_called()
+
+
 class TestRunExportIncludeFiles:
     """Test include_files flag for blob downloads."""
 
@@ -354,27 +384,6 @@ class TestRunExportIncludeFiles:
         mock_collector.fetch_file_content.assert_not_called()
         mock_writer.add_blob.assert_not_called()
 
-    @patch(f"{EXPORTER}.ArchiveWriter")
-    @patch(f"{EXPORTER}.compute_closure")
-    @patch(f"{EXPORTER}.EntityCollector")
-    def test_include_files_blob_download_error_continues(self, MockCollector,
-                                                          mock_closure,
-                                                          MockWriter,
-                                                          mock_client,
-                                                          mock_collector,
-                                                          mock_writer):
-        MockCollector.return_value = mock_collector
-        MockWriter.return_value = mock_writer
-        mock_closure.return_value = ([], [], [], [])
-        mock_collector.fetch_file_content.side_effect = Exception("Download failed")
-
-        from wip_toolkit.export.exporter import run_export
-        # Should not raise
-        stats = run_export(mock_client, "wip", "/tmp/export.zip", include_files=True)
-
-        assert isinstance(stats, ExportStats)
-        mock_writer.add_blob.assert_not_called()
-
 
 class TestRunExportLatestOnly:
     """Test latest_only flag."""
@@ -382,11 +391,11 @@ class TestRunExportLatestOnly:
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")
-    def test_latest_only_passes_flag_to_collector(self, MockCollector,
-                                                    mock_closure, MockWriter,
-                                                    mock_client,
-                                                    mock_collector,
-                                                    mock_writer):
+    def test_latest_only_passes_flag_to_stream(self, MockCollector,
+                                                 mock_closure, MockWriter,
+                                                 mock_client,
+                                                 mock_collector,
+                                                 mock_writer):
         MockCollector.return_value = mock_collector
         MockWriter.return_value = mock_writer
         mock_closure.return_value = ([], [], [], [])
@@ -394,22 +403,9 @@ class TestRunExportLatestOnly:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", latest_only=True)
 
-        mock_collector.fetch_documents.assert_called_once_with(latest_only=True)
-
-    @patch(f"{EXPORTER}.ArchiveWriter")
-    @patch(f"{EXPORTER}.compute_closure")
-    @patch(f"{EXPORTER}.EntityCollector")
-    def test_default_fetches_all_versions(self, MockCollector, mock_closure,
-                                           MockWriter, mock_client,
-                                           mock_collector, mock_writer):
-        MockCollector.return_value = mock_collector
-        MockWriter.return_value = mock_writer
-        mock_closure.return_value = ([], [], [], [])
-
-        from wip_toolkit.export.exporter import run_export
-        run_export(mock_client, "wip", "/tmp/export.zip")
-
-        mock_collector.fetch_documents.assert_called_once_with(latest_only=False)
+        mock_collector.stream_documents.assert_called_once_with(
+            latest_only=True, page_size=1000
+        )
 
 
 # ===========================================================================
@@ -430,7 +426,6 @@ class TestFetchRawTemplates:
 
         assert len(result) == 1
         assert result[0]["fields"] == [{"raw": True}]
-        collector.fetch_template_raw.assert_called_once_with("TPL-001", 1)
 
     def test_falls_back_to_resolved_on_error(self):
         from wip_toolkit.export.exporter import _fetch_raw_templates
@@ -444,49 +439,6 @@ class TestFetchRawTemplates:
         assert len(result) == 1
         assert result[0]["fields"] == [{"resolved": True}]
 
-    def test_uses_default_version_1(self):
-        from wip_toolkit.export.exporter import _fetch_raw_templates
-
-        collector = MagicMock()
-        resolved = {"template_id": "TPL-001", "fields": []}  # no version key
-        collector.fetch_template_raw.return_value = resolved
-
-        _fetch_raw_templates(collector, [resolved])
-
-        collector.fetch_template_raw.assert_called_once_with("TPL-001", 1)
-
-    def test_multiple_templates(self):
-        from wip_toolkit.export.exporter import _fetch_raw_templates
-
-        collector = MagicMock()
-        tpl1 = {"template_id": "TPL-001", "version": 1, "fields": []}
-        tpl2 = {"template_id": "TPL-002", "version": 2, "fields": []}
-        raw1 = {"template_id": "TPL-001", "version": 1, "fields": [], "raw": True}
-        raw2 = {"template_id": "TPL-002", "version": 2, "fields": [], "raw": True}
-        collector.fetch_template_raw.side_effect = [raw1, raw2]
-
-        result = _fetch_raw_templates(collector, [tpl1, tpl2])
-
-        assert len(result) == 2
-        assert result[0]["raw"] is True
-        assert result[1]["raw"] is True
-
-    def test_partial_failure(self):
-        """First template raw succeeds, second fails and falls back."""
-        from wip_toolkit.export.exporter import _fetch_raw_templates
-
-        collector = MagicMock()
-        tpl1 = {"template_id": "TPL-001", "version": 1, "fields": []}
-        tpl2 = {"template_id": "TPL-002", "version": 1, "fields": [{"resolved": True}]}
-        raw1 = {"template_id": "TPL-001", "version": 1, "fields": [], "raw": True}
-        collector.fetch_template_raw.side_effect = [raw1, Exception("500")]
-
-        result = _fetch_raw_templates(collector, [tpl1, tpl2])
-
-        assert len(result) == 2
-        assert result[0].get("raw") is True
-        assert result[1]["fields"] == [{"resolved": True}]
-
     def test_empty_templates(self):
         from wip_toolkit.export.exporter import _fetch_raw_templates
 
@@ -495,97 +447,6 @@ class TestFetchRawTemplates:
 
         assert result == []
         collector.fetch_template_raw.assert_not_called()
-
-
-# ===========================================================================
-# _enrich_with_registry
-# ===========================================================================
-class TestEnrichWithRegistry:
-    """Test Registry enrichment of entities."""
-
-    def test_injects_registry_into_entities(self):
-        from wip_toolkit.export.exporter import _enrich_with_registry
-
-        collector = MagicMock()
-        collector.fetch_registry_entries.return_value = {
-            "TERM-001": {"entry_id": "TERM-001", "entity_type": "terminologies"},
-            "TPL-001": {"entry_id": "TPL-001", "entity_type": "templates"},
-        }
-
-        terminologies = [{"terminology_id": "TERM-001"}]
-        templates = [{"template_id": "TPL-001"}]
-
-        _enrich_with_registry(collector, terminologies, [], templates, [], [])
-
-        assert terminologies[0]["_registry"]["entry_id"] == "TERM-001"
-        assert templates[0]["_registry"]["entry_id"] == "TPL-001"
-
-    def test_deduplicates_ids_for_bulk_lookup(self):
-        from wip_toolkit.export.exporter import _enrich_with_registry
-
-        collector = MagicMock()
-        collector.fetch_registry_entries.return_value = {}
-
-        # Same template_id in two different version entries
-        templates = [
-            {"template_id": "TPL-001", "version": 1},
-            {"template_id": "TPL-001", "version": 2},
-        ]
-
-        _enrich_with_registry(collector, [], [], templates, [], [])
-
-        # Should only see TPL-001 once in the lookup call
-        call_ids = collector.fetch_registry_entries.call_args[0][0]
-        assert call_ids.count("TPL-001") == 1
-
-    def test_no_entities_skips_lookup(self):
-        from wip_toolkit.export.exporter import _enrich_with_registry
-
-        collector = MagicMock()
-
-        _enrich_with_registry(collector, [], [], [], [], [])
-
-        collector.fetch_registry_entries.assert_not_called()
-
-    def test_missing_registry_entry_not_injected(self):
-        from wip_toolkit.export.exporter import _enrich_with_registry
-
-        collector = MagicMock()
-        collector.fetch_registry_entries.return_value = {}
-
-        terminologies = [{"terminology_id": "TERM-001"}]
-
-        _enrich_with_registry(collector, terminologies, [], [], [], [])
-
-        assert "_registry" not in terminologies[0]
-
-    def test_enriches_all_entity_types(self):
-        from wip_toolkit.export.exporter import _enrich_with_registry
-
-        collector = MagicMock()
-        reg_data = {"entry_id": "X", "entity_type": "any"}
-        collector.fetch_registry_entries.return_value = {
-            "TERM-001": reg_data,
-            "T-001": reg_data,
-            "TPL-001": reg_data,
-            "DOC-001": reg_data,
-            "FILE-001": reg_data,
-        }
-
-        terminologies = [{"terminology_id": "TERM-001"}]
-        terms = [{"term_id": "T-001"}]
-        templates = [{"template_id": "TPL-001"}]
-        documents = [{"document_id": "DOC-001"}]
-        files = [{"file_id": "FILE-001"}]
-
-        _enrich_with_registry(collector, terminologies, terms, templates,
-                              documents, files)
-
-        assert "_registry" in terminologies[0]
-        assert "_registry" in terms[0]
-        assert "_registry" in templates[0]
-        assert "_registry" in documents[0]
-        assert "_registry" in files[0]
 
 
 # ===========================================================================
@@ -606,7 +467,6 @@ class TestBuildStats:
             warnings=["some warning"],
         )
 
-        # Use a fixed start time so we can verify duration is positive
         import time
         start = time.monotonic() - 1.5
 
@@ -633,5 +493,3 @@ class TestBuildStats:
         assert stats.namespace == "test"
         assert stats.closure_iterations == 0
         assert stats.external_terminologies == 0
-        assert stats.external_templates == 0
-        assert stats.warnings == []

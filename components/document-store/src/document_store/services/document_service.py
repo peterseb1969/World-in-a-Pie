@@ -517,12 +517,19 @@ class DocumentService:
         page_size: int = 20,
         namespace: Optional[str] = None,
         latest_only: bool = False,
+        cursor: Optional[str] = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
         When latest_only=True, uses aggregation to return only the highest
         version of each document_id (like template-store's latest_only).
+
+        When cursor is provided, uses cursor-based pagination (more efficient
+        for deep pages). The cursor is the MongoDB _id of the last item from
+        the previous page. When using cursor, skip/total count are avoided.
         """
+        from bson import ObjectId
+
         query: dict = {}
         if namespace:
             query["namespace"] = namespace
@@ -557,6 +564,20 @@ class DocumentService:
             ]
             results = await Document.aggregate(paginated_pipeline).to_list()
             documents = [Document(**doc) for doc in results]
+        elif cursor:
+            # Cursor-based pagination: use _id > cursor, sorted by _id ASC
+            try:
+                cursor_oid = ObjectId(cursor)
+            except Exception:
+                raise ValueError(f"Invalid cursor: {cursor}")
+            query["_id"] = {"$gt": cursor_oid}
+
+            # No total count for cursor mode (expensive and unnecessary)
+            total = -1
+
+            documents = await Document.find(query).sort(
+                [("_id", 1)]
+            ).limit(page_size).to_list()
         else:
             # Count total
             total = await Document.find(query).count()
@@ -567,15 +588,23 @@ class DocumentService:
                 [("created_at", -1)]
             ).skip(skip).limit(page_size).to_list()
 
-        # Convert to responses (async)
-        items = [await self._to_response(d) for d in documents]
+        # Convert to responses in batch (single aggregation instead of N queries)
+        items = await self._batch_to_responses(documents)
+
+        # Compute next_cursor from the last document's MongoDB _id
+        next_cursor: Optional[str] = None
+        if cursor is not None and len(documents) == page_size:
+            last_doc = documents[-1]
+            if hasattr(last_doc, 'id') and last_doc.id is not None:
+                next_cursor = str(last_doc.id)
 
         return DocumentListResponse(
             items=items,
             total=total,
             page=page,
             page_size=page_size,
-            pages=math.ceil(total / page_size) if total > 0 else 1
+            pages=math.ceil(total / page_size) if total > 0 else 1,
+            next_cursor=next_cursor,
         )
 
     async def get_document_versions(
@@ -743,8 +772,8 @@ class DocumentService:
             .limit(request.page_size)\
             .to_list()
 
-        # Convert to responses (async)
-        items = [await self._to_response(d) for d in documents]
+        # Convert to responses in batch
+        items = await self._batch_to_responses(documents)
 
         return DocumentQueryResponse(
             items=items,
@@ -1168,6 +1197,58 @@ class DocumentService:
             references=result.references,
             file_references=result.file_references
         )
+
+    async def _batch_to_responses(self, documents: list[Document]) -> list[DocumentResponse]:
+        """Convert a batch of Documents to DocumentResponses with a single aggregation.
+
+        Instead of querying the latest version per-document (N+1 problem),
+        does one aggregation for all document_ids in the batch.
+        """
+        if not documents:
+            return []
+
+        # Get unique document_ids in this batch
+        doc_ids = list({d.document_id for d in documents})
+
+        # Single aggregation: for each document_id, find the max version
+        pipeline = [
+            {"$match": {"document_id": {"$in": doc_ids}}},
+            {"$group": {
+                "_id": "$document_id",
+                "latest_version": {"$max": "$version"},
+            }},
+        ]
+        agg_results = await Document.aggregate(pipeline).to_list()
+        latest_map = {r["_id"]: r["latest_version"] for r in agg_results}
+
+        # Build responses using the pre-fetched latest version info
+        responses = []
+        for doc in documents:
+            latest_version = latest_map.get(doc.document_id, doc.version)
+            is_latest = doc.version == latest_version
+
+            responses.append(DocumentResponse(
+                document_id=doc.document_id,
+                namespace=doc.namespace,
+                template_id=doc.template_id,
+                template_version=doc.template_version,
+                template_value=doc.template_value,
+                identity_hash=doc.identity_hash,
+                version=doc.version,
+                data=doc.data,
+                term_references=doc.term_references,
+                references=doc.references,
+                file_references=doc.file_references,
+                status=doc.status,
+                created_at=doc.created_at,
+                created_by=doc.created_by,
+                updated_at=doc.updated_at,
+                updated_by=doc.updated_by,
+                metadata=doc.metadata,
+                is_latest_version=is_latest,
+                latest_version=latest_version,
+            ))
+        return responses
 
     async def _to_response(self, document: Document) -> DocumentResponse:
         """Convert Document to DocumentResponse with latest version info."""

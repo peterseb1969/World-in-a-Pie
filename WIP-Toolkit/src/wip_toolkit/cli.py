@@ -43,6 +43,7 @@ def main(ctx: click.Context, host: str, proxy: bool, api_key: str, no_verify_ssl
 @click.option("--include-inactive", is_flag=True, help="Include inactive/deprecated entities")
 @click.option("--skip-documents", is_flag=True, help="Export only terminologies + templates")
 @click.option("--skip-closure", is_flag=True, help="Skip referential integrity closure")
+@click.option("--skip-synonyms", is_flag=True, help="Skip Registry synonym export")
 @click.option("--latest-only", is_flag=True, help="Export only latest document versions")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.pass_context
@@ -54,6 +55,7 @@ def export(
     include_inactive: bool,
     skip_documents: bool,
     skip_closure: bool,
+    skip_synonyms: bool,
     latest_only: bool,
     dry_run: bool,
 ) -> None:
@@ -84,6 +86,7 @@ def export(
             include_inactive=include_inactive,
             skip_documents=skip_documents,
             skip_closure=skip_closure,
+            skip_synonyms=skip_synonyms,
             latest_only=latest_only,
             dry_run=dry_run,
         )
