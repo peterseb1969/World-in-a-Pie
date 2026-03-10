@@ -28,13 +28,20 @@ usage() {
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-  --registry REG   Image registry prefix (e.g. ghcr.io/myorg)
+  --registry REG   Image registry prefix (e.g. kubi5-1.local:32000, ghcr.io/myorg)
   --tag TAG        Image tag (default: latest)
   --push           Push images after building
   --service NAME   Build only one service (registry|def-store|template-store|
                    document-store|reporting-sync|ingest-gateway|wip-console)
   --builder CMD    Container build tool: docker or podman (default: docker)
   -h, --help       Show this help
+
+Examples:
+  # Build all and push to kubi5 registry
+  $(basename "$0") --registry kubi5-1.local:32000 --push --builder podman
+
+  # Build and push a single service
+  $(basename "$0") --registry kubi5-1.local:32000 --push --service def-store
 EOF
     exit 0
 }

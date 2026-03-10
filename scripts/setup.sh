@@ -85,6 +85,8 @@ SKIP_CONFIRM="false"
 CONFIG_FILE=""
 SAVE_CONFIG=""
 CLEAN_DATA="false"
+IMAGE_REGISTRY=""
+IMAGE_TAG="latest"
 
 WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
 
@@ -254,6 +256,9 @@ OPTIONS:
   --data-dir DIR      Data storage directory (default: ./data)
   --config FILE       Load configuration from file (for unattended installs)
   --save-config FILE  Save configuration to file and exit (don't install)
+  --registry HOST:PORT  Pull pre-built images from a container registry instead of
+                      building locally (e.g. kubi5-1.local:32000)
+  --image-tag TAG     Image tag to pull (default: latest)
   --clean             Clean NATS/JetStream data before starting (fixes stream conflicts)
   --generate-secrets  Generate random production secrets (implied by --prod)
   --email EMAIL       Admin email for Let's Encrypt certificates
@@ -287,6 +292,9 @@ EXAMPLES:
 
   # Production deployment
   $(basename "$0") --preset standard --prod --hostname wip.example.com
+
+  # Use pre-built images from registry (skip local builds)
+  $(basename "$0") --preset standard --hostname wip.local --registry kubi5-1.local:32000
 
   # Clean start (fixes NATS stream conflicts)
   $(basename "$0") --preset standard --hostname wip.local --clean
@@ -328,6 +336,8 @@ load_config() {
     [ -n "${WIP_PLATFORM:-}" ] && PLATFORM="$WIP_PLATFORM"
     [ -n "${WIP_API_KEY:-}" ] && API_KEY="$WIP_API_KEY"
     [ -n "${WIP_DATA_DIR:-}" ] && WIP_DATA_DIR="$WIP_DATA_DIR"
+    [ -n "${WIP_IMAGE_REGISTRY:-}" ] && IMAGE_REGISTRY="$WIP_IMAGE_REGISTRY"
+    [ -n "${WIP_IMAGE_TAG:-}" ] && IMAGE_TAG="$WIP_IMAGE_TAG"
 
     log_info "Configuration loaded successfully"
 }
@@ -382,6 +392,10 @@ WIP_DATA_DIR="$WIP_DATA_DIR"
 
 # API Key (consider using env var or secrets manager in production)
 WIP_API_KEY="$API_KEY"
+
+# Pre-built image registry (optional — skip local builds)
+WIP_IMAGE_REGISTRY="$IMAGE_REGISTRY"
+WIP_IMAGE_TAG="$IMAGE_TAG"
 EOF
 
     log_info "Configuration saved to: $config_file"
@@ -446,6 +460,14 @@ parse_args() {
                 ;;
             --save-config)
                 SAVE_CONFIG="$2"
+                shift 2
+                ;;
+            --registry)
+                IMAGE_REGISTRY="$2"
+                shift 2
+                ;;
+            --image-tag)
+                IMAGE_TAG="$2"
                 shift 2
                 ;;
             --clean)
@@ -715,6 +737,14 @@ show_confirmation() {
         done
         echo ""
     fi
+
+    # Image source
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        echo -e "  ${BOLD}Images:${NC}    ${GREEN}Pre-built from ${IMAGE_REGISTRY} (tag: ${IMAGE_TAG})${NC}"
+    else
+        echo -e "  ${BOLD}Images:${NC}    Local build"
+    fi
+    echo ""
 
     # Data directory
     echo -e "  ${BOLD}Data Dir:${NC}  $WIP_DATA_DIR"
@@ -1124,6 +1154,69 @@ generate_service_overrides() {
 # Variant: $VARIANT | Generated: $(date '+%Y-%m-%d %H:%M:%S')
 # This file is .gitignored. Regenerate with: ./scripts/setup.sh --config config/last-install.conf -y"
 
+    # ── Registry images mode: generate standalone compose files (no build:) ──
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        log_info "Using pre-built images from registry: $IMAGE_REGISTRY (tag: $IMAGE_TAG)"
+
+        # For each service, generate docker-compose.registry.yml — a complete compose
+        # file derived from the base but with build: replaced by image: and wip-auth
+        # volume/pip-install removed (wip-auth is baked into the registry image).
+        # podman-compose can't override build: via merge, so we use a separate file.
+        for svc_dir in registry def-store template-store document-store reporting-sync ingest-gateway; do
+            local comp_dir="$PROJECT_ROOT/components/$svc_dir"
+            [ -d "$comp_dir" ] || continue
+
+            local module_name="${svc_dir//-/_}"
+            local image_name="${IMAGE_REGISTRY}/wip-${svc_dir}:${IMAGE_TAG}"
+            local svc_port
+            case "$svc_dir" in
+                registry)        svc_port=8001 ;;
+                def-store)       svc_port=8002 ;;
+                template-store)  svc_port=8003 ;;
+                document-store)  svc_port=8004 ;;
+                reporting-sync)  svc_port=8005 ;;
+                ingest-gateway)  svc_port=8006 ;;
+            esac
+
+            # Transform base compose: remove build: block, wip-auth refs, replace command, add image
+            # Then remove empty volumes: blocks (services where wip-auth was the only volume)
+            awk -v img="$image_name" -v mod="$module_name" -v port="$svc_port" -v cname="wip-${svc_dir}" '
+                /^    build:/ { in_build=1; next }
+                in_build && /^    [a-z]/ { in_build=0 }
+                in_build { next }
+                /wip-auth/ { next }
+                /^    command:/ { in_cmd=1; print "    command: [\"uvicorn\", \"" mod ".main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"" port "\"]"; next }
+                in_cmd && /^    [a-z]/ { in_cmd=0 }
+                in_cmd { next }
+                $0 ~ "container_name: " cname { print; print "    image: " img; next }
+                { print }
+            ' "$comp_dir/docker-compose.yml" | awk '
+                /^    volumes:$/ { hold=$0; getline; if ($0 ~ /^      -/) { print hold; print } else { print } next }
+                { print }
+            ' > "$comp_dir/docker-compose.registry.yml"
+
+            # Remove any stale override file
+            rm -f "$comp_dir/docker-compose.override.yml"
+            log_debug "  Created registry compose: $comp_dir/docker-compose.registry.yml"
+        done
+
+        # Console: remove build: block, add image:
+        local console_image="${IMAGE_REGISTRY}/wip-console:${IMAGE_TAG}"
+        local console_dir="$PROJECT_ROOT/ui/wip-console"
+        awk -v img="$console_image" '
+            /^    build:/ { in_build=1; next }
+            in_build && /^    [a-z]/ { in_build=0 }
+            in_build { next }
+            /container_name: wip-console/ { print; print "    image: " img; next }
+            { print }
+        ' "$console_dir/docker-compose.yml" > "$console_dir/docker-compose.registry.yml"
+        rm -f "$console_dir/docker-compose.override.yml"
+
+        log_info "Generated registry compose files (7 services)"
+        return
+    fi
+
+    # ── Dev variant: mount source for live reload ──
     if [ "$VARIANT" = "dev" ]; then
         # Python services: mount source and tests for live reload
         for svc_dir in registry def-store template-store document-store reporting-sync ingest-gateway; do
@@ -1148,11 +1241,7 @@ generate_service_overrides() {
 
             # Some services have extra dev-specific mounts
             case "$svc_dir" in
-                def-store|template-store|document-store)
-                    volumes="$volumes
-      - ../../config/api-keys.dev.json:/app/config/api-keys.json:ro"
-                    ;;
-                reporting-sync)
+                def-store|template-store|document-store|reporting-sync)
                     volumes="$volumes
       - ../../config/api-keys.dev.json:/app/config/api-keys.json:ro"
                     ;;
@@ -1674,9 +1763,18 @@ start_service() {
     local dir=$2
     local port=$3
 
+    # When --registry is set, use docker-compose.registry.yml (no build: key)
+    # Otherwise use docker-compose.yml with --build
+    local compose_cmd
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        compose_cmd="podman-compose --env-file $PROJECT_ROOT/.env -f docker-compose.registry.yml up -d --force-recreate"
+    else
+        compose_cmd="podman-compose --env-file $PROJECT_ROOT/.env -f docker-compose.yml up -d --build --force-recreate"
+    fi
+
     log_info "Starting $name..."
     cd "$PROJECT_ROOT/components/$dir"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
+    eval $compose_cmd
 
     # Wait for health
     local retries=30
@@ -1692,10 +1790,18 @@ start_service() {
 }
 
 start_services() {
+    # When --registry is set, use docker-compose.registry.yml (no build: key)
+    local compose_file="docker-compose.yml"
+    local build_flag="--build"
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        compose_file="docker-compose.registry.yml"
+        build_flag=""
+    fi
+
     log_step "Starting Registry and initializing namespaces..."
 
     cd "$PROJECT_ROOT/components/registry"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
 
     # Wait for Registry
     local retries=30
@@ -1737,7 +1843,7 @@ start_services() {
 
     log_step "Starting WIP Console..."
     cd "$PROJECT_ROOT/ui/wip-console"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f docker-compose.yml up -d --build --force-recreate
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
     log_info "Waiting for Console to start..."
     sleep 8
 }
@@ -1755,6 +1861,11 @@ print_status() {
     echo "  Platform: $PLATFORM"
     echo "  Network:  $NETWORK"
     [ -n "$HOSTNAME" ] && echo "  Hostname: $HOSTNAME"
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        echo "  Images:   $IMAGE_REGISTRY (tag: $IMAGE_TAG)"
+    else
+        echo "  Images:   Local build"
+    fi
     echo ""
     echo "=========================================="
     echo "  Access URLs"
