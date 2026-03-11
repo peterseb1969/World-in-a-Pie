@@ -115,11 +115,28 @@ class OntologyService:
                 ))
 
             except DuplicateKeyError:
-                results.append(BulkResultItem(
-                    index=i,
-                    status="error",
-                    error=f"Relationship already exists: {item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
-                ))
+                # Check if the existing relationship is inactive (soft-deleted) — re-activate it
+                existing = await TermRelationship.find_one({
+                    "namespace": namespace,
+                    "source_term_id": item.source_term_id,
+                    "target_term_id": item.target_term_id,
+                    "relationship_type": item.relationship_type,
+                    "status": "inactive",
+                })
+                if existing:
+                    existing.status = "active"
+                    await existing.save()
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="created",
+                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id} (reactivated)"
+                    ))
+                else:
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="skipped",
+                        error=f"Relationship already exists: {item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                    ))
             except Exception as e:
                 logger.error(f"Error creating relationship at index {i}: {e}")
                 results.append(BulkResultItem(

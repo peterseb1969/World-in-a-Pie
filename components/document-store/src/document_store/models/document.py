@@ -71,10 +71,10 @@ class Document(BeanieDocument):
         description="Template value (e.g., PLANNED_VISIT) for easier identification"
     )
 
-    # Identity for upsert logic
+    # Identity for upsert logic (empty string when template has no identity_fields)
     identity_hash: str = Field(
-        ...,
-        description="SHA-256 hash of identity field values"
+        default="",
+        description="SHA-256 hash of identity field values (empty when template has no identity_fields)"
     )
 
     # Document versioning

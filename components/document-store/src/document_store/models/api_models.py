@@ -70,7 +70,7 @@ class DocumentResponse(BaseModel):
         None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
-    identity_hash: str
+    identity_hash: str = ""
     version: int
     data: dict[str, Any]
     term_references: list[dict[str, Any]] = Field(
@@ -115,7 +115,7 @@ class DocumentCreateResponse(BaseModel):
         None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
-    identity_hash: str
+    identity_hash: str = ""
     version: int
     is_new: bool = Field(
         ...,
@@ -167,7 +167,7 @@ class DocumentVersionSummary(BaseModel):
 class DocumentVersionResponse(BaseModel):
     """Response containing document version history."""
 
-    identity_hash: str
+    identity_hash: str = ""
     current_version: int
     versions: list[DocumentVersionSummary]
 
