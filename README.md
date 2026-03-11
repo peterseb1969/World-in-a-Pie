@@ -9,7 +9,7 @@
 
 **A universal, template-driven document storage and query system designed to run anywhere — from a Raspberry Pi to the cloud.**
 
-> **This project is an experiment in agentic coding.** The entire platform — six microservices, a Vue 3 console, CI pipeline, deployment automation — was designed and built with AI assistance (Claude Code). It demonstrates that agentic coding can produce non-trivial, production-grade distributed systems.
+> **This project is an experiment in agentic coding.** The entire platform — six microservices, a Vue 3 console, CI pipeline, deployment automation — was designed and built with AI assistance (Claude Code). Judge for yourself whether the result holds up.
 
 ---
 
