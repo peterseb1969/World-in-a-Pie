@@ -5,14 +5,36 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
 [![Vue 3](https://img.shields.io/badge/Vue-3-brightgreen.svg)](https://vuejs.org/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7-green.svg)](https://www.mongodb.com/)
+[![Built with Claude Code](https://img.shields.io/badge/Built_with-Claude_Code-blueviolet.svg)](https://claude.ai/claude-code)
 
 **A universal, template-driven document storage and query system designed to run anywhere — from a Raspberry Pi to the cloud.**
+
+> **This project is an experiment in agentic coding.** The entire platform — six microservices, a Vue 3 console, CI pipeline, deployment automation — was designed and built with AI assistance (Claude Code). It demonstrates that agentic coding can produce non-trivial, production-grade distributed systems.
+
+---
+
+## Why WIP Exists
+
+Agentic and vibe-coded apps are cheap to create and easy to throw away. Each one invents its own data model and backend. The apps are disposable — but **the data often isn't**. When the app is retired, the data dies with it or needs painful migration. When you have 20 vibe-coded apps, you have 20 incompatible data silos that can't talk to each other.
+
+**WIP solves this by decoupling data from applications.**
+
+Any app — whether carefully engineered or quickly vibe-coded — can use WIP as its backend. The app defines templates (its schema), stores validated documents, and moves on. When the app is decommissioned, the data stays: validated, versioned, and queryable. When another app needs the same data, it's already there with a consistent structure.
+
+| Without WIP | With WIP |
+|---|---|
+| Each app invents its own schema | Apps share a common schema layer (templates) |
+| App retirement = data loss or migration | App retirement = nothing happens to data |
+| Cross-app analysis requires ETL | Cross-app queries work out of the box |
+| Data standards diverge over time | Controlled vocabularies enforce consistency |
+
+WIP doesn't force apps into the same data model — it provides a **common backend** where integration is possible where it makes sense, without getting in the way where it doesn't.
 
 ---
 
 ## What is World In a Pie?
 
-World In a Pie (WIP) is an extremely generic storage layer that can store and query *anything* that can be represented digitally. It achieves this through a layered architecture of definitions, templates, and validated documents.
+World In a Pie (WIP) is a generic storage layer that can store and query *anything* that can be represented digitally. It achieves this through a layered architecture of definitions, templates, and validated documents.
 
 The name reflects both the philosophy (containing the *world* of data) and the target deployment (a Raspberry *Pi*).
 
@@ -25,7 +47,7 @@ The name reflects both the philosophy (containing the *world* of data) and the t
 WIP is built on three principles:
 
 1. **Universal Storage**: Any data structure can be stored, as long as it conforms to a defined template
-2. **Enforced Consistency**: All data is validated against templates that reference a central ontology
+2. **Enforced Consistency**: All data is validated against templates that reference controlled vocabularies and ontologies
 3. **Federated Identity**: A standalone registry provides identity resolution across distributed instances
 
 ---
