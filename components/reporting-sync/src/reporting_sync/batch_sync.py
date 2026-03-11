@@ -9,6 +9,7 @@ Responsibilities:
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -387,6 +388,316 @@ class BatchSyncService:
             task.cancel()
             return True
         return False
+
+    async def batch_sync_terminologies(
+        self,
+        namespace: str = "wip",
+        page_size: int = 100,
+    ) -> dict:
+        """
+        Batch sync all terminologies from Def-Store to PostgreSQL.
+
+        Returns:
+            Dict with sync results (synced, failed, total)
+        """
+        table_name = await self.schema_manager.ensure_terminologies_table()
+        synced = 0
+        failed = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                page = 1
+
+                while True:
+                    resp = await client.get(
+                        f"{settings.def_store_url}/api/def-store/terminologies",
+                        params={
+                            "namespace": namespace,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                        headers={"X-API-Key": settings.api_key},
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"Failed to list terminologies: {resp.status_code}")
+                        break
+
+                    data = resp.json()
+                    items = data.get("items", [])
+
+                    if not items:
+                        break
+
+                    async with self.pool.acquire() as conn:
+                        for t in items:
+                            try:
+                                await conn.execute(
+                                    f"""
+                                    INSERT INTO "{table_name}" (
+                                        "terminology_id", "namespace", "value", "label",
+                                        "description", "case_sensitive", "allow_multiple",
+                                        "extensible", "status", "term_count",
+                                        "created_at", "created_by", "updated_at", "updated_by"
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                    ON CONFLICT ("namespace", "terminology_id")
+                                    DO UPDATE SET
+                                        "value" = EXCLUDED."value",
+                                        "label" = EXCLUDED."label",
+                                        "description" = EXCLUDED."description",
+                                        "case_sensitive" = EXCLUDED."case_sensitive",
+                                        "allow_multiple" = EXCLUDED."allow_multiple",
+                                        "extensible" = EXCLUDED."extensible",
+                                        "status" = EXCLUDED."status",
+                                        "term_count" = EXCLUDED."term_count",
+                                        "updated_at" = EXCLUDED."updated_at",
+                                        "updated_by" = EXCLUDED."updated_by"
+                                    """,
+                                    t["terminology_id"],
+                                    t.get("namespace", namespace),
+                                    t["value"],
+                                    t.get("label"),
+                                    t.get("description"),
+                                    t.get("case_sensitive", False),
+                                    t.get("allow_multiple", False),
+                                    t.get("extensible", True),
+                                    t.get("status", "active"),
+                                    t.get("term_count", 0),
+                                    t.get("created_at"),
+                                    t.get("created_by"),
+                                    t.get("updated_at"),
+                                    t.get("updated_by"),
+                                )
+                                synced += 1
+                            except Exception as e:
+                                logger.error(f"Error syncing terminology {t.get('value')}: {e}")
+                                failed += 1
+
+                    if page >= data.get("pages", 1):
+                        break
+                    page += 1
+                    await asyncio.sleep(0.05)
+
+        except Exception as e:
+            logger.error(f"Batch terminology sync error: {e}", exc_info=True)
+
+        logger.info(f"Terminology batch sync: {synced} synced, {failed} failed")
+        return {"synced": synced, "failed": failed, "total": synced + failed}
+
+    async def batch_sync_terms(
+        self,
+        namespace: str = "wip",
+        page_size: int = 100,
+    ) -> dict:
+        """
+        Batch sync all terms from Def-Store to PostgreSQL.
+
+        Iterates through all terminologies and fetches their terms.
+
+        Returns:
+            Dict with sync results (synced, failed, total)
+        """
+        table_name = await self.schema_manager.ensure_terms_table()
+        synced = 0
+        failed = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # First, get all terminology IDs
+                terminology_ids = []
+                page = 1
+                while True:
+                    resp = await client.get(
+                        f"{settings.def_store_url}/api/def-store/terminologies",
+                        params={"namespace": namespace, "page": page, "page_size": 100},
+                        headers={"X-API-Key": settings.api_key},
+                    )
+                    if resp.status_code != 200:
+                        break
+                    data = resp.json()
+                    for t in data.get("items", []):
+                        terminology_ids.append(t["terminology_id"])
+                    if page >= data.get("pages", 1):
+                        break
+                    page += 1
+
+                logger.info(f"Found {len(terminology_ids)} terminologies, fetching terms...")
+
+                # Fetch terms per terminology
+                for tidx, tid in enumerate(terminology_ids):
+                    page = 1
+                    while True:
+                        resp = await client.get(
+                            f"{settings.def_store_url}/api/def-store/terminologies/{tid}/terms",
+                            params={
+                                "page": page,
+                                "page_size": page_size,
+                            },
+                            headers={"X-API-Key": settings.api_key},
+                        )
+                        if resp.status_code != 200:
+                            logger.error(f"Failed to list terms for {tid}: {resp.status_code}")
+                            break
+
+                        data = resp.json()
+                        items = data.get("items", [])
+
+                        if not items:
+                            break
+
+                        async with self.pool.acquire() as conn:
+                            for t in items:
+                                try:
+                                    await conn.execute(
+                                        f"""
+                                        INSERT INTO "{table_name}" (
+                                            "term_id", "namespace", "terminology_id",
+                                            "terminology_value", "value", "aliases",
+                                            "label", "description", "sort_order",
+                                            "parent_term_id", "status",
+                                            "deprecated_reason", "replaced_by_term_id",
+                                            "created_at", "created_by", "updated_at", "updated_by"
+                                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                                        ON CONFLICT ("namespace", "term_id")
+                                        DO UPDATE SET
+                                            "terminology_value" = EXCLUDED."terminology_value",
+                                            "value" = EXCLUDED."value",
+                                            "aliases" = EXCLUDED."aliases",
+                                            "label" = EXCLUDED."label",
+                                            "description" = EXCLUDED."description",
+                                            "sort_order" = EXCLUDED."sort_order",
+                                            "parent_term_id" = EXCLUDED."parent_term_id",
+                                            "status" = EXCLUDED."status",
+                                            "updated_at" = EXCLUDED."updated_at",
+                                            "updated_by" = EXCLUDED."updated_by"
+                                        """,
+                                        t["term_id"],
+                                        t.get("namespace", namespace),
+                                        t.get("terminology_id"),
+                                        t.get("terminology_value"),
+                                        t["value"],
+                                        json.dumps(t.get("aliases", [])),
+                                        t.get("label"),
+                                        t.get("description"),
+                                        t.get("sort_order", 0),
+                                        t.get("parent_term_id"),
+                                        t.get("status", "active"),
+                                        t.get("deprecated_reason"),
+                                        t.get("replaced_by_term_id"),
+                                        t.get("created_at"),
+                                        t.get("created_by"),
+                                        t.get("updated_at"),
+                                        t.get("updated_by"),
+                                    )
+                                    synced += 1
+                                except Exception as e:
+                                    logger.error(f"Error syncing term {t.get('value')}: {e}")
+                                    failed += 1
+
+                        if page >= data.get("pages", 1):
+                            break
+                        page += 1
+                        await asyncio.sleep(0.05)
+
+                    if (tidx + 1) % 10 == 0:
+                        logger.info(
+                            f"Term sync progress: {tidx+1}/{len(terminology_ids)} terminologies, "
+                            f"{synced} terms synced"
+                        )
+
+        except Exception as e:
+            logger.error(f"Batch term sync error: {e}", exc_info=True)
+
+        logger.info(f"Term batch sync: {synced} synced, {failed} failed")
+        return {"synced": synced, "failed": failed, "total": synced + failed}
+
+    async def batch_sync_relationships(
+        self,
+        namespace: str = "wip",
+        page_size: int = 100,
+    ) -> dict:
+        """
+        Batch sync all term relationships from Def-Store to PostgreSQL.
+
+        Uses the /ontology/relationships/all endpoint for efficient pagination
+        across all relationships (no per-term iteration needed).
+
+        Returns:
+            Dict with sync results (synced, failed, total)
+        """
+        table_name = await self.schema_manager.ensure_term_relationships_table()
+        synced = 0
+        failed = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                page = 1
+
+                while True:
+                    resp = await client.get(
+                        f"{settings.def_store_url}/api/def-store/ontology/relationships/all",
+                        params={
+                            "namespace": namespace,
+                            "page": page,
+                            "page_size": page_size,
+                        },
+                        headers={"X-API-Key": settings.api_key},
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"Failed to list relationships: {resp.status_code}")
+                        break
+
+                    data = resp.json()
+                    items = data.get("items", [])
+
+                    if not items:
+                        break
+
+                    async with self.pool.acquire() as conn:
+                        for rel in items:
+                            try:
+                                await conn.execute(
+                                    f"""
+                                    INSERT INTO "{table_name}" (
+                                        "namespace", "source_term_id", "target_term_id",
+                                        "relationship_type", "source_term_value", "target_term_value",
+                                        "source_terminology_id", "target_terminology_id",
+                                        "metadata", "status", "created_at", "created_by"
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                    ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                                    DO UPDATE SET
+                                        "status" = EXCLUDED."status",
+                                        "source_term_value" = EXCLUDED."source_term_value",
+                                        "target_term_value" = EXCLUDED."target_term_value",
+                                        "metadata" = EXCLUDED."metadata"
+                                    """,
+                                    rel.get("namespace", namespace),
+                                    rel["source_term_id"],
+                                    rel["target_term_id"],
+                                    rel["relationship_type"],
+                                    rel.get("source_term_value"),
+                                    rel.get("target_term_value"),
+                                    rel.get("source_terminology_id"),
+                                    rel.get("target_terminology_id"),
+                                    json.dumps(rel.get("metadata", {})),
+                                    rel.get("status", "active"),
+                                    rel.get("created_at"),
+                                    rel.get("created_by"),
+                                )
+                                synced += 1
+                            except Exception as e:
+                                logger.error(f"Error syncing relationship: {e}")
+                                failed += 1
+
+                    if page >= data.get("pages", 1):
+                        break
+                    page += 1
+                    await asyncio.sleep(0.05)  # Small delay between pages
+
+        except Exception as e:
+            logger.error(f"Batch relationship sync error: {e}", exc_info=True)
+
+        logger.info(f"Relationship batch sync: {synced} synced, {failed} failed")
+        return {"synced": synced, "failed": failed, "total": synced + failed}
 
     def clear_completed_jobs(self) -> int:
         """Clear completed/failed/cancelled jobs from memory."""

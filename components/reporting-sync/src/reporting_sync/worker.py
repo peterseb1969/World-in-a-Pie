@@ -192,6 +192,272 @@ class SyncWorker:
 
         return True
 
+    async def _process_terminology_event(self, event_data: dict[str, Any]) -> bool:
+        """
+        Process a terminology event (created, updated, deleted, restored).
+
+        Syncs the terminology to the terminologies table in PostgreSQL.
+        """
+        start_time = time.perf_counter()
+        event_type = event_data.get("event_type")
+        term_data = event_data.get("terminology", {})
+
+        namespace = term_data.get("namespace", "wip")
+        terminology_id = term_data.get("terminology_id")
+
+        if not terminology_id:
+            logger.warning("Invalid terminology event: missing terminology_id")
+            return False
+
+        table_name = await self.schema_manager.ensure_terminologies_table()
+
+        try:
+            async with self.pool.acquire() as conn:
+                if event_type == "terminology.deleted":
+                    await conn.execute(
+                        f"""
+                        UPDATE "{table_name}"
+                        SET "status" = 'inactive',
+                            "updated_at" = NOW(),
+                            "updated_by" = $3
+                        WHERE "namespace" = $1
+                          AND "terminology_id" = $2
+                        """,
+                        namespace, terminology_id, event_data.get("changed_by"),
+                    )
+                else:
+                    await conn.execute(
+                        f"""
+                        INSERT INTO "{table_name}" (
+                            "terminology_id", "namespace", "value", "label",
+                            "description", "case_sensitive", "allow_multiple",
+                            "extensible", "status", "term_count",
+                            "created_at", "created_by", "updated_at", "updated_by"
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                        ON CONFLICT ("namespace", "terminology_id")
+                        DO UPDATE SET
+                            "value" = EXCLUDED."value",
+                            "label" = EXCLUDED."label",
+                            "description" = EXCLUDED."description",
+                            "case_sensitive" = EXCLUDED."case_sensitive",
+                            "allow_multiple" = EXCLUDED."allow_multiple",
+                            "extensible" = EXCLUDED."extensible",
+                            "status" = EXCLUDED."status",
+                            "term_count" = EXCLUDED."term_count",
+                            "updated_at" = EXCLUDED."updated_at",
+                            "updated_by" = EXCLUDED."updated_by"
+                        """,
+                        terminology_id,
+                        namespace,
+                        term_data.get("value"),
+                        term_data.get("label"),
+                        term_data.get("description"),
+                        term_data.get("case_sensitive", False),
+                        term_data.get("allow_multiple", False),
+                        term_data.get("extensible", True),
+                        term_data.get("status", "active"),
+                        term_data.get("term_count", 0),
+                        term_data.get("created_at"),
+                        term_data.get("created_by"),
+                        term_data.get("updated_at"),
+                        term_data.get("updated_by"),
+                    )
+
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(
+                f"Synced terminology {term_data.get('value')} ({terminology_id}) "
+                f"to {table_name} ({latency_ms:.1f}ms)"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error syncing terminology: {e}")
+            raise
+
+    async def _process_term_event(self, event_data: dict[str, Any]) -> bool:
+        """
+        Process a term event (created, updated, deprecated, deleted).
+
+        Syncs the term to the terms table in PostgreSQL.
+        """
+        start_time = time.perf_counter()
+        event_type = event_data.get("event_type")
+        term_data = event_data.get("term", {})
+
+        namespace = term_data.get("namespace", "wip")
+        term_id = term_data.get("term_id")
+
+        if not term_id:
+            logger.warning("Invalid term event: missing term_id")
+            return False
+
+        table_name = await self.schema_manager.ensure_terms_table()
+
+        try:
+            async with self.pool.acquire() as conn:
+                if event_type == "term.deleted":
+                    await conn.execute(
+                        f"""
+                        UPDATE "{table_name}"
+                        SET "status" = 'inactive',
+                            "updated_at" = NOW(),
+                            "updated_by" = $3
+                        WHERE "namespace" = $1
+                          AND "term_id" = $2
+                        """,
+                        namespace, term_id, event_data.get("changed_by"),
+                    )
+                elif event_type == "term.deprecated":
+                    await conn.execute(
+                        f"""
+                        UPDATE "{table_name}"
+                        SET "status" = 'deprecated',
+                            "deprecated_reason" = $3,
+                            "replaced_by_term_id" = $4,
+                            "updated_at" = NOW(),
+                            "updated_by" = $5
+                        WHERE "namespace" = $1
+                          AND "term_id" = $2
+                        """,
+                        namespace,
+                        term_id,
+                        term_data.get("deprecated_reason"),
+                        term_data.get("replaced_by_term_id"),
+                        event_data.get("changed_by"),
+                    )
+                else:
+                    # Upsert for create/update
+                    await conn.execute(
+                        f"""
+                        INSERT INTO "{table_name}" (
+                            "term_id", "namespace", "terminology_id",
+                            "terminology_value", "value", "aliases",
+                            "label", "description", "sort_order",
+                            "parent_term_id", "status",
+                            "deprecated_reason", "replaced_by_term_id",
+                            "created_at", "created_by", "updated_at", "updated_by"
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                        ON CONFLICT ("namespace", "term_id")
+                        DO UPDATE SET
+                            "terminology_value" = EXCLUDED."terminology_value",
+                            "value" = EXCLUDED."value",
+                            "aliases" = EXCLUDED."aliases",
+                            "label" = EXCLUDED."label",
+                            "description" = EXCLUDED."description",
+                            "sort_order" = EXCLUDED."sort_order",
+                            "parent_term_id" = EXCLUDED."parent_term_id",
+                            "status" = EXCLUDED."status",
+                            "updated_at" = EXCLUDED."updated_at",
+                            "updated_by" = EXCLUDED."updated_by"
+                        """,
+                        term_id,
+                        namespace,
+                        term_data.get("terminology_id"),
+                        term_data.get("terminology_value"),
+                        term_data.get("value"),
+                        json.dumps(term_data.get("aliases", [])),
+                        term_data.get("label"),
+                        term_data.get("description"),
+                        term_data.get("sort_order", 0),
+                        term_data.get("parent_term_id"),
+                        term_data.get("status", "active"),
+                        term_data.get("deprecated_reason"),
+                        term_data.get("replaced_by_term_id"),
+                        term_data.get("created_at"),
+                        term_data.get("created_by"),
+                        term_data.get("updated_at"),
+                        term_data.get("updated_by"),
+                    )
+
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(
+                f"Synced term {term_data.get('value')} ({term_id}) "
+                f"to {table_name} ({latency_ms:.1f}ms)"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error syncing term: {e}")
+            raise
+
+    async def _process_relationship_event(self, event_data: dict[str, Any]) -> bool:
+        """
+        Process a relationship event (created, deleted).
+
+        Syncs the relationship to the term_relationships table in PostgreSQL.
+        """
+        start_time = time.perf_counter()
+        event_type = event_data.get("event_type")
+        rel = event_data.get("relationship", {})
+
+        namespace = rel.get("namespace", "wip")
+        source_term_id = rel.get("source_term_id")
+        target_term_id = rel.get("target_term_id")
+        relationship_type = rel.get("relationship_type")
+
+        if not source_term_id or not target_term_id or not relationship_type:
+            logger.warning("Invalid relationship event: missing required fields")
+            return False
+
+        # Ensure table exists
+        table_name = await self.schema_manager.ensure_term_relationships_table()
+
+        try:
+            async with self.pool.acquire() as conn:
+                if event_type == "relationship.deleted":
+                    await conn.execute(
+                        f"""
+                        UPDATE "{table_name}"
+                        SET "status" = 'inactive'
+                        WHERE "namespace" = $1
+                          AND "source_term_id" = $2
+                          AND "target_term_id" = $3
+                          AND "relationship_type" = $4
+                        """,
+                        namespace, source_term_id, target_term_id, relationship_type,
+                    )
+                else:
+                    # Upsert for create/reactivate
+                    await conn.execute(
+                        f"""
+                        INSERT INTO "{table_name}" (
+                            "namespace", "source_term_id", "target_term_id",
+                            "relationship_type", "source_term_value", "target_term_value",
+                            "source_terminology_id", "target_terminology_id",
+                            "metadata", "status", "created_at", "created_by"
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
+                        ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                        DO UPDATE SET
+                            "status" = EXCLUDED."status",
+                            "source_term_value" = EXCLUDED."source_term_value",
+                            "target_term_value" = EXCLUDED."target_term_value",
+                            "metadata" = EXCLUDED."metadata",
+                            "created_by" = EXCLUDED."created_by"
+                        """,
+                        namespace,
+                        source_term_id,
+                        target_term_id,
+                        relationship_type,
+                        rel.get("source_term_value"),
+                        rel.get("target_term_value"),
+                        rel.get("source_terminology_id"),
+                        rel.get("target_terminology_id"),
+                        json.dumps(rel.get("metadata", {})),
+                        rel.get("status", "active"),
+                        rel.get("created_by"),
+                    )
+
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(
+                f"Synced relationship {source_term_id} --{relationship_type}--> "
+                f"{target_term_id} to {table_name} ({latency_ms:.1f}ms)"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Error syncing relationship: {e}")
+            raise
+
     async def _process_message(self, msg) -> None:
         """Process a single NATS message."""
         try:
@@ -207,6 +473,12 @@ class SyncWorker:
                 success = await self._process_document_event(event_data)
             elif event_type.startswith("template."):
                 success = await self._process_template_event(event_data)
+            elif event_type.startswith("terminology."):
+                success = await self._process_terminology_event(event_data)
+            elif event_type.startswith("term."):
+                success = await self._process_term_event(event_data)
+            elif event_type.startswith("relationship."):
+                success = await self._process_relationship_event(event_data)
             else:
                 logger.warning(f"Unknown event type: {event_type}")
                 success = True  # Don't retry unknown events

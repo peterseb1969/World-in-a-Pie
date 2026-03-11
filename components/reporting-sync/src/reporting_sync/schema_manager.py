@@ -371,6 +371,154 @@ ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
 
         return migrations
 
+    async def ensure_terminologies_table(self) -> str:
+        """
+        Ensure the terminologies table exists in PostgreSQL.
+
+        Fixed-schema table for syncing terminologies from the Def-Store.
+
+        Returns:
+            Table name ('terminologies')
+        """
+        table_name = "terminologies"
+
+        if await self.table_exists(table_name):
+            return table_name
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS "{table_name}" (
+    "terminology_id" TEXT NOT NULL,
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "value" TEXT NOT NULL,
+    "label" TEXT,
+    "description" TEXT,
+    "case_sensitive" BOOLEAN DEFAULT FALSE,
+    "allow_multiple" BOOLEAN DEFAULT FALSE,
+    "extensible" BOOLEAN DEFAULT TRUE,
+    "status" VARCHAR(20) NOT NULL DEFAULT 'active',
+    "term_count" INTEGER DEFAULT 0,
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "created_by" TEXT,
+    "updated_at" TIMESTAMP WITH TIME ZONE,
+    "updated_by" TEXT,
+    PRIMARY KEY ("namespace", "terminology_id")
+);
+
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
+  ON "{table_name}"("namespace", "value");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
+  ON "{table_name}"("namespace", "status");
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {table_name} table")
+        return table_name
+
+    async def ensure_terms_table(self) -> str:
+        """
+        Ensure the terms table exists in PostgreSQL.
+
+        Fixed-schema table for syncing terms from the Def-Store.
+
+        Returns:
+            Table name ('terms')
+        """
+        table_name = "terms"
+
+        if await self.table_exists(table_name):
+            return table_name
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS "{table_name}" (
+    "term_id" TEXT NOT NULL,
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "terminology_id" TEXT NOT NULL,
+    "terminology_value" TEXT,
+    "value" TEXT NOT NULL,
+    "aliases" JSONB DEFAULT '[]'::jsonb,
+    "label" TEXT,
+    "description" TEXT,
+    "sort_order" INTEGER DEFAULT 0,
+    "parent_term_id" TEXT,
+    "status" VARCHAR(20) NOT NULL DEFAULT 'active',
+    "deprecated_reason" TEXT,
+    "replaced_by_term_id" TEXT,
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "created_by" TEXT,
+    "updated_at" TIMESTAMP WITH TIME ZONE,
+    "updated_by" TEXT,
+    PRIMARY KEY ("namespace", "term_id")
+);
+
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_terminology_idx"
+  ON "{table_name}"("namespace", "terminology_id");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
+  ON "{table_name}"("namespace", "value");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
+  ON "{table_name}"("namespace", "status");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_parent_idx"
+  ON "{table_name}"("namespace", "parent_term_id");
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {table_name} table")
+        return table_name
+
+    async def ensure_term_relationships_table(self) -> str:
+        """
+        Ensure the term_relationships table exists in PostgreSQL.
+
+        This is a fixed-schema table (not template-driven) for syncing
+        ontology relationships from the Def-Store.
+
+        Returns:
+            Table name ('term_relationships')
+        """
+        table_name = "term_relationships"
+
+        if await self.table_exists(table_name):
+            return table_name
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS "{table_name}" (
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "source_term_id" TEXT NOT NULL,
+    "target_term_id" TEXT NOT NULL,
+    "relationship_type" TEXT NOT NULL,
+    "source_term_value" TEXT,
+    "target_term_value" TEXT,
+    "source_terminology_id" TEXT,
+    "target_terminology_id" TEXT,
+    "metadata" JSONB DEFAULT '{{}}'::jsonb,
+    "status" VARCHAR(20) NOT NULL DEFAULT 'active',
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "created_by" TEXT,
+    PRIMARY KEY ("namespace", "source_term_id", "target_term_id", "relationship_type")
+);
+
+-- Indexes for efficient traversal queries
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_type_idx"
+  ON "{table_name}"("namespace", "source_term_id", "relationship_type");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_type_idx"
+  ON "{table_name}"("namespace", "target_term_id", "relationship_type");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
+  ON "{table_name}"("namespace", "status");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_terminology_idx"
+  ON "{table_name}"("namespace", "source_terminology_id");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
+  ON "{table_name}"("namespace", "target_terminology_id");
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {table_name} table")
+        return table_name
+
     async def ensure_table_for_template(
         self,
         template: dict[str, Any],

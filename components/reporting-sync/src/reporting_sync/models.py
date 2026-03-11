@@ -32,6 +32,22 @@ class EventType(str, Enum):
     FILE_UPDATED = "file.updated"
     FILE_DELETED = "file.deleted"
 
+    # Terminology events (from def-store)
+    TERMINOLOGY_CREATED = "terminology.created"
+    TERMINOLOGY_UPDATED = "terminology.updated"
+    TERMINOLOGY_DELETED = "terminology.deleted"
+    TERMINOLOGY_RESTORED = "terminology.restored"
+
+    # Term events (from def-store)
+    TERM_CREATED = "term.created"
+    TERM_UPDATED = "term.updated"
+    TERM_DEPRECATED = "term.deprecated"
+    TERM_DELETED = "term.deleted"
+
+    # Relationship events (from def-store)
+    RELATIONSHIP_CREATED = "relationship.created"
+    RELATIONSHIP_DELETED = "relationship.deleted"
+
 
 class SyncStrategy(str, Enum):
     """Sync strategy for a template."""

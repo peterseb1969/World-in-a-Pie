@@ -5,9 +5,10 @@ End-to-end ontology test for World In a Pie.
 Tests the full lifecycle:
 1. Create a hand-crafted mini medical ontology with polyhierarchy and typed relationships
 2. Import ICD-10-GM from testdata/ as a real-world terminology with hierarchy
-3. Create templates that reference ontology terms
-4. Create documents that use ontology terms
-5. Verify traversal queries work correctly
+3. Import HPO (~20k terms, ~24k is_a edges, polyhierarchy, synonyms)
+4. Create templates that reference ontology terms
+5. Create documents that use ontology terms
+6. Verify traversal queries work correctly
 
 Usage:
     # Against localhost (direct ports)
@@ -16,8 +17,8 @@ Usage:
     # Against a remote host via proxy
     python scripts/test_ontology_e2e.py --host wip-pi.local --via-proxy
 
-    # Only run the mini ontology test (no ICD-10 import)
-    python scripts/test_ontology_e2e.py --skip-icd10
+    # Only run the mini ontology test (no ICD-10/HPO import)
+    python scripts/test_ontology_e2e.py --skip-icd10 --skip-hpo
 
     # Only import ICD-10 (skip mini ontology)
     python scripts/test_ontology_e2e.py --skip-mini
@@ -746,6 +747,306 @@ def test_icd10_import():
 
 
 # ===========================================================================
+# TEST 3: HPO (Human Phenotype Ontology) Import
+# ===========================================================================
+
+def _hpo_uri_to_value(uri: str) -> str:
+    """Convert OBO URI to HPO-style value: HP_0000001 → HP:0000001."""
+    # "http://purl.obolibrary.org/obo/HP_0000001" → "HP:0000001"
+    fragment = uri.rsplit("/", 1)[-1]  # HP_0000001
+    return fragment.replace("_", ":", 1)  # HP:0000001
+
+
+def test_hpo_import():
+    """
+    Import HPO (Human Phenotype Ontology) from testdata/hp.json.
+
+    HPO is a real-world polyhierarchical ontology:
+      - ~19,994 nodes (phenotype terms)
+      - ~23,677 is_a edges (all is_a)
+      - 3,609 concepts with multiple parents (polyhierarchy)
+      - 11,036 nodes with synonyms
+
+    This test exercises:
+      1. Large-scale term import (~20k terms in batches)
+      2. Large-scale relationship import (~24k edges in batches)
+      3. Polyhierarchy traversal (multiple parents per concept)
+      4. Synonym import as term aliases
+    """
+    print("\n" + "=" * 60)
+    print("TEST 3: HPO (Human Phenotype Ontology) Import")
+    print("=" * 60)
+
+    hp_json = Path(__file__).parent.parent / "testdata" / "hp.json"
+    if not hp_json.exists():
+        print(f"  SKIP: HPO test data not found at {hp_json}")
+        return
+
+    # --- Parse HPO JSON ---
+    print("\n--- Parsing hp.json ---")
+    t0 = time.time()
+
+    with open(hp_json) as f:
+        hpo_data = json.load(f)
+
+    graph = hpo_data["graphs"][0]
+    raw_nodes = [n for n in graph["nodes"] if n.get("type") == "CLASS"]
+    raw_edges = graph["edges"]
+
+    # Build node lookup: URI → {value, label, synonyms}
+    nodes_by_uri: dict[str, dict] = {}
+    for n in raw_nodes:
+        uri = n["id"]
+        if not uri.startswith("http://purl.obolibrary.org/obo/HP_"):
+            continue  # skip non-HP nodes (e.g., imported terms)
+        value = _hpo_uri_to_value(uri)
+        label = n.get("lbl", value)
+        synonyms = [
+            s["val"] for s in n.get("meta", {}).get("synonyms", [])
+            if s.get("val")
+        ]
+        nodes_by_uri[uri] = {"value": value, "label": label, "synonyms": synonyms}
+
+    # Filter edges to only those where both ends are HP terms
+    edges = [
+        e for e in raw_edges
+        if e["sub"] in nodes_by_uri and e["obj"] in nodes_by_uri
+    ]
+
+    print(f"  HP nodes: {len(nodes_by_uri)}")
+    print(f"  is_a edges: {len(edges)}")
+    t_parse = time.time() - t0
+    print(f"  Parse time: {t_parse:.1f}s")
+
+    # --- Create HPO terminology ---
+    print("\n--- Creating HPO terminology ---")
+    t1 = time.time()
+
+    resp = req("post", f"{DEF_STORE}/terminologies",
+               json=[{
+                   "value": "HPO",
+                   "label": "Human Phenotype Ontology",
+                   "description": "Standardized vocabulary of phenotypic abnormalities in human disease",
+                   "namespace": NAMESPACE,
+                   "metadata": {"source": "HPO Consortium", "version": "2026-02-16"},
+               }])
+    data = resp.json()
+    result = data["results"][0]
+    if result["status"] == "created":
+        hpo_terminology_id = result["id"]
+        check("Created HPO terminology", True)
+    elif "already exists" in result.get("error", ""):
+        lookup = req("get", f"{DEF_STORE}/terminologies/by-value/HPO")
+        hpo_terminology_id = lookup.json()["terminology_id"]
+        check(f"HPO exists (reusing {hpo_terminology_id[:8]}...)", True)
+    else:
+        check("Created HPO terminology", False, result.get("error"))
+        return
+
+    # --- Import terms in batches ---
+    print(f"\n--- Importing {len(nodes_by_uri)} HPO terms (batched) ---")
+
+    TERM_BATCH = 1000
+    term_items = []
+    synonym_count = 0
+    for info in nodes_by_uri.values():
+        item: dict[str, Any] = {"value": info["value"], "label": info["label"]}
+        if info["synonyms"]:
+            item["aliases"] = info["synonyms"][:5]  # Max 5 aliases per term
+            synonym_count += len(item["aliases"])
+        term_items.append(item)
+
+    # Map value → term_id for relationship creation
+    value_to_term_id: dict[str, str] = {}
+    total_ok = 0
+
+    for i in range(0, len(term_items), TERM_BATCH):
+        batch = term_items[i:i + TERM_BATCH]
+        resp = req("post", f"{DEF_STORE}/terminologies/{hpo_terminology_id}/terms",
+                   json=batch,
+                   params={"batch_size": 1000, "registry_batch_size": 50},
+                   timeout=120)
+        data = resp.json()
+        batch_ok = 0
+        for r in data.get("results", []):
+            if r.get("id"):
+                value_to_term_id[r["value"]] = r["id"]
+                batch_ok += 1
+            elif r["status"] in ("skipped", "error") and "lready exists" in r.get("error", ""):
+                batch_ok += 1
+                # We'll resolve IDs later if needed
+        total_ok += batch_ok
+        batch_num = i // TERM_BATCH + 1
+        total_batches = (len(term_items) + TERM_BATCH - 1) // TERM_BATCH
+        print(f"  Batch {batch_num}/{total_batches}: {batch_ok}/{len(batch)} OK")
+
+    t_terms = time.time() - t1
+    check(f"Imported {total_ok}/{len(term_items)} terms in {t_terms:.1f}s",
+          total_ok == len(term_items),
+          f"got {total_ok}")
+
+    # If re-running, we need to resolve term IDs for existing terms
+    if len(value_to_term_id) < len(nodes_by_uri):
+        print(f"\n--- Resolving {len(nodes_by_uri) - len(value_to_term_id)} existing term IDs ---")
+        # Fetch all terms via paginated list
+        page = 1
+        page_size = 100
+        while True:
+            resp = req("get", f"{DEF_STORE}/terminologies/{hpo_terminology_id}/terms",
+                       params={"page": page, "page_size": page_size})
+            data = resp.json()
+            for item in data.get("items", []):
+                value_to_term_id[item["value"]] = item["term_id"]
+            if page >= data.get("pages", 1):
+                break
+            page += 1
+        print(f"  Resolved {len(value_to_term_id)} total term IDs")
+
+    # Build URI → term_id mapping for edges
+    uri_to_term_id: dict[str, str] = {}
+    for uri, info in nodes_by_uri.items():
+        tid = value_to_term_id.get(info["value"])
+        if tid:
+            uri_to_term_id[uri] = tid
+
+    # --- Import relationships in batches ---
+    print(f"\n--- Importing {len(edges)} is_a relationships (batched) ---")
+    t2 = time.time()
+
+    REL_BATCH = 500
+    rel_items = []
+    skipped_edges = 0
+    for e in edges:
+        src_id = uri_to_term_id.get(e["sub"])
+        tgt_id = uri_to_term_id.get(e["obj"])
+        if src_id and tgt_id:
+            rel_items.append({
+                "source_term_id": src_id,
+                "target_term_id": tgt_id,
+                "relationship_type": "is_a",
+            })
+        else:
+            skipped_edges += 1
+
+    if skipped_edges:
+        print(f"  Skipped {skipped_edges} edges (missing term IDs)")
+
+    total_rel_ok = 0
+    for i in range(0, len(rel_items), REL_BATCH):
+        batch = rel_items[i:i + REL_BATCH]
+        resp = req("post", f"{DEF_STORE}/ontology/relationships",
+                   json=batch, params={"namespace": NAMESPACE},
+                   timeout=120)
+        data = resp.json()
+        batch_ok = sum(1 for r in data.get("results", [])
+                      if r.get("status") in ("created", "skipped"))
+        total_rel_ok += batch_ok
+        batch_num = i // REL_BATCH + 1
+        total_batches = (len(rel_items) + REL_BATCH - 1) // REL_BATCH
+        print(f"  Batch {batch_num}/{total_batches}: {batch_ok}/{len(batch)} OK")
+
+    t_rels = time.time() - t2
+    check(f"Imported {total_rel_ok}/{len(rel_items)} relationships in {t_rels:.1f}s",
+          total_rel_ok == len(rel_items),
+          f"got {total_rel_ok}")
+
+    # --- Verify polyhierarchy traversal ---
+    print("\n--- Verifying polyhierarchy traversal ---")
+
+    # Find a node with multiple parents for testing
+    from collections import Counter
+    parent_counts = Counter()
+    edge_by_sub: dict[str, list[str]] = {}
+    for e in edges:
+        sub_val = nodes_by_uri[e["sub"]]["value"]
+        obj_val = nodes_by_uri[e["obj"]]["value"]
+        parent_counts[sub_val] += 1
+        edge_by_sub.setdefault(sub_val, []).append(obj_val)
+
+    # Pick a polyhierarchy concept (2+ parents) that we have IDs for
+    poly_term = None
+    poly_parents = []
+    for val, count in parent_counts.items():
+        if count >= 2 and val in value_to_term_id:
+            parents = edge_by_sub[val]
+            if all(p in value_to_term_id for p in parents):
+                poly_term = val
+                poly_parents = parents
+                break
+
+    if poly_term:
+        poly_tid = value_to_term_id[poly_term]
+        print(f"  Testing polyhierarchy on: {poly_term}")
+        print(f"    Direct parents: {poly_parents}")
+
+        # Check parents
+        resp = req("get", f"{DEF_STORE}/ontology/terms/{poly_tid}/parents",
+                   params={"namespace": NAMESPACE})
+        parent_data = resp.json()
+        parent_target_ids = {r["target_term_id"] for r in parent_data}
+        expected_parent_ids = {value_to_term_id[p] for p in poly_parents}
+        check(f"{poly_term} has {len(poly_parents)} parents",
+              parent_target_ids == expected_parent_ids,
+              f"expected {len(expected_parent_ids)}, got {len(parent_target_ids)}")
+
+        # Check ancestors (should find all ancestors through both parent paths)
+        resp = req("get", f"{DEF_STORE}/ontology/terms/{poly_tid}/ancestors",
+                   params={"namespace": NAMESPACE, "max_depth": 20})
+        anc_data = resp.json()
+        check(f"Ancestors found: {anc_data['total']}",
+              anc_data["total"] >= len(poly_parents),
+              f"expected >= {len(poly_parents)}")
+
+        # All paths should eventually reach the root (HP:0000001 = "All")
+        anc_values = {n["value"] for n in anc_data["nodes"]}
+        check("Root 'HP:0000001' reachable via ancestors",
+              "HP:0000001" in anc_values,
+              f"ancestors: {sorted(list(anc_values))[:10]}...")
+    else:
+        print("  WARNING: Could not find a polyhierarchy term with resolved IDs")
+
+    # Test descendants from root
+    root_id = value_to_term_id.get("HP:0000001")
+    if root_id:
+        resp = req("get", f"{DEF_STORE}/ontology/terms/{root_id}/descendants",
+                   params={"namespace": NAMESPACE, "max_depth": 1})
+        desc_data = resp.json()
+        check(f"Root HP:0000001 has direct children: {desc_data['total']}",
+              desc_data["total"] >= 3,  # All has several top-level categories
+              f"got {desc_data['total']}")
+
+    # --- Verify synonym/alias search ---
+    print("\n--- Verifying synonym search ---")
+
+    # Find a term with synonyms to test search
+    test_synonym_term = None
+    test_synonym = None
+    for uri, info in nodes_by_uri.items():
+        if info["synonyms"] and info["value"] in value_to_term_id:
+            test_synonym_term = info
+            test_synonym = info["synonyms"][0]
+            break
+
+    if test_synonym_term and test_synonym:
+        resp = req("get", f"{DEF_STORE}/terminologies/{hpo_terminology_id}/terms",
+                   params={"search": test_synonym[:30], "page_size": 10})
+        data = resp.json()
+        found = any(
+            item["value"] == test_synonym_term["value"]
+            for item in data.get("items", [])
+        )
+        check(f"Synonym search '{test_synonym[:30]}' finds {test_synonym_term['value']}",
+              found,
+              f"got {[i['value'] for i in data.get('items', [])[:5]]}")
+
+    total_time = time.time() - t0
+    print(f"\n  HPO import complete: {total_time:.1f}s total")
+    print(f"  Terms: {len(value_to_term_id)}")
+    print(f"  Relationships: {total_rel_ok}")
+    print(f"  Aliases (synonyms): {synonym_count}")
+
+
+# ===========================================================================
 # MAIN
 # ===========================================================================
 
@@ -757,6 +1058,8 @@ def main():
     parser.add_argument("--via-proxy", action="store_true", help="Route through Caddy proxy")
     parser.add_argument("--skip-mini", action="store_true", help="Skip mini ontology test")
     parser.add_argument("--skip-icd10", action="store_true", help="Skip ICD-10 import test")
+    parser.add_argument("--skip-hpo", action="store_true", help="Skip HPO import test")
+    parser.add_argument("--only-hpo", action="store_true", help="Only run HPO import test")
     args = parser.parse_args()
 
     configure_urls(args.host, args.via_proxy)
@@ -778,11 +1081,17 @@ def main():
         print(f"\nERROR: Cannot connect to Def-Store: {e}")
         sys.exit(1)
 
-    if not args.skip_mini:
-        test_mini_ontology()
+    if args.only_hpo:
+        test_hpo_import()
+    else:
+        if not args.skip_mini:
+            test_mini_ontology()
 
-    if not args.skip_icd10:
-        test_icd10_import()
+        if not args.skip_icd10:
+            test_icd10_import()
+
+        if not args.skip_hpo:
+            test_hpo_import()
 
     # Summary
     print("\n" + "=" * 60)

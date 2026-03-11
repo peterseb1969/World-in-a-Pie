@@ -104,6 +104,41 @@ async def delete_relationships(
     )
 
 
+@router.get(
+    "/relationships/all",
+    response_model=RelationshipListResponse,
+    summary="List all relationships (for batch sync)"
+)
+async def list_all_relationships(
+    namespace: str = Query("wip", description="Namespace"),
+    relationship_type: Optional[str] = Query(None, description="Filter by type"),
+    status: str = Query("active", description="Filter by status"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    api_key: str = Depends(require_api_key),
+) -> RelationshipListResponse:
+    """
+    List all relationships in a namespace (paginated).
+
+    Unlike the per-term list endpoint, this returns ALL relationships,
+    useful for batch sync and export operations.
+    """
+    items, total = await OntologyService.list_all_relationships(
+        namespace=namespace,
+        relationship_type=relationship_type,
+        status=status,
+        page=page,
+        page_size=page_size,
+    )
+    return RelationshipListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
+
+
 # =============================================================================
 # TRAVERSAL QUERIES
 # =============================================================================

@@ -19,6 +19,7 @@ from ..models.api_models import (
     TraversalResponse,
 )
 from ..api.auth import get_identity_string
+from .nats_client import publish_relationship_event, EventType as NatsEventType
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,25 @@ class OntologyService:
                     value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
                 ))
 
+                # Publish event to NATS
+                await publish_relationship_event(
+                    NatsEventType.RELATIONSHIP_CREATED,
+                    {
+                        "namespace": namespace,
+                        "source_term_id": item.source_term_id,
+                        "target_term_id": item.target_term_id,
+                        "relationship_type": item.relationship_type,
+                        "source_terminology_id": source_term.terminology_id,
+                        "target_terminology_id": target_term.terminology_id,
+                        "source_term_value": source_term.value,
+                        "target_term_value": target_term.value,
+                        "metadata": item.metadata or {},
+                        "status": "active",
+                        "created_by": actor or item.created_by,
+                    },
+                    changed_by=actor or item.created_by,
+                )
+
             except DuplicateKeyError:
                 # Check if the existing relationship is inactive (soft-deleted) — re-activate it
                 existing = await TermRelationship.find_one({
@@ -131,6 +151,23 @@ class OntologyService:
                         status="created",
                         value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id} (reactivated)"
                     ))
+
+                    # Publish reactivation as a create event
+                    await publish_relationship_event(
+                        NatsEventType.RELATIONSHIP_CREATED,
+                        {
+                            "namespace": namespace,
+                            "source_term_id": item.source_term_id,
+                            "target_term_id": item.target_term_id,
+                            "relationship_type": item.relationship_type,
+                            "source_terminology_id": existing.source_terminology_id,
+                            "target_terminology_id": existing.target_terminology_id,
+                            "metadata": existing.metadata or {},
+                            "status": "active",
+                            "created_by": actor,
+                        },
+                        changed_by=actor,
+                    )
                 else:
                     results.append(BulkResultItem(
                         index=i,
@@ -189,6 +226,20 @@ class OntologyService:
                     value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
                 ))
 
+                # Publish delete event to NATS
+                await publish_relationship_event(
+                    NatsEventType.RELATIONSHIP_DELETED,
+                    {
+                        "namespace": namespace,
+                        "source_term_id": item.source_term_id,
+                        "target_term_id": item.target_term_id,
+                        "relationship_type": item.relationship_type,
+                        "source_terminology_id": rel.source_terminology_id,
+                        "target_terminology_id": rel.target_terminology_id,
+                        "status": "inactive",
+                    },
+                )
+
             except Exception as e:
                 logger.error(f"Error deleting relationship at index {i}: {e}")
                 results.append(BulkResultItem(
@@ -221,6 +272,28 @@ class OntologyService:
                 {"source_term_id": term_id},
                 {"target_term_id": term_id},
             ]
+
+        if relationship_type:
+            query["relationship_type"] = relationship_type
+
+        total = await TermRelationship.find(query).count()
+        skip = (page - 1) * page_size
+
+        rels = await TermRelationship.find(query).skip(skip).limit(page_size).to_list()
+
+        items = [OntologyService._to_relationship_response(r) for r in rels]
+        return items, total
+
+    @staticmethod
+    async def list_all_relationships(
+        namespace: str = "wip",
+        relationship_type: Optional[str] = None,
+        status: str = "active",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> tuple[list[RelationshipResponse], int]:
+        """List all relationships in a namespace with pagination."""
+        query: dict = {"namespace": namespace, "status": status}
 
         if relationship_type:
             query["relationship_type"] = relationship_type

@@ -21,6 +21,12 @@ from ..models.api_models import (
     BulkResultItem,
 )
 from .registry_client import get_registry_client, RegistryError
+from .nats_client import (
+    publish_terminology_event,
+    publish_term_event,
+    publish_term_events_bulk,
+    EventType as NatsEventType,
+)
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -107,6 +113,13 @@ class TerminologyService:
                 "description": request.description,
             },
             namespace=namespace
+        )
+
+        # Publish NATS event
+        await publish_terminology_event(
+            NatsEventType.TERMINOLOGY_CREATED,
+            TerminologyService._terminology_to_event_dict(terminology),
+            changed_by=actor,
         )
 
         return TerminologyService._to_terminology_response(terminology)
@@ -285,6 +298,13 @@ class TerminologyService:
                 namespace=terminology.namespace
             )
 
+        # Publish NATS event
+        await publish_terminology_event(
+            NatsEventType.TERMINOLOGY_UPDATED,
+            TerminologyService._terminology_to_event_dict(terminology),
+            changed_by=actor,
+        )
+
         return TerminologyService._to_terminology_response(terminology)
 
     @staticmethod
@@ -325,6 +345,13 @@ class TerminologyService:
                 "updated_by": actor
             }
         })
+
+        # Publish NATS event
+        await publish_terminology_event(
+            NatsEventType.TERMINOLOGY_DELETED,
+            TerminologyService._terminology_to_event_dict(terminology),
+            changed_by=actor,
+        )
 
         return True
 
@@ -380,6 +407,13 @@ class TerminologyService:
                 "status": "active"
             }).count()
             await terminology.save()
+
+        # Publish NATS event
+        await publish_terminology_event(
+            NatsEventType.TERMINOLOGY_RESTORED,
+            TerminologyService._terminology_to_event_dict(terminology),
+            changed_by=actor,
+        )
 
         return TerminologyService._to_terminology_response(terminology)
 
@@ -481,6 +515,13 @@ class TerminologyService:
         terminology.term_count += 1
         terminology.updated_at = datetime.now(timezone.utc)
         await terminology.save()
+
+        # Publish NATS event
+        await publish_term_event(
+            NatsEventType.TERM_CREATED,
+            TerminologyService._term_to_event_dict(term),
+            changed_by=actor,
+        )
 
         return TerminologyService._to_term_response(term)
 
@@ -704,6 +745,19 @@ class TerminologyService:
             if audit_entries:
                 await TermAuditLog.insert_many(audit_entries)
 
+            # Phase F2: Publish NATS events for created terms
+            created_term_dicts = [
+                TerminologyService._term_to_event_dict(terms_to_insert[pos])
+                for pos, idx in enumerate(insert_indices)
+                if results[idx] is not None and results[idx].status == "created"
+            ]
+            if created_term_dicts:
+                await publish_term_events_bulk(
+                    NatsEventType.TERM_CREATED,
+                    created_term_dicts,
+                    changed_by=actor,
+                )
+
             total_created += batch_created
             logger.info(
                 f"Batch {batch_num}/{num_batches} complete: "
@@ -896,6 +950,13 @@ class TerminologyService:
                 namespace=term.namespace
             )
 
+        # Publish NATS event
+        await publish_term_event(
+            NatsEventType.TERM_UPDATED,
+            TerminologyService._term_to_event_dict(term),
+            changed_by=actor,
+        )
+
         return TerminologyService._to_term_response(term)
 
     @staticmethod
@@ -929,6 +990,13 @@ class TerminologyService:
             }).count()
             await terminology.save()
 
+        # Publish NATS event
+        await publish_term_event(
+            NatsEventType.TERM_DEPRECATED,
+            TerminologyService._term_to_event_dict(term),
+            changed_by=actor,
+        )
+
         return TerminologyService._to_term_response(term)
 
     @staticmethod
@@ -957,6 +1025,13 @@ class TerminologyService:
                 "status": "active"
             }).count()
             await terminology.save()
+
+        # Publish NATS event
+        await publish_term_event(
+            NatsEventType.TERM_DELETED,
+            TerminologyService._term_to_event_dict(term),
+            changed_by=actor,
+        )
 
         return True
 
@@ -1081,6 +1156,49 @@ class TerminologyService:
             updated_at=t.updated_at,
             updated_by=t.updated_by,
         )
+
+    @staticmethod
+    def _terminology_to_event_dict(t: Terminology) -> dict:
+        """Convert Terminology document to a dict for NATS event payload."""
+        return {
+            "terminology_id": t.terminology_id,
+            "namespace": t.namespace,
+            "value": t.value,
+            "label": t.label,
+            "description": t.description,
+            "case_sensitive": t.case_sensitive,
+            "allow_multiple": t.allow_multiple,
+            "extensible": t.extensible,
+            "status": t.status,
+            "term_count": t.term_count,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "created_by": t.created_by,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            "updated_by": t.updated_by,
+        }
+
+    @staticmethod
+    def _term_to_event_dict(t: Term) -> dict:
+        """Convert Term document to a dict for NATS event payload."""
+        return {
+            "term_id": t.term_id,
+            "namespace": t.namespace,
+            "terminology_id": t.terminology_id,
+            "terminology_value": t.terminology_value,
+            "value": t.value,
+            "aliases": t.aliases,
+            "label": t.label or t.value,
+            "description": t.description,
+            "sort_order": t.sort_order,
+            "parent_term_id": t.parent_term_id,
+            "status": t.status,
+            "deprecated_reason": t.deprecated_reason,
+            "replaced_by_term_id": t.replaced_by_term_id,
+            "created_at": t.created_at.isoformat() if t.created_at else None,
+            "created_by": t.created_by,
+            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            "updated_by": t.updated_by,
+        }
 
     @staticmethod
     async def _create_audit_log(

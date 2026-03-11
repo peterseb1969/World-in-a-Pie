@@ -21,6 +21,7 @@ from .models.audit_log import TermAuditLog
 from .models.term_relationship import TermRelationship
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
+from .services.nats_client import configure_nats_client, close_nats_client
 from .services.system_terminologies import ensure_system_terminologies
 
 
@@ -33,6 +34,7 @@ class Settings:
     API_KEY: str = os.getenv("API_KEY", "dev_master_key_for_testing")
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
     REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
+    NATS_URL: str = os.getenv("NATS_URL", "")
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
 
 
@@ -73,6 +75,13 @@ async def lifespan(app: FastAPI):
     else:
         print("WARNING: Registry service is not reachable. Some features may not work.")
 
+    # Configure NATS client (optional — for event publishing to reporting-sync)
+    if settings.NATS_URL:
+        nats_ok = await configure_nats_client(settings.NATS_URL)
+        print(f"NATS client: {'connected' if nats_ok else 'failed'} ({settings.NATS_URL})")
+    else:
+        print("NATS URL not configured, event publishing disabled")
+
     # Bootstrap system terminologies
     print("Ensuring system terminologies exist...")
     try:
@@ -92,6 +101,7 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Def-Store Service...")
+    await close_nats_client()
     app.state.mongodb_client.close()
     print("MongoDB connection closed.")
 

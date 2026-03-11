@@ -154,6 +154,9 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
             subjects=[
                 "wip.documents.>",
                 "wip.templates.>",
+                "wip.terminologies.>",
+                "wip.terms.>",
+                "wip.relationships.>",
             ],
             retention="limits",
             max_msgs=1_000_000,
@@ -232,6 +235,13 @@ async def lifespan(app: FastAPI):
 
         # Initialize schema
         await init_postgres_schema(state.postgres_pool)
+
+        # Ensure def-store tables exist
+        from .schema_manager import SchemaManager
+        sm = SchemaManager(state.postgres_pool)
+        await sm.ensure_terminologies_table()
+        await sm.ensure_terms_table()
+        await sm.ensure_term_relationships_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -610,6 +620,92 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
     return job
+
+
+@router.post("/sync/batch/terminologies")
+async def trigger_terminology_sync(
+    namespace: str = "wip",
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """
+    Batch sync all terminologies from Def-Store to PostgreSQL.
+
+    Args:
+        namespace: Namespace to sync (default: wip)
+        page_size: Page size for API fetches (default: 100)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    result = await state.batch_sync_service.batch_sync_terminologies(
+        namespace=namespace,
+        page_size=page_size,
+    )
+
+    return {
+        "status": "completed",
+        "table": "terminologies",
+        **result,
+    }
+
+
+@router.post("/sync/batch/terms")
+async def trigger_term_sync(
+    namespace: str = "wip",
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """
+    Batch sync all terms from Def-Store to PostgreSQL.
+
+    Iterates through all terminologies and fetches their terms.
+
+    Args:
+        namespace: Namespace to sync (default: wip)
+        page_size: Page size for API fetches (default: 100)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    result = await state.batch_sync_service.batch_sync_terms(
+        namespace=namespace,
+        page_size=page_size,
+    )
+
+    return {
+        "status": "completed",
+        "table": "terms",
+        **result,
+    }
+
+
+@router.post("/sync/batch/relationships")
+async def trigger_relationship_sync(
+    namespace: str = "wip",
+    page_size: int = 100,
+) -> dict[str, Any]:
+    """
+    Batch sync all term relationships from Def-Store to PostgreSQL.
+
+    Fetches all active relationships via the Def-Store ontology API
+    and upserts them into the term_relationships table.
+
+    Args:
+        namespace: Namespace to sync (default: wip)
+        page_size: Page size for API fetches (default: 100)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    result = await state.batch_sync_service.batch_sync_relationships(
+        namespace=namespace,
+        page_size=page_size,
+    )
+
+    return {
+        "status": "completed",
+        "table": "term_relationships",
+        **result,
+    }
 
 
 @router.delete("/sync/batch/jobs/{job_id}")
