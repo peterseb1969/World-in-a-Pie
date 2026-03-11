@@ -1,6 +1,12 @@
 # World In a Pie (WIP)
 
-**A universal, template-driven document storage and query system designed to run anywhere — even on a Raspberry Pi.**
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green.svg)](https://fastapi.tiangolo.com)
+[![Vue 3](https://img.shields.io/badge/Vue-3-brightgreen.svg)](https://vuejs.org/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7-green.svg)](https://www.mongodb.com/)
+
+**A universal, template-driven document storage and query system designed to run anywhere — from a Raspberry Pi to the cloud.**
 
 ---
 
@@ -141,18 +147,35 @@ See [Production Deployment Guide](docs/production-deployment.md) for complete in
 
 ## Project Status
 
-**Core functionality complete** — All services operational with OIDC authentication, bulk operations, PostgreSQL reporting sync, binary file storage (MinIO), semantic types, and template draft mode.
+**Core platform complete and operational.** All services running with:
 
-Current focus: Namespace scoping improvements and data isolation.
+- OIDC authentication (Dex) + API key dual mode
+- Bulk-first API convention across all write endpoints
+- PostgreSQL reporting sync via NATS JetStream
+- Binary file storage (MinIO) with reference tracking
+- Semantic types (email, URL, geo_point, duration, etc.)
+- Template draft mode with cascading activation
+- Template inheritance with version pinning
+- Streaming import/export with cursor pagination
+- Namespace-scoped referential integrity
+- Ontology support — typed relationships, polyhierarchy, traversal queries
+
+Current focus: Ontology import (OWL/SKOS), file upload (CSV/XLSX), and BI dashboards.
 
 ---
 
 ## License
 
-*TBD*
+Licensed under the [Apache License, Version 2.0](LICENSE).
 
 ---
 
 ## Contributing
 
-*TBD*
+Contributions are welcome! Please open an issue to discuss proposed changes before submitting a pull request.
+
+Key conventions:
+- **Bulk-first API** — all write endpoints accept arrays and return `BulkResponse`
+- **Soft-delete** — data is never hard-deleted (except file storage reclamation)
+- **Namespace-scoped** — all entities are scoped to a namespace
+- See [API Conventions](docs/api-conventions.md) and [Data Models](docs/data-models.md) for details
