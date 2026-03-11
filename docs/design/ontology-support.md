@@ -395,3 +395,23 @@ SNOMED CT allows combining concepts at data entry time (e.g., "fracture" + "femu
 - [ ] Traversal of "all ancestors of Viral Pneumonia" returns correct multi-parent paths
 - [ ] Existing terminologies with `parent_term_id` continue to work unchanged
 - [ ] Round-trip: import SKOS → export SKOS produces equivalent output
+
+## Implementation Status
+
+### Done
+- Phase 1: Relationship model, CRUD endpoints, bulk create/delete
+- Phase 2: Traversal queries (ancestors, descendants, parents, children)
+- Phase 4 (partial): Reporting sync — full NATS streaming + PostgreSQL sync for all def-store entities (terminologies, terms, relationships), batch sync endpoints
+- HPO E2E test: 20k terms, 24k relationships, polyhierarchy verification
+
+### Pending
+- Phase 3: OWL/SKOS/OBO import parsers (currently only JSON-based import)
+- Phase 4 (remainder): OWL/SKOS export, integrity service extension
+- Phase 5: Console UI (relationship browser, import wizard)
+
+### TODO: Test Coverage
+- Review and extend unit test coverage for new NATS publishing code in def-store
+- Add unit tests for reporting-sync terminology/term event processing
+- Add integration tests for batch sync endpoints (terminologies, terms, relationships)
+- Verify E2E test scripts cover the full reporting sync pipeline
+- Check existing test scripts for coverage gaps after ontology + sync additions
