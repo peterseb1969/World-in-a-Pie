@@ -73,7 +73,6 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
                 "sort_order": 5
             },
         ]
-    }
     },
     {
         "value": "_ONTOLOGY_RELATIONSHIP_TYPES",
