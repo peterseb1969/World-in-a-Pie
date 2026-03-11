@@ -74,7 +74,102 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
             },
         ]
     }
+    },
+    {
+        "value": "_ONTOLOGY_RELATIONSHIP_TYPES",
+        "label": "Ontology Relationship Types",
+        "description": "System terminology defining relationship types for ontology support. "
+                       "Each term represents a typed relationship between concepts.",
+        "case_sensitive": False,
+        "metadata": {
+            "source": "WIP System",
+            "version": "1.0",
+            "language": "en",
+            "custom": {
+                "system_managed": True,
+                "ontology": True
+            }
+        },
+        "terms": [
+            {
+                "value": "is_a",
+                "label": "Is a",
+                "description": "Subsumption / SKOS broader",
+                "aliases": ["broader", "subClassOf"],
+                "metadata": {"inverse": "has_subtype", "transitive": True},
+                "sort_order": 1
+            },
+            {
+                "value": "has_subtype",
+                "label": "Has subtype",
+                "description": "Inverse of is_a / SKOS narrower",
+                "aliases": ["narrower"],
+                "metadata": {"inverse": "is_a", "transitive": True},
+                "sort_order": 2
+            },
+            {
+                "value": "part_of",
+                "label": "Part of",
+                "description": "Mereological part-whole relationship",
+                "aliases": [],
+                "metadata": {"inverse": "has_part", "transitive": True},
+                "sort_order": 3
+            },
+            {
+                "value": "has_part",
+                "label": "Has part",
+                "description": "Inverse of part_of",
+                "aliases": [],
+                "metadata": {"inverse": "part_of", "transitive": True},
+                "sort_order": 4
+            },
+            {
+                "value": "maps_to",
+                "label": "Maps to",
+                "description": "Cross-vocabulary mapping",
+                "aliases": ["exactMatch", "closeMatch"],
+                "metadata": {"inverse": "mapped_from", "transitive": False},
+                "sort_order": 5
+            },
+            {
+                "value": "mapped_from",
+                "label": "Mapped from",
+                "description": "Inverse of maps_to",
+                "aliases": [],
+                "metadata": {"inverse": "maps_to", "transitive": False},
+                "sort_order": 6
+            },
+            {
+                "value": "related_to",
+                "label": "Related to",
+                "description": "Associative / SKOS related",
+                "aliases": ["related"],
+                "metadata": {"inverse": "related_to", "transitive": False},
+                "sort_order": 7
+            },
+            {
+                "value": "finding_site",
+                "label": "Finding site",
+                "description": "SNOMED-style anatomical site attribute",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 8
+            },
+            {
+                "value": "causative_agent",
+                "label": "Causative agent",
+                "description": "SNOMED-style causative agent attribute",
+                "aliases": [],
+                "metadata": {"transitive": False},
+                "sort_order": 9
+            },
+        ]
+    }
 ]
+
+
+# Constant for the relationship types terminology value
+RELATIONSHIP_TYPES_TERMINOLOGY_VALUE = "_ONTOLOGY_RELATIONSHIP_TYPES"
 
 
 async def ensure_system_terminologies() -> dict[str, Any]:

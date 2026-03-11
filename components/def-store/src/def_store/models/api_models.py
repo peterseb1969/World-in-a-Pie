@@ -445,3 +445,87 @@ class AuditLogResponse(BaseModel):
     total: int
     page: int = 1
     page_size: int = 50
+
+
+# =============================================================================
+# ONTOLOGY / RELATIONSHIP MODELS
+# =============================================================================
+
+class CreateRelationshipRequest(StrictModel):
+    """Request to create a typed relationship between two terms."""
+
+    source_term_id: str = Field(
+        ...,
+        description="The subject term ID"
+    )
+    target_term_id: str = Field(
+        ...,
+        description="The object term ID"
+    )
+    relationship_type: str = Field(
+        ...,
+        description="Relationship type value (e.g., 'is_a', 'part_of')"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Provenance, confidence, OWL axioms"
+    )
+    created_by: Optional[str] = Field(
+        None,
+        description="User or system creating this relationship"
+    )
+
+
+class DeleteRelationshipRequest(StrictModel):
+    """Request to delete a specific relationship."""
+
+    source_term_id: str = Field(..., description="The subject term ID")
+    target_term_id: str = Field(..., description="The object term ID")
+    relationship_type: str = Field(..., description="Relationship type value")
+
+
+class RelationshipResponse(BaseModel):
+    """Response containing a single relationship."""
+
+    namespace: str
+    source_term_id: str
+    target_term_id: str
+    relationship_type: str
+    relationship_value: Optional[str] = None
+    source_terminology_id: Optional[str] = None
+    target_terminology_id: Optional[str] = None
+    metadata: dict[str, Any] = {}
+    status: str
+    created_at: datetime
+    created_by: Optional[str] = None
+
+
+class RelationshipListResponse(BaseModel):
+    """Response for listing relationships."""
+
+    items: list[RelationshipResponse]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    pages: int = 0
+
+
+class TraversalNode(BaseModel):
+    """A single node in a traversal result."""
+
+    term_id: str
+    value: Optional[str] = None
+    terminology_id: Optional[str] = None
+    depth: int
+    path: list[str]
+
+
+class TraversalResponse(BaseModel):
+    """Response for ancestor/descendant traversal queries."""
+
+    term_id: str
+    relationship_type: str
+    direction: str  # "ancestors" or "descendants"
+    nodes: list[TraversalNode]
+    total: int
+    max_depth_reached: bool = False

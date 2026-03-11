@@ -1,0 +1,195 @@
+"""API endpoints for ontology relationship management and traversal."""
+
+import math
+from typing import Optional
+
+from fastapi import APIRouter, Body, Query, Depends
+
+from ..models.api_models import (
+    BulkResponse,
+    CreateRelationshipRequest,
+    DeleteRelationshipRequest,
+    RelationshipListResponse,
+    TraversalResponse,
+    RelationshipResponse,
+)
+from ..services.ontology_service import OntologyService
+from .auth import require_api_key
+
+router = APIRouter(prefix="/ontology", tags=["Ontology"])
+
+
+# =============================================================================
+# RELATIONSHIP CRUD
+# =============================================================================
+
+@router.post(
+    "/relationships",
+    response_model=BulkResponse,
+    summary="Create term relationships"
+)
+async def create_relationships(
+    items: list[CreateRelationshipRequest] = Body(...),
+    namespace: str = Query("wip", description="Namespace"),
+    api_key: str = Depends(require_api_key),
+) -> BulkResponse:
+    """
+    Create one or more typed relationships between terms.
+
+    Relationship types include: is_a, part_of, has_part, maps_to, related_to,
+    finding_site, causative_agent, or any custom type.
+    """
+    results = await OntologyService.create_relationships(namespace, items)
+    succeeded = sum(1 for r in results if r.status == "created")
+    return BulkResponse(
+        results=results,
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+    )
+
+
+@router.get(
+    "/relationships",
+    response_model=RelationshipListResponse,
+    summary="List relationships for a term"
+)
+async def list_relationships(
+    term_id: str = Query(..., description="Term ID to query relationships for"),
+    direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
+    relationship_type: Optional[str] = Query(None, description="Filter by relationship type"),
+    namespace: str = Query("wip", description="Namespace"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    api_key: str = Depends(require_api_key),
+) -> RelationshipListResponse:
+    """List relationships for a term, with optional direction and type filtering."""
+    items, total = await OntologyService.list_relationships(
+        term_id=term_id,
+        namespace=namespace,
+        direction=direction,
+        relationship_type=relationship_type,
+        page=page,
+        page_size=page_size,
+    )
+    return RelationshipListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
+
+
+@router.delete(
+    "/relationships",
+    response_model=BulkResponse,
+    summary="Delete term relationships"
+)
+async def delete_relationships(
+    items: list[DeleteRelationshipRequest] = Body(...),
+    namespace: str = Query("wip", description="Namespace"),
+    api_key: str = Depends(require_api_key),
+) -> BulkResponse:
+    """
+    Soft-delete one or more relationships (set status to inactive).
+    """
+    results = await OntologyService.delete_relationships(namespace, items)
+    succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
+    return BulkResponse(
+        results=results,
+        total=len(results),
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+    )
+
+
+# =============================================================================
+# TRAVERSAL QUERIES
+# =============================================================================
+
+@router.get(
+    "/terms/{term_id}/ancestors",
+    response_model=TraversalResponse,
+    summary="Get ancestors of a term"
+)
+async def get_ancestors(
+    term_id: str,
+    relationship_type: str = Query("is_a", description="Relationship type to traverse"),
+    namespace: str = Query("wip", description="Namespace"),
+    max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
+    api_key: str = Depends(require_api_key),
+) -> TraversalResponse:
+    """
+    Traverse upward from a term, following outgoing relationships of the given type.
+
+    For is_a relationships, also follows parent_term_id links for backward
+    compatibility with simple hierarchical terminologies.
+    """
+    return await OntologyService.get_ancestors(
+        term_id=term_id,
+        namespace=namespace,
+        relationship_type=relationship_type,
+        max_depth=max_depth,
+    )
+
+
+@router.get(
+    "/terms/{term_id}/descendants",
+    response_model=TraversalResponse,
+    summary="Get descendants of a term"
+)
+async def get_descendants(
+    term_id: str,
+    relationship_type: str = Query("is_a", description="Relationship type to traverse"),
+    namespace: str = Query("wip", description="Namespace"),
+    max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
+    api_key: str = Depends(require_api_key),
+) -> TraversalResponse:
+    """
+    Traverse downward from a term, following incoming relationships of the given type.
+
+    For is_a relationships, also includes children via parent_term_id.
+    """
+    return await OntologyService.get_descendants(
+        term_id=term_id,
+        namespace=namespace,
+        relationship_type=relationship_type,
+        max_depth=max_depth,
+    )
+
+
+@router.get(
+    "/terms/{term_id}/parents",
+    response_model=list[RelationshipResponse],
+    summary="Get direct parents of a term"
+)
+async def get_parents(
+    term_id: str,
+    namespace: str = Query("wip", description="Namespace"),
+    api_key: str = Depends(require_api_key),
+) -> list[RelationshipResponse]:
+    """
+    Get immediate parents of a term (non-transitive).
+
+    Combines is_a relationships and parent_term_id.
+    """
+    return await OntologyService.get_parents(term_id, namespace)
+
+
+@router.get(
+    "/terms/{term_id}/children",
+    response_model=list[RelationshipResponse],
+    summary="Get direct children of a term"
+)
+async def get_children(
+    term_id: str,
+    namespace: str = Query("wip", description="Namespace"),
+    api_key: str = Depends(require_api_key),
+) -> list[RelationshipResponse]:
+    """
+    Get immediate children of a term (non-transitive).
+
+    Combines incoming is_a relationships and children via parent_term_id.
+    """
+    return await OntologyService.get_children(term_id, namespace)

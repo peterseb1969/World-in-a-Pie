@@ -22,6 +22,7 @@ from def_store.main import app
 from def_store.models.terminology import Terminology
 from def_store.models.term import Term
 from def_store.models.audit_log import TermAuditLog
+from def_store.models.term_relationship import TermRelationship
 from def_store.api.auth import set_api_key
 from def_store.services.registry_client import configure_registry_client, RegistryClient
 
@@ -93,13 +94,14 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Terminology, Term, TermAuditLog]
+        document_models=[Terminology, Term, TermAuditLog, TermRelationship]
     )
 
     # Clean up data from previous test
     await Term.delete_all()
     await Terminology.delete_all()
     await TermAuditLog.delete_all()
+    await TermRelationship.delete_all()
 
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client

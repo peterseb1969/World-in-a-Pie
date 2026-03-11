@@ -18,6 +18,7 @@ from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
 from .models.terminology import Terminology
 from .models.term import Term
 from .models.audit_log import TermAuditLog
+from .models.term_relationship import TermRelationship
 from .api import api_router
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.system_terminologies import ensure_system_terminologies
@@ -51,7 +52,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Terminology, Term, TermAuditLog]
+        document_models=[Terminology, Term, TermAuditLog, TermRelationship]
     )
     print("MongoDB connection and Beanie initialization successful.")
 

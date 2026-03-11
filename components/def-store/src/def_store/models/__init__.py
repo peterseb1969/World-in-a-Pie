@@ -3,6 +3,7 @@
 from .terminology import Terminology
 from .term import Term
 from .audit_log import TermAuditLog
+from .term_relationship import TermRelationship
 from .api_models import (
     CreateTerminologyRequest,
     UpdateTerminologyRequest,
@@ -14,12 +15,19 @@ from .api_models import (
     ValidateValueResponse,
     ImportTerminologyRequest,
     ExportFormat,
+    CreateRelationshipRequest,
+    DeleteRelationshipRequest,
+    RelationshipResponse,
+    RelationshipListResponse,
+    TraversalNode,
+    TraversalResponse,
 )
 
 __all__ = [
     "Terminology",
     "Term",
     "TermAuditLog",
+    "TermRelationship",
     "CreateTerminologyRequest",
     "UpdateTerminologyRequest",
     "TerminologyResponse",
@@ -30,4 +38,10 @@ __all__ = [
     "ValidateValueResponse",
     "ImportTerminologyRequest",
     "ExportFormat",
+    "CreateRelationshipRequest",
+    "DeleteRelationshipRequest",
+    "RelationshipResponse",
+    "RelationshipListResponse",
+    "TraversalNode",
+    "TraversalResponse",
 ]
