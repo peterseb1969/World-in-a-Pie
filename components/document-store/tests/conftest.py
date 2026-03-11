@@ -161,6 +161,29 @@ SAMPLE_TEMPLATES = {
         "identity_fields": [],
         "fields": [],
         "rules": []
+    },
+    "TPL-NO-IDENTITY": {
+        "template_id": "TPL-NO-IDENTITY",
+        "value": "NO_IDENTITY",
+        "label": "Template Without Identity Fields",
+        "version": 1,
+        "status": "active",
+        "identity_fields": [],
+        "fields": [
+            {
+                "name": "title",
+                "label": "Title",
+                "type": "string",
+                "mandatory": True
+            },
+            {
+                "name": "notes",
+                "label": "Notes",
+                "type": "string",
+                "mandatory": False
+            }
+        ],
+        "rules": []
     }
 }
 

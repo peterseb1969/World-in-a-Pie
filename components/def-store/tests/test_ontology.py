@@ -92,7 +92,8 @@ class TestCreateRelationships:
         assert data["succeeded"] == 2
 
     @pytest.mark.asyncio
-    async def test_create_duplicate_relationship_fails(self, client, auth_headers):
+    async def test_create_duplicate_relationship_returns_skipped(self, client, auth_headers):
+        """Creating an already-active relationship returns status 'skipped', not 'error'."""
         tid = await create_terminology(client, auth_headers)
         a = await create_term(client, auth_headers, tid, "Parent")
         b = await create_term(client, auth_headers, tid, "Child")
@@ -101,10 +102,51 @@ class TestCreateRelationships:
         data1 = await create_relationship(client, auth_headers, b, a, "is_a")
         assert data1["succeeded"] == 1
 
-        # Duplicate
+        # Duplicate — should be skipped, not error
         data2 = await create_relationship(client, auth_headers, b, a, "is_a")
-        assert data2["failed"] == 1
+        assert data2["results"][0]["status"] == "skipped"
         assert "already exists" in data2["results"][0]["error"]
+
+    @pytest.mark.asyncio
+    async def test_reactivate_deleted_relationship(self, client, auth_headers):
+        """Creating a relationship that was soft-deleted reactivates it."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "Parent")
+        b = await create_term(client, auth_headers, tid, "Child")
+
+        # Create
+        data1 = await create_relationship(client, auth_headers, b, a, "is_a")
+        assert data1["succeeded"] == 1
+
+        # Delete (soft)
+        del_resp = await client.request(
+            "DELETE",
+            f"{API}/ontology/relationships",
+            json=[{"source_term_id": b, "target_term_id": a, "relationship_type": "is_a"}],
+            headers=auth_headers,
+        )
+        assert del_resp.json()["results"][0]["status"] == "deleted"
+
+        # Verify not traversable after deletion
+        anc_resp = await client.get(
+            f"{API}/ontology/terms/{b}/ancestors",
+            headers=auth_headers,
+        )
+        assert anc_resp.json()["total"] == 0
+
+        # Re-create — should reactivate, not fail
+        data2 = await create_relationship(client, auth_headers, b, a, "is_a")
+        assert data2["succeeded"] == 1
+        assert data2["results"][0]["status"] == "created"
+        assert "reactivated" in data2["results"][0].get("value", "")
+
+        # Verify traversable again
+        anc_resp2 = await client.get(
+            f"{API}/ontology/terms/{b}/ancestors",
+            headers=auth_headers,
+        )
+        assert anc_resp2.json()["total"] == 1
+        assert anc_resp2.json()["nodes"][0]["term_id"] == a
 
     @pytest.mark.asyncio
     async def test_create_relationship_nonexistent_source(self, client, auth_headers):

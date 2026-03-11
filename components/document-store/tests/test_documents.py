@@ -275,6 +275,52 @@ async def test_auth_required(client: AsyncClient, sample_person_data: dict):
 
 
 @pytest.mark.asyncio
+async def test_create_document_without_identity_fields(client: AsyncClient, auth_headers: dict):
+    """Test creating a document when template has no identity_fields.
+
+    Regression test: identity_hash was a required str field, causing a crash
+    when the template had no identity_fields (identity_hash was None from Registry).
+    """
+    result = await create_one(
+        client, auth_headers, "TPL-NO-IDENTITY",
+        {"title": "Meeting Notes", "notes": "Discussed Q3 roadmap"}
+    )
+    assert result["status"] == "created"
+    assert result["version"] == 1
+    assert result["is_new"] is True
+    # identity_hash should be empty string, not None
+    assert result["identity_hash"] == ""
+
+    # Creating another document with same data should create a NEW document (no upsert)
+    result2 = await create_one(
+        client, auth_headers, "TPL-NO-IDENTITY",
+        {"title": "Meeting Notes", "notes": "Discussed Q3 roadmap"}
+    )
+    assert result2["status"] == "created"
+    assert result2["is_new"] is True
+    assert result2["document_id"] != result["document_id"]
+
+
+@pytest.mark.asyncio
+async def test_get_document_without_identity_fields(client: AsyncClient, auth_headers: dict):
+    """Test that a document without identity_fields can be retrieved."""
+    result = await create_one(
+        client, auth_headers, "TPL-NO-IDENTITY",
+        {"title": "Test Note"}
+    )
+    doc_id = result["document_id"]
+
+    response = await client.get(
+        f"/api/document-store/documents/{doc_id}",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    doc = response.json()
+    assert doc["data"]["title"] == "Test Note"
+    assert doc["identity_hash"] == ""
+
+
+@pytest.mark.asyncio
 async def test_invalid_api_key(client: AsyncClient, sample_person_data: dict):
     """Test that invalid API key is rejected."""
     response = await client.post(
