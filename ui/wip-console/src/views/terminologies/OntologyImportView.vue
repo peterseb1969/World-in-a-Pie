@@ -158,7 +158,7 @@ async function doImport() {
       update_existing: options.value.update_existing,
       include_deprecated: options.value.include_deprecated,
       max_synonyms: options.value.max_synonyms,
-      namespace: nsStore.current,
+      namespace: nsStore.currentNamespaceParam || 'wip',
     }
     if (options.value.terminology_value) opts.terminology_value = options.value.terminology_value
     if (options.value.terminology_label) opts.terminology_label = options.value.terminology_label
