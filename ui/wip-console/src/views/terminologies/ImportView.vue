@@ -23,6 +23,7 @@ const importing = ref(false)
 const importResult = ref<{
   terminology: { terminology_id: string; value: string; label: string }
   terms_result: BulkResponse
+  relationships_result?: { total: number; created: number; skipped: number; errors: number }
 } | null>(null)
 
 // Progress tracking
@@ -369,6 +370,26 @@ inactive,Inactive,Not active</pre>
           </div>
           <div class="summary-item">
             <span class="summary-value">{{ importResult.terms_result.total }}</span>
+            <span class="summary-label">Total</span>
+          </div>
+        </div>
+
+        <div v-if="importResult.relationships_result" class="result-summary" style="margin-top: 1rem;">
+          <h4 style="width: 100%; margin: 0 0 0.5rem 0; font-size: 0.875rem; text-transform: uppercase; color: var(--p-text-muted-color);">Relationships</h4>
+          <div class="summary-item">
+            <span class="summary-value success">{{ importResult.relationships_result.created }}</span>
+            <span class="summary-label">Created</span>
+          </div>
+          <div class="summary-item" v-if="importResult.relationships_result.skipped > 0">
+            <span class="summary-value">{{ importResult.relationships_result.skipped }}</span>
+            <span class="summary-label">Skipped</span>
+          </div>
+          <div class="summary-item" v-if="importResult.relationships_result.errors > 0">
+            <span class="summary-value error">{{ importResult.relationships_result.errors }}</span>
+            <span class="summary-label">Errors</span>
+          </div>
+          <div class="summary-item">
+            <span class="summary-value">{{ importResult.relationships_result.total }}</span>
             <span class="summary-label">Total</span>
           </div>
         </div>

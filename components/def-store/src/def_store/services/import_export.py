@@ -135,6 +135,8 @@ class ImportExportService:
                 "sort_order": t.sort_order,
                 "status": t.status,
             }
+            if t.aliases:
+                term_dict["aliases"] = t.aliases
             if t.parent_term_id:
                 term_dict["parent_term_id"] = t.parent_term_id
             if t.translations:
@@ -372,7 +374,20 @@ class ImportExportService:
             else terminology_data.get("label")
         )
 
-        return {
+        # Import relationships if present
+        relationships_data = data.get("relationships", [])
+        rel_result = None
+        if relationships_data:
+            namespace = terminology_data.get("namespace", "wip")
+            rel_result = await ImportExportService._import_relationships(
+                relationships_data,
+                terminology_id=terminology_id,
+                namespace=namespace,
+                term_results=term_results,
+                options=options,
+            )
+
+        result: dict[str, Any] = {
             "terminology": {
                 "terminology_id": terminology_id,
                 "value": terminology_data.get("value"),
@@ -387,6 +402,9 @@ class ImportExportService:
                 "failed": error_count
             }
         }
+        if rel_result:
+            result["relationships_result"] = rel_result
+        return result
 
     @staticmethod
     async def _import_csv(
@@ -432,6 +450,80 @@ class ImportExportService:
         }
 
         return await ImportExportService.import_terminology(json_data, "json", options)
+
+    @staticmethod
+    async def _import_relationships(
+        relationships_data: list[dict[str, Any]],
+        terminology_id: str,
+        namespace: str,
+        term_results: list[BulkResultItem],
+        options: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """
+        Import relationships from export format (source_term_value/target_term_value).
+
+        Resolves term values to IDs and creates relationships in batches.
+        """
+        options = options or {}
+        relationship_batch_size = options.get("relationship_batch_size", 500)
+
+        # Build value→term_id from creation results
+        value_to_id: dict[str, str] = {}
+        for r in term_results:
+            if r.id and r.value:
+                value_to_id[r.value] = r.id
+
+        # Resolve skipped terms from DB
+        if len(value_to_id) < len(term_results):
+            async for term in Term.find({
+                "namespace": namespace,
+                "terminology_id": terminology_id,
+            }):
+                value_to_id[term.value] = term.term_id
+
+        # Ensure relationship types exist
+        rel_types = {r["relationship_type"] for r in relationships_data if r.get("relationship_type")}
+        await ImportExportService._ensure_relationship_types(rel_types)
+
+        # Build and batch-create relationships
+        rel_created = 0
+        rel_skipped = 0
+        rel_errors = 0
+        rel_error_samples: list[str] = []
+
+        for i in range(0, len(relationships_data), relationship_batch_size):
+            batch = relationships_data[i:i + relationship_batch_size]
+            rel_requests: list[CreateRelationshipRequest] = []
+            for rd in batch:
+                src_id = value_to_id.get(rd.get("source_term_value", ""))
+                tgt_id = value_to_id.get(rd.get("target_term_value", ""))
+                if src_id and tgt_id:
+                    rel_requests.append(CreateRelationshipRequest(
+                        source_term_id=src_id,
+                        target_term_id=tgt_id,
+                        relationship_type=rd["relationship_type"],
+                        metadata=rd.get("metadata"),
+                    ))
+
+            if rel_requests:
+                results = await OntologyService.create_relationships(namespace, rel_requests)
+                for r in results:
+                    if r.status == "created":
+                        rel_created += 1
+                    elif r.status == "skipped":
+                        rel_skipped += 1
+                    else:
+                        rel_errors += 1
+                        if len(rel_error_samples) < 5 and r.error:
+                            rel_error_samples.append(r.error)
+
+        return {
+            "total": len(relationships_data),
+            "created": rel_created,
+            "skipped": rel_skipped,
+            "errors": rel_errors,
+            "error_samples": rel_error_samples[:5] if rel_error_samples else [],
+        }
 
     @staticmethod
     async def import_from_url(
