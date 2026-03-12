@@ -3,6 +3,9 @@
 import csv
 import io
 import json
+import logging
+import time
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -15,8 +18,12 @@ from ..models.api_models import (
     TermResponse,
     ExportTerminologyResponse,
     BulkResultItem,
+    CreateRelationshipRequest,
 )
 from .terminology_service import TerminologyService
+from .ontology_service import OntologyService
+
+logger = logging.getLogger(__name__)
 
 
 class ImportExportService:
@@ -410,3 +417,313 @@ class ImportExportService:
                 }
 
         return await ImportExportService.import_terminology(data, format, options)
+
+    # =========================================================================
+    # OBO GRAPH JSON IMPORT
+    # =========================================================================
+
+    # Predicate URI → WIP relationship type
+    OBO_PREDICATE_MAP: dict[str, str] = {
+        "is_a": "is_a",
+        "http://purl.obolibrary.org/obo/BFO_0000050": "part_of",
+        "http://purl.obolibrary.org/obo/BFO_0000051": "has_part",
+        "http://purl.obolibrary.org/obo/RO_0002211": "regulates",
+        "http://purl.obolibrary.org/obo/RO_0002212": "negatively_regulates",
+        "http://purl.obolibrary.org/obo/RO_0002213": "positively_regulates",
+        "http://purl.obolibrary.org/obo/RO_0002215": "capable_of",
+        "http://purl.obolibrary.org/obo/RO_0002216": "capable_of_part_of",
+        "http://purl.obolibrary.org/obo/RO_0002233": "has_input",
+        "http://purl.obolibrary.org/obo/RO_0002234": "has_output",
+        "http://purl.obolibrary.org/obo/RO_0002331": "involved_in",
+        "http://purl.obolibrary.org/obo/RO_0002332": "regulates_activity_of",
+    }
+    OBO_SKIP_PREDICATES = {"subPropertyOf"}
+
+    @staticmethod
+    def _uri_to_value(uri: str) -> str:
+        """Convert OBO URI to compact value: HP_0000001 → HP:0000001."""
+        fragment = uri.rsplit("/", 1)[-1]
+        return fragment.replace("_", ":", 1)
+
+    @staticmethod
+    def _detect_prefix(graph: dict) -> str | None:
+        """Auto-detect OBO prefix from graph ID."""
+        graph_id = graph.get("id", "")
+        filename = graph_id.rsplit("/", 1)[-1]
+        base = filename.split(".")[0].split("-")[0].upper()
+        return base if base else None
+
+    @classmethod
+    def _map_predicate(cls, pred: str) -> str | None:
+        """Map OBO predicate to WIP relationship type."""
+        if pred in cls.OBO_SKIP_PREDICATES:
+            return None
+        if pred in cls.OBO_PREDICATE_MAP:
+            return cls.OBO_PREDICATE_MAP[pred]
+        if "/" in pred:
+            fragment = pred.rsplit("/", 1)[-1]
+            return fragment.replace("_", ":", 1)
+        return pred
+
+    @classmethod
+    def _parse_obo_graph(
+        cls,
+        data: dict,
+        prefix_filter: str | None = None,
+        include_deprecated: bool = False,
+        max_synonyms: int = 10,
+    ) -> dict[str, Any]:
+        """Parse OBO Graph JSON into nodes and edges."""
+        graph = data["graphs"][0]
+        meta = graph.get("meta", {})
+
+        if not prefix_filter:
+            prefix_filter = cls._detect_prefix(graph)
+
+        uri_prefix = f"http://purl.obolibrary.org/obo/{prefix_filter}_" if prefix_filter else None
+
+        # Ontology metadata
+        ontology_meta: dict[str, str] = {}
+        for bpv in meta.get("basicPropertyValues", []):
+            pred = bpv.get("pred", "")
+            val = bpv.get("val", "")
+            if "title" in pred:
+                ontology_meta["title"] = val
+            elif "description" in pred:
+                ontology_meta["description"] = val
+            elif "versionInfo" in pred:
+                ontology_meta["version"] = val
+
+        # Parse nodes
+        nodes: dict[str, dict] = {}
+        for n in graph.get("nodes", []):
+            if n.get("type") != "CLASS":
+                continue
+            uri = n["id"]
+            if uri_prefix and not uri.startswith(uri_prefix):
+                continue
+            node_meta = n.get("meta", {})
+            if node_meta.get("deprecated", False) and not include_deprecated:
+                continue
+
+            value = cls._uri_to_value(uri)
+            label = n.get("lbl", value)
+            definition = node_meta.get("definition", {})
+            description = definition.get("val") if definition else None
+            aliases = [s["val"] for s in node_meta.get("synonyms", []) if s.get("val")][:max_synonyms]
+            xrefs = [x.get("val") for x in node_meta.get("xrefs", []) if x.get("val")]
+
+            term_metadata: dict[str, Any] = {}
+            if xrefs:
+                term_metadata["xrefs"] = xrefs
+
+            nodes[uri] = {
+                "value": value,
+                "label": label,
+                "description": description,
+                "aliases": aliases,
+                "metadata": term_metadata,
+            }
+
+        # Parse edges
+        edges: list[dict] = []
+        pred_counts: Counter = Counter()
+        for e in graph.get("edges", []):
+            sub, obj, pred = e.get("sub"), e.get("obj"), e.get("pred")
+            if sub not in nodes or obj not in nodes:
+                continue
+            rel_type = cls._map_predicate(pred)
+            if rel_type is None:
+                continue
+            pred_counts[rel_type] += 1
+            edges.append({
+                "source_uri": sub,
+                "target_uri": obj,
+                "relationship_type": rel_type,
+            })
+
+        return {
+            "ontology_meta": ontology_meta,
+            "prefix": prefix_filter,
+            "nodes": nodes,
+            "edges": edges,
+            "stats": {
+                "nodes_parsed": len(nodes),
+                "edges_parsed": len(edges),
+                "predicate_distribution": dict(pred_counts.most_common()),
+            },
+        }
+
+    @staticmethod
+    async def import_ontology(
+        data: dict[str, Any],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """
+        Import an OBO Graph JSON ontology.
+
+        Args:
+            data: OBO Graph JSON data (with "graphs" array)
+            options: Import options (terminology_value, terminology_label,
+                     prefix_filter, include_deprecated, max_synonyms,
+                     batch_size, registry_batch_size, relationship_batch_size,
+                     namespace, skip_duplicates, update_existing, created_by)
+
+        Returns:
+            Import summary with terminology, term, and relationship stats.
+        """
+        t0 = time.perf_counter()
+
+        namespace = options.get("namespace", "wip")
+        created_by = options.get("created_by")
+        batch_size = options.get("batch_size", 1000)
+        registry_batch_size = options.get("registry_batch_size", 50)
+        relationship_batch_size = options.get("relationship_batch_size", 500)
+        skip_duplicates = options.get("skip_duplicates", True)
+        update_existing = options.get("update_existing", False)
+
+        # Parse
+        parsed = ImportExportService._parse_obo_graph(
+            data,
+            prefix_filter=options.get("prefix_filter"),
+            include_deprecated=options.get("include_deprecated", False),
+            max_synonyms=options.get("max_synonyms", 10),
+        )
+
+        nodes = parsed["nodes"]
+        edges = parsed["edges"]
+        meta = parsed["ontology_meta"]
+
+        terminology_value = options.get("terminology_value") or parsed["prefix"]
+        terminology_label = options.get("terminology_label") or meta.get("title") or terminology_value
+
+        if not terminology_value:
+            raise ValueError("Could not auto-detect terminology value. Provide terminology_value.")
+
+        logger.info(
+            f"Parsed OBO graph: {len(nodes)} nodes, {len(edges)} edges, "
+            f"prefix={parsed['prefix']}"
+        )
+
+        # Create or find terminology
+        existing = await Terminology.find_one({
+            "namespace": namespace,
+            "value": terminology_value,
+        })
+
+        if existing:
+            terminology_id = existing.terminology_id
+            terminology_status = "exists"
+        else:
+            create_req = CreateTerminologyRequest(
+                value=terminology_value,
+                label=terminology_label,
+                description=meta.get("description"),
+                namespace=namespace,
+                metadata=TerminologyMetadata(
+                    source=meta.get("title", terminology_value),
+                    version=meta.get("version"),
+                    custom={"format": "OBO Graph JSON"},
+                ),
+                created_by=created_by,
+            )
+            terminology_response = await TerminologyService.create_terminology(create_req)
+            terminology_id = terminology_response.terminology_id
+            terminology_status = "created"
+
+        # Import terms in batches
+        term_requests = []
+        for info in nodes.values():
+            term_requests.append(CreateTermRequest(
+                value=info["value"],
+                label=info["label"],
+                description=info["description"],
+                aliases=info["aliases"],
+                metadata=info["metadata"],
+                created_by=created_by,
+            ))
+
+        term_results = await TerminologyService.create_terms_bulk(
+            terminology_id=terminology_id,
+            terms=term_requests,
+            skip_duplicates=skip_duplicates,
+            update_existing=update_existing,
+            batch_size=batch_size,
+            registry_batch_size=registry_batch_size,
+        )
+
+        # Build value→term_id mapping
+        value_to_id: dict[str, str] = {}
+        for r in term_results:
+            if r.id:
+                value_to_id[r.value] = r.id
+
+        # Resolve IDs for skipped terms
+        if len(value_to_id) < len(nodes):
+            async for term in Term.find({
+                "namespace": namespace,
+                "terminology_id": terminology_id,
+            }):
+                value_to_id[term.value] = term.term_id
+
+        # Build URI→term_id mapping and import relationships
+        uri_to_id: dict[str, str] = {}
+        for uri, info in nodes.items():
+            tid = value_to_id.get(info["value"])
+            if tid:
+                uri_to_id[uri] = tid
+
+        rel_created = 0
+        rel_skipped = 0
+        rel_errors = 0
+
+        for i in range(0, len(edges), relationship_batch_size):
+            batch_edges = edges[i:i + relationship_batch_size]
+            rel_requests: list[CreateRelationshipRequest] = []
+            for e in batch_edges:
+                src_id = uri_to_id.get(e["source_uri"])
+                tgt_id = uri_to_id.get(e["target_uri"])
+                if src_id and tgt_id:
+                    rel_requests.append(CreateRelationshipRequest(
+                        source_term_id=src_id,
+                        target_term_id=tgt_id,
+                        relationship_type=e["relationship_type"],
+                    ))
+
+            if rel_requests:
+                results = await OntologyService.create_relationships(namespace, rel_requests)
+                for r in results:
+                    if r.status == "created":
+                        rel_created += 1
+                    elif r.status == "skipped":
+                        rel_skipped += 1
+                    else:
+                        rel_errors += 1
+
+        elapsed = time.perf_counter() - t0
+        terms_created = sum(1 for r in term_results if r.status == "created")
+        terms_skipped = sum(1 for r in term_results if r.status == "skipped")
+        terms_errors = sum(1 for r in term_results if r.status == "error")
+
+        return {
+            "terminology": {
+                "terminology_id": terminology_id,
+                "value": terminology_value,
+                "label": terminology_label,
+                "status": terminology_status,
+            },
+            "terms": {
+                "total": len(nodes),
+                "created": terms_created,
+                "skipped": terms_skipped,
+                "errors": terms_errors,
+            },
+            "relationships": {
+                "total": len(edges),
+                "created": rel_created,
+                "skipped": rel_skipped,
+                "errors": rel_errors,
+                "predicate_distribution": parsed["stats"]["predicate_distribution"],
+            },
+            "elapsed_seconds": round(elapsed, 1),
+        }

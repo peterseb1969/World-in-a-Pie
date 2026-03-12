@@ -147,6 +147,63 @@ async def import_terminology(
 
 
 @router.post(
+    "/import-ontology",
+    summary="Import OBO Graph JSON ontology"
+)
+async def import_ontology(
+    data: dict[str, Any] = Body(...),
+    terminology_value: Optional[str] = Query(None, description="WIP terminology value (e.g., HPO, GO). Auto-detected if not set."),
+    terminology_label: Optional[str] = Query(None, description="Display label. Auto-detected if not set."),
+    namespace: str = Query("wip", description="Target namespace"),
+    prefix_filter: Optional[str] = Query(None, description="Only import nodes with this OBO prefix"),
+    include_deprecated: bool = Query(False, description="Import deprecated/obsolete nodes"),
+    max_synonyms: int = Query(10, description="Max aliases per term"),
+    batch_size: int = Query(1000, description="Terms per MongoDB batch"),
+    registry_batch_size: int = Query(50, description="Terms per registry HTTP call"),
+    relationship_batch_size: int = Query(500, description="Relationships per batch"),
+    skip_duplicates: bool = Query(True, description="Skip existing terms"),
+    update_existing: bool = Query(False, description="Update existing terms"),
+    created_by: Optional[str] = Query(None, description="User performing import"),
+    api_key: str = Depends(require_api_key),
+):
+    """
+    Import an OBO Graph JSON ontology (HP, GO, CHEBI, etc.).
+
+    Accepts standard OBO Graph JSON format with `graphs[0].nodes[]` and
+    `graphs[0].edges[]`. Parses nodes into terms and edges into relationships.
+
+    Auto-detects the ontology prefix and metadata from the graph structure.
+    For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
+    """
+    try:
+        if "graphs" not in data or not data["graphs"]:
+            raise ValueError("Invalid OBO Graph JSON: missing 'graphs' array")
+
+        options = {
+            "terminology_value": terminology_value,
+            "terminology_label": terminology_label,
+            "namespace": namespace,
+            "prefix_filter": prefix_filter,
+            "include_deprecated": include_deprecated,
+            "max_synonyms": max_synonyms,
+            "batch_size": batch_size,
+            "registry_batch_size": registry_batch_size,
+            "relationship_batch_size": relationship_batch_size,
+            "skip_duplicates": skip_duplicates,
+            "update_existing": update_existing,
+            "created_by": created_by,
+        }
+
+        result = await ImportExportService.import_ontology(data, options)
+        return JSONResponse(content=result)
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ontology import failed: {str(e)}")
+
+
+@router.post(
     "/import/url",
     summary="Import from URL"
 )
