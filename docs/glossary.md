@@ -26,7 +26,7 @@ A record of all changes to an entity. [Terms](#term) use audit logs instead of v
 The process of initializing the system with foundational data. The [Registry](#registry) must be initialized with WIP namespaces before other services can generate IDs.
 
 ### Bulk Operation
-An API feature that allows multiple entities to be created, updated, or validated in a single request. Improves performance for batch processing.
+The standard API convention in WIP. All write endpoints (POST/PUT/DELETE) accept a JSON array and return a `BulkResponse`. Single operations are sent as `[item]`. There are no single-entity write endpoints. HTTP 200 is always returned — errors are per-item in `results[i].status`.
 
 ---
 
@@ -46,10 +46,10 @@ A [validation rule](#validation-rule) that applies only when certain conditions 
 ## D
 
 ### Deactivate
-The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution.
+The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution. Exception: files support hard-delete to reclaim MinIO storage.
 
 ### Def-Store
-The service managing [terminologies](#terminology) and [terms](#term). Provides controlled vocabularies that [templates](#template) reference for term-type fields. API: `http://localhost:8002/api/def-store/`.
+The service managing [terminologies](#terminology), [terms](#term), and [ontology relationships](#relationship). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.
 
 ### Dex
 The OIDC provider used in WIP for user authentication. Lightweight (~30MB RAM), works over HTTP, and supports static user configuration via YAML. Provides JWT tokens for authenticated users.
@@ -65,6 +65,9 @@ The primary data entity in WIP. A JSON object that:
 ### Document Store
 The service that manages [documents](#document). Provides validation, versioning, and term reference resolution. Uses MongoDB for persistence. API: `http://localhost:8004/api/document-store/`.
 
+### Draft (Status)
+A template status that allows creation without reference validation. Enables circular dependencies and order-independent template creation. Draft templates must be activated via `POST /templates/{id}/activate` before they can be used by documents.
+
 ### Dual Auth Mode
 Authentication mode where both API keys and JWT tokens are accepted. Default mode for most deployments. See [wip-auth](#wip-auth).
 
@@ -76,7 +79,7 @@ Authentication mode where both API keys and JWT tokens are accepted. Default mod
 A message published to [NATS](#nats) when something changes in WIP. Contains the full entity data (self-contained). Types include `document.created`, `document.updated`, `template.created`, etc. Used by [Reporting-Sync](#reporting-sync) for PostgreSQL synchronization.
 
 ### Extends
-Template inheritance. A template can extend another template, inheriting its fields and rules while adding or overriding its own. Example: EMPLOYEE extends PERSON.
+Template inheritance. A template can extend another template, inheriting its fields and rules while adding or overriding its own. Example: EMPLOYEE extends PERSON. The `extends_version` field can pin inheritance to a specific parent version.
 
 ---
 
@@ -86,7 +89,7 @@ Template inheritance. A template can extend another template, inheriting its fie
 The Python web framework used for WIP's backend services. Provides automatic OpenAPI documentation (`/docs`), Pydantic validation, and async support.
 
 ### Field
-A single data element within a [template](#template). Has a name, type, and optional validation rules. Types: `string`, `number`, `integer`, `boolean`, `date`, `datetime`, `term`, `object`, `array`.
+A single data element within a [template](#template). Has a name, type, and optional validation rules. Types: `string`, `number`, `integer`, `boolean`, `date`, `datetime`, `term`, `object`, `array`, `reference`, `file`.
 
 ---
 
@@ -165,11 +168,14 @@ The document store database. Stores documents, templates, terminologies, and ter
 ## N
 
 ### Namespace
-A logical partition in the [Registry](#registry) that enables different ID formats. WIP namespaces:
-- `wip-terminologies`: Prefixed IDs (TERM-XXXXXX)
-- `wip-terms`: Prefixed IDs (T-XXXXXX)
-- `wip-templates`: Prefixed IDs (TPL-XXXXXX)
-- `wip-documents`: UUID7 IDs (time-ordered)
+A logical partition in the [Registry](#registry) that enables different ID formats. Default WIP namespaces all use UUID7:
+- `wip-terminologies`: UUID7
+- `wip-terms`: UUID7
+- `wip-templates`: UUID7
+- `wip-documents`: UUID7
+- `wip-files`: UUID7
+
+Custom namespaces can be configured with prefixed ID formats.
 
 ### NATS
 Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enabled. Handles event publishing between services.
@@ -182,7 +188,7 @@ Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enable
 OpenID Connect. The authentication protocol used by [Dex](#dex). Provides secure user login with JWT tokens.
 
 ### Ontology
-A formal representation of knowledge as a set of concepts and relationships. In WIP, ontologies are implemented as collections of [terminologies](#terminology).
+A formal representation of knowledge as a set of concepts and typed [relationships](#relationship). In WIP, ontologies are represented using [terminologies](#terminology) (for concepts/terms) and [relationships](#relationship) (for typed edges like `is_a`, `part_of`). Standard ontologies can be imported from OBO Graph JSON format. Relationship types are validated against the `_ONTOLOGY_RELATIONSHIP_TYPES` system terminology.
 
 ---
 
@@ -216,6 +222,9 @@ Role-Based Access Control. Authorization based on [groups](#groups) from JWT tok
 ### Registry
 Service providing ID generation and namespace management. Maps [composite keys](#composite-key) to standardized IDs. Must be initialized before other services. API: `http://localhost:8001/api/registry/`.
 
+### Relationship
+A typed, directed edge between two [terms](#term), optionally across [terminologies](#terminology). Used for ontology structure (e.g., `is_a`, `part_of`, `regulates`). Stored in Def-Store and synced to PostgreSQL for reporting.
+
 ### Reporting Layer
 The PostgreSQL database that mirrors document data for SQL-based querying. Not the source of truth—a projection synchronized from MongoDB via events.
 
@@ -226,11 +235,14 @@ Service that consumes [events](#event) from NATS and synchronizes data to Postgr
 
 ## S
 
+### Semantic Type
+A field-level type hint that triggers format-specific validation and reporting behavior. Types: `email`, `url`, `latitude`, `longitude`, `percentage`, `duration`, `geo_point`. Specified via `semantic_type` on template fields.
+
 ### Setup Script
 The `scripts/setup.sh` script that automates WIP deployment. Auto-detects platform, generates configuration, and starts all services.
 
 ### Status
-Lifecycle state of an entity. Values for documents: `active`, `inactive`. Values for terms: `active`, `deprecated`.
+Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated`. Values for templates: `draft`, `active`, `inactive`.
 
 ### Sync
 The process of copying document data to PostgreSQL. Driven by NATS events (real-time) or batch API calls (recovery).
@@ -244,8 +256,9 @@ In the [Registry](#registry), an alternative identifier that resolves to the sam
 
 ### Template
 A schema definition that documents must conform to. Contains:
-- `template_id`: Unique ID (TPL-XXXXXX)
-- `code`: Human-readable identifier shared across versions
+- `template_id`: Unique ID (UUID7), stable across versions
+- `value`: Human-readable identifier shared across versions
+- `label`: Display name
 - `fields`: Field definitions with types and validation
 - `rules`: Cross-field validation rules
 - `identity_fields`: Fields forming the composite key
@@ -256,21 +269,21 @@ A schema definition that documents must conform to. Contains:
 Service managing [templates](#template). Validates references to terminologies and parent templates. API: `http://localhost:8003/api/template-store/`.
 
 ### Template Version
-Templates support multiple active versions simultaneously. When updated, a new template with a new `template_id` is created while the original remains active. Documents reference specific template versions.
+Templates support multiple active versions simultaneously. When updated, the `template_id` stays the same and the `version` number increments. Documents reference specific template versions. The `extends_version` field can pin inheritance to a specific parent version.
 
 ### Term
 A single concept within a [terminology](#terminology). Structure:
-- `term_id`: Unique ID (T-XXXXXX)
-- `code`: Short code (e.g., "M")
-- `value`: Display value (e.g., "Male")
+- `term_id`: Unique ID (UUID7)
+- `value`: The canonical value (e.g., "MALE")
+- `label`: Display label (e.g., "Male")
 - `aliases`: Alternative values that resolve to this term
-- `parent_id`: Optional parent for hierarchical terms
+- `parent_term_id`: Optional parent for hierarchical terms
 
 ### Terminology
 A controlled vocabulary containing related [terms](#term). Structure:
-- `terminology_id`: Unique ID (TERM-XXXXXX)
-- `code`: Short code (e.g., "GENDER")
-- `name`: Display name (e.g., "Gender")
+- `terminology_id`: Unique ID (UUID7)
+- `value`: Short identifier (e.g., "GENDER")
+- `label`: Display name (e.g., "Gender")
 
 ### Terminology Reference
 A template field property linking a `term` type field to a specific [terminology](#terminology). Written as `terminology_ref` in field definitions.
@@ -286,7 +299,7 @@ The `term_references` field in documents that stores resolved term IDs. When a d
 The combined create-or-update behavior based on [identity](#identity). If an active document with the same identity hash exists, a new version is created and the old version is deactivated. Otherwise, a new document is created.
 
 ### UUID7
-Time-ordered UUID format used for document IDs. Provides chronological ordering while maintaining uniqueness.
+Time-ordered UUID format used for all entity IDs in the default `wip` namespace. Provides chronological ordering while maintaining uniqueness.
 
 ---
 
@@ -309,7 +322,7 @@ A constraint that spans multiple fields. Types:
 - `dependency`: Field requires another field to be present
 
 ### Version
-A snapshot of a document at a point in time. When updated via [upsert](#upsert), a new version with a new `document_id` is created. Versions share the same [identity hash](#identity-hash). Version numbers increment automatically.
+A snapshot of a document at a point in time. When updated via [upsert](#upsert), the `document_id` stays the same and the `version` number increments. The previous version is set to inactive. Versions share the same [identity hash](#identity-hash).
 
 ### Vue
 JavaScript framework used for [WIP Console](#wip-console). Version 3 with Composition API and TypeScript.
@@ -322,7 +335,7 @@ JavaScript framework used for [WIP Console](#wip-console). Version 3 with Compos
 Acronym for **W**orld **I**n a **P**ie. Also a happy coincidence with "Work In Progress."
 
 ### WIP Console
-The unified web UI for managing terminologies, templates, and documents. Built with [Vue](#vue) and [PrimeVue](#primevue). Supports both OIDC login and API key authentication.
+The unified web UI for managing terminologies, templates, and documents. Built with [Vue](#vue) and [PrimeVue](#primevue). Supports both OIDC login and API key authentication. Features a unified import view that auto-detects file format (WIP JSON, OBO Graph JSON, CSV).
 
 ### wip-auth
 Shared Python library providing pluggable authentication for all WIP services. Supports modes: `none`, `api_key_only`, `jwt_only`, `dual`. Located in `libs/wip-auth/`.
@@ -349,6 +362,7 @@ The full name of this system. Reflects:
 | JSON | JavaScript Object Notation |
 | JWT | JSON Web Token |
 | MQ | Message Queue |
+| OBO | Open Biomedical Ontologies |
 | OIDC | OpenID Connect |
 | RBAC | Role-Based Access Control |
 | REST | Representational State Transfer |

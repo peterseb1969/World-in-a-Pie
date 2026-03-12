@@ -342,12 +342,16 @@ class OntologyService:
     async def list_all_relationships(
         namespace: str = "wip",
         relationship_type: Optional[str] = None,
+        source_terminology_id: Optional[str] = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[RelationshipResponse], int]:
         """List all relationships in a namespace with pagination."""
         query: dict = {"namespace": namespace, "status": status}
+
+        if source_terminology_id:
+            query["source_terminology_id"] = source_terminology_id
 
         if relationship_type:
             query["relationship_type"] = relationship_type

@@ -12,7 +12,7 @@ These constraints make complex template set design frustrating and error-prone.
 
 ## Proposed Solution: Draft Status
 
-Add `"draft"` as a template status alongside `active`, `deprecated`, and `inactive`.
+Add `"draft"` as a template status alongside `active` and `inactive`.
 
 ### Semantics
 
@@ -20,7 +20,6 @@ Add `"draft"` as a template status alongside `active`, `deprecated`, and `inacti
 |--------|---------------------|---------------------|----------|
 | **draft** | Skipped | No | Yes |
 | **active** | Required (validated on transition) | Yes | Yes (creates new version) |
-| deprecated | N/A | Yes (existing only) | No |
 | inactive | N/A | No | No |
 
 ### Lifecycle
@@ -54,8 +53,8 @@ Add `"draft"` as a template status alongside `active`, `deprecated`, and `inacti
 ```json
 POST /api/template-store/templates
 {
-  "code": "SCHEDULE",
-  "name": "Study Schedule",
+  "value": "SCHEDULE",
+  "label": "Study Schedule",
   "status": "draft",
   "fields": [
     {"name": "anchor_timepoint", "type": "reference", "reference_type": "document",

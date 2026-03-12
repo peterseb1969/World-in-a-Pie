@@ -273,6 +273,7 @@ class DefStoreClient extends BaseApiClient {
   async importTerminology(data: ImportTerminologyRequest): Promise<{
     terminology: Terminology
     terms_result: BulkResponse
+    relationships_result?: { total: number; created: number; skipped: number; errors: number }
   }> {
     const response = await this.client.post('/import-export/import', data)
     return response.data
@@ -353,6 +354,7 @@ class DefStoreClient extends BaseApiClient {
   async listAllRelationships(params?: {
     namespace?: string
     relationship_type?: string
+    source_terminology_id?: string
     status?: string
     page?: number
     page_size?: number

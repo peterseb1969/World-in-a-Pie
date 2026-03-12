@@ -2,7 +2,7 @@
 
 ## Problem
 
-Entity reference fields in templates store bare **codes** — user-supplied strings that are not canonical identifiers. This violates WIP's core identity principle.
+Entity reference fields in templates store bare **values** — user-supplied strings that are not canonical identifiers. This violates WIP's core identity principle.
 
 ### WIP's Identity Model
 
@@ -12,7 +12,7 @@ The only valid ways to reference an entity in WIP are:
 2. **Composite key hash** — SHA-256 of the composite key, scoped to a namespace
 3. **Registered synonym** — an alternative key registered in the Registry that resolves to a canonical ID
 
-A bare code like `"PERSON"` or `"DOC_STATUS"` is none of these. It's an unqualified, user-supplied string used as a lookup hint.
+A bare value like `"PERSON"` or `"DOC_STATUS"` is none of these. It's an unqualified, user-supplied string used as a lookup hint.
 
 ### Affected Fields
 
@@ -21,29 +21,29 @@ A bare code like `"PERSON"` or `"DOC_STATUS"` is none of these. It's an unqualif
 | Field | Previously Stored | Now Stores |
 |-------|------------------|------------|
 | `extends` | `template_id` (TPL-XXXXXX) | Correct (no change) |
-| `target_templates` | code ("PERSON") | `template_id` (TPL-XXXXXX) |
-| `template_ref` | code ("ADDRESS") | `template_id` (TPL-XXXXXX) |
-| `array_template_ref` | code ("CONTACT") | `template_id` (TPL-XXXXXX) |
+| `target_templates` | value ("PERSON") | `template_id` (TPL-XXXXXX) |
+| `template_ref` | value ("ADDRESS") | `template_id` (TPL-XXXXXX) |
+| `array_template_ref` | value ("CONTACT") | `template_id` (TPL-XXXXXX) |
 
 **Terminology references:**
 
 | Field | Previously Stored | Now Stores |
 |-------|------------------|------------|
-| `terminology_ref` | code ("DOC_STATUS") | `terminology_id` (TERM-XXXXXX) |
-| `array_terminology_ref` | code ("COUNTRY") | `terminology_id` (TERM-XXXXXX) |
-| `target_terminologies` | codes (["GENDER"]) | `terminology_id`s (["TERM-XXXXXX"]) |
+| `terminology_ref` | value ("DOC_STATUS") | `terminology_id` (TERM-XXXXXX) |
+| `array_terminology_ref` | value ("COUNTRY") | `terminology_id` (TERM-XXXXXX) |
+| `target_terminologies` | values (["GENDER"]) | `terminology_id`s (["TERM-XXXXXX"]) |
 
 ### Consequences (Now Fixed)
 
 1. **No version pinning** — `target_templates: ["PERSON"]` silently accepted any version.
-2. **No namespace scoping** — validation did `Template.find_one({"code": tpl_code})` without filtering by namespace.
-3. **Inconsistency** — `extends` correctly stored a canonical ID while all other references stored codes.
+2. **No namespace scoping** — validation did `Template.find_one({"value": tpl_value})` without filtering by namespace.
+3. **Inconsistency** — `extends` correctly stored a canonical ID while all other references stored values.
 4. **Bypassed the Registry** — template references skipped the Registry entirely.
-5. **Broken nested validation** — `get_template_resolved(template_ref)` received a code, returned `None`, silently skipping nested object validation.
+5. **Broken nested validation** — `get_template_resolved(template_ref)` received a value, returned `None`, silently skipping nested object validation.
 
 ## Solution: Always Store Canonical IDs
 
-**All reference fields store canonical IDs** — `template_id` (TPL-XXXXXX) for templates, `terminology_id` (TERM-XXXXXX) for terminologies. The `version_strategy` field controls how stored IDs are interpreted at document validation time.
+**All reference fields store canonical IDs** — `template_id` for templates, `terminology_id` for terminologies. The `version_strategy` field controls how stored IDs are interpreted at document validation time.
 
 ### Storage
 
@@ -58,9 +58,9 @@ target_terminologies: ["TERM-000003"]              # not ["GENDER"]
 
 ### Normalization at Template Creation
 
-When a user provides a code (for convenience), the system resolves it to a canonical ID before storing:
+When a user provides a value (for convenience), the system resolves it to a canonical ID before storing:
 
-1. User provides `"PERSON"` → system looks up latest active template with code PERSON in the pool → resolves to `TPL-000042` → stores `TPL-000042`
+1. User provides `"PERSON"` → system looks up latest active template with value PERSON in the pool → resolves to `TPL-000042` → stores `TPL-000042`
 2. User provides `"TPL-000042"` → system validates it exists → stores `TPL-000042`
 3. User provides `"DOC_STATUS"` → system looks up terminology → resolves to `TERM-000001` → stores `TERM-000001`
 
@@ -82,7 +82,7 @@ Default: `latest`.
 
 | Strategy | Stored | Resolution |
 |----------|--------|-----------|
-| `latest` | `TPL-000042` | Look up TPL-000042 → code "PERSON" → accept document if its template code is "PERSON" (any version) |
+| `latest` | `TPL-000042` | Look up TPL-000042 → value "PERSON" → accept document if its template value is "PERSON" (any version) |
 | `pinned` | `TPL-000042` | Accept document only if its `template_id` is exactly `TPL-000042` |
 
 ### `extends` — No Change
@@ -93,11 +93,11 @@ Already stores `template_id`, always pinned. Correct as-is.
 
 ### Template Creation
 
-No changes to `CreateTemplateRequest`. Users can provide codes or IDs — normalization is transparent:
+No changes to `CreateTemplateRequest`. Users can provide values or IDs — normalization is transparent:
 
 ```json
 {
-  "code": "EMPLOYEE_REVIEW",
+  "value": "EMPLOYEE_REVIEW",
   "fields": [
     {
       "name": "employee",
@@ -166,7 +166,7 @@ For `latest`: validates against the latest active version of the ADDRESS family.
 
 Works with both strategies. The stored IDs are always used as the starting point:
 
-**`latest`:** `target_templates: ["TPL-000042"]` → look up TPL-000042's code (PERSON) → find all descendants by code → expand to `["PERSON", "EMPLOYEE", "CUSTOMER"]` (matched by code, any version).
+**`latest`:** `target_templates: ["TPL-000042"]` → look up TPL-000042's value (PERSON) → find all descendants by value → expand to `["PERSON", "EMPLOYEE", "CUSTOMER"]` (matched by value, any version).
 
 **`pinned`:** `target_templates: ["TPL-000042"]` → find descendants of exactly TPL-000042 → expand to `["TPL-000042", "TPL-000043", "TPL-000044"]` (matched by exact template_id).
 
@@ -189,9 +189,9 @@ Works with both strategies. The stored IDs are always used as the starting point
 
 ### Key Methods
 
-**`_resolve_to_template_id(ref, namespace, known_templates=None)`** — Resolves a template code or ID to a canonical `template_id`. If `ref` is a UUID7, validates existence. Otherwise looks up latest active template by value in the namespace. `known_templates` enables cross-resolution within an activation set.
+**`_resolve_to_template_id(ref, namespace, known_templates=None)`** — Resolves a template value or ID to a canonical `template_id`. If `ref` is a UUID7, validates existence. Otherwise looks up latest active template by value in the namespace. `known_templates` enables cross-resolution within an activation set.
 
-**`_resolve_to_terminology_id(ref, namespace)`** — Resolves a terminology code or ID to a canonical `terminology_id`. If `ref` is a UUID7, validates existence and active status. Otherwise looks up by value via def-store.
+**`_resolve_to_terminology_id(ref, namespace)`** — Resolves a terminology value or ID to a canonical `terminology_id`. If `ref` is a UUID7, validates existence and active status. Otherwise looks up by value via def-store.
 
 **`_normalize_field_references(fields, namespace, known_templates=None)`** — Iterates all fields and normalizes the 6 reference fields to canonical IDs. Mutates fields in-place.
 
@@ -202,18 +202,18 @@ Works with both strategies. The stored IDs are always used as the starting point
 - **Registry** — no changes to the Registry service itself.
 - **Reporting sync** — no changes. Template reporting config is version-specific.
 - **Def-Store service** — no changes (clients already support both ID and code lookup).
-- **API request models** — `CreateTemplateRequest` still accepts codes as input; normalization is transparent.
+- **API request models** — `CreateTemplateRequest` still accepts values as input; normalization is transparent.
 
 ## Verification
 
-1. Create template with `target_templates: ["PERSON"]` → stored as `["TPL-XXXXXX"]`
-2. Create template with `terminology_ref: "DOC_STATUS"` → stored as `"TERM-XXXXXX"`
-3. Create template with `target_terminologies: ["GENDER"]` → stored as `["TERM-XXXXXX"]`
+1. Create template with `target_templates: ["PERSON"]` → stored as canonical IDs
+2. Create template with `terminology_ref: "DOC_STATUS"` → stored as canonical ID
+3. Create template with `target_terminologies: ["GENDER"]` → stored as canonical IDs
 4. Create template with already-canonical IDs → stored as-is
 5. `version_strategy: "pinned"` → document with different template version rejected
 6. `version_strategy: "latest"` (default) → document with any family version accepted
 7. `include_subtypes` with `pinned` → descendants matched by exact template_id
-8. `include_subtypes` with `latest` → descendants matched by code family
+8. `include_subtypes` with `latest` → descendants matched by value family
 9. Nested object validation via `template_ref` → works (was silently broken before)
 10. Draft activation → references normalized to canonical IDs at activation time
 11. Bulk create (non-draft) → references normalized

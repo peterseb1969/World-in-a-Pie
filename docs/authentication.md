@@ -598,7 +598,7 @@ The OIDC library (oidc-client-ts) uses PKCE which requires `Crypto.subtle`, avai
 - OIDC login works over network without SSH tunnels
 - ~25MB RAM overhead
 
-For API-key-only deployments, use `--profile pi-minimal` to skip Caddy.
+For API-key-only deployments, use `--preset core` to skip Caddy.
 
 ---
 

@@ -268,7 +268,7 @@ All events follow this structure:
   "document": {
     "document_id": "019c20d4-67f1-7a8f-989e-74436577ce8d",
     "template_id": "TPL-000001",
-    "template_code": "PERSON",
+    "template_value": "PERSON",
     "version": 1,
     "status": "active",
     "identity_hash": "a1b2c3d4e5f6...",
@@ -344,6 +344,7 @@ Usage: python my_consumer.py
 
 import asyncio
 import json
+import os
 import signal
 from datetime import datetime
 from nats.aio.client import Client as NATS
@@ -368,7 +369,7 @@ async def handle_message(msg):
 
         print(f"[{datetime.now().isoformat()}] {event_type}")
         print(f"  Document: {doc.get('document_id')}")
-        print(f"  Template: {doc.get('template_code')}")
+        print(f"  Template: {doc.get('template_value')}")
         print(f"  Data: {json.dumps(doc.get('data', {}), indent=4)}")
         print()
 
@@ -480,7 +481,7 @@ async function handleMessage(msg) {
 
         console.log(`[${new Date().toISOString()}] ${eventType}`);
         console.log(`  Document: ${doc.document_id}`);
-        console.log(`  Template: ${doc.template_code}`);
+        console.log(`  Template: ${doc.template_value}`);
         console.log(`  Data: ${JSON.stringify(doc.data, null, 2)}`);
         console.log();
 
@@ -588,7 +589,7 @@ async def handle_message(msg):
     doc = event.get("document", {})
 
     # Only process PERSON documents
-    if doc.get("template_code") != "PERSON":
+    if doc.get("template_value") != "PERSON":
         await msg.ack()  # Acknowledge but skip
         return
 

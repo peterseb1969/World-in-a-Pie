@@ -220,8 +220,8 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
     "namespace": "wip",
     "entity_type": "terminologies",
     "composite_key": {
-        "code": "GENDER",
-        "name": "Gender"
+        "value": "GENDER",
+        "label": "Gender"
     }
 }
 # → Generates: TERM-000001
@@ -232,8 +232,8 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
     "entity_type": "terms",
     "composite_key": {
         "terminology_id": "TERM-000001",
-        "code": "M",
-        "value": "Male"
+        "value": "M",
+        "label": "Male"
     }
 }
 # → Generates: T-000001

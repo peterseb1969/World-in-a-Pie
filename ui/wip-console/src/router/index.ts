@@ -33,11 +33,6 @@ const router = createRouter({
       component: () => import('@/views/terminologies/ImportView.vue')
     },
     {
-      path: '/terminologies/import-ontology',
-      name: 'ontology-import',
-      component: () => import('@/views/terminologies/OntologyImportView.vue')
-    },
-    {
       path: '/terminologies/validate',
       name: 'terminology-validate',
       component: () => import('@/views/terminologies/ValidateView.vue')

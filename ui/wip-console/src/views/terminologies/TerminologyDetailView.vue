@@ -156,6 +156,9 @@ async function exportTerminology(format: 'json' | 'csv') {
     URL.revokeObjectURL(url)
 
     uiStore.showSuccess('Export Complete', `Downloaded ${filename}`)
+    if (format === 'json') {
+      uiStore.showInfo('Export Note', 'WIP JSON export is lossless within WIP. If this was imported from OBO/OWL, the original format is not preserved.')
+    }
   } catch (e) {
     uiStore.showError('Export Failed', (e as Error).message)
   } finally {

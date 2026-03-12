@@ -110,22 +110,22 @@ class NamespaceGroup(BaseModel):
 # Current
 class Terminology(Document):
     terminology_id: str
-    code: str
-    name: str
+    value: str
+    label: str
     # ... other fields
 
 # Proposed
 class Terminology(Document):
     terminology_id: str
     namespace: str = Field(default="wip-terminologies", index=True)
-    code: str
-    name: str
+    value: str
+    label: str
     # ... other fields
 
     class Settings:
         indexes = [
             IndexModel([("namespace", 1), ("terminology_id", 1)], unique=True),
-            IndexModel([("namespace", 1), ("code", 1)], unique=True),
+            IndexModel([("namespace", 1), ("value", 1)], unique=True),
             IndexModel([("namespace", 1), ("status", 1)]),
         ]
 ```
@@ -137,8 +137,8 @@ class Terminology(Document):
 class Term(Document):
     term_id: str
     terminology_id: str
-    code: str
     value: str
+    label: str
 
 # Proposed
 class Term(Document):
@@ -146,13 +146,13 @@ class Term(Document):
     namespace: str = Field(default="wip-terms", index=True)
     terminology_id: str
     terminology_namespace: str = Field(default="wip-terminologies")  # Reference
-    code: str
     value: str
+    label: str
 
     class Settings:
         indexes = [
             IndexModel([("namespace", 1), ("term_id", 1)], unique=True),
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("code", 1)], unique=True),
+            IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], unique=True),
             IndexModel([("namespace", 1), ("status", 1)]),
         ]
 ```
@@ -163,22 +163,22 @@ class Term(Document):
 # Current
 class Template(Document):
     template_id: str
-    code: str
-    name: str
+    value: str
+    label: str
     version: int
 
 # Proposed
 class Template(Document):
     template_id: str
     namespace: str = Field(default="wip-templates", index=True)
-    code: str
-    name: str
+    value: str
+    label: str
     version: int
 
     class Settings:
         indexes = [
             IndexModel([("namespace", 1), ("template_id", 1)], unique=True),
-            IndexModel([("namespace", 1), ("code", 1), ("version", 1)], unique=True),
+            IndexModel([("namespace", 1), ("value", 1), ("version", 1)], unique=True),
             IndexModel([("namespace", 1), ("status", 1)]),
         ]
 ```
@@ -280,12 +280,12 @@ POST /api/document-store/documents?namespace=dev-documents
 
 ```python
 # Current (hardcoded)
-async def register_terminology(code: str, name: str) -> str:
-    return await self._register("wip-terminologies", {"code": code, "name": name})
+async def register_terminology(value: str, label: str) -> str:
+    return await self._register("wip-terminologies", {"value": value, "label": label})
 
 # Proposed (namespace parameter)
-async def register_terminology(code: str, name: str, namespace: str = "wip-terminologies") -> str:
-    return await self._register(namespace, {"code": code, "name": name})
+async def register_terminology(value: str, label: str, namespace: str = "wip-terminologies") -> str:
+    return await self._register(namespace, {"value": value, "label": label})
 ```
 
 ### Cross-Namespace References

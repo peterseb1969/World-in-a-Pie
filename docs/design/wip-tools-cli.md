@@ -2,7 +2,9 @@
 
 A command-line toolkit for bulk data operations, migrations, and maintenance tasks on WIP instances.
 
-## Status: Planned
+## Status: Partially Implemented
+
+**Note:** The actual implementation lives at `WIP-Toolkit/src/wip_toolkit/`.
 
 ---
 
@@ -211,7 +213,7 @@ wip-tools import --all backup/
   "type": "documents",
   "template": {
     "template_id": "TPL-000001",
-    "code": "CUSTOMER",
+    "value": "CUSTOMER",
     "version": 2
   },
   "count": 1500,
@@ -471,10 +473,10 @@ wip-tools --json migrate PERSON --from-version 1 --to-version 2
 ## Implementation Structure
 
 ```
-tools/wip-tools/
+WIP-Toolkit/
 ├── pyproject.toml
 ├── README.md
-├── wip_tools/
+├── src/wip_toolkit/
 │   ├── __init__.py
 │   ├── __main__.py          # Entry point
 │   ├── cli.py               # Click command definitions

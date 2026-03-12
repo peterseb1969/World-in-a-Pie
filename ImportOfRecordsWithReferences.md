@@ -89,10 +89,10 @@ Rather than introducing a new endpoint, the existing `POST /api/registry/entries
 *   **Request format** (existing bulk model):
     ```json
     [
-      { "entry_id": "ext_123", "pool_id": "wip-documents" }
+      { "entry_id": "ext_123", "namespace": "wip-documents" }
     ]
     ```
-*   **The `pool_id` field is optional.** When set to `null`, the lookup searches all pools, enabling cross-namespace resolution.
+*   **The `namespace` field is optional.** When set to `null`, the lookup searches all namespaces, enabling cross-namespace resolution.
 *   **Response** includes a `matched_via` field indicating how the entry was found: `"entry_id"`, `"additional_id"`, or `"composite_key_value"`.
 
 ### 2. Document Store Service Enhancement

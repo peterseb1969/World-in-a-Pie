@@ -147,9 +147,9 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 
 ## Backend
 
-### Python 3.12+
+### Python 3.11+
 
-**Choice**: Python 3.12 or higher
+**Choice**: Python 3.11 or higher
 
 **Rationale**:
 - **Productivity**: Rapid development, readable code
@@ -336,7 +336,7 @@ async def generate_table(template: Template, conn: asyncpg.Connection):
         sql_type = TYPE_MAP.get(field.type, "TEXT")
         columns.append(f"{field.name} {sql_type}")
 
-    sql = f"CREATE TABLE IF NOT EXISTS doc_{template.code} ({', '.join(columns)})"
+    sql = f"CREATE TABLE IF NOT EXISTS doc_{template.value} ({', '.join(columns)})"
     await conn.execute(sql)
 ```
 
@@ -516,7 +516,7 @@ podman exec -it wip-def-store bash -c \
 
 | Component | Version | Notes |
 |-----------|---------|-------|
-| Python | 3.12+ | Most services; reporting-sync uses 3.11 |
+| Python | 3.11+ | Most services use 3.12; reporting-sync uses 3.11 |
 | FastAPI | 0.100+ | Latest stable |
 | Pydantic | 2.0+ | v2 for Rust-based performance |
 | Vue | 3.4+ | Composition API |

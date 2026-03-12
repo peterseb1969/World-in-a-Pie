@@ -94,7 +94,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 
 | Attribute | Value |
 |-----------|-------|
-| **Image** | `mongo:7` (Mac/dev-minimal) / `mongo:4.4.18` (Pi) |
+| **Image** | `mongo:7` (default) / `mongo:4.4.18` (Pi 4) |
 | **Purpose** | Primary document store for all services |
 | **Port** | 27017 |
 | **Network** | wip-network |
@@ -119,7 +119,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | **Purpose** | MongoDB web admin UI |
 | **Port** | 8081 |
 | **Network** | wip-network |
-| **Profiles** | mac, pi-large, dev-minimal |
+| **Modules** | dev-tools |
 
 **Exposed Endpoint:**
 - `http://localhost:8081` - Web UI
@@ -182,7 +182,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | **Ports** | 9000 (S3 API), 9001 (Console) |
 | **Network** | wip-network |
 | **Volumes** | `${WIP_DATA_DIR}/minio:/data` |
-| **Profiles** | mac, pi-standard, pi-large |
+| **Modules** | files |
 
 **Exposed Endpoints:**
 - `localhost:9000` - S3 API
@@ -204,7 +204,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | **Port** | 5556 (internal, via Caddy) |
 | **Network** | wip-network |
 | **Volumes** | `./config/dex:/etc/dex:ro`, `${WIP_DATA_DIR}/dex:/data` |
-| **Profiles** | mac, pi-standard, pi-large |
+| **Modules** | oidc |
 
 **Exposed Endpoints:**
 - Internal: `http://wip-dex:5556/dex/` (via Caddy proxy)
@@ -229,7 +229,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | **Ports** | 8080 (HTTP), 8443 (HTTPS) |
 | **Network** | wip-network |
 | **Volumes** | `./config/caddy/Caddyfile:ro`, `${WIP_DATA_DIR}/caddy/` |
-| **Profiles** | mac, pi-standard, pi-large |
+| **Modules** | oidc |
 
 **Exposed Endpoints:**
 - `http://localhost:8080` - HTTP (redirects to HTTPS)
@@ -365,8 +365,8 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 |--------|------|-------------|
 | GET/POST | `/templates` | List/Create templates |
 | GET/PUT/DELETE | `/templates/{id}` | CRUD template |
-| GET | `/templates/by-code/{code}` | Get by code |
-| GET | `/templates/by-code/{code}/versions` | List versions |
+| GET | `/templates/by-value/{value}` | Get by value |
+| GET | `/templates/by-value/{value}/versions` | List versions |
 | POST | `/templates/{id}/validate` | Validate template |
 | POST | `/templates/bulk` | Bulk operations |
 | GET | `/{id}/dependencies` | Check dependencies |
@@ -435,8 +435,8 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | GET | `/metrics/consumer` | NATS consumer info |
 | GET | `/alerts` | Active alerts |
 | PUT | `/alerts/config` | Configure alerts |
-| GET | `/schema/{template_code}` | View generated schema |
-| POST | `/sync/batch/{template_code}` | Trigger batch sync |
+| GET | `/schema/{template_value}` | View generated schema |
+| POST | `/sync/batch/{template_value}` | Trigger batch sync |
 | GET | `/sync/batch/jobs` | List sync jobs |
 | GET | `/health/integrity` | Data integrity check |
 

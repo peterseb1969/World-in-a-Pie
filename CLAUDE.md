@@ -29,7 +29,7 @@ World In a Pie (WIP) is a universal template-driven document storage system desi
 All core services are implemented and working:
 
 - [x] Registry - Namespace management, ID generation, bulk operations
-- [x] Def-Store - Terminologies, terms, aliases, audit log, import/export
+- [x] Def-Store - Terminologies, terms, aliases, audit log, import/export, ontology relationships
 - [x] Template-Store - Templates, fields, validation rules, inheritance
 - [x] Document-Store - Documents, versioning, term validation, table view
 - [x] Reporting-Sync - NATS consumer, PostgreSQL sync, batch operations, alerts
@@ -45,6 +45,7 @@ All core services are implemented and working:
 - Metabase optional deployment (`deploy/optional/metabase/`) with PostgreSQL reporting infrastructure
 - Template draft mode — create templates with `status: "draft"`, cascading activation with full validation
 - Bulk-first API convention — all write endpoints accept `List[Item]`, return `BulkResponse`; no single-entity write endpoints
+- Ontology support — OBO Graph JSON import, typed relationships (is_a, part_of, etc.), relationship type validation, traversal queries, unified import view with auto-format detection
 
 ---
 
@@ -55,10 +56,11 @@ All core services are implemented and working:
 | 1 | Binary File Storage (MinIO) | ✅ Complete — Full CRUD API, UI, reference tracking, orphan detection |
 | 2 | Semantic Types | ✅ Complete — 7 types, validation, reporting sync, UI hints |
 | 3 | BI Dashboard (Metabase) | ✅ Optional deployment ready (`deploy/optional/metabase/`), pre-built dashboards pending |
-| 4 | File Upload (CSV/XLSX) | Pending |
-| 5 | Event Replay | Design complete, implementation pending |
-| 6 | Docker support | Test/document running with standard Docker |
-| 7 | Rootful Podman | Test/document running with `sudo podman` |
+| 4 | Ontology Support | ✅ Complete — OBO Graph JSON import, typed relationships, traversal, unified import UI |
+| 5 | File Upload (CSV/XLSX) | Pending |
+| 6 | Event Replay | Design complete, implementation pending |
+| 7 | Docker support | Test/document running with standard Docker |
+| 8 | Rootful Podman | Test/document running with `sudo podman` |
 
 See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
@@ -67,6 +69,7 @@ See `docs/` for detailed specifications:
 - `docs/network-configuration.md` - **Network & OIDC setup (4 deployment scenarios)**
 - `docs/production-deployment.md` - Production security guide
 - `docs/data-models.md` - Document, template, term models
+- `docs/design/ontology-support.md` - Ontology import, relationships, traversal
 - `docs/uniqueness-and-identity.md` - **Uniqueness rules, Registry synonyms, ID generation**
 - `docs/api-conventions.md` - **Bulk-first API convention, BulkResponse contract, client examples**
 - `docs/design/event-replay.md` - Event replay for consumer onboarding

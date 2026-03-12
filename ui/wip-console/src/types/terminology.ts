@@ -138,6 +138,12 @@ export interface TermListResponse {
 export interface ImportTerminologyRequest {
   terminology: CreateTerminologyRequest
   terms: CreateTermRequest[]
+  relationships?: Array<{
+    source_term_value: string
+    target_term_value: string
+    relationship_type: string
+    target_terminology_value?: string
+  }>
   options?: {
     skip_duplicates?: boolean
     update_existing?: boolean

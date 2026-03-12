@@ -309,7 +309,7 @@ $ wip-nano query NOTE --where "tags contains 'project-x'"
 
 **Reasons to defer:**
 
-1. **Core WIP not yet complete** - Event replay, file storage phases pending
+1. **Core WIP not yet complete** - Event replay pending (file storage is now complete)
 2. **Limited demand** - Pi 5 with 8GB is the stated target
 3. **High effort** - SQLite rewrite is significant work
 4. **Maintenance burden** - Two storage backends to maintain

@@ -180,9 +180,9 @@ See [Production Deployment Guide](docs/production-deployment.md) for complete in
 - Template inheritance with version pinning
 - Streaming import/export with cursor pagination
 - Namespace-scoped referential integrity
-- Ontology support — typed relationships, polyhierarchy, traversal queries
+- Ontology support — OBO Graph JSON import, typed relationships, polyhierarchy, traversal queries, unified import with auto-format detection
 
-Current focus: Ontology import (OWL/SKOS), file upload (CSV/XLSX), and BI dashboards.
+Current focus: File upload (CSV/XLSX), BI dashboards, and event replay.
 
 ---
 

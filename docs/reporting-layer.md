@@ -316,7 +316,7 @@ CREATE TABLE _wip_schema_migrations (
 # reporting-sync/config.yaml
 nats:
   url: nats://localhost:4222
-  stream: WIP_DOCUMENTS
+  stream: WIP_EVENTS
   consumer: reporting-sync
 
 postgresql:

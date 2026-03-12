@@ -112,6 +112,7 @@ async def delete_relationships(
 async def list_all_relationships(
     namespace: str = Query("wip", description="Namespace"),
     relationship_type: Optional[str] = Query(None, description="Filter by type"),
+    source_terminology_id: Optional[str] = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
@@ -121,11 +122,13 @@ async def list_all_relationships(
     List all relationships in a namespace (paginated).
 
     Unlike the per-term list endpoint, this returns ALL relationships,
-    useful for batch sync and export operations.
+    useful for batch sync and export operations. Use source_terminology_id
+    to filter to a specific terminology.
     """
     items, total = await OntologyService.list_all_relationships(
         namespace=namespace,
         relationship_type=relationship_type,
+        source_terminology_id=source_terminology_id,
         status=status,
         page=page,
         page_size=page_size,

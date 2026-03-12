@@ -167,7 +167,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 {
   "document_id": "0192abc...",
   "template_id": "TPL-000001",
-  "template_code": "STUDY_ARM",
+  "template_value": "STUDY_ARM",
   "data": {
     "study": "DEMO-001",
     "arm_code": "TREATMENT",
@@ -180,7 +180,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
       "resolved": {
         "document_id": "0192def...",
         "identity_hash": "abc123...",
-        "template_code": "STUDY_DEFINITION",
+        "template_value": "STUDY_DEFINITION",
         "version": 3
       },
       "version_strategy": "latest",
@@ -191,7 +191,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
       "lookup_value": "male",
       "resolved": {
         "term_id": "T-000042",
-        "terminology_code": "GENDER",
+        "terminology_value": "GENDER",
         "matched_via": "value"
       },
       "version_strategy": "latest",
@@ -218,7 +218,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 {
   "document_id": "0192def...",
   "identity_hash": "abc123...",
-  "template_code": "STUDY_DEFINITION",
+  "template_value": "STUDY_DEFINITION",
   "version": 3
 }
 ```
@@ -227,7 +227,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 ```json
 {
   "term_id": "T-000042",
-  "terminology_code": "GENDER",
+  "terminology_value": "GENDER",
   "matched_via": "value"
 }
 ```
@@ -236,7 +236,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 ```json
 {
   "terminology_id": "TERM-000001",
-  "terminology_code": "GENDER",
+  "terminology_value": "GENDER",
   "version": 1
 }
 ```
@@ -245,7 +245,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 ```json
 {
   "template_id": "TPL-000001",
-  "template_code": "STUDY_DEFINITION",
+  "template_value": "STUDY_DEFINITION",
   "version": 3
 }
 ```
@@ -388,7 +388,7 @@ GET /documents/{id}?expand_references=true
       "lookup_value": "DEMO-001",
       "resolved": {
         "document_id": "0192def...",
-        "template_code": "STUDY_DEFINITION"
+        "template_value": "STUDY_DEFINITION"
       }
     }
   }
@@ -408,7 +408,7 @@ GET /documents/{id}?expand_references=true
       "lookup_value": "DEMO-001",
       "resolved": {
         "document_id": "0192def...",
-        "template_code": "STUDY_DEFINITION"
+        "template_value": "STUDY_DEFINITION"
       },
       "expanded": {
         "document_id": "0192def...",
@@ -507,7 +507,7 @@ Response:
   "referenced_by": [
     {
       "document_id": "0192abc...",
-      "template_code": "STUDY_ARM",
+      "template_value": "STUDY_ARM",
       "field": "study",
       "reference_type": "document"
     }

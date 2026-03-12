@@ -71,7 +71,7 @@ This is configured in `docker-compose.yml` via the `API_KEY` environment variabl
 | GET | `/api/def-store/terminologies` | List all terminologies |
 | POST | `/api/def-store/terminologies` | Create a terminology |
 | GET | `/api/def-store/terminologies/{id}` | Get terminology by ID |
-| GET | `/api/def-store/terminologies/by-code/{code}` | Get terminology by code |
+| GET | `/api/def-store/terminologies/by-value/{value}` | Get terminology by value |
 | PUT | `/api/def-store/terminologies/{id}` | Update terminology |
 | DELETE | `/api/def-store/terminologies/{id}` | Delete terminology |
 
@@ -82,7 +82,7 @@ This is configured in `docker-compose.yml` via the `API_KEY` environment variabl
 | GET | `/api/def-store/terms/{terminology_id}` | List terms in terminology |
 | POST | `/api/def-store/terms/{terminology_id}` | Create a term |
 | GET | `/api/def-store/terms/{terminology_id}/{term_id}` | Get term by ID |
-| GET | `/api/def-store/terms/{terminology_id}/by-code/{code}` | Get term by code |
+| GET | `/api/def-store/terms/{terminology_id}/by-value/{value}` | Get term by value |
 | PUT | `/api/def-store/terms/{terminology_id}/{term_id}` | Update term |
 | DELETE | `/api/def-store/terms/{terminology_id}/{term_id}` | Delete term |
 | POST | `/api/def-store/terms/{terminology_id}/validate` | Validate a value |

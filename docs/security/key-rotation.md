@@ -21,10 +21,9 @@ This guide covers rotating secrets and keys in a WIP deployment.
    MASTER_API_KEY=<new-key>
    ```
 
-3. **Restart services:**
+3. **Recreate services** (restart does NOT reload env vars):
    ```bash
-   podman restart wip-registry wip-def-store \
-     wip-template-store wip-document-store
+   podman-compose down && podman-compose up -d
    ```
 
 4. **Update clients** using the old key
@@ -77,10 +76,9 @@ For deployments using `api-keys.json`:
    WIP_MONGO_URI=mongodb://wip_admin:new-secure-password@wip-mongodb:27017/
    ```
 
-5. **Restart services:**
+5. **Recreate services** (restart does NOT reload env vars):
    ```bash
-   podman restart wip-registry wip-def-store \
-     wip-template-store wip-document-store
+   podman-compose down && podman-compose up -d
    ```
 
 ### PostgreSQL
@@ -98,9 +96,9 @@ For deployments using `api-keys.json`:
 
 3. **Update secrets and .env** (similar to MongoDB)
 
-4. **Restart reporting-sync:**
+4. **Recreate reporting-sync** (restart does NOT reload env vars):
    ```bash
-   podman restart wip-reporting-sync
+   podman-compose down && podman-compose up -d
    ```
 
 ---
@@ -132,9 +130,9 @@ For deployments using `api-keys.json`:
    NATS_URL=nats://new-token-here@wip-nats:4222
    ```
 
-5. **Restart NATS and dependent services:**
+5. **Recreate NATS and dependent services** (restart does NOT reload env vars):
    ```bash
-   podman restart wip-nats wip-reporting-sync wip-ingest-gateway
+   podman-compose down && podman-compose up -d
    ```
 
 ---
@@ -155,9 +153,9 @@ For deployments using `api-keys.json`:
 
 3. **Update secrets file and .env**
 
-4. **Restart Dex:**
+4. **Recreate Dex** (restart does NOT reload env vars):
    ```bash
-   podman restart wip-dex
+   podman-compose down && podman-compose up -d
    ```
 
 ---

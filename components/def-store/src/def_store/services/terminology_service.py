@@ -523,6 +523,11 @@ class TerminologyService:
             changed_by=actor,
         )
 
+        # Invalidate relationship type cache if this is the system terminology
+        if terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
+            from .ontology_service import OntologyService
+            OntologyService.invalidate_relationship_type_cache()
+
         return TerminologyService._to_term_response(term)
 
     @staticmethod
@@ -774,6 +779,11 @@ class TerminologyService:
             terminology.term_count += total_created
             terminology.updated_at = now
             await terminology.save()
+
+        # Invalidate relationship type cache if this is the system terminology
+        if total_created > 0 and terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
+            from .ontology_service import OntologyService
+            OntologyService.invalidate_relationship_type_cache()
 
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"

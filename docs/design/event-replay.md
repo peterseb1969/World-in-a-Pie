@@ -60,7 +60,7 @@ Each replay request creates a **replay session** with:
   "session_id": "replay-abc123",
   "entity_type": "documents",
   "filter": {
-    "template_code": "CUSTOMER",
+    "template_value": "CUSTOMER",
     "status": "active"
   },
   "stream_name": "WIP_REPLAY_abc123",
@@ -92,7 +92,7 @@ X-API-Key: {api_key}
 {
   "entity_type": "documents",
   "filter": {
-    "template_code": "CUSTOMER",    // optional: specific template
+    "template_value": "CUSTOMER",    // optional: specific template
     "status": "active"              // optional: default "active"
   },
   "options": {
@@ -156,7 +156,7 @@ POST /api/def-store/replay/start
 {
   "entity_type": "terminologies",  // or "terms"
   "filter": {
-    "terminology_code": "COUNTRY"  // optional for terms
+    "terminology_value": "COUNTRY"  // optional for terms
   }
 }
 ```
@@ -172,7 +172,7 @@ Replay events use the **same format as live events** with additional metadata:
   "data": {
     "document_id": "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
     "template_id": "TPL-000001",
-    "template_code": "CUSTOMER",
+    "template_value": "CUSTOMER",
     "version": 1,
     "data": {
       "name": "Acme Corp",
@@ -194,9 +194,9 @@ Replay events use the **same format as live events** with additional metadata:
 ### Event Subjects
 
 ```
-wip.replay.{session_id}.documents.{template_code}
+wip.replay.{session_id}.documents.{template_value}
 wip.replay.{session_id}.terminologies
-wip.replay.{session_id}.terms.{terminology_code}
+wip.replay.{session_id}.terms.{terminology_value}
 wip.replay.{session_id}.complete
 ```
 
@@ -227,7 +227,7 @@ response = await http_client.post(
     f"{document_store_url}/api/document-store/replay/start",
     json={
         "entity_type": "documents",
-        "filter": {"template_code": "CUSTOMER"}
+        "filter": {"template_value": "CUSTOMER"}
     }
 )
 session = response.json()
@@ -339,7 +339,7 @@ async def publish_replay_events(session, documents):
     for doc in documents:
         event = create_event(doc, session)
         await js.publish(
-            subject=f"wip.replay.{session.session_id}.documents.{doc['template_code']}",
+            subject=f"wip.replay.{session.session_id}.documents.{doc['template_value']}",
             payload=json.dumps(event)
         )
 

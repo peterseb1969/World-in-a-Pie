@@ -115,7 +115,7 @@ connectors:
       # Optional: Restrict to specific Google Workspace domain(s)
       # hostedDomains:
       #   - yourcompany.com
-      #   - anotherorgg.com
+      #   - anotherorg.com
 ```
 
 ### 2.2 Using Environment Variables (Recommended)
@@ -214,7 +214,7 @@ After updating the configuration:
 
 ```bash
 # If using setup.sh
-./scripts/setup.sh --profile <your-profile>
+./scripts/setup.sh --preset <your-profile>
 
 # Or restart Dex container directly
 podman restart wip-dex
