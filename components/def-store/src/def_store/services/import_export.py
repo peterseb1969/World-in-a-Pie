@@ -605,6 +605,67 @@ class ImportExportService:
         }
 
     @staticmethod
+    async def _ensure_relationship_types(needed_types: set[str]) -> None:
+        """
+        Ensure all needed relationship types exist in _ONTOLOGY_RELATIONSHIP_TYPES.
+
+        Auto-creates any missing types as new terms in the system terminology.
+        Invalidates the OntologyService cache after adding new types.
+        """
+        from .system_terminologies import RELATIONSHIP_TYPES_TERMINOLOGY_VALUE
+
+        valid_types = await OntologyService.get_valid_relationship_types()
+        missing = needed_types - set(valid_types.keys())
+
+        if not missing:
+            return
+
+        logger.info(f"Auto-creating {len(missing)} missing relationship types: {missing}")
+
+        # Find the _ONTOLOGY_RELATIONSHIP_TYPES terminology
+        terminology = await Terminology.find_one({
+            "value": RELATIONSHIP_TYPES_TERMINOLOGY_VALUE,
+        })
+        if not terminology:
+            logger.error(
+                f"Cannot auto-create relationship types: "
+                f"{RELATIONSHIP_TYPES_TERMINOLOGY_VALUE} terminology not found"
+            )
+            return
+
+        # Get current max sort_order
+        max_sort = 0
+        async for term in Term.find({
+            "terminology_id": terminology.terminology_id,
+        }).sort("-sort_order").limit(1):
+            max_sort = term.sort_order
+
+        # Create missing types as terms
+        term_requests = []
+        for i, rel_type in enumerate(sorted(missing)):
+            # Convert value to a human-readable label
+            label = rel_type.replace("_", " ").replace(":", " ").title()
+            term_requests.append(CreateTermRequest(
+                value=rel_type,
+                label=label,
+                description=f"Auto-created from ontology import",
+                sort_order=max_sort + i + 1,
+                created_by="system:ontology-import",
+            ))
+
+        if term_requests:
+            results = await TerminologyService.create_terms_bulk(
+                terminology_id=terminology.terminology_id,
+                terms=term_requests,
+                skip_duplicates=True,
+            )
+            created = sum(1 for r in results if r.status == "created")
+            logger.info(f"Created {created} new relationship types")
+
+            # Invalidate cache so create_relationships picks up the new types
+            OntologyService.invalidate_relationship_type_cache()
+
+    @staticmethod
     async def import_ontology(
         data: dict[str, Any],
         options: dict[str, Any],
@@ -727,6 +788,10 @@ class ImportExportService:
             f"ID mappings: value_to_id={len(value_to_id)}, "
             f"uri_to_id={len(uri_to_id)}, nodes={len(nodes)}, edges={len(edges)}"
         )
+
+        # Ensure all relationship types exist in _ONTOLOGY_RELATIONSHIP_TYPES
+        edge_rel_types = {e["relationship_type"] for e in edges}
+        await ImportExportService._ensure_relationship_types(edge_rel_types)
 
         rel_created = 0
         rel_skipped = 0

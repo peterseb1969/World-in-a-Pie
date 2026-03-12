@@ -31,6 +31,47 @@ class OntologyService:
     _relationship_types: dict[str, str] | None = None
 
     # =========================================================================
+    # RELATIONSHIP TYPE VALIDATION
+    # =========================================================================
+
+    @classmethod
+    async def get_valid_relationship_types(cls) -> dict[str, str]:
+        """
+        Load and cache valid relationship types from _ONTOLOGY_RELATIONSHIP_TYPES.
+
+        Returns:
+            Dict mapping term value → term label (e.g. {"is_a": "Is a"}).
+        """
+        if cls._relationship_types is not None:
+            return cls._relationship_types
+
+        from ..models.terminology import Terminology
+
+        terminology = await Terminology.find_one({
+            "value": "_ONTOLOGY_RELATIONSHIP_TYPES"
+        })
+        if not terminology:
+            logger.warning("_ONTOLOGY_RELATIONSHIP_TYPES terminology not found")
+            cls._relationship_types = {}
+            return cls._relationship_types
+
+        types: dict[str, str] = {}
+        async for term in Term.find({
+            "terminology_id": terminology.terminology_id,
+            "status": "active",
+        }):
+            types[term.value] = term.label or term.value
+
+        cls._relationship_types = types
+        logger.info(f"Loaded {len(types)} valid relationship types")
+        return cls._relationship_types
+
+    @classmethod
+    def invalidate_relationship_type_cache(cls) -> None:
+        """Invalidate the cache so next call reloads from DB."""
+        cls._relationship_types = None
+
+    # =========================================================================
     # RELATIONSHIP CRUD
     # =========================================================================
 
@@ -48,6 +89,9 @@ class OntologyService:
         actor = get_identity_string()
         results: list[BulkResultItem] = []
 
+        # Load valid relationship types
+        valid_types = await OntologyService.get_valid_relationship_types()
+
         # Pre-fetch all referenced term IDs for validation
         all_term_ids = set()
         for item in items:
@@ -63,6 +107,16 @@ class OntologyService:
 
         for i, item in enumerate(items):
             try:
+                # Validate relationship type
+                if valid_types and item.relationship_type not in valid_types:
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        error=f"Unknown relationship type '{item.relationship_type}'. "
+                              f"Valid types: {', '.join(sorted(valid_types.keys()))}"
+                    ))
+                    continue
+
                 # Validate source term exists
                 source_term = existing_terms.get(item.source_term_id)
                 if not source_term:
