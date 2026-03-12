@@ -46,7 +46,7 @@ const options = ref({
 const importResult = ref<{
   terminology: { terminology_id: string; value: string; label: string; status: string }
   terms: { total: number; created: number; skipped: number; errors: number }
-  relationships: { total: number; created: number; skipped: number; errors: number; predicate_distribution: Record<string, number> }
+  relationships: { total: number; created: number; skipped: number; errors: number; predicate_distribution: Record<string, number>; error_samples?: string[] }
   elapsed_seconds: number
 } | null>(null)
 
@@ -421,6 +421,15 @@ const sortedResultPredicates = computed(() => {
                 />
               </div>
             </div>
+
+            <div v-if="importResult.relationships.error_samples && importResult.relationships.error_samples.length > 0" class="error-samples">
+              <h4>Error Samples</h4>
+              <ul>
+                <li v-for="(err, idx) in importResult.relationships.error_samples" :key="idx" class="error-text">
+                  {{ err }}
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       </template>
@@ -626,5 +635,23 @@ const sortedResultPredicates = computed(() => {
   padding: 0.125rem 0.375rem;
   border-radius: 3px;
   font-size: 0.875rem;
+}
+
+.error-samples {
+  margin-top: 1rem;
+  background: var(--p-red-50);
+  padding: 1rem;
+  border-radius: 6px;
+}
+
+.error-samples ul {
+  margin: 0;
+  padding-left: 1.5rem;
+}
+
+.error-samples li {
+  font-size: 0.875rem;
+  color: var(--p-red-700);
+  margin-bottom: 0.25rem;
 }
 </style>

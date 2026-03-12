@@ -308,7 +308,7 @@ class DefStoreClient extends BaseApiClient {
   ): Promise<{
     terminology: { terminology_id: string; value: string; label: string; status: string }
     terms: { total: number; created: number; skipped: number; errors: number }
-    relationships: { total: number; created: number; skipped: number; errors: number; predicate_distribution: Record<string, number> }
+    relationships: { total: number; created: number; skipped: number; errors: number; predicate_distribution: Record<string, number>; error_samples?: string[] }
     elapsed_seconds: number
   }> {
     const response = await this.client.post('/import-export/import-ontology', data, {

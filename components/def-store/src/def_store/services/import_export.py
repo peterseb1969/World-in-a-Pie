@@ -723,9 +723,15 @@ class ImportExportService:
             if tid:
                 uri_to_id[uri] = tid
 
+        logger.info(
+            f"ID mappings: value_to_id={len(value_to_id)}, "
+            f"uri_to_id={len(uri_to_id)}, nodes={len(nodes)}, edges={len(edges)}"
+        )
+
         rel_created = 0
         rel_skipped = 0
         rel_errors = 0
+        rel_error_samples: list[str] = []
 
         for i in range(0, len(edges), relationship_batch_size):
             batch_edges = edges[i:i + relationship_batch_size]
@@ -749,11 +755,23 @@ class ImportExportService:
                         rel_skipped += 1
                     else:
                         rel_errors += 1
+                        if len(rel_error_samples) < 5 and r.error:
+                            rel_error_samples.append(r.error)
+
+            if i == 0:
+                logger.info(
+                    f"First relationship batch: {len(rel_requests)} requests, "
+                    f"created={rel_created}, errors={rel_errors}, "
+                    f"samples={rel_error_samples}"
+                )
 
         elapsed = time.perf_counter() - t0
         terms_created = sum(1 for r in term_results if r.status == "created")
         terms_skipped = sum(1 for r in term_results if r.status == "skipped")
         terms_errors = sum(1 for r in term_results if r.status == "error")
+
+        if rel_error_samples:
+            logger.warning(f"Relationship error samples: {rel_error_samples}")
 
         return {
             "terminology": {
@@ -774,6 +792,7 @@ class ImportExportService:
                 "skipped": rel_skipped,
                 "errors": rel_errors,
                 "predicate_distribution": parsed["stats"]["predicate_distribution"],
+                "error_samples": rel_error_samples[:5] if rel_error_samples else [],
             },
             "elapsed_seconds": round(elapsed, 1),
         }
