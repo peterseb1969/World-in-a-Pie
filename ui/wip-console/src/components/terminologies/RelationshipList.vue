@@ -83,7 +83,6 @@ async function loadRelationships() {
     } else {
       // All relationships for this terminology (use /all endpoint with filter)
       const data = await defStoreClient.listAllRelationships({
-        source_terminology_id: props.terminologyId,
         page: currentPage.value + 1,
         page_size: rowsPerPage.value,
         relationship_type: typeFilter.value || undefined,

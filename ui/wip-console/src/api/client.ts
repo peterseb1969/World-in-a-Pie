@@ -197,7 +197,7 @@ class DefStoreClient extends BaseApiClient {
     page?: number
     page_size?: number
     status?: string
-    search?: string
+    value?: string
     namespace?: string
   }): Promise<TerminologyListResponse> {
     const response = await this.client.get<TerminologyListResponse>('/terminologies', { params })
@@ -230,6 +230,7 @@ class DefStoreClient extends BaseApiClient {
     page_size?: number
     status?: string
     search?: string
+    namespace?: string
   }): Promise<TermListResponse> {
     const response = await this.client.get<TermListResponse>(
       `/terminologies/${terminologyId}/terms`,
@@ -354,7 +355,6 @@ class DefStoreClient extends BaseApiClient {
   async listAllRelationships(params?: {
     namespace?: string
     relationship_type?: string
-    source_terminology_id?: string
     status?: string
     page?: number
     page_size?: number
@@ -515,6 +515,22 @@ class TemplateStoreClient extends BaseApiClient {
   }
 
   // ===========================================================================
+  // ACTIVATION ENDPOINTS
+  // ===========================================================================
+
+  async activateTemplate(id: string, params?: {
+    namespace?: string
+    dry_run?: boolean
+  }): Promise<BulkResponse> {
+    const response = await this.client.post<BulkResponse>(
+      `/templates/${id}/activate`,
+      null,
+      { params }
+    )
+    return response.data
+  }
+
+  // ===========================================================================
   // INHERITANCE ENDPOINTS
   // ===========================================================================
 
@@ -548,8 +564,9 @@ class DocumentStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async getDocument(id: string): Promise<Document> {
-    const response = await this.client.get<Document>(`/documents/${id}`)
+  async getDocument(id: string, version?: number): Promise<Document> {
+    const params = version !== undefined ? { version } : undefined
+    const response = await this.client.get<Document>(`/documents/${id}`, { params })
     return response.data
   }
 
@@ -617,7 +634,7 @@ class DocumentStoreClient extends BaseApiClient {
 
   async exportTableCsv(
     templateId: string,
-    params?: { status?: string; include_metadata?: boolean }
+    params?: { status?: string; include_metadata?: boolean; max_cross_product?: number }
   ): Promise<Blob> {
     const response = await this.client.get(`/table/${templateId}/csv`, {
       params,

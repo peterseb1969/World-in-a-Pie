@@ -1,6 +1,4 @@
-// =============================================================================
-// FILE TYPES
-// =============================================================================
+import type { PaginatedResponse } from './common.js'
 
 export type FileStatus = 'orphan' | 'active' | 'inactive'
 
@@ -28,10 +26,6 @@ export interface FileEntity {
   updated_by: string | null
 }
 
-// =============================================================================
-// REQUEST/RESPONSE TYPES
-// =============================================================================
-
 export interface FileUploadMetadata {
   description?: string
   tags?: string[]
@@ -48,13 +42,7 @@ export interface UpdateFileMetadataRequest {
   allowed_templates?: string[]
 }
 
-export interface FileListResponse {
-  items: FileEntity[]
-  total: number
-  page: number
-  page_size: number
-  pages: number
-}
+export type FileListResponse = PaginatedResponse<FileEntity>
 
 export interface FileDownloadResponse {
   file_id: string
@@ -65,10 +53,6 @@ export interface FileDownloadResponse {
   expires_in: number
 }
 
-// =============================================================================
-// INTEGRITY TYPES
-// =============================================================================
-
 export interface FileIntegrityIssue {
   type: 'orphan_file' | 'missing_storage' | 'broken_reference'
   severity: 'warning' | 'error'
@@ -78,23 +62,12 @@ export interface FileIntegrityIssue {
   message: string
 }
 
-export interface FileIntegritySummary {
-  total_files: number
-  orphan_files: number
-  missing_storage: number
-  broken_references: number
-}
-
 export interface FileIntegrityResponse {
   status: 'healthy' | 'warning' | 'error'
   checked_at: string
   summary: Record<string, number>
   issues: FileIntegrityIssue[]
 }
-
-// =============================================================================
-// QUERY TYPES
-// =============================================================================
 
 export interface FileQueryParams {
   namespace?: string

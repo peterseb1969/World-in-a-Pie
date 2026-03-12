@@ -245,7 +245,9 @@ WorldInPie/
 ├── docs/                  # Detailed documentation
 ├── scripts/               # Setup and utility scripts
 ├── config/                # Configuration files
-├── libs/wip-auth/         # Shared auth library
+├── libs/wip-auth/         # Shared auth library (Python)
+├── libs/wip-client/       # @wip/client — TypeScript client library (fetch-based)
+├── libs/wip-react/        # @wip/react — React hooks (TanStack Query)
 ├── components/
 │   ├── registry/          # ID & namespace management
 │   ├── def-store/         # Terminologies & terms
