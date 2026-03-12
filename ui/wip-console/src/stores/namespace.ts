@@ -49,9 +49,6 @@ export const useNamespaceStore = defineStore('namespace', () => {
     namespaces.value.find(ns => ns.prefix === current.value) || null
   )
 
-  // Is non-production namespace?
-  const isNonProduction = computed(() => current.value !== 'wip')
-
   // Actions
   async function loadNamespaces() {
     loading.value = true
@@ -175,7 +172,6 @@ export const useNamespaceStore = defineStore('namespace', () => {
     currentNamespaceParam,
     currentNamespace,
     isAll,
-    isNonProduction,
     // Actions
     loadNamespaces,
     setCurrent,

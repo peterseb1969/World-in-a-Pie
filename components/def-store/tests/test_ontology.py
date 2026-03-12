@@ -540,6 +540,137 @@ class TestParentsChildren:
         assert parent_ids == {p1, p2}
 
 
+class TestRelationshipPagination:
+    """Tests for pagination on relationship list endpoints."""
+
+    @pytest.mark.asyncio
+    async def test_pagination_params(self, client, auth_headers):
+        """Page and page_size params are respected."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+        c = await create_term(client, auth_headers, tid, "C")
+        d = await create_term(client, auth_headers, tid, "D")
+        await create_relationship(client, auth_headers, a, b, "is_a")
+        await create_relationship(client, auth_headers, a, c, "part_of")
+        await create_relationship(client, auth_headers, a, d, "related_to")
+
+        # Page 1, size 2
+        resp = await client.get(
+            f"{API}/ontology/relationships",
+            params={"term_id": a, "page": 1, "page_size": 2},
+            headers=auth_headers,
+        )
+        data = resp.json()
+        assert len(data["items"]) == 2
+        assert data["total"] == 3
+        assert data["pages"] == 2
+
+        # Page 2, size 2
+        resp2 = await client.get(
+            f"{API}/ontology/relationships",
+            params={"term_id": a, "page": 2, "page_size": 2},
+            headers=auth_headers,
+        )
+        data2 = resp2.json()
+        assert len(data2["items"]) == 1
+
+
+class TestListAllRelationships:
+    """Tests for GET /ontology/relationships/all."""
+
+    @pytest.mark.asyncio
+    async def test_list_all_returns_all_relationships(self, client, auth_headers):
+        """The /all endpoint returns relationships regardless of term_id."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+        c = await create_term(client, auth_headers, tid, "C")
+        await create_relationship(client, auth_headers, a, b, "is_a")
+        await create_relationship(client, auth_headers, b, c, "is_a")
+
+        resp = await client.get(
+            f"{API}/ontology/relationships/all",
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total"] >= 2
+
+    @pytest.mark.asyncio
+    async def test_list_all_filter_by_type(self, client, auth_headers):
+        """The /all endpoint filters by relationship_type."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+        c = await create_term(client, auth_headers, tid, "C")
+        await create_relationship(client, auth_headers, a, b, "is_a")
+        await create_relationship(client, auth_headers, a, c, "part_of")
+
+        resp = await client.get(
+            f"{API}/ontology/relationships/all",
+            params={"relationship_type": "part_of"},
+            headers=auth_headers,
+        )
+        data = resp.json()
+        for item in data["items"]:
+            assert item["relationship_type"] == "part_of"
+
+    @pytest.mark.asyncio
+    async def test_list_all_pagination(self, client, auth_headers):
+        """The /all endpoint supports pagination."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+        c = await create_term(client, auth_headers, tid, "C")
+        await create_relationship(client, auth_headers, a, b, "is_a")
+        await create_relationship(client, auth_headers, b, c, "is_a")
+
+        resp = await client.get(
+            f"{API}/ontology/relationships/all",
+            params={"page_size": 1, "page": 1},
+            headers=auth_headers,
+        )
+        data = resp.json()
+        assert len(data["items"]) == 1
+        assert data["pages"] >= 2
+
+
+class TestMetadataRoundTrip:
+    """Tests for metadata persistence through create and list."""
+
+    @pytest.mark.asyncio
+    async def test_metadata_returned_in_list(self, client, auth_headers):
+        """Metadata set on create is returned when listing relationships."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "Parent")
+        b = await create_term(client, auth_headers, tid, "Child")
+
+        meta = {"source_ontology": "SNOMED-CT", "confidence": 0.95}
+        resp = await client.post(
+            f"{API}/ontology/relationships",
+            json=[{
+                "source_term_id": b,
+                "target_term_id": a,
+                "relationship_type": "is_a",
+                "metadata": meta,
+            }],
+            headers=auth_headers,
+        )
+        assert resp.json()["succeeded"] == 1
+
+        # List and verify metadata
+        list_resp = await client.get(
+            f"{API}/ontology/relationships",
+            params={"term_id": b, "direction": "outgoing"},
+            headers=auth_headers,
+        )
+        data = list_resp.json()
+        assert data["total"] == 1
+        assert data["items"][0]["metadata"]["source_ontology"] == "SNOMED-CT"
+        assert data["items"][0]["metadata"]["confidence"] == 0.95
+
+
 class TestNonIsATraversal:
     """Tests for traversal with relationship types other than is_a."""
 

@@ -5,7 +5,6 @@ import Button from 'primevue/button'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Divider from 'primevue/divider'
-import Message from 'primevue/message'
 import { useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import { oidcProviderName, isOidcEnabled } from '@/config/auth'
 import { isFilesEnabled, isReportingEnabled } from '@/config/modules'
@@ -329,15 +328,6 @@ function toggleSidebar() {
           />
         </div>
       </header>
-      <!-- Non-production namespace warning -->
-      <Message
-        v-if="namespaceStore.isNonProduction"
-        severity="warn"
-        :closable="false"
-        class="namespace-warning"
-      >
-        You are viewing the <strong>{{ namespaceStore.current }}</strong> namespace (non-production data)
-      </Message>
       <div class="content-area">
         <slot />
       </div>
@@ -729,15 +719,6 @@ function toggleSidebar() {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-}
-
-.namespace-warning {
-  margin: 0;
-  border-radius: 0;
-}
-
-.namespace-warning :deep(.p-message-text) {
-  font-size: 0.875rem;
 }
 
 .content-area {
