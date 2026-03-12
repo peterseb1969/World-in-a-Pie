@@ -43,6 +43,12 @@ const router = createRouter({
       component: () => import('@/views/terminologies/TerminologyDetailView.vue'),
       props: true
     },
+    {
+      path: '/terms/:id',
+      name: 'term-detail',
+      component: () => import('@/views/terminologies/TermDetailView.vue'),
+      props: true
+    },
     // Template routes
     {
       path: '/templates',

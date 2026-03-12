@@ -16,6 +16,7 @@ import { defStoreClient } from '@/api/client'
 import TermList from '@/components/terminologies/TermList.vue'
 import TerminologyForm from '@/components/terminologies/TerminologyForm.vue'
 import BulkTermImport from '@/components/terminologies/BulkTermImport.vue'
+import RelationshipList from '@/components/terminologies/RelationshipList.vue'
 import type { Template } from '@/types'
 
 const props = defineProps<{
@@ -170,6 +171,10 @@ function navigateToTemplate(template: Template) {
   router.push(`/templates/${template.template_id}`)
 }
 
+function navigateToTerm(termId: string) {
+  router.push(`/terms/${termId}`)
+}
+
 function getFieldsUsingTerminology(template: Template): string[] {
   if (!terminologyStore.currentTerminology) return []
   const termId = terminologyStore.currentTerminology.terminology_id
@@ -271,8 +276,26 @@ function getFieldsUsingTerminology(template: Template): string[] {
           </div>
         </TabPanel>
 
-        <TabPanel value="1" header="Metadata">
-          <div class="metadata-section">
+        <TabPanel value="1">
+          <template #header>
+            <span class="tab-header">
+              <i class="pi pi-sitemap"></i>
+              Relationships
+            </span>
+          </template>
+          <div class="relationships-section">
+            <p class="section-description">
+              Ontology relationships (is_a, part_of, etc.) between terms in this terminology.
+            </p>
+            <RelationshipList
+              :terminology-id="id"
+              @navigate-to-term="navigateToTerm"
+            />
+          </div>
+        </TabPanel>
+
+        <TabPanel value="2" header="Metadata">
+          <div class="metadata-section" >
             <div v-if="terminologyStore.currentTerminology.metadata" class="metadata-grid">
               <div v-if="terminologyStore.currentTerminology.metadata.source" class="metadata-item">
                 <span class="metadata-label">Source</span>
@@ -293,7 +316,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
           </div>
         </TabPanel>
 
-        <TabPanel value="2">
+        <TabPanel value="3">
           <template #header>
             <span class="tab-header">
               <i class="pi pi-file"></i>
@@ -359,7 +382,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
           </div>
         </TabPanel>
 
-        <TabPanel value="3" header="Raw JSON">
+        <TabPanel value="4" header="Raw JSON">
           <div class="raw-json">
             <pre>{{ JSON.stringify(terminologyStore.currentTerminology, null, 2) }}</pre>
           </div>
@@ -601,6 +624,16 @@ function getFieldsUsingTerminology(template: Template): string[] {
 .empty-usage i {
   font-size: 1.5rem;
   opacity: 0.5;
+}
+
+.relationships-section {
+  padding: 1rem 0;
+}
+
+.section-description {
+  margin: 0 0 1rem 0;
+  color: var(--p-text-muted-color);
+  font-size: 0.875rem;
 }
 
 .raw-json pre {

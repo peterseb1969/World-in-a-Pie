@@ -73,6 +73,7 @@ export interface Term {
   term_id: string
   namespace: string
   terminology_id: string
+  terminology_value?: string
   value: string
   aliases: string[]
   label?: string

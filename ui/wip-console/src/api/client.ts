@@ -40,6 +40,12 @@ import type {
   UpdateFileMetadataRequest,
   FileIntegrityResponse,
   FileQueryParams,
+  // Ontology types
+  Relationship,
+  RelationshipListResponse,
+  CreateRelationshipRequest,
+  DeleteRelationshipRequest,
+  TraversalResponse,
   // Shared types
   ApiError,
   BulkResultItem,
@@ -294,6 +300,100 @@ class DefStoreClient extends BaseApiClient {
 
   async bulkValidate(data: BulkValidateRequest): Promise<BulkValidateResponse> {
     const response = await this.client.post<BulkValidateResponse>('/validate/bulk', data)
+    return response.data
+  }
+
+  // ===========================================================================
+  // ONTOLOGY / RELATIONSHIP ENDPOINTS
+  // ===========================================================================
+
+  async listRelationships(params: {
+    term_id: string
+    direction?: string
+    relationship_type?: string
+    namespace?: string
+    page?: number
+    page_size?: number
+  }): Promise<RelationshipListResponse> {
+    const response = await this.client.get<RelationshipListResponse>(
+      '/ontology/relationships',
+      { params }
+    )
+    return response.data
+  }
+
+  async listAllRelationships(params?: {
+    namespace?: string
+    relationship_type?: string
+    status?: string
+    page?: number
+    page_size?: number
+  }): Promise<RelationshipListResponse> {
+    const response = await this.client.get<RelationshipListResponse>(
+      '/ontology/relationships/all',
+      { params }
+    )
+    return response.data
+  }
+
+  async createRelationships(items: CreateRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
+    const params = namespace ? { namespace } : undefined
+    const response = await this.client.post<BulkResponse>(
+      '/ontology/relationships',
+      items,
+      { params }
+    )
+    return response.data
+  }
+
+  async deleteRelationships(items: DeleteRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
+    const params = namespace ? { namespace } : undefined
+    const response = await this.client.delete<BulkResponse>(
+      '/ontology/relationships',
+      { data: items, params }
+    )
+    return response.data
+  }
+
+  async getAncestors(termId: string, params?: {
+    relationship_type?: string
+    namespace?: string
+    max_depth?: number
+  }): Promise<TraversalResponse> {
+    const response = await this.client.get<TraversalResponse>(
+      `/ontology/terms/${termId}/ancestors`,
+      { params }
+    )
+    return response.data
+  }
+
+  async getTermDescendants(termId: string, params?: {
+    relationship_type?: string
+    namespace?: string
+    max_depth?: number
+  }): Promise<TraversalResponse> {
+    const response = await this.client.get<TraversalResponse>(
+      `/ontology/terms/${termId}/descendants`,
+      { params }
+    )
+    return response.data
+  }
+
+  async getParents(termId: string, namespace?: string): Promise<Relationship[]> {
+    const params = namespace ? { namespace } : undefined
+    const response = await this.client.get<Relationship[]>(
+      `/ontology/terms/${termId}/parents`,
+      { params }
+    )
+    return response.data
+  }
+
+  async getChildren(termId: string, namespace?: string): Promise<Relationship[]> {
+    const params = namespace ? { namespace } : undefined
+    const response = await this.client.get<Relationship[]>(
+      `/ontology/terms/${termId}/children`,
+      { params }
+    )
     return response.data
   }
 }

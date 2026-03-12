@@ -4,6 +4,7 @@ export * from './template'
 export * from './document'
 export * from './file'
 export * from './registry'
+export * from './ontology'
 
 // =============================================================================
 // SHARED TYPES

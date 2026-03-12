@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import DataTable, { type DataTablePageEvent } from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'
@@ -11,6 +12,8 @@ import type { Term } from '@/types'
 import TermForm from './TermForm.vue'
 import DeprecateTermDialog from './DeprecateTermDialog.vue'
 import TruncatedId from '@/components/common/TruncatedId.vue'
+
+const router = useRouter()
 
 const props = defineProps<{
   terminologyId: string
@@ -187,7 +190,9 @@ async function onDeprecated() {
 
       <Column field="value" header="Value" sortable style="width: 18%">
         <template #body="{ data }">
-          <code class="value-text">{{ data.value }}</code>
+          <a href="#" class="value-link" @click.prevent="router.push(`/terms/${data.term_id}`)">
+            <code class="value-text">{{ data.value }}</code>
+          </a>
         </template>
       </Column>
 
@@ -337,6 +342,15 @@ async function onDeprecated() {
   font-family: monospace;
   color: var(--p-text-muted-color);
   font-size: 0.8rem;
+}
+
+.value-link {
+  text-decoration: none;
+}
+
+.value-link:hover .value-text {
+  background: var(--p-primary-50);
+  color: var(--p-primary-700);
 }
 
 .value-text {
