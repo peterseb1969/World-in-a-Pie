@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from ..models.terminology import Terminology, TerminologyMetadata
 from ..models.term import Term, TermTranslation
+from ..models.term_relationship import TermRelationship
 from ..models.api_models import (
     CreateTerminologyRequest,
     CreateTermRequest,
@@ -40,6 +41,7 @@ class ImportExportService:
         format: str = "json",
         include_metadata: bool = True,
         include_inactive: bool = False,
+        include_relationships: bool = False,
         languages: Optional[list[str]] = None
     ) -> dict[str, Any]:
         """
@@ -51,6 +53,7 @@ class ImportExportService:
             format: Export format (json, csv)
             include_metadata: Include metadata in export
             include_inactive: Include inactive/deprecated terms
+            include_relationships: Include ontology relationships
             languages: Languages to include for translations
 
         Returns:
@@ -82,21 +85,50 @@ class ImportExportService:
                     if t.language in languages
                 ]
 
+        # Get relationships if requested
+        relationships: list[TermRelationship] = []
+        if include_relationships and format != "csv":
+            rel_query: dict[str, Any] = {
+                "namespace": terminology.namespace,
+                "source_terminology_id": terminology.terminology_id,
+            }
+            if not include_inactive:
+                rel_query["status"] = "active"
+            relationships = await TermRelationship.find(rel_query).to_list()
+
+            # Also get relationships where target is in this terminology
+            # but source is from another (cross-terminology links)
+            cross_query: dict[str, Any] = {
+                "namespace": terminology.namespace,
+                "target_terminology_id": terminology.terminology_id,
+                "source_terminology_id": {"$ne": terminology.terminology_id},
+            }
+            if not include_inactive:
+                cross_query["status"] = "active"
+            cross_rels = await TermRelationship.find(cross_query).to_list()
+            relationships.extend(cross_rels)
+
         if format == "csv":
             return ImportExportService._export_csv(terminology, terms, include_metadata)
         else:
-            return ImportExportService._export_json(terminology, terms, include_metadata)
+            return ImportExportService._export_json(
+                terminology, terms, include_metadata, relationships
+            )
 
     @staticmethod
     def _export_json(
         terminology: Terminology,
         terms: list[Term],
-        include_metadata: bool
+        include_metadata: bool,
+        relationships: Optional[list["TermRelationship"]] = None,
     ) -> dict[str, Any]:
         """Export as JSON."""
+        # Build term_id → value lookup for relationship denormalization
+        term_id_to_value: dict[str, str] = {}
         term_data = []
         for t in terms:
-            term_dict = {
+            term_id_to_value[t.term_id] = t.value
+            term_dict: dict[str, Any] = {
                 "value": t.value,
                 "label": t.label or t.value,
                 "description": t.description,
@@ -118,7 +150,7 @@ class ImportExportService:
 
             term_data.append(term_dict)
 
-        result = {
+        result: dict[str, Any] = {
             "terminology": {
                 "value": terminology.value,
                 "label": terminology.label,
@@ -141,6 +173,24 @@ class ImportExportService:
                 "language": terminology.metadata.language,
                 "custom": terminology.metadata.custom
             }
+
+        # Include relationships if provided
+        if relationships:
+            rel_data = []
+            for r in relationships:
+                rel_dict: dict[str, Any] = {
+                    "source_term_value": term_id_to_value.get(r.source_term_id, r.source_term_id),
+                    "target_term_value": term_id_to_value.get(r.target_term_id, r.target_term_id),
+                    "relationship_type": r.relationship_type,
+                }
+                if r.metadata:
+                    rel_dict["metadata"] = r.metadata
+                if r.source_terminology_id != terminology.terminology_id:
+                    rel_dict["source_terminology_id"] = r.source_terminology_id
+                if r.target_terminology_id != terminology.terminology_id:
+                    rel_dict["target_terminology_id"] = r.target_terminology_id
+                rel_data.append(rel_dict)
+            result["relationships"] = rel_data
 
         return result
 

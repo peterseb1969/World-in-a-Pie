@@ -21,13 +21,15 @@ async def export_terminology(
     format: str = Query("json", description="Export format: json, csv"),
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
+    include_relationships: bool = Query(False, description="Include ontology relationships"),
     languages: Optional[str] = Query(None, description="Comma-separated language codes"),
     api_key: str = Depends(require_api_key)
 ):
     """
     Export a terminology with all its terms.
 
-    Supports JSON and CSV formats.
+    Supports JSON and CSV formats. Use include_relationships=true to include
+    ontology relationships (is_a, part_of, etc.) in JSON exports.
     """
     try:
         language_list = languages.split(",") if languages else None
@@ -37,6 +39,7 @@ async def export_terminology(
             format=format,
             include_metadata=include_metadata,
             include_inactive=include_inactive,
+            include_relationships=include_relationships,
             languages=language_list
         )
 

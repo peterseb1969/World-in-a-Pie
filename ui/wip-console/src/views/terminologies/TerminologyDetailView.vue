@@ -135,7 +135,7 @@ function confirmDeactivate() {
 async function exportTerminology(format: 'json' | 'csv') {
   exporting.value = true
   try {
-    const data = await defStoreClient.exportTerminology(props.id, format)
+    const data = await defStoreClient.exportTerminology(props.id, format, false, format === 'json')
 
     let blob: Blob
     let filename: string

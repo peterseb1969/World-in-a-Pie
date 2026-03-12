@@ -281,10 +281,38 @@ class DefStoreClient extends BaseApiClient {
   async exportTerminology(
     terminologyId: string,
     format: 'json' | 'csv' = 'json',
-    includeInactive: boolean = false
+    includeInactive: boolean = false,
+    includeRelationships: boolean = false
   ): Promise<ExportTerminologyResponse | string> {
     const response = await this.client.get(`/import-export/export/${terminologyId}`, {
-      params: { format, include_inactive: includeInactive }
+      params: { format, include_inactive: includeInactive, include_relationships: includeRelationships }
+    })
+    return response.data
+  }
+
+  async importOntology(
+    data: Record<string, unknown>,
+    options?: {
+      terminology_value?: string
+      terminology_label?: string
+      namespace?: string
+      prefix_filter?: string
+      include_deprecated?: boolean
+      max_synonyms?: number
+      batch_size?: number
+      registry_batch_size?: number
+      relationship_batch_size?: number
+      skip_duplicates?: boolean
+      update_existing?: boolean
+    }
+  ): Promise<{
+    terminology: { terminology_id: string; value: string; label: string; status: string }
+    terms: { total: number; created: number; skipped: number; errors: number }
+    relationships: { total: number; created: number; skipped: number; errors: number; predicate_distribution: Record<string, number> }
+    elapsed_seconds: number
+  }> {
+    const response = await this.client.post('/import-export/import-ontology', data, {
+      params: options
     })
     return response.data
   }
