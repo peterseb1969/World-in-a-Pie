@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useConfirm } from 'primevue/useconfirm'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -15,6 +15,7 @@ import { getDocumentTitle } from '@/utils/document'
 import type { Document } from '@/types'
 
 const router = useRouter()
+const route = useRoute()
 const confirm = useConfirm()
 const documentStore = useDocumentStore()
 const templateStore = useTemplateStore()
@@ -22,8 +23,8 @@ const authStore = useAuthStore()
 const uiStore = useUiStore()
 
 const searchQuery = ref('')
-const statusFilter = ref<string | null>(null)
-const templateFilter = ref<string | null>(null)
+const statusFilter = ref<string | null>((route.query.status as string) || null)
+const templateFilter = ref<string | null>((route.query.template as string) || null)
 
 const statusOptions = [
   { label: 'All Status', value: null },
@@ -192,6 +193,11 @@ function formatDateTime(dateString: string): string {
 
 // Watch for filter and namespace changes (preserving filters)
 watch([statusFilter, templateFilter], () => {
+  // Sync filters to URL query params so they survive navigation
+  const query: Record<string, string> = {}
+  if (templateFilter.value) query.template = templateFilter.value
+  if (statusFilter.value) query.status = statusFilter.value
+  router.replace({ query })
   loadDocuments()
 })
 watch(() => documentStore.namespaceParam, () => {

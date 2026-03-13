@@ -250,9 +250,15 @@ function restoreVersion() {
   uiStore.showInfo('Version Restored', 'Data from the selected version has been loaded. Save to create a new version.')
 }
 
-// Cancel and go back
+// Cancel and go back (uses browser history to preserve list filters)
 function cancel() {
-  router.push('/documents')
+  // If we came from the document list, go back to preserve query params (filters).
+  // Otherwise fall back to a plain /documents navigation.
+  if (window.history.state?.back?.startsWith('/documents')) {
+    router.back()
+  } else {
+    router.push('/documents')
+  }
 }
 
 function getStatusSeverity(status: string): "success" | "info" | "warn" | "danger" | "secondary" | "contrast" | undefined {

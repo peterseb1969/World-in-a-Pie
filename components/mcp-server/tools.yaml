@@ -1,0 +1,114 @@
+# WIP MCP Server — Tool Configuration
+#
+# This file defines metadata for MCP tools. Parameter schemas are derived
+# from OpenAPI specs (via generate_schemas.py), not hand-written here.
+#
+# Fields:
+#   description: Human-written guidance (the "why" and gotchas)
+#   openapi_schema: "service#ModelName" — which OpenAPI request model to use
+#   param_name: Which function parameter receives the schema
+#   param_type: "list" if param is list[dict], omit for single dict
+#   nested_schemas: Additional schemas to include in the description
+#   notes: Extra guidance appended to the description
+
+tools:
+  # -- Terminologies --
+  create_terminology:
+    description: "Create a terminology (controlled vocabulary)."
+    openapi_schema: "def-store#CreateTerminologyRequest"
+    param_name: null  # scalar params, schema used for description only
+    notes: |
+      Convention: use UPPER_SNAKE_CASE for the value field.
+      A terminology is a namespace for terms — e.g., COUNTRY, GENDER, DIAGNOSIS_CODE.
+
+  create_terminologies_bulk:
+    description: "Create multiple terminologies at once."
+    openapi_schema: "def-store#CreateTerminologyRequest"
+    param_name: "items"
+    param_type: list
+    notes: |
+      Each item follows the same schema as create_terminology.
+
+  # -- Terms --
+  create_terms:
+    description: "Create terms in a terminology."
+    openapi_schema: "def-store#CreateTermRequest"
+    param_name: "terms"
+    param_type: list
+    notes: |
+      Terms are entries in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
+      Each term must have a 'value' field (unique within the terminology).
+      Optional: aliases (list of strings), label, description, sort_order.
+
+  # -- Ontology --
+  create_relationships:
+    description: "Create ontology relationships between terms."
+    openapi_schema: "def-store#CreateRelationshipRequest"
+    param_name: "relationships"
+    param_type: list
+    notes: |
+      Relationship types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+      Use source_term_id (subject) and target_term_id (object).
+      Example: "Lung cancer" --is_a--> "Cancer"
+
+  # -- Templates --
+  create_template:
+    description: "Create a template (document schema)."
+    openapi_schema: "template-store#CreateTemplateRequest"
+    param_name: "template"
+    nested_schemas:
+      - "template-store#FieldDefinition"
+    notes: |
+      IMPORTANT field naming:
+        - Use "mandatory" (not "required") for required fields
+        - Use "terminology_ref" (not "terminology_id") for term field references
+        - Use "template_ref" (not "template_id") for reference field references
+      Use status: "draft" for circular dependencies, then activate_template.
+      Convention: use UPPER_SNAKE_CASE for the value field.
+
+  create_templates_bulk:
+    description: "Create multiple templates. Use status: 'draft' for circular dependencies, then activate."
+    openapi_schema: "template-store#CreateTemplateRequest"
+    param_name: "templates"
+    param_type: list
+    nested_schemas:
+      - "template-store#FieldDefinition"
+    notes: |
+      Each item follows the same schema as create_template.
+      IMPORTANT: Use "mandatory" (not "required"), "terminology_ref" (not "terminology_id").
+
+  # -- Documents --
+  create_document:
+    description: "Create a document (an instance of a template)."
+    openapi_schema: "document-store#DocumentCreateRequest"
+    param_name: "document"
+    notes: |
+      Term fields: submit the human-readable value (e.g., "United Kingdom").
+      WIP resolves it to the term_id automatically. If resolution fails,
+      you'll get a clear error indicating which field/value failed.
+      If the template defines identity_fields and this document matches
+      an existing one, it creates a new version instead of a duplicate.
+
+  create_documents_bulk:
+    description: "Create multiple documents at once. Returns per-item results."
+    openapi_schema: "document-store#DocumentCreateRequest"
+    param_name: "documents"
+    param_type: list
+    notes: |
+      Each item follows the same schema as create_document.
+
+  # -- Query --
+  query_documents:
+    description: "Query documents with complex filters."
+    openapi_schema: null  # freeform query body
+    param_name: "filters"
+    notes: |
+      Consult the template's fields to know what's filterable.
+
+  # -- Import --
+  import_terminology:
+    description: "Import a terminology with terms from JSON data."
+    openapi_schema: null  # freeform import body
+    param_name: "data"
+    notes: |
+      The import format matches the export format from export_terminology.

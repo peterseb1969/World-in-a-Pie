@@ -5,6 +5,7 @@ import type {
   DocumentListResponse,
   CreateDocumentRequest,
   DocumentQueryParams,
+  DocumentQueryRequest,
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
@@ -87,7 +88,7 @@ export class DocumentStoreService extends BaseService {
     return this.get(`/documents/by-identity/${identityHash}`, includeInactive !== undefined ? { include_inactive: includeInactive } : undefined)
   }
 
-  async queryDocuments(body: Record<string, unknown>): Promise<DocumentListResponse> {
+  async queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse> {
     return this.post('/documents/query', body)
   }
 }

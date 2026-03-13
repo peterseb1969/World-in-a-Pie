@@ -78,6 +78,32 @@ export interface DocumentQueryParams {
 
 export type DocumentListResponse = PaginatedResponse<Document>
 
+export type QueryFilterOperator = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'exists' | 'regex'
+
+export interface QueryFilter {
+  /** Field path to filter on (e.g., 'data.account', 'data.status', 'template_id') */
+  field: string
+  /** Comparison operator. Default: 'eq' */
+  operator?: QueryFilterOperator
+  /** Value to compare against */
+  value: unknown
+}
+
+export interface DocumentQueryRequest {
+  /** Filter conditions (AND logic) */
+  filters?: QueryFilter[]
+  /** Filter by template ID */
+  template_id?: string
+  /** Filter by status */
+  status?: DocumentStatus
+  page?: number
+  page_size?: number
+  /** Field to sort by. Default: 'created_at' */
+  sort_by?: string
+  /** Sort order. Default: 'desc' */
+  sort_order?: 'asc' | 'desc'
+}
+
 export interface DocumentValidationResponse {
   valid: boolean
   errors: Array<{

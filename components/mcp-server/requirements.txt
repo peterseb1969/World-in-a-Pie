@@ -1,0 +1,11 @@
+# WIP MCP Server Dependencies
+
+# MCP SDK
+mcp[cli]>=1.0.0,<2.0.0
+
+# HTTP client for WIP API calls
+httpx>=0.26.0,<0.28.0
+
+# Data validation
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0
