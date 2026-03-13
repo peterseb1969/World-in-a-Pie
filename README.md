@@ -182,7 +182,80 @@ See [Production Deployment Guide](docs/production-deployment.md) for complete in
 - Namespace-scoped referential integrity
 - Ontology support — OBO Graph JSON import, typed relationships, polyhierarchy, traversal queries, unified import with auto-format detection
 
-Current focus: File upload (CSV/XLSX), BI dashboards, and event replay.
+Current focus: File upload (CSV/XLSX) and event replay.
+
+---
+
+## One More Thing...
+
+### Streaming Ingestion Gateway
+
+External systems don't need to call REST APIs directly. The **Ingest Gateway** consumes messages from NATS JetStream and routes them to the right service — terminologies, templates, or documents. Fire-and-forget with correlation-based result tracking.
+
+```
+External System → NATS (wip.ingest.*) → Ingest Gateway → REST APIs
+                                              ↓
+                              NATS (wip.ingest.results.{correlation_id})
+```
+
+- Batched pull consumption with configurable batch sizes
+- Automatic retry with backpressure (explicit ack/nak, max 3 attempts)
+- Wrapped or direct payload formats
+- Per-message correlation IDs for result tracking
+- Health, status, and metrics endpoints
+
+This decouples producers from the WIP API surface — useful for IoT pipelines, ETL jobs, or any system that speaks NATS.
+
+### Business Intelligence with Metabase
+
+WIP's **Reporting-Sync** service streams changes from MongoDB to PostgreSQL in real time via NATS events. Every template becomes a SQL table with flattened fields, term references, and version history. Deploy Metabase on top for instant dashboards:
+
+```bash
+# One command to add BI
+podman-compose -f deploy/optional/metabase/docker-compose.yml up -d
+# → Metabase at http://localhost:3030, pre-connected to wip_reporting
+```
+
+No ETL pipelines, no schema management — tables evolve automatically as templates change. Term-aware columns enable cross-template joins through shared vocabularies.
+
+### The Registry: Foreign IDs as First-Class Citizens
+
+The Registry isn't just an ID generator — it's an **identity federation hub**. Any entry can have multiple composite keys (synonyms), each pointing to the same canonical ID. This makes external system integration trivial:
+
+```
+WIP Entry (019-uuid-42)
+├── Primary:  {"namespace": "wip", "value": "ASPIRIN"}
+├── Synonym:  {"vendor": "SAP",  "material_id": "MAT-4291"}
+├── Synonym:  {"system": "FDA",  "ndc": "0573-0150-20"}
+└── Synonym:  {"legacy_db": "pharma-v1", "drug_code": "ASP-001"}
+```
+
+Any of these keys resolves to the same entry — instantly, via indexed hash lookup. When you import data from SAP, the FDA, or a legacy database, you don't force ID remapping. Each system keeps its native identifiers, and the Registry links them:
+
+- **Synonym resolution** — look up by any vendor/external ID, get the canonical WIP ID
+- **Source tracking** — each synonym carries `source_info` (system ID, endpoint URL) for provenance
+- **ID merging** — discover two entries are the same entity? Merge them; the old ID becomes a synonym, all existing synonyms migrate, nothing breaks
+- **Federated search** — search across all namespaces and all synonym keys in one query, with human-readable resolution paths
+
+This means WIP can sit at the center of a multi-vendor environment where every system has its own ID scheme, and act as the universal translator between them — without ever losing track of where each ID came from.
+
+### MCP Server: AI-Native Development
+
+WIP ships with a **Model Context Protocol (MCP) server** that exposes the full platform to AI coding assistants. An AI building an application on top of WIP can discover templates, query documents, manage terminologies, and import data — all through tool calls, without reading WIP source code.
+
+```json
+{
+  "mcpServers": {
+    "wip": {
+      "command": "python",
+      "args": ["-m", "wip_mcp"],
+      "env": { "WIP_BASE_URL": "http://localhost:8001" }
+    }
+  }
+}
+```
+
+33 tools covering all CRUD operations, plus resources for API conventions and data model documentation. Tool schemas are generated from OpenAPI specs, so the AI always sees field names and types that match the actual API — no drift, no silent failures.
 
 ---
 
