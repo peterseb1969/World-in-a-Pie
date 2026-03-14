@@ -89,6 +89,29 @@ jobs:
           PYTHONPATH: src
         run: pytest tests/ -v --tb=short
 
+  # MCP server (no DB needed)
+  test-mcp-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        working-directory: components/mcp-server
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        working-directory: components/mcp-server
+        env:
+          PYTHONPATH: src
+        run: pytest tests/ -v --tb=short
+
   # wip-auth library
   test-wip-auth:
     runs-on: ubuntu-latest
