@@ -169,4 +169,21 @@ describe('FetchTransport', () => {
     await expect(retryTransport.request('POST', '/api/test', { body: {} })).rejects.toThrow(WipServerError)
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('uses window.location.origin when baseUrl is empty string', () => {
+    vi.stubGlobal('window', { location: { origin: 'https://wip.local:8443' } })
+    const t = new FetchTransport({ baseUrl: '' })
+    // Verify by making a request — the URL should use the origin
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
+    t.request('GET', '/api/test')
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('https://wip.local:8443/api/test'),
+      expect.any(Object),
+    )
+  })
+
+  it('throws clear error when baseUrl is empty in non-browser environment', () => {
+    vi.stubGlobal('window', undefined)
+    expect(() => new FetchTransport({ baseUrl: '' })).toThrow('baseUrl is required')
+  })
 })

@@ -34,8 +34,20 @@ export class FetchTransport {
   private onAuthError?: () => void
 
   constructor(config: FetchTransportConfig) {
+    // Resolve empty baseUrl: use window.location.origin in browsers, error in Node
+    let baseUrl = config.baseUrl
+    if (!baseUrl) {
+      if (typeof window !== 'undefined' && window.location?.origin) {
+        baseUrl = window.location.origin
+      } else {
+        throw new Error(
+          'WipClient: baseUrl is required in non-browser environments. ' +
+          'Pass an explicit baseUrl (e.g. "http://localhost:8001").'
+        )
+      }
+    }
     // Strip trailing slash
-    this.baseUrl = config.baseUrl.replace(/\/+$/, '')
+    this.baseUrl = baseUrl.replace(/\/+$/, '')
     this.auth = config.auth
     this.timeout = config.timeout ?? DEFAULT_TIMEOUT
     this.retry = config.retry ?? DEFAULT_RETRY
