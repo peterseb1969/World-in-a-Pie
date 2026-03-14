@@ -257,6 +257,15 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 
 33 tools covering all CRUD operations, plus resources for API conventions and data model documentation. Tool schemas are generated from OpenAPI specs, so the AI always sees field names and types that match the actual API — no drift, no silent failures.
 
+> [!CAUTION]
+> **Your data leaves your machine when you use cloud AI.**
+>
+> WIP stores your data locally — on your Pi, your server, your laptop. That sovereignty holds *at rest*. But when a cloud AI (Claude, ChatGPT, etc.) queries your data via MCP, **the data it reads is sent to the AI provider's servers**. This is how cloud AI works, not a WIP limitation.
+>
+> The fix is architectural: local models (via Ollama or similar) speak the same MCP protocol. When they are capable enough for multi-tool reasoning, the data never leaves your network. WIP is ready for that today.
+>
+> **Until then, cloud AI queries = your data travels. Make it a conscious choice.**
+
 ---
 
 ## License
