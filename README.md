@@ -258,13 +258,17 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 33 tools covering all CRUD operations, plus resources for API conventions and data model documentation. Tool schemas are generated from OpenAPI specs, so the AI always sees field names and types that match the actual API — no drift, no silent failures.
 
 > [!CAUTION]
-> **Your data leaves your machine when you use cloud AI.**
+> **Cloud AI + your data: three channels of exposure.**
 >
-> WIP stores your data locally — on your Pi, your server, your laptop. That sovereignty holds *at rest*. But when a cloud AI (Claude, ChatGPT, etc.) queries your data via MCP, **the data it reads is sent to the AI provider's servers**. This is how cloud AI works, not a WIP limitation.
+> WIP stores your data locally — your Pi, your server, your laptop. That sovereignty is real *at rest*. But if you use a cloud AI (Claude, ChatGPT, etc.) anywhere in the workflow, your data can leave your machine through three channels:
 >
-> The fix is architectural: local models (via Ollama or similar) speak the same MCP protocol. When they are capable enough for multi-tool reasoning, the data never leaves your network. WIP is ready for that today.
+> 1. **Development context** — When an AI reads your sample files to write parsers or understand data formats, your real data (account numbers, transactions, IBANs) enters the AI provider's context window. This happens before MCP is even involved.
+> 2. **MCP queries** — When an AI calls WIP tools to query, import, or verify documents, your stored data is sent to the AI provider's servers.
+> 3. **Conversational queries** — The "talk to your data" use case. Same exposure as above, but now it's the feature, not a side effect.
 >
-> **Until then, cloud AI queries = your data travels. Make it a conscious choice.**
+> Channel 1 is the one people miss. You don't need the MCP server to expose data to a cloud AI. You just need to develop against real data — which every developer does.
+>
+> **The structural fix exists:** local models (via Ollama or similar) speak the same MCP protocol. When they are capable enough for multi-tool reasoning, your data never leaves your network. WIP's architecture is ready for that today. Until then, **understand the tradeoff and make it a conscious choice.**
 
 ---
 
