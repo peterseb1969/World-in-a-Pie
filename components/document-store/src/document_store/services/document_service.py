@@ -1,5 +1,6 @@
 """Document service for CRUD operations and upsert logic."""
 
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -247,7 +248,7 @@ class DocumentService:
 
         version = version_override if version_override is not None else 1
 
-        document = Document(
+        document = await self._insert_with_retry(
             namespace=namespace,
             document_id=document_id,
             template_id=request.template_id,
@@ -259,15 +260,10 @@ class DocumentService:
             term_references=validation_result.term_references,
             references=validation_result.references,
             file_references=validation_result.file_references,
-            status=DocumentStatus.ACTIVE,
-            created_at=now,
-            created_by=actor,
-            updated_at=now,
-            updated_by=actor,
-            metadata=metadata
+            metadata=metadata,
+            actor=actor,
+            now=now,
         )
-
-        await document.insert()
 
         # Publish document created event
         await publish_document_event(
@@ -287,9 +283,9 @@ class DocumentService:
             template_id=request.template_id,
             template_value=validation_result.template_value,
             identity_hash=validation_result.identity_hash or "",
-            version=version,
-            is_new=True,
-            previous_version=None,
+            version=document.version,
+            is_new=document.version == 1,
+            previous_version=None if document.version == 1 else document.version - 1,
             warnings=validation_result.warnings
         ), None
 
@@ -340,6 +336,80 @@ class DocumentService:
 
         return False
 
+    async def _insert_with_retry(
+        self,
+        namespace: str,
+        document_id: str,
+        template_id: str,
+        template_version: int,
+        template_value: str,
+        identity_hash: str,
+        version: int,
+        data: dict,
+        term_references: list,
+        references: list,
+        file_references: list,
+        metadata: DocumentMetadata,
+        actor: str,
+        now: datetime,
+        max_retries: int = 3,
+    ) -> "Document":
+        """Insert a document, retrying on duplicate key errors.
+
+        When two concurrent requests (or duplicate identity hashes in a batch)
+        race to create the same version, the loser gets a DuplicateKeyError.
+        This method catches that, re-queries the latest version, deactivates
+        it, and retries with an incremented version number.
+        """
+        from pymongo.errors import DuplicateKeyError
+
+        logger = logging.getLogger(__name__)
+
+        for attempt in range(max_retries):
+            document = Document(
+                namespace=namespace,
+                document_id=document_id,
+                template_id=template_id,
+                template_version=template_version,
+                template_value=template_value,
+                identity_hash=identity_hash or "",
+                version=version,
+                data=data,
+                term_references=term_references,
+                references=references,
+                file_references=file_references,
+                status=DocumentStatus.ACTIVE,
+                created_at=now,
+                created_by=actor,
+                updated_at=now,
+                updated_by=actor,
+                metadata=metadata,
+            )
+            try:
+                await document.insert()
+                return document
+            except DuplicateKeyError:
+                if attempt >= max_retries - 1:
+                    raise
+                # Re-query the latest version and retry
+                logger.info(
+                    "DuplicateKeyError on %s v%d, retrying (attempt %d/%d)",
+                    document_id, version, attempt + 1, max_retries,
+                )
+                latest = await Document.find(
+                    {"namespace": namespace, "document_id": document_id}
+                ).sort([("version", -1)]).limit(1).to_list()
+                if latest:
+                    # Deactivate the current active version if it's not ours
+                    if latest[0].status == DocumentStatus.ACTIVE:
+                        latest[0].status = DocumentStatus.INACTIVE
+                        latest[0].updated_at = now
+                        latest[0].updated_by = actor
+                        await latest[0].save()
+                    version = latest[0].version + 1
+                else:
+                    version += 1
+
     async def _create_new_version(
         self,
         request: DocumentCreateRequest,
@@ -387,9 +457,9 @@ class DocumentService:
             custom=request.metadata or {}
         )
 
-        document = Document(
+        document = await self._insert_with_retry(
             namespace=namespace,
-            document_id=document_id,  # Same stable ID
+            document_id=document_id,
             template_id=request.template_id,
             template_version=validation_result.template_version,
             template_value=validation_result.template_value,
@@ -399,15 +469,11 @@ class DocumentService:
             term_references=validation_result.term_references,
             references=validation_result.references,
             file_references=validation_result.file_references,
-            status=DocumentStatus.ACTIVE,
-            created_at=now,
-            created_by=actor,
-            updated_at=now,
-            updated_by=actor,
-            metadata=metadata
+            metadata=metadata,
+            actor=actor,
+            now=now,
         )
-
-        await document.insert()
+        new_version = document.version  # May have been incremented by retry
 
         # Publish document updated event
         await publish_document_event(
@@ -1019,6 +1085,9 @@ class DocumentService:
         timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
+        # Track documents created within this batch so that duplicate identity
+        # hashes in the same batch use the correct latest version instead of
+        # the stale Stage 3 snapshot.
         start = time.perf_counter()
         now = datetime.now(timezone.utc)
 
@@ -1038,7 +1107,10 @@ class DocumentService:
                 identity_hash = validation_result.identity_hash
                 is_new_from_registry = registry_result.get("status") == "created"
 
-                # For existing identity (Registry returned already_exists), check DB
+                # For existing identity (Registry returned already_exists), check
+                # the live map (updated within this loop) instead of only the
+                # Stage 3 snapshot — this handles duplicate identity hashes in
+                # the same batch correctly.
                 existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
 
                 if existing:
@@ -1074,12 +1146,13 @@ class DocumentService:
                     new_version = 1
                     is_new = True
 
-                # Create document
+                # Create document with retry on duplicate key (handles
+                # concurrent requests racing on the same identity hash)
                 metadata = DocumentMetadata(
                     warnings=validation_result.warnings,
                     custom=item.metadata or {}
                 )
-                document = Document(
+                document = await self._insert_with_retry(
                     namespace=namespace,
                     document_id=document_id,
                     template_id=item.template_id,
@@ -1091,14 +1164,17 @@ class DocumentService:
                     term_references=validation_result.term_references,
                     references=validation_result.references,
                     file_references=validation_result.file_references,
-                    status=DocumentStatus.ACTIVE,
-                    created_at=now,
-                    created_by=actor,
-                    updated_at=now,
-                    updated_by=actor,
-                    metadata=metadata
+                    metadata=metadata,
+                    actor=actor,
+                    now=now,
                 )
-                await document.insert()
+                new_version = document.version
+                is_new = new_version == 1
+
+                # Update existing_by_hash so subsequent items in this batch
+                # with the same identity hash see the correct latest version.
+                if identity_hash:
+                    existing_by_hash[identity_hash] = document
 
                 # Publish event
                 event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
