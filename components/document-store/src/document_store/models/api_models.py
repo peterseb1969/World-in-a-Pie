@@ -205,8 +205,8 @@ class DocumentQueryRequest(StrictModel):
         description="Filter by template ID"
     )
     status: Optional[DocumentStatus] = Field(
-        None,
-        description="Filter by status"
+        DocumentStatus.ACTIVE,
+        description="Filter by status (defaults to 'active' — pass null to include all versions)"
     )
     page: int = Field(
         default=1,
