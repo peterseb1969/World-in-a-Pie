@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/images/WIP_logo_blue_small.png" alt="World In a Pie" width="200">
+</p>
+
 # World In a Pie (WIP)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
