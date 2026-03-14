@@ -732,11 +732,18 @@ async def create_documents_bulk(documents: list[dict]) -> str:
 
 @mcp.tool()
 async def query_documents(filters: dict) -> str:
-    """Query documents with complex filters.
+    """Query documents with complex filters (low-level). Prefer query_by_template for easier use.
 
     Args:
-        filters: Query filter object. Supports field-level filtering.
-            Consult the template's fields to know what's filterable.
+        filters: Query body with these fields:
+            - template_id: Filter by template ID (required for field filters).
+            - namespace: Filter by namespace.
+            - status: Filter by status ('active', 'inactive').
+            - page, page_size: Pagination.
+            - filters: List of {field, operator, value} objects.
+              Field names must include 'data.' prefix (e.g., 'data.country').
+              Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.
+              Example: [{"field": "data.country", "operator": "eq", "value": "CH"}]
     """
     try:
         data = await get_client().query_documents(filters)
@@ -876,6 +883,355 @@ async def get_file_metadata(file_id: str) -> str:
     """Get metadata for a file (not the file content itself)."""
     try:
         data = await get_client().get_file(file_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def upload_file(
+    file_path: str,
+    namespace: str = "wip",
+    description: str | None = None,
+    tags: str | None = None,
+    category: str | None = None,
+) -> str:
+    """Upload a file to WIP from a local path. Returns file_id and metadata.
+
+    Args:
+        file_path: Absolute path to the file on the local machine.
+        namespace: Namespace to store the file in.
+        description: Optional description of the file.
+        tags: Optional comma-separated tags (e.g., 'receipt,2024,tax').
+        category: Optional category (e.g., 'receipt', 'manual', 'report').
+    """
+    import mimetypes
+
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            return f"Error: File not found: {file_path}"
+        if not p.is_file():
+            return f"Error: Not a file: {file_path}"
+
+        content = p.read_bytes()
+        content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
+        tag_list = [t.strip() for t in tags.split(",")] if tags else None
+
+        data = await get_client().upload_file(
+            file_content=content,
+            filename=p.name,
+            content_type=content_type,
+            namespace=namespace,
+            description=description,
+            tags=tag_list,
+            category=category,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Template-Aware Query
+# ===================================================================
+
+
+@mcp.tool()
+async def get_template_fields(
+    template_value: str,
+    namespace: str | None = None,
+) -> str:
+    """Get a clean summary of a template's fields — name, type, mandatory, references.
+
+    Use this to understand what fields a template has before querying or creating
+    documents. Returns the template_id so you can use it directly in queries.
+
+    Args:
+        template_value: Template value code (e.g., 'PATIENT', 'BANK_TRANSACTION').
+        namespace: Optional namespace filter.
+    """
+    try:
+        tmpl = await get_client().get_template_by_value(
+            value=template_value, namespace=namespace
+        )
+        fields = tmpl.get("fields", [])
+        summary = {
+            "template_id": tmpl.get("template_id"),
+            "template_value": tmpl.get("value"),
+            "version": tmpl.get("version"),
+            "namespace": tmpl.get("namespace"),
+            "identity_fields": tmpl.get("identity_fields", []),
+            "fields": [
+                {
+                    "name": f["name"],
+                    "type": f.get("type", "string"),
+                    "mandatory": f.get("mandatory", False),
+                    **({"terminology_ref": f["terminology_ref"]} if f.get("terminology_ref") else {}),
+                    **({"template_ref": f["template_ref"]} if f.get("template_ref") else {}),
+                    **({"semantic_type": f["semantic_type"]} if f.get("semantic_type") else {}),
+                }
+                for f in fields
+            ],
+        }
+        return json.dumps(summary, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def query_by_template(
+    template_value: str,
+    field_filters: list[dict] | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    namespace: str | None = None,
+) -> str:
+    """Query documents by template value with easy field filtering.
+
+    Resolves template_value to template_id automatically. Field names are
+    auto-prefixed with 'data.' so you can write 'country' instead of 'data.country'.
+
+    Args:
+        template_value: Template value code (e.g., 'PATIENT').
+        field_filters: List of filters. Each: {field, operator, value}.
+            Field names are auto-prefixed with 'data.' if needed.
+            Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.
+            Example: [{"field": "country", "operator": "eq", "value": "CH"}]
+        status: Filter by document status (default: active).
+        namespace: Namespace filter.
+    """
+    try:
+        # Resolve template_value → template_id
+        tmpl = await get_client().get_template_by_value(
+            value=template_value, namespace=namespace
+        )
+        template_id = tmpl.get("template_id")
+
+        # Build query body
+        query: dict = {
+            "template_id": template_id,
+            "page": page,
+            "page_size": page_size,
+        }
+        if status:
+            query["status"] = status
+        if namespace:
+            query["namespace"] = namespace
+
+        # Build filters with auto-prefix
+        if field_filters:
+            filters = []
+            for f in field_filters:
+                field = f.get("field", "")
+                # Auto-prefix with data. if not already prefixed
+                if not field.startswith("data.") and field not in (
+                    "document_id", "template_id", "namespace", "status",
+                    "version", "created_at", "updated_at",
+                ):
+                    field = f"data.{field}"
+                filters.append({
+                    "field": field,
+                    "operator": f.get("operator", "eq"),
+                    "value": f.get("value"),
+                })
+            query["filters"] = filters
+
+        data = await get_client().query_documents(query)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Reporting & SQL Query
+# ===================================================================
+
+
+@mcp.tool()
+async def list_report_tables() -> str:
+    """List available reporting tables in PostgreSQL (doc_* tables + terminologies/terms).
+
+    Use this to discover what tables exist before running SQL queries.
+    Each table includes column names, types, and row counts.
+    """
+    try:
+        data = await get_client().list_report_tables()
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def run_report_query(
+    sql: str,
+    params: list | None = None,
+    max_rows: int = 1000,
+) -> str:
+    """Execute a read-only SQL query against the PostgreSQL reporting database.
+
+    Use this for cross-template JOINs, aggregations, and analytics that
+    aren't possible with the document query API.
+
+    Args:
+        sql: SQL SELECT query. Must be read-only (no INSERT/UPDATE/DELETE/DROP).
+            Table names: doc_{template_value} (e.g., doc_patient, doc_bank_transaction).
+            Term fields have two columns: {field} (value) and {field}_term_id.
+            Use list_report_tables() first to discover available tables and columns.
+        params: Optional list of parameter values for $1, $2, etc. placeholders.
+        max_rows: Maximum rows to return (default 1000).
+
+    Example:
+        run_report_query("SELECT name, country FROM doc_patient WHERE country = $1", ["CH"])
+    """
+    try:
+        data = await get_client().run_report_query(
+            sql=sql, params=params, max_rows=max_rows
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Import (CSV/XLSX)
+# ===================================================================
+
+
+@mcp.tool()
+async def import_documents_csv(
+    file_path: str,
+    template_value: str,
+    column_mapping: dict | None = None,
+    namespace: str | None = None,
+    skip_errors: bool = True,
+) -> str:
+    """Import documents from a CSV or XLSX file into a template.
+
+    Reads a local file, maps columns to template fields, and creates
+    documents in bulk. If column_mapping is omitted, columns are
+    auto-mapped to template fields by matching names (case-insensitive).
+
+    Args:
+        file_path: Path to a CSV or XLSX file.
+        template_value: Template value code (e.g., 'PATIENT').
+        column_mapping: Optional {csv_column: template_field} mapping.
+            If omitted, auto-maps columns whose names match field names.
+        namespace: Namespace (default: 'wip').
+        skip_errors: Skip rows that fail validation (default: true).
+    """
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            return f"Error: File not found: {file_path}"
+
+        content = p.read_bytes()
+        ns = namespace or "wip"
+
+        # If no mapping provided, auto-map by getting template fields
+        if column_mapping is None:
+            # Preview to get headers
+            preview = await get_client().preview_import(content, p.name)
+            if "error" in preview:
+                return f"Error: {preview['error']}"
+
+            headers = preview.get("headers", [])
+
+            # Get template fields
+            tmpl = await get_client().get_template_by_value(value=template_value)
+            fields = tmpl.get("fields", [])
+            field_names = {f["name"].lower(): f["name"] for f in fields}
+
+            # Auto-map: match CSV headers to field names (case-insensitive)
+            column_mapping = {}
+            for header in headers:
+                lower = header.lower().replace(" ", "_")
+                if lower in field_names:
+                    column_mapping[header] = field_names[lower]
+
+            if not column_mapping:
+                return (
+                    f"Error: No columns could be auto-mapped.\n"
+                    f"CSV columns: {headers}\n"
+                    f"Template fields: {[f['name'] for f in fields]}\n"
+                    f"Provide an explicit column_mapping."
+                )
+
+        # Resolve template_id
+        tmpl = await get_client().get_template_by_value(value=template_value)
+        template_id = tmpl.get("template_id")
+
+        result = await get_client().import_documents(
+            file_content=content,
+            filename=p.name,
+            template_id=template_id,
+            column_mapping=column_mapping,
+            namespace=ns,
+            skip_errors=skip_errors,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Event Replay
+# ===================================================================
+
+
+@mcp.tool()
+async def start_replay(
+    template_value: str | None = None,
+    template_id: str | None = None,
+    namespace: str = "wip",
+    throttle_ms: int = 10,
+    batch_size: int = 100,
+) -> str:
+    """Start replaying stored documents as NATS events.
+
+    Replayed events go to a dedicated NATS stream with metadata.replay=true.
+    Use this to onboard new consumers or backfill data.
+
+    Args:
+        template_value: Replay documents for this template (optional, replays all if omitted).
+        template_id: Alternative to template_value — use the template ID directly.
+        namespace: Namespace to replay from.
+        throttle_ms: Delay between events in ms (0-5000, default 10).
+        batch_size: Documents per batch (10-1000, default 100).
+    """
+    try:
+        filter_config = {"namespace": namespace, "status": "active"}
+        if template_value:
+            filter_config["template_value"] = template_value
+        if template_id:
+            filter_config["template_id"] = template_id
+
+        data = await get_client().start_replay(
+            filter_config=filter_config,
+            throttle_ms=throttle_ms,
+            batch_size=batch_size,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_replay_status(session_id: str) -> str:
+    """Get the current status of a replay session (published count, total, status)."""
+    try:
+        data = await get_client().get_replay_session(session_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def cancel_replay(session_id: str) -> str:
+    """Cancel a replay session and delete its NATS stream."""
+    try:
+        data = await get_client().cancel_replay(session_id)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)

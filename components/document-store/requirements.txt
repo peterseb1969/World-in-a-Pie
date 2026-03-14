@@ -27,3 +27,6 @@ pydantic-settings>=2.1.0,<3.0.0
 
 # Email validation
 email-validator>=2.1.0,<3.0.0
+
+# XLSX file parsing for CSV/XLSX import
+openpyxl>=3.1.0,<4.0.0

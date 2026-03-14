@@ -491,6 +491,131 @@ class WipClient:
             f"/api/document-store/files/{file_id}",
         )
 
+    async def upload_file(
+        self,
+        file_content: bytes,
+        filename: str,
+        content_type: str,
+        namespace: str = "wip",
+        description: str | None = None,
+        tags: list[str] | None = None,
+        category: str | None = None,
+    ) -> dict:
+        """Upload a file via multipart form. Returns single FileResponse (not bulk)."""
+        client = await self._get_client()
+        files = {"file": (filename, file_content, content_type)}
+        data: dict[str, str] = {"namespace": namespace}
+        if description:
+            data["description"] = description
+        if tags:
+            data["tags"] = ",".join(tags)
+        if category:
+            data["category"] = category
+
+        resp = await client.post(
+            f"{self.document_store_url}/api/document-store/files",
+            files=files,
+            data=data,
+            headers={"X-API-Key": self.api_key},  # Override default JSON headers
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ========================================================
+    # Document-Store: Import
+    # ========================================================
+
+    async def preview_import(
+        self,
+        file_content: bytes,
+        filename: str,
+    ) -> dict:
+        """Preview a CSV/XLSX file for import."""
+        client = await self._get_client()
+        files = {"file": (filename, file_content, "application/octet-stream")}
+        resp = await client.post(
+            f"{self.document_store_url}/api/document-store/import/preview",
+            files=files,
+            headers={"X-API-Key": self.api_key},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def import_documents(
+        self,
+        file_content: bytes,
+        filename: str,
+        template_id: str,
+        column_mapping: dict,
+        namespace: str = "wip",
+        skip_errors: bool = False,
+    ) -> dict:
+        """Import documents from CSV/XLSX."""
+        import json as _json
+        client = await self._get_client()
+        files = {"file": (filename, file_content, "application/octet-stream")}
+        data = {
+            "template_id": template_id,
+            "column_mapping": _json.dumps(column_mapping),
+            "namespace": namespace,
+            "skip_errors": str(skip_errors).lower(),
+        }
+        resp = await client.post(
+            f"{self.document_store_url}/api/document-store/import",
+            files=files,
+            data=data,
+            headers={"X-API-Key": self.api_key},
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    # ========================================================
+    # Document-Store: Replay
+    # ========================================================
+
+    async def start_replay(
+        self,
+        filter_config: dict | None = None,
+        throttle_ms: int = 10,
+        batch_size: int = 100,
+    ) -> dict:
+        """Start a document replay session."""
+        body = {
+            "filter": filter_config or {},
+            "throttle_ms": throttle_ms,
+            "batch_size": batch_size,
+        }
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/replay/start",
+            json=body,
+        )
+
+    async def get_replay_session(self, session_id: str) -> dict:
+        """Get replay session status."""
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/replay/{session_id}",
+        )
+
+    async def pause_replay(self, session_id: str) -> dict:
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/replay/{session_id}/pause",
+        )
+
+    async def resume_replay(self, session_id: str) -> dict:
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/replay/{session_id}/resume",
+        )
+
+    async def cancel_replay(self, session_id: str) -> dict:
+        return await self._delete(
+            self.document_store_url,
+            f"/api/document-store/replay/{session_id}",
+        )
+
     # ========================================================
     # Reporting-Sync
     # ========================================================
@@ -498,6 +623,30 @@ class WipClient:
     async def get_sync_status(self) -> dict:
         return await self._get(
             self.reporting_sync_url, "/api/reporting-sync/status"
+        )
+
+    async def list_report_tables(self) -> dict:
+        """List available reporting tables (doc_* + terminologies/terms)."""
+        return await self._get(
+            self.reporting_sync_url, "/api/reporting-sync/tables"
+        )
+
+    async def run_report_query(
+        self,
+        sql: str,
+        params: list | None = None,
+        timeout_seconds: int = 30,
+        max_rows: int = 1000,
+    ) -> dict:
+        """Execute a read-only SQL query against the reporting database."""
+        body = {
+            "sql": sql,
+            "params": params or [],
+            "timeout_seconds": timeout_seconds,
+            "max_rows": max_rows,
+        }
+        return await self._post(
+            self.reporting_sync_url, "/api/reporting-sync/query", json=body
         )
 
     async def unified_search(

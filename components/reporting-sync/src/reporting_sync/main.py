@@ -7,6 +7,7 @@ The actual sync work is done by the worker module.
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -1093,6 +1094,143 @@ async def get_referenced_by(
         entity_id=entity_id,
         limit=limit
     )
+
+
+# =============================================================================
+# QUERY ENDPOINTS (for cross-template joins)
+# =============================================================================
+
+
+@router.get("/tables")
+async def list_tables():
+    """List available reporting tables with their columns and row counts."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    allowed_prefixes = ("doc_",)
+    allowed_exact = {"terminologies", "terms", "term_relationships"}
+
+    async with state.postgres_pool.acquire() as conn:
+        # Get all base tables in public schema
+        raw_tables = await conn.fetch(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+            ORDER BY table_name
+            """
+        )
+
+        tables = []
+        for row in raw_tables:
+            tname = row["table_name"]
+            if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
+                continue
+
+            # Get columns
+            columns = await conn.fetch(
+                """
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = $1
+                ORDER BY ordinal_position
+                """,
+                tname,
+            )
+
+            # Get row count
+            count = await conn.fetchval(
+                f'SELECT COUNT(*) FROM "{tname}"'
+            )
+
+            tables.append({
+                "name": tname,
+                "columns": [
+                    {
+                        "name": c["column_name"],
+                        "type": c["data_type"],
+                        "nullable": c["is_nullable"] == "YES",
+                    }
+                    for c in columns
+                ],
+                "row_count": count,
+            })
+
+    return {"tables": tables}
+
+
+class ReportQuery(BaseModel):
+    """Request model for ad-hoc reporting queries."""
+
+    sql: str
+    params: list[Any] = []
+    timeout_seconds: int = Field(default=30, ge=1, le=300)
+    max_rows: int = Field(default=1000, ge=1, le=50000)
+
+
+# Pattern matching dangerous SQL keywords at word boundaries
+_DANGEROUS_SQL_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b",
+    re.IGNORECASE,
+)
+
+
+@router.post("/query")
+async def execute_query(body: ReportQuery):
+    """Execute a read-only SQL query against the reporting database."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    # Safety: reject write/DDL statements
+    if _DANGEROUS_SQL_RE.search(body.sql):
+        raise HTTPException(
+            status_code=400,
+            detail="Only read-only queries are allowed. "
+            "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
+        )
+
+    # Build wrapped query with row limit
+    wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"
+
+    # Build positional parameter references
+    params = body.params
+
+    try:
+        async with state.postgres_pool.acquire() as conn:
+            # Set statement timeout and read-only transaction
+            await conn.execute(
+                f"SET statement_timeout = {body.timeout_seconds * 1000}"
+            )
+            await conn.execute("SET default_transaction_read_only = on")
+
+            rows = await conn.fetch(wrapped_sql, *params)
+
+            # Detect truncation
+            truncated = len(rows) > body.max_rows
+            if truncated:
+                rows = rows[: body.max_rows]
+
+            # Extract column names from first row (or empty)
+            columns = list(rows[0].keys()) if rows else []
+
+            return {
+                "columns": columns,
+                "rows": [dict(r) for r in rows],
+                "row_count": len(rows),
+                "truncated": truncated,
+            }
+
+    except asyncpg.QueryCanceledError:
+        raise HTTPException(
+            status_code=408,
+            detail=f"Query timed out after {body.timeout_seconds} seconds",
+        )
+    except asyncpg.PostgresSyntaxError as e:
+        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}")
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=400, detail=f"Query error: {e}")
 
 
 @router.get("/")

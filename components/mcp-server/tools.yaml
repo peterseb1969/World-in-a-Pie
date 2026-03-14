@@ -99,13 +99,94 @@ tools:
 
   # -- Query --
   query_documents:
-    description: "Query documents with complex filters."
+    description: "Query documents with complex filters (low-level). Prefer query_by_template."
     openapi_schema: null  # freeform query body
     param_name: "filters"
     notes: |
-      Consult the template's fields to know what's filterable.
+      filters.filters: [{field: "data.country", operator: "eq", value: "CH"}]
+      Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.
+      Field names MUST include "data." prefix for document data fields.
+      Use query_by_template for easier querying (auto-prefixes fields).
 
-  # -- Import --
+  query_by_template:
+    description: "Query documents by template value with easy field filtering."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      Resolves template_value → template_id automatically.
+      Field names auto-prefixed with "data." — write "country" not "data.country".
+      field_filters: [{"field": "country", "operator": "eq", "value": "CH"}]
+      Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.
+
+  get_template_fields:
+    description: "Get a clean summary of a template's fields for querying or document creation."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      Returns template_id, field names, types, mandatory flags, and references.
+      Use this to understand what data a template holds before querying.
+
+  # -- Files --
+  upload_file:
+    description: "Upload a file to WIP from a local path."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      Reads a file from disk and uploads it to WIP's MinIO-backed file storage.
+      Supports any file type. Returns file_id for use in document file fields.
+      Tags are comma-separated (e.g., "receipt,2024,tax").
+
+  # -- Reporting & SQL --
+  list_report_tables:
+    description: "List available PostgreSQL reporting tables and their schemas."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      Returns doc_* tables (one per template) plus terminologies, terms, term_relationships.
+      Use this before run_report_query to understand available tables and columns.
+
+  run_report_query:
+    description: "Execute a read-only SQL query against the PostgreSQL reporting database."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      For cross-template JOINs, aggregations, and analytics.
+      Tables: doc_{template_value} (e.g., doc_patient).
+      Term fields: {field} (value) + {field}_term_id columns.
+      Use $1, $2 for parameter binding. Read-only: no INSERT/UPDATE/DELETE.
+      Timeout: 30s default. Max rows: 1000 default.
+
+  # -- Import (CSV/XLSX) --
+  import_documents_csv:
+    description: "Import documents from a CSV/XLSX file into a template."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      Reads a local CSV/XLSX file, maps columns to template fields,
+      and creates documents in bulk. Auto-maps columns if mapping is omitted.
+      Term fields: use human-readable values in the CSV.
+
+  # -- Replay --
+  start_replay:
+    description: "Start replaying stored documents as NATS events."
+    openapi_schema: null
+    param_name: null
+    notes: |
+      For onboarding new consumers or backfilling data.
+      Events go to a separate NATS stream with metadata.replay=true.
+      Use get_replay_status to track progress, cancel_replay to stop.
+
+  get_replay_status:
+    description: "Get the status of a replay session."
+    openapi_schema: null
+    param_name: null
+
+  cancel_replay:
+    description: "Cancel a replay session and delete its NATS stream."
+    openapi_schema: null
+    param_name: null
+
+  # -- Terminology Import --
   import_terminology:
     description: "Import a terminology with terms from JSON data."
     openapi_schema: null  # freeform import body

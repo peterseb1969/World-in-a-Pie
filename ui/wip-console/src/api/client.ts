@@ -642,6 +642,52 @@ class DocumentStoreClient extends BaseApiClient {
     })
     return response.data
   }
+
+  // ===========================================================================
+  // IMPORT ENDPOINTS
+  // ===========================================================================
+
+  async importPreview(file: File): Promise<{
+    format: string
+    headers: string[]
+    sample_rows: Record<string, string>[]
+    total_rows: number
+    error?: string
+  }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await this.client.post('/import/preview', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    return response.data
+  }
+
+  async importDocuments(
+    file: File,
+    templateId: string,
+    columnMapping: Record<string, string>,
+    namespace: string = 'wip',
+    skipErrors: boolean = false
+  ): Promise<{
+    total_rows: number
+    succeeded: number
+    failed: number
+    skipped: number
+    results: Array<{ row: number; document_id: string; version: number; is_new: boolean }>
+    errors: Array<{ row: number; error: string; data?: Record<string, string> }>
+    error?: string
+  }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    formData.append('template_id', templateId)
+    formData.append('column_mapping', JSON.stringify(columnMapping))
+    formData.append('namespace', namespace)
+    formData.append('skip_errors', String(skipErrors))
+    const response = await this.client.post('/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    return response.data
+  }
 }
 
 // =============================================================================
