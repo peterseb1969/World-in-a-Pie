@@ -3,6 +3,7 @@
 import io
 import json
 import pytest
+import openpyxl
 from httpx import AsyncClient
 
 
@@ -12,6 +13,18 @@ def _make_csv(headers: list[str], rows: list[list[str]]) -> bytes:
     for row in rows:
         lines.append(",".join(row))
     return "\n".join(lines).encode("utf-8")
+
+
+def _make_xlsx(headers: list[str], rows: list[list]) -> bytes:
+    """Build an XLSX file in memory."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 @pytest.mark.asyncio
@@ -197,3 +210,27 @@ async def test_import_bad_json_mapping(client: AsyncClient, auth_headers: dict):
     data = response.json()
     assert "error" in data
     assert "JSON" in data["error"]
+
+
+@pytest.mark.asyncio
+async def test_preview_xlsx(client: AsyncClient, auth_headers: dict):
+    """Preview an XLSX file — returns format, headers, and sample rows."""
+    xlsx_bytes = _make_xlsx(
+        ["national_id", "first_name", "last_name"],
+        [
+            ["123456789", "Alice", "Smith"],
+            ["987654321", "Bob", "Jones"],
+            ["111222333", "Carol", "Lee"],
+        ],
+    )
+    response = await client.post(
+        "/api/document-store/import/preview",
+        headers=auth_headers,
+        files={"file": ("test.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["format"] == "xlsx"
+    assert data["headers"] == ["national_id", "first_name", "last_name"]
+    assert data["total_rows"] == 3
+    assert len(data["sample_rows"]) == 3

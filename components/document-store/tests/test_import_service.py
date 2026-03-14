@@ -1,6 +1,8 @@
 """Unit tests for ImportService (CSV/XLSX parsing, no DB needed)."""
 
+import io
 import pytest
+import openpyxl
 from document_store.services.import_service import ImportService
 
 
@@ -10,6 +12,18 @@ def _csv(headers: list[str], rows: list[list[str]]) -> bytes:
     for row in rows:
         lines.append(",".join(row))
     return "\n".join(lines).encode("utf-8")
+
+
+def _make_xlsx(headers: list[str], rows: list[list]) -> bytes:
+    """Build XLSX bytes in memory."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # =========================================================================
@@ -130,3 +144,69 @@ def test_build_documents_unmapped_columns_ignored():
     assert "Extra" not in docs[0]["data"]
     assert "extra" not in docs[0]["data"]
     assert docs[0]["data"]["name"] == "Alice"
+
+
+# =========================================================================
+# preview — XLSX
+# =========================================================================
+
+
+def test_preview_xlsx():
+    content = _make_xlsx(
+        ["name", "age"],
+        [["Alice", "30"], ["Bob", "25"]],
+    )
+    result = ImportService.preview(content, "test.xlsx")
+    assert result["format"] == "xlsx"
+    assert result["headers"] == ["name", "age"]
+    assert result["total_rows"] == 2
+    assert len(result["sample_rows"]) == 2
+    assert result["sample_rows"][0]["name"] == "Alice"
+
+
+# =========================================================================
+# parse_rows — XLSX
+# =========================================================================
+
+
+def test_parse_rows_xlsx():
+    content = _make_xlsx(["a", "b"], [["1", "2"], ["3", "4"]])
+    headers, rows = ImportService.parse_rows(content, "data.xlsx")
+    assert headers == ["a", "b"]
+    assert len(rows) == 2
+    assert rows[0]["a"] == "1"
+    assert rows[1]["b"] == "4"
+
+
+def test_parse_rows_xlsx_numeric_values():
+    """Numeric XLSX cells are converted to strings."""
+    content = _make_xlsx(["id", "score"], [[1, 99.5], [2, 100]])
+    headers, rows = ImportService.parse_rows(content, "numbers.xlsx")
+    assert headers == ["id", "score"]
+    assert rows[0]["id"] == "1"
+    assert rows[0]["score"] == "99.5"
+    assert rows[1]["id"] == "2"
+    assert rows[1]["score"] == "100"
+
+
+def test_parse_rows_xlsx_empty_cells():
+    """Empty XLSX cells become empty strings."""
+    content = _make_xlsx(["a", "b"], [["val", None], [None, "val2"]])
+    headers, rows = ImportService.parse_rows(content, "gaps.xlsx")
+    assert rows[0]["a"] == "val"
+    assert rows[0]["b"] == ""
+    assert rows[1]["a"] == ""
+    assert rows[1]["b"] == "val2"
+
+
+def test_parse_rows_xlsx_empty_sheet():
+    """An empty XLSX sheet raises ValueError."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    # Remove default empty row by not appending anything
+    buf = io.BytesIO()
+    wb.save(buf)
+    content = buf.getvalue()
+
+    with pytest.raises(ValueError, match="Empty spreadsheet"):
+        ImportService.parse_rows(content, "empty.xlsx")
