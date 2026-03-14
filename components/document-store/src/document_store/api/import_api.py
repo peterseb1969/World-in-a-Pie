@@ -113,9 +113,11 @@ async def import_documents(
             row_num = batch_start + i + 2  # +2 for 1-indexed + header row
             try:
                 req = DocumentCreateRequest(**doc)
-                result, _ = await doc_service.create_document(
+                result, error_msg = await doc_service.create_document(
                     req, namespace=namespace
                 )
+                if result is None:
+                    raise ValueError(error_msg or "Validation failed")
                 succeeded += 1
                 created_ids.append({
                     "row": row_num,

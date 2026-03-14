@@ -86,20 +86,23 @@ async def test_import_csv_success(client: AsyncClient, auth_headers: dict):
 
 @pytest.mark.asyncio
 async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: dict):
-    """Import with skip_errors=true skips bad rows and imports good ones."""
+    """Import with skip_errors=true skips bad rows and imports good ones.
+
+    The bad row is missing first_name (mandatory field) — it's mapped but empty,
+    so build_documents skips it, triggering a 'missing required field' validation error.
+    """
     csv_bytes = _make_csv(
-        ["national_id", "first_name", "last_name", "gender"],
+        ["national_id", "first_name", "last_name"],
         [
-            ["123456789", "Alice", "Smith", "F"],           # good
-            ["987654321", "Bob", "Jones", "INVALID_TERM"],  # bad - invalid term value
-            ["111222333", "Carol", "Lee", "M"],             # good
+            ["123456789", "Alice", "Smith"],   # good — all mandatory fields present
+            ["987654321", "", "Jones"],         # bad — first_name is empty → omitted → missing mandatory
+            ["111222333", "Carol", "Lee"],      # good
         ],
     )
     mapping = json.dumps({
         "national_id": "national_id",
         "first_name": "first_name",
         "last_name": "last_name",
-        "gender": "gender",
     })
     response = await client.post(
         "/api/document-store/import",
@@ -122,20 +125,22 @@ async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: 
 
 @pytest.mark.asyncio
 async def test_import_csv_without_skip_stops_on_error(client: AsyncClient, auth_headers: dict):
-    """Import with skip_errors=false stops at first error."""
+    """Import with skip_errors=false stops at first error.
+
+    First row is missing first_name (mandatory), so import stops immediately.
+    """
     csv_bytes = _make_csv(
-        ["national_id", "first_name", "last_name", "gender"],
+        ["national_id", "first_name", "last_name"],
         [
-            ["123456789", "Alice", "Smith", "INVALID_TERM"],  # bad - invalid term
-            ["987654321", "Bob", "Jones", "M"],                # never reached
-            ["111222333", "Carol", "Lee", "F"],                # never reached
+            ["123456789", "", "Smith"],      # bad — missing mandatory first_name
+            ["987654321", "Bob", "Jones"],    # never reached
+            ["111222333", "Carol", "Lee"],    # never reached
         ],
     )
     mapping = json.dumps({
         "national_id": "national_id",
         "first_name": "first_name",
         "last_name": "last_name",
-        "gender": "gender",
     })
     response = await client.post(
         "/api/document-store/import",
