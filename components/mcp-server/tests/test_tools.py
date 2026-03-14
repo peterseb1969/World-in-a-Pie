@@ -260,3 +260,105 @@ async def test_cancel_replay():
     data = json.loads(result)
     assert data["status"] == "cancelled"
     mock.cancel_replay.assert_awaited_once_with("abc123")
+
+
+# =========================================================================
+# P2: CSV/XLSX Import
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_import_documents_csv_success():
+    """import_documents_csv reads file and calls client."""
+    mock = _mock_client()
+    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+    mock.import_documents.return_value = {
+        "total_rows": 2,
+        "succeeded": 2,
+        "failed": 0,
+        "skipped": 0,
+        "results": [
+            {"row": 2, "document_id": "DOC-001", "version": 1, "is_new": True},
+            {"row": 3, "document_id": "DOC-002", "version": 1, "is_new": True},
+        ],
+        "errors": [],
+    }
+
+    csv_content = "name,email\nAlice,alice@test.com\nBob,bob@test.com\n"
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+        f.write(csv_content)
+        tmp_path = f.name
+
+    try:
+        with patch("wip_mcp.server.get_client", return_value=mock):
+            result = await import_documents_csv(
+                file_path=tmp_path,
+                template_value="PATIENT",
+                column_mapping={"name": "name", "email": "email"},
+            )
+
+        data = json.loads(result)
+        assert data["succeeded"] == 2
+        mock.import_documents.assert_awaited_once()
+        call_kwargs = mock.import_documents.call_args.kwargs
+        assert call_kwargs["template_id"] == "TPL-001"
+        assert call_kwargs["column_mapping"] == {"name": "name", "email": "email"}
+    finally:
+        os.unlink(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_import_documents_csv_not_found():
+    """import_documents_csv returns error for missing file."""
+    mock = _mock_client()
+    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await import_documents_csv(
+            file_path="/nonexistent/data.csv",
+            template_value="PATIENT",
+        )
+
+    assert "not found" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_import_documents_csv_auto_mapping():
+    """import_documents_csv with no mapping auto-maps columns to fields."""
+    mock = _mock_client()
+    mock.get_template_by_value.return_value = {
+        "template_id": "TPL-001",
+        "fields": [{"name": "name", "type": "string"}],
+    }
+    mock.preview_import.return_value = {
+        "headers": ["name"],
+        "sample_rows": [{"name": "Alice"}],
+        "total_rows": 1,
+        "format": "csv",
+    }
+    mock.import_documents.return_value = {
+        "total_rows": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "skipped": 0,
+        "results": [],
+        "errors": [],
+    }
+
+    csv_content = "name\nAlice\n"
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+        f.write(csv_content)
+        tmp_path = f.name
+
+    try:
+        with patch("wip_mcp.server.get_client", return_value=mock):
+            result = await import_documents_csv(
+                file_path=tmp_path,
+                template_value="PATIENT",
+                # No column_mapping — should auto-map
+            )
+
+        data = json.loads(result)
+        assert data["succeeded"] == 1
+    finally:
+        os.unlink(tmp_path)

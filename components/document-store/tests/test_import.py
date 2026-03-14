@@ -88,17 +88,18 @@ async def test_import_csv_success(client: AsyncClient, auth_headers: dict):
 async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: dict):
     """Import with skip_errors=true skips bad rows and imports good ones."""
     csv_bytes = _make_csv(
-        ["national_id", "first_name", "last_name"],
+        ["national_id", "first_name", "last_name", "gender"],
         [
-            ["123456789", "Alice", "Smith"],        # good
-            ["BAD_ID!!!!", "", ""],                  # bad - national_id pattern fail + missing first_name
-            ["987654321", "Bob", "Jones"],           # good
+            ["123456789", "Alice", "Smith", "F"],           # good
+            ["987654321", "Bob", "Jones", "INVALID_TERM"],  # bad - invalid term value
+            ["111222333", "Carol", "Lee", "M"],             # good
         ],
     )
     mapping = json.dumps({
         "national_id": "national_id",
         "first_name": "first_name",
         "last_name": "last_name",
+        "gender": "gender",
     })
     response = await client.post(
         "/api/document-store/import",
@@ -123,17 +124,18 @@ async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: 
 async def test_import_csv_without_skip_stops_on_error(client: AsyncClient, auth_headers: dict):
     """Import with skip_errors=false stops at first error."""
     csv_bytes = _make_csv(
-        ["national_id", "first_name", "last_name"],
+        ["national_id", "first_name", "last_name", "gender"],
         [
-            ["BAD_ID!!!!", "", ""],                  # bad row first
-            ["123456789", "Alice", "Smith"],          # never reached
-            ["987654321", "Bob", "Jones"],            # never reached
+            ["123456789", "Alice", "Smith", "INVALID_TERM"],  # bad - invalid term
+            ["987654321", "Bob", "Jones", "M"],                # never reached
+            ["111222333", "Carol", "Lee", "F"],                # never reached
         ],
     )
     mapping = json.dumps({
         "national_id": "national_id",
         "first_name": "first_name",
         "last_name": "last_name",
+        "gender": "gender",
     })
     response = await client.post(
         "/api/document-store/import",
