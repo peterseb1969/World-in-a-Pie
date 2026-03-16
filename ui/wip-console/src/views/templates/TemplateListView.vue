@@ -46,6 +46,7 @@ const filteredOwnTemplates = computed(() => {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(
       t =>
+        t.template_id?.toLowerCase().includes(query) ||
         t.label.toLowerCase().includes(query) ||
         t.value.toLowerCase().includes(query) ||
         t.description?.toLowerCase().includes(query)
@@ -63,6 +64,7 @@ const filteredWipTemplates = computed(() => {
     const query = searchQuery.value.toLowerCase()
     result = result.filter(
       t =>
+        t.template_id?.toLowerCase().includes(query) ||
         t.label.toLowerCase().includes(query) ||
         t.value.toLowerCase().includes(query) ||
         t.description?.toLowerCase().includes(query)
