@@ -31,6 +31,7 @@ const filteredOwnTerminologies = computed(() => {
   if (!searchQuery.value) return terminologyStore.ownTerminologies
   const query = searchQuery.value.toLowerCase()
   return terminologyStore.ownTerminologies.filter(t =>
+    t.terminology_id?.toLowerCase().includes(query) ||
     t.value.toLowerCase().includes(query) ||
     t.label.toLowerCase().includes(query) ||
     t.description?.toLowerCase().includes(query)
@@ -42,6 +43,7 @@ const filteredWipTerminologies = computed(() => {
   if (!searchQuery.value) return terminologyStore.wipTerminologies
   const query = searchQuery.value.toLowerCase()
   return terminologyStore.wipTerminologies.filter(t =>
+    t.terminology_id?.toLowerCase().includes(query) ||
     t.value.toLowerCase().includes(query) ||
     t.label.toLowerCase().includes(query) ||
     t.description?.toLowerCase().includes(query)

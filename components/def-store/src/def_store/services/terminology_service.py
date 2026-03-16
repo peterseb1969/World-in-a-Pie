@@ -845,7 +845,9 @@ class TerminologyService:
         # Add search filter if provided
         if search:
             query["$or"] = [
+                {"term_id": {"$regex": search, "$options": "i"}},
                 {"value": {"$regex": search, "$options": "i"}},
+                {"label": {"$regex": search, "$options": "i"}},
                 {"aliases": {"$regex": search, "$options": "i"}}
             ]
 
