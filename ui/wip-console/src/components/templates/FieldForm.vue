@@ -7,6 +7,7 @@ import Select from 'primevue/select'
 import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import Fieldset from 'primevue/fieldset'
+import Chips from 'primevue/chips'
 import type { FieldDefinition, Terminology, Template } from '@/types'
 import { FIELD_TYPES, REFERENCE_TYPES, VERSION_STRATEGIES } from '@/types'
 import MultiSelect from 'primevue/multiselect'
@@ -39,11 +40,20 @@ const form = ref<FieldDefinition>({
   array_item_type: undefined,
   array_terminology_ref: undefined,
   array_template_ref: undefined,
+  file_config: undefined,
   validation: undefined,
   metadata: {}
 })
 
 const validationEnabled = ref(false)
+const fileConfigEnabled = ref(false)
+
+const DEFAULT_FILE_CONFIG = {
+  allowed_types: [] as string[],
+  max_size_mb: 50,
+  multiple: false,
+  max_files: undefined as number | undefined,
+}
 
 // Reset form when dialog opens
 watch(() => props.visible, (visible) => {
@@ -51,6 +61,7 @@ watch(() => props.visible, (visible) => {
     if (props.field) {
       form.value = JSON.parse(JSON.stringify(props.field))
       validationEnabled.value = !!props.field.validation
+      fileConfigEnabled.value = !!props.field.file_config
     } else {
       form.value = {
         name: '',
@@ -67,10 +78,12 @@ watch(() => props.visible, (visible) => {
         array_item_type: undefined,
         array_terminology_ref: undefined,
         array_template_ref: undefined,
+        file_config: undefined,
         validation: undefined,
         metadata: {}
       }
       validationEnabled.value = false
+      fileConfigEnabled.value = false
     }
   }
 })
@@ -113,6 +126,7 @@ const showTargetTemplates = computed(() =>
 const showTargetTerminologies = computed(() =>
   form.value.type === 'reference' && form.value.reference_type === 'term'
 )
+const showFileConfig = computed(() => form.value.type === 'file')
 const showArrayConfig = computed(() => form.value.type === 'array')
 const showArrayTerminologyRef = computed(() =>
   form.value.type === 'array' && form.value.array_item_type === 'term'
@@ -173,6 +187,10 @@ watch(() => form.value.type, (newType) => {
     form.value.target_terminologies = undefined
     form.value.version_strategy = undefined
   }
+  if (newType !== 'file') {
+    form.value.file_config = undefined
+    fileConfigEnabled.value = false
+  }
   if (newType !== 'array') {
     form.value.array_item_type = undefined
     form.value.array_terminology_ref = undefined
@@ -210,6 +228,14 @@ watch(validationEnabled, (enabled) => {
     form.value.validation = {}
   } else if (!enabled) {
     form.value.validation = undefined
+  }
+})
+
+watch(fileConfigEnabled, (enabled) => {
+  if (enabled && !form.value.file_config) {
+    form.value.file_config = { ...DEFAULT_FILE_CONFIG }
+  } else if (!enabled) {
+    form.value.file_config = undefined
   }
 })
 
@@ -255,6 +281,14 @@ const canSave = computed(() => {
 function save() {
   if (!canSave.value) {
     return
+  }
+
+  // Clean up empty file_config
+  if (form.value.file_config) {
+    const fc = form.value.file_config
+    if (!fc.allowed_types?.length && !fc.max_size_mb && !fc.multiple && !fc.max_files) {
+      form.value.file_config = undefined
+    }
   }
 
   // Clean up empty validation object
@@ -471,6 +505,55 @@ function save() {
           </small>
           <small v-else>Terms referenced must belong to one of these terminologies</small>
         </div>
+      </Fieldset>
+
+      <!-- File configuration -->
+      <Fieldset v-if="showFileConfig" legend="File Configuration">
+        <div class="form-field checkbox-field">
+          <Checkbox id="file_config_enabled" v-model="fileConfigEnabled" binary />
+          <label for="file_config_enabled">Configure file constraints</label>
+        </div>
+
+        <template v-if="fileConfigEnabled && form.file_config">
+          <div class="form-field">
+            <label for="allowed_types">Allowed MIME Types</label>
+            <Chips
+              id="allowed_types"
+              v-model="form.file_config.allowed_types"
+              placeholder="e.g. application/pdf (press Enter)"
+              class="w-full"
+            />
+            <small>Leave empty to allow all file types</small>
+          </div>
+
+          <div class="form-row">
+            <div class="form-field">
+              <label for="max_size_mb">Max File Size (MB)</label>
+              <InputNumber
+                id="max_size_mb"
+                v-model="form.file_config.max_size_mb"
+                :min="1"
+                :max="1000"
+                class="w-full"
+              />
+            </div>
+            <div class="form-field checkbox-field" style="margin-top: 1.5rem">
+              <Checkbox id="file_multiple" v-model="form.file_config.multiple" binary />
+              <label for="file_multiple">Allow multiple files</label>
+            </div>
+          </div>
+
+          <div class="form-field" v-if="form.file_config.multiple">
+            <label for="max_files">Max Files</label>
+            <InputNumber
+              id="max_files"
+              v-model="form.file_config.max_files"
+              :min="1"
+              class="w-full"
+            />
+            <small>Leave empty for unlimited</small>
+          </div>
+        </template>
       </Fieldset>
 
       <!-- Array configuration -->

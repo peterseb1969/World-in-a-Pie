@@ -1334,8 +1334,8 @@ class ValidationService:
             file_id = file_val["file_id"]
             file_config = file_val["file_config"]
 
-            allowed_types = file_config.get("allowed_types", ["*/*"])
-            max_size_mb = file_config.get("max_size_mb", 10.0)
+            allowed_types = file_config.get("allowed_types") or ["*/*"]
+            max_size_mb = file_config.get("max_size_mb") or 10.0
 
             try:
                 is_valid, error_msg, file_ref = await file_service.validate_file_for_field(

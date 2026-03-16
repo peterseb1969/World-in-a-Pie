@@ -584,16 +584,25 @@ class FileService:
         return True, None, file_ref
 
     def _matches_type_pattern(self, content_type: str, patterns: list[str]) -> bool:
-        """Check if content_type matches any of the allowed patterns."""
+        """Check if content_type matches any of the allowed patterns.
+
+        Handles:
+        - Wildcard patterns (e.g., "image/*")
+        - Case-insensitive comparison
+        - Content-type parameters (e.g., "text/csv; charset=utf-8" matches "text/csv")
+        """
+        # Strip parameters (e.g., "; charset=utf-8") and normalize case
+        base_type = content_type.split(";")[0].strip().lower()
         for pattern in patterns:
+            pattern = pattern.strip().lower()
             if pattern == "*/*":
                 return True
             if pattern.endswith("/*"):
                 # Wildcard pattern (e.g., "image/*")
                 prefix = pattern[:-2]
-                if content_type.startswith(prefix + "/"):
+                if base_type.startswith(prefix + "/"):
                     return True
-            elif pattern == content_type:
+            elif pattern == base_type:
                 return True
         return False
 
