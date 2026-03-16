@@ -129,21 +129,28 @@ class TemplateStoreClient:
         Get a template with inheritance fully resolved.
 
         This returns the template with all parent fields and rules merged.
-        Results are cached by (template_id, version).
+        Results are cached by (template_id, version) — but ONLY when a
+        specific version is requested. When version is None ("give me the
+        latest"), we always fetch from the service because the latest
+        active version can change at any time.
 
         Args:
             template_id: Template ID
+            version: Specific version (None = latest, not cached)
 
         Returns:
             Resolved template data if found, None otherwise
         """
-        # Check cache first (keyed by template_id + version)
-        cache_key = f"{template_id}:v{version}" if version else template_id
-        if cache_key in self._template_cache:
-            self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-            return self._template_cache[cache_key]
+        # Only cache when a specific version is pinned — the (template_id, version)
+        # pair is immutable, so the cache entry never goes stale.
+        # When version is None, "latest" is dynamic and must not be cached.
+        if version is not None:
+            cache_key = f"{template_id}:v{version}"
+            if cache_key in self._template_cache:
+                self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                return self._template_cache[cache_key]
 
-        # Cache miss - fetch from service
+        # Fetch from service
         self._cache_misses = getattr(self, '_cache_misses', 0) + 1
         template = await self.get_template(
             template_id=template_id,
@@ -151,8 +158,18 @@ class TemplateStoreClient:
             version=version
         )
 
-        # Cache the result (including None for not found)
-        self._template_cache[cache_key] = template
+        # Cache pinned-version results (including None for not found).
+        # Also cache when we resolved "latest" — key it by the actual version
+        # returned, so future pinned lookups benefit from this fetch.
+        if version is not None:
+            cache_key = f"{template_id}:v{version}"
+            self._template_cache[cache_key] = template
+        elif template is not None:
+            actual_version = template.get("version")
+            if actual_version is not None:
+                cache_key = f"{template_id}:v{actual_version}"
+                self._template_cache[cache_key] = template
+
         return template
 
     async def template_exists(
