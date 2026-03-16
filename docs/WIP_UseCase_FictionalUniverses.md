@@ -293,6 +293,149 @@ Claude reasons across both namespaces simultaneously, flagging any assertion in 
 
 ---
 
+## The Fan Experience — The Know-It-All Friend You Always Wanted
+
+Forget query interfaces and structured data access patterns for a moment. What WIP + Claude actually is, for a fan, is something much simpler and much more fun: **the one friend who has read everything, remembers everything, never gets tired of talking about it, and is available at 2am.**
+
+Not a search engine. Not a wiki. A conversation. With someone who genuinely knows their stuff and can be cheerfully insufferable about it.
+
+---
+
+### The Pub Argument Resolver
+
+Every fan group has that moment. Someone makes a claim. Someone else disputes it. Phones come out. Nobody can find a definitive answer. The argument outlasts the drinks.
+
+> **Fan A:** Legolas and Gimli basically invented cross-species friendship. Nothing like that existed before in Middle-earth.
+>
+> **Fan B:** That is completely wrong, what about—
+>
+> **WIP + Claude:** *[already querying the `allied_with` and `friendship` ontology relationships across races]* Actually, Círdan the Shipwright maintained close friendships with multiple Maia across the First Age, and the relationship between the Edain and the Elves of Beleriand during the Wars of Beleriand produced several documented cross-species bonds that predate Legolas and Gimli by thousands of years. That said, Legolas and Gimli are unique in one specific sense — they're the only documented case of a Dwarf and Elf forming a bond of genuine personal affection rather than political alliance. Fan B, you were right but for the wrong reasons.
+
+Both fans are now annoyed and delighted simultaneously. This is the correct outcome.
+
+---
+
+### Trivial Pursuit at a Fan Convention
+
+This is where WIP + Claude becomes genuinely dangerous for an event organiser's schedule.
+
+Because WIP holds the complete structured universe — every character, every relationship, every event, every location, every date — Claude can generate trivia questions at any difficulty level, on demand, with verified answers and source citations. Not from training data. From the actual WIP documents.
+
+**Easy tier:**
+> *"What is the name of Bilbo Baggins' home in the Shire?"*
+> Answer: Bag End. Source: The Hobbit, Chapter 1.
+
+**Medium tier:**
+> *"Which member of the Fellowship was present at the Council of Elrond but not originally intended to be part of the Company?"*
+> Answer: Boromir — he came seeking interpretation of a dream, not intending to join. The Fellowship's composition was decided at the Council itself.
+
+**Hard tier:**
+> *"How many generations separate Thorin Oakenshield from Durin the Deathless, and which of his companions shares the most recent common ancestor with him?"*
+> Claude queries the genealogy graph, counts generations, cross-references all thirteen dwarves, returns Balin — and the exact generational distance for both.
+
+**Convention special — the audience participation round:**
+> Claude generates a question live, based on a character the audience nominates, at a difficulty level they vote for, with a follow-up question automatically generated from whatever answer is given.
+
+The follow-up question mechanic is what makes this special. Every answer opens a new question. A Trivial Pursuit game that never runs out of cards, generates questions tailored to the specific crowd, and gets harder the more the audience knows.
+
+A host at a Tolkien convention could run this for hours. They would have to physically stop it.
+
+**Bonus round — spot the deliberate mistake:**
+> Claude generates a question with a subtly wrong answer embedded in it. The audience has to identify the error and correct it. This is genuinely difficult because Claude knows exactly which facts are close enough to be plausible.
+> *"Fíli and Kíli were the youngest members of Thorin's company and the nephews of Balin. True or false?"*
+> False — they were Thorin's nephews, not Balin's. Balin's brother was Dwalin. A casual fan might miss it. A real fan catches it in under two seconds and is very smug about it.
+
+---
+
+### WIP as the Ultimate Game Master Tool for D&D
+
+This is where WIP's architecture clicks into place for an entirely different creative use case — and it's almost embarrassingly well suited for it.
+
+A Dungeons & Dragons campaign is, structurally, exactly the fictional universe problem. You have:
+- A cast of player characters and NPCs with relationships, histories, and secrets
+- A world with places, factions, and power structures
+- A timeline of events that accumulates session by session
+- Lore that the GM knows and the players are discovering
+- Consequences that ripple forward from earlier decisions
+
+The GM currently tracks all of this in a combination of notebooks, Notion pages, Obsidian vaults, and their own increasingly unreliable memory. WIP replaces all of that with something structured, queryable, and Claude-accessible.
+
+**The namespace structure writes itself:**
+
+```
+Namespace: world-canonical
+  The permanent world — geography, history, factions, 
+  ancient lore, gods, languages. Stable between campaigns.
+  
+Namespace: campaign-dragons-of-the-north
+  Everything that happened in this specific campaign.
+  Characters, events, decisions, consequences.
+  Extends world-canonical but never modifies it.
+  
+Namespace: campaign-the-thieves-guild
+  A different campaign in the same world, different players.
+  Same world-canonical foundation, completely separate events.
+```
+
+The world-canonical namespace is the GM's world bible. Each campaign gets its own namespace, inheriting the world but accumulating its own history. Two campaigns can run in the same world simultaneously without stepping on each other. When an NPC from one campaign becomes relevant in another, the canonical character record is shared — but their experiences in each campaign are separate.
+
+**During a session, the GM uses WIP + Claude in real time:**
+
+> *"My players just asked whether the blacksmith in Millhaven has any connection to the Thieves' Guild. I didn't plan this. What does WIP know about the blacksmith?"*
+
+Claude queries the NPC document for the blacksmith, traverses their `member_of`, `allied_with`, and `knows` relationships, and surfaces everything the GM has previously recorded — including a note from three sessions ago that the blacksmith's brother owed a debt to a Guild fence.
+
+The GM didn't remember that note. WIP did. The session just got a lot more interesting.
+
+> *"One of my players wants to investigate the ruins north of Millhaven. What do I have documented about that region?"*
+
+Claude queries PLACE documents, EVENT documents referencing that location, and LORE documents tagged with that region — and returns a structured briefing the GM can improvise from.
+
+**Between sessions, WIP is the campaign journal:**
+
+After each session, the GM (or a player, if they're that organised) adds documents:
+- New NPCs introduced
+- Relationships established or broken
+- Events that occurred
+- Secrets revealed to the players
+- Consequences pending
+
+Over a year-long campaign, this accumulates into a complete structured history of the adventure. Every decision has a document. Every consequence is traceable.
+
+**The player-facing version — the party's own knowledge base:**
+
+Give the players read access to a filtered view of WIP — the things their characters actually know, filtered by the `known_to` field on LORE documents. They can ask Claude:
+
+> *"What does my character know about the Duke of Millhaven?"*
+
+Claude queries LORE documents where the character is in the `known_to` array, and returns exactly what that character has learned — no more, no less. No accidentally surfacing information their character wasn't present for. No GM accidentally giving away something they shouldn't.
+
+**The continuity superpower:**
+
+Six months into a campaign, a player says: *"Wait — didn't the innkeeper in the first village mention something about a silver wolf? I feel like that's connected to what we just found."*
+
+Normal response: everyone tries to remember. Nobody can. The thread is lost.
+
+WIP response: Claude queries EVENT documents from session one, finds the innkeeper's dialogue recorded as a LORE document, traverses the `silver_wolf` tag across all documents, and surfaces three other mentions across the campaign history — including one the players had completely forgotten that now makes everything click.
+
+The players lose their minds. The GM looks like a genius who planned this all along. 
+
+(The GM may or may not have actually planned this. WIP will not tell.)
+
+---
+
+### The Community Angle — Fans Building for Fans
+
+The most exciting version of all of this is not a single fan or a single GM using WIP privately. It's a community building a shared WIP instance together.
+
+The dedication required to populate a complete WIP instance for the full Tolkien legendarium — every character from the Silmarillion, every relationship in the appendices, every event in Unfinished Tales — is exactly the kind of project that fan communities organise around. They would argue about the correct ontology for Maia versus Valar. They would debate which parentage claims deserve `confidence: confirmed` versus `confidence: disputed`. They would submit pull requests to the terminology definitions.
+
+And then they would all query it through Claude, at conventions and in Discord servers and at 2am during rewatches.
+
+**A community of fans building a WIP instance together, then all chatting with it through Claude, is a new kind of fandom that doesn't quite exist yet.** The data they build is the thing they've always wanted. The conversations they have with it are the ones they've been trying to have with each other for decades — just finally with someone who has read everything and never gets the details wrong.
+
+---
+
 ## Template Sketch
 
 ```
