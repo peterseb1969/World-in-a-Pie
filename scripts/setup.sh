@@ -89,6 +89,7 @@ SAVE_CONFIG=""
 CLEAN_DATA="false"
 IMAGE_REGISTRY=""
 IMAGE_TAG="latest"
+REMOTE_CORE=""  # Remote WIP core host for console-only deployment
 
 WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
 
@@ -262,6 +263,8 @@ OPTIONS:
   --data-dir DIR      Data storage directory (default: ./data)
   --config FILE       Load configuration from file (for unattended installs)
   --save-config FILE  Save configuration to file and exit (don't install)
+  --remote-core HOST    Console-only deployment connecting to a remote WIP core
+                      (e.g. pi-poe-8gb.local). Skips infrastructure and services.
   --registry HOST:PORT  Pull pre-built images from a container registry instead of
                       building locally (e.g. kubi5-1.local:32000)
   --image-tag TAG     Image tag to pull (default: latest)
@@ -298,6 +301,9 @@ EXAMPLES:
 
   # Minimal preset plus ingest gateway
   $(basename "$0") --preset core --modules ingest --localhost
+
+  # Console-only on Mac, connecting to remote WIP core on Pi
+  $(basename "$0") --preset core --localhost --remote-core pi-poe-8gb.local
 
   # Production deployment
   $(basename "$0") --preset standard --prod --hostname wip.example.com
@@ -347,6 +353,7 @@ load_config() {
     [ -n "${WIP_DATA_DIR:-}" ] && WIP_DATA_DIR="$WIP_DATA_DIR"
     [ -n "${WIP_IMAGE_REGISTRY:-}" ] && IMAGE_REGISTRY="$WIP_IMAGE_REGISTRY"
     [ -n "${WIP_IMAGE_TAG:-}" ] && IMAGE_TAG="$WIP_IMAGE_TAG"
+    [ -n "${WIP_REMOTE_CORE:-}" ] && REMOTE_CORE="$WIP_REMOTE_CORE"
 
     log_info "Configuration loaded successfully"
 }
@@ -405,6 +412,9 @@ WIP_API_KEY="$API_KEY"
 # Pre-built image registry (optional — skip local builds)
 WIP_IMAGE_REGISTRY="$IMAGE_REGISTRY"
 WIP_IMAGE_TAG="$IMAGE_TAG"
+
+# Remote core host (console-only deployment)
+WIP_REMOTE_CORE="$REMOTE_CORE"
 EOF
 
     log_info "Configuration saved to: $config_file"
@@ -477,6 +487,10 @@ parse_args() {
                 ;;
             --image-tag)
                 IMAGE_TAG="$2"
+                shift 2
+                ;;
+            --remote-core)
+                REMOTE_CORE="$2"
                 shift 2
                 ;;
             --clean)
@@ -563,6 +577,25 @@ validate_config() {
     if [ "$LOCALHOST_MODE" != "true" ] && [ -z "$HOSTNAME" ]; then
         log_error "Network mode requires --hostname (or use --localhost for local-only)"
         exit 1
+    fi
+
+    # Remote core mode: console-only deployment connecting to a remote WIP instance
+    if [ -n "$REMOTE_CORE" ]; then
+        # Strip protocol if provided (we build URLs ourselves)
+        REMOTE_CORE="${REMOTE_CORE#http://}"
+        REMOTE_CORE="${REMOTE_CORE#https://}"
+        REMOTE_CORE="${REMOTE_CORE%/}"
+        log_info "Remote core mode: console will connect to WIP services on $REMOTE_CORE"
+
+        # Ensure console module is active
+        if ! has_module "console" 2>/dev/null; then
+            # Force console into modules (may run before compute_modules)
+            if [ -n "$MODULES" ]; then
+                MODULES="console,$MODULES"
+            else
+                MODULES="console"
+            fi
+        fi
     fi
 
     # Auto-detect platform if not specified
@@ -710,17 +743,22 @@ show_confirmation() {
     else
         echo -e "  ${BOLD}Network:${NC}   remote (https://${HOSTNAME}:${HTTPS_PORT})"
     fi
+    if [ -n "$REMOTE_CORE" ]; then
+        echo -e "  ${BOLD}Remote:${NC}    ${GREEN}Console-only — backend on ${REMOTE_CORE}${NC}"
+    fi
     echo ""
 
-    # Core services (always included)
-    echo -e "  ${BOLD}Core Services:${NC}"
-    echo "    ✓ MongoDB          Document store"
-    echo "    ✓ NATS             Message queue for events"
-    echo "    ✓ Registry         ID management"
-    echo "    ✓ Def-Store        Terminology management"
-    echo "    ✓ Template-Store   Schema management"
-    echo "    ✓ Document-Store   Document storage + validation"
-    echo ""
+    # Core services (only when not in remote-core mode)
+    if [ -z "$REMOTE_CORE" ]; then
+        echo -e "  ${BOLD}Core Services:${NC}"
+        echo "    ✓ MongoDB          Document store"
+        echo "    ✓ NATS             Message queue for events"
+        echo "    ✓ Registry         ID management"
+        echo "    ✓ Def-Store        Terminology management"
+        echo "    ✓ Template-Store   Schema management"
+        echo "    ✓ Document-Store   Document storage + validation"
+        echo ""
+    fi
 
     # Active modules
     if [ -n "$ACTIVE_MODULES" ]; then
@@ -1082,8 +1120,22 @@ generate_console_nginx_config() {
     log_step "Generating Console nginx configuration..."
     mkdir -p "$PROJECT_ROOT/config/console"
 
+    # Determine backend hosts — docker DNS (co-located) or remote core
+    local def_store_backend="wip-def-store:8002"
+    local template_store_backend="wip-template-store:8003"
+    local document_store_backend="wip-document-store:8004"
+    local dex_backend="wip-dex:5556"
+
+    if [ -n "$REMOTE_CORE" ]; then
+        def_store_backend="${REMOTE_CORE}:8002"
+        template_store_backend="${REMOTE_CORE}:8003"
+        document_store_backend="${REMOTE_CORE}:8004"
+        dex_backend="${REMOTE_CORE}:5556"
+        log_info "Console nginx will proxy to remote core: $REMOTE_CORE"
+    fi
+
     # Base nginx config
-    cat > "$PROJECT_ROOT/config/console/nginx.conf" << 'EOF'
+    cat > "$PROJECT_ROOT/config/console/nginx.conf" << EOF
 server {
     listen 80;
     server_name localhost;
@@ -1096,52 +1148,52 @@ server {
 
     # Handle SPA routing - serve index.html for all routes
     location / {
-        try_files $uri $uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 
     # Proxy API requests to Def-Store backend
     location /api/def-store/ {
-        proxy_pass http://wip-def-store:8002/api/;
+        proxy_pass http://${def_store_backend}/api/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # Proxy API requests to Template-Store backend
     location /api/template-store/ {
-        proxy_pass http://wip-template-store:8003/api/;
+        proxy_pass http://${template_store_backend}/api/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # Proxy API requests to Document-Store backend
     location /api/document-store/ {
-        proxy_pass http://wip-document-store:8004/api/;
+        proxy_pass http://${document_store_backend}/api/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 EOF
 
     # Add Dex proxy only if OIDC is enabled
     if has_module "oidc"; then
-        cat >> "$PROJECT_ROOT/config/console/nginx.conf" << 'EOF'
+        cat >> "$PROJECT_ROOT/config/console/nginx.conf" << EOF
 
     # Proxy Dex OIDC requests to avoid CORS issues
     location /dex/ {
-        proxy_pass http://wip-dex:5556/dex/;
+        proxy_pass http://${dex_backend}/dex/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 EOF
     fi
@@ -1287,6 +1339,20 @@ EOF
             rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
         fi
         log_info "Removed dev override files (production mode)"
+    fi
+
+    # When console runs without Caddy (no oidc module or remote-core mode),
+    # it needs its own port mapping since Caddy normally proxies 8080→console:80
+    if has_module "console" && ! has_module "oidc"; then
+        local console_override="$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
+        cat > "$console_override" << EOF
+$override_header
+services:
+  wip-console:
+    ports:
+      - "${HTTP_PORT}:80"
+EOF
+        log_info "Console port mapping: ${HTTP_PORT}→80 (no Caddy)"
     fi
 }
 
@@ -1776,6 +1842,39 @@ start_infrastructure() {
     fi
 }
 
+start_console_only() {
+    # Remote core mode: only start the console container
+    local compose_file="docker-compose.yml"
+    local build_flag="--build"
+    if [ -n "$IMAGE_REGISTRY" ]; then
+        compose_file="docker-compose.registry.yml"
+        build_flag=""
+    fi
+
+    log_step "Starting WIP Console (remote core: $REMOTE_CORE)..."
+    cd "$PROJECT_ROOT/ui/wip-console"
+    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
+    log_info "Waiting for Console to start..."
+    sleep 8
+
+    # Verify the remote core is reachable
+    log_info "Checking remote core connectivity..."
+    local core_ok=false
+    for port in 8002 8003 8004; do
+        if curl -s "http://${REMOTE_CORE}:${port}/health" 2>/dev/null | grep -q "healthy"; then
+            core_ok=true
+        else
+            log_warn "  Service on ${REMOTE_CORE}:${port} not reachable"
+        fi
+    done
+
+    if [ "$core_ok" = "true" ]; then
+        log_info "Remote core is reachable"
+    else
+        log_warn "Remote core services may not be running — console will retry on each request"
+    fi
+}
+
 start_service() {
     local name=$1
     local dir=$2
@@ -1883,6 +1982,7 @@ print_status() {
     echo "  Platform: $PLATFORM"
     echo "  Network:  $NETWORK"
     [ -n "$HOSTNAME" ] && echo "  Hostname: $HOSTNAME"
+    [ -n "$REMOTE_CORE" ] && echo "  Remote:   $REMOTE_CORE (console-only mode)"
     if [ -n "$IMAGE_REGISTRY" ]; then
         echo "  Images:   $IMAGE_REGISTRY (tag: $IMAGE_TAG)"
     else
@@ -1922,29 +2022,37 @@ print_status() {
     echo "=========================================="
     echo "  Service Ports"
     echo "=========================================="
-    echo "  Registry:       http://localhost:8001"
-    echo "  Def-Store:      http://localhost:8002"
-    echo "  Template-Store: http://localhost:8003"
-    echo "  Document-Store: http://localhost:8004"
 
-    if has_module "reporting"; then
-        echo "  Reporting-Sync: http://localhost:8005"
-        echo "  PostgreSQL:     localhost:5432"
+    if [ -n "$REMOTE_CORE" ]; then
+        echo "  (Services running on remote core: $REMOTE_CORE)"
+        echo "  Def-Store:      http://${REMOTE_CORE}:8002"
+        echo "  Template-Store: http://${REMOTE_CORE}:8003"
+        echo "  Document-Store: http://${REMOTE_CORE}:8004"
+    else
+        echo "  Registry:       http://localhost:8001"
+        echo "  Def-Store:      http://localhost:8002"
+        echo "  Template-Store: http://localhost:8003"
+        echo "  Document-Store: http://localhost:8004"
+
+        if has_module "reporting"; then
+            echo "  Reporting-Sync: http://localhost:8005"
+            echo "  PostgreSQL:     localhost:5432"
+        fi
+
+        if has_module "ingest"; then
+            echo "  Ingest-Gateway: http://localhost:8006"
+        fi
+
+        if has_module "dev-tools"; then
+            echo "  Mongo Express:  http://localhost:8081 (admin/admin)"
+        fi
+
+        if has_module "files"; then
+            echo "  MinIO Console:  http://localhost:9001"
+        fi
+
+        echo "  NATS Monitor:   http://localhost:8222"
     fi
-
-    if has_module "ingest"; then
-        echo "  Ingest-Gateway: http://localhost:8006"
-    fi
-
-    if has_module "dev-tools"; then
-        echo "  Mongo Express:  http://localhost:8081 (admin/admin)"
-    fi
-
-    if has_module "files"; then
-        echo "  MinIO Console:  http://localhost:9001"
-    fi
-
-    echo "  NATS Monitor:   http://localhost:8222"
     echo ""
     echo "=========================================="
     echo "  Files"
@@ -2001,30 +2109,42 @@ main() {
     init_log_file
 
     check_dependencies
-    ensure_data_dirs
-    ensure_network
-    ensure_linger
-    verify_compose_files
-    check_nats_conflicts
-    clean_nats_data
 
-    # Generate secrets for production mode
-    if [ "$GENERATE_SECRETS" = "true" ]; then
-        generate_prod_secrets
-        save_secrets
-        # Update global API_KEY for namespace initialization
-        API_KEY="$WIP_API_KEY"
+    if [ -n "$REMOTE_CORE" ]; then
+        # Remote core mode: only deploy console, skip infrastructure and services
+        log_step "Remote core mode — deploying console only (backend: $REMOTE_CORE)"
+        ensure_network
+        generate_env_file
+        generate_console_nginx_config
+        generate_service_overrides
+        start_console_only
+    else
+        # Full deployment: infrastructure + services + optional console
+        ensure_data_dirs
+        ensure_network
+        ensure_linger
+        verify_compose_files
+        check_nats_conflicts
+        clean_nats_data
+
+        # Generate secrets for production mode
+        if [ "$GENERATE_SECRETS" = "true" ]; then
+            generate_prod_secrets
+            save_secrets
+            # Update global API_KEY for namespace initialization
+            API_KEY="$WIP_API_KEY"
+        fi
+
+        generate_env_file
+        generate_dex_config
+        generate_console_nginx_config
+        generate_caddy_config
+        generate_nats_config
+        generate_service_overrides
+
+        start_infrastructure
+        start_services
     fi
-
-    generate_env_file
-    generate_dex_config
-    generate_console_nginx_config
-    generate_caddy_config
-    generate_nats_config
-    generate_service_overrides
-
-    start_infrastructure
-    start_services
 
     print_status
     finalize_log

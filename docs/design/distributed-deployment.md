@@ -1,6 +1,6 @@
 # Distributed Deployment Design
 
-**Status:** Phase 1 Complete, Phase 2-3 Planning
+**Status:** Phase 1-2 Complete, Phase 3 Planning
 **Date:** 2026-03-17
 
 ## Goal
@@ -76,20 +76,22 @@ Caddy ←──── Console (TLS + proxy)
 
 **Value:** Immediate footprint reduction on constrained devices. MCP-only workflows don't need the console.
 
-### 2. Console Remote Mode (Priority 2)
+### 2. Console Remote Mode (Priority 2) — DONE
 
 **What:** Console deployable on a different host, connecting to remote WIP services.
 
-**Changes:**
-- Make nginx.conf backend URLs configurable (not just docker-compose DNS names)
-- Option A: Generate nginx.conf with external URLs (e.g., `http://wip-pi.local:8001`)
-- Option B: Runtime config.js injected at container start (avoids rebuild)
-- Handle OIDC: either share Dex on core host (console proxies to it), or run Dex alongside console
-- `setup.sh --remote-wip http://wip-pi.local` generates console-only config pointing at remote core
+**Implementation:**
+- `--remote-core HOST` flag in setup.sh generates console-only deployment
+- nginx.conf backend URLs use remote hostname:port instead of docker DNS names
+- Skips all infrastructure and service startup (only starts console container)
+- Console port exposed directly (8080→80) when no Caddy
+- Dex proxy points to remote Dex when OIDC is active
+- Connectivity check on startup (warns if remote services unreachable)
+- Config persisted in last-install.conf for easy re-run
+- Usage: `./scripts/setup.sh --preset core --localhost --remote-core pi-poe-8gb.local`
 
 **OIDC considerations:**
-- Simplest: keep Dex on the core host, console's Caddy proxies `/dex` to remote Dex
-- Alternative: run Dex alongside console, configure it with same issuer URL
+- Simplest: keep Dex on the core host, console's nginx proxies `/dex` to remote Dex (implemented)
 - API-key-only mode avoids OIDC entirely (simplest for personal use)
 
 ### 3. Distributed Setup Support (Priority 3)
