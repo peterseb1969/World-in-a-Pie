@@ -17,6 +17,7 @@ Options:
     --benchmark          Run performance benchmarks after seeding
     --output FILE        Write benchmark results to JSON file
     --namespace PREFIX    Namespace prefix for data isolation (default: seed)
+    --time-limit SECS    Stop document seeding after SECS seconds (for quick perf tests)
     --skip-terminologies Skip terminology seeding (use existing)
     --skip-templates     Skip template seeding (use existing)
     --dry-run            Show what would be created without making changes
@@ -24,6 +25,10 @@ Options:
 Examples:
     # Seed everything with standard profile (localhost)
     python scripts/seed_comprehensive.py
+
+    # Quick 30-second performance test (seeds terminologies + templates, then
+    # creates documents for 30s — enough for meaningful throughput numbers)
+    python scripts/seed_comprehensive.py --profile performance --time-limit 30
 
     # Seed a remote WIP instance via direct ports (requires port access)
     python scripts/seed_comprehensive.py --host wip-pi.local
@@ -254,6 +259,7 @@ class WIPSeeder:
         urls: dict[str, str] = None,
         dry_run: bool = False,
         namespace: str = "wip",
+        time_limit: float | None = None,
     ):
         self.profile = profile
         self.api_key = api_key
@@ -263,6 +269,7 @@ class WIPSeeder:
         self.dry_run = dry_run
         self.namespace = namespace
         self._custom_ns = namespace != "wip"
+        self.time_limit = time_limit
 
         # Disable SSL verification for self-signed certs when using proxy
         verify_ssl = not via_proxy
@@ -555,17 +562,27 @@ class WIPSeeder:
 
     def seed_documents(self) -> dict[str, int]:
         """Seed documents for all templates."""
-        stats = {"documents": 0, "errors": 0, "by_template": {}}
+        stats = {"documents": 0, "errors": 0, "by_template": {}, "time_limited": False}
 
         print("\nSeeding documents...")
         doc_counts = documents.get_document_counts(self.profile)
 
+        total_planned = documents.get_total_documents(self.profile)
+        if self.time_limit:
+            print(f"  Time limit: {self.time_limit:.0f}s (will stop after limit is reached)")
+
         progress = performance.ProgressReporter(
-            total=documents.get_total_documents(self.profile),
+            total=total_planned,
             operation="Creating documents"
         )
 
+        doc_start_time = time.perf_counter()
+        time_exceeded = False
+
         for template_value, count in doc_counts.items():
+            if time_exceeded:
+                break
+
             template_id = self.created_templates.get(template_value)
             if not template_id:
                 # Try to look it up
@@ -593,6 +610,11 @@ class WIPSeeder:
             docs = documents.generate_documents_for_template(template_value, count)
 
             for i in range(0, len(docs), batch_size):
+                # Check time limit before starting next batch
+                if self.time_limit and (time.perf_counter() - doc_start_time) >= self.time_limit:
+                    time_exceeded = True
+                    break
+
                 batch = docs[i:i + batch_size]
                 batch_data = [
                     {"template_id": template_id, "namespace": self.namespace, "data": doc, "created_by": "seed_script"}
@@ -646,7 +668,14 @@ class WIPSeeder:
                     stats["by_template"][template_value]["errors"] += len(batch)
                     progress.update(len(batch))
 
-        progress.complete()
+        if time_exceeded:
+            stats["time_limited"] = True
+            elapsed_docs = time.perf_counter() - doc_start_time
+            rate = stats["documents"] / elapsed_docs if elapsed_docs > 0 else 0
+            progress.complete_time_limited(stats["documents"], elapsed_docs)
+            print(f"\n  Time limit reached: {stats['documents']} docs in {elapsed_docs:.1f}s ({rate:.1f} docs/sec)")
+        else:
+            progress.complete()
 
         # Print summary by template
         print("\nDocuments by template:")
@@ -1063,6 +1092,14 @@ def main():
     )
 
     parser.add_argument(
+        "--time-limit",
+        type=float,
+        default=None,
+        metavar="SECS",
+        help="Stop document seeding after SECS seconds (for quick perf tests, e.g. --time-limit 30)"
+    )
+
+    parser.add_argument(
         "--skip-terminologies",
         action="store_true",
         help="Skip terminology seeding (use existing)"
@@ -1107,6 +1144,8 @@ def main():
     print(f"Profile: {args.profile}")
     print(f"Namespace: {args.namespace}")
     print(f"Services: {', '.join(services)}")
+    if args.time_limit:
+        print(f"Time limit: {args.time_limit:.0f}s (document seeding)")
     print(f"Dry run: {args.dry_run}")
 
     if args.via_proxy:
@@ -1127,6 +1166,7 @@ def main():
         via_proxy=args.via_proxy,
         dry_run=args.dry_run,
         namespace=args.namespace,
+        time_limit=args.time_limit,
     )
 
     # Check services
@@ -1195,19 +1235,19 @@ def main():
         total_stats["documents"] = stats
         print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
-    # Seed template versions (v2 of selected templates)
-    if "template-store" in services and not args.skip_templates:
-        phase_start = time.perf_counter()
-        stats = seeder.seed_template_versions()
-        total_stats["template_versions"] = stats
-        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+    # Seed template versions and versioning tests (skip when time-limited — not useful for perf tests)
+    if not args.time_limit:
+        if "template-store" in services and not args.skip_templates:
+            phase_start = time.perf_counter()
+            stats = seeder.seed_template_versions()
+            total_stats["template_versions"] = stats
+            print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
-    # Seed versioning test documents (upsert: same identity → new version)
-    if "document-store" in services:
-        phase_start = time.perf_counter()
-        stats = seeder.seed_versioning_tests()
-        total_stats["versioning_tests"] = stats
-        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+        if "document-store" in services:
+            phase_start = time.perf_counter()
+            stats = seeder.seed_versioning_tests()
+            total_stats["versioning_tests"] = stats
+            print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
     elapsed = time.time() - start_time
 
@@ -1231,7 +1271,8 @@ def main():
 
     if "documents" in total_stats:
         s = total_stats["documents"]
-        print(f"Documents: {s['documents']} created, {s['errors']} errors")
+        time_note = " (time limit reached)" if s.get("time_limited") else ""
+        print(f"Documents: {s['documents']} created, {s['errors']} errors{time_note}")
 
     if "versioning_tests" in total_stats:
         s = total_stats["versioning_tests"]

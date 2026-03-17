@@ -239,6 +239,14 @@ class ProgressReporter:
             f"(100%) - Completed in {elapsed:.1f}s ({rate:.1f}/s)"
         )
 
+    def complete_time_limited(self, actual: int, elapsed: float):
+        """Mark as complete when stopped by time limit."""
+        rate = actual / elapsed if elapsed > 0 else 0
+        print(
+            f"\r{self.operation}: {actual:,} "
+            f"- Stopped at {elapsed:.1f}s ({rate:.1f}/s)"
+        )
+
 
 def generate_batch(
     generator: Callable[[int], dict[str, Any]],
