@@ -88,6 +88,10 @@ class TemplateStoreClient:
         """
         Get a template by ID or value.
 
+        Uses the same cache as get_template_resolved() when looking up by
+        template_id with resolve_inheritance=True (the common case in
+        reference validation).
+
         Args:
             template_id: Template ID
             template_value: Template value (e.g., 'PERSON')
@@ -97,6 +101,22 @@ class TemplateStoreClient:
         Returns:
             Template data if found, None otherwise
         """
+        # Check cache for the common case: by template_id with inheritance
+        use_cache = template_id and resolve_inheritance
+        if use_cache:
+            now = time.monotonic()
+            if version is not None:
+                cache_key = f"{template_id}:v{version}"
+                if cache_key in self._template_cache:
+                    self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                    return self._template_cache[cache_key]
+            else:
+                if template_id in self._latest_cache:
+                    cached_template, cached_at = self._latest_cache[template_id]
+                    if (now - cached_at) < LATEST_TTL_SECONDS:
+                        self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                        return cached_template
+
         if template_id:
             url = f"{self.base_url}/api/template-store/templates/{template_id}"
         elif template_value:
@@ -111,6 +131,9 @@ class TemplateStoreClient:
         params = {}
         if version is not None:
             params["version"] = version
+
+        if use_cache:
+            self._cache_misses = getattr(self, '_cache_misses', 0) + 1
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -128,7 +151,19 @@ class TemplateStoreClient:
                         f"Failed to get template: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                result = response.json()
+
+                # Populate cache
+                if use_cache and result is not None:
+                    if version is not None:
+                        self._template_cache[f"{template_id}:v{version}"] = result
+                    else:
+                        self._latest_cache[template_id] = (result, time.monotonic())
+                        actual_version = result.get("version")
+                        if actual_version is not None:
+                            self._template_cache[f"{template_id}:v{actual_version}"] = result
+
+                return result
         except httpx.RequestError as e:
             raise TemplateStoreError(f"Request failed: {str(e)}")
 

@@ -954,6 +954,10 @@ class DocumentService:
         valid_indices = []  # Indices of valid documents
 
         validation_semaphore = asyncio.Semaphore(10)
+        # Shared cache for document reference lookups across the batch —
+        # avoids repeated MongoDB queries when many docs reference the same
+        # target (e.g., 50 FIN_TRANSACTIONs all pointing to one FIN_ACCOUNT).
+        doc_ref_cache: dict = {}
 
         async def _validate_one(i: int, item: DocumentCreateRequest):
             async with validation_semaphore:
@@ -961,7 +965,8 @@ class DocumentService:
                     item.template_id,
                     item.data,
                     template_version=getattr(item, 'template_version', None),
-                    namespace=namespace
+                    namespace=namespace,
+                    doc_ref_cache=doc_ref_cache
                 )
 
         if continue_on_error:
@@ -995,7 +1000,8 @@ class DocumentService:
                         item.template_id,
                         item.data,
                         template_version=getattr(item, 'template_version', None),
-                        namespace=namespace
+                        namespace=namespace,
+                        doc_ref_cache=doc_ref_cache
                     )
                     if validation_result.valid:
                         validation_results.append((i, item, validation_result))

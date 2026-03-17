@@ -165,7 +165,8 @@ class ValidationService:
         template_id: str,
         data: dict[str, Any],
         template_version: Optional[int] = None,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        doc_ref_cache: Optional[dict] = None
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -217,7 +218,7 @@ class ValidationService:
 
         # Stage 5: Reference validation - unified reference fields
         start = time.perf_counter()
-        await self._validate_references(data, template, result, namespace=namespace)
+        await self._validate_references(data, template, result, namespace=namespace, doc_ref_cache=doc_ref_cache)
         result.timing["5_reference_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -1195,7 +1196,8 @@ class ValidationService:
         data: dict[str, Any],
         template: dict[str, Any],
         result: ValidationResult,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        doc_ref_cache: Optional[dict] = None
     ):
         """
         Validate and resolve reference fields.
@@ -1234,7 +1236,8 @@ class ValidationService:
                     resolved = await self._resolve_document_reference(
                         value, target_templates, result, field_path,
                         version_strategy=version_strategy,
-                        namespace=namespace
+                        namespace=namespace,
+                        doc_ref_cache=doc_ref_cache
                     )
                     if resolved:
                         result.references.append({
@@ -1477,10 +1480,36 @@ class ValidationService:
         result: ValidationResult,
         field_path: str,
         version_strategy: str = "latest",
-        namespace: str = "wip"
+        namespace: str = "wip",
+        doc_ref_cache: Optional[dict] = None
     ) -> Optional[dict[str, Any]]:
-        """Resolve a document reference by ID, hash, or business key."""
+        """Resolve a document reference by ID, hash, or business key.
+
+        When doc_ref_cache is provided (bulk operations), resolved documents
+        are cached by lookup key to avoid repeated MongoDB queries for the
+        same reference across documents in a batch.
+        """
         from ..models.document import Document, DocumentStatus
+
+        # Build a cache key for this lookup
+        cache_key = None
+        if doc_ref_cache is not None and isinstance(value, str):
+            cache_key = f"doc:{value}"
+            if cache_key in doc_ref_cache:
+                doc = doc_ref_cache[cache_key]
+                # Jump straight to template verification (doc may be None)
+                if doc is None:
+                    result.add_error(
+                        code="reference_not_found",
+                        message=f"Referenced document not found for field '{field_path}'",
+                        field=field_path,
+                        details={"value": str(value), "target_templates": target_templates}
+                    )
+                    return None
+                # Skip to template verification below
+                return await self._verify_ref_template_and_build_result(
+                    doc, target_templates, result, field_path, version_strategy
+                )
 
         # Determine lookup method based on value format
         if isinstance(value, str):
@@ -1518,6 +1547,10 @@ class ValidationService:
             )
             return None
 
+        # Cache the lookup result (including None for not-found)
+        if cache_key is not None and doc_ref_cache is not None:
+            doc_ref_cache[cache_key] = doc
+
         if not doc:
             result.add_error(
                 code="reference_not_found",
@@ -1526,6 +1559,21 @@ class ValidationService:
                 details={"value": str(value), "target_templates": target_templates}
             )
             return None
+
+        return await self._verify_ref_template_and_build_result(
+            doc, target_templates, result, field_path, version_strategy
+        )
+
+    async def _verify_ref_template_and_build_result(
+        self,
+        doc: Any,
+        target_templates: list[str],
+        result: "ValidationResult",
+        field_path: str,
+        version_strategy: str = "latest"
+    ) -> Optional[dict[str, Any]]:
+        """Verify referenced document's template and build the resolved result."""
+        from ..models.document import DocumentStatus
 
         # Verify template matches target_templates
         if target_templates:
