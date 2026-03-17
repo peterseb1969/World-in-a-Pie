@@ -1,6 +1,6 @@
 # Distributed Deployment Design
 
-**Status:** Planning
+**Status:** Phase 1 Complete, Phase 2-3 Planning
 **Date:** 2026-03-17
 
 ## Goal
@@ -61,15 +61,18 @@ Caddy ←──── Console (TLS + proxy)
 
 ## Deliverables
 
-### 1. Make Console Optional (Priority 1)
+### 1. Make Console Optional (Priority 1) — DONE
 
 **What:** Add `console` as a composable module instead of always deploying it.
 
-**Changes:**
-- Create `docker-compose/modules/console.yml` — move console + Caddy + Dex into it
-- New preset `headless` = core services without console
-- Update `setup.sh` to skip console-related config when module not selected
-- API-only deployment: just core services, accessed via API key
+**Implementation:**
+- `console` added as a virtual module (same pattern as `ingest` — no overlay file, conditionally started by `start_services()`)
+- New `headless` preset = base services only, no console, no OIDC
+- `console` added to all existing presets (backward compatible)
+- `setup.sh` conditionally skips: console startup, nginx config generation, Caddy console proxy, console override files
+- `print_status()` and `show_confirmation()` reflect headless mode
+- Usage: `./scripts/setup.sh --preset headless --localhost`
+- Or remove from any preset: `./scripts/setup.sh --preset standard --remove console --localhost`
 
 **Value:** Immediate footprint reduction on constrained devices. MCP-only workflows don't need the console.
 

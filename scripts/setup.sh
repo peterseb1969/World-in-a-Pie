@@ -4,12 +4,14 @@
 # Modular deployment system with presets and composable modules.
 #
 # Presets (sensible defaults):
-#   core      - Minimal: MongoDB, NATS, API-key auth only
+#   headless  - API only: no Console, no OIDC, lowest footprint
+#   core      - Minimal: MongoDB, NATS, Console, API-key auth only
 #   standard  - Most common: + OIDC authentication
 #   analytics - With reporting: + PostgreSQL, Reporting-Sync
 #   full      - Everything: + MinIO, Ingest-Gateway
 #
 # Modules (composable):
+#   console   - WIP Console web interface
 #   oidc      - Dex + Caddy for user authentication
 #   reporting - PostgreSQL + Reporting-Sync for SQL analytics
 #   files     - MinIO for binary file storage
@@ -103,11 +105,12 @@ WIP_DEX_CLIENT_SECRET=""
 WIP_NATS_TOKEN=""
 
 # Available modules
-AVAILABLE_MODULES="oidc reporting files ingest dev-tools"
+AVAILABLE_MODULES="console oidc reporting files ingest dev-tools"
 
 # Module description lookup (bash 3.2 compatible)
 get_module_desc() {
     case "$1" in
+        console)   echo "WIP Console web interface" ;;
         oidc)      echo "User authentication via Dex + Caddy (HTTPS)" ;;
         reporting) echo "SQL analytics via PostgreSQL + Reporting-Sync" ;;
         files)     echo "Binary file storage via MinIO (S3-compatible)" ;;
@@ -120,6 +123,7 @@ get_module_desc() {
 # Preset description lookup (bash 3.2 compatible)
 get_preset_desc() {
     case "$1" in
+        headless)  echo "API only - no Console, no OIDC, lowest footprint" ;;
         core)      echo "Minimal deployment - API keys only, no OIDC" ;;
         standard)  echo "Recommended - OIDC authentication for multi-user access" ;;
         analytics) echo "Standard + SQL reporting for BI dashboards" ;;
@@ -229,12 +233,14 @@ show_help() {
 WIP Unified Setup Script - Modular Deployment System
 
 PRESETS (sensible defaults):
+  headless   API only - no Console, no OIDC, lowest footprint
   core       Minimal deployment, API-key auth only
   standard   OIDC authentication (recommended for most users)
   analytics  Standard + PostgreSQL reporting
   full       All features enabled
 
 MODULES (composable):
+  console    WIP Console web interface
   oidc       User authentication via Dex + Caddy
   reporting  PostgreSQL + Reporting-Sync for SQL analytics
   files      MinIO for binary file attachments
@@ -270,6 +276,9 @@ OPTIONS:
 EXAMPLES:
   # Standard deployment (most common)
   $(basename "$0") --preset standard --hostname wip.local
+
+  # Headless (API-only, no Console - ideal for MCP workflows)
+  $(basename "$0") --preset headless --localhost
 
   # Minimal local development
   $(basename "$0") --preset core --localhost
@@ -362,7 +371,7 @@ save_config() {
 # Use with: ./scripts/setup.sh --config $config_file -y
 #
 
-# Deployment preset (core, standard, analytics, full)
+# Deployment preset (headless, core, standard, analytics, full)
 WIP_PRESET="$PRESET"
 
 # Explicit modules (if not using preset)
@@ -511,7 +520,7 @@ validate_config() {
     # Must have either preset or modules
     if [ -z "$PRESET" ] && [ -z "$MODULES" ]; then
         log_error "Must specify either --preset or --modules"
-        echo "Available presets: core, standard, analytics, full"
+        echo "Available presets: headless, core, standard, analytics, full"
         exit 1
     fi
 
@@ -534,7 +543,7 @@ validate_config() {
         local preset_file="$PROJECT_ROOT/config/presets/${PRESET}.conf"
         if [ ! -f "$preset_file" ]; then
             log_error "Unknown preset: $PRESET"
-            echo "Available presets: core, standard, analytics, full"
+            echo "Available presets: headless, core, standard, analytics, full"
             exit 1
         fi
     fi
@@ -711,7 +720,6 @@ show_confirmation() {
     echo "    ✓ Def-Store        Terminology management"
     echo "    ✓ Template-Store   Schema management"
     echo "    ✓ Document-Store   Document storage + validation"
-    echo "    ✓ WIP Console      Admin web interface"
     echo ""
 
     # Active modules
@@ -1066,6 +1074,11 @@ EOF
 }
 
 generate_console_nginx_config() {
+    if ! has_module "console"; then
+        log_debug "Skipping console nginx config (console module not active)"
+        return
+    fi
+
     log_step "Generating Console nginx configuration..."
     mkdir -p "$PROJECT_ROOT/config/console"
 
@@ -1201,18 +1214,20 @@ generate_service_overrides() {
         done
 
         # Console: remove build: block, add image:
-        local console_image="${IMAGE_REGISTRY}/wip-console:${IMAGE_TAG}"
-        local console_dir="$PROJECT_ROOT/ui/wip-console"
-        awk -v img="$console_image" '
-            /^    build:/ { in_build=1; next }
-            in_build && /^    [a-z]/ { in_build=0 }
-            in_build { next }
-            /container_name: wip-console/ { print; print "    image: " img; next }
-            { print }
-        ' "$console_dir/docker-compose.yml" > "$console_dir/docker-compose.registry.yml"
-        rm -f "$console_dir/docker-compose.override.yml"
+        if has_module "console"; then
+            local console_image="${IMAGE_REGISTRY}/wip-console:${IMAGE_TAG}"
+            local console_dir="$PROJECT_ROOT/ui/wip-console"
+            awk -v img="$console_image" '
+                /^    build:/ { in_build=1; next }
+                in_build && /^    [a-z]/ { in_build=0 }
+                in_build { next }
+                /container_name: wip-console/ { print; print "    image: " img; next }
+                { print }
+            ' "$console_dir/docker-compose.yml" > "$console_dir/docker-compose.registry.yml"
+            rm -f "$console_dir/docker-compose.override.yml"
+        fi
 
-        log_info "Generated registry compose files (7 services)"
+        log_info "Generated registry compose files"
         return
     fi
 
@@ -1258,8 +1273,9 @@ EOF
         done
 
         # Console always uses production target (dist baked into image)
-        # Remove any stale dev override that would shadow the built-in dist
-        rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
+        if has_module "console"; then
+            rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
+        fi
 
         log_info "Generated dev override files (source mounts enabled)"
     else
@@ -1267,7 +1283,9 @@ EOF
         for svc_dir in registry def-store template-store document-store reporting-sync ingest-gateway; do
             rm -f "$PROJECT_ROOT/components/$svc_dir/docker-compose.override.yml"
         done
-        rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
+        if has_module "console"; then
+            rm -f "$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
+        fi
         log_info "Removed dev override files (production mode)"
     fi
 }
@@ -1375,9 +1393,9 @@ $security_headers
         reverse_proxy wip-ingest-gateway:8006
     }
 
-    # WIP Console (default - always nginx on port 80)
+    # WIP Console (SPA served by nginx on port 80)
     handle {
-        reverse_proxy wip-console:80
+        $(has_module "console" && echo "reverse_proxy wip-console:80" || echo "respond \"WIP API — Console not deployed\" 200")
     }
 }
 EOF
@@ -1841,11 +1859,15 @@ start_services() {
     fi
     echo ""
 
-    log_step "Starting WIP Console..."
-    cd "$PROJECT_ROOT/ui/wip-console"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
-    log_info "Waiting for Console to start..."
-    sleep 8
+    if has_module "console"; then
+        log_step "Starting WIP Console..."
+        cd "$PROJECT_ROOT/ui/wip-console"
+        podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
+        log_info "Waiting for Console to start..."
+        sleep 8
+    else
+        log_info "Console module not active — skipping (headless/API-only mode)"
+    fi
 }
 
 print_status() {
@@ -1871,19 +1893,26 @@ print_status() {
     echo "  Access URLs"
     echo "=========================================="
 
-    if has_module "oidc"; then
-        if [ "$LOCALHOST_MODE" = "true" ]; then
-            echo "  Console:  https://localhost:${HTTPS_PORT}"
+    if has_module "console"; then
+        if has_module "oidc"; then
+            if [ "$LOCALHOST_MODE" = "true" ]; then
+                echo "  Console:  https://localhost:${HTTPS_PORT}"
+            else
+                echo "  Console:  https://${HOSTNAME}:${HTTPS_PORT}"
+                echo "            https://localhost:${HTTPS_PORT} (local)"
+            fi
+            echo ""
+            echo "  Login:    admin@wip.local / admin123"
+            echo "            editor@wip.local / editor123"
+            echo "            viewer@wip.local / viewer123"
         else
-            echo "  Console:  https://${HOSTNAME}:${HTTPS_PORT}"
-            echo "            https://localhost:${HTTPS_PORT} (local)"
+            echo "  Console:  http://localhost:8080 (direct, no TLS)"
+            echo ""
+            echo "  Auth:     API Key only"
+            echo "  API Key:  $API_KEY"
         fi
-        echo ""
-        echo "  Login:    admin@wip.local / admin123"
-        echo "            editor@wip.local / editor123"
-        echo "            viewer@wip.local / viewer123"
     else
-        echo "  Console:  http://localhost:8080 (direct, no TLS)"
+        echo "  Console:  Not deployed (headless mode)"
         echo ""
         echo "  Auth:     API Key only"
         echo "  API Key:  $API_KEY"
