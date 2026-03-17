@@ -81,18 +81,18 @@ Caddy ←──── Console (TLS + proxy)
 **What:** Console deployable on a different host, connecting to remote WIP services.
 
 **Implementation:**
-- `--remote-core HOST` flag in setup.sh generates console-only deployment
-- nginx.conf backend URLs use remote hostname:port instead of docker DNS names
-- Skips all infrastructure and service startup (only starts console container)
-- Console port exposed directly (8080→80) when no Caddy
-- Dex proxy points to remote Dex when OIDC is active
-- Connectivity check on startup (warns if remote services unreachable)
+- `--remote-core HOST` flag — no `--preset` or `--modules` needed
+- Auto-probes remote host to detect running modules (OIDC, reporting, files, ingest)
+- `--remote-modules LIST` overrides auto-detection when probe is unreliable
+- nginx.conf generated with remote host URLs instead of docker DNS
+- VITE feature flags set based on detected/specified remote modules
+- Console port exposed directly (8080->80) since no local Caddy
 - Config persisted in last-install.conf for easy re-run
-- Usage: `./scripts/setup.sh --preset core --localhost --remote-core pi-poe-8gb.local`
+- Usage: `./scripts/setup.sh --remote-core pi-poe-8gb.local`
 
 **OIDC considerations:**
-- Simplest: keep Dex on the core host, console's nginx proxies `/dex` to remote Dex (implemented)
-- API-key-only mode avoids OIDC entirely (simplest for personal use)
+- When OIDC detected on remote, console nginx proxies `/dex` to remote Dex
+- API-key-only mode if no OIDC detected (simplest for personal use)
 
 ### 3. Distributed Setup Support (Priority 3)
 

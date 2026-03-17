@@ -90,6 +90,7 @@ CLEAN_DATA="false"
 IMAGE_REGISTRY=""
 IMAGE_TAG="latest"
 REMOTE_CORE=""  # Remote WIP core host for console-only deployment
+REMOTE_MODULES=""  # Modules available on remote core (auto-detected or explicit)
 
 WIP_DATA_DIR="${WIP_DATA_DIR:-$PROJECT_ROOT/data}"
 
@@ -229,6 +230,61 @@ detect_platform() {
     fi
 }
 
+probe_remote_core() {
+    # Auto-detect which modules are running on the remote core host.
+    # Probes health endpoints with a short timeout. Returns detected modules
+    # as a comma-separated string in REMOTE_MODULES.
+
+    local host="$1"
+    local detected=""
+    local timeout=3
+
+    log_step "Probing remote core at $host..."
+
+    # Core services (always expected)
+    for svc_port in "Registry:8001" "Def-Store:8002" "Template-Store:8003" "Document-Store:8004"; do
+        local name="${svc_port%%:*}"
+        local port="${svc_port##*:}"
+        if curl -s --connect-timeout "$timeout" "http://${host}:${port}/health" 2>/dev/null | grep -q "healthy"; then
+            log_info "  $name on :$port — reachable"
+        else
+            log_warn "  $name on :$port — not reachable"
+        fi
+    done
+
+    # Optional modules
+    if curl -s --connect-timeout "$timeout" "http://${host}:8005/health" 2>/dev/null | grep -q "healthy"; then
+        detected="${detected:+$detected,}reporting"
+        log_info "  Reporting-Sync on :8005 — reachable"
+    fi
+
+    if curl -s --connect-timeout "$timeout" "http://${host}:8006/health" 2>/dev/null | grep -q "healthy"; then
+        detected="${detected:+$detected,}ingest"
+        log_info "  Ingest-Gateway on :8006 — reachable"
+    fi
+
+    if curl -s --connect-timeout "$timeout" "http://${host}:9001" 2>/dev/null | head -1 | grep -q ""; then
+        detected="${detected:+$detected,}files"
+        log_info "  MinIO on :9001 — reachable"
+    fi
+
+    # Check for OIDC (Dex on port 5556 or Caddy on 8443)
+    if curl -sk --connect-timeout "$timeout" "https://${host}:8443" 2>/dev/null | head -1 | grep -q ""; then
+        detected="${detected:+$detected,}oidc"
+        log_info "  Caddy/OIDC on :8443 — reachable"
+    elif curl -s --connect-timeout "$timeout" "http://${host}:5556/dex/healthz" 2>/dev/null | grep -q "ok\|healthy"; then
+        detected="${detected:+$detected,}oidc"
+        log_info "  Dex on :5556 — reachable"
+    fi
+
+    REMOTE_MODULES="$detected"
+    if [ -n "$REMOTE_MODULES" ]; then
+        log_info "Detected remote modules: $REMOTE_MODULES"
+    else
+        log_info "No optional modules detected on remote (core services only)"
+    fi
+}
+
 show_help() {
     cat << EOF
 WIP Unified Setup Script - Modular Deployment System
@@ -264,7 +320,10 @@ OPTIONS:
   --config FILE       Load configuration from file (for unattended installs)
   --save-config FILE  Save configuration to file and exit (don't install)
   --remote-core HOST    Console-only deployment connecting to a remote WIP core
-                      (e.g. pi-poe-8gb.local). Skips infrastructure and services.
+                      (e.g. pi-poe-8gb.local). No --preset needed. Auto-detects
+                      which modules are running on the remote host.
+  --remote-modules LIST Override auto-detection: specify remote modules explicitly
+                      (e.g. oidc,reporting,files)
   --registry HOST:PORT  Pull pre-built images from a container registry instead of
                       building locally (e.g. kubi5-1.local:32000)
   --image-tag TAG     Image tag to pull (default: latest)
@@ -302,8 +361,11 @@ EXAMPLES:
   # Minimal preset plus ingest gateway
   $(basename "$0") --preset core --modules ingest --localhost
 
-  # Console-only on Mac, connecting to remote WIP core on Pi
-  $(basename "$0") --preset core --localhost --remote-core pi-poe-8gb.local
+  # Console-only on Mac, connecting to remote WIP core on Pi (auto-detects modules)
+  $(basename "$0") --remote-core pi-poe-8gb.local
+
+  # Same, but explicitly specify what the remote has
+  $(basename "$0") --remote-core pi-poe-8gb.local --remote-modules oidc,reporting,files
 
   # Production deployment
   $(basename "$0") --preset standard --prod --hostname wip.example.com
@@ -354,6 +416,7 @@ load_config() {
     [ -n "${WIP_IMAGE_REGISTRY:-}" ] && IMAGE_REGISTRY="$WIP_IMAGE_REGISTRY"
     [ -n "${WIP_IMAGE_TAG:-}" ] && IMAGE_TAG="$WIP_IMAGE_TAG"
     [ -n "${WIP_REMOTE_CORE:-}" ] && REMOTE_CORE="$WIP_REMOTE_CORE"
+    [ -n "${WIP_REMOTE_MODULES:-}" ] && REMOTE_MODULES="$WIP_REMOTE_MODULES"
 
     log_info "Configuration loaded successfully"
 }
@@ -413,8 +476,9 @@ WIP_API_KEY="$API_KEY"
 WIP_IMAGE_REGISTRY="$IMAGE_REGISTRY"
 WIP_IMAGE_TAG="$IMAGE_TAG"
 
-# Remote core host (console-only deployment)
+# Remote core (console-only deployment)
 WIP_REMOTE_CORE="$REMOTE_CORE"
+WIP_REMOTE_MODULES="$REMOTE_MODULES"
 EOF
 
     log_info "Configuration saved to: $config_file"
@@ -493,6 +557,10 @@ parse_args() {
                 REMOTE_CORE="$2"
                 shift 2
                 ;;
+            --remote-modules)
+                REMOTE_MODULES="$2"
+                shift 2
+                ;;
             --clean)
                 CLEAN_DATA="true"
                 shift
@@ -531,9 +599,18 @@ parse_args() {
 }
 
 validate_config() {
-    # Must have either preset or modules
-    if [ -z "$PRESET" ] && [ -z "$MODULES" ]; then
-        log_error "Must specify either --preset or --modules"
+    # Remote core mode: no preset/modules needed — we only deploy console
+    if [ -n "$REMOTE_CORE" ]; then
+        # Override: set console-only modules, ignore preset
+        MODULES="console"
+        PRESET=""
+        # Default to localhost if no hostname/localhost specified
+        if [ "$LOCALHOST_MODE" != "true" ] && [ -z "$HOSTNAME" ]; then
+            LOCALHOST_MODE="true"
+            NETWORK="localhost"
+        fi
+    elif [ -z "$PRESET" ] && [ -z "$MODULES" ]; then
+        log_error "Must specify either --preset, --modules, or --remote-core"
         echo "Available presets: headless, core, standard, analytics, full"
         exit 1
     fi
@@ -579,23 +656,11 @@ validate_config() {
         exit 1
     fi
 
-    # Remote core mode: console-only deployment connecting to a remote WIP instance
+    # Remote core: clean up hostname
     if [ -n "$REMOTE_CORE" ]; then
-        # Strip protocol if provided (we build URLs ourselves)
         REMOTE_CORE="${REMOTE_CORE#http://}"
         REMOTE_CORE="${REMOTE_CORE#https://}"
         REMOTE_CORE="${REMOTE_CORE%/}"
-        log_info "Remote core mode: console will connect to WIP services on $REMOTE_CORE"
-
-        # Ensure console module is active
-        if ! has_module "console" 2>/dev/null; then
-            # Force console into modules (may run before compute_modules)
-            if [ -n "$MODULES" ]; then
-                MODULES="console,$MODULES"
-            else
-                MODULES="console"
-            fi
-        fi
     fi
 
     # Auto-detect platform if not specified
@@ -679,6 +744,11 @@ has_module() {
     [[ ",$ACTIVE_MODULES," == *",$1,"* ]]
 }
 
+# Check if a feature is available — either locally or on the remote core
+has_feature() {
+    has_module "$1" || [[ ",$REMOTE_MODULES," == *",$1,"* ]]
+}
+
 init_log_file() {
     mkdir -p "$PROJECT_ROOT/logs"
     LOG_FILE="$PROJECT_ROOT/logs/setup-$(date '+%Y%m%d-%H%M%S').log"
@@ -760,11 +830,20 @@ show_confirmation() {
         echo ""
     fi
 
-    # Active modules
+    # Active modules (local)
     if [ -n "$ACTIVE_MODULES" ]; then
-        echo -e "  ${BOLD}Active Modules:${NC}"
+        echo -e "  ${BOLD}Active Modules (local):${NC}"
         for mod in ${ACTIVE_MODULES//,/ }; do
             echo -e "    ${GREEN}✓${NC} ${mod}$(printf '%*s' $((14 - ${#mod})) '')$(get_module_desc "$mod")"
+        done
+        echo ""
+    fi
+
+    # Remote modules (detected or specified)
+    if [ -n "$REMOTE_MODULES" ]; then
+        echo -e "  ${BOLD}Remote Modules (on $REMOTE_CORE):${NC}"
+        for mod in ${REMOTE_MODULES//,/ }; do
+            echo -e "    ${CYAN}↗${NC} ${mod}$(printf '%*s' $((14 - ${#mod})) '')$(get_module_desc "$mod")"
         done
         echo ""
     fi
@@ -772,7 +851,7 @@ show_confirmation() {
     # Inactive modules
     local inactive=""
     for mod in $AVAILABLE_MODULES; do
-        if ! has_module "$mod"; then
+        if ! has_module "$mod" && ! [[ ",$REMOTE_MODULES," == *",$mod,"* ]]; then
             inactive="$inactive $mod"
         fi
     done
@@ -840,10 +919,10 @@ EOF
 generate_env_file() {
     log_step "Generating .env file..."
 
-    # Determine auth mode
+    # Determine auth mode (check both local and remote modules)
     local auth_mode="api_key_only"
     local oidc_enabled="false"
-    if has_module "oidc"; then
+    if has_feature "oidc"; then
         auth_mode="dual"
         oidc_enabled="true"
     fi
@@ -851,7 +930,7 @@ generate_env_file() {
     # Determine issuer URL
     local issuer_url=""
     local jwks_uri=""
-    if has_module "oidc"; then
+    if has_feature "oidc"; then
         if [ "$LOCALHOST_MODE" = "true" ]; then
             issuer_url="http://localhost:5556/dex"
             jwks_uri="http://wip-dex:5556/dex/keys"
@@ -951,9 +1030,10 @@ VITE_OIDC_PROVIDER_NAME=Dex
 VITE_API_BASE_URL=
 
 # Optional module feature flags (must match WIP_MODULES)
-VITE_REPORTING_ENABLED=$(has_module "reporting" && echo "true" || echo "false")
-VITE_FILES_ENABLED=$(has_module "files" && echo "true" || echo "false")
-VITE_INGEST_ENABLED=$(has_module "ingest" && echo "true" || echo "false")
+# Feature flags: check both local modules and remote modules
+VITE_REPORTING_ENABLED=$(has_feature "reporting" && echo "true" || echo "false")
+VITE_FILES_ENABLED=$(has_feature "files" && echo "true" || echo "false")
+VITE_INGEST_ENABLED=$(has_feature "ingest" && echo "true" || echo "false")
 
 # =============================================================================
 # FILE STORAGE (MinIO)
@@ -1182,8 +1262,8 @@ server {
     }
 EOF
 
-    # Add Dex proxy only if OIDC is enabled
-    if has_module "oidc"; then
+    # Add Dex proxy only if OIDC is available (locally or on remote)
+    if has_feature "oidc"; then
         cat >> "$PROJECT_ROOT/config/console/nginx.conf" << EOF
 
     # Proxy Dex OIDC requests to avoid CORS issues
@@ -1341,9 +1421,9 @@ EOF
         log_info "Removed dev override files (production mode)"
     fi
 
-    # When console runs without Caddy (no oidc module or remote-core mode),
-    # it needs its own port mapping since Caddy normally proxies 8080→console:80
-    if has_module "console" && ! has_module "oidc"; then
+    # When console runs without local Caddy, it needs its own port mapping.
+    # This applies when: no oidc module locally, OR remote-core mode (no local Caddy).
+    if has_module "console" && (! has_module "oidc" || [ -n "$REMOTE_CORE" ]); then
         local console_override="$PROJECT_ROOT/ui/wip-console/docker-compose.override.yml"
         cat > "$console_override" << EOF
 $override_header
@@ -1994,7 +2074,20 @@ print_status() {
     echo "=========================================="
 
     if has_module "console"; then
-        if has_module "oidc"; then
+        if [ -n "$REMOTE_CORE" ]; then
+            echo "  Console:  http://localhost:${HTTP_PORT} (proxying to $REMOTE_CORE)"
+            if has_feature "oidc"; then
+                echo ""
+                echo "  Login:    admin@wip.local / admin123"
+                echo "            editor@wip.local / editor123"
+                echo "            viewer@wip.local / viewer123"
+            else
+                echo ""
+                echo "  Auth:     API Key only"
+                echo "  API Key:  $API_KEY"
+            fi
+            [ -n "$REMOTE_MODULES" ] && echo "  Remote:   $REMOTE_MODULES"
+        elif has_module "oidc"; then
             if [ "$LOCALHOST_MODE" = "true" ]; then
                 echo "  Console:  https://localhost:${HTTPS_PORT}"
             else
@@ -2006,7 +2099,7 @@ print_status() {
             echo "            editor@wip.local / editor123"
             echo "            viewer@wip.local / viewer123"
         else
-            echo "  Console:  http://localhost:8080 (direct, no TLS)"
+            echo "  Console:  http://localhost:${HTTP_PORT} (direct, no TLS)"
             echo ""
             echo "  Auth:     API Key only"
             echo "  API Key:  $API_KEY"
@@ -2113,6 +2206,14 @@ main() {
     if [ -n "$REMOTE_CORE" ]; then
         # Remote core mode: only deploy console, skip infrastructure and services
         log_step "Remote core mode — deploying console only (backend: $REMOTE_CORE)"
+
+        # Auto-detect remote modules if not explicitly specified
+        if [ -z "$REMOTE_MODULES" ]; then
+            probe_remote_core "$REMOTE_CORE"
+        else
+            log_info "Using explicit remote modules: $REMOTE_MODULES"
+        fi
+
         ensure_network
         generate_env_file
         generate_console_nginx_config
