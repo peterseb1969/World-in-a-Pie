@@ -32,6 +32,8 @@ export class FetchTransport {
   private timeout: number
   private retry: RetryConfig
   private onAuthError?: () => void
+  // Cache auth headers to avoid async overhead on synchronous providers
+  private cachedAuthHeaders: Record<string, string> | null = null
 
   constructor(config: FetchTransportConfig) {
     // Resolve empty baseUrl: use window.location.origin in browsers, error in Node
@@ -56,6 +58,7 @@ export class FetchTransport {
 
   setAuth(auth: AuthProvider | undefined) {
     this.auth = auth
+    this.cachedAuthHeaders = null
   }
 
   async request<T>(
@@ -74,10 +77,12 @@ export class FetchTransport {
       ...options?.headers,
     }
 
-    // Add auth headers
+    // Add auth headers (cache for synchronous providers to avoid async overhead)
     if (this.auth) {
-      const authHeaders = await this.auth.getHeaders()
-      Object.assign(headers, authHeaders)
+      if (!this.cachedAuthHeaders) {
+        this.cachedAuthHeaders = await this.auth.getHeaders()
+      }
+      Object.assign(headers, this.cachedAuthHeaders)
     }
 
     // Set content-type for JSON bodies
@@ -88,6 +93,8 @@ export class FetchTransport {
     const fetchOptions: RequestInit = {
       method,
       headers,
+      // Enable HTTP keep-alive for connection reuse across batches
+      keepalive: true,
     }
 
     if (options?.body !== undefined) {
@@ -121,8 +128,10 @@ export class FetchTransport {
 
         if (!response.ok) {
           const error = await this.mapResponseError(response)
-          if (error instanceof WipAuthError && this.onAuthError) {
-            this.onAuthError()
+          if (error instanceof WipAuthError) {
+            // Invalidate cached auth headers on auth error
+            this.cachedAuthHeaders = null
+            if (this.onAuthError) this.onAuthError()
           }
           // Retry on 502/503/504 for GET
           if (isRetryable && attempt < maxAttempts - 1 && response.status >= 502) {
@@ -141,9 +150,16 @@ export class FetchTransport {
         }
 
         // Handle empty responses (204, etc.)
-        const text = await response.text()
-        if (!text) return undefined as T
-        return JSON.parse(text) as T
+        if (response.status === 204) {
+          return undefined as T
+        }
+        // Use response.json() directly — faster than text() + JSON.parse()
+        // Fall back gracefully if body is empty (some proxies return 200 with no body)
+        try {
+          return (await response.json()) as T
+        } catch {
+          return undefined as T
+        }
       } catch (err) {
         clearTimeout(timeoutId)
         if (err instanceof WipError) {
@@ -171,24 +187,21 @@ export class FetchTransport {
   }
 
   private buildUrl(path: string, params?: Record<string, unknown>): string {
-    const url = new URL(path, this.baseUrl + '/')
-    // The URL constructor resolves path relative to base - we want to join them
-    // Use string concatenation for reliability
     const fullUrl = `${this.baseUrl}${path.startsWith('/') ? path : '/' + path}`
-    const parsed = new URL(fullUrl)
 
-    if (params) {
-      for (const [key, value] of Object.entries(params)) {
-        if (value === undefined || value === null) continue
-        if (Array.isArray(value)) {
-          for (const v of value) {
-            parsed.searchParams.append(key, String(v))
-          }
-        } else if (typeof value === 'boolean') {
-          parsed.searchParams.set(key, value ? 'true' : 'false')
-        } else {
-          parsed.searchParams.set(key, String(value))
+    if (!params) return fullUrl
+
+    const parsed = new URL(fullUrl)
+    for (const [key, value] of Object.entries(params)) {
+      if (value === undefined || value === null) continue
+      if (Array.isArray(value)) {
+        for (const v of value) {
+          parsed.searchParams.append(key, String(v))
         }
+      } else if (typeof value === 'boolean') {
+        parsed.searchParams.set(key, value ? 'true' : 'false')
+      } else {
+        parsed.searchParams.set(key, String(value))
       }
     }
 

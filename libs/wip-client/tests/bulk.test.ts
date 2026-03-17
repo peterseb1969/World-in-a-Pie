@@ -88,4 +88,28 @@ describe('bulkImport', () => {
     expect(result.processed).toBe(0)
     expect(result.total).toBe(0)
   })
+
+  it('processes batches concurrently when concurrency > 1', async () => {
+    const items = Array.from({ length: 30 }, (_, i) => ({ value: `item-${i}` }))
+    let concurrent = 0
+    let maxConcurrent = 0
+
+    const writeFn = vi.fn().mockImplementation(async (batch) => {
+      concurrent++
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 10))
+      concurrent--
+      return makeBulkResponse(batch.length)
+    })
+
+    const result = await bulkImport(items, writeFn, {
+      batchSize: 10,
+      concurrency: 3,
+    })
+
+    expect(writeFn).toHaveBeenCalledTimes(3)
+    expect(maxConcurrent).toBe(3) // All 3 batches ran in parallel
+    expect(result.processed).toBe(30)
+    expect(result.succeeded).toBe(30)
+  })
 })
