@@ -1,9 +1,14 @@
 """Client for communicating with the WIP Template Store service."""
 
 import os
+import time
 from typing import Any, Optional
 
 import httpx
+
+# How long to cache "latest version" resolution (seconds).
+# Pinned (template_id, version) pairs are cached forever — they're immutable.
+LATEST_TTL_SECONDS = 5.0
 
 
 class TemplateStoreClient:
@@ -13,8 +18,10 @@ class TemplateStoreClient:
     Used to fetch templates for document validation. Templates include
     field definitions, validation rules, and identity field configuration.
 
-    Includes permanent caching for templates since template_id is immutable -
-    each template version gets a unique ID that never changes.
+    Caching strategy (version-aware):
+    - (template_id, version) lookups: cached permanently — immutable pair
+    - "latest" lookups (version=None): cached with short TTL (5s) — covers
+      bulk batches without going stale across template updates
     """
 
     def __init__(
@@ -41,9 +48,12 @@ class TemplateStoreClient:
         )
         self.timeout = timeout
 
-        # Permanent cache for resolved templates (template_id -> template data)
-        # Template IDs are immutable - each version gets a new ID
+        # Permanent cache: keyed by "template_id:v{version}" — immutable
         self._template_cache: dict[str, Optional[dict[str, Any]]] = {}
+
+        # TTL cache for "latest" resolution: keyed by template_id
+        # Value: (template_data, timestamp)
+        self._latest_cache: dict[str, tuple[Optional[dict[str, Any]], float]] = {}
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -56,13 +66,15 @@ class TemplateStoreClient:
         """Get cache statistics."""
         return {
             "template_cache_size": len(self._template_cache),
+            "latest_cache_size": len(self._latest_cache),
             "template_cache_hits": getattr(self, '_cache_hits', 0),
             "template_cache_misses": getattr(self, '_cache_misses', 0),
         }
 
     def clear_cache(self):
-        """Clear the template cache (mainly for testing)."""
+        """Clear all template caches (mainly for testing)."""
         self._template_cache.clear()
+        self._latest_cache.clear()
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -128,27 +140,33 @@ class TemplateStoreClient:
         """
         Get a template with inheritance fully resolved.
 
-        This returns the template with all parent fields and rules merged.
-        Results are cached by (template_id, version) — but ONLY when a
-        specific version is requested. When version is None ("give me the
-        latest"), we always fetch from the service because the latest
-        active version can change at any time.
+        Caching strategy:
+        - Pinned version (version != None): cached permanently — immutable pair
+        - Latest (version == None): cached with short TTL (5s) — fast enough
+          for bulk batches, fresh enough for template updates
 
         Args:
             template_id: Template ID
-            version: Specific version (None = latest, not cached)
+            version: Specific version (None = latest)
 
         Returns:
             Resolved template data if found, None otherwise
         """
-        # Only cache when a specific version is pinned — the (template_id, version)
-        # pair is immutable, so the cache entry never goes stale.
-        # When version is None, "latest" is dynamic and must not be cached.
+        now = time.monotonic()
+
+        # --- Pinned version: permanent cache ---
         if version is not None:
             cache_key = f"{template_id}:v{version}"
             if cache_key in self._template_cache:
                 self._cache_hits = getattr(self, '_cache_hits', 0) + 1
                 return self._template_cache[cache_key]
+        else:
+            # --- Latest: TTL cache ---
+            if template_id in self._latest_cache:
+                cached_template, cached_at = self._latest_cache[template_id]
+                if (now - cached_at) < LATEST_TTL_SECONDS:
+                    self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                    return cached_template
 
         # Fetch from service
         self._cache_misses = getattr(self, '_cache_misses', 0) + 1
@@ -158,17 +176,18 @@ class TemplateStoreClient:
             version=version
         )
 
-        # Cache pinned-version results (including None for not found).
-        # Also cache when we resolved "latest" — key it by the actual version
-        # returned, so future pinned lookups benefit from this fetch.
+        # Cache the result
         if version is not None:
-            cache_key = f"{template_id}:v{version}"
-            self._template_cache[cache_key] = template
-        elif template is not None:
-            actual_version = template.get("version")
-            if actual_version is not None:
-                cache_key = f"{template_id}:v{actual_version}"
-                self._template_cache[cache_key] = template
+            # Pinned version: permanent
+            self._template_cache[f"{template_id}:v{version}"] = template
+        else:
+            # Latest: TTL cache
+            self._latest_cache[template_id] = (template, now)
+            # Also populate the permanent cache for the resolved version
+            if template is not None:
+                actual_version = template.get("version")
+                if actual_version is not None:
+                    self._template_cache[f"{template_id}:v{actual_version}"] = template
 
         return template
 
