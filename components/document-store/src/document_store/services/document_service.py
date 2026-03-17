@@ -1,5 +1,6 @@
 """Document service for CRUD operations and upsert logic."""
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -940,35 +941,72 @@ class DocumentService:
                     if ref:
                         await warm_template(ref)
 
-        for tid in unique_template_ids:
-            await warm_template(tid)
+        await asyncio.gather(*(warm_template(tid) for tid in unique_template_ids))
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
-        # Stage 1: Validate all documents
+        # Stage 1: Validate all documents (concurrently)
+        # Semaphore limits concurrent validations to avoid overwhelming
+        # upstream services (template-store, def-store) with HTTP requests.
+        # Cache warming in Stage 0 means most validations hit cache, but
+        # reference resolution and file validation still make I/O calls.
         start = time.perf_counter()
         validation_results = []
         valid_indices = []  # Indices of valid documents
 
-        for i, item in enumerate(items):
-            try:
-                validation_result = await self.validation_service.validate(
+        validation_semaphore = asyncio.Semaphore(10)
+
+        async def _validate_one(i: int, item: DocumentCreateRequest):
+            async with validation_semaphore:
+                return i, item, await self.validation_service.validate(
                     item.template_id,
                     item.data,
                     template_version=getattr(item, 'template_version', None),
                     namespace=namespace
                 )
-                if validation_result.valid:
-                    validation_results.append((i, item, validation_result))
-                    valid_indices.append(i)
-                else:
+
+        if continue_on_error:
+            # All validations run concurrently — errors collected per-item
+            tasks = [_validate_one(i, item) for i, item in enumerate(items)]
+            settled = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for task_idx, entry in enumerate(settled):
+                if isinstance(entry, Exception):
                     failed += 1
                     results.append(BulkResultItem(
-                        index=i,
-                        status="error",
-                        error=self._format_validation_errors(validation_result.errors)
+                        index=task_idx, status="error", error=str(entry)
                     ))
-                    if not continue_on_error:
-                        # Fill in remaining as skipped
+                else:
+                    i, item, validation_result = entry
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                        valid_indices.append(i)
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
+        else:
+            # Sequential when continue_on_error=False — stop on first failure
+            for i, item in enumerate(items):
+                try:
+                    validation_result = await self.validation_service.validate(
+                        item.template_id,
+                        item.data,
+                        template_version=getattr(item, 'template_version', None),
+                        namespace=namespace
+                    )
+                    if validation_result.valid:
+                        validation_results.append((i, item, validation_result))
+                        valid_indices.append(i)
+                    else:
+                        failed += 1
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            error=self._format_validation_errors(validation_result.errors)
+                        ))
                         for j in range(i + 1, len(items)):
                             results.append(BulkResultItem(
                                 index=j, status="skipped", error="Stopped due to previous error"
@@ -983,12 +1021,11 @@ class DocumentService:
                             failed=sum(1 for r in results if r.status == "error"),
                             timing=timing,
                         )
-            except Exception as e:
-                failed += 1
-                results.append(BulkResultItem(
-                    index=i, status="error", error=str(e)
-                ))
-                if not continue_on_error:
+                except Exception as e:
+                    failed += 1
+                    results.append(BulkResultItem(
+                        index=i, status="error", error=str(e)
+                    ))
                     for j in range(i + 1, len(items)):
                         results.append(BulkResultItem(
                             index=j, status="skipped", error="Stopped due to previous error"
@@ -1088,8 +1125,11 @@ class DocumentService:
         # Track documents created within this batch so that duplicate identity
         # hashes in the same batch use the correct latest version instead of
         # the stale Stage 3 snapshot.
+        # NATS events are collected and published concurrently after the loop
+        # to avoid per-document ACK wait (~10ms each).
         start = time.perf_counter()
         now = datetime.now(timezone.utc)
+        pending_events: list[tuple[EventType, dict]] = []
 
         for idx, ((i, item, validation_result), registry_result) in enumerate(
             zip(validation_results, registry_results)
@@ -1176,13 +1216,12 @@ class DocumentService:
                 if identity_hash:
                     existing_by_hash[identity_hash] = document
 
-                # Publish event
+                # Defer NATS event — published concurrently after the loop
                 event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
-                await publish_document_event(
+                pending_events.append((
                     event_type,
                     self._document_to_event_payload(document),
-                    changed_by=actor
-                )
+                ))
 
                 # Update file reference counts
                 if not is_new and existing:
@@ -1228,6 +1267,17 @@ class DocumentService:
                     break
 
         timing["4_create_documents"] = (time.perf_counter() - start) * 1000
+
+        # Stage 5: Publish all NATS events concurrently
+        # Events are fire-and-forget within gather — individual failures are
+        # logged by publish_document_event() but don't fail the batch.
+        if pending_events:
+            start = time.perf_counter()
+            await asyncio.gather(*(
+                publish_document_event(et, payload, changed_by=actor)
+                for et, payload in pending_events
+            ))
+            timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
         timing["total"] = (time.perf_counter() - total_start) * 1000
         self._record_creation_timing(timing)
 
