@@ -10,7 +10,7 @@ The MCP server already provides 30+ tools for AI-assisted data access. Today the
 
 ## Goals
 
-1. **Chat with your data** — ask questions, create documents, run reports in plain language
+1. **Chat with your data** — ask questions, explore documents, run reports in plain language
 2. **BYOK (Bring Your Own Key)** — users provide their own AI provider API key (Anthropic, Google, OpenAI)
 3. **Optional deployment** — WIP works without it; add it when you want conversational access
 4. **Minimal new code** — reuse MCP tool definitions, WIP APIs, and existing auth
@@ -318,14 +318,14 @@ The NLI service is a proxy — all heavy computation happens at the AI provider.
 
 ## Implementation Plan
 
-### Session 1: Backend MVP
+### Session 1: Backend MVP (Read-Only)
 
 1. Create `components/nli-service/` with FastAPI skeleton
 2. Implement `AnthropicProvider` with streaming
-3. Import tool definitions from MCP server
+3. Import **read-only** tool definitions from MCP server
 4. Implement agent loop with tool execution
 5. REST endpoint: `POST /api/nli/chat` (non-streaming first)
-6. Test: send a message, get a response with tool calls executed
+6. Test: send a query, get a response with read tools executed
 
 ### Session 2: Streaming + Persistence
 
@@ -347,8 +347,72 @@ The NLI service is a proxy — all heavy computation happens at the AI provider.
 1. Add `GoogleProvider` and `OpenAIProvider`
 2. Add provider selection in settings UI
 3. Conversation title auto-generation
-4. Context window management (truncation strategy)
-5. Optional deployment setup (`deploy/optional/nli/`)
+4. Optional deployment setup (`deploy/optional/nli/`)
+
+### Session 5: Write Access + Voice (Future)
+
+1. Per-namespace write access configuration
+2. Confirmation flow for write operations
+3. Browser-native voice input/output (SpeechRecognition + SpeechSynthesis)
+4. Voice toggle in chat settings
+
+## Dependencies
+
+- **Namespace Authorization** (`docs/design/namespace-authorization.md`) — required before multi-user NLI deployment. Without namespace-level permissions, giving someone NLI access means giving them access to all data. Single-user deployments can skip this (superadmin bypasses all checks).
+
+## Read-Only by Default
+
+The NLI is a conversational *query* interface, not a data entry tool. In a chat (and especially future voice), users cannot review changes before they hit the database — there's no diff, no confirmation dialog, no undo.
+
+**Phase 1: Read-only.** Only read tools are exposed to the agent:
+- `list_*`, `get_*`, `query_*`, `search_*` tools
+- `run_report_query` (already read-only SQL)
+- `get_template_fields`, `get_wip_status`, `list_namespaces`, etc.
+
+Write tools (`create_*`, `update_*`, `delete_*`, `import_*`) are excluded from the tool set entirely.
+
+**Phase 2: Configurable write access.** Per-namespace setting:
+
+```python
+# In namespace configuration or NLI service config
+{
+    "nli_write_enabled": false,          # Default: read-only
+    "nli_write_namespaces": ["sandbox"]  # Opt-in per namespace
+}
+```
+
+When write is enabled, the agent must request explicit confirmation before executing:
+```
+AI: I'll create 3 PERSON documents with the data you described. Proceed? [Yes/No]
+User: Yes
+AI: [executes tool calls]
+```
+
+## Voice Interface (Future)
+
+Speech-to-text and text-to-speech require **zero backend changes** using browser-native APIs:
+
+| Capability | Browser API | Quality | Cost |
+|-----------|------------|---------|------|
+| Speech → Text | `SpeechRecognition` (Web Speech API) | Good, ~20 lines JS | Free |
+| Text → Speech | `SpeechSynthesis` (Web Speech API) | Decent, ~15 lines JS | Free |
+
+For higher quality, optional cloud providers can be added later:
+
+| Capability | Provider | Quality | Cost |
+|-----------|---------|---------|------|
+| Speech → Text | OpenAI Whisper API | Excellent | $0.006/min |
+| Text → Speech | OpenAI TTS / ElevenLabs | Natural | $0.015-0.030/1K chars |
+
+**MVP path:** Browser-native APIs only. Microphone button on input, speaker button on responses. Toggle in settings. No backend changes, no additional BYOK keys.
+
+**UI additions for voice:**
+```
+ui/wip-console/src/components/chat/
+├── ...existing components...
+├── VoiceInput.vue          # Microphone button, SpeechRecognition
+└── VoiceOutput.vue         # Speaker button, SpeechSynthesis
+```
 
 ## What This Is Not
 
@@ -356,12 +420,12 @@ The NLI service is a proxy — all heavy computation happens at the AI provider.
 - **Not a replacement for the Console.** Bulk operations, template editing, and import workflows are better in structured UI. Chat is for exploration, quick queries, and ad-hoc operations.
 - **Not an AI framework.** The agent loop is ~100 lines of straightforward async Python. No chains, no graphs, no agents-calling-agents.
 
-## Open Questions
+## Decisions
 
-1. **Context window management.** Long conversations will exceed token limits. Options: (a) truncate old messages, (b) summarize conversation history, (c) just start a new conversation. Leaning toward (c) for MVP — keep it simple.
-
-2. **Rate limiting.** Should the NLI service rate-limit AI API calls to prevent accidental cost spikes? Probably yes — configurable per-user limit.
-
-3. **Conversation sharing.** Can users share conversations? Not in MVP, but the data model supports it (add `shared_with` field).
-
-4. **MCP server reuse vs. import.** Two options for tool handlers: (a) import the MCP server's handler functions directly, (b) copy the WipClient and tool definitions. Option (a) avoids duplication but creates a dependency. Leaning toward (a) — both services are Python, same container network.
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Context window management | Start new conversation | This is data interrogation, not software development — conversations are short-lived |
+| Rate limiting | Yes, configurable per-user | Prevent accidental cost spikes on BYOK keys |
+| Conversation sharing | Not in MVP | Data model supports it later (`shared_with` field) |
+| MCP server reuse | Import handler functions directly | Both Python, same container network — avoids duplication |
+| Read vs. write | Read-only Phase 1, configurable write Phase 2 | Can't review changes in a chat interface |
