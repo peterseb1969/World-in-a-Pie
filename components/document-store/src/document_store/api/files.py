@@ -27,6 +27,7 @@ from ..services.file_storage_client import (
     is_file_storage_enabled,
     FileStorageError,
 )
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 
@@ -89,6 +90,9 @@ async def upload_file(
     _: str = Depends(require_api_key)
 ):
     """Upload a file to storage."""
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
     service = get_file_service()
 
     # Read file content
@@ -138,6 +142,9 @@ async def list_files(
     _: str = Depends(require_api_key)
 ):
     """List files with pagination."""
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     service = get_file_service()
 
     tag_list = [t.strip() for t in tags.split(",")] if tags else None

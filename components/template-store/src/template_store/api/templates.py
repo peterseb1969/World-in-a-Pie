@@ -23,6 +23,7 @@ from ..services.template_service import TemplateService
 from ..services.registry_client import RegistryError
 from ..services.inheritance_service import InheritanceService, InheritanceError
 from ..services.dependency_service import DependencyService, TemplateDependencies
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 
@@ -44,6 +45,11 @@ async def create_templates(
     Namespace is specified per item (default: "wip").
     For single items, uses direct creation. For multiple items, uses batch path.
     """
+    identity = get_current_identity()
+    namespaces = {item.namespace for item in items}
+    for ns in namespaces:
+        await check_namespace_permission(identity, ns, "write")
+
     if len(items) == 1:
         # Single item — use direct create path
         try:
@@ -84,6 +90,10 @@ async def list_templates(
     Supports filtering by status, parent template, and value.
     Use latest_only=true to only show the most recent version of each template.
     """
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     templates, total = await TemplateService.list_templates(
         status=status,
         extends=extends,
@@ -150,6 +160,10 @@ async def get_template_by_value(
     Returns the template with inheritance resolved.
     To get a specific version, use /by-value/{value}/versions/{version}.
     """
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     versions = await TemplateService.get_template_versions(value, namespace=namespace)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -337,6 +351,9 @@ async def activate_template(
 
     Use dry_run=true to preview what would be activated without making changes.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
     try:
         return await TemplateService.activate_template(
             template_id=template_id,

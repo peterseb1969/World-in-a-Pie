@@ -14,6 +14,7 @@ from ..models.api_models import (
     RelationshipResponse,
 )
 from ..services.ontology_service import OntologyService
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 router = APIRouter(prefix="/ontology", tags=["Ontology"])
@@ -39,6 +40,9 @@ async def create_relationships(
     Relationship types include: is_a, part_of, has_part, maps_to, related_to,
     finding_site, causative_agent, or any custom type.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
     results = await OntologyService.create_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status == "created")
     return BulkResponse(
@@ -64,6 +68,9 @@ async def list_relationships(
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """List relationships for a term, with optional direction and type filtering."""
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     items, total = await OntologyService.list_relationships(
         term_id=term_id,
         namespace=namespace,
@@ -94,6 +101,9 @@ async def delete_relationships(
     """
     Soft-delete one or more relationships (set status to inactive).
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "write")
+
     results = await OntologyService.delete_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
     return BulkResponse(
@@ -125,6 +135,9 @@ async def list_all_relationships(
     useful for batch sync and export operations. Use source_terminology_id
     to filter to a specific terminology.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     items, total = await OntologyService.list_all_relationships(
         namespace=namespace,
         relationship_type=relationship_type,
@@ -164,6 +177,9 @@ async def get_ancestors(
     For is_a relationships, also follows parent_term_id links for backward
     compatibility with simple hierarchical terminologies.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     return await OntologyService.get_ancestors(
         term_id=term_id,
         namespace=namespace,
@@ -189,6 +205,9 @@ async def get_descendants(
 
     For is_a relationships, also includes children via parent_term_id.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     return await OntologyService.get_descendants(
         term_id=term_id,
         namespace=namespace,
@@ -212,6 +231,9 @@ async def get_parents(
 
     Combines is_a relationships and parent_term_id.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     return await OntologyService.get_parents(term_id, namespace)
 
 
@@ -230,4 +252,7 @@ async def get_children(
 
     Combines incoming is_a relationships and children via parent_term_id.
     """
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "read")
+
     return await OntologyService.get_children(term_id, namespace)

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from ..models.api_models import ImportTerminologyRequest, ExportFormat
 from ..services.import_export import ImportExportService
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 router = APIRouter(prefix="/import-export", tags=["Import/Export"])
@@ -179,6 +180,9 @@ async def import_ontology(
     For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
     """
     try:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "write")
+
         if "graphs" not in data or not data["graphs"]:
             raise ValueError("Invalid OBO Graph JSON: missing 'graphs' array")
 

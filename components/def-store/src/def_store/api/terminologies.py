@@ -17,6 +17,7 @@ from ..models.api_models import (
 from ..services.terminology_service import TerminologyService
 from ..services.registry_client import RegistryError
 from ..services.dependency_service import DependencyService, TerminologyDependencies
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -33,6 +34,11 @@ async def create_terminologies(
     Each terminology will be registered with the Registry service to get
     a unique ID. Namespace is specified per item (default: "wip").
     """
+    identity = get_current_identity()
+    namespaces = {item.namespace for item in items}
+    for ns in namespaces:
+        await check_namespace_permission(identity, ns, "write")
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -59,6 +65,10 @@ async def list_terminologies(
     api_key: str = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
         value=value,
@@ -82,6 +92,10 @@ async def get_terminology_by_value(
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its value (e.g., DOC_STATUS)."""
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     result = await TerminologyService.get_terminology(value=value, namespace=namespace)
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")

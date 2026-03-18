@@ -18,6 +18,8 @@ from ..models.api_models import (
     DeleteItem,
     ArchiveItem,
 )
+from wip_auth import check_namespace_permission, get_current_identity
+
 from ..services.document_service import get_document_service
 from ..services.nats_client import get_throttle_delay
 from .auth import require_api_key
@@ -43,6 +45,11 @@ async def create_documents(
     _: str = Depends(require_api_key)
 ):
     """Create or update documents. Namespace is read from each item (default: "wip")."""
+    identity = get_current_identity()
+    namespaces = {item.namespace for item in items}
+    for ns in namespaces:
+        await check_namespace_permission(identity, ns, "write")
+
     service = get_document_service()
 
     if len(items) == 1:
@@ -98,6 +105,10 @@ async def list_documents(
     Use cursor for efficient deep pagination (avoids skip/limit degradation).
     When cursor is provided, page parameter is ignored and total is -1.
     """
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     service = get_document_service()
     return await service.list_documents(
         template_id=template_id,

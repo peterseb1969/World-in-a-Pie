@@ -22,6 +22,7 @@ from ..models.api_models import (
 from ..models.terminology import Terminology
 from ..services.terminology_service import TerminologyService
 from ..services.registry_client import RegistryError
+from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 router = APIRouter(tags=["Terms"])
@@ -61,6 +62,12 @@ async def create_terms(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    # Look up terminology to get namespace for permission check
+    term_parent = await Terminology.find_one({"terminology_id": terminology_id})
+    if term_parent:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, term_parent.namespace, "write")
+
     if len(items) == 1:
         # Single item — use direct create path
         try:
@@ -110,6 +117,10 @@ async def list_terms(
     api_key: str = Depends(require_api_key)
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
     if not terminology:
