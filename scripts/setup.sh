@@ -725,8 +725,8 @@ compute_modules() {
     # Clean up commas
     final_modules=$(echo "$final_modules" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
 
-    # Add dev-tools in dev variant
-    if [ "$VARIANT" = "dev" ]; then
+    # Add dev-tools in dev variant (except headless — minimal footprint)
+    if [ "$VARIANT" = "dev" ] && [ "$PRESET" != "headless" ]; then
         if [[ ! " $final_modules " =~ " dev-tools " ]]; then
             if [ -n "$final_modules" ]; then
                 final_modules="$final_modules,dev-tools"
