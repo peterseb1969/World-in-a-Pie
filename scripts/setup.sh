@@ -1275,6 +1275,12 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+EOF
+
+    # Add Reporting-Sync proxy only if reporting module is active
+    if has_module "reporting"; then
+        cat >> "$PROJECT_ROOT/config/console/nginx.conf" << EOF
+
     # Proxy API requests to Reporting-Sync backend
     location /api/reporting-sync/ {
         proxy_pass http://${reporting_sync_backend};
@@ -1285,6 +1291,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 EOF
+    fi
 
     # Add Dex proxy only if OIDC is available (locally or on remote)
     if has_feature "oidc"; then
