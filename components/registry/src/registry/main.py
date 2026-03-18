@@ -18,6 +18,7 @@ from wip_auth import setup_auth
 from .models.namespace import Namespace
 from .models.entry import RegistryEntry
 from .models.id_counter import IdCounter
+from .models.grant import NamespaceGrant
 from .api import api_router
 from .services.auth import AuthService
 
@@ -49,7 +50,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant]
     )
     print("MongoDB connection and Beanie initialization successful.")
 

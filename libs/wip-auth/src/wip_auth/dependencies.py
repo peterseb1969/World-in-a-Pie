@@ -141,6 +141,44 @@ RequireAdmin = require_admin
 OptionalIdentity = optional_identity
 
 
+async def require_namespace_read(
+    identity: UserIdentity, namespace: str
+) -> None:
+    """Require read (or higher) access to a namespace.
+
+    Call from route handlers after extracting namespace from the request.
+
+    Args:
+        identity: The authenticated identity.
+        namespace: The namespace to check access for.
+
+    Raises:
+        HTTPException 404 if namespace is invisible (no access).
+        HTTPException 403 if insufficient permissions.
+    """
+    from .permissions import check_namespace_permission
+
+    await check_namespace_permission(identity, namespace, "read")
+
+
+async def require_namespace_write(
+    identity: UserIdentity, namespace: str
+) -> None:
+    """Require write (or higher) access to a namespace."""
+    from .permissions import check_namespace_permission
+
+    await check_namespace_permission(identity, namespace, "write")
+
+
+async def require_namespace_admin(
+    identity: UserIdentity, namespace: str
+) -> None:
+    """Require admin access to a namespace."""
+    from .permissions import check_namespace_permission
+
+    await check_namespace_permission(identity, namespace, "admin")
+
+
 # Legacy compatibility: direct dependency function for require_api_key
 # This matches the old signature where Depends(require_api_key) was used
 async def require_api_key(request: Request) -> UserIdentity:

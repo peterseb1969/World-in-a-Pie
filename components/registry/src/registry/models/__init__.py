@@ -5,6 +5,7 @@ from .id_algorithm import IdAlgorithmConfig, IdFormatValidator, IdGenerator, DEF
 from .namespace import Namespace
 from .entry import RegistryEntry, Synonym, SourceInfo
 from .id_counter import IdCounter
+from .grant import NamespaceGrant, GrantCreate, GrantRevoke, GrantResponse, MyNamespaceResponse
 
 # API models
 from .api_models import (
@@ -116,4 +117,10 @@ __all__ = [
     "ExportResponse",
     "ImportRequest",
     "ImportResponse",
+    # Grant models
+    "NamespaceGrant",
+    "GrantCreate",
+    "GrantRevoke",
+    "GrantResponse",
+    "MyNamespaceResponse",
 ]

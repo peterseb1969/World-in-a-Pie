@@ -36,6 +36,15 @@ from .dependencies import (
     require_api_key,
     require_groups,
     require_identity,
+    require_namespace_admin,
+    require_namespace_read,
+    require_namespace_write,
+)
+from .permissions import (
+    check_namespace_permission,
+    clear_permission_cache,
+    permission_sufficient,
+    resolve_permission,
 )
 from .identity import (
     clear_current_identity,
@@ -79,7 +88,15 @@ __all__ = [
     "require_groups",
     "require_admin",
     "require_api_key",
+    "require_namespace_read",
+    "require_namespace_write",
+    "require_namespace_admin",
     "optional_identity",
+    # Permissions
+    "check_namespace_permission",
+    "resolve_permission",
+    "permission_sufficient",
+    "clear_permission_cache",
     # Identity context
     "get_current_identity",
     "set_current_identity",
