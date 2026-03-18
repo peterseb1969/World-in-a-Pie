@@ -37,7 +37,7 @@ export const oidcConfig: UserManagerSettings = {
 
   // OAuth2 settings
   response_type: 'code',
-  scope: 'openid profile email',
+  scope: 'openid profile email groups',
 
   // Token handling
   automaticSilentRenew: false, // Disable - requires iframe which can have issues

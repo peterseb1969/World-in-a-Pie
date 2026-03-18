@@ -197,10 +197,10 @@ onMounted(loadTemplates)
         <span class="total-count">{{ templateStore.total }} templates</span>
       </div>
       <Button
+        v-if="namespaceStore.canWrite"
         label="Create Template"
         icon="pi pi-plus"
         @click="createNewTemplate"
-        :disabled="!authStore.isAuthenticated"
       />
     </div>
 
@@ -352,7 +352,7 @@ onMounted(loadTemplates)
           <div class="empty-state">
             <i class="pi pi-file-edit"></i>
             <p>No templates in this namespace</p>
-            <Button label="Create your first template" icon="pi pi-plus" @click="createNewTemplate" />
+            <Button v-if="namespaceStore.canWrite" label="Create your first template" icon="pi pi-plus" @click="createNewTemplate" />
           </div>
         </template>
       </DataTable>

@@ -247,7 +247,7 @@ export const useAuthStore = defineStore('auth', () => {
         password,
         client_id: oidcConfig.client_id || 'wip-console',
         client_secret: oidcConfig.client_secret || 'wip-console-secret',
-        scope: 'openid profile email',
+        scope: 'openid profile email groups',
       })
 
       const response = await fetch(tokenEndpoint, {

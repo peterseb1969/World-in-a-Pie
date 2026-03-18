@@ -199,8 +199,8 @@ watch(() => namespaceStore.current, () => {
         </div>
       </div>
 
-      <!-- Quick Actions Row -->
-      <div class="quick-actions-row">
+      <!-- Quick Actions Row (write+ permission required) -->
+      <div v-if="namespaceStore.canWrite" class="quick-actions-row">
         <Button
           label="New Terminology"
           icon="pi pi-plus"

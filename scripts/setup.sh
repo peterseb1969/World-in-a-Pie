@@ -1177,14 +1177,20 @@ staticPasswords:
     hash: $admin_hash
     username: admin
     userID: admin-001
+    groups:
+      - wip-admins
   - email: editor@wip.local
     hash: $editor_hash
     username: editor
     userID: editor-001
+    groups:
+      - wip-editors
   - email: viewer@wip.local
     hash: $viewer_hash
     username: viewer
     userID: viewer-001
+    groups:
+      - wip-viewers
 EOF
 
     log_info "Generated Dex config"

@@ -10,7 +10,7 @@ import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import Dialog from 'primevue/dialog'
 import TruncatedId from '@/components/common/TruncatedId.vue'
-import { useDocumentStore, useTemplateStore, useAuthStore, useUiStore } from '@/stores'
+import { useDocumentStore, useTemplateStore, useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import { getDocumentTitle } from '@/utils/document'
 import type { Document } from '@/types'
 
@@ -21,6 +21,7 @@ const documentStore = useDocumentStore()
 const templateStore = useTemplateStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const searchQuery = ref('')
 const statusFilter = ref<string | null>((route.query.status as string) || null)
@@ -219,10 +220,10 @@ onMounted(async () => {
         <span class="total-count">{{ documentStore.total }} documents</span>
       </div>
       <Button
+        v-if="namespaceStore.canWrite"
         label="Create Document"
         icon="pi pi-plus"
         @click="openCreateDialog"
-        :disabled="!authStore.isAuthenticated"
       />
     </div>
 
@@ -360,7 +361,7 @@ onMounted(async () => {
           <div class="empty-state">
             <i class="pi pi-folder-open"></i>
             <p>No documents found</p>
-            <Button label="Create your first document" icon="pi pi-plus" @click="openCreateDialog" />
+            <Button v-if="namespaceStore.canWrite" label="Create your first document" icon="pi pi-plus" @click="openCreateDialog" />
           </div>
         </template>
       </DataTable>

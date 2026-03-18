@@ -16,7 +16,7 @@ services:
   # Authentication (OIDC)
   # ===================
   dex:
-    image: ghcr.io/dexidp/dex:v2.38.0
+    image: ghcr.io/dexidp/dex:v2.45.0
     container_name: wip-dex
     command: ["dex", "serve", "/etc/dex/config.yaml"]
     ports:
