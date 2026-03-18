@@ -1118,6 +1118,11 @@ class RegistryClient extends BaseApiClient {
     return response.data
   }
 
+  async getMyNamespaces(): Promise<{ prefix: string; description: string; permission: string }[]> {
+    const response = await this.client.get<{ prefix: string; description: string; permission: string }[]>('/my/namespaces')
+    return response.data
+  }
+
   async getNamespace(prefix: string): Promise<Namespace> {
     const response = await this.client.get<Namespace>(`/namespaces/${prefix}`)
     return response.data

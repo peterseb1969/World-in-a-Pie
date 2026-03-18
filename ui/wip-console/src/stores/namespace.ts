@@ -29,14 +29,22 @@ export interface NamespaceStats {
   entity_counts: Record<string, number>
 }
 
+export interface AccessibleNamespace {
+  prefix: string
+  description: string
+  permission: string  // "read" | "write" | "admin"
+}
+
 const STORAGE_KEY = 'wip-namespace'
 
 export const useNamespaceStore = defineStore('namespace', () => {
   // State
   const namespaces = ref<Namespace[]>([])
+  const accessibleNamespaces = ref<AccessibleNamespace[]>([])
   const current = ref<string>(localStorage.getItem(STORAGE_KEY) || 'wip')
   const loading = ref(false)
   const error = ref<string | null>(null)
+  const noAccess = ref(false)
 
   // "all" is a special value meaning no namespace filtering
   const isAll = computed(() => current.value === 'all')
@@ -49,15 +57,63 @@ export const useNamespaceStore = defineStore('namespace', () => {
     namespaces.value.find(ns => ns.prefix === current.value) || null
   )
 
+  // Permission for the current namespace
+  const currentPermission = computed(() => {
+    if (isAll.value) return 'read'  // "all" view is read-only
+    const ns = accessibleNamespaces.value.find(ns => ns.prefix === current.value)
+    return ns?.permission || 'none'
+  })
+
+  // Can the user write to the current namespace?
+  const canWrite = computed(() => {
+    const level = { none: 0, read: 1, write: 2, admin: 3 }
+    return (level[currentPermission.value as keyof typeof level] || 0) >= 2
+  })
+
+  // Is the user admin on the current namespace?
+  const isAdmin = computed(() => currentPermission.value === 'admin')
+
   // Actions
   async function loadNamespaces() {
+    loading.value = true
+    error.value = null
+    noAccess.value = false
+    try {
+      // Load accessible namespaces (permission-filtered)
+      const accessible = await registryClient.getMyNamespaces()
+      accessibleNamespaces.value = accessible
+
+      if (accessible.length === 0) {
+        noAccess.value = true
+        namespaces.value = []
+        return
+      }
+
+      // Also load full namespace objects for the accessible ones
+      const allNs = await registryClient.listNamespaces()
+      const accessiblePrefixes = new Set(accessible.map(ns => ns.prefix))
+      namespaces.value = allNs.filter(ns => accessiblePrefixes.has(ns.prefix))
+
+      // If current namespace is not accessible, switch to the first accessible one
+      if (current.value !== 'all' && !accessiblePrefixes.has(current.value)) {
+        setCurrent(accessible[0].prefix)
+      }
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to load namespaces'
+      console.error('Failed to load namespaces:', e)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // Load all namespaces (admin view, e.g. namespace management page)
+  async function loadAllNamespaces() {
     loading.value = true
     error.value = null
     try {
       namespaces.value = await registryClient.listNamespaces()
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to load namespaces'
-      console.error('Failed to load namespaces:', e)
     } finally {
       loading.value = false
     }
@@ -165,15 +221,21 @@ export const useNamespaceStore = defineStore('namespace', () => {
   return {
     // State
     namespaces,
+    accessibleNamespaces,
     current,
     loading,
     error,
+    noAccess,
     // Computed
     currentNamespaceParam,
     currentNamespace,
     isAll,
+    currentPermission,
+    canWrite,
+    isAdmin,
     // Actions
     loadNamespaces,
+    loadAllNamespaces,
     setCurrent,
     createNamespace,
     updateNamespace,

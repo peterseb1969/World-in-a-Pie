@@ -329,7 +329,22 @@ function toggleSidebar() {
         </div>
       </header>
       <div class="content-area">
-        <slot />
+        <!-- No access gate -->
+        <div v-if="authStore.isAuthenticated && namespaceStore.noAccess" class="no-access-overlay">
+          <div class="no-access-card">
+            <i class="pi pi-lock no-access-icon"></i>
+            <h2>No Namespace Access</h2>
+            <p>Your account does not have access to any namespaces.</p>
+            <p class="no-access-help">Contact an administrator to request access.</p>
+            <Button
+              label="Logout"
+              severity="secondary"
+              icon="pi pi-sign-out"
+              @click="logout"
+            />
+          </div>
+        </div>
+        <slot v-else />
       </div>
     </main>
 
@@ -847,6 +862,44 @@ function toggleSidebar() {
 
 .w-full {
   width: 100%;
+}
+
+/* No Access Overlay */
+.no-access-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+}
+
+.no-access-card {
+  text-align: center;
+  padding: 3rem;
+  background-color: var(--p-surface-0);
+  border-radius: 12px;
+  border: 1px solid var(--p-surface-200);
+  max-width: 400px;
+}
+
+.no-access-icon {
+  font-size: 3rem;
+  color: var(--p-text-muted-color);
+  margin-bottom: 1rem;
+}
+
+.no-access-card h2 {
+  margin: 0 0 0.5rem;
+  color: var(--p-text-color);
+}
+
+.no-access-card p {
+  color: var(--p-text-muted-color);
+  margin: 0 0 0.5rem;
+}
+
+.no-access-help {
+  margin-bottom: 1.5rem !important;
+  font-size: 0.875rem;
 }
 
 /* Responsive */

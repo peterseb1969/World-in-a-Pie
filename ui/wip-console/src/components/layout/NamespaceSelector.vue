@@ -21,22 +21,26 @@ watch(() => authStore.isAuthenticated, (isAuth) => {
   }
 })
 
-// Synthetic "All" entry for unfiltered view
-const allEntry = { prefix: 'all', description: 'All namespaces (no filter)', status: 'active' as const }
+// Synthetic "All" entry for unfiltered view (only shows data from accessible namespaces)
+const allEntry = { prefix: 'all', description: 'All accessible namespaces', status: 'active' as const }
 
-// Filter to only active namespaces, ensure "All" first, then wip, then alphabetically
+// Show only accessible namespaces + "all" option
 const activeGroups = computed(() => {
-  const namespaces = namespaceStore.namespaces || []
-  const active = namespaces.filter(ns => ns.status === 'active')
+  const accessible = namespaceStore.accessibleNamespaces || []
+  if (accessible.length === 0) return []
 
   // Sort: wip first, then alphabetically
-  const sorted = [...active].sort((a, b) => {
+  const sorted = [...accessible].sort((a, b) => {
     if (a.prefix === 'wip') return -1
     if (b.prefix === 'wip') return 1
     return a.prefix.localeCompare(b.prefix)
   })
 
-  return [allEntry, ...sorted]
+  // Only show "all" if there are multiple namespaces
+  if (sorted.length > 1) {
+    return [allEntry, ...sorted]
+  }
+  return sorted
 })
 
 // Current namespace for v-model
@@ -52,6 +56,16 @@ function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | '
   if (prefix.startsWith('dev')) return 'info'
   if (prefix.startsWith('test') || prefix.startsWith('staging')) return 'warn'
   return 'secondary'
+}
+
+// Permission badge for each namespace
+function getPermissionIcon(prefix: string): string {
+  if (prefix === 'all') return ''
+  const ns = namespaceStore.accessibleNamespaces.find(n => n.prefix === prefix)
+  if (!ns) return ''
+  if (ns.permission === 'admin') return 'pi pi-shield'
+  if (ns.permission === 'write') return 'pi pi-pencil'
+  return 'pi pi-eye'
 }
 </script>
 
@@ -72,6 +86,7 @@ function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | '
             :value="slotProps.value.toUpperCase()"
             :severity="getSeverity(slotProps.value)"
           />
+          <i v-if="getPermissionIcon(slotProps.value)" :class="getPermissionIcon(slotProps.value)" class="permission-icon" />
         </div>
         <span v-else>{{ slotProps.placeholder }}</span>
       </template>
@@ -82,6 +97,7 @@ function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | '
             :severity="getSeverity(slotProps.option.prefix)"
           />
           <span class="namespace-description">{{ slotProps.option.description }}</span>
+          <i v-if="getPermissionIcon(slotProps.option.prefix)" :class="getPermissionIcon(slotProps.option.prefix)" class="permission-icon" />
         </div>
       </template>
     </Dropdown>
@@ -101,6 +117,7 @@ function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | '
 .namespace-value {
   display: flex;
   align-items: center;
+  gap: 0.5rem;
 }
 
 .namespace-option {
@@ -112,5 +129,10 @@ function getSeverity(prefix: string): 'success' | 'info' | 'warn' | 'danger' | '
 .namespace-description {
   color: var(--p-text-muted-color);
   font-size: 0.875rem;
+}
+
+.permission-icon {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
 }
 </style>
