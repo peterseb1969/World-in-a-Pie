@@ -1,14 +1,24 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import Dropdown from 'primevue/dropdown'
 import Tag from 'primevue/tag'
-import { useNamespaceStore } from '@/stores'
+import { useNamespaceStore, useAuthStore } from '@/stores'
 
 const namespaceStore = useNamespaceStore()
+const authStore = useAuthStore()
 
-// Load namespaces on mount
+// Load namespaces on mount (only if authenticated)
 onMounted(() => {
-  namespaceStore.loadNamespaces()
+  if (authStore.isAuthenticated) {
+    namespaceStore.loadNamespaces()
+  }
+})
+
+// Reload namespaces when auth state changes (e.g., after login)
+watch(() => authStore.isAuthenticated, (isAuth) => {
+  if (isAuth) {
+    namespaceStore.loadNamespaces()
+  }
 })
 
 // Synthetic "All" entry for unfiltered view

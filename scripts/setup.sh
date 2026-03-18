@@ -1201,15 +1201,19 @@ generate_console_nginx_config() {
     mkdir -p "$PROJECT_ROOT/config/console"
 
     # Determine backend hosts — docker DNS (co-located) or remote core
+    local registry_backend="wip-registry:8001"
     local def_store_backend="wip-def-store:8002"
     local template_store_backend="wip-template-store:8003"
     local document_store_backend="wip-document-store:8004"
+    local reporting_sync_backend="wip-reporting-sync:8005"
     local dex_backend="wip-dex:5556"
 
     if [ -n "$REMOTE_CORE" ]; then
+        registry_backend="${REMOTE_CORE}:8001"
         def_store_backend="${REMOTE_CORE}:8002"
         template_store_backend="${REMOTE_CORE}:8003"
         document_store_backend="${REMOTE_CORE}:8004"
+        reporting_sync_backend="${REMOTE_CORE}:8005"
         dex_backend="${REMOTE_CORE}:5556"
         log_info "Console nginx will proxy to remote core: $REMOTE_CORE"
     fi
@@ -1231,9 +1235,19 @@ server {
         try_files \$uri \$uri/ /index.html;
     }
 
+    # Proxy API requests to Registry backend
+    location /api/registry/ {
+        proxy_pass http://${registry_backend};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
     # Proxy API requests to Def-Store backend
     location /api/def-store/ {
-        proxy_pass http://${def_store_backend}/api/;
+        proxy_pass http://${def_store_backend};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1243,7 +1257,7 @@ server {
 
     # Proxy API requests to Template-Store backend
     location /api/template-store/ {
-        proxy_pass http://${template_store_backend}/api/;
+        proxy_pass http://${template_store_backend};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1253,7 +1267,17 @@ server {
 
     # Proxy API requests to Document-Store backend
     location /api/document-store/ {
-        proxy_pass http://${document_store_backend}/api/;
+        proxy_pass http://${document_store_backend};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    # Proxy API requests to Reporting-Sync backend
+    location /api/reporting-sync/ {
+        proxy_pass http://${reporting_sync_backend};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -1933,7 +1957,11 @@ start_console_only() {
 
     log_step "Starting WIP Console (remote core: $REMOTE_CORE)..."
     cd "$PROJECT_ROOT/ui/wip-console"
-    podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
+    local compose_args="--env-file $PROJECT_ROOT/.env -f $compose_file"
+    if [ -f "docker-compose.override.yml" ]; then
+        compose_args="$compose_args -f docker-compose.override.yml"
+    fi
+    podman-compose $compose_args up -d $build_flag --force-recreate
     log_info "Waiting for Console to start..."
     sleep 8
 
@@ -1962,16 +1990,22 @@ start_service() {
 
     # When --registry is set, use docker-compose.registry.yml (no build: key)
     # Otherwise use docker-compose.yml with --build
-    local compose_cmd
+    local compose_file
+    local build_flag="--build"
     if [ -n "$IMAGE_REGISTRY" ]; then
-        compose_cmd="podman-compose --env-file $PROJECT_ROOT/.env -f docker-compose.registry.yml up -d --force-recreate"
+        compose_file="docker-compose.registry.yml"
+        build_flag=""
     else
-        compose_cmd="podman-compose --env-file $PROJECT_ROOT/.env -f docker-compose.yml up -d --build --force-recreate"
+        compose_file="docker-compose.yml"
     fi
 
     log_info "Starting $name..."
     cd "$PROJECT_ROOT/components/$dir"
-    eval $compose_cmd
+    local compose_args="--env-file $PROJECT_ROOT/.env -f $compose_file"
+    if [ -f "docker-compose.override.yml" ]; then
+        compose_args="$compose_args -f docker-compose.override.yml"
+    fi
+    podman-compose $compose_args up -d $build_flag --force-recreate
 
     # Wait for health
     local retries=30
@@ -2041,7 +2075,11 @@ start_services() {
     if has_module "console"; then
         log_step "Starting WIP Console..."
         cd "$PROJECT_ROOT/ui/wip-console"
-        podman-compose --env-file "$PROJECT_ROOT/.env" -f "$compose_file" up -d $build_flag --force-recreate
+        local console_args="--env-file $PROJECT_ROOT/.env -f $compose_file"
+        if [ -f "docker-compose.override.yml" ]; then
+            console_args="$console_args -f docker-compose.override.yml"
+        fi
+        podman-compose $console_args up -d $build_flag --force-recreate
         log_info "Waiting for Console to start..."
         sleep 8
     else

@@ -10,6 +10,7 @@ services:
       dockerfile: Dockerfile
       target: ${WIP_CONSOLE_TARGET:-production}
       args:
+        VITE_OIDC_ENABLED: ${VITE_OIDC_ENABLED:-true}
         VITE_OIDC_AUTHORITY: /dex
         VITE_OIDC_CLIENT_ID: wip-console
         VITE_OIDC_CLIENT_SECRET: wip-console-secret

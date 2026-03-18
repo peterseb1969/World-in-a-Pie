@@ -14,6 +14,7 @@ COPY . .
 
 # Build arguments for OIDC configuration (baked into static JS at build time)
 # Uses /dex proxy path to avoid CORS issues
+ARG VITE_OIDC_ENABLED=true
 ARG VITE_OIDC_AUTHORITY=/dex
 ARG VITE_OIDC_CLIENT_ID=wip-console
 ARG VITE_OIDC_CLIENT_SECRET=wip-console-secret
@@ -25,6 +26,7 @@ ARG VITE_FILES_ENABLED=false
 ARG VITE_INGEST_ENABLED=false
 
 # Set environment variables for build
+ENV VITE_OIDC_ENABLED=$VITE_OIDC_ENABLED
 ENV VITE_OIDC_AUTHORITY=$VITE_OIDC_AUTHORITY
 ENV VITE_OIDC_CLIENT_ID=$VITE_OIDC_CLIENT_ID
 ENV VITE_OIDC_CLIENT_SECRET=$VITE_OIDC_CLIENT_SECRET
