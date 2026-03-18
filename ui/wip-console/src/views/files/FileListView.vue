@@ -11,13 +11,14 @@ import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { fileStoreClient } from '@/api/client'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import TruncatedId from '@/components/common/TruncatedId.vue'
 import type { FileEntity, FileStatus, FileListResponse } from '@/types'
 
 const router = useRouter()
 const confirm = useConfirm()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // State
 const files = ref<FileEntity[]>([])
@@ -170,6 +171,7 @@ onMounted(async () => {
     <div class="page-header">
       <h1>Files</h1>
       <Button
+        v-if="namespaceStore.canWrite"
         label="Upload"
         icon="pi pi-upload"
         @click="router.push('/files/upload')"

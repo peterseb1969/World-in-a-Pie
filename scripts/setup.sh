@@ -2068,6 +2068,23 @@ start_services() {
     else
         log_warn "  Namespace initialization response: $init_result"
     fi
+
+    # Seed default namespace grants for test user groups
+    if has_module "oidc"; then
+        log_info "Seeding default namespace grants..."
+        local grant_result=$(curl -s -X POST http://localhost:8001/api/registry/namespaces/wip/grants \
+            -H "X-API-Key: $API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '[
+                {"subject": "wip-editors", "subject_type": "group", "permission": "write"},
+                {"subject": "wip-viewers", "subject_type": "group", "permission": "read"}
+            ]' 2>/dev/null || echo "failed")
+        if echo "$grant_result" | grep -q "succeeded"; then
+            log_info "  Default grants created (wip-editors: write, wip-viewers: read)"
+        else
+            log_warn "  Grant seeding response: $grant_result"
+        fi
+    fi
     echo ""
 
     log_step "Starting application services..."

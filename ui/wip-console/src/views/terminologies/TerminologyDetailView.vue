@@ -11,7 +11,7 @@ import Skeleton from 'primevue/skeleton'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import { useConfirm } from 'primevue/useconfirm'
-import { useTerminologyStore, useTemplateStore, useUiStore } from '@/stores'
+import { useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore } from '@/stores'
 import { defStoreClient } from '@/api/client'
 import TermList from '@/components/terminologies/TermList.vue'
 import TerminologyForm from '@/components/terminologies/TerminologyForm.vue'
@@ -28,6 +28,7 @@ const confirm = useConfirm()
 const terminologyStore = useTerminologyStore()
 const templateStore = useTemplateStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const showEditDialog = ref(false)
 const showBulkImport = ref(false)
@@ -224,6 +225,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
 
         <div class="header-actions">
           <Button
+            v-if="namespaceStore.canWrite"
             label="Edit"
             icon="pi pi-pencil"
             severity="secondary"
@@ -237,6 +239,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
             @click="exportTerminology('json')"
           />
           <Button
+            v-if="namespaceStore.canWrite"
             icon="pi pi-ban"
             severity="danger"
             title="Deactivate"
@@ -269,6 +272,7 @@ function getFieldsUsingTerminology(template: Template): string[] {
           <div class="terms-section">
             <div class="terms-header">
               <Button
+                v-if="namespaceStore.canWrite"
                 label="Bulk Import"
                 icon="pi pi-upload"
                 severity="secondary"

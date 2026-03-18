@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { useNamespaceStore } from '@/stores'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -30,7 +31,8 @@ const router = createRouter({
     {
       path: '/terminologies/import',
       name: 'terminology-import',
-      component: () => import('@/views/terminologies/ImportView.vue')
+      component: () => import('@/views/terminologies/ImportView.vue'),
+      meta: { requiresWrite: true }
     },
     {
       path: '/terminologies/validate',
@@ -58,7 +60,8 @@ const router = createRouter({
     {
       path: '/templates/new',
       name: 'template-create',
-      component: () => import('@/views/templates/TemplateDetailView.vue')
+      component: () => import('@/views/templates/TemplateDetailView.vue'),
+      meta: { requiresWrite: true }
     },
     {
       path: '/templates/:id',
@@ -75,12 +78,14 @@ const router = createRouter({
     {
       path: '/documents/import',
       name: 'document-import',
-      component: () => import('@/views/documents/ImportView.vue')
+      component: () => import('@/views/documents/ImportView.vue'),
+      meta: { requiresWrite: true }
     },
     {
       path: '/documents/new',
       name: 'document-create',
-      component: () => import('@/views/documents/DocumentDetailView.vue')
+      component: () => import('@/views/documents/DocumentDetailView.vue'),
+      meta: { requiresWrite: true }
     },
     {
       path: '/documents/table',
@@ -102,7 +107,8 @@ const router = createRouter({
     {
       path: '/files/upload',
       name: 'file-upload',
-      component: () => import('@/views/files/FileUploadView.vue')
+      component: () => import('@/views/files/FileUploadView.vue'),
+      meta: { requiresWrite: true }
     },
     {
       path: '/files/orphans',
@@ -130,7 +136,8 @@ const router = createRouter({
     {
       path: '/namespaces',
       name: 'namespaces',
-      component: () => import('@/views/NamespacesView.vue')
+      component: () => import('@/views/NamespacesView.vue'),
+      meta: { requiresAdmin: true }
     },
     {
       path: '/registry',
@@ -144,6 +151,19 @@ const router = createRouter({
       props: true
     }
   ]
+})
+
+// Route guard: block write routes for read-only users
+router.beforeEach((to) => {
+  if (to.meta.requiresWrite || to.meta.requiresAdmin) {
+    const ns = useNamespaceStore()
+    if (to.meta.requiresAdmin && !ns.isAdmin) {
+      return { name: 'home' }
+    }
+    if (to.meta.requiresWrite && !ns.canWrite) {
+      return { name: 'home' }
+    }
+  }
 })
 
 export default router
