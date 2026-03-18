@@ -23,6 +23,8 @@ from .models import UserIdentity
 
 # Cache: "user_id:namespace" → (permission, cached_at)
 _grant_cache: dict[str, tuple[str, float]] = {}
+# Cache: "user_id" → (namespace_list_or_None, cached_at)
+_accessible_cache: dict[str, tuple[list[str] | None, float]] = {}
 GRANT_CACHE_TTL = 30.0  # seconds
 
 # Permission hierarchy
@@ -137,6 +139,66 @@ async def check_namespace_permission(
         )
 
 
+async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
+    """Resolve which namespaces an identity can access.
+
+    Returns None for superadmin (meaning: no filter needed, all namespaces).
+    Returns a list of namespace prefixes for regular users.
+    Uses a 30-second in-process cache.
+    """
+    if _is_superadmin(identity):
+        return None
+
+    cache_key = identity.user_id
+    now = time.monotonic()
+
+    if cache_key in _accessible_cache:
+        namespaces, cached_at = _accessible_cache[cache_key]
+        if (now - cached_at) < GRANT_CACHE_TTL:
+            return namespaces
+
+    namespaces = await _fetch_accessible_from_registry(identity)
+    _accessible_cache[cache_key] = (namespaces, now)
+    return namespaces
+
+
+async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
+    """Call Registry's internal accessible-namespaces endpoint."""
+    import httpx
+
+    registry_url = _get_registry_url()
+    api_key = os.getenv(
+        "WIP_AUTH_LEGACY_API_KEY",
+        os.getenv("API_KEY", ""),
+    )
+
+    params = {
+        "user_id": identity.user_id,
+        "auth_method": identity.auth_method,
+    }
+    if identity.email:
+        params["email"] = identity.email
+    if identity.groups:
+        params["groups"] = ",".join(identity.groups)
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{registry_url}/api/registry/my/accessible-namespaces",
+                params=params,
+                headers={"X-API-Key": api_key},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("is_superadmin"):
+                    return None
+                return data.get("namespaces", [])
+            return []
+    except Exception:
+        return []
+
+
 def clear_permission_cache() -> None:
     """Clear the permission cache (for testing)."""
     _grant_cache.clear()
+    _accessible_cache.clear()

@@ -18,7 +18,7 @@ from ..models.api_models import (
     DeleteItem,
     ArchiveItem,
 )
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 
 from ..services.document_service import get_document_service
 from ..services.nats_client import get_throttle_delay
@@ -105,9 +105,12 @@ async def list_documents(
     Use cursor for efficient deep pagination (avoids skip/limit degradation).
     When cursor is provided, page parameter is ignored and total is -1.
     """
+    identity = get_current_identity()
+    allowed_namespaces = None
     if namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "read")
+    else:
+        allowed_namespaces = await resolve_accessible_namespaces(identity)
 
     service = get_document_service()
     return await service.list_documents(
@@ -119,6 +122,7 @@ async def list_documents(
         namespace=namespace,
         latest_only=latest_only,
         cursor=cursor,
+        allowed_namespaces=allowed_namespaces,
     )
 
 

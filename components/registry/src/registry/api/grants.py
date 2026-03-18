@@ -332,3 +332,45 @@ async def check_permission_internal(
 
     perm = await _resolve_permission(synthetic, namespace)
     return {"namespace": namespace, "user_id": user_id, "permission": perm}
+
+
+@my_router.get(
+    "/accessible-namespaces",
+    summary="Get accessible namespaces for a given identity (internal, service-to-service)",
+)
+async def accessible_namespaces_internal(
+    user_id: str,
+    email: str | None = None,
+    groups: str | None = None,
+    auth_method: str = "jwt",
+    _: str = Depends(require_api_key),
+):
+    """Internal endpoint for services to get a user's accessible namespaces.
+
+    Returns the list of namespace prefixes the user can access, plus
+    whether they are a superadmin (meaning: access to everything).
+    """
+    caller = get_current_identity()
+    if not _is_superadmin(caller):
+        raise HTTPException(403, "Only service accounts can call this endpoint")
+
+    group_list = groups.split(",") if groups else []
+    synthetic = UserIdentity(
+        user_id=user_id,
+        username=email or user_id,
+        email=email,
+        groups=group_list,
+        auth_method=auth_method,
+    )
+
+    if _is_superadmin(synthetic):
+        return {"namespaces": None, "is_superadmin": True}
+
+    all_ns = await Namespace.find({"status": "active"}).to_list()
+    accessible = []
+    for ns in all_ns:
+        perm = await _resolve_permission(synthetic, ns.prefix)
+        if perm != "none":
+            accessible.append(ns.prefix)
+
+    return {"namespaces": accessible, "is_superadmin": False}

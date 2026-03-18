@@ -241,7 +241,8 @@ class TemplateService:
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        namespace: Optional[str] = None
+        namespace: Optional[str] = None,
+        allowed_namespaces: Optional[list[str]] = None,
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -261,6 +262,8 @@ class TemplateService:
         query: dict = {}
         if namespace:
             query["namespace"] = namespace
+        elif allowed_namespaces is not None:
+            query["namespace"] = {"$in": allowed_namespaces}
         if status:
             query["status"] = status
         if extends:

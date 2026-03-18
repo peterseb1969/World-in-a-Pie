@@ -585,6 +585,7 @@ class DocumentService:
         namespace: Optional[str] = None,
         latest_only: bool = False,
         cursor: Optional[str] = None,
+        allowed_namespaces: Optional[list[str]] = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -600,6 +601,8 @@ class DocumentService:
         query: dict = {}
         if namespace:
             query["namespace"] = namespace
+        elif allowed_namespaces is not None:
+            query["namespace"] = {"$in": allowed_namespaces}
         if template_id:
             query["template_id"] = template_id
         if template_value:

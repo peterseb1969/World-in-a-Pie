@@ -44,6 +44,7 @@ from .permissions import (
     check_namespace_permission,
     clear_permission_cache,
     permission_sufficient,
+    resolve_accessible_namespaces,
     resolve_permission,
 )
 from .identity import (
@@ -95,6 +96,7 @@ __all__ = [
     # Permissions
     "check_namespace_permission",
     "resolve_permission",
+    "resolve_accessible_namespaces",
     "permission_sufficient",
     "clear_permission_cache",
     # Identity context

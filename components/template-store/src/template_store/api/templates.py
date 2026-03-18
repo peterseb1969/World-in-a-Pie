@@ -23,7 +23,7 @@ from ..services.template_service import TemplateService
 from ..services.registry_client import RegistryError
 from ..services.inheritance_service import InheritanceService, InheritanceError
 from ..services.dependency_service import DependencyService, TemplateDependencies
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 from .auth import require_api_key
 
 
@@ -90,9 +90,12 @@ async def list_templates(
     Supports filtering by status, parent template, and value.
     Use latest_only=true to only show the most recent version of each template.
     """
+    identity = get_current_identity()
+    allowed_namespaces = None
     if namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "read")
+    else:
+        allowed_namespaces = await resolve_accessible_namespaces(identity)
 
     templates, total = await TemplateService.list_templates(
         status=status,
@@ -101,7 +104,8 @@ async def list_templates(
         latest_only=latest_only,
         page=page,
         page_size=page_size,
-        namespace=namespace
+        namespace=namespace,
+        allowed_namespaces=allowed_namespaces,
     )
     return TemplateListResponse(
         items=templates,

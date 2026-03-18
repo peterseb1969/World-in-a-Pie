@@ -17,7 +17,7 @@ from ..models.api_models import (
 from ..services.terminology_service import TerminologyService
 from ..services.registry_client import RegistryError
 from ..services.dependency_service import DependencyService, TerminologyDependencies
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -65,16 +65,20 @@ async def list_terminologies(
     api_key: str = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
+    identity = get_current_identity()
+    allowed_namespaces = None
     if namespace:
-        identity = get_current_identity()
         await check_namespace_permission(identity, namespace, "read")
+    else:
+        allowed_namespaces = await resolve_accessible_namespaces(identity)
 
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
         value=value,
         page=page,
         page_size=page_size,
-        namespace=namespace
+        namespace=namespace,
+        allowed_namespaces=allowed_namespaces,
     )
     return TerminologyListResponse(
         items=terminologies,
