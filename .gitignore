@@ -27,6 +27,9 @@ Thumbs.db
 # Docker
 *.log
 
+# npm pack artifacts
+*.tgz
+
 # Generated config files (created by scripts/setup.sh)
 config/dex/config.yaml
 config/caddy/Caddyfile
