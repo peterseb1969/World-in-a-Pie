@@ -66,6 +66,7 @@ All core services are implemented and working:
 | 8 | Event Replay | Design complete, implementation pending |
 | 9 | Docker support | Test/document running with standard Docker |
 | 10 | Rootful Podman | Test/document running with `sudo podman` |
+| 11 | Registry entry reactivation | Pending — `POST /entries/{id}/reactivate` for reversible merges |
 
 See `docs/` for detailed specifications:
 - `docs/architecture.md` - System architecture
