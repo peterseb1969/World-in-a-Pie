@@ -29,7 +29,12 @@ mcp = FastMCP(
         "terminologies and templates, store documents, and query data. "
         "WIP uses a bulk-first API: all write operations accept arrays and "
         "return per-item results. This MCP server handles the bulk envelope "
-        "for you — single-item calls return the unwrapped result directly."
+        "for you — single-item calls return the unwrapped result directly. "
+        "IMPORTANT: Before creating any templates or documents, read the "
+        "wip://conventions and wip://data-model resources. WIP has several "
+        "non-obvious behaviours (multi-version templates, identity-based "
+        "dedup, bulk-first 200 OK) that will cause subtle bugs if you "
+        "rely on conventional assumptions."
     ),
 )
 
@@ -57,44 +62,99 @@ def _error(e: Exception) -> str:
 
 @mcp.resource("wip://conventions")
 def get_conventions() -> str:
-    """WIP API conventions: bulk-first pattern, identity hashing, versioning."""
+    """WIP API conventions: bulk-first, versioning, namespaces, authorization."""
     return """# WIP API Conventions
 
-## Bulk-First: Every Write Endpoint is Bulk
+## Bulk-First: Every Write is Bulk, 200 OK Always
 All write endpoints (POST/PUT/DELETE) accept a JSON array and return BulkResponse.
 Single operations are just [item]. There are no single-entity write endpoints.
 
 Response: { results: [...], total: N, succeeded: N, failed: N }
-- Always HTTP 200 — errors are per-item in results[i].status == "error"
-- Never check HTTP status codes for duplicates/conflicts; check result.status
-- Updates use PUT with entity ID in the body (not URL)
-- Deletes use DELETE with body: [{"id": "..."}]
 
-NOTE: This MCP server handles the bulk envelope for you. Single-item tool calls
-(create_terminology, create_template, create_document) unwrap the response and
-return the result directly. Bulk tool calls return the full envelope.
+CRITICAL: Always parse results[i].status — never rely on HTTP status codes.
+A 200 OK response can contain per-item errors. Statuses: created, updated, error, skipped.
+
+- Updates use PUT with entity ID in the body (not URL)
+- Deletes use DELETE with JSON body: [{"id": "..."}] (NOT DELETE /resource/{id})
+
+This MCP server handles the bulk envelope for you — single-item tool calls
+unwrap the response and return the result directly.
+
+## Soft Delete — Inactive Means Retired, Not Deleted
+Entities are never hard-deleted, only set to status: "inactive".
+(Exception: files support hard-delete to reclaim storage.)
+
+Retired entities are invisible to new data but always resolve for existing data.
+A document referencing term "ACTIVE" will always resolve, even if "ACTIVE" was
+retired years later. Historical data never breaks.
+
+WIP enforces this: inactive terms are rejected in new documents (only active
+terms match during validation). You do not need to check term status yourself.
 
 ## Identity & Versioning
-- Templates: (namespace, template_id, version) — same template_id across versions
-- Documents: (namespace, document_id, version) — identity_fields control dedup
-- Terms: (namespace, terminology_id, value) — unique within terminology
 
-## Namespaces
-All entities are scoped to a namespace. Default: "wip". Namespaces provide
-multi-tenant isolation. Same entity_id can exist in different namespaces.
+### Templates: Multiple Active Versions Coexist
+Updating a template creates a NEW version. The previous version stays active.
+This is by design — schema evolution without migration. But it means two versions
+of the same template can accept documents simultaneously.
 
-## Soft Delete
-Data is never hard-deleted, only set to status: "inactive".
-Exception: files support hard-delete to reclaim storage.
+After updating, deactivate the old version if you don't need it:
+deactivate_template(template_id, version=N). Otherwise, always pass
+template_version when creating documents — without it, WIP resolves
+"latest active", which may not be the version you expect when multiple
+versions are active.
+
+### Documents: Identity Fields Control Dedup
+Templates define identity_fields. WIP hashes those fields to decide:
+same hash = new version (update), different hash = new document (create).
+The same POST endpoint handles both — it's an upsert.
+
+- Zero identity fields = every submission creates a new document (append-only, no update path)
+- Too many identity fields = corrections create duplicates instead of versions
+- Never add timestamps or per-run data to identity fields — it makes every
+  hash unique, creating duplicates instead of versions
+- Avoid timestamps in non-identity fields too — they trigger unnecessary
+  version updates on otherwise unchanged documents
+
+### Terms
+- (namespace, terminology_id, value) — unique within terminology
+
+## Namespaces & Authorization
+
+All entities are scoped to a namespace.
+
+### Permission Model
+Namespaces have permission grants (read, write, admin) assigned to users or groups.
+Superadmins (wip-admins group) bypass all checks. Users without a grant on a
+namespace get 404 (not 403) — the namespace's existence is not leaked.
+
+Discover your accessible namespaces: GET /api/registry/my/namespaces
+
+### Cross-Namespace References
+Isolation mode controls what a namespace can reference:
+- **open** (default): own namespace + "wip" namespace + allowed_external_refs
+- **strict**: only own namespace + explicit allowed_external_refs (wip NOT automatic)
+
+Cross-namespace term references work without grants on the referenced namespace.
+Shared vocabularies (in "wip") are the common language — you need a grant to
+list or modify a namespace's data, but not to reference its terms.
+
+Reference validation runs at document creation, not template creation.
+
+## Template Cache
+Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
+resolution). Lookups by explicit version are cached permanently (immutable).
+If a template update seems to have no effect, wait or pass the explicit version.
 
 ## Pagination
-Default page_size: 50, max: 100. All list responses include a `pages` field.
+Default page_size: 50, max: 100. List responses include a `pages` field
+(computed as ceil(total / page_size)).
 """
 
 
 @mcp.resource("wip://data-model")
 def get_data_model() -> str:
-    """WIP core data model: terminologies, terms, templates, documents."""
+    """WIP core data model: terminologies, terms, templates, documents, registry."""
     return """# WIP Core Data Model
 
 ## Terminologies
@@ -105,19 +165,66 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 ## Terms
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Fields: value (unique within terminology), label, aliases, description
-- Terms can have ontology relationships (is_a, part_of, etc.)
+- Terms can have ontology relationships (see Ontology section below)
 - Documents store both the original value AND the resolved term_id
+- Inactive terms are rejected in new documents (enforced by validation)
 
 ## Templates
 A template defines a document schema — like a form definition.
-- Fields define type, mandatory/optional, terminology references, validation rules
 - Templates support inheritance (extends another template)
 - Templates are versioned: same template_id, incrementing version
-- Field types: string, number, integer, boolean, date, term, reference, file, array, object
-- Use "mandatory: true" (NOT "required") for required fields
-- A term field uses "terminology_ref" to specify which terminology_id it draws from
-- A reference field uses "template_ref" to specify which template_id it references
+- Multiple versions can be active simultaneously — see conventions resource
 - Templates can define identity_fields for document deduplication
+
+### Field Types
+string, number, integer, boolean, date, datetime, term, reference, file, array, object
+
+### Semantic Types
+Fields can declare a semantic_type for validation and reporting hints:
+email, url, latitude, longitude, percentage, duration, geo_point
+
+Example: a string field with semantic_type "email" is validated as an email address.
+
+### Reference Field Types
+A reference field's reference_type determines what it points to:
+- **document**: references another document (e.g., invoice → customer record)
+- **term**: references a term in a terminology (e.g., country field → COUNTRY terminology)
+- **terminology**: references a terminology itself (rare — for meta-schemas or config)
+- **template**: references a template (e.g., for typed document-to-template links)
+
+For term references, set terminology_ref to the terminology_id it draws from.
+For document references, set template_ref to constrain which template's documents are valid.
+
+### File Field Configuration
+- allowed_types: MIME type patterns (e.g., ["image/*", "application/pdf"])
+- max_size_mb: up to 100
+- multiple: allow multiple files; max_files sets the limit
+
+### Array Field Configuration
+- array_item_type: string, number, object, or term
+- array_terminology_ref / array_template_ref for typed array items
+
+### Other Field Properties
+- Use "mandatory: true" (NOT "required") for required fields
+- Validation: pattern (regex), min_length, max_length, minimum, maximum, enum
+
+### Validation Rules (Cross-Field)
+Templates can define rules across fields:
+- CONDITIONAL_REQUIRED: field X required when field Y has value Z
+- CONDITIONAL_VALUE: field X constrained when field Y has value Z
+- MUTUAL_EXCLUSION: only one of fields X, Y can have a value
+- DEPENDENCY: field X requires field Y to also be present
+
+### Template Draft Mode
+Create templates with status: "draft" to skip reference validation.
+This enables circular dependencies and order-independent creation.
+POST /templates/{id}/activate validates and activates cascadingly.
+All-or-nothing: if any template in the chain fails validation, none activate.
+
+### Reporting Configuration
+Templates can configure PostgreSQL sync behaviour:
+- sync_enabled, sync_strategy (latest_only, all_versions, disabled)
+- table_name, include_metadata, flatten_arrays, max_array_elements
 
 ## Documents
 A document is an instance of a template — a filled-in form.
@@ -125,17 +232,32 @@ A document is an instance of a template — a filled-in form.
 - Terms are resolved: you submit the value, WIP stores both value and term_id
 - Versioned: same identity → same document_id, new version
 - identity_fields (defined on template) control what makes a document "the same"
+- Zero identity fields = append-only (every POST creates a new document)
 
 ## Files
 Binary files stored in MinIO, referenced by documents.
-- Upload returns a file_id (FILE-XXXXXX)
+- Upload returns a file_id (UUID7 format)
 - Link the file_id to a document's file field
 
-## Relationships (Ontology)
+## Registry & Synonyms
+The Registry assigns canonical IDs (UUID7) to all entities. Any entity can have
+multiple identifiers (synonyms) — external IDs, vendor codes, alternate names.
+All synonyms resolve to the same canonical WIP ID via O(1) lookup.
+
+Key operations:
+- Register a synonym: {"erp_id": "SAP-001"} → resolves to a WIP entity ID
+- Lookup by any synonym: as fast as lookup by canonical ID
+- Merge two IDs: declare one as synonym of the other (currently one-way —
+  no reactivation endpoint exists yet for the deprecated entry)
+
+This enables cross-system integration without mapping tables.
+
+## Ontology Relationships
 Terms can be connected via typed relationships:
-- is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
+- Types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
 - Fields: source_term_id, target_term_id, relationship_type
 - Supports traversal: ancestors, descendants, parents, children
+- Supports OBO Graph JSON import for bulk relationship loading
 """
 
 
@@ -148,39 +270,67 @@ def get_development_guide() -> str:
 Never modify WIP. Only consume its APIs.
 
 ## Phase 1: Exploratory
-Understand WIP's capabilities. Use these tools:
+Understand WIP's capabilities:
 - get_wip_status — check all services are running
 - list_namespaces — see available namespaces
 - list_terminologies — see existing controlled vocabularies
 - list_templates — see existing document schemas
+- query_by_template — query documents with field filters
 
 ## Phase 2: Data Model Design
 Map your domain onto WIP primitives:
+
 1. Identify controlled vocabularies → create terminologies
 2. Identify document types → design templates with fields
 3. Define relationships between templates (references, inheritance)
-4. Define identity_fields for deduplication
+4. Define identity_fields for deduplication — choose carefully:
+   - Too few → unrelated entities collide into one document
+   - Too many → corrections create duplicates instead of versions
+   - Zero → append-only, no update path (fine for event logs)
+   - NEVER include timestamps or per-run data in identity fields —
+     it makes every submission a "new" document instead of a version
+   - Avoid them in non-identity fields too — they trigger unnecessary
+     version updates on otherwise unchanged documents
+5. Apply semantic_types where applicable (email, url, geo_point, etc.)
+
+### Namespace Strategy
+- Shared terminologies (COUNTRY, CURRENCY) → "wip" namespace
+- App-specific data (templates, documents) → app namespace (e.g., "finance")
+- Domain-specific terminologies used by only one app → app namespace
+- If a second app needs a terminology, promote it to "wip"
 
 Use create_terminology, create_terms, create_template (with status: "draft"
 for circular dependencies, then activate_template).
 
 ## Phase 3: Implementation
 Create the data model in WIP:
+
 1. Create terminologies and populate with terms
-2. Create templates (use draft mode if needed)
+2. Create templates — use draft mode for circular dependencies,
+   then activate (all-or-nothing validation across the chain)
 3. Create test documents to verify validation
+   - Pass template_version explicitly — without it, WIP resolves "latest active",
+     which may not be the version you expect if multiple versions are active
+   - Updating a template does NOT deactivate the old version — both stay active.
+     Deactivate the old version explicitly if you don't need it.
 4. Verify term resolution and reference resolution work
+5. Register external ID synonyms if integrating with other systems
+6. Configure reporting (sync_strategy, table_name) if using PostgreSQL
 
 ## Phase 4: Application Layer
-Build the frontend app using @wip/client and @wip/react.
+Build the frontend/app using @wip/client and @wip/react.
 The MCP server is mainly useful in Phases 1-3. In Phase 4,
-the app itself uses the TypeScript client library.
+the app uses the TypeScript client library directly.
+
+For analytics, use query_by_template or run_report_query (SQL).
+For bulk data loading, use import_documents_csv.
 
 ## Key Patterns
 - Template inheritance: create a base template, extend it
 - Term resolution: submit human-readable values, WIP resolves to term_ids
 - Identity hashing: define identity_fields so duplicate submissions update, not duplicate
 - Draft mode: create templates with status: "draft" to handle circular deps
+- Registry synonyms: register external IDs for cross-system lookups
 """
 
 
@@ -537,6 +687,9 @@ async def get_template_raw(template_id: str) -> str:
 async def create_template(template: dict) -> str:
     """Create a template (document schema).
 
+    NOTE: Updating an existing template creates a new version — the old version
+    stays active. See wip://conventions for versioning behaviour and deactivation.
+
     Args:
         template: Template definition. Required fields:
             - value: Unique code (e.g., 'BANK_TRANSACTION'). UPPER_SNAKE_CASE.
@@ -549,12 +702,13 @@ async def create_template(template: dict) -> str:
             - extends: Parent template value to inherit from.
             - extends_version: Pin to specific parent version.
             - identity_fields: List of field names for deduplication.
+              Choose carefully — see wip://conventions for pitfalls.
             - status: 'active' (default) or 'draft' (skip validation).
 
         Field definition: {
             name: str,          # field name
             label: str,         # display label
-            type: str,          # string, number, integer, boolean, date, term, reference, file, array, object
+            type: str,          # string, number, integer, boolean, date, datetime, term, reference, file, array, object
             mandatory: bool,    # whether the field is required (NOTE: "mandatory", not "required")
             terminology_ref: str,  # for type=term: terminology_id of the referenced terminology
             template_ref: str,  # for type=reference: template_id of the referenced template
@@ -589,7 +743,9 @@ async def create_template(template: dict) -> str:
 
 @mcp.tool()
 async def create_templates_bulk(templates: list[dict]) -> str:
-    """Create multiple templates. Use status: 'draft' for circular dependencies, then activate."""
+    """Create multiple templates. Use status: 'draft' for circular dependencies, then activate.
+
+    Updates create new versions — old versions stay active. See wip://conventions."""
     try:
         data = await get_client().create_templates(templates)
         return json.dumps(data, indent=2, default=str)
@@ -692,6 +848,9 @@ async def create_document(document: dict) -> str:
     Args:
         document: Document data. Required:
             - template_id: Which template this document uses.
+            - template_version: Pin to a specific template version. Recommended —
+              without it, WIP resolves "latest active" which may not be what you
+              expect if multiple versions are active. See wip://conventions.
             - data: The field values (a dict matching the template's fields).
             - namespace: Namespace (default: 'wip').
 
@@ -701,10 +860,13 @@ async def create_document(document: dict) -> str:
 
     Identity: If the template defines identity_fields and this document
     matches an existing one, it creates a new version instead of a duplicate.
+    Do not include timestamps or per-run data in document fields — it breaks
+    dedup or causes unnecessary version churn. See wip://conventions.
 
     Example:
         create_document({
             "template_id": "TPL-xxx",
+            "template_version": 1,
             "namespace": "wip",
             "data": {
                 "name": "Jane Doe",
