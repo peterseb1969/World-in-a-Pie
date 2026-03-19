@@ -284,9 +284,10 @@ wait_for_services() {
             fi
         fi
 
-        # Reporting-Sync (port 8005)
+        # Reporting-Sync (port 8005) — must check body for "healthy" since
+        # endpoint returns 200 even when degraded (NATS/Postgres not yet connected)
         if echo "$services" | grep -q "reporting-sync"; then
-            if curl -sf http://localhost:8005/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:8005/health 2>/dev/null | grep -q '"healthy"'; then
                 status_line+=" reporting-sync:OK"
             else
                 status_line+=" reporting-sync:WAIT"
