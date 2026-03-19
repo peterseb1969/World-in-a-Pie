@@ -72,11 +72,11 @@ LOCALHOST_TESTS=(
     "standard-dev|standard|--localhost|registry,def-store,template-store,document-store,console|standard|oidc dev-tools"
     "standard-prod|standard|--localhost --prod|registry,def-store,template-store,document-store,console|standard|oidc"
     # Analytics preset (+ reporting)
-    "analytics-dev|analytics|--localhost|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting dev-tools"
-    "analytics-prod|analytics|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting"
+    "analytics-dev|analytics|--localhost|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc nats reporting dev-tools"
+    "analytics-prod|analytics|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc nats reporting"
     # Full preset (+ files + ingest)
-    "full-dev|full|--localhost|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest dev-tools"
-    "full-prod|full|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest"
+    "full-dev|full|--localhost|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc nats reporting files ingest dev-tools"
+    "full-prod|full|--localhost --prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc nats reporting files ingest"
 )
 
 # Remote test presets - converted to full test definitions with --hostname at runtime
@@ -89,11 +89,11 @@ REMOTE_TEST_PRESETS=(
     "standard-remote-dev|standard|dev|registry,def-store,template-store,document-store,console|standard|oidc dev-tools"
     "standard-remote-prod|standard|prod|registry,def-store,template-store,document-store,console|standard|oidc"
     # Analytics preset
-    "analytics-remote-dev|analytics|dev|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting dev-tools"
-    "analytics-remote-prod|analytics|prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc reporting"
+    "analytics-remote-dev|analytics|dev|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc nats reporting dev-tools"
+    "analytics-remote-prod|analytics|prod|registry,def-store,template-store,document-store,console,reporting-sync|standard|oidc nats reporting"
     # Full preset
-    "full-remote-dev|full|dev|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest dev-tools"
-    "full-remote-prod|full|prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc reporting files ingest"
+    "full-remote-dev|full|dev|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc nats reporting files ingest dev-tools"
+    "full-remote-prod|full|prod|registry,def-store,template-store,document-store,console,reporting-sync,ingest-gateway|standard|oidc nats reporting files ingest"
 )
 
 # Active test set (populated based on mode)

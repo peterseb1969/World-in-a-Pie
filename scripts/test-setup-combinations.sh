@@ -242,7 +242,8 @@ happy_test "core + localhost" \
     contains 'WIP_PRESET="core"' \
     contains 'WIP_LOCALHOST_MODE="true"' \
     contains 'WIP_VARIANT="dev"' \
-    excludes 'oidc'
+    excludes 'oidc' \
+    excludes 'nats'
 
 happy_test "core + hostname" \
     --preset core --hostname wip.local -y \
@@ -250,7 +251,8 @@ happy_test "core + hostname" \
     contains 'WIP_PRESET="core"' \
     contains 'WIP_HOSTNAME="wip.local"' \
     contains 'WIP_LOCALHOST_MODE="false"' \
-    excludes 'oidc'
+    excludes 'oidc' \
+    excludes 'nats'
 
 happy_test "standard + localhost" \
     --preset standard --localhost -y \
@@ -258,7 +260,8 @@ happy_test "standard + localhost" \
     contains 'WIP_PRESET="standard"' \
     contains 'WIP_LOCALHOST_MODE="true"' \
     contains 'oidc' \
-    contains 'dev-tools'
+    contains 'dev-tools' \
+    excludes 'nats'
 
 happy_test "standard + hostname" \
     --preset standard --hostname wip.local -y \
@@ -266,7 +269,8 @@ happy_test "standard + hostname" \
     contains 'WIP_PRESET="standard"' \
     contains 'WIP_HOSTNAME="wip.local"' \
     contains 'oidc' \
-    contains 'dev-tools'
+    contains 'dev-tools' \
+    excludes 'nats'
 
 happy_test "analytics + localhost" \
     --preset analytics --localhost -y \
@@ -274,7 +278,8 @@ happy_test "analytics + localhost" \
     contains 'WIP_PRESET="analytics"' \
     contains 'WIP_LOCALHOST_MODE="true"' \
     contains 'oidc' \
-    contains 'reporting'
+    contains 'reporting' \
+    contains 'nats'
 
 happy_test "analytics + hostname" \
     --preset analytics --hostname wip.local -y \
@@ -282,7 +287,8 @@ happy_test "analytics + hostname" \
     contains 'WIP_PRESET="analytics"' \
     contains 'WIP_HOSTNAME="wip.local"' \
     contains 'oidc' \
-    contains 'reporting'
+    contains 'reporting' \
+    contains 'nats'
 
 happy_test "full + localhost" \
     --preset full --localhost -y \
@@ -292,7 +298,8 @@ happy_test "full + localhost" \
     contains 'oidc' \
     contains 'reporting' \
     contains 'files' \
-    contains 'ingest'
+    contains 'ingest' \
+    contains 'nats'
 
 happy_test "full + hostname" \
     --preset full --hostname wip.local -y \
@@ -302,7 +309,8 @@ happy_test "full + hostname" \
     contains 'oidc' \
     contains 'reporting' \
     contains 'files' \
-    contains 'ingest'
+    contains 'ingest' \
+    contains 'nats'
 
 echo ""
 
@@ -316,14 +324,16 @@ happy_test "core + localhost + prod" \
     contains 'WIP_VARIANT="prod"' \
     contains 'WIP_LOCALHOST_MODE="true"' \
     excludes 'dev-tools' \
-    excludes 'oidc'
+    excludes 'oidc' \
+    excludes 'nats'
 
 happy_test "standard + hostname + prod" \
     --preset standard --hostname wip.local --prod -y \
     -- \
     contains 'WIP_VARIANT="prod"' \
     contains 'oidc' \
-    excludes 'dev-tools'
+    excludes 'dev-tools' \
+    excludes 'nats'
 
 happy_test "analytics + hostname + prod" \
     --preset analytics --hostname wip.local --prod -y \
@@ -331,6 +341,7 @@ happy_test "analytics + hostname + prod" \
     contains 'WIP_VARIANT="prod"' \
     contains 'oidc' \
     contains 'reporting' \
+    contains 'nats' \
     excludes 'dev-tools'
 
 happy_test "full + hostname + prod" \
@@ -341,6 +352,7 @@ happy_test "full + hostname + prod" \
     contains 'reporting' \
     contains 'files' \
     contains 'ingest' \
+    contains 'nats' \
     excludes 'dev-tools'
 
 echo ""
@@ -353,13 +365,15 @@ happy_test "standard + add reporting" \
     --preset standard --add reporting --hostname wip.local -y \
     -- \
     contains 'oidc' \
-    contains 'reporting'
+    contains 'reporting' \
+    contains 'nats'
 
 happy_test "standard + modules reporting (merge)" \
     --preset standard --modules reporting --hostname wip.local -y \
     -- \
     contains 'oidc' \
-    contains 'reporting'
+    contains 'reporting' \
+    contains 'nats'
 
 happy_test "full + remove ingest" \
     --preset full --remove ingest --hostname wip.local -y \
@@ -367,6 +381,7 @@ happy_test "full + remove ingest" \
     contains 'oidc' \
     contains 'reporting' \
     contains 'files' \
+    contains 'nats' \
     excludes 'ingest'
 
 happy_test "full + remove ingest,files" \
@@ -374,6 +389,7 @@ happy_test "full + remove ingest,files" \
     -- \
     contains 'oidc' \
     contains 'reporting' \
+    contains 'nats' \
     excludes 'ingest' \
     excludes 'files'
 
@@ -382,7 +398,8 @@ happy_test "core + add files" \
     -- \
     contains 'files' \
     contains 'dev-tools' \
-    excludes 'oidc'
+    excludes 'oidc' \
+    excludes 'nats'
 
 happy_test "analytics + add files,ingest" \
     --preset analytics --add files,ingest --hostname wip.local -y \
@@ -391,6 +408,7 @@ happy_test "analytics + add files,ingest" \
     contains 'reporting' \
     contains 'files' \
     contains 'ingest' \
+    contains 'nats' \
     contains 'dev-tools'
 
 echo ""
@@ -406,7 +424,8 @@ happy_test "modules: oidc only" \
     contains 'oidc' \
     contains 'dev-tools' \
     excludes 'reporting' \
-    excludes 'files'
+    excludes 'files' \
+    excludes 'nats'
 
 happy_test "modules: oidc,files" \
     --modules oidc,files --hostname wip.local -y \
@@ -414,12 +433,14 @@ happy_test "modules: oidc,files" \
     contains 'oidc' \
     contains 'files' \
     contains 'dev-tools' \
-    excludes 'reporting'
+    excludes 'reporting' \
+    excludes 'nats'
 
 happy_test "modules: reporting only" \
     --modules reporting --localhost -y \
     -- \
     contains 'reporting' \
+    contains 'nats' \
     contains 'dev-tools' \
     excludes 'oidc'
 
@@ -429,12 +450,14 @@ happy_test "modules: oidc,reporting,files" \
     contains 'oidc' \
     contains 'reporting' \
     contains 'files' \
+    contains 'nats' \
     excludes 'ingest'
 
 happy_test "modules: ingest only" \
     --modules ingest --localhost -y \
     -- \
     contains 'ingest' \
+    contains 'nats' \
     contains 'dev-tools' \
     excludes 'oidc' \
     excludes 'reporting' \
@@ -445,6 +468,7 @@ happy_test "modules: files,ingest" \
     -- \
     contains 'files' \
     contains 'ingest' \
+    contains 'nats' \
     contains 'dev-tools' \
     excludes 'oidc' \
     excludes 'reporting'
@@ -582,6 +606,7 @@ happy_test "full + clean + prod" \
     --preset full --hostname wip.local --clean --prod -y \
     -- \
     contains 'WIP_VARIANT="prod"' \
+    contains 'nats' \
     excludes 'dev-tools'
 
 happy_test "generate-secrets without prod" \
@@ -627,7 +652,7 @@ echo ""
 echo -e "${YELLOW}Category 11: Validation / Error Cases${NC}"
 
 error_test "no arguments" \
-    "Must specify either --preset or --modules"
+    "Must specify either --preset"
     # (no args)
 
 error_test "preset without network" \
@@ -647,7 +672,7 @@ error_test "modules without network" \
     --modules oidc
 
 error_test "hostname without preset/modules" \
-    "Must specify either --preset or --modules" \
+    "Must specify either --preset" \
     --hostname wip.local
 
 echo ""
