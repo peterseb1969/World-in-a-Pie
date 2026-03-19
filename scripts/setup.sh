@@ -107,13 +107,14 @@ WIP_DEX_CLIENT_SECRET=""
 WIP_NATS_TOKEN=""
 
 # Available modules
-AVAILABLE_MODULES="console oidc reporting files ingest dev-tools"
+AVAILABLE_MODULES="console oidc nats reporting files ingest dev-tools"
 
 # Module description lookup (bash 3.2 compatible)
 get_module_desc() {
     case "$1" in
         console)   echo "WIP Console web interface" ;;
         oidc)      echo "User authentication via Dex + Caddy (HTTPS)" ;;
+        nats)      echo "NATS JetStream message queue (auto-included by reporting/ingest)" ;;
         reporting) echo "SQL analytics via PostgreSQL + Reporting-Sync" ;;
         files)     echo "Binary file storage via MinIO (S3-compatible)" ;;
         ingest)    echo "Streaming data ingestion via NATS" ;;
@@ -299,6 +300,7 @@ PRESETS (sensible defaults):
 MODULES (composable):
   console    WIP Console web interface
   oidc       User authentication via Dex + Caddy
+  nats       NATS JetStream message queue (auto-included by reporting/ingest)
   reporting  PostgreSQL + Reporting-Sync for SQL analytics
   files      MinIO for binary file attachments
   ingest     Ingest-Gateway for streaming data ingestion
@@ -675,6 +677,7 @@ validate_config() {
         MODULES="${MODULES//dev-tools/}"
         ADD_MODULES="${ADD_MODULES//dev-tools/}"
     fi
+
 }
 
 load_preset() {
@@ -725,6 +728,14 @@ compute_modules() {
     # Clean up commas
     final_modules=$(echo "$final_modules" | tr ',' '\n' | grep -v '^$' | sort -u | tr '\n' ',' | sed 's/,$//')
 
+    # Auto-include nats when reporting or ingest is active
+    if [[ ",$final_modules," == *",reporting,"* ]] || [[ ",$final_modules," == *",ingest,"* ]]; then
+        if [[ ! ",$final_modules," == *",nats,"* ]]; then
+            final_modules="nats,$final_modules"
+            log_info "Auto-included nats module (required by reporting/ingest)"
+        fi
+    fi
+
     # Add dev-tools in dev variant (except headless — minimal footprint)
     if [ "$VARIANT" = "dev" ] && [ "$PRESET" != "headless" ]; then
         if [[ ! " $final_modules " =~ " dev-tools " ]]; then
@@ -738,6 +749,29 @@ compute_modules() {
 
     ACTIVE_MODULES="$final_modules"
     log_info "Active modules: ${ACTIVE_MODULES:-none (base only)}"
+
+    # Warning: no authentication on network deployment
+    if [ "$LOCALHOST_MODE" != "true" ] && [ -z "$REMOTE_CORE" ] && ! has_module "oidc"; then
+        echo ""
+        log_warn "No authentication module (oidc) — anyone on the network can read/write all data."
+        log_warn "Add oidc to your modules or use --localhost for local-only access."
+        echo ""
+        if [ "$SKIP_CONFIRM" != "true" ]; then
+            read -p "  Continue without authentication? [y/N] " -n 1 -r response
+            echo ""
+            if [[ ! "$response" =~ ^[Yy]$ ]]; then
+                log_info "Aborted. Add oidc to your modules or use --localhost."
+                exit 0
+            fi
+        fi
+    fi
+
+    # Note: ingest without reporting
+    if has_module "ingest" && ! has_module "reporting"; then
+        log_warn "ingest module is active but reporting is not."
+        log_info "  NATS events will not be synced to PostgreSQL."
+        log_info "  This is fine if you have a custom NATS consumer."
+    fi
 }
 
 has_module() {
@@ -969,10 +1003,13 @@ generate_env_file() {
         mongo_uri="mongodb://${mongo_user}:${mongo_password}@wip-mongodb:27017/"
     fi
 
-    # Build NATS URL
-    local nats_url="nats://wip-nats:4222"
-    if [ -n "$nats_token" ]; then
-        nats_url="nats://${nats_token}@wip-nats:4222"
+    # Build NATS URL (empty when nats module is not active — services skip gracefully)
+    local nats_url=""
+    if has_module "nats"; then
+        nats_url="nats://wip-nats:4222"
+        if [ -n "$nats_token" ]; then
+            nats_url="nats://${nats_token}@wip-nats:4222"
+        fi
     fi
 
     cat > "$PROJECT_ROOT/.env" << EOF
@@ -1805,7 +1842,7 @@ verify_compose_files() {
     # - files: adds MinIO
     # - dev-tools: adds Mongo Express
     # - ingest: NO overlay (service started separately)
-    local overlay_modules="oidc reporting files dev-tools"
+    local overlay_modules="nats oidc reporting files dev-tools"
 
     # Check module files only for those that have overlays
     for mod in ${ACTIVE_MODULES//,/ }; do
@@ -1900,13 +1937,15 @@ start_infrastructure() {
         exit 1
     fi
 
-    # Wait for NATS
-    log_info "Waiting for NATS..."
-    sleep 3
-    if curl -s http://localhost:8222/varz &>/dev/null; then
-        log_milestone "NATS ready"
-    else
-        log_warn "NATS monitoring not responding (may still be starting)"
+    # Wait for NATS if enabled
+    if has_module "nats"; then
+        log_info "Waiting for NATS..."
+        sleep 3
+        if curl -s http://localhost:8222/varz &>/dev/null; then
+            log_milestone "NATS ready"
+        else
+            log_warn "NATS monitoring not responding (may still be starting)"
+        fi
     fi
 
     # Wait for PostgreSQL if enabled
@@ -2212,7 +2251,9 @@ print_status() {
             echo "  MinIO Console:  http://localhost:9001"
         fi
 
-        echo "  NATS Monitor:   http://localhost:8222"
+        if has_module "nats"; then
+            echo "  NATS Monitor:   http://localhost:8222"
+        fi
     fi
     echo ""
     echo "=========================================="
@@ -2293,8 +2334,10 @@ main() {
         ensure_network
         ensure_linger
         verify_compose_files
-        check_nats_conflicts
-        clean_nats_data
+        if has_module "nats"; then
+            check_nats_conflicts
+            clean_nats_data
+        fi
 
         # Generate secrets for production mode
         if [ "$GENERATE_SECRETS" = "true" ]; then
