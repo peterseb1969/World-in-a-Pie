@@ -79,6 +79,11 @@ detect_from_containers() {
         modules="$modules ingest"
     fi
 
+    # Check for NATS
+    if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "wip-nats"; then
+        modules="$modules nats"
+    fi
+
     # Check for dev-tools (Mongo Express)
     if podman ps --format "{{.Names}}" 2>/dev/null | grep -q "wip-mongo-express"; then
         modules="$modules dev-tools"

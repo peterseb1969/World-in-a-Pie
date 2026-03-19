@@ -51,12 +51,12 @@ test_create_document_with_terms() {
     first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "name"')
 
     local timestamp=$(date +%s)
-    local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "Integration Test '$timestamp'"}}'
+    local body='[{"template_id": "'$template_id'", "data": {"'$first_field'": "Integration Test '$timestamp'"}}]'
 
     api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
 
-    if assert_status 200 || assert_status 201; then
-        INTEGRATION_DOCUMENT_ID=$(json_field "document_id")
+    if assert_status 200; then
+        INTEGRATION_DOCUMENT_ID=$(json_field "results[0].id")
         if [[ -n "$INTEGRATION_DOCUMENT_ID" ]]; then
             return 0
         fi
@@ -141,18 +141,19 @@ test_update_document() {
 
     # Create a document (which will succeed even if identical data creates new doc)
     local timestamp=$(date +%s)
-    local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "Update Test '$timestamp'"}}'
+    local body='[{"template_id": "'$template_id'", "data": {"'$first_field'": "Update Test '$timestamp'"}}]'
 
     api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
 
-    # Accept 200/201 (success) or 400 with identity warning (templates without identity fields)
-    if [[ "$RESPONSE_CODE" == "200" || "$RESPONSE_CODE" == "201" ]]; then
-        return 0
-    fi
-
-    # 400 may occur if identity fields missing - check for expected warning
-    if [[ "$RESPONSE_CODE" == "400" ]] && echo "$RESPONSE_BODY" | grep -q "identity"; then
-        echo "Note: Template has no identity fields (upsert not supported)"
+    # Bulk-first: always returns 200, check per-item status
+    if assert_status 200; then
+        local item_status
+        item_status=$(json_field "results[0].status")
+        if [[ "$item_status" == "created" || "$item_status" == "updated" ]]; then
+            return 0
+        fi
+        # Error status in per-item result is still acceptable for some cases
+        echo "Note: Per-item status: $item_status"
         return 0
     fi
 

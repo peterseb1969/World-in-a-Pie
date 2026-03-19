@@ -177,7 +177,9 @@ run_suite() {
     echo -e "\n  ${DIM}Core Infrastructure${NC}"
     run_test "MongoDB container running" test_mongodb_running
     run_test "MongoDB healthy" test_mongodb_healthy
-    run_test "NATS container running" test_nats_running
+    if has_module "nats"; then
+        run_test "NATS container running" test_nats_running
+    fi
 
     echo -e "\n  ${DIM}Core Services${NC}"
     run_test "Registry container running" test_registry_running

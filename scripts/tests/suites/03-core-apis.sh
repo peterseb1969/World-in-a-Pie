@@ -73,16 +73,16 @@ test_def_store_list_terminologies() {
 
 test_def_store_create_terminology() {
     local code="TEST_$(date +%s)"
-    local body='{
+    local body='[{
         "value": "'$code'",
         "label": "Test Terminology",
         "description": "Created by API test"
-    }'
+    }]'
 
     api_post "http://localhost:$PORT_DEF_STORE/api/def-store/terminologies" "$body"
 
-    if assert_status 200 || assert_status 201; then
-        TEST_TERMINOLOGY_ID=$(json_field "terminology_id")
+    if assert_status 200; then
+        TEST_TERMINOLOGY_ID=$(json_field "results[0].id")
         return 0
     fi
     return 1
@@ -159,19 +159,19 @@ test_template_store_list() {
 
 test_template_store_create() {
     local code="TEST_TPL_$(date +%s)"
-    local body='{
+    local body='[{
         "value": "'$code'",
         "label": "Test Template",
         "description": "Created by API test",
         "fields": [
             {"name": "test_field", "label": "Test Field", "type": "string", "mandatory": true}
         ]
-    }'
+    }]'
 
     api_post "http://localhost:$PORT_TEMPLATE_STORE/api/template-store/templates" "$body"
 
-    if assert_status 200 || assert_status 201; then
-        TEST_TEMPLATE_ID=$(json_field "template_id")
+    if assert_status 200; then
+        TEST_TEMPLATE_ID=$(json_field "results[0].id")
         return 0
     fi
     return 1
@@ -260,12 +260,12 @@ test_document_store_create() {
     local first_field
     first_field=$(echo "$RESPONSE_BODY" | jq -r '.fields[0].name // "test_field"')
 
-    local body='{"template_id": "'$template_id'", "data": {"'$first_field'": "API Test '$(date +%s)'"}}'
+    local body='[{"template_id": "'$template_id'", "data": {"'$first_field'": "API Test '$(date +%s)'"}}]'
 
     api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
 
-    if assert_status 200 || assert_status 201; then
-        TEST_DOCUMENT_ID=$(json_field "document_id")
+    if assert_status 200; then
+        TEST_DOCUMENT_ID=$(json_field "results[0].id")
         return 0
     fi
     return 1
@@ -329,7 +329,7 @@ test_term_resolution_in_document() {
     fi
 
     # Create a document with term reference
-    local body='{
+    local body='[{
         "template_id": "'$template_id'",
         "data": {
             "first_name": "Test",
@@ -337,10 +337,10 @@ test_term_resolution_in_document() {
             "email": "test-'$(date +%s)'@example.com",
             "salutation": "Mr"
         }
-    }'
+    }]'
 
     api_post "http://localhost:$PORT_DOCUMENT_STORE/api/document-store/documents" "$body"
-    assert_status 200 || assert_status 201
+    assert_status 200
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
