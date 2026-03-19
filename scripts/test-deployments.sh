@@ -154,14 +154,18 @@ cleanup_all() {
     fi
 
     # CRITICAL: Clean data directories for fresh state between tests
+    # PostgreSQL especially must be fully wiped — if PGDATA persists, the container
+    # reuses old credentials and ignores POSTGRES_PASSWORD from the new deployment.
     local data_dir="$PROJECT_ROOT/data"
     if [ -d "$data_dir" ]; then
         log_dim "Wiping data directories for clean slate..."
 
-        # Remove contents of each data directory
+        # Remove contents of each data directory using multiple strategies:
+        # 1. podman unshare (accesses container UID namespace)
+        # 2. Direct rm (works for user-owned files)
+        # 3. Alpine container mount (nuclear option for stubborn files)
         for subdir in mongodb nats postgres dex minio caddy; do
             if [ -d "$data_dir/$subdir" ]; then
-                # Use podman unshare for dirs owned by container UIDs (rootless podman)
                 podman unshare rm -rf "$data_dir/$subdir"/* 2>/dev/null \
                     || rm -rf "$data_dir/$subdir"/* 2>/dev/null || true
                 podman unshare rm -rf "$data_dir/$subdir"/.[!.]* 2>/dev/null \
@@ -169,21 +173,25 @@ cleanup_all() {
             fi
         done
 
-        # Verify MongoDB data is gone (most critical for reproducibility)
-        if [ -d "$data_dir/mongodb" ] && [ "$(ls -A "$data_dir/mongodb" 2>/dev/null)" ]; then
-            log_error "CRITICAL: Failed to clean MongoDB data directory!"
-            log_error "Data from previous test may affect results."
-            log_error "Manual cleanup required: rm -rf $data_dir/mongodb/*"
-            return 1
-        fi
+        # Verify critical data directories are clean; use Alpine container as fallback
+        for critical_dir in mongodb postgres nats; do
+            local dir_path="$data_dir/$critical_dir"
+            if [ -d "$dir_path" ] && podman unshare ls -A "$dir_path" 2>/dev/null | grep -q .; then
+                log_dim "Stubborn files in $critical_dir — cleaning via container..."
+                podman run --rm -v "$dir_path:/cleanup:Z" docker.io/library/alpine:3 \
+                    sh -c 'rm -rf /cleanup/* /cleanup/.[!.]*' 2>/dev/null || true
+            fi
+        done
 
-        # Verify NATS JetStream data is gone
-        if [ -d "$data_dir/nats/jetstream" ] && [ "$(ls -A "$data_dir/nats/jetstream" 2>/dev/null)" ]; then
-            log_error "CRITICAL: Failed to clean NATS JetStream data directory!"
-            log_error "Stream conflicts may cause test failures."
-            log_error "Manual cleanup required: rm -rf $data_dir/nats/jetstream/*"
-            return 1
-        fi
+        # Final verification
+        for critical_dir in mongodb postgres; do
+            if [ -d "$data_dir/$critical_dir" ] && podman unshare ls -A "$data_dir/$critical_dir" 2>/dev/null | grep -q .; then
+                log_error "CRITICAL: Failed to clean $critical_dir data directory!"
+                log_error "Old credentials will persist and cause auth failures."
+                log_error "Manual cleanup: podman unshare rm -rf $data_dir/$critical_dir/*"
+                return 1
+            fi
+        done
     fi
 
     # Verify no WIP containers remain
