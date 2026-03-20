@@ -445,8 +445,8 @@ async def clear_caches():
 # Integrity check endpoint
 @app.get("/health/integrity", tags=["Health"], response_model=IntegrityCheckResult)
 async def integrity_check(
-    status: str = None,
-    template_id: str = None,
+    status: str | None = None,
+    template_id: str | None = None,
     limit: int = 0,
     check_term_refs: bool = True,
     recent_first: bool = False
