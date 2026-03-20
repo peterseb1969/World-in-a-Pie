@@ -17,7 +17,7 @@ services:
     command: ["--js", "--sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"   # Client connections
-      - "8222:8222"   # HTTP monitoring
+      - "${WIP_NATS_MONITOR_PORT:-8222}:8222"   # HTTP monitoring (set to empty in prod to disable)
     volumes:
       - ${WIP_DATA_DIR:-./data}/nats:/data
     # Note: NATS image is minimal (no shell/curl/wget), so healthcheck

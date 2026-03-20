@@ -38,6 +38,10 @@ min_confidence = 80
 paths = ["components/", "libs/wip-auth/"]
 exclude = ["*/tests/*", "*/__pycache__/*", "*/node_modules/*", "components/seed_data/*", "components/mcp-server/*"]
 
+[tool.bandit]
+exclude_dirs = ["tests", "*/tests/*"]
+skips = ["B101"]  # assert used in tests
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

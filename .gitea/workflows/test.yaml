@@ -39,6 +39,35 @@ jobs:
             echo "No shell files changed"
           fi
 
+      - name: Bandit security scan (changed files only)
+        run: |
+          pip install bandit
+          CHANGED_PY=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.py')
+          if [ -n "$CHANGED_PY" ]; then
+            echo "$CHANGED_PY" | xargs bandit -c pyproject.toml --severity-level medium -f txt || true
+          else
+            echo "No Python files changed"
+          fi
+
+  # Dependency vulnerability check
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Audit wip-auth dependencies
+        run: |
+          pip install -e libs/wip-auth
+          pip-audit --desc --fix --dry-run || true
+
   # Components that need MongoDB
   test-services:
     runs-on: ubuntu-latest

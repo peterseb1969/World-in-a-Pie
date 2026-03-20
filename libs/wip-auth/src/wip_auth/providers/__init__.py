@@ -6,7 +6,7 @@ This module contains the auth provider implementations:
 - OIDCProvider: JWT/OIDC authentication for user sessions
 """
 
-from .api_key import APIKeyProvider, hash_api_key
+from .api_key import APIKeyProvider, hash_api_key, verify_api_key
 from .base import AuthProvider
 from .none import NoAuthProvider
 from .oidc import OIDCProvider
@@ -17,4 +17,5 @@ __all__ = [
     "NoAuthProvider",
     "OIDCProvider",
     "hash_api_key",
+    "verify_api_key",
 ]

@@ -54,23 +54,43 @@ class TestNoAuthProvider:
 class TestHashApiKey:
     """Tests for hash_api_key function."""
 
-    def test_consistent_hashing(self):
-        """Same key should produce same hash."""
-        hash1 = hash_api_key("my_secret_key")
-        hash2 = hash_api_key("my_secret_key")
-        assert hash1 == hash2
+    def test_bcrypt_hashing(self):
+        """hash_api_key should produce bcrypt hashes."""
+        h = hash_api_key("my_secret_key")
+        assert h.startswith("$2b$")
+
+    def test_verify_correct_key(self):
+        """verify_api_key should accept the correct key."""
+        from wip_auth.providers.api_key import verify_api_key
+        h = hash_api_key("my_secret_key")
+        assert verify_api_key("my_secret_key", h) is True
+
+    def test_verify_wrong_key(self):
+        """verify_api_key should reject the wrong key."""
+        from wip_auth.providers.api_key import verify_api_key
+        h = hash_api_key("my_secret_key")
+        assert verify_api_key("wrong_key", h) is False
 
     def test_different_keys_different_hashes(self):
         """Different keys should produce different hashes."""
-        hash1 = hash_api_key("key1")
-        hash2 = hash_api_key("key2")
-        assert hash1 != hash2
+        from wip_auth.providers.api_key import verify_api_key
+        h = hash_api_key("key1")
+        assert verify_api_key("key2", h) is False
 
     def test_salt_affects_hash(self):
         """Different salts should produce different hashes."""
-        hash1 = hash_api_key("key", salt="salt1")
-        hash2 = hash_api_key("key", salt="salt2")
-        assert hash1 != hash2
+        from wip_auth.providers.api_key import verify_api_key
+        h = hash_api_key("key", salt="salt1")
+        assert verify_api_key("key", h, salt="salt1") is True
+        assert verify_api_key("key", h, salt="salt2") is False
+
+    def test_legacy_sha256_fallback(self):
+        """Should verify legacy SHA-256 hashes."""
+        import hashlib
+        from wip_auth.providers.api_key import verify_api_key
+        legacy_hash = hashlib.sha256("wip_auth_salt:test_key".encode()).hexdigest()
+        assert verify_api_key("test_key", legacy_hash) is True
+        assert verify_api_key("wrong_key", legacy_hash) is False
 
 
 class TestAPIKeyProvider:
@@ -176,14 +196,15 @@ class TestAPIKeyProvider:
         provider.add_key(new_key)
 
         # Should have 3 keys now
-        assert len(provider._keys_by_hash) == 3
+        assert len(provider._keys) == 3
 
     def test_remove_key(self, provider):
-        """Should be able to remove keys at runtime."""
-        key_hash = hash_api_key("secret123")
+        """Should be able to remove keys by hash."""
+        # Get the hash of the first key to remove
+        key_hash = provider._keys[0].key_hash
         removed = provider.remove_key(key_hash)
         assert removed is True
-        assert len(provider._keys_by_hash) == 1
+        assert len(provider._keys) == 1
 
     def test_namespace_access_check(self, provider):
         """Should check namespace access for API key identities."""

@@ -78,6 +78,10 @@ class FileService:
         if not is_file_storage_enabled():
             raise FileServiceError("File storage is not enabled")
 
+        # Sanitise filename (L2 — prevent header injection, path traversal)
+        from .file_validation import sanitize_filename
+        filename = sanitize_filename(filename)
+
         # Get authenticated identity
         actor = get_identity_string()
 

@@ -5,7 +5,7 @@ Provides grant CRUD (bulk-first) and user-facing permission queries.
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from wip_auth import UserIdentity, get_current_identity
 
@@ -302,6 +302,7 @@ async def my_namespace_permission(
     summary="Check permission for a given identity (internal, service-to-service)",
 )
 async def check_permission_internal(
+    request: Request,
     namespace: str,
     user_id: str,
     email: str | None = None,
@@ -314,14 +315,19 @@ async def check_permission_internal(
     Services call this to resolve a user's permission on a namespace
     without that user being the direct caller.
 
+    Groups are read from the X-User-Groups header (preferred) or the
+    groups query parameter (legacy, deprecated).
+
     Only callable by admin/service API keys (superadmin check).
     """
     caller = get_current_identity()
     if not _is_superadmin(caller):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
-    # Build a synthetic identity for resolution
-    group_list = groups.split(",") if groups else []
+    # Prefer groups from header (M2 — avoid leaking in logs/caches)
+    header_groups = request.headers.get("X-User-Groups")
+    groups_str = header_groups or groups
+    group_list = groups_str.split(",") if groups_str else []
     synthetic = UserIdentity(
         user_id=user_id,
         username=email or user_id,
@@ -339,6 +345,7 @@ async def check_permission_internal(
     summary="Get accessible namespaces for a given identity (internal, service-to-service)",
 )
 async def accessible_namespaces_internal(
+    request: Request,
     user_id: str,
     email: str | None = None,
     groups: str | None = None,
@@ -349,12 +356,16 @@ async def accessible_namespaces_internal(
 
     Returns the list of namespace prefixes the user can access, plus
     whether they are a superadmin (meaning: access to everything).
+
+    Groups are read from X-User-Groups header (preferred) or groups query param.
     """
     caller = get_current_identity()
     if not _is_superadmin(caller):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
-    group_list = groups.split(",") if groups else []
+    header_groups = request.headers.get("X-User-Groups")
+    groups_str = header_groups or groups
+    group_list = groups_str.split(",") if groups_str else []
     synthetic = UserIdentity(
         user_id=user_id,
         username=email or user_id,

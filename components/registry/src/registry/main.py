@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth
+from wip_auth import check_production_security, setup_auth, setup_rate_limiting
 
 from .api import api_router
 from .models.entry import RegistryEntry
@@ -31,7 +31,7 @@ class Settings:
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_registry")
     MASTER_API_KEY: str | None = os.getenv("MASTER_API_KEY")
     AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "true").lower() == "true"
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
 
 
 settings = Settings()
@@ -40,7 +40,8 @@ settings = Settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
-    # Startup
+    # Startup — security check first
+    check_production_security()
     print("Starting WIP Registry Service...")
 
     # Initialize MongoDB connection
@@ -107,13 +108,16 @@ Admin operations (namespace management) require elevated privileges.
 providers = setup_auth(app)
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
+# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+setup_rate_limiting(app)
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type", "Accept"],
 )
 
 # Include API router
@@ -149,12 +153,14 @@ async def health_check():
             "auth_enabled": settings.AUTH_ENABLED,
         }
     except Exception as e:
+        import logging
+        logging.getLogger("registry.health").error("Health check failed: %s", e)
         raise HTTPException(
             status_code=503,
             detail={
                 "status": "unhealthy",
                 "database": "disconnected",
-                "error": str(e),
+                "error": "database connection failed",
             }
         )
 

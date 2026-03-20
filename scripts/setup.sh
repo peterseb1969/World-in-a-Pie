@@ -1049,6 +1049,7 @@ WIP_AUTH_MODE=$auth_mode
 WIP_AUTH_LEGACY_API_KEY=$api_key
 API_KEY=$api_key
 MASTER_API_KEY=$api_key
+WIP_AUTH_API_KEY_HASH_SALT=$( [ "$VARIANT" = "prod" ] && openssl rand -hex 16 || echo "wip_auth_salt" )
 
 # OIDC Settings
 WIP_AUTH_JWT_ISSUER_URL=$issuer_url
@@ -1084,6 +1085,7 @@ WIP_FILE_STORAGE_PUBLIC_ENDPOINT=http://${HOSTNAME:-localhost}:9000
 WIP_FILE_STORAGE_ACCESS_KEY=wip-minio-root
 WIP_FILE_STORAGE_SECRET_KEY=$minio_password
 WIP_FILE_STORAGE_BUCKET=wip-attachments
+WIP_MINIO_CONSOLE_PORT=$( [ "$VARIANT" = "prod" ] && echo "" || echo "9001" )
 
 # =============================================================================
 # POSTGRESQL
@@ -1095,13 +1097,20 @@ WIP_POSTGRES_PASSWORD=$postgres_password
 # =============================================================================
 WIP_NATS_TOKEN=$nats_token
 NATS_URL=$nats_url
+WIP_NATS_MONITOR_PORT=$( [ "$VARIANT" = "prod" ] && echo "" || echo "8222" )
 
 # =============================================================================
 # DEV/PROD BEHAVIOR
 # =============================================================================
 WIP_DEV_RELOAD=$( [ "$VARIANT" = "dev" ] && echo "true" || echo "" )
 WIP_RESTART_POLICY=$( [ "$VARIANT" = "dev" ] && echo "no" || echo "unless-stopped" )
-WIP_CORS_ORIGINS=$( [ "$VARIANT" = "dev" ] && echo "*" || echo "" )
+if [ "$VARIANT" = "dev" ]; then
+    WIP_CORS_ORIGINS="*"
+else
+    # Production: restrict CORS to the actual deployment hostname
+    WIP_CORS_ORIGINS="https://${HOSTNAME}:${HTTPS_PORT}"
+    [ "$LOCALHOST_MODE" = "true" ] || WIP_CORS_ORIGINS="${WIP_CORS_ORIGINS},https://localhost:${HTTPS_PORT}"
+fi
 WIP_CONSOLE_TARGET=production  # Always build dist into image (development target requires local npm run build)
 
 # =============================================================================
@@ -1555,8 +1564,16 @@ generate_caddy_config() {
         log_info "TLS: Self-signed internal certificates"
     fi
 
-    # Build security headers
-    local security_headers=""
+    # Build security headers (all deployment modes)
+    local security_headers="
+    # Security headers
+    header {
+        X-Content-Type-Options \"nosniff\"
+        X-Frame-Options \"SAMEORIGIN\"
+        Referrer-Policy \"strict-origin-when-cross-origin\"
+        X-XSS-Protection \"0\"
+        -Server
+    }"
     if [ "$VARIANT" = "prod" ]; then
         security_headers="
     # Security headers (production)
@@ -1565,6 +1582,9 @@ generate_caddy_config() {
         X-Content-Type-Options \"nosniff\"
         X-Frame-Options \"SAMEORIGIN\"
         Referrer-Policy \"strict-origin-when-cross-origin\"
+        Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'\"
+        X-XSS-Protection \"0\"
+        -Server
     }"
     fi
 

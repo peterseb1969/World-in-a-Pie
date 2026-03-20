@@ -65,6 +65,8 @@ from .providers import (
     hash_api_key,
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
+from .ratelimit import setup_rate_limiting
+from .security import check_production_security
 
 __version__ = "0.1.0"
 
@@ -113,6 +115,10 @@ __all__ = [
     # Setup
     "setup_auth",
     "create_providers_from_config",
+    # Rate limiting
+    "setup_rate_limiting",
+    # Security
+    "check_production_security",
 ]
 
 

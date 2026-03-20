@@ -43,6 +43,8 @@ from .search_service import (
     TermDocumentsResponse,
 )
 from .worker import run_sync_worker
+from wip_auth.ratelimit import setup_rate_limiting
+from wip_auth.security import check_production_security
 
 # Configure logging
 logging.basicConfig(
@@ -216,7 +218,8 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
-    # Startup
+    # Startup — security check first
+    check_production_security()
     logger.info(f"Starting {settings.service_name} v{__version__}...")
 
     try:
@@ -315,6 +318,9 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+setup_rate_limiting(app)
 
 router = APIRouter(prefix="/api/reporting-sync")
 

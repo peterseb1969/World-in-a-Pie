@@ -23,9 +23,9 @@ data:
   DOCUMENT_STORE_URL: "http://wip-document-store:8004"
   NATS_URL: "nats://wip-nats:4222"
 
-  # CORS — restrict in production
-  CORS_ORIGINS: "*"
-  WIP_CORS_ORIGINS: "*"
+  # CORS — restrict to your deployment hostname in production
+  CORS_ORIGINS: "https://localhost:8443"
+  WIP_CORS_ORIGINS: "https://localhost:8443"
 
   # File storage
   WIP_FILE_STORAGE_ENABLED: "true"

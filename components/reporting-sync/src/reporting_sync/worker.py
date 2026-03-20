@@ -148,7 +148,12 @@ class SyncWorker:
                     except Exception as e:
                         logger.error(f"Error inserting row for {document_id}: {e}")
                         logger.debug(f"SQL: {sql}")
-                        logger.debug(f"Values: {values}")
+                        # Truncate values to avoid logging sensitive document content (L4)
+                        truncated = [
+                            (str(v)[:100] + "..." if len(str(v)) > 100 else v)
+                            for v in values
+                        ]
+                        logger.debug(f"Values (truncated): {truncated}")
                         raise
 
             latency_ms = (time.perf_counter() - start_time) * 1000

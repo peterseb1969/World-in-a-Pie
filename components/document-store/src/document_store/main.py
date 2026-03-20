@@ -9,13 +9,19 @@ import os
 from contextlib import asynccontextmanager
 
 from beanie import init_beanie
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import RejectUnknownQueryParamsMiddleware, setup_auth
+from wip_auth import (
+    RejectUnknownQueryParamsMiddleware,
+    check_production_security,
+    setup_auth,
+    setup_rate_limiting,
+)
 
 from .api import api_router
+from .api.auth import require_api_key
 from .models.document import Document
 from .models.file import File
 from .services.def_store_client import configure_def_store_client, get_def_store_client
@@ -51,7 +57,8 @@ class Settings:
     DEF_STORE_URL: str = os.getenv("DEF_STORE_URL", "http://localhost:8002")
     DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
+    MAX_UPLOAD_SIZE: int = int(os.getenv("WIP_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024)))  # 100MB default
     # File storage settings (MinIO/S3)
     FILE_STORAGE_ENABLED: bool = os.getenv("WIP_FILE_STORAGE_ENABLED", "false").lower() == "true"
     FILE_STORAGE_ENDPOINT: str = os.getenv("WIP_FILE_STORAGE_ENDPOINT", "http://localhost:9000")
@@ -66,7 +73,8 @@ settings = Settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
-    # Startup
+    # Startup — security check first
+    check_production_security()
     print("Starting WIP Document Store Service...")
 
     # Initialize MongoDB connection
@@ -246,6 +254,9 @@ All endpoints require API key authentication via the `X-API-Key` header.
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
 setup_auth(app)
 
+# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+setup_rate_limiting(app)
+
 # Reject unknown query parameters (returns 422 for undeclared params)
 app.add_middleware(RejectUnknownQueryParamsMiddleware)
 
@@ -254,8 +265,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type", "Accept"],
 )
 
 # Include API router
@@ -287,7 +298,9 @@ async def health_check():
         await app.state.mongodb_client.admin.command('ping')
         mongo_status = "connected"
     except Exception as e:
-        mongo_status = f"error: {e!s}"
+        import logging
+        logging.getLogger("document_store.health").error("Health check failed: %s", e)
+        mongo_status = "error"
 
     # Check Registry
     registry_client = get_registry_client()
@@ -339,8 +352,8 @@ async def ready_check():
         raise HTTPException(status_code=503, detail={"ready": False})
 
 
-# Debug endpoints for performance analysis
-@app.get("/debug/timing", tags=["Debug"])
+# Debug endpoints for performance analysis (gated behind auth — H7)
+@app.get("/debug/timing", tags=["Debug"], dependencies=[Depends(require_api_key)])
 async def get_timing_stats():
     """
     Get timing statistics for document creation and validation.
@@ -372,7 +385,7 @@ async def get_timing_stats():
     }
 
 
-@app.post("/debug/timing/reset", tags=["Debug"])
+@app.post("/debug/timing/reset", tags=["Debug"], dependencies=[Depends(require_api_key)])
 async def reset_timing_stats():
     """Reset all timing statistics (creation and validation)."""
     from .services.document_service import DocumentService
@@ -382,7 +395,7 @@ async def reset_timing_stats():
     return {"status": "reset"}
 
 
-@app.get("/debug/cache", tags=["Debug"])
+@app.get("/debug/cache", tags=["Debug"], dependencies=[Depends(require_api_key)])
 async def get_cache_stats():
     """
     Get cache statistics for Template Store and Def-Store clients.
@@ -417,7 +430,7 @@ async def get_cache_stats():
     }
 
 
-@app.post("/debug/cache/clear", tags=["Debug"])
+@app.post("/debug/cache/clear", tags=["Debug"], dependencies=[Depends(require_api_key)])
 async def clear_caches():
     """Clear all caches (template and term validation)."""
     template_client = get_template_store_client()

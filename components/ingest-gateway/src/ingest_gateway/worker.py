@@ -81,6 +81,14 @@ class IngestWorker:
                 await msg.ack()  # Don't retry unknown subjects
                 return
 
+            # Basic message validation (M8 — reject clearly malformed payloads)
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Rejecting non-dict message on subject %s", subject
+                )
+                await msg.ack()
+                return
+
             # Extract correlation_id and payload
             # Support both wrapped format and direct payload
             if "correlation_id" in data and "payload" in data:

@@ -94,10 +94,27 @@ async def upload_file(
 
     service = get_file_service()
 
-    # Read file content
-    content = await file.read()
+    # Read file content with size limit to prevent OOM on resource-constrained devices
+    from ..main import settings as app_settings
+    max_size = app_settings.MAX_UPLOAD_SIZE
+    content = bytearray()
+    while True:
+        chunk = await file.read(65536)  # 64KB chunks
+        if not chunk:
+            break
+        content.extend(chunk)
+        if len(content) > max_size:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum upload size is {max_size // (1024 * 1024)}MB"
+            )
+    content = bytes(content)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
+
+    # Validate content type against allowlist (H5 — prevent malware uploads)
+    from ..services.file_validation import validate_upload_content_type
+    validate_upload_content_type(file.content_type or "application/octet-stream", file.filename or "unnamed")
 
     # Parse metadata from form fields
     metadata = FileUploadMetadata(

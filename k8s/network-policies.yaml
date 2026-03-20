@@ -1,0 +1,535 @@
+# WIP Kubernetes NetworkPolicies (M6)
+#
+# Restricts pod-to-pod communication to defined paths.
+# Without these, all pods can communicate freely — a compromised pod
+# could access any service or database directly.
+#
+# Communication paths:
+#   Ingress → all services (HTTP)
+#   Services → MongoDB (all 4 core services + reporting-sync reads)
+#   Services → Registry (def-store, template-store, document-store)
+#   Services → NATS (reporting-sync, ingest-gateway, + publishers)
+#   Reporting-sync → PostgreSQL
+#   Document-store → MinIO
+#   Template-store → Def-store
+#   Document-store → Template-store, Def-store
+#   Ingest-gateway → Def-store, Template-store, Document-store
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-default
+  namespace: wip
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# MongoDB: only accept connections from WIP services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mongodb-allow-services
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: registry
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+      ports:
+        - port: 27017
+          protocol: TCP
+
+---
+# PostgreSQL: only accept connections from reporting-sync
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-allow-reporting
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reporting-sync
+      ports:
+        - port: 5432
+          protocol: TCP
+
+---
+# NATS: accept from services that publish/subscribe events
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nats-allow-services
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reporting-sync
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest-gateway
+      ports:
+        - port: 4222
+          protocol: TCP
+
+---
+# MinIO: only accept connections from document-store
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-allow-docstore
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: minio
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+      ports:
+        - port: 9000
+          protocol: TCP
+
+---
+# Registry: accept from all services + ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: registry-allow-ingress
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest-gateway
+        - podSelector: {}  # Allow from ingress controller
+      ports:
+        - port: 8001
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - port: 27017
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Def-Store: accept from template-store, document-store, ingest-gateway, ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: def-store-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: def-store
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reporting-sync
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest-gateway
+        - podSelector: {}
+      ports:
+        - port: 8002
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - port: 27017
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: registry
+      ports:
+        - port: 8001
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Template-Store: accept from document-store, ingest-gateway, reporting-sync, ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: template-store-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: template-store
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: reporting-sync
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest-gateway
+        - podSelector: {}
+      ports:
+        - port: 8003
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - port: 27017
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: registry
+      ports:
+        - port: 8001
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+      ports:
+        - port: 8002
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Document-Store: accept from ingest-gateway, ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: document-store-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: document-store
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingest-gateway
+        - podSelector: {}
+      ports:
+        - port: 8004
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mongodb
+      ports:
+        - port: 27017
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: registry
+      ports:
+        - port: 8001
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+      ports:
+        - port: 8003
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+      ports:
+        - port: 8002
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+      ports:
+        - port: 9000
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Reporting-Sync: accept from ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: reporting-sync-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: reporting-sync
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8005
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      ports:
+        - port: 5432
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+      ports:
+        - port: 8003
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+      ports:
+        - port: 8004
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+      ports:
+        - port: 8002
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Ingest-Gateway: accept from ingress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingest-gateway-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingest-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 8006
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: nats
+      ports:
+        - port: 4222
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: def-store
+      ports:
+        - port: 8002
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: template-store
+      ports:
+        - port: 8003
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: document-store
+      ports:
+        - port: 8004
+          protocol: TCP
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+---
+# Console: accept from ingress only
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: console-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: console
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 80
+          protocol: TCP
+
+---
+# Dex: accept from ingress, egress to LDAP/external (if needed)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: dex-allow
+  namespace: wip
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: dex
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - port: 5556
+          protocol: TCP

@@ -13,19 +13,18 @@ Usage:
 """
 
 import os
-import time
 from typing import Literal
 
+from cachetools import TTLCache
 from fastapi import HTTPException
 
 from .config import get_auth_config
 from .models import UserIdentity
 
-# Cache: "user_id:namespace" → (permission, cached_at)
-_grant_cache: dict[str, tuple[str, float]] = {}
-# Cache: "user_id" → (namespace_list_or_None, cached_at)
-_accessible_cache: dict[str, tuple[list[str] | None, float]] = {}
+# Thread-safe TTL caches (L1 — prevents potential race conditions)
 GRANT_CACHE_TTL = 30.0  # seconds
+_grant_cache: TTLCache = TTLCache(maxsize=1024, ttl=GRANT_CACHE_TTL)
+_accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)
 
 # Permission hierarchy
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
@@ -60,17 +59,15 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
         return "admin"
 
     cache_key = f"{identity.user_id}:{namespace}"
-    now = time.monotonic()
 
-    # Check cache
-    if cache_key in _grant_cache:
-        permission, cached_at = _grant_cache[cache_key]
-        if (now - cached_at) < GRANT_CACHE_TTL:
-            return permission
+    # Check cache (TTLCache handles expiry automatically)
+    cached = _grant_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # Fetch from Registry
     permission = await _fetch_permission_from_registry(identity, namespace)
-    _grant_cache[cache_key] = (permission, now)
+    _grant_cache[cache_key] = permission
     return permission
 
 
@@ -98,15 +95,18 @@ async def _fetch_permission_from_registry(
     }
     if identity.email:
         params["email"] = identity.email
+
+    # Pass groups in header (M2 — avoid leaking group names in access logs/caches)
+    headers = {"X-API-Key": api_key}
     if identity.groups:
-        params["groups"] = ",".join(identity.groups)
+        headers["X-User-Groups"] = ",".join(identity.groups)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{registry_url}/api/registry/my/check-permission",
                 params=params,
-                headers={"X-API-Key": api_key},
+                headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -150,16 +150,18 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
         return None
 
     cache_key = identity.user_id
-    now = time.monotonic()
 
-    if cache_key in _accessible_cache:
-        namespaces, cached_at = _accessible_cache[cache_key]
-        if (now - cached_at) < GRANT_CACHE_TTL:
-            return namespaces
+    # Use sentinel to distinguish "not cached" from "cached None"
+    cached = _accessible_cache.get(cache_key, _SENTINEL)
+    if cached is not _SENTINEL:
+        return cached
 
     namespaces = await _fetch_accessible_from_registry(identity)
-    _accessible_cache[cache_key] = (namespaces, now)
+    _accessible_cache[cache_key] = namespaces
     return namespaces
+
+
+_SENTINEL = object()
 
 
 async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
@@ -178,15 +180,17 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
     }
     if identity.email:
         params["email"] = identity.email
+
+    headers = {"X-API-Key": api_key}
     if identity.groups:
-        params["groups"] = ",".join(identity.groups)
+        headers["X-User-Groups"] = ",".join(identity.groups)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(
                 f"{registry_url}/api/registry/my/accessible-namespaces",
                 params=params,
-                headers={"X-API-Key": api_key},
+                headers=headers,
             )
             if resp.status_code == 200:
                 data = resp.json()

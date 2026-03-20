@@ -29,6 +29,7 @@ resources:
 
   # Networking
   - ingress/ingress.yaml
+  - network-policies.yaml
 
 labels:
   - pairs:

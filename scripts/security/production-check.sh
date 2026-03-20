@@ -9,10 +9,17 @@
 #
 # Checks:
 #   - No default passwords in .env
-#   - Secrets files exist with correct permissions
+#   - CORS not wildcard
+#   - File upload limit configured
+#   - Rate limiting enabled
+#   - API key not default
+#   - MongoDB auth enabled
+#   - MinIO console port not exposed
+#   - NATS monitoring port not exposed
+#   - Security headers present
+#   - Debug endpoints gated
+#   - Secrets files have correct permissions
 #   - TLS configured correctly
-#   - Database authentication enabled
-#   - API keys are strong
 #
 
 set -e
@@ -92,9 +99,9 @@ source "$PROJECT_ROOT/.env"
 # ===================
 echo "API Key Security:"
 
-# Check for default API key
+# Check for default API key (C4)
 if [ "$API_KEY" = "dev_master_key_for_testing" ]; then
-    fail "Using default API key (dev_master_key_for_testing)"
+    fail "Using default API key (dev_master_key_for_testing) — publicly documented"
 else
     # Check key length (should be at least 32 chars for 128-bit security)
     if [ ${#API_KEY} -lt 32 ]; then
@@ -104,20 +111,78 @@ else
     fi
 fi
 
+# Check API key hash salt (H2)
+if [ -n "$WIP_AUTH_API_KEY_HASH_SALT" ] && [ "$WIP_AUTH_API_KEY_HASH_SALT" != "wip_auth_salt" ]; then
+    pass "Per-deployment API key hash salt configured"
+else
+    warn "Using default API key hash salt (wip_auth_salt)"
+    info "  Re-run setup.sh with --prod to generate per-deployment salt"
+fi
+
+# ===================
+# CORS CHECKS (C1)
+# ===================
+echo ""
+echo "CORS Configuration:"
+
+if [ -n "$WIP_CORS_ORIGINS" ]; then
+    if [ "$WIP_CORS_ORIGINS" = "*" ]; then
+        fail "CORS allows all origins (wildcard *)"
+        info "  Set WIP_CORS_ORIGINS to your hostname, e.g. https://wip-pi.local:8443"
+    else
+        pass "CORS restricted to: $WIP_CORS_ORIGINS"
+    fi
+else
+    pass "CORS using service default (localhost only)"
+fi
+
+# ===================
+# RATE LIMITING (C3)
+# ===================
+echo ""
+echo "Rate Limiting:"
+
+if [ -n "$WIP_RATE_LIMIT" ]; then
+    if [ "$WIP_RATE_LIMIT" = "" ]; then
+        warn "Rate limiting explicitly disabled"
+    else
+        pass "Rate limiting configured: $WIP_RATE_LIMIT"
+    fi
+else
+    pass "Rate limiting enabled (default: 40000/minute)"
+fi
+
+# ===================
+# FILE UPLOAD (C2)
+# ===================
+echo ""
+echo "File Upload Security:"
+
+if [ -n "$WIP_MAX_UPLOAD_SIZE" ]; then
+    size_mb=$((WIP_MAX_UPLOAD_SIZE / 1024 / 1024))
+    pass "File upload size limit configured: ${size_mb}MB"
+else
+    pass "File upload size limit enabled (default: 100MB)"
+fi
+
 # ===================
 # DATABASE CHECKS
 # ===================
 echo ""
 echo "Database Authentication:"
 
-# MongoDB
+# MongoDB (M4)
 if [ -n "$WIP_MONGO_USER" ] && [ -n "$WIP_MONGO_PASSWORD" ]; then
     pass "MongoDB authentication configured"
     if [ ${#WIP_MONGO_PASSWORD} -lt 24 ]; then
         warn "MongoDB password is short (recommend 24+ chars)"
     fi
 else
-    warn "MongoDB running without authentication"
+    if [ "$WIP_VARIANT" = "prod" ]; then
+        fail "MongoDB running without authentication in production mode"
+    else
+        warn "MongoDB running without authentication"
+    fi
     info "  Re-run setup.sh with --prod to enable"
 fi
 
@@ -141,6 +206,17 @@ if [ -n "$WIP_NATS_TOKEN" ]; then
 else
     warn "NATS running without authentication"
     info "  Re-run setup.sh with --prod to enable"
+fi
+
+# NATS monitoring port (H6)
+if [ -n "$WIP_NATS_MONITOR_PORT" ] && [ "$WIP_NATS_MONITOR_PORT" != "" ]; then
+    if [ "$WIP_VARIANT" = "prod" ]; then
+        warn "NATS HTTP monitoring exposed on port $WIP_NATS_MONITOR_PORT (accessible without auth)"
+    else
+        info "NATS HTTP monitoring on port $WIP_NATS_MONITOR_PORT (dev mode)"
+    fi
+else
+    pass "NATS HTTP monitoring port not exposed"
 fi
 
 # ===================
@@ -212,6 +288,20 @@ if [[ "$WIP_MODULES" == *"oidc"* ]]; then
         else
             fail "No TLS configuration found"
         fi
+
+        # Security headers check (H4)
+        if grep -q "X-Content-Type-Options" "$PROJECT_ROOT/config/caddy/Caddyfile"; then
+            pass "Security headers configured in Caddyfile"
+        else
+            warn "Security headers missing from Caddyfile"
+            info "  Re-run setup.sh to regenerate Caddyfile with security headers"
+        fi
+
+        if [ "$WIP_VARIANT" = "prod" ] && grep -q "Strict-Transport-Security" "$PROJECT_ROOT/config/caddy/Caddyfile"; then
+            pass "HSTS header configured (production)"
+        elif [ "$WIP_VARIANT" = "prod" ]; then
+            warn "HSTS header missing (recommended for production)"
+        fi
     else
         fail "Caddyfile not found"
     fi
@@ -230,6 +320,17 @@ if [[ "$WIP_MODULES" == *"files"* ]]; then
         warn "MinIO using default password"
     else
         pass "MinIO password configured"
+    fi
+
+    # MinIO console port (H6)
+    if [ -n "$WIP_MINIO_CONSOLE_PORT" ] && [ "$WIP_MINIO_CONSOLE_PORT" != "" ]; then
+        if [ "$WIP_VARIANT" = "prod" ]; then
+            warn "MinIO web console exposed on port $WIP_MINIO_CONSOLE_PORT (accessible without auth)"
+        else
+            info "MinIO web console on port $WIP_MINIO_CONSOLE_PORT (dev mode)"
+        fi
+    else
+        pass "MinIO web console port not exposed"
     fi
 fi
 

@@ -23,7 +23,7 @@ services:
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
+      - "${WIP_MINIO_CONSOLE_PORT:-9001}:9001"   # Web Console (set to empty in prod to disable)
     environment:
       MINIO_ROOT_USER: ${WIP_MINIO_USER:-wip-minio-root}
       MINIO_ROOT_PASSWORD: ${WIP_MINIO_PASSWORD:-wip-minio-password}

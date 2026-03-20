@@ -1474,6 +1474,18 @@ _patch_tool_schemas()
 
 def main():
     transport = "sse" if "--sse" in sys.argv else "stdio"
+
+    if transport == "sse":
+        import os
+        api_key = os.getenv("API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+        if not api_key:
+            print(
+                "WARNING: MCP server running in SSE mode without API key protection.\n"
+                "Anyone with network access will have full CRUD access via AI tools.\n"
+                "Set API_KEY environment variable for SSE transport.",
+                file=sys.stderr,
+            )
+
     mcp.run(transport=transport)
 
 

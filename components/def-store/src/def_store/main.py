@@ -13,7 +13,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import RejectUnknownQueryParamsMiddleware, setup_auth
+from wip_auth import (
+    RejectUnknownQueryParamsMiddleware,
+    check_production_security,
+    setup_auth,
+    setup_rate_limiting,
+)
 
 from .api import api_router
 from .models.audit_log import TermAuditLog
@@ -35,7 +40,7 @@ class Settings:
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
     REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     NATS_URL: str = os.getenv("NATS_URL", "")
-    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "*").split(",")
+    CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
 
 
 settings = Settings()
@@ -44,7 +49,8 @@ settings = Settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
-    # Startup
+    # Startup — security check first
+    check_production_security()
     print("Starting WIP Def-Store Service...")
 
     # Initialize MongoDB connection
@@ -142,6 +148,9 @@ unique, system-wide identifiers. IDs are configurable per namespace (default: UU
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
 setup_auth(app)
 
+# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+setup_rate_limiting(app)
+
 # Reject unknown query parameters (returns 422 for undeclared params)
 app.add_middleware(RejectUnknownQueryParamsMiddleware)
 
@@ -150,8 +159,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "X-API-Key", "Content-Type", "Accept"],
 )
 
 # Include API router
@@ -183,7 +192,9 @@ async def health_check():
         await app.state.mongodb_client.admin.command('ping')
         mongo_status = "connected"
     except Exception as e:
-        mongo_status = f"error: {e!s}"
+        import logging
+        logging.getLogger("def_store.health").error("Health check failed: %s", e)
+        mongo_status = "error"
 
     # Check Registry
     registry_client = get_registry_client()
