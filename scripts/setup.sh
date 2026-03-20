@@ -1575,6 +1575,12 @@ generate_caddy_config() {
         -Server
     }"
     if [ "$VARIANT" = "prod" ]; then
+        # In localhost mode, OIDC token exchange goes to http://localhost:5556
+        # (not through Caddy), so CSP connect-src must allow it.
+        local connect_src="'self'"
+        if [ "$LOCALHOST_MODE" = "true" ] && has_feature "oidc"; then
+            connect_src="'self' http://localhost:5556"
+        fi
         security_headers="
     # Security headers (production)
     header {
@@ -1582,7 +1588,7 @@ generate_caddy_config() {
         X-Content-Type-Options \"nosniff\"
         X-Frame-Options \"SAMEORIGIN\"
         Referrer-Policy \"strict-origin-when-cross-origin\"
-        Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'\"
+        Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src $connect_src\"
         X-XSS-Protection \"0\"
         -Server
     }"
