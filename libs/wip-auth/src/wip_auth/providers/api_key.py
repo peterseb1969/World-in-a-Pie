@@ -107,6 +107,10 @@ class APIKeyProvider:
         # Store enabled keys for iteration-based bcrypt verification
         self._keys: list[APIKeyRecord] = [k for k in keys if k.enabled]
 
+        # Cache: SHA-256(plaintext_key) → APIKeyRecord after first bcrypt verify.
+        # Avoids re-running bcrypt (~3ms) on every request for the same key.
+        self._verified_cache: dict[str, APIKeyRecord] = {}
+
         # Warn about legacy SHA-256 hashes
         for key in self._keys:
             if _is_sha256_hash(key.key_hash):
@@ -121,12 +125,14 @@ class APIKeyProvider:
         """Add a new API key at runtime."""
         if key.enabled:
             self._keys.append(key)
+            self._verified_cache.clear()
 
     def remove_key(self, key_hash: str) -> bool:
         """Remove an API key by its hash."""
         for i, key in enumerate(self._keys):
             if key.key_hash == key_hash:
                 self._keys.pop(i)
+                self._verified_cache.clear()
                 return True
         return False
 
@@ -137,14 +143,24 @@ class APIKeyProvider:
     def _validate_key(self, api_key: str) -> tuple[APIKeyRecord | None, str | None]:
         """Validate an API key against all registered keys.
 
-        Iterates through all keys and uses bcrypt.checkpw() for
-        constant-time verification. With typical key counts (1-5),
-        this adds ~1-5ms overhead — negligible vs. DB operations.
+        Uses a fast SHA-256 fingerprint cache so bcrypt only runs once
+        per unique key. Subsequent requests hit the O(1) cache lookup.
         """
+        # Fast path: check cache with SHA-256 fingerprint of plaintext key
+        fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
+        cached = self._verified_cache.get(fingerprint)
+        if cached is not None:
+            if cached.is_expired():
+                self._verified_cache.pop(fingerprint, None)
+                return None, "API key has expired"
+            return cached, None
+
+        # Slow path: bcrypt verify against all registered keys
         for record in self._keys:
             if verify_api_key(api_key, record.key_hash, self.hash_salt):
                 if record.is_expired():
                     return None, "API key has expired"
+                self._verified_cache[fingerprint] = record
                 return record, None
 
         return None, "Invalid API key"
