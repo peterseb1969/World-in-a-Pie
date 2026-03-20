@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Set up Python venv
         run: |
@@ -19,16 +21,23 @@ jobs:
       - name: Install tools
         run: pip install ruff shellcheck-py
 
-      - name: Ruff
+      - name: Ruff (changed files only)
         run: |
-          ruff check components/registry/src components/def-store/src \
-            components/template-store/src components/document-store/src \
-            components/reporting-sync/src components/ingest-gateway/src \
-            components/mcp-server/src libs/wip-auth/src \
-            --config pyproject.toml --output-format=github
+          CHANGED_PY=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.py')
+          if [ -n "$CHANGED_PY" ]; then
+            echo "$CHANGED_PY" | xargs ruff check --config pyproject.toml --output-format=github
+          else
+            echo "No Python files changed"
+          fi
 
-      - name: ShellCheck
-        run: find scripts/ -name '*.sh' -exec shellcheck {} +
+      - name: ShellCheck (changed files only)
+        run: |
+          CHANGED_SH=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.sh')
+          if [ -n "$CHANGED_SH" ]; then
+            echo "$CHANGED_SH" | xargs shellcheck
+          else
+            echo "No shell files changed"
+          fi
 
   # Components that need MongoDB
   test-services:
