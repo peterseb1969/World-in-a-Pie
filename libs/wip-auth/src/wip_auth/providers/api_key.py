@@ -41,8 +41,11 @@ def hash_api_key(key: str, salt: str = "wip_auth_salt") -> str:
     Returns:
         Bcrypt hash string (starts with $2b$)
     """
+    # bcrypt has a 72-byte input limit. Pre-hash with SHA-256 to support
+    # arbitrarily long salt+key combinations while preserving full entropy.
     salted = f"{salt}:{key}"
-    return bcrypt.hashpw(salted.encode(), bcrypt.gensalt()).decode()
+    prehash = hashlib.sha256(salted.encode()).digest()
+    return bcrypt.hashpw(prehash, bcrypt.gensalt()).decode()
 
 
 def verify_api_key(key: str, key_hash: str, salt: str = "wip_auth_salt") -> bool:
@@ -63,7 +66,9 @@ def verify_api_key(key: str, key_hash: str, salt: str = "wip_auth_salt") -> bool
 
     if _is_bcrypt_hash(key_hash):
         try:
-            return bcrypt.checkpw(salted.encode(), key_hash.encode())
+            # Pre-hash to match hash_api_key() (handles >72-byte inputs)
+            prehash = hashlib.sha256(salted.encode()).digest()
+            return bcrypt.checkpw(prehash, key_hash.encode())
         except (ValueError, TypeError):
             return False
 
