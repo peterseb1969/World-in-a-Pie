@@ -1,30 +1,28 @@
 """Template service for business logic."""
 
-from datetime import datetime, timezone
-from typing import Optional
-
-from ..models.template import Template, TemplateMetadata
-from ..models.api_models import (
-    CreateTemplateRequest,
-    UpdateTemplateRequest,
-    TemplateResponse,
-    TemplateUpdateResponse,
-    BulkResultItem,
-    ValidateTemplateResponse,
-    ValidationError,
-    ValidationWarning,
-    CascadeResult,
-    CascadeResponse,
-)
-from .registry_client import get_registry_client, RegistryError
-from .def_store_client import get_def_store_client, DefStoreError
-from .inheritance_service import InheritanceService, InheritanceError
-from .nats_client import publish_template_event, EventType
-from .reference_validator import get_reference_validator, ReferenceValidationError
+from datetime import UTC, datetime
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
+from ..models.api_models import (
+    BulkResultItem,
+    CascadeResponse,
+    CascadeResult,
+    CreateTemplateRequest,
+    TemplateResponse,
+    TemplateUpdateResponse,
+    UpdateTemplateRequest,
+    ValidateTemplateResponse,
+    ValidationError,
+    ValidationWarning,
+)
+from ..models.template import Template, TemplateMetadata
+from .def_store_client import DefStoreError, get_def_store_client
+from .inheritance_service import InheritanceError, InheritanceService
+from .nats_client import EventType, publish_template_event
+from .reference_validator import ReferenceValidationError, get_reference_validator
+from .registry_client import get_registry_client
 
 
 class TemplateService:
@@ -156,12 +154,12 @@ class TemplateService:
 
     @staticmethod
     async def get_template(
-        template_id: Optional[str] = None,
-        value: Optional[str] = None,
-        version: Optional[int] = None,
+        template_id: str | None = None,
+        value: str | None = None,
+        version: int | None = None,
         resolve_inheritance: bool = True,
-        namespace: Optional[str] = None
-    ) -> Optional[TemplateResponse]:
+        namespace: str | None = None
+    ) -> TemplateResponse | None:
         """
         Get a template by ID or value.
 
@@ -214,9 +212,9 @@ class TemplateService:
 
     @staticmethod
     async def get_template_raw(
-        template_id: Optional[str] = None,
-        value: Optional[str] = None
-    ) -> Optional[TemplateResponse]:
+        template_id: str | None = None,
+        value: str | None = None
+    ) -> TemplateResponse | None:
         """
         Get a template by ID or value without inheritance resolution.
 
@@ -235,14 +233,14 @@ class TemplateService:
 
     @staticmethod
     async def list_templates(
-        status: Optional[str] = None,
-        extends: Optional[str] = None,
-        value: Optional[str] = None,
+        status: str | None = None,
+        extends: str | None = None,
+        value: str | None = None,
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        namespace: Optional[str] = None,
-        allowed_namespaces: Optional[list[str]] = None,
+        namespace: str | None = None,
+        allowed_namespaces: list[str] | None = None,
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -314,7 +312,7 @@ class TemplateService:
     @staticmethod
     async def get_template_versions(
         value: str,
-        namespace: Optional[str] = None
+        namespace: str | None = None
     ) -> list[TemplateResponse]:
         """
         Get all versions of a template by value.
@@ -340,7 +338,7 @@ class TemplateService:
         value: str,
         version: int,
         resolve_inheritance: bool = True
-    ) -> Optional[TemplateResponse]:
+    ) -> TemplateResponse | None:
         """
         Get a specific version of a template by value and version number.
 
@@ -449,7 +447,7 @@ class TemplateService:
     async def update_template(
         template_id: str,
         request: UpdateTemplateRequest
-    ) -> Optional[TemplateUpdateResponse]:
+    ) -> TemplateUpdateResponse | None:
         """
         Update a template by creating a new version.
 
@@ -497,7 +495,7 @@ class TemplateService:
         if new_value != original.value:
             existing_other = await Template.find_one({
                 "value": new_value,
-                "value": {"$ne": original.value}  # Different template family
+                "namespace": original.namespace,
             })
             if existing_other:
                 raise ValueError(f"Template with value '{new_value}' already exists")
@@ -540,9 +538,9 @@ class TemplateService:
             metadata=request.metadata if request.metadata is not None else original.metadata,
             reporting=request.reporting if request.reporting is not None else original.reporting,
             status="active",
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             created_by=actor,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
             updated_by=actor,
         )
         await new_template.insert()
@@ -565,8 +563,8 @@ class TemplateService:
     @staticmethod
     async def delete_template(
         template_id: str,
-        updated_by: Optional[str] = None,  # Deprecated: uses authenticated identity
-        version: Optional[int] = None
+        updated_by: str | None = None,  # Deprecated: uses authenticated identity
+        version: int | None = None
     ) -> bool:
         """
         Soft-delete a template version (set status to inactive).
@@ -603,7 +601,7 @@ class TemplateService:
 
         # Deactivate template
         template.status = "inactive"
-        template.updated_at = datetime.now(timezone.utc)
+        template.updated_at = datetime.now(UTC)
         template.updated_by = actor
         await template.save()
 
@@ -623,7 +621,7 @@ class TemplateService:
     @staticmethod
     async def create_templates_bulk(
         templates: list[CreateTemplateRequest],
-        created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
+        created_by: str | None = None,  # Deprecated: uses authenticated identity
         namespace: str = "wip",
     ) -> list[BulkResultItem]:
         """
@@ -822,7 +820,7 @@ class TemplateService:
                         warnings.append(ValidationWarning(
                             field=f"fields.{field.name}.terminology_ref",
                             code="validation_failed",
-                            message=f"Could not validate terminology: {str(e)}"
+                            message=f"Could not validate terminology: {e!s}"
                         ))
 
                 if field.array_terminology_ref:
@@ -840,7 +838,7 @@ class TemplateService:
                         warnings.append(ValidationWarning(
                             field=f"fields.{field.name}.array_terminology_ref",
                             code="validation_failed",
-                            message=f"Could not validate terminology: {str(e)}"
+                            message=f"Could not validate terminology: {e!s}"
                         ))
 
         # Check template refs in fields
@@ -923,7 +921,7 @@ class TemplateService:
                                         warnings.append(ValidationWarning(
                                             field=f"fields.{field.name}.target_terminologies",
                                             code="validation_failed",
-                                            message=f"Could not validate terminology: {str(e)}"
+                                            message=f"Could not validate terminology: {e!s}"
                                         ))
 
         return ValidateTemplateResponse(
@@ -1036,9 +1034,9 @@ class TemplateService:
                     metadata=child.metadata,
                     reporting=child.reporting,
                     status="active",
-                    created_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(UTC),
                     created_by=actor,
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(UTC),
                     updated_by=actor,
                 )
                 await new_child.insert()
@@ -1229,7 +1227,7 @@ class TemplateService:
                         warnings.append(ValidationWarning(
                             field=f"{prefix}fields.{field.name}.terminology_ref",
                             code="validation_failed",
-                            message=f"Could not validate terminology: {str(e)}"
+                            message=f"Could not validate terminology: {e!s}"
                         ))
 
                 if field.array_terminology_ref:
@@ -1247,7 +1245,7 @@ class TemplateService:
                         warnings.append(ValidationWarning(
                             field=f"{prefix}fields.{field.name}.array_terminology_ref",
                             code="validation_failed",
-                            message=f"Could not validate terminology: {str(e)}"
+                            message=f"Could not validate terminology: {e!s}"
                         ))
 
                 # Template refs
@@ -1348,7 +1346,7 @@ class TemplateService:
                                         warnings.append(ValidationWarning(
                                             field=f"{prefix}fields.{field.name}.target_terminologies",
                                             code="validation_failed",
-                                            message=f"Could not validate terminology: {str(e)}"
+                                            message=f"Could not validate terminology: {e!s}"
                                         ))
 
         return errors, warnings
@@ -1449,7 +1447,7 @@ class TemplateService:
 
         # Activate all templates in the set
         actor = get_identity_string()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         activated_ids = []
 
         for t in activation_set:
@@ -1536,7 +1534,7 @@ class TemplateService:
     async def _find_template_by_ref(
         ref: str,
         namespace: str
-    ) -> Optional[Template]:
+    ) -> Template | None:
         """
         Find a template by reference (ID or value).
 

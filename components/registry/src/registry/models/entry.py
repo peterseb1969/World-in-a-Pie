@@ -1,7 +1,7 @@
 """Registry entry model for the Registry service."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -15,7 +15,7 @@ class SourceInfo(BaseModel):
         ...,
         description="Identifier of the source system"
     )
-    endpoint_url: Optional[str] = Field(
+    endpoint_url: str | None = Field(
         None,
         description="API endpoint URL for proxied queries"
     )
@@ -40,14 +40,14 @@ class Synonym(BaseModel):
         ...,
         description="SHA-256 hash of the composite key"
     )
-    source_info: Optional[SourceInfo] = Field(
+    source_info: SourceInfo | None = Field(
         None,
         description="Source system information"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this synonym"
     )
@@ -98,7 +98,7 @@ class RegistryEntry(Document):
     )
 
     # Source system that owns this entry
-    source_info: Optional[SourceInfo] = Field(
+    source_info: SourceInfo | None = Field(
         None,
         description="Source system information"
     )
@@ -111,16 +111,16 @@ class RegistryEntry(Document):
 
     # Timestamps
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this entry"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this entry"
     )
@@ -179,7 +179,7 @@ class RegistryEntry(Document):
         hashes.extend(s.composite_key_hash for s in self.synonyms)
         return hashes
 
-    def find_synonym_by_hash(self, key_hash: str) -> Optional[Synonym]:
+    def find_synonym_by_hash(self, key_hash: str) -> Synonym | None:
         """Find a synonym by its composite key hash."""
         for syn in self.synonyms:
             if syn.composite_key_hash == key_hash:

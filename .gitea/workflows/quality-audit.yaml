@@ -1,0 +1,32 @@
+name: Quality Audit
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  quality-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install Python tools
+        run: pip install ruff mypy vulture radon
+
+      - name: Install ShellCheck
+        run: pip install shellcheck-py
+
+      - name: Run quality audit (quick)
+        run: ./scripts/quality-audit.sh --quick --ci
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-report
+          path: reports/quality-audit/REPORT.md

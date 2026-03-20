@@ -6,8 +6,8 @@ Provides unified search across all WIP services and reverse lookups.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import asyncpg
 import httpx
@@ -222,7 +222,7 @@ class SearchService:
                 1 if r.id.lower() == query_lower else
                 2 if r.value and query_lower in r.value.lower() else
                 3,
-                r.updated_at or datetime.min.replace(tzinfo=timezone.utc)
+                r.updated_at or datetime.min.replace(tzinfo=UTC)
             ),
             reverse=False  # Lower score = better match
         )
@@ -511,7 +511,7 @@ class SearchService:
                         timestamp = updated_at
                     else:
                         action = "created"
-                        timestamp = created_at or datetime.now(timezone.utc)
+                        timestamp = created_at or datetime.now(UTC)
 
                     items.append(ActivityItem(
                         type="terminology",
@@ -566,7 +566,7 @@ class SearchService:
                             timestamp = updated_at
                         else:
                             action = "created"
-                            timestamp = created_at or datetime.now(timezone.utc)
+                            timestamp = created_at or datetime.now(UTC)
 
                         items.append(ActivityItem(
                             type="term",
@@ -606,10 +606,10 @@ class SearchService:
                     # Version > 1 means updated
                     if version > 1:
                         action = "updated"
-                        timestamp = updated_at or created_at or datetime.now(timezone.utc)
+                        timestamp = updated_at or created_at or datetime.now(UTC)
                     else:
                         action = "created"
-                        timestamp = created_at or datetime.now(timezone.utc)
+                        timestamp = created_at or datetime.now(UTC)
 
                     items.append(ActivityItem(
                         type="template",
@@ -662,10 +662,10 @@ class SearchService:
 
                     if version > 1:
                         action = "updated"
-                        timestamp = updated_at or created_at or datetime.now(timezone.utc)
+                        timestamp = updated_at or created_at or datetime.now(UTC)
                     else:
                         action = "created"
-                        timestamp = created_at or datetime.now(timezone.utc)
+                        timestamp = created_at or datetime.now(UTC)
 
                     # Get template_value from our lookup (API returns null)
                     template_id = item.get("template_id")
@@ -1284,13 +1284,13 @@ class SearchService:
                     status = item.get("status", "")
                     if status == "inactive":
                         action = "deleted"
-                        timestamp = updated_at or uploaded_at or datetime.now(timezone.utc)
+                        timestamp = updated_at or uploaded_at or datetime.now(UTC)
                     elif updated_at and uploaded_at and updated_at > uploaded_at:
                         action = "updated"
                         timestamp = updated_at
                     else:
                         action = "created"
-                        timestamp = uploaded_at or datetime.now(timezone.utc)
+                        timestamp = uploaded_at or datetime.now(UTC)
 
                     items.append(ActivityItem(
                         type="file",

@@ -1,57 +1,15 @@
 """Data models for the Registry service."""
 
 # Core models
-from .id_algorithm import IdAlgorithmConfig, IdFormatValidator, IdGenerator, DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES
-from .namespace import Namespace
-from .entry import RegistryEntry, Synonym, SourceInfo
-from .id_counter import IdCounter
-from .grant import NamespaceGrant, GrantCreate, GrantRevoke, GrantResponse, MyNamespaceResponse
-
 # API models
 from .api_models import (
-    # User-facing Namespace API models
-    NamespaceCreate,
-    NamespaceUpdate,
-    NamespaceResponse,
-    NamespaceStatsResponse,
-    # Registration API models
-    RegisterKeyItem,
-    RegisterKeyResponse,
-    RegisterBulkResponse,
-    # Provision API models
-    ProvisionRequest,
-    ProvisionedId,
-    ProvisionResponse,
-    # Reserve API models
-    ReserveItem,
-    ReserveItemResponse,
-    ReserveBulkResponse,
+    ActivateBulkResponse,
     # Activate API models
     ActivateItem,
     ActivateItemResponse,
-    ActivateBulkResponse,
     # Synonym API models
     AddSynonymItem,
     AddSynonymResponse,
-    RemoveSynonymItem,
-    RemoveSynonymResponse,
-    # Merge API models
-    MergeItem,
-    MergeResponse,
-    # Lookup API models
-    LookupByIdItem,
-    LookupByKeyItem,
-    LookupResponse,
-    LookupBulkResponse,
-    # Search API models
-    SearchItem,
-    SearchByTermItem,
-    SearchResult,
-    SearchResponse,
-    SearchBulkResponse,
-    # Update API models
-    UpdateEntryItem,
-    UpdateEntryResponse,
     # Delete API models
     DeleteItem,
     DeleteResponse,
@@ -59,7 +17,48 @@ from .api_models import (
     ExportResponse,
     ImportRequest,
     ImportResponse,
+    LookupBulkResponse,
+    # Lookup API models
+    LookupByIdItem,
+    LookupByKeyItem,
+    LookupResponse,
+    # Merge API models
+    MergeItem,
+    MergeResponse,
+    # User-facing Namespace API models
+    NamespaceCreate,
+    NamespaceResponse,
+    NamespaceStatsResponse,
+    NamespaceUpdate,
+    ProvisionedId,
+    # Provision API models
+    ProvisionRequest,
+    ProvisionResponse,
+    RegisterBulkResponse,
+    # Registration API models
+    RegisterKeyItem,
+    RegisterKeyResponse,
+    RemoveSynonymItem,
+    RemoveSynonymResponse,
+    ReserveBulkResponse,
+    # Reserve API models
+    ReserveItem,
+    ReserveItemResponse,
+    SearchBulkResponse,
+    SearchByTermItem,
+    # Search API models
+    SearchItem,
+    SearchResponse,
+    SearchResult,
+    # Update API models
+    UpdateEntryItem,
+    UpdateEntryResponse,
 )
+from .entry import RegistryEntry, SourceInfo, Synonym
+from .grant import GrantCreate, GrantResponse, GrantRevoke, MyNamespaceResponse, NamespaceGrant
+from .id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES, IdAlgorithmConfig, IdFormatValidator, IdGenerator
+from .id_counter import IdCounter
+from .namespace import Namespace
 
 __all__ = [
     # Core models

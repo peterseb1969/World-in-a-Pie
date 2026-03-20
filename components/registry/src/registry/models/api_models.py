@@ -1,12 +1,11 @@
 """API request and response models for the Registry service."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .id_algorithm import IdAlgorithmConfig
-from .entry import Synonym, SourceInfo
+from .entry import SourceInfo, Synonym
 
 
 class StrictModel(BaseModel):
@@ -31,21 +30,21 @@ class NamespaceCreate(StrictModel):
         default_factory=list,
         description="For open mode, optional allowlist of external namespace prefixes"
     )
-    id_config: Optional[dict[str, Any]] = Field(
+    id_config: dict[str, Any] | None = Field(
         None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
-    created_by: Optional[str] = Field(None, description="User creating the namespace")
+    created_by: str | None = Field(None, description="User creating the namespace")
 
 
 class NamespaceUpdate(StrictModel):
     """Request model for updating a user-facing namespace."""
 
-    description: Optional[str] = None
-    isolation_mode: Optional[str] = None
-    allowed_external_refs: Optional[list[str]] = None
-    id_config: Optional[dict[str, Any]] = None
-    updated_by: Optional[str] = None
+    description: str | None = None
+    isolation_mode: str | None = None
+    allowed_external_refs: list[str] | None = None
+    id_config: dict[str, Any] | None = None
+    updated_by: str | None = None
 
 
 class NamespaceResponse(BaseModel):
@@ -58,9 +57,9 @@ class NamespaceResponse(BaseModel):
     id_config: dict[str, Any]
     status: str
     created_at: datetime
-    created_by: Optional[str]
+    created_by: str | None
     updated_at: datetime
-    updated_by: Optional[str]
+    updated_by: str | None
 
 
 class NamespaceStatsResponse(BaseModel):
@@ -90,7 +89,7 @@ class BrowseEntryItem(BaseModel):
     synonyms_count: int
     status: str
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
 
 
@@ -113,15 +112,15 @@ class RegisterKeyItem(StrictModel):
 
     namespace: str = Field(default="wip", description="Namespace")
     entity_type: str = Field(default="terms", description="Entity type")
-    entry_id: Optional[str] = Field(None, description="Client-provided ID (if not provided, registry generates one)")
+    entry_id: str | None = Field(None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
-    identity_values: Optional[dict[str, Any]] = Field(
+    identity_values: dict[str, Any] | None = Field(
         None,
         description="Raw identity field values. Registry computes identity_hash, "
                     "injects it into composite_key, and creates a synonym with the raw values."
     )
-    source_info: Optional[SourceInfo] = Field(None, description="Source system info")
-    created_by: Optional[str] = Field(None, description="Creator identifier")
+    source_info: SourceInfo | None = Field(None, description="Source system info")
+    created_by: str | None = Field(None, description="Creator identifier")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -130,11 +129,11 @@ class RegisterKeyResponse(BaseModel):
 
     input_index: int
     status: str  # created, already_exists, error
-    registry_id: Optional[str] = None
-    namespace: Optional[str] = None
-    entity_type: Optional[str] = None
-    identity_hash: Optional[str] = None
-    error: Optional[str] = None
+    registry_id: str | None = None
+    namespace: str | None = None
+    entity_type: str | None = None
+    identity_hash: str | None = None
+    error: str | None = None
 
 
 class RegisterBulkResponse(BaseModel):
@@ -157,11 +156,11 @@ class ProvisionRequest(StrictModel):
     namespace: str = Field(..., description="Namespace")
     entity_type: str = Field(..., description="Entity type")
     count: int = Field(default=1, description="Number of IDs to provision", ge=1, le=1000)
-    composite_keys: Optional[list[dict[str, Any]]] = Field(
+    composite_keys: list[dict[str, Any]] | None = Field(
         None,
         description="Optional composite keys to associate with provisioned IDs"
     )
-    created_by: Optional[str] = Field(None, description="Creator identifier")
+    created_by: str | None = Field(None, description="Creator identifier")
 
 
 class ProvisionedId(BaseModel):
@@ -190,8 +189,8 @@ class ReserveItem(StrictModel):
     entry_id: str = Field(..., description="Client-provided ID")
     namespace: str = Field(..., description="Namespace")
     entity_type: str = Field(..., description="Entity type")
-    composite_key: Optional[dict[str, Any]] = Field(None, description="Composite key values")
-    created_by: Optional[str] = Field(None, description="Creator identifier")
+    composite_key: dict[str, Any] | None = Field(None, description="Composite key values")
+    created_by: str | None = Field(None, description="Creator identifier")
 
 
 class ReserveItemResponse(BaseModel):
@@ -199,8 +198,8 @@ class ReserveItemResponse(BaseModel):
 
     input_index: int
     status: str  # reserved, already_exists, invalid_format, error
-    entry_id: Optional[str] = None
-    error: Optional[str] = None
+    entry_id: str | None = None
+    error: str | None = None
 
 
 class ReserveBulkResponse(BaseModel):
@@ -227,8 +226,8 @@ class ActivateItemResponse(BaseModel):
 
     input_index: int
     status: str  # activated, not_found, already_active, error
-    entry_id: Optional[str] = None
-    error: Optional[str] = None
+    entry_id: str | None = None
+    error: str | None = None
 
 
 class ActivateBulkResponse(BaseModel):
@@ -251,8 +250,8 @@ class AddSynonymItem(StrictModel):
     synonym_namespace: str = Field(..., description="Namespace for the synonym")
     synonym_entity_type: str = Field(..., description="Entity type for the synonym")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
-    synonym_source_info: Optional[SourceInfo] = Field(None, description="Source info for synonym")
-    created_by: Optional[str] = Field(None, description="Creator identifier")
+    synonym_source_info: SourceInfo | None = Field(None, description="Source info for synonym")
+    created_by: str | None = Field(None, description="Creator identifier")
 
 
 class AddSynonymResponse(BaseModel):
@@ -260,8 +259,8 @@ class AddSynonymResponse(BaseModel):
 
     input_index: int
     status: str  # added, already_exists, target_not_found, error
-    registry_id: Optional[str] = None
-    error: Optional[str] = None
+    registry_id: str | None = None
+    error: str | None = None
 
 
 class RemoveSynonymItem(StrictModel):
@@ -271,7 +270,7 @@ class RemoveSynonymItem(StrictModel):
     synonym_namespace: str = Field(..., description="Namespace of synonym to remove")
     synonym_entity_type: str = Field(..., description="Entity type of synonym to remove")
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key of synonym to remove")
-    updated_by: Optional[str] = Field(None, description="Updater identifier")
+    updated_by: str | None = Field(None, description="Updater identifier")
 
 
 class RemoveSynonymResponse(BaseModel):
@@ -279,8 +278,8 @@ class RemoveSynonymResponse(BaseModel):
 
     input_index: int
     status: str  # removed, not_found, error
-    registry_id: Optional[str] = None
-    error: Optional[str] = None
+    registry_id: str | None = None
+    error: str | None = None
 
 
 # =============================================================================
@@ -292,7 +291,7 @@ class MergeItem(StrictModel):
 
     preferred_id: str
     deprecated_id: str
-    updated_by: Optional[str] = Field(None, description="Updater identifier")
+    updated_by: str | None = Field(None, description="Updater identifier")
 
 
 class MergeResponse(BaseModel):
@@ -300,9 +299,9 @@ class MergeResponse(BaseModel):
 
     input_index: int
     status: str  # merged, preferred_not_found, deprecated_not_found, error
-    preferred_id: Optional[str] = None
-    deprecated_id: Optional[str] = None
-    error: Optional[str] = None
+    preferred_id: str | None = None
+    deprecated_id: str | None = None
+    error: str | None = None
 
 
 # =============================================================================
@@ -313,8 +312,8 @@ class LookupByIdItem(StrictModel):
     """Request model for looking up by ID."""
 
     entry_id: str = Field(..., description="The entry ID to look up")
-    namespace: Optional[str] = Field(default=None, description="Namespace filter")
-    entity_type: Optional[str] = Field(default=None, description="Entity type filter")
+    namespace: str | None = Field(default=None, description="Namespace filter")
+    entity_type: str | None = Field(default=None, description="Entity type filter")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
@@ -334,25 +333,25 @@ class LookupResponse(BaseModel):
     input_index: int
     status: str  # found, not_found, error
 
-    entry_id: Optional[str] = None
-    namespace: Optional[str] = None
-    entity_type: Optional[str] = None
+    entry_id: str | None = None
+    namespace: str | None = None
+    entity_type: str | None = None
 
-    matched_namespace: Optional[str] = None
-    matched_entity_type: Optional[str] = None
-    matched_composite_key: Optional[dict[str, Any]] = None
+    matched_namespace: str | None = None
+    matched_entity_type: str | None = None
+    matched_composite_key: dict[str, Any] | None = None
 
     synonyms: list[Synonym] = Field(default_factory=list)
 
-    matched_via: Optional[str] = Field(
+    matched_via: str | None = Field(
         None,
         description="How the match was found: entry_id or composite_key_value"
     )
 
-    source_info: Optional[SourceInfo] = None
-    source_data: Optional[dict[str, Any]] = None
+    source_info: SourceInfo | None = None
+    source_data: dict[str, Any] | None = None
 
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class LookupBulkResponse(BaseModel):
@@ -376,11 +375,11 @@ class SearchItem(StrictModel):
         ...,
         description="Field-value pairs to search for in composite keys"
     )
-    restrict_to_namespaces: Optional[list[str]] = Field(
+    restrict_to_namespaces: list[str] | None = Field(
         None,
         description="Only search in these namespaces (None = all)"
     )
-    restrict_to_entity_types: Optional[list[str]] = Field(
+    restrict_to_entity_types: list[str] | None = Field(
         None,
         description="Only search in these entity types (None = all)"
     )
@@ -391,11 +390,11 @@ class SearchByTermItem(StrictModel):
     """Request model for free-text term search."""
 
     term: str = Field(..., description="Term to search for across all composite key values")
-    restrict_to_namespaces: Optional[list[str]] = Field(
+    restrict_to_namespaces: list[str] | None = Field(
         None,
         description="Only search in these namespaces (None = all)"
     )
-    restrict_to_entity_types: Optional[list[str]] = Field(
+    restrict_to_entity_types: list[str] | None = Field(
         None,
         description="Only search in these entity types (None = all)"
     )
@@ -437,9 +436,9 @@ class UpdateEntryItem(StrictModel):
     """Request model for updating an entry."""
 
     entry_id: str
-    source_info: Optional[SourceInfo] = None
-    metadata: Optional[dict[str, Any]] = None
-    updated_by: Optional[str] = None
+    source_info: SourceInfo | None = None
+    metadata: dict[str, Any] | None = None
+    updated_by: str | None = None
 
 
 class UpdateEntryResponse(BaseModel):
@@ -447,8 +446,8 @@ class UpdateEntryResponse(BaseModel):
 
     input_index: int
     status: str  # updated, not_found, error
-    registry_id: Optional[str] = None
-    error: Optional[str] = None
+    registry_id: str | None = None
+    error: str | None = None
 
 
 # =============================================================================
@@ -459,7 +458,7 @@ class DeleteItem(StrictModel):
     """Request model for deleting (deactivating) an entry."""
 
     entry_id: str
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
 
 
 class DeleteResponse(BaseModel):
@@ -467,8 +466,8 @@ class DeleteResponse(BaseModel):
 
     input_index: int
     status: str  # deactivated, not_found, error
-    registry_id: Optional[str] = None
-    error: Optional[str] = None
+    registry_id: str | None = None
+    error: str | None = None
 
 
 class BulkUpdateResponse(BaseModel):
@@ -533,12 +532,12 @@ class UnifiedSearchResultItem(BaseModel):
     status: str
     primary_composite_key: dict[str, Any]
     synonyms: list[Synonym] = Field(default_factory=list)
-    source_info: Optional[SourceInfo] = None
+    source_info: SourceInfo | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
     matched_via: str = Field(
         ...,
         description="How the match was found: entry_id, composite_key_value, synonym_key_value"
@@ -576,14 +575,14 @@ class EntryDetailResponse(BaseModel):
     primary_composite_key: dict[str, Any]
     primary_composite_key_hash: str
     synonyms: list[Synonym] = Field(default_factory=list)
-    source_info: Optional[SourceInfo] = None
+    source_info: SourceInfo | None = None
     search_values: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
 
 
 # =============================================================================
@@ -605,7 +604,7 @@ class ExportResponse(BaseModel):
 class ImportRequest(StrictModel):
     """Request model for namespace import."""
 
-    target_prefix: Optional[str] = Field(
+    target_prefix: str | None = Field(
         None,
         description="Optional new prefix for the imported namespace"
     )
@@ -613,7 +612,7 @@ class ImportRequest(StrictModel):
         default="create",
         description="Import mode: create (fail if exists), merge (add new), replace (overwrite)"
     )
-    imported_by: Optional[str] = Field(
+    imported_by: str | None = Field(
         None,
         description="User performing the import"
     )
@@ -628,7 +627,7 @@ class ImportResponse(BaseModel):
         default_factory=dict,
         description="Count of imported entities by type"
     )
-    source_prefix: Optional[str] = Field(
+    source_prefix: str | None = Field(
         None,
         description="Original prefix from the export (if remapped)"
     )

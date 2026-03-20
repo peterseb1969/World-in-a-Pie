@@ -1,7 +1,7 @@
 """Terminology model for the Def-Store service."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -11,15 +11,15 @@ from pymongo import IndexModel
 class TerminologyMetadata(BaseModel):
     """Additional metadata for a terminology."""
 
-    source: Optional[str] = Field(
+    source: str | None = Field(
         None,
         description="Source of the terminology (e.g., 'ISO 3166', 'internal')"
     )
-    source_url: Optional[str] = Field(
+    source_url: str | None = Field(
         None,
         description="URL to the source specification"
     )
-    version: Optional[str] = Field(
+    version: str | None = Field(
         None,
         description="Version of the terminology (e.g., '2024.1')"
     )
@@ -69,7 +69,7 @@ class Terminology(Document):
         ...,
         description="Display label (e.g., 'Document Status')"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description of the terminology's purpose"
     )
@@ -100,16 +100,16 @@ class Terminology(Document):
         description="Status: active, inactive"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this terminology"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this terminology"
     )

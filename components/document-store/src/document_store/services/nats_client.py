@@ -11,9 +11,9 @@ write endpoints add a small delay before returning, naturally slowing callers.
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ _nats_enabled = False
 
 # Backpressure — updated by background monitor, read by write endpoints
 _throttle_delay: float = 0.0  # seconds
-_backpressure_task: Optional[asyncio.Task] = None
+_backpressure_task: asyncio.Task | None = None
 
 
 class EventType(str, Enum):
@@ -57,7 +57,7 @@ async def configure_nats_client(nats_url: str) -> bool:
 
     try:
         import nats
-        from nats.js.api import StreamConfig, RetentionPolicy
+        from nats.js.api import RetentionPolicy, StreamConfig
 
         _nats_client = await nats.connect(nats_url)
         _jetstream = _nats_client.jetstream()
@@ -184,7 +184,7 @@ def is_nats_enabled() -> bool:
 async def publish_document_event(
     event_type: EventType,
     document: dict[str, Any],
-    changed_by: Optional[str] = None
+    changed_by: str | None = None
 ) -> bool:
     """
     Publish a document event to NATS.
@@ -207,7 +207,7 @@ async def publish_document_event(
         # Build event payload
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "document": document,
         }
@@ -235,7 +235,7 @@ async def publish_document_event(
 async def publish_file_event(
     event_type: EventType,
     file_data: dict[str, Any],
-    changed_by: Optional[str] = None
+    changed_by: str | None = None
 ) -> bool:
     """
     Publish a file event to NATS.
@@ -257,7 +257,7 @@ async def publish_file_event(
     try:
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "file": file_data,
         }

@@ -7,9 +7,9 @@ Events are published after successful ontology operations (relationship create/d
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ async def configure_nats_client(nats_url: str) -> bool:
 
     try:
         import nats
-        from nats.js.api import StreamConfig, RetentionPolicy
+        from nats.js.api import RetentionPolicy, StreamConfig
 
         _nats_client = await nats.connect(nats_url)
         _jetstream = _nats_client.jetstream()
@@ -130,7 +130,7 @@ def is_nats_enabled() -> bool:
 async def publish_relationship_event(
     event_type: EventType,
     relationship: dict[str, Any],
-    changed_by: Optional[str] = None,
+    changed_by: str | None = None,
 ) -> bool:
     """
     Publish a relationship event to NATS.
@@ -152,7 +152,7 @@ async def publish_relationship_event(
     try:
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "relationship": relationship,
         }
@@ -180,7 +180,7 @@ async def publish_relationship_event(
 async def publish_terminology_event(
     event_type: EventType,
     terminology: dict[str, Any],
-    changed_by: Optional[str] = None,
+    changed_by: str | None = None,
 ) -> bool:
     """
     Publish a terminology event to NATS.
@@ -202,7 +202,7 @@ async def publish_terminology_event(
     try:
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "terminology": terminology,
         }
@@ -229,7 +229,7 @@ async def publish_terminology_event(
 async def publish_term_event(
     event_type: EventType,
     term: dict[str, Any],
-    changed_by: Optional[str] = None,
+    changed_by: str | None = None,
 ) -> bool:
     """
     Publish a term event to NATS.
@@ -251,7 +251,7 @@ async def publish_term_event(
     try:
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "term": term,
         }
@@ -278,7 +278,7 @@ async def publish_term_event(
 async def publish_term_events_bulk(
     event_type: EventType,
     terms: list[dict[str, Any]],
-    changed_by: Optional[str] = None,
+    changed_by: str | None = None,
 ) -> int:
     """
     Publish multiple term events to NATS.
@@ -298,7 +298,7 @@ async def publish_term_events_bulk(
         try:
             event = {
                 "event_type": event_type.value,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "changed_by": changed_by,
                 "term": term,
             }

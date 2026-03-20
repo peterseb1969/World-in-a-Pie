@@ -1,11 +1,11 @@
 """Audit log models for tracking changes to terminologies and terms."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import Field
-from pymongo import IndexModel, DESCENDING
+from pymongo import DESCENDING, IndexModel
 
 
 class TermAuditLog(Document):
@@ -39,10 +39,10 @@ class TermAuditLog(Document):
         description="Type of change: created, updated, deprecated, deleted"
     )
     changed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the change occurred"
     )
-    changed_by: Optional[str] = Field(
+    changed_by: str | None = Field(
         None,
         description="User or system that made the change"
     )
@@ -62,7 +62,7 @@ class TermAuditLog(Document):
     )
 
     # Optional comment
-    comment: Optional[str] = Field(
+    comment: str | None = Field(
         None,
         description="Optional comment explaining the change"
     )

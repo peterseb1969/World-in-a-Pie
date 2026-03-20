@@ -13,24 +13,28 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
+from wip_auth import RejectUnknownQueryParamsMiddleware, setup_auth
 
+from .api import api_router
 from .models.document import Document
 from .models.file import File
-from .api import api_router
-from .services.registry_client import configure_registry_client, get_registry_client
-from .services.template_store_client import configure_template_store_client, get_template_store_client
 from .services.def_store_client import configure_def_store_client, get_def_store_client
-from .services.nats_client import (
-    configure_nats_client, close_nats_client, health_check as nats_health_check,
-    start_backpressure_monitor,
-)
 from .services.file_storage_client import (
     configure_file_storage_client,
     get_file_storage_client,
     is_file_storage_enabled,
 )
-from .services.integrity_service import check_all_documents, IntegrityCheckResult
+from .services.integrity_service import IntegrityCheckResult, check_all_documents
+from .services.nats_client import (
+    close_nats_client,
+    configure_nats_client,
+    start_backpressure_monitor,
+)
+from .services.nats_client import (
+    health_check as nats_health_check,
+)
+from .services.registry_client import configure_registry_client, get_registry_client
+from .services.template_store_client import configure_template_store_client, get_template_store_client
 
 
 # Application configuration
@@ -283,7 +287,7 @@ async def health_check():
         await app.state.mongodb_client.admin.command('ping')
         mongo_status = "connected"
     except Exception as e:
-        mongo_status = f"error: {str(e)}"
+        mongo_status = f"error: {e!s}"
 
     # Check Registry
     registry_client = get_registry_client()
@@ -359,8 +363,8 @@ async def get_timing_stats():
     - 5_rule_evaluation: Cross-field rule checking
     - 6_identity_computation: Identity hash computation
     """
-    from .services.validation_service import ValidationService
     from .services.document_service import DocumentService
+    from .services.validation_service import ValidationService
 
     return {
         "creation": DocumentService.get_creation_timing_stats(),
@@ -371,8 +375,8 @@ async def get_timing_stats():
 @app.post("/debug/timing/reset", tags=["Debug"])
 async def reset_timing_stats():
     """Reset all timing statistics (creation and validation)."""
-    from .services.validation_service import ValidationService
     from .services.document_service import DocumentService
+    from .services.validation_service import ValidationService
     ValidationService.reset_timing_stats()
     DocumentService.reset_creation_timing_stats()
     return {"status": "reset"}

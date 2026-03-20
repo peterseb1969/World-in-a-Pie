@@ -4,8 +4,8 @@ A NamespaceGrant maps a subject (user email, API key name, or group)
 to a permission level on a specific namespace.
 """
 
-from datetime import datetime, timezone
-from typing import Literal, Optional
+from datetime import UTC, datetime
+from typing import Literal
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -31,16 +31,16 @@ class NamespaceGrant(Document):
         ..., description="Identity string of who created this grant"
     )
     granted_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    expires_at: Optional[datetime] = Field(
+    expires_at: datetime | None = Field(
         None, description="Optional expiration (None = never)"
     )
 
     def is_expired(self) -> bool:
         if self.expires_at is None:
             return False
-        return datetime.now(timezone.utc) > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     class Settings:
         name = "namespace_grants"
@@ -63,7 +63,7 @@ class GrantCreate(BaseModel):
     subject: str
     subject_type: Literal["user", "api_key", "group"] = "user"
     permission: Literal["read", "write", "admin"] = "read"
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
 
 
 class GrantRevoke(BaseModel):
@@ -82,7 +82,7 @@ class GrantResponse(BaseModel):
     permission: str
     granted_by: str
     granted_at: datetime
-    expires_at: Optional[datetime] = None
+    expires_at: datetime | None = None
 
 
 class MyNamespaceResponse(BaseModel):

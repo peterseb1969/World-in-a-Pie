@@ -10,7 +10,7 @@ import logging
 import os
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
@@ -91,7 +91,7 @@ class ImportService:
             if mode == "replace" and existing_ns:
                 # Archive existing data (soft delete)
                 existing_ns.status = "archived"
-                existing_ns.updated_at = datetime.now(timezone.utc)
+                existing_ns.updated_at = datetime.now(UTC)
                 await existing_ns.save()
 
             # Create or get namespace

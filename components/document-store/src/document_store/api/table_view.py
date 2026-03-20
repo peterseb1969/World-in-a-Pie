@@ -11,7 +11,7 @@ Use cases:
 
 from enum import Enum
 from itertools import product
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
@@ -259,7 +259,7 @@ All rows include system columns prefixed with underscore:
 )
 async def get_table_view(
     template_id: str,
-    status: Optional[DocumentStatus] = Query(
+    status: DocumentStatus | None = Query(
         DocumentStatus.ACTIVE,
         description="Filter by document status"
     ),
@@ -359,7 +359,7 @@ Same flattening logic as the JSON endpoint applies.
 )
 async def export_table_csv(
     template_id: str,
-    status: Optional[DocumentStatus] = Query(
+    status: DocumentStatus | None = Query(
         DocumentStatus.ACTIVE,
         description="Filter by document status"
     ),

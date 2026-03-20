@@ -5,25 +5,24 @@ Each namespace has configurable ID algorithms per entity type.
 """
 
 import os
-from datetime import datetime, timezone
-from typing import Any, List
+from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from ..models.namespace import Namespace
-from ..models.entry import RegistryEntry
-from ..models.id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES
 from ..models.api_models import (
+    ExportResponse,
+    ImportResponse,
     NamespaceCreate,
-    NamespaceUpdate,
     NamespaceResponse,
     NamespaceStatsResponse,
-    ExportResponse,
-    ImportRequest,
-    ImportResponse,
+    NamespaceUpdate,
 )
-from ..services.auth import require_api_key, require_admin_key
+from ..models.entry import RegistryEntry
+from ..models.id_algorithm import VALID_ENTITY_TYPES
+from ..models.namespace import Namespace
+from ..services.auth import require_admin_key, require_api_key
 
 router = APIRouter()
 
@@ -52,13 +51,13 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
 
 @router.get(
     "",
-    response_model=List[NamespaceResponse],
+    response_model=list[NamespaceResponse],
     summary="List namespaces"
 )
 async def list_namespaces(
     include_archived: bool = Query(False, description="Include archived namespaces"),
     api_key: str = Depends(require_api_key)
-) -> List[NamespaceResponse]:
+) -> list[NamespaceResponse]:
     """List all namespaces."""
     if include_archived:
         query = {"status": {"$ne": "deleted"}}
@@ -192,7 +191,7 @@ async def update_namespace(
         if value is not None and field != "updated_by":
             setattr(ns, field, value)
 
-    ns.updated_at = datetime.now(timezone.utc)
+    ns.updated_at = datetime.now(UTC)
     ns.updated_by = request.updated_by
     await ns.save()
 
@@ -218,7 +217,7 @@ async def archive_namespace(
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
     ns.status = "archived"
-    ns.updated_at = datetime.now(timezone.utc)
+    ns.updated_at = datetime.now(UTC)
     ns.updated_by = archived_by
     await ns.save()
 
@@ -244,7 +243,7 @@ async def restore_namespace(
         raise HTTPException(status_code=400, detail=f"Namespace is not archived: {prefix}")
 
     ns.status = "active"
-    ns.updated_at = datetime.now(timezone.utc)
+    ns.updated_at = datetime.now(UTC)
     ns.updated_by = restored_by
     await ns.save()
 
@@ -276,7 +275,7 @@ async def delete_namespace(
         raise HTTPException(status_code=400, detail="Namespace must be archived before deletion")
 
     ns.status = "deleted"
-    ns.updated_at = datetime.now(timezone.utc)
+    ns.updated_at = datetime.now(UTC)
     ns.updated_by = deleted_by
     await ns.save()
 
@@ -351,7 +350,7 @@ async def export_namespace(
             stats=stats,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Export failed: {e!s}")
 
 
 @router.get(
@@ -390,9 +389,10 @@ async def import_namespace(
     api_key: str = Depends(require_admin_key)
 ) -> ImportResponse:
     """Import a namespace from an exported archive."""
-    from ..services.import_service import ImportService
-    import tempfile
     import shutil
+    import tempfile
+
+    from ..services.import_service import ImportService
 
     if mode not in ("create", "merge", "replace"):
         raise HTTPException(status_code=400, detail="Invalid mode. Must be one of: create, merge, replace")
@@ -420,13 +420,12 @@ async def import_namespace(
             imported_by=imported_by,
         )
 
-        import zipfile
         import json
+        import zipfile
         source_prefix = None
-        with zipfile.ZipFile(temp_file.name, "r") as zf:
-            with zf.open("manifest.json") as mf:
-                manifest = json.load(mf)
-                source_prefix = manifest.get("prefix")
+        with zipfile.ZipFile(temp_file.name, "r") as zf, zf.open("manifest.json") as mf:
+            manifest = json.load(mf)
+            source_prefix = manifest.get("prefix")
 
         return ImportResponse(
             prefix=ns.prefix,
@@ -438,6 +437,6 @@ async def import_namespace(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
     finally:
         os.unlink(temp_file.name)

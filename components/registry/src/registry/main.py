@@ -15,11 +15,11 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import setup_auth
 
-from .models.namespace import Namespace
-from .models.entry import RegistryEntry
-from .models.id_counter import IdCounter
-from .models.grant import NamespaceGrant
 from .api import api_router
+from .models.entry import RegistryEntry
+from .models.grant import NamespaceGrant
+from .models.id_counter import IdCounter
+from .models.namespace import Namespace
 from .services.auth import AuthService
 
 

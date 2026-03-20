@@ -2,32 +2,31 @@
 
 import asyncio
 import math
-from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from ..models.file import FileStatus
+from wip_auth import check_namespace_permission, get_current_identity
+
 from ..models.api_models import (
-    BulkResultItem,
     BulkResponse,
-    FileResponse,
-    FileListResponse,
+    BulkResultItem,
+    DeleteItem,
     FileDownloadResponse,
+    FileIntegrityResponse,
+    FileListResponse,
+    FileResponse,
     FileUploadMetadata,
     UpdateFileItem,
-    DeleteItem,
-    FileIntegrityResponse,
 )
-from ..services.file_service import get_file_service, FileServiceError
-from ..services.nats_client import get_throttle_delay
+from ..models.file import FileStatus
+from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
     get_file_storage_client,
     is_file_storage_enabled,
-    FileStorageError,
 )
-from wip_auth import check_namespace_permission, get_current_identity
+from ..services.nats_client import get_throttle_delay
 from .auth import require_api_key
 
 
@@ -82,11 +81,11 @@ Metadata can be provided as form fields:
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
     namespace: str = Form(default="wip", description="Namespace for the file"),
-    file_id: Optional[str] = Form(None, description="Pre-assigned file ID (for restore/migration)"),
-    description: Optional[str] = Form(None, description="File description"),
-    tags: Optional[str] = Form(None, description="Comma-separated tags"),
-    category: Optional[str] = Form(None, description="Classification category"),
-    allowed_templates: Optional[str] = Form(None, description="Comma-separated template values"),
+    file_id: str | None = Form(None, description="Pre-assigned file ID (for restore/migration)"),
+    description: str | None = Form(None, description="File description"),
+    tags: str | None = Form(None, description="Comma-separated tags"),
+    category: str | None = Form(None, description="Classification category"),
+    allowed_templates: str | None = Form(None, description="Comma-separated template values"),
     _: str = Depends(require_api_key)
 ):
     """Upload a file to storage."""
@@ -132,11 +131,11 @@ async def upload_file(
 )
 async def list_files(
     namespace: str = Query(default="wip", description="Namespace to query"),
-    status: Optional[FileStatus] = Query(None, description="Filter by status"),
-    content_type: Optional[str] = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
-    category: Optional[str] = Query(None, description="Filter by category"),
-    tags: Optional[str] = Query(None, description="Comma-separated tags (all must match)"),
-    uploaded_by: Optional[str] = Query(None, description="Filter by uploader"),
+    status: FileStatus | None = Query(None, description="Filter by status"),
+    content_type: str | None = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
+    category: str | None = Query(None, description="Filter by category"),
+    tags: str | None = Query(None, description="Comma-separated tags (all must match)"),
+    uploaded_by: str | None = Query(None, description="Filter by uploader"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
@@ -222,7 +221,8 @@ async def download_file_content(
     _: str = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
-    from ..models.file import File as FileModel, FileStatus
+    from ..models.file import File as FileModel
+    from ..models.file import FileStatus
 
     # Quick metadata lookup (no file content loaded yet)
     file_doc = await FileModel.find_one({"file_id": file_id})

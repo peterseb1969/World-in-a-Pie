@@ -1,31 +1,29 @@
 """Template API endpoints."""
 
 import math
-from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+
 from ..models.api_models import (
-    BulkResultItem,
+    ActivateTemplateResponse,
     BulkResponse,
+    BulkResultItem,
+    CascadeResponse,
     CreateTemplateRequest,
-    UpdateTemplateItem,
     DeleteItem,
-    TemplateResponse,
-    TemplateUpdateResponse,
     TemplateListResponse,
+    TemplateResponse,
+    UpdateTemplateItem,
     ValidateTemplateRequest,
     ValidateTemplateResponse,
-    CascadeResponse,
-    ActivateTemplateResponse,
 )
-from ..services.template_service import TemplateService
-from ..services.registry_client import RegistryError
-from ..services.inheritance_service import InheritanceService, InheritanceError
 from ..services.dependency_service import DependencyService, TemplateDependencies
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from ..services.inheritance_service import InheritanceService
+from ..services.registry_client import RegistryError
+from ..services.template_service import TemplateService
 from .auth import require_api_key
-
 
 router = APIRouter(
     prefix="/templates",
@@ -58,7 +56,7 @@ async def create_templates(
         except ValueError as e:
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=str(e))]
         except RegistryError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {str(e)}")]
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
     else:
         # Bulk path
         try:
@@ -67,7 +65,7 @@ async def create_templates(
                 namespace=items[0].namespace if items else "wip",
             )
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -76,10 +74,10 @@ async def create_templates(
 
 @router.get("", response_model=TemplateListResponse)
 async def list_templates(
-    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    extends: Optional[str] = Query(None, description="Filter by parent template"),
-    value: Optional[str] = Query(None, description="Filter by template value (shows all versions)"),
+    namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
+    status: str | None = Query(None, description="Filter by status"),
+    extends: str | None = Query(None, description="Filter by parent template"),
+    value: str | None = Query(None, description="Filter by template value (shows all versions)"),
     latest_only: bool = Query(False, description="Only return latest version of each template"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page")
@@ -119,7 +117,7 @@ async def list_templates(
 @router.get("/{template_id}", response_model=TemplateResponse)
 async def get_template(
     template_id: str,
-    version: Optional[int] = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)")
 ):
     """
     Get a template by ID.
@@ -137,7 +135,7 @@ async def get_template(
 @router.get("/{template_id}/raw", response_model=TemplateResponse)
 async def get_template_raw(
     template_id: str,
-    version: Optional[int] = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)")
 ):
     """
     Get a template by ID without inheritance resolution.
@@ -156,7 +154,7 @@ async def get_template_raw(
 @router.get("/by-value/{value}", response_model=TemplateResponse)
 async def get_template_by_value(
     value: str,
-    namespace: Optional[str] = Query(default=None, description="Namespace to search in (omit for all)")
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)")
 ):
     """
     Get the latest version of a template by value.
@@ -247,7 +245,7 @@ async def update_templates(
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=str(e)))
         except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=f"Registry error: {str(e)}"))
+            results.append(BulkResultItem(index=i, status="error", id=item.template_id, error=f"Registry error: {e!s}"))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -384,7 +382,7 @@ async def cascade_template(template_id: str):
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)

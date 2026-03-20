@@ -1,7 +1,7 @@
 """API key authentication provider."""
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request
 
@@ -155,7 +155,7 @@ class APIKeyProvider:
             )
 
         # Update last used timestamp (in-memory only)
-        key_record.last_used_at = datetime.now(timezone.utc)
+        key_record.last_used_at = datetime.now(UTC)
 
         # Build identity from key record
         groups = key_record.groups if key_record.groups else self.default_groups

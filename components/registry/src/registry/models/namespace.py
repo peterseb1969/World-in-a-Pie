@@ -5,14 +5,14 @@ organizing data. Each namespace has an ID algorithm configuration that
 defines how IDs are generated for each entity type.
 """
 
-from datetime import datetime, timezone
-from typing import Any, Literal, Optional
+from datetime import UTC, datetime
+from typing import Any, Literal
 
 from beanie import Document
 from pydantic import Field
 from pymongo import IndexModel
 
-from .id_algorithm import IdAlgorithmConfig, DEFAULT_ID_CONFIG
+from .id_algorithm import DEFAULT_ID_CONFIG, IdAlgorithmConfig
 
 
 class Namespace(Document):
@@ -49,16 +49,16 @@ class Namespace(Document):
         description="Namespace status"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User who created this namespace"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User who last updated this namespace"
     )

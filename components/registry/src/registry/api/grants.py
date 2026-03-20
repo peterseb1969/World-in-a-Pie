@@ -3,7 +3,7 @@
 Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -166,7 +166,7 @@ async def create_grants(
                 existing.permission = item.permission
                 existing.expires_at = item.expires_at
                 existing.granted_by = identity.identity_string
-                existing.granted_at = datetime.now(timezone.utc)
+                existing.granted_at = datetime.now(UTC)
                 await existing.save()
                 results.append({
                     "index": i, "status": "updated",

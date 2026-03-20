@@ -1,7 +1,6 @@
 """S3-compatible storage client for file operations with MinIO."""
 
 import os
-from typing import Optional
 from contextlib import asynccontextmanager
 
 from aiobotocore.session import get_session
@@ -22,12 +21,12 @@ class FileStorageClient:
 
     def __init__(
         self,
-        endpoint_url: Optional[str] = None,
-        access_key: Optional[str] = None,
-        secret_key: Optional[str] = None,
-        bucket: Optional[str] = None,
+        endpoint_url: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket: str | None = None,
         region: str = "us-east-1",
-        public_endpoint_url: Optional[str] = None,
+        public_endpoint_url: str | None = None,
     ):
         """
         Initialize the file storage client.
@@ -83,7 +82,7 @@ class FileStorageClient:
         storage_key: str,
         content: bytes,
         content_type: str,
-        metadata: Optional[dict[str, str]] = None
+        metadata: dict[str, str] | None = None
     ) -> None:
         """
         Upload a file to storage.
@@ -227,7 +226,7 @@ class FileStorageClient:
         self,
         storage_key: str,
         expires_in: int = 3600,
-        filename: Optional[str] = None
+        filename: str | None = None
     ) -> str:
         """
         Generate a pre-signed URL for direct download.
@@ -341,7 +340,7 @@ class FileStorageError(Exception):
 
 
 # Singleton instance
-_client: Optional[FileStorageClient] = None
+_client: FileStorageClient | None = None
 
 
 def get_file_storage_client() -> FileStorageClient:
@@ -353,10 +352,10 @@ def get_file_storage_client() -> FileStorageClient:
 
 
 def configure_file_storage_client(
-    endpoint_url: Optional[str] = None,
-    access_key: Optional[str] = None,
-    secret_key: Optional[str] = None,
-    bucket: Optional[str] = None,
+    endpoint_url: str | None = None,
+    access_key: str | None = None,
+    secret_key: str | None = None,
+    bucket: str | None = None,
 ) -> FileStorageClient:
     """Configure and return the file storage client."""
     global _client

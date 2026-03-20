@@ -1,11 +1,9 @@
 """Search service for registry entries."""
 
 import re
-from typing import Any, Optional
+from typing import Any
 
-from ..models.entry import RegistryEntry, Synonym
-from ..models.api_models import SearchResult
-from .hash import HashService
+from ..models.entry import RegistryEntry
 
 
 class SearchService:
@@ -14,8 +12,8 @@ class SearchService:
     @staticmethod
     def build_field_query(
         field_criteria: dict[str, Any],
-        restrict_to_namespaces: Optional[list[str]] = None,
-        restrict_to_entity_types: Optional[list[str]] = None,
+        restrict_to_namespaces: list[str] | None = None,
+        restrict_to_entity_types: list[str] | None = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """
@@ -96,8 +94,8 @@ class SearchService:
     @staticmethod
     def build_text_search_query(
         term: str,
-        restrict_to_namespaces: Optional[list[str]] = None,
-        restrict_to_entity_types: Optional[list[str]] = None,
+        restrict_to_namespaces: list[str] | None = None,
+        restrict_to_entity_types: list[str] | None = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """
@@ -146,8 +144,8 @@ class SearchService:
     @staticmethod
     def build_regex_search_query(
         term: str,
-        restrict_to_namespaces: Optional[list[str]] = None,
-        restrict_to_entity_types: Optional[list[str]] = None,
+        restrict_to_namespaces: list[str] | None = None,
+        restrict_to_entity_types: list[str] | None = None,
         include_inactive: bool = False
     ) -> dict[str, Any]:
         """

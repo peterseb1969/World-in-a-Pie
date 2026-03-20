@@ -4,13 +4,13 @@ Files are first-class entities with Registry IDs, stored in MinIO,
 and referenced by documents like any other reference type.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
-from pymongo import IndexModel, DESCENDING
+from pymongo import DESCENDING, IndexModel
 
 
 class FileStatus(str, Enum):
@@ -23,7 +23,7 @@ class FileStatus(str, Enum):
 class FileMetadata(BaseModel):
     """User-defined metadata for files."""
 
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Human-readable description of the file"
     )
@@ -31,7 +31,7 @@ class FileMetadata(BaseModel):
         default_factory=list,
         description="Searchable tags"
     )
-    category: Optional[str] = Field(
+    category: str | None = Field(
         None,
         description="Classification category"
     )
@@ -105,25 +105,25 @@ class File(BeanieDocument):
     )
 
     # Optional: restrict which templates can use this file
-    allowed_templates: Optional[list[str]] = Field(
+    allowed_templates: list[str] | None = Field(
         None,
         description="Template values that can reference this file (None = all)"
     )
 
     # Lifecycle
     uploaded_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
+        default_factory=lambda: datetime.now(UTC),
         description="When the file was uploaded"
     )
-    uploaded_by: Optional[str] = Field(
+    uploaded_by: str | None = Field(
         None,
         description="User or system that uploaded this file"
     )
-    updated_at: Optional[datetime] = Field(
+    updated_at: datetime | None = Field(
         None,
         description="When the file metadata was last updated"
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this file"
     )
@@ -184,7 +184,7 @@ class FileReference(BaseModel):
         ...,
         description="File size in bytes (denormalized)"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="File description (denormalized from file metadata)"
     )

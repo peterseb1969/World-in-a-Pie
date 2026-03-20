@@ -4,11 +4,10 @@ Dependency Service for Def-Store.
 Checks what depends on a terminology before allowing deactivation.
 """
 
-from typing import Optional
-import httpx
-import os
 import logging
+import os
 
+import httpx
 from pydantic import BaseModel, Field
 
 from ..models.terminology import Terminology
@@ -29,7 +28,7 @@ class TerminologyDependencies(BaseModel):
     # Summary
     has_dependencies: bool = False
     can_deactivate: bool = True
-    warning_message: Optional[str] = None
+    warning_message: str | None = None
 
 
 class DependencyService:
@@ -70,7 +69,7 @@ class DependencyService:
             )
             result.template_count = len(templates)
             result.templates = templates[:10]  # Limit to first 10
-        except Exception as e:
+        except Exception:
             # If Template Store is unavailable, we can't check
             result.template_count = -1
 

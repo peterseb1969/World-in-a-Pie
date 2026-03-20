@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -227,7 +227,7 @@ class BatchSyncService:
     ) -> None:
         """Run the batch sync job."""
         job.status = BatchSyncStatus.RUNNING
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = datetime.now(UTC)
 
         try:
             # Fetch template
@@ -235,7 +235,7 @@ class BatchSyncService:
             if not template:
                 job.status = BatchSyncStatus.FAILED
                 job.error_message = f"Template {job.template_value} not found"
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = datetime.now(UTC)
                 return
 
             # Resolve inherited fields from parent templates
@@ -247,7 +247,7 @@ class BatchSyncService:
             if not config.sync_enabled:
                 job.status = BatchSyncStatus.COMPLETED
                 job.error_message = "Sync disabled for this template"
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = datetime.now(UTC)
                 return
 
             # Ensure table exists
@@ -255,7 +255,7 @@ class BatchSyncService:
             if not table_name:
                 job.status = BatchSyncStatus.FAILED
                 job.error_message = "Failed to create table"
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = datetime.now(UTC)
                 return
 
             # Check if table already has data (unless force)
@@ -266,7 +266,7 @@ class BatchSyncService:
                         job.status = BatchSyncStatus.COMPLETED
                         job.documents_synced = count
                         job.error_message = f"Table already has {count} rows. Use force=true to re-sync."
-                        job.completed_at = datetime.now(timezone.utc)
+                        job.completed_at = datetime.now(UTC)
                         return
 
             template_id = template["template_id"]
@@ -279,7 +279,7 @@ class BatchSyncService:
 
             if total == 0:
                 job.status = BatchSyncStatus.COMPLETED
-                job.completed_at = datetime.now(timezone.utc)
+                job.completed_at = datetime.now(UTC)
                 logger.info(f"No documents to sync for {job.template_value}")
                 return
 
@@ -322,7 +322,7 @@ class BatchSyncService:
                 await asyncio.sleep(0.1)
 
             job.status = BatchSyncStatus.COMPLETED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.now(UTC)
 
             logger.info(
                 f"Batch sync completed for {job.template_value}: "
@@ -331,13 +331,13 @@ class BatchSyncService:
 
         except asyncio.CancelledError:
             job.status = BatchSyncStatus.CANCELLED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.now(UTC)
             logger.info(f"Batch sync cancelled for {job.template_value}")
 
         except Exception as e:
             job.status = BatchSyncStatus.FAILED
             job.error_message = str(e)
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.now(UTC)
             logger.error(f"Batch sync failed for {job.template_value}: {e}", exc_info=True)
 
     async def start_batch_sync_all(

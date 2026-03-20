@@ -1,11 +1,9 @@
 """Service for resolving template inheritance."""
 
-from typing import Optional
 
-from ..models.template import Template
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
-
+from ..models.template import Template
 
 MAX_INHERITANCE_DEPTH = 10
 
@@ -221,7 +219,7 @@ class InheritanceService:
     @staticmethod
     async def check_circular_inheritance(
         template_id: str,
-        new_extends: Optional[str]
+        new_extends: str | None
     ) -> bool:
         """
         Check if setting extends would create circular inheritance.

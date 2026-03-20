@@ -1,7 +1,7 @@
 """Client for communicating with the WIP Registry service."""
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -15,8 +15,8 @@ class RegistryClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0
     ):
         """
@@ -46,9 +46,9 @@ class RegistryClient:
 
     async def register_template(
         self,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip",
-        entry_id: Optional[str] = None,
+        entry_id: str | None = None,
     ) -> str:
         """
         Register a new template in the Registry.
@@ -100,7 +100,7 @@ class RegistryClient:
     async def register_templates_bulk(
         self,
         count: int,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
@@ -150,7 +150,7 @@ class RegistryClient:
         target_id: str,
         new_value: str,
         namespace: str = "wip",
-        additional_fields: Optional[dict[str, Any]] = None
+        additional_fields: dict[str, Any] | None = None
     ) -> bool:
         """
         Add a synonym when a value changes.
@@ -199,8 +199,8 @@ class RegistryClient:
         self,
         value: str,
         namespace: str = "wip",
-        additional_fields: Optional[dict[str, Any]] = None
-    ) -> Optional[str]:
+        additional_fields: dict[str, Any] | None = None
+    ) -> str | None:
         """
         Look up a registry ID by value.
 
@@ -253,7 +253,7 @@ class RegistryError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[RegistryClient] = None
+_client: RegistryClient | None = None
 
 
 def get_registry_client() -> RegistryClient:
@@ -265,8 +265,8 @@ def get_registry_client() -> RegistryClient:
 
 
 def configure_registry_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    base_url: str | None = None,
+    api_key: str | None = None
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client

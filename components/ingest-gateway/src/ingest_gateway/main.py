@@ -17,10 +17,10 @@ from nats.js import JetStreamContext
 
 from . import __version__
 from .config import settings
-from .models import HealthResponse, StatusResponse, MetricsResponse
-from .worker import IngestWorker
 from .http_client import IngestHTTPClient
+from .models import HealthResponse, MetricsResponse, StatusResponse
 from .result_publisher import ResultPublisher
+from .worker import IngestWorker
 
 # Configure logging
 logging.basicConfig(

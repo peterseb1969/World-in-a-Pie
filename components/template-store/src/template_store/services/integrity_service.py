@@ -6,14 +6,13 @@ Checks for orphaned references:
 - Template references (extends, template_ref, array_template_ref)
 """
 
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, Field
 
-from ..models.template import Template
 from ..models.field import FieldType
-from .def_store_client import get_def_store_client, DefStoreError
+from ..models.template import Template
+from .def_store_client import DefStoreError, get_def_store_client
 
 
 class IntegrityIssue(BaseModel):
@@ -30,7 +29,7 @@ class IntegrityIssue(BaseModel):
     template_id: str = Field(..., description="Template with the issue")
     template_value: str = Field(..., description="Template value")
     template_version: int = Field(..., description="Template version")
-    field_path: Optional[str] = Field(
+    field_path: str | None = Field(
         None,
         description="Field path (e.g., 'gender', 'addresses[].country')"
     )
@@ -57,7 +56,7 @@ class IntegrityCheckResult(BaseModel):
         description="Overall status: healthy, warning, error"
     )
     checked_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     summary: IntegritySummary = Field(default_factory=IntegritySummary)
     issues: list[IntegrityIssue] = Field(default_factory=list)
@@ -108,7 +107,7 @@ async def check_terminology_reference(
                 reference=ref,
                 message=f"Terminology '{ref}' is {terminology.get('status', 'unknown')}"
             ))
-    except DefStoreError as e:
+    except DefStoreError:
         # Can't reach Def-Store, skip check but don't report as issue
         pass
 
@@ -116,7 +115,7 @@ async def check_terminology_reference(
 async def check_template_reference(
     ref: str,
     template: Template,
-    field_path: Optional[str],
+    field_path: str | None,
     issues: list[IntegrityIssue],
 ) -> None:
     """
@@ -215,7 +214,7 @@ async def check_template_integrity(template: Template) -> list[IntegrityIssue]:
 
 
 async def check_all_templates(
-    status_filter: Optional[str] = None,
+    status_filter: str | None = None,
     limit: int = 1000
 ) -> IntegrityCheckResult:
     """

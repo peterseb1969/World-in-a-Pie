@@ -1,13 +1,13 @@
 """API request/response models for the Template Store service."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .field import FieldDefinition
 from .rule import ValidationRule
-from .template import TemplateMetadata, ReportingConfig
+from .template import ReportingConfig, TemplateMetadata
 
 
 class StrictModel(BaseModel):
@@ -30,15 +30,15 @@ class CreateTemplateRequest(StrictModel):
         ...,
         description="Display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description"
     )
-    template_id: Optional[str] = Field(
+    template_id: str | None = Field(
         None,
         description="Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)"
     )
-    version: Optional[int] = Field(
+    version: int | None = Field(
         None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
     )
@@ -46,11 +46,11 @@ class CreateTemplateRequest(StrictModel):
         default="wip",
         description="Namespace for the template"
     )
-    extends: Optional[str] = Field(
+    extends: str | None = Field(
         None,
         description="Parent template ID for inheritance"
     )
-    extends_version: Optional[int] = Field(
+    extends_version: int | None = Field(
         None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
@@ -66,15 +66,15 @@ class CreateTemplateRequest(StrictModel):
         default_factory=list,
         description="Cross-field validation rules"
     )
-    metadata: Optional[TemplateMetadata] = Field(
+    metadata: TemplateMetadata | None = Field(
         None,
         description="Additional metadata"
     )
-    reporting: Optional[ReportingConfig] = Field(
+    reporting: ReportingConfig | None = Field(
         None,
         description="Configuration for PostgreSQL reporting sync"
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system creating this template"
     )
@@ -82,7 +82,7 @@ class CreateTemplateRequest(StrictModel):
         default=True,
         description="Validate that terminology_ref and template_ref values exist before creating"
     )
-    status: Optional[str] = Field(
+    status: str | None = Field(
         default=None,
         description="Initial status: 'active' (default) or 'draft' (skips reference validation)"
     )
@@ -91,47 +91,47 @@ class CreateTemplateRequest(StrictModel):
 class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
-    value: Optional[str] = Field(
+    value: str | None = Field(
         None,
         description="New value (triggers Registry synonym)"
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         None,
         description="New display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="New description"
     )
-    extends: Optional[str] = Field(
+    extends: str | None = Field(
         None,
         description="Parent template ID (changing creates new version)"
     )
-    extends_version: Optional[int] = Field(
+    extends_version: int | None = Field(
         None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
-    identity_fields: Optional[list[str]] = Field(
+    identity_fields: list[str] | None = Field(
         None,
         description="Update identity fields"
     )
-    fields: Optional[list[FieldDefinition]] = Field(
+    fields: list[FieldDefinition] | None = Field(
         None,
         description="Update field definitions"
     )
-    rules: Optional[list[ValidationRule]] = Field(
+    rules: list[ValidationRule] | None = Field(
         None,
         description="Update validation rules"
     )
-    metadata: Optional[TemplateMetadata] = Field(
+    metadata: TemplateMetadata | None = Field(
         None,
         description="Update metadata"
     )
-    reporting: Optional[ReportingConfig] = Field(
+    reporting: ReportingConfig | None = Field(
         None,
         description="Update reporting configuration"
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system updating this template"
     )
@@ -144,20 +144,20 @@ class TemplateResponse(BaseModel):
     namespace: str
     value: str
     label: str
-    description: Optional[str] = None
+    description: str | None = None
     version: int = 1
-    extends: Optional[str] = None
-    extends_version: Optional[int] = None
+    extends: str | None = None
+    extends_version: int | None = None
     identity_fields: list[str] = []
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []
     metadata: TemplateMetadata
-    reporting: Optional[ReportingConfig] = None
+    reporting: ReportingConfig | None = None
     status: str
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
 
 
 class TemplateListResponse(BaseModel):
@@ -180,7 +180,7 @@ class TemplateUpdateResponse(BaseModel):
         ...,
         description="True if a new version was created, False if unchanged"
     )
-    previous_version: Optional[int] = Field(
+    previous_version: int | None = Field(
         None,
         description="Previous version number if a new version was created"
     )
@@ -195,11 +195,11 @@ class BulkResultItem(BaseModel):
 
     index: int
     status: str  # created, updated, deleted, skipped, error
-    id: Optional[str] = None
-    value: Optional[str] = None
-    version: Optional[int] = None
-    is_new_version: Optional[bool] = None
-    error: Optional[str] = None
+    id: str | None = None
+    value: str | None = None
+    version: int | None = None
+    is_new_version: bool | None = None
+    error: str | None = None
 
 
 class BulkResponse(BaseModel):
@@ -221,9 +221,9 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: Optional[int] = Field(None, description="Specific version to deactivate (default: latest)")
+    version: int | None = Field(None, description="Specific version to deactivate (default: latest)")
     force: bool = Field(default=False, description="Force deletion even if documents exist")
-    updated_by: Optional[str] = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(None, description="User performing deletion")
 
 
 # =============================================================================
@@ -266,7 +266,7 @@ class ValidateTemplateResponse(BaseModel):
     template_id: str
     errors: list[ValidationError] = []
     warnings: list[ValidationWarning] = []
-    will_also_activate: Optional[list[str]] = Field(
+    will_also_activate: list[str] | None = Field(
         default=None,
         description="Template IDs of other draft templates that would be activated together (draft templates only)"
     )
@@ -310,13 +310,13 @@ class CascadeResult(BaseModel):
 
     value: str
     old_template_id: str
-    new_template_id: Optional[str] = None
-    new_version: Optional[int] = None
+    new_template_id: str | None = None
+    new_version: int | None = None
     status: str = Field(
         ...,
         description="updated, unchanged, or error"
     )
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class CascadeResponse(BaseModel):
@@ -346,6 +346,6 @@ class ValidateDocumentResponse(BaseModel):
 
     valid: bool
     template_id: str
-    identity_hash: Optional[str] = None
+    identity_hash: str | None = None
     errors: list[ValidationError] = []
     warnings: list[ValidationWarning] = []

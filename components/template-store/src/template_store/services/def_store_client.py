@@ -1,7 +1,7 @@
 """Client for communicating with the WIP Def-Store service."""
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -15,8 +15,8 @@ class DefStoreClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0
     ):
         """
@@ -46,10 +46,10 @@ class DefStoreClient:
 
     async def get_terminology(
         self,
-        terminology_id: Optional[str] = None,
-        terminology_value: Optional[str] = None,
-        namespace: Optional[str] = None,
-    ) -> Optional[dict[str, Any]]:
+        terminology_id: str | None = None,
+        terminology_value: str | None = None,
+        namespace: str | None = None,
+    ) -> dict[str, Any] | None:
         """
         Get a terminology by ID or value.
 
@@ -84,12 +84,12 @@ class DefStoreClient:
 
                 return response.json()
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            raise DefStoreError(f"Request failed: {e!s}")
 
     async def terminology_exists(
         self,
         terminology_ref: str,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
     ) -> bool:
         """
         Check if a terminology exists by ID or value.
@@ -148,7 +148,7 @@ class DefStoreClient:
 
                 return response.json()
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            raise DefStoreError(f"Request failed: {e!s}")
 
     async def validate_values_bulk(
         self,
@@ -187,7 +187,7 @@ class DefStoreClient:
                 data = response.json()
                 return data.get("results", [])
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            raise DefStoreError(f"Request failed: {e!s}")
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
@@ -205,7 +205,7 @@ class DefStoreError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[DefStoreClient] = None
+_client: DefStoreClient | None = None
 
 
 def get_def_store_client() -> DefStoreClient:
@@ -217,8 +217,8 @@ def get_def_store_client() -> DefStoreClient:
 
 
 def configure_def_store_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    base_url: str | None = None,
+    api_key: str | None = None
 ) -> DefStoreClient:
     """Configure and return the Def-Store client."""
     global _client

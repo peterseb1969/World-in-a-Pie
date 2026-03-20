@@ -1,7 +1,7 @@
 """Field definition models for templates."""
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -61,27 +61,27 @@ class SemanticType(str, Enum):
 class FieldValidation(BaseModel):
     """Field-level validation constraints."""
 
-    pattern: Optional[str] = Field(
+    pattern: str | None = Field(
         None,
         description="Regex pattern for string fields"
     )
-    min_length: Optional[int] = Field(
+    min_length: int | None = Field(
         None,
         description="Minimum string length"
     )
-    max_length: Optional[int] = Field(
+    max_length: int | None = Field(
         None,
         description="Maximum string length"
     )
-    minimum: Optional[float] = Field(
+    minimum: float | None = Field(
         None,
         description="Minimum numeric value"
     )
-    maximum: Optional[float] = Field(
+    maximum: float | None = Field(
         None,
         description="Maximum numeric value"
     )
-    enum: Optional[list[Any]] = Field(
+    enum: list[Any] | None = Field(
         None,
         description="Allowed values (not term-based)"
     )
@@ -104,7 +104,7 @@ class FileFieldConfig(BaseModel):
         default=False,
         description="Allow multiple files (field value becomes array of file IDs)"
     )
-    max_files: Optional[int] = Field(
+    max_files: int | None = Field(
         None,
         ge=1,
         le=100,
@@ -133,87 +133,87 @@ class FieldDefinition(BaseModel):
         default=False,
         description="Whether field is required"
     )
-    default_value: Optional[Any] = Field(
+    default_value: Any | None = Field(
         None,
         description="Default value if not provided"
     )
 
     # For type=term: reference to Def-Store terminology (legacy)
-    terminology_ref: Optional[str] = Field(
+    terminology_ref: str | None = Field(
         None,
         description="Canonical terminology_id for term validation (resolved from value at creation)"
     )
 
     # For type=object: reference to another template
-    template_ref: Optional[str] = Field(
+    template_ref: str | None = Field(
         None,
         description="Canonical template_id for nested template (resolved from value at creation)"
     )
 
     # For type=reference: unified reference configuration
-    reference_type: Optional[ReferenceType] = Field(
+    reference_type: ReferenceType | None = Field(
         None,
         description="Type of entity being referenced (for reference type)"
     )
-    target_templates: Optional[list[str]] = Field(
+    target_templates: list[str] | None = Field(
         None,
         description="Canonical template_ids for allowed document reference targets (resolved from values at creation)"
     )
-    include_subtypes: Optional[bool] = Field(
+    include_subtypes: bool | None = Field(
         None,
         description="When true, target_templates also accepts documents from child templates (via inheritance)"
     )
-    target_terminologies: Optional[list[str]] = Field(
+    target_terminologies: list[str] | None = Field(
         None,
         description="Canonical terminology_ids for allowed term reference targets (resolved from values at creation)"
     )
-    version_strategy: Optional[VersionStrategy] = Field(
+    version_strategy: VersionStrategy | None = Field(
         None,
         description="How to resolve reference versions (default: latest)"
     )
 
     # For type=file: file configuration
-    file_config: Optional[FileFieldConfig] = Field(
+    file_config: FileFieldConfig | None = Field(
         None,
         description="Configuration for file fields (allowed types, size limits)"
     )
 
     # For type=array: item configuration
-    array_item_type: Optional[FieldType] = Field(
+    array_item_type: FieldType | None = Field(
         None,
         description="Type of array items (for array type)"
     )
-    array_terminology_ref: Optional[str] = Field(
+    array_terminology_ref: str | None = Field(
         None,
         description="Canonical terminology_id for array item term validation (resolved from value at creation)"
     )
-    array_template_ref: Optional[str] = Field(
+    array_template_ref: str | None = Field(
         None,
         description="Canonical template_id for array item template (resolved from value at creation)"
     )
-    array_file_config: Optional[FileFieldConfig] = Field(
+    array_file_config: FileFieldConfig | None = Field(
         None,
         description="File configuration for array items if file type"
     )
 
     # Validation constraints
-    validation: Optional[FieldValidation] = Field(
+    validation: FieldValidation | None = Field(
         None,
         description="Field-level validation rules"
     )
 
     # Semantic type for universal data patterns
-    semantic_type: Optional[SemanticType] = Field(
+    semantic_type: SemanticType | None = Field(
         None,
         description="Semantic type for additional validation (email, url, latitude, etc.)"
     )
 
     # Inheritance tracking (populated during resolution, not stored)
-    inherited: Optional[bool] = Field(
+    inherited: bool | None = Field(
         None,
         description="Whether this field is inherited from a parent template (set during resolution)"
     )
-    inherited_from: Optional[str] = Field(
+    inherited_from: str | None = Field(
         None,
         description="Template ID of the parent template this field was inherited from"
     )

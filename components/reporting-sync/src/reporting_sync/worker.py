@@ -13,18 +13,18 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
 import httpx
 from nats.aio.client import Client as NATS
 from nats.js import JetStreamContext
-from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
+from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
 from .config import settings
 from .metrics import metrics
-from .models import EventType, ReportingConfig, SyncStatus, SyncStrategy
+from .models import EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
 from .transformer import DocumentTransformer
 
@@ -92,7 +92,7 @@ class SyncWorker:
         template_id = document.get("template_id")
 
         if not document_id or not template_id:
-            logger.warning(f"Invalid document event: missing document_id or template_id")
+            logger.warning("Invalid document event: missing document_id or template_id")
             metrics.record_event_failed(None, None, "invalid_event", "Missing document_id or template_id")
             return False
 
@@ -486,7 +486,7 @@ class SyncWorker:
             if success:
                 await msg.ack()
                 self.status.events_processed += 1
-                self.status.last_event_processed = datetime.utcnow()
+                self.status.last_event_processed = datetime.now(UTC)
             else:
                 # Negative ack for retry
                 await msg.nak(delay=settings.retry_delay_ms / 1000)
@@ -537,7 +537,7 @@ class SyncWorker:
                     messages = await sub.fetch(batch=settings.batch_size, timeout=5)
                     for msg in messages:
                         await self._process_message(msg)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # No messages available, continue
                     pass
                 except Exception as e:

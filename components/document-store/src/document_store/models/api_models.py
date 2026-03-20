@@ -1,12 +1,12 @@
 """API request and response models for the Document Store."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .document import DocumentStatus, DocumentMetadata
-from .file import FileStatus, FileMetadata
+from .document import DocumentMetadata, DocumentStatus
+from .file import FileMetadata, FileStatus
 
 
 class StrictModel(BaseModel):
@@ -25,15 +25,15 @@ class DocumentCreateRequest(StrictModel):
         ...,
         description="Template ID to validate against"
     )
-    template_version: Optional[int] = Field(
+    template_version: int | None = Field(
         None,
         description="Specific template version to validate against (default: latest)"
     )
-    document_id: Optional[str] = Field(
+    document_id: str | None = Field(
         None,
         description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
     )
-    version: Optional[int] = Field(
+    version: int | None = Field(
         None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)"
     )
@@ -45,15 +45,15 @@ class DocumentCreateRequest(StrictModel):
         ...,
         description="Document content"
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system creating this document"
     )
-    metadata: Optional[dict[str, Any]] = Field(
+    metadata: dict[str, Any] | None = Field(
         None,
         description="Custom metadata"
     )
-    synonyms: Optional[list[dict[str, Any]]] = Field(
+    synonyms: list[dict[str, Any]] | None = Field(
         None,
         description="Optional synonym composite keys to register for this document in the Registry"
     )
@@ -66,7 +66,7 @@ class DocumentResponse(BaseModel):
     namespace: str
     template_id: str
     template_version: int
-    template_value: Optional[str] = Field(
+    template_value: str | None = Field(
         None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
@@ -87,9 +87,9 @@ class DocumentResponse(BaseModel):
     )
     status: DocumentStatus
     created_at: datetime
-    created_by: Optional[str]
+    created_by: str | None
     updated_at: datetime
-    updated_by: Optional[str]
+    updated_by: str | None
     metadata: DocumentMetadata
 
     # Latest version info - populated when returning document
@@ -97,7 +97,7 @@ class DocumentResponse(BaseModel):
         default=True,
         description="Whether this is the latest version of the document"
     )
-    latest_version: Optional[int] = Field(
+    latest_version: int | None = Field(
         None,
         description="The latest version number for this document_id"
     )
@@ -111,7 +111,7 @@ class DocumentCreateResponse(BaseModel):
     document_id: str
     namespace: str
     template_id: str
-    template_value: Optional[str] = Field(
+    template_value: str | None = Field(
         None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
@@ -121,7 +121,7 @@ class DocumentCreateResponse(BaseModel):
         ...,
         description="True if this is a new document, False if it's a new version"
     )
-    previous_version: Optional[int] = Field(
+    previous_version: int | None = Field(
         None,
         description="Previous version number if this is an update"
     )
@@ -143,7 +143,7 @@ class DocumentListResponse(BaseModel):
     page: int
     page_size: int
     pages: int
-    next_cursor: Optional[str] = Field(
+    next_cursor: str | None = Field(
         None,
         description="Cursor for next page (MongoDB _id of last item). "
                     "Null on last page or when using offset pagination."
@@ -161,7 +161,7 @@ class DocumentVersionSummary(BaseModel):
     version: int
     status: DocumentStatus
     created_at: datetime
-    created_by: Optional[str]
+    created_by: str | None
 
 
 class DocumentVersionResponse(BaseModel):
@@ -200,11 +200,11 @@ class DocumentQueryRequest(StrictModel):
         default_factory=list,
         description="Filter conditions (AND logic)"
     )
-    template_id: Optional[str] = Field(
+    template_id: str | None = Field(
         None,
         description="Filter by template ID"
     )
-    status: Optional[DocumentStatus] = Field(
+    status: DocumentStatus | None = Field(
         DocumentStatus.ACTIVE,
         description="Filter by status (defaults to 'active' — pass null to include all versions)"
     )
@@ -249,12 +249,12 @@ class BulkResultItem(BaseModel):
 
     index: int
     status: str  # created, updated, unchanged, deleted, skipped, error
-    id: Optional[str] = None
-    document_id: Optional[str] = None
-    identity_hash: Optional[str] = None
-    version: Optional[int] = None
-    is_new: Optional[bool] = None
-    error: Optional[str] = None
+    id: str | None = None
+    document_id: str | None = None
+    identity_hash: str | None = None
+    version: int | None = None
+    is_new: bool | None = None
+    error: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -265,7 +265,7 @@ class BulkResponse(BaseModel):
     total: int
     succeeded: int
     failed: int
-    timing: Optional[dict[str, float]] = Field(
+    timing: dict[str, float] | None = Field(
         default=None,
         description="Server-side timing breakdown in milliseconds"
     )
@@ -276,14 +276,14 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if referenced")
-    updated_by: Optional[str] = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(None, description="User performing deletion")
 
 
 class ArchiveItem(StrictModel):
     """Item in a bulk archive request."""
 
     id: str = Field(..., description="ID of document to archive")
-    archived_by: Optional[str] = Field(None, description="User performing the archive")
+    archived_by: str | None = Field(None, description="User performing the archive")
 
 
 # ============================================================================
@@ -293,7 +293,7 @@ class ArchiveItem(StrictModel):
 class ValidationError(BaseModel):
     """A validation error."""
 
-    field: Optional[str] = Field(
+    field: str | None = Field(
         None,
         description="Field path with the error (e.g., 'data.name')"
     )
@@ -305,7 +305,7 @@ class ValidationError(BaseModel):
         ...,
         description="Human-readable error message"
     )
-    details: Optional[dict[str, Any]] = Field(
+    details: dict[str, Any] | None = Field(
         None,
         description="Additional error details"
     )
@@ -339,11 +339,11 @@ class ValidationResponse(BaseModel):
         default_factory=list,
         description="Non-blocking warnings"
     )
-    identity_hash: Optional[str] = Field(
+    identity_hash: str | None = Field(
         None,
         description="Computed identity hash (if valid)"
     )
-    template_version: Optional[int] = Field(
+    template_version: int | None = Field(
         None,
         description="Template version used for validation"
     )
@@ -368,7 +368,7 @@ class ValidationResponse(BaseModel):
 class FileUploadMetadata(StrictModel):
     """Metadata to include with file upload."""
 
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Human-readable description of the file"
     )
@@ -376,7 +376,7 @@ class FileUploadMetadata(StrictModel):
         default_factory=list,
         description="Searchable tags"
     )
-    category: Optional[str] = Field(
+    category: str | None = Field(
         None,
         description="Classification category"
     )
@@ -384,7 +384,7 @@ class FileUploadMetadata(StrictModel):
         default_factory=dict,
         description="Additional custom metadata fields"
     )
-    allowed_templates: Optional[list[str]] = Field(
+    allowed_templates: list[str] | None = Field(
         None,
         description="Template values that can reference this file (None = all)"
     )
@@ -393,23 +393,23 @@ class FileUploadMetadata(StrictModel):
 class UpdateFileMetadataRequest(StrictModel):
     """Request to update file metadata."""
 
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Human-readable description of the file"
     )
-    tags: Optional[list[str]] = Field(
+    tags: list[str] | None = Field(
         None,
         description="Searchable tags (replaces existing)"
     )
-    category: Optional[str] = Field(
+    category: str | None = Field(
         None,
         description="Classification category"
     )
-    custom: Optional[dict[str, Any]] = Field(
+    custom: dict[str, Any] | None = Field(
         None,
         description="Additional custom metadata fields (merges with existing)"
     )
-    allowed_templates: Optional[list[str]] = Field(
+    allowed_templates: list[str] | None = Field(
         None,
         description="Template values that can reference this file"
     )
@@ -433,11 +433,11 @@ class FileResponse(BaseModel):
     metadata: FileMetadata
     status: FileStatus
     reference_count: int
-    allowed_templates: Optional[list[str]]
+    allowed_templates: list[str] | None
     uploaded_at: datetime
-    uploaded_by: Optional[str]
-    updated_at: Optional[datetime]
-    updated_by: Optional[str]
+    uploaded_by: str | None
+    updated_at: datetime | None
+    updated_by: str | None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -477,9 +477,9 @@ class FileIntegrityIssue(BaseModel):
         ...,
         description="Issue severity: warning, error"
     )
-    file_id: Optional[str] = None
-    document_id: Optional[str] = None
-    field_path: Optional[str] = None
+    file_id: str | None = None
+    document_id: str | None = None
+    field_path: str | None = None
     message: str
 
 

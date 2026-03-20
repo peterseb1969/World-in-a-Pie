@@ -1,11 +1,10 @@
 """Audit log API endpoints for the Def-Store service."""
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from ..models.audit_log import TermAuditLog
 from ..models.api_models import AuditLogEntry, AuditLogResponse
+from ..models.audit_log import TermAuditLog
 from .auth import require_api_key
 
 router = APIRouter(prefix="/audit", tags=["Audit Log"])
@@ -66,7 +65,7 @@ async def get_term_audit_log(
 )
 async def get_terminology_audit_log(
     terminology_id: str,
-    action: Optional[str] = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
+    action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
@@ -100,7 +99,7 @@ async def get_terminology_audit_log(
     description="Retrieve recent changes across all terminologies."
 )
 async def get_recent_audit_log(
-    action: Optional[str] = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
+    action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)

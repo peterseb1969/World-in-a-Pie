@@ -1,15 +1,12 @@
 """Ontology service for managing term relationships and traversal."""
 
 import logging
-import math
 from collections import deque
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from pymongo.errors import DuplicateKeyError
 
-from ..models.term import Term
-from ..models.term_relationship import TermRelationship
+from ..api.auth import get_identity_string
 from ..models.api_models import (
     BulkResultItem,
     CreateRelationshipRequest,
@@ -18,8 +15,10 @@ from ..models.api_models import (
     TraversalNode,
     TraversalResponse,
 )
-from ..api.auth import get_identity_string
-from .nats_client import publish_relationship_event, EventType as NatsEventType
+from ..models.term import Term
+from ..models.term_relationship import TermRelationship
+from .nats_client import EventType as NatsEventType
+from .nats_client import publish_relationship_event
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +156,7 @@ class OntologyService:
                     target_terminology_id=target_term.terminology_id,
                     metadata=item.metadata,
                     status="active",
-                    created_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(UTC),
                     created_by=actor or item.created_by,
                 )
 
@@ -309,7 +308,7 @@ class OntologyService:
         term_id: str,
         namespace: str = "wip",
         direction: str = "outgoing",
-        relationship_type: Optional[str] = None,
+        relationship_type: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
@@ -341,8 +340,8 @@ class OntologyService:
     @staticmethod
     async def list_all_relationships(
         namespace: str = "wip",
-        relationship_type: Optional[str] = None,
-        source_terminology_id: Optional[str] = None,
+        relationship_type: str | None = None,
+        source_terminology_id: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,

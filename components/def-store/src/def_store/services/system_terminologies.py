@@ -10,13 +10,12 @@ Users can add terms to system terminologies but should not delete
 the built-in terms.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
-from ..models.terminology import Terminology, TerminologyMetadata
 from ..models.term import Term
-from .registry_client import get_registry_client, RegistryError
-
+from ..models.terminology import Terminology, TerminologyMetadata
+from .registry_client import RegistryError, get_registry_client
 
 # System terminology definitions
 # The `_` prefix indicates a system-managed terminology
@@ -234,9 +233,9 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     extensible=True,  # System terminologies can be extended
                     metadata=metadata,
                     status="active",
-                    created_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(UTC),
                     created_by="system:bootstrap",
-                    updated_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(UTC),
                     updated_by="system:bootstrap",
                     term_count=0
                 )
@@ -289,9 +288,9 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                         sort_order=term_data.get("sort_order", 0),
                         metadata=term_data.get("metadata", {}),
                         status="active",
-                        created_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(UTC),
                         created_by="system:bootstrap",
-                        updated_at=datetime.now(timezone.utc),
+                        updated_at=datetime.now(UTC),
                         updated_by="system:bootstrap"
                     )
 

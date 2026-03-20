@@ -2,11 +2,12 @@
 
 from fastapi import APIRouter
 
-from .namespaces import router as namespaces_router
 from .entries import router as entries_router
-from .synonyms import router as synonyms_router
+from .grants import my_router as my_router
+from .grants import router as grants_router
+from .namespaces import router as namespaces_router
 from .search import router as search_router
-from .grants import router as grants_router, my_router as my_router
+from .synonyms import router as synonyms_router
 
 # Create main API router
 api_router = APIRouter(prefix="/api/registry")

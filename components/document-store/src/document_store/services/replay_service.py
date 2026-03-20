@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class ReplayService:
         batch_size: int = 100,
     ) -> dict:
         """Start a new replay session."""
-        from ..models.replay import ReplaySession, ReplayFilter, ReplayStatus
+        from ..models.replay import ReplayFilter, ReplaySession
         from .nats_client import _jetstream, _nats_enabled
 
         if not _nats_enabled or not _jetstream:
@@ -53,7 +53,7 @@ class ReplayService:
             raise ValueError("No documents match the replay filter")
 
         # Create NATS stream for replay
-        from nats.js.api import StreamConfig, RetentionPolicy, StorageType
+        from nats.js.api import RetentionPolicy, StorageType, StreamConfig
         await _jetstream.add_stream(
             StreamConfig(
                 name=stream_name,
@@ -87,7 +87,7 @@ class ReplayService:
 
         return session.model_dump(mode="json")
 
-    def get_session(self, session_id: str) -> Optional[dict]:
+    def get_session(self, session_id: str) -> dict | None:
         """Get replay session state."""
         session = self._sessions.get(session_id)
         if not session:
@@ -160,13 +160,13 @@ class ReplayService:
 
     async def _publish_replay(self, session_id: str):
         """Background task that publishes replay events."""
-        from ..models.replay import ReplayStatus
         from ..models.document import Document
+        from ..models.replay import ReplayStatus
         from .nats_client import _jetstream
 
         session = self._sessions[session_id]
         session.status = ReplayStatus.RUNNING
-        session.started_at = datetime.now(timezone.utc)
+        session.started_at = datetime.now(UTC)
 
         try:
             query = {
@@ -212,7 +212,7 @@ class ReplayService:
                     template_value = doc_dict.get("template_value", "unknown")
                     event = {
                         "event_type": "document.created",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "changed_by": "replay",
                         "document": doc_dict,
                         "metadata": {
@@ -238,7 +238,7 @@ class ReplayService:
             # Publish completion event
             complete_event = {
                 "event_type": "replay.complete",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
                 "session_id": session_id,
                 "total_published": session.published,
             }
@@ -248,7 +248,7 @@ class ReplayService:
             )
 
             session.status = ReplayStatus.COMPLETED
-            session.completed_at = datetime.now(timezone.utc)
+            session.completed_at = datetime.now(UTC)
             logger.info(f"Replay {session_id} completed: {session.published} events published")
 
         except asyncio.CancelledError:
@@ -261,7 +261,7 @@ class ReplayService:
 
 
 # Global instance
-_replay_service: Optional[ReplayService] = None
+_replay_service: ReplayService | None = None
 
 
 def get_replay_service() -> ReplayService:

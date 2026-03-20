@@ -7,7 +7,6 @@ endpoint signature and returns 422 for any unknown params.
 
 import inspect
 import logging
-from typing import Set
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -33,14 +32,28 @@ def _get_declared_query_params(endpoint) -> frozenset[str]:
         return _DECLARED_CACHE[key]
 
     from fastapi.params import (
-        Depends as DependsClass,
-        Query as QueryClass,
-        Path as PathClass,
         Body as BodyClass,
-        Header as HeaderClass,
+    )
+    from fastapi.params import (
         Cookie as CookieClass,
+    )
+    from fastapi.params import (
+        Depends as DependsClass,
+    )
+    from fastapi.params import (
         File as FileClass,
+    )
+    from fastapi.params import (
         Form as FormClass,
+    )
+    from fastapi.params import (
+        Header as HeaderClass,
+    )
+    from fastapi.params import (
+        Path as PathClass,
+    )
+    from fastapi.params import (
+        Query as QueryClass,
     )
 
     # All non-query FastAPI parameter types

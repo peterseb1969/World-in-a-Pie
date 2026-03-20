@@ -1,24 +1,23 @@
 """Synonym management API endpoints."""
 
-from datetime import datetime, timezone
-from typing import List
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends
 
-from ..models.entry import RegistryEntry, Synonym
 from ..models.api_models import (
     AddSynonymItem,
     AddSynonymResponse,
-    RemoveSynonymItem,
-    RemoveSynonymResponse,
-    MergeItem,
-    MergeResponse,
+    BulkMergeResponse,
     BulkSynonymAddResponse,
     BulkSynonymRemoveResponse,
-    BulkMergeResponse,
+    MergeItem,
+    MergeResponse,
+    RemoveSynonymItem,
+    RemoveSynonymResponse,
 )
-from ..services.hash import HashService
+from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
+from ..services.hash import HashService
 
 router = APIRouter()
 
@@ -29,7 +28,7 @@ router = APIRouter()
     summary="Add synonyms to existing entries (bulk)"
 )
 async def add_synonyms(
-    items: List[AddSynonymItem] = Body(...),
+    items: list[AddSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkSynonymAddResponse:
     """Add one or more synonyms to existing registry entries."""
@@ -84,7 +83,7 @@ async def add_synonyms(
 
             entry.synonyms.append(synonym)
             entry.rebuild_search_values()
-            entry.updated_at = datetime.now(timezone.utc)
+            entry.updated_at = datetime.now(UTC)
             await entry.save()
 
             results.append(AddSynonymResponse(
@@ -109,7 +108,7 @@ async def add_synonyms(
     summary="Remove synonyms from entries (bulk)"
 )
 async def remove_synonyms(
-    items: List[RemoveSynonymItem] = Body(...),
+    items: list[RemoveSynonymItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkSynonymRemoveResponse:
     """Remove one or more synonyms from registry entries."""
@@ -146,7 +145,7 @@ async def remove_synonyms(
                 continue
 
             entry.rebuild_search_values()
-            entry.updated_at = datetime.now(timezone.utc)
+            entry.updated_at = datetime.now(UTC)
             entry.updated_by = item.updated_by
             await entry.save()
 
@@ -172,7 +171,7 @@ async def remove_synonyms(
     summary="Merge entries (ID-as-synonym) (bulk)"
 )
 async def merge_entries(
-    items: List[MergeItem] = Body(...),
+    items: list[MergeItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkMergeResponse:
     """Merge two entries, making the deprecated one a synonym of the preferred."""
@@ -226,12 +225,12 @@ async def merge_entries(
                     preferred.synonyms.append(syn)
 
             deprecated.status = "inactive"
-            deprecated.updated_at = datetime.now(timezone.utc)
+            deprecated.updated_at = datetime.now(UTC)
             deprecated.updated_by = item.updated_by
             await deprecated.save()
 
             preferred.rebuild_search_values()
-            preferred.updated_at = datetime.now(timezone.utc)
+            preferred.updated_at = datetime.now(UTC)
             preferred.updated_by = item.updated_by
             await preferred.save()
 

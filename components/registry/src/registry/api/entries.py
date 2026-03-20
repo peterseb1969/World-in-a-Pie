@@ -1,61 +1,60 @@
 """Registry entry management API endpoints."""
 
-from datetime import datetime, timezone
-from typing import List, Optional
 import math
+from datetime import UTC, datetime
 
 import httpx
-from fastapi import APIRouter, HTTPException, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from ..models.namespace import Namespace
-from ..models.id_algorithm import IdAlgorithmConfig, IdFormatValidator, VALID_ENTITY_TYPES
-from ..models.entry import RegistryEntry, Synonym
 from ..models.api_models import (
-    RegisterKeyItem,
-    RegisterKeyResponse,
-    RegisterBulkResponse,
-    ProvisionRequest,
-    ProvisionedId,
-    ProvisionResponse,
-    ReserveItem,
-    ReserveItemResponse,
-    ReserveBulkResponse,
+    ActivateBulkResponse,
     ActivateItem,
     ActivateItemResponse,
-    ActivateBulkResponse,
+    BrowseEntriesResponse,
+    BrowseEntryItem,
+    BulkDeleteResponse,
+    BulkUpdateResponse,
+    DeleteItem,
+    DeleteResponse,
+    EntryDetailResponse,
+    LookupBulkResponse,
     LookupByIdItem,
     LookupByKeyItem,
     LookupResponse,
-    LookupBulkResponse,
+    ProvisionedId,
+    ProvisionRequest,
+    ProvisionResponse,
+    RegisterBulkResponse,
+    RegisterKeyItem,
+    RegisterKeyResponse,
+    ReserveBulkResponse,
+    ReserveItem,
+    ReserveItemResponse,
+    UnifiedSearchResponse,
+    UnifiedSearchResultItem,
     UpdateEntryItem,
     UpdateEntryResponse,
-    DeleteItem,
-    DeleteResponse,
-    BulkUpdateResponse,
-    BulkDeleteResponse,
-    BrowseEntryItem,
-    BrowseEntriesResponse,
-    UnifiedSearchResultItem,
-    UnifiedSearchResponse,
-    EntryDetailResponse,
 )
-from ..services.id_generator import IdGeneratorService
-from ..services.hash import HashService
+from ..models.entry import RegistryEntry, Synonym
+from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
+from ..models.namespace import Namespace
 from ..services.auth import require_api_key
+from ..services.hash import HashService
+from ..services.id_generator import IdGeneratorService
 
 router = APIRouter()
 
 
 def build_lookup_response(
     input_index: int,
-    entry: Optional[RegistryEntry],
+    entry: RegistryEntry | None,
     status: str = "found",
-    matched_namespace: Optional[str] = None,
-    matched_entity_type: Optional[str] = None,
-    matched_composite_key: Optional[dict] = None,
-    matched_via: Optional[str] = None,
-    source_data: Optional[dict] = None,
-    error: Optional[str] = None
+    matched_namespace: str | None = None,
+    matched_entity_type: str | None = None,
+    matched_composite_key: dict | None = None,
+    matched_via: str | None = None,
+    source_data: dict | None = None,
+    error: str | None = None
 ) -> LookupResponse:
     """Build a standardized lookup response."""
     if entry is None:
@@ -88,10 +87,10 @@ def build_lookup_response(
     summary="Browse registry entries"
 )
 async def browse_entries(
-    namespace: Optional[str] = Query(None, description="Filter by namespace"),
-    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
-    status: Optional[str] = Query(None, description="Filter by status (active, reserved, inactive)"),
-    q: Optional[str] = Query(None, description="Search across entry IDs and composite key values"),
+    namespace: str | None = Query(None, description="Filter by namespace"),
+    entity_type: str | None = Query(None, description="Filter by entity type"),
+    status: str | None = Query(None, description="Filter by status (active, reserved, inactive)"),
+    q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key)
@@ -148,9 +147,9 @@ async def browse_entries(
 )
 async def unified_search(
     q: str = Query(..., min_length=1, description="Search query string"),
-    namespace: Optional[str] = Query(None, description="Filter by namespace"),
-    entity_type: Optional[str] = Query(None, description="Filter by entity type"),
-    status: Optional[str] = Query(None, description="Filter by status"),
+    namespace: str | None = Query(None, description="Filter by namespace"),
+    entity_type: str | None = Query(None, description="Filter by entity type"),
+    status: str | None = Query(None, description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key)
@@ -295,7 +294,7 @@ async def get_entry_detail(
     summary="Register composite keys (bulk, reserve+activate)"
 )
 async def register_keys(
-    items: List[RegisterKeyItem] = Body(...),
+    items: list[RegisterKeyItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> RegisterBulkResponse:
     """
@@ -308,7 +307,7 @@ async def register_keys(
     if not items:
         return RegisterBulkResponse(results=[], total=0, created=0, already_exists=0, errors=0)
 
-    results: List[RegisterKeyResponse | None] = [None] * len(items)
+    results: list[RegisterKeyResponse | None] = [None] * len(items)
     created_count = 0
     exists_count = 0
     error_count = 0
@@ -317,7 +316,7 @@ async def register_keys(
     # When identity_values is provided, compute identity_hash and inject it
     # into composite_key before hashing the full key for dedup.
     hashes = []
-    identity_hashes: List[Optional[str]] = []
+    identity_hashes: list[str | None] = []
     for item in items:
         if item.identity_values:
             # Compute identity_hash from raw values
@@ -350,8 +349,8 @@ async def register_keys(
                 existing_by_hash[syn.composite_key_hash] = entry
 
     # Phase 3: Build entries to insert
-    entries_to_insert: List[RegistryEntry] = []
-    insert_indices: List[int] = []
+    entries_to_insert: list[RegistryEntry] = []
+    insert_indices: list[int] = []
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes)):
         try:
@@ -442,7 +441,7 @@ async def register_keys(
                     results[idx] = RegisterKeyResponse(
                         input_index=idx,
                         status="error",
-                        error=f"Batch insert failed: {str(e)}"
+                        error=f"Batch insert failed: {e!s}"
                     )
                     error_count += 1
 
@@ -522,7 +521,7 @@ async def provision_ids(
     summary="Reserve client-provided IDs"
 )
 async def reserve_ids(
-    items: List[ReserveItem] = Body(...),
+    items: list[ReserveItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> ReserveBulkResponse:
     """
@@ -604,7 +603,7 @@ async def reserve_ids(
                 if results[idx] is None:
                     results[idx] = ReserveItemResponse(
                         input_index=idx, status="error",
-                        error=f"Batch insert failed: {str(e)}"
+                        error=f"Batch insert failed: {e!s}"
                     )
                     error_count += 1
 
@@ -622,7 +621,7 @@ async def reserve_ids(
     summary="Activate reserved entries"
 )
 async def activate_entries(
-    items: List[ActivateItem] = Body(...),
+    items: list[ActivateItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> ActivateBulkResponse:
     """Activate reserved entries, making them resolvable."""
@@ -656,7 +655,7 @@ async def activate_entries(
                 continue
 
             entry.status = "active"
-            entry.updated_at = datetime.now(timezone.utc)
+            entry.updated_at = datetime.now(UTC)
             await entry.save()
 
             results.append(ActivateItemResponse(
@@ -684,7 +683,7 @@ async def activate_entries(
     summary="Lookup entries by ID (bulk)"
 )
 async def lookup_by_ids(
-    items: List[LookupByIdItem] = Body(...),
+    items: list[LookupByIdItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their IDs. Only active entries are resolvable."""
@@ -732,7 +731,7 @@ async def lookup_by_ids(
                         resp.raise_for_status()
                         source_data = resp.json()
                     except Exception as e:
-                        source_data = {"error": f"Failed to fetch: {str(e)}"}
+                        source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
                     input_index=i, entry=entry,
@@ -756,7 +755,7 @@ async def lookup_by_ids(
     summary="Lookup entries by composite key (bulk)"
 )
 async def lookup_by_keys(
-    items: List[LookupByKeyItem] = Body(...),
+    items: list[LookupByKeyItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> LookupBulkResponse:
     """Look up registry entries by their composite keys."""
@@ -823,7 +822,7 @@ async def lookup_by_keys(
                         resp.raise_for_status()
                         source_data = resp.json()
                     except Exception as e:
-                        source_data = {"error": f"Failed to fetch: {str(e)}"}
+                        source_data = {"error": f"Failed to fetch: {e!s}"}
 
                 results.append(build_lookup_response(
                     input_index=i, entry=entry,
@@ -850,7 +849,7 @@ async def lookup_by_keys(
     summary="Update entries (bulk)"
 )
 async def update_entries(
-    items: List[UpdateEntryItem] = Body(...),
+    items: list[UpdateEntryItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkUpdateResponse:
     """Update one or more registry entries."""
@@ -874,7 +873,7 @@ async def update_entries(
             if item.metadata is not None:
                 entry.metadata.update(item.metadata)
 
-            entry.updated_at = datetime.now(timezone.utc)
+            entry.updated_at = datetime.now(UTC)
             entry.updated_by = item.updated_by
             await entry.save()
 
@@ -900,7 +899,7 @@ async def update_entries(
     summary="Delete entries (bulk, soft delete)"
 )
 async def delete_entries(
-    items: List[DeleteItem] = Body(...),
+    items: list[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkDeleteResponse:
     """Deactivate one or more registry entries (soft delete)."""
@@ -917,7 +916,7 @@ async def delete_entries(
                 continue
 
             entry.status = "inactive"
-            entry.updated_at = datetime.now(timezone.utc)
+            entry.updated_at = datetime.now(UTC)
             entry.updated_by = item.updated_by
             await entry.save()
 

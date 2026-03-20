@@ -1,23 +1,23 @@
 """API endpoints for terminology management."""
 
 import math
-from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 
 from ..models.api_models import (
-    BulkResultItem,
     BulkResponse,
+    BulkResultItem,
     CreateTerminologyRequest,
-    UpdateTerminologyItem,
     DeleteItem,
-    TerminologyResponse,
     TerminologyListResponse,
+    TerminologyResponse,
+    UpdateTerminologyItem,
 )
-from ..services.terminology_service import TerminologyService
-from ..services.registry_client import RegistryError
 from ..services.dependency_service import DependencyService, TerminologyDependencies
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from ..services.registry_client import RegistryError
+from ..services.terminology_service import TerminologyService
 from .auth import require_api_key
 
 router = APIRouter(prefix="/terminologies", tags=["Terminologies"])
@@ -47,7 +47,7 @@ async def create_terminologies(
         except (ValueError, HTTPException) as e:
             results.append(BulkResultItem(index=i, status="error", error=str(e)))
         except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", error=f"Registry error: {str(e)}"))
+            results.append(BulkResultItem(index=i, status="error", error=f"Registry error: {e!s}"))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -57,9 +57,9 @@ async def create_terminologies(
 
 @router.get("", response_model=TerminologyListResponse, summary="List terminologies")
 async def list_terminologies(
-    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    value: Optional[str] = Query(None, description="Filter by exact value match"),
+    namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
+    status: str | None = Query(None, description="Filter by status"),
+    value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
     api_key: str = Depends(require_api_key)
@@ -92,7 +92,7 @@ async def list_terminologies(
 @router.get("/by-value/{value}", response_model=TerminologyResponse, summary="Get a terminology by value")
 async def get_terminology_by_value(
     value: str,
-    namespace: Optional[str] = Query(default=None, description="Namespace to search in (omit for all)"),
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """Get a terminology by its value (e.g., DOC_STATUS)."""
@@ -109,7 +109,7 @@ async def get_terminology_by_value(
 @router.get("/{terminology_id}", response_model=TerminologyResponse, summary="Get a terminology")
 async def get_terminology(
     terminology_id: str,
-    namespace: Optional[str] = Query(default=None, description="Namespace for value fallback lookup"),
+    namespace: str | None = Query(default=None, description="Namespace for value fallback lookup"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyResponse:
     """
@@ -151,7 +151,7 @@ async def update_terminologies(
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=str(e)))
         except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=f"Registry error: {str(e)}"))
+            results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, error=f"Registry error: {e!s}"))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),

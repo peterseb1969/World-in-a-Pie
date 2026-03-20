@@ -13,20 +13,20 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from nats.aio.client import Client as NATS
 from nats.js import JetStreamContext
-from nats.js.api import ConsumerConfig, DeliverPolicy, AckPolicy
+from nats.js.api import AckPolicy, ConsumerConfig, DeliverPolicy
 
 from .config import settings
+from .http_client import IngestHTTPClient
 from .models import (
+    SUBJECT_TO_ACTION,
     IngestAction,
     IngestResult,
     IngestResultStatus,
-    SUBJECT_TO_ACTION,
 )
-from .http_client import IngestHTTPClient
 from .result_publisher import ResultPublisher
 
 logger = logging.getLogger(__name__)
@@ -187,7 +187,7 @@ class IngestWorker:
                     for msg in messages:
                         await self._process_message(msg)
 
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # No messages available, continue loop
                     pass
                 except asyncio.CancelledError:

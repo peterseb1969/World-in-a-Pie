@@ -9,14 +9,14 @@ Uses batched cursor iteration to avoid loading all documents into memory.
 """
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..models.document import Document, DocumentStatus
-from .template_store_client import get_template_store_client, TemplateStoreError
-from .def_store_client import get_def_store_client, DefStoreError
+from ..models.document import Document
+from .def_store_client import DefStoreError, get_def_store_client
+from .template_store_client import TemplateStoreError, get_template_store_client
 
 # Batch size for cursor iteration — bounds memory usage
 BATCH_SIZE = 500
@@ -36,7 +36,7 @@ class IntegrityIssue(BaseModel):
     document_id: str = Field(..., description="Document with the issue")
     template_id: str = Field(..., description="Template ID of the document")
     version: int = Field(..., description="Document version")
-    field_path: Optional[str] = Field(
+    field_path: str | None = Field(
         None,
         description="Field path (e.g., 'gender', 'addresses[0].country')"
     )
@@ -63,7 +63,7 @@ class IntegrityCheckResult(BaseModel):
         description="Overall status: healthy, warning, error"
     )
     checked_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     summary: IntegritySummary = Field(default_factory=IntegritySummary)
     issues: list[IntegrityIssue] = Field(default_factory=list)
@@ -227,8 +227,8 @@ async def check_document_integrity(document: Document) -> list[IntegrityIssue]:
 
 
 async def check_all_documents(
-    status_filter: Optional[str] = None,
-    template_id_filter: Optional[str] = None,
+    status_filter: str | None = None,
+    template_id_filter: str | None = None,
     limit: int = 0,
     check_term_refs: bool = True,
     recent_first: bool = False

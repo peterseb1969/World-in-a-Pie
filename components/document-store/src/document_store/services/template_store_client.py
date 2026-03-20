@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -26,8 +26,8 @@ class TemplateStoreClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0
     ):
         """
@@ -49,11 +49,11 @@ class TemplateStoreClient:
         self.timeout = timeout
 
         # Permanent cache: keyed by "template_id:v{version}" — immutable
-        self._template_cache: dict[str, Optional[dict[str, Any]]] = {}
+        self._template_cache: dict[str, dict[str, Any] | None] = {}
 
         # TTL cache for "latest" resolution: keyed by template_id
         # Value: (template_data, timestamp)
-        self._latest_cache: dict[str, tuple[Optional[dict[str, Any]], float]] = {}
+        self._latest_cache: dict[str, tuple[dict[str, Any] | None, float]] = {}
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -80,11 +80,11 @@ class TemplateStoreClient:
 
     async def get_template(
         self,
-        template_id: Optional[str] = None,
-        template_value: Optional[str] = None,
+        template_id: str | None = None,
+        template_value: str | None = None,
         resolve_inheritance: bool = True,
-        version: Optional[int] = None
-    ) -> Optional[dict[str, Any]]:
+        version: int | None = None
+    ) -> dict[str, Any] | None:
         """
         Get a template by ID or value.
 
@@ -165,13 +165,13 @@ class TemplateStoreClient:
 
                 return result
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {str(e)}")
+            raise TemplateStoreError(f"Request failed: {e!s}")
 
     async def get_template_resolved(
         self,
         template_id: str,
-        version: Optional[int] = None
-    ) -> Optional[dict[str, Any]]:
+        version: int | None = None
+    ) -> dict[str, Any] | None:
         """
         Get a template with inheritance fully resolved.
 
@@ -282,7 +282,7 @@ class TemplateStoreClient:
                 data = response.json()
                 return data.get("items", [])
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {str(e)}")
+            raise TemplateStoreError(f"Request failed: {e!s}")
 
     async def validate_template_references(
         self,
@@ -318,7 +318,7 @@ class TemplateStoreError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[TemplateStoreClient] = None
+_client: TemplateStoreClient | None = None
 
 
 def get_template_store_client() -> TemplateStoreClient:
@@ -330,8 +330,8 @@ def get_template_store_client() -> TemplateStoreClient:
 
 
 def configure_template_store_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    base_url: str | None = None,
+    api_key: str | None = None
 ) -> TemplateStoreClient:
     """Configure and return the Template Store client."""
     global _client

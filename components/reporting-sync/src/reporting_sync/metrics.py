@@ -9,7 +9,7 @@ import logging
 import statistics
 import uuid
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -18,7 +18,6 @@ from .models import (
     Alert,
     AlertConfig,
     AlertSeverity,
-    AlertThresholds,
     AlertType,
     ConsumerInfo,
     LatencyStats,
@@ -34,13 +33,13 @@ class MetricsCollector:
 
     def __init__(self, max_latency_samples: int = 1000, max_alerts_history: int = 100):
         # Timing
-        self.started_at = datetime.now(timezone.utc)
+        self.started_at = datetime.now(UTC)
 
         # Event counters
         self.events_processed = 0
         self.events_failed = 0
         self._last_events_count = 0
-        self._last_events_time = datetime.now(timezone.utc)
+        self._last_events_time = datetime.now(UTC)
 
         # Latency tracking (sliding window)
         self._latency_samples: deque[float] = deque(maxlen=max_latency_samples)
@@ -68,7 +67,7 @@ class MetricsCollector:
     ) -> None:
         """Record a successfully processed event."""
         self.events_processed += 1
-        self.last_event_at = datetime.now(timezone.utc)
+        self.last_event_at = datetime.now(UTC)
         self._latency_samples.append(latency_ms)
 
         # Update template stats
@@ -80,7 +79,7 @@ class MetricsCollector:
 
         stats = self._template_stats[template_value]
         stats.documents_synced += 1
-        stats.last_sync_at = datetime.now(timezone.utc)
+        stats.last_sync_at = datetime.now(UTC)
 
     def record_event_failed(
         self,
@@ -91,7 +90,7 @@ class MetricsCollector:
     ) -> None:
         """Record a failed event."""
         self.events_failed += 1
-        self.last_event_at = datetime.now(timezone.utc)
+        self.last_event_at = datetime.now(UTC)
 
         # Track error type
         self._errors_by_type[error_type] = self._errors_by_type.get(error_type, 0) + 1
@@ -107,12 +106,12 @@ class MetricsCollector:
             stats = self._template_stats[template_value]
             stats.documents_failed += 1
             stats.last_error = error_message
-            stats.last_error_at = datetime.now(timezone.utc)
+            stats.last_error_at = datetime.now(UTC)
 
     def record_event_skipped(self, template_value: str, reason: str) -> None:
         """Record a skipped event (sync disabled, etc.)."""
         self.events_processed += 1  # Still counts as processed
-        self.last_event_at = datetime.now(timezone.utc)
+        self.last_event_at = datetime.now(UTC)
         logger.debug(f"Event skipped for {template_value}: {reason}")
 
     def get_latency_stats(self) -> LatencyStats:
@@ -136,7 +135,7 @@ class MetricsCollector:
 
     def get_events_per_second(self) -> float:
         """Calculate current events per second rate."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         elapsed = (now - self._last_events_time).total_seconds()
 
         if elapsed < 1:
@@ -161,7 +160,7 @@ class MetricsCollector:
 
     def get_uptime_seconds(self) -> float:
         """Get service uptime in seconds."""
-        return (datetime.now(timezone.utc) - self.started_at).total_seconds()
+        return (datetime.now(UTC) - self.started_at).total_seconds()
 
     def build_metrics_response(
         self,
@@ -219,7 +218,7 @@ class MetricsCollector:
             alert_type=alert_type,
             severity=severity,
             message=message,
-            triggered_at=datetime.now(timezone.utc),
+            triggered_at=datetime.now(UTC),
             details=details or {},
         )
         self._active_alerts[alert_type.value] = alert
@@ -231,7 +230,7 @@ class MetricsCollector:
         key = alert_type.value
         if key in self._active_alerts:
             alert = self._active_alerts.pop(key)
-            alert.resolved_at = datetime.now(timezone.utc)
+            alert.resolved_at = datetime.now(UTC)
             self._resolved_alerts.append(alert)
             logger.info(f"Alert resolved: {alert.message}")
             return alert
@@ -305,7 +304,7 @@ class MetricsCollector:
         # 3. Check processing stalled alert
         if self.last_event_at:
             seconds_since_event = (
-                datetime.now(timezone.utc) - self.last_event_at
+                datetime.now(UTC) - self.last_event_at
             ).total_seconds()
 
             if seconds_since_event >= thresholds.stall_critical_seconds:
@@ -369,7 +368,7 @@ class MetricsCollector:
 
         payload = {
             "service": "wip-reporting-sync",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "alerts": [alert.model_dump(mode="json") for alert in alerts],
         }
 

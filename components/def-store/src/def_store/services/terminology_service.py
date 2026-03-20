@@ -2,35 +2,35 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from pymongo.errors import BulkWriteError, DuplicateKeyError
-
-from ..models.terminology import Terminology, TerminologyMetadata
-from ..models.term import Term
-from ..models.audit_log import TermAuditLog
-from ..models.api_models import (
-    CreateTerminologyRequest,
-    UpdateTerminologyRequest,
-    TerminologyResponse,
-    CreateTermRequest,
-    UpdateTermRequest,
-    DeprecateTermRequest,
-    TermResponse,
-    BulkResultItem,
-)
-from .registry_client import get_registry_client, RegistryError
-from .nats_client import (
-    publish_terminology_event,
-    publish_term_event,
-    publish_term_events_bulk,
-    EventType as NatsEventType,
-)
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
+from ..models.api_models import (
+    BulkResultItem,
+    CreateTerminologyRequest,
+    CreateTermRequest,
+    DeprecateTermRequest,
+    TerminologyResponse,
+    TermResponse,
+    UpdateTerminologyRequest,
+    UpdateTermRequest,
+)
+from ..models.audit_log import TermAuditLog
+from ..models.term import Term
+from ..models.terminology import Terminology, TerminologyMetadata
+from .nats_client import (
+    EventType as NatsEventType,
+)
+from .nats_client import (
+    publish_term_event,
+    publish_term_events_bulk,
+    publish_terminology_event,
+)
+from .registry_client import get_registry_client
 
 logger = logging.getLogger(__name__)
 
@@ -126,10 +126,10 @@ class TerminologyService:
 
     @staticmethod
     async def get_terminology(
-        terminology_id: Optional[str] = None,
-        value: Optional[str] = None,
-        namespace: Optional[str] = None
-    ) -> Optional[TerminologyResponse]:
+        terminology_id: str | None = None,
+        value: str | None = None,
+        namespace: str | None = None
+    ) -> TerminologyResponse | None:
         """
         Get a terminology by ID or value.
 
@@ -161,12 +161,12 @@ class TerminologyService:
 
     @staticmethod
     async def list_terminologies(
-        status: Optional[str] = None,
-        value: Optional[str] = None,
+        status: str | None = None,
+        value: str | None = None,
         page: int = 1,
         page_size: int = 50,
-        namespace: Optional[str] = None,
-        allowed_namespaces: Optional[list[str]] = None,
+        namespace: str | None = None,
+        allowed_namespaces: list[str] | None = None,
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -209,7 +209,7 @@ class TerminologyService:
     async def update_terminology(
         terminology_id: str,
         request: UpdateTerminologyRequest
-    ) -> Optional[TerminologyResponse]:
+    ) -> TerminologyResponse | None:
         """
         Update a terminology.
 
@@ -284,7 +284,7 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        terminology.updated_at = datetime.now(timezone.utc)
+        terminology.updated_at = datetime.now(UTC)
         terminology.updated_by = actor
         await terminology.save()
 
@@ -313,7 +313,7 @@ class TerminologyService:
     @staticmethod
     async def delete_terminology(
         terminology_id: str,
-        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """
         Soft-delete a terminology (set status to inactive).
@@ -336,7 +336,7 @@ class TerminologyService:
 
         # Deactivate terminology
         terminology.status = "inactive"
-        terminology.updated_at = datetime.now(timezone.utc)
+        terminology.updated_at = datetime.now(UTC)
         terminology.updated_by = actor
         await terminology.save()
 
@@ -344,7 +344,7 @@ class TerminologyService:
         await Term.find({"terminology_id": terminology_id}).update_many({
             "$set": {
                 "status": "inactive",
-                "updated_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(UTC),
                 "updated_by": actor
             }
         })
@@ -362,7 +362,7 @@ class TerminologyService:
     async def restore_terminology(
         terminology_id: str,
         restore_terms: bool = True
-    ) -> Optional[TerminologyResponse]:
+    ) -> TerminologyResponse | None:
         """
         Restore a soft-deleted terminology (set status back to active).
 
@@ -383,7 +383,7 @@ class TerminologyService:
             return TerminologyService._to_terminology_response(terminology)
 
         actor = get_identity_string()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Reactivate terminology
         terminology.status = "active"
@@ -516,7 +516,7 @@ class TerminologyService:
 
         # Update terminology term count
         terminology.term_count += 1
-        terminology.updated_at = datetime.now(timezone.utc)
+        terminology.updated_at = datetime.now(UTC)
         await terminology.save()
 
         # Publish NATS event
@@ -537,7 +537,7 @@ class TerminologyService:
     async def create_terms_bulk(
         terminology_id: str,
         terms: list[CreateTermRequest],
-        created_by: Optional[str] = None,  # Deprecated: uses authenticated identity
+        created_by: str | None = None,  # Deprecated: uses authenticated identity
         skip_duplicates: bool = True,
         update_existing: bool = False,
         batch_size: int = 1000,
@@ -580,7 +580,7 @@ class TerminologyService:
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
 
         # Initialize results array
         results: list[BulkResultItem | None] = [None] * len(terms)
@@ -795,8 +795,8 @@ class TerminologyService:
 
     @staticmethod
     async def get_term(
-        term_id: Optional[str] = None,
-    ) -> Optional[TermResponse]:
+        term_id: str | None = None,
+    ) -> TermResponse | None:
         """
         Get a term by ID.
 
@@ -817,13 +817,12 @@ class TerminologyService:
     @staticmethod
     async def list_terms(
         terminology_id: str,
-        status: Optional[str] = None,
-        include_children: bool = True,
+        status: str | None = None,
         page: int = 1,
         page_size: int = 50,
-        search: Optional[str] = None,
-        namespace: Optional[str] = None,
-        allowed_namespaces: Optional[list[str]] = None,
+        search: str | None = None,
+        namespace: str | None = None,
+        allowed_namespaces: list[str] | None = None,
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -831,7 +830,6 @@ class TerminologyService:
         Args:
             terminology_id: Terminology to list terms from
             status: Filter by status
-            include_children: Include child terms in hierarchy
             page: Page number (1-based)
             page_size: Number of items per page
             search: Search string for value or aliases
@@ -874,7 +872,7 @@ class TerminologyService:
     async def update_term(
         term_id: str,
         request: UpdateTermRequest
-    ) -> Optional[TermResponse]:
+    ) -> TermResponse | None:
         """
         Update a term.
 
@@ -951,7 +949,7 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        term.updated_at = datetime.now(timezone.utc)
+        term.updated_at = datetime.now(UTC)
         term.updated_by = actor
         await term.save()
 
@@ -981,7 +979,7 @@ class TerminologyService:
     async def deprecate_term(
         term_id: str,
         request: DeprecateTermRequest
-    ) -> Optional[TermResponse]:
+    ) -> TermResponse | None:
         """
         Deprecate a term (mark as deprecated but keep for historical data).
         """
@@ -995,7 +993,7 @@ class TerminologyService:
         term.status = "deprecated"
         term.deprecated_reason = request.reason
         term.replaced_by_term_id = request.replaced_by_term_id
-        term.updated_at = datetime.now(timezone.utc)
+        term.updated_at = datetime.now(UTC)
         term.updated_by = actor
         await term.save()
 
@@ -1020,7 +1018,7 @@ class TerminologyService:
     @staticmethod
     async def delete_term(
         term_id: str,
-        updated_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Soft-delete a term."""
         term = await Term.find_one({"term_id": term_id})
@@ -1031,7 +1029,7 @@ class TerminologyService:
         actor = get_identity_string()
 
         term.status = "inactive"
-        term.updated_at = datetime.now(timezone.utc)
+        term.updated_at = datetime.now(UTC)
         term.updated_by = actor
         await term.save()
 
@@ -1059,10 +1057,10 @@ class TerminologyService:
 
     @staticmethod
     async def validate_value(
-        terminology_id: Optional[str] = None,
-        terminology_value: Optional[str] = None,
+        terminology_id: str | None = None,
+        terminology_value: str | None = None,
         value: str = ""
-    ) -> tuple[bool, Optional[Term], Optional[str], Optional[Term]]:
+    ) -> tuple[bool, Term | None, str | None, Term | None]:
         """
         Validate a value against a terminology.
 
@@ -1223,11 +1221,11 @@ class TerminologyService:
         term_id: str,
         terminology_id: str,
         action: str,
-        changed_by: Optional[str] = None,
+        changed_by: str | None = None,
         changed_fields: list[str] = None,
         previous_values: dict = None,
         new_values: dict = None,
-        comment: Optional[str] = None,
+        comment: str | None = None,
         namespace: str = "wip"
     ):
         """Create an audit log entry for a term change."""

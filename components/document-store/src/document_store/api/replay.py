@@ -1,9 +1,10 @@
 """Event replay API endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
+
 from wip_auth import require_api_key
 
-from ..models.replay import ReplayRequest, ReplaySessionResponse, ReplayStatus
+from ..models.replay import ReplayRequest, ReplaySessionResponse
 from ..services.replay_service import get_replay_service
 
 router = APIRouter(prefix="/replay", tags=["Replay"])

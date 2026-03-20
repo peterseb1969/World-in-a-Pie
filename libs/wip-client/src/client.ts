@@ -1,4 +1,4 @@
-import { FetchTransport, type FetchTransportConfig, type RetryConfig } from './http.js'
+import { FetchTransport, type RetryConfig } from './http.js'
 import type { AuthProvider } from './auth/index.js'
 import { ApiKeyAuthProvider } from './auth/api-key.js'
 import { OidcAuthProvider } from './auth/oidc.js'

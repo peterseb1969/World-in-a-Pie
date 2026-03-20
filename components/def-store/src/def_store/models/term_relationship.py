@@ -1,7 +1,7 @@
 """TermRelationship model for ontology support in the Def-Store service."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import Field
@@ -44,15 +44,15 @@ class TermRelationship(Document):
     )
 
     # Denormalized fields for query efficiency
-    relationship_value: Optional[str] = Field(
+    relationship_value: str | None = Field(
         None,
         description="Denormalized relationship type display value"
     )
-    source_terminology_id: Optional[str] = Field(
+    source_terminology_id: str | None = Field(
         None,
         description="Denormalized source term's terminology ID"
     )
-    target_terminology_id: Optional[str] = Field(
+    target_terminology_id: str | None = Field(
         None,
         description="Denormalized target term's terminology ID"
     )
@@ -71,9 +71,9 @@ class TermRelationship(Document):
 
     # Audit
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this relationship"
     )

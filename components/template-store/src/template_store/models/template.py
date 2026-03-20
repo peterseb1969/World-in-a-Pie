@@ -1,7 +1,7 @@
 """Template model for the Template Store service."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -22,7 +22,7 @@ class ReportingConfig(BaseModel):
         default="latest_only",
         description="Sync strategy: 'latest_only' (upsert) or 'all_versions' (insert all)"
     )
-    table_name: Optional[str] = Field(
+    table_name: str | None = Field(
         default=None,
         description="Custom PostgreSQL table name (auto-generated from value if not set)"
     )
@@ -45,11 +45,11 @@ class ReportingConfig(BaseModel):
 class TemplateMetadata(BaseModel):
     """Additional metadata for a template."""
 
-    domain: Optional[str] = Field(
+    domain: str | None = Field(
         None,
         description="Business domain (e.g., 'hr', 'finance', 'healthcare')"
     )
-    category: Optional[str] = Field(
+    category: str | None = Field(
         None,
         description="Template category (e.g., 'master_data', 'transaction')"
     )
@@ -100,7 +100,7 @@ class Template(Document):
         ...,
         description="Display label (e.g., 'Person Template')"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description of the template's purpose"
     )
@@ -112,11 +112,11 @@ class Template(Document):
     )
 
     # Inheritance
-    extends: Optional[str] = Field(
+    extends: str | None = Field(
         None,
         description="Parent template ID for inheritance"
     )
-    extends_version: Optional[int] = Field(
+    extends_version: int | None = Field(
         None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
@@ -146,7 +146,7 @@ class Template(Document):
     )
 
     # Reporting configuration
-    reporting: Optional[ReportingConfig] = Field(
+    reporting: ReportingConfig | None = Field(
         default=None,
         description="Configuration for PostgreSQL reporting sync"
     )
@@ -157,16 +157,16 @@ class Template(Document):
         description="Status: draft, active, inactive"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this template"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this template"
     )

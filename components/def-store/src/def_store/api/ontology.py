@@ -1,20 +1,20 @@
 """API endpoints for ontology relationship management and traversal."""
 
 import math
-from typing import Optional
 
-from fastapi import APIRouter, Body, Query, Depends
+from fastapi import APIRouter, Body, Depends, Query
+
+from wip_auth import check_namespace_permission, get_current_identity
 
 from ..models.api_models import (
     BulkResponse,
     CreateRelationshipRequest,
     DeleteRelationshipRequest,
     RelationshipListResponse,
-    TraversalResponse,
     RelationshipResponse,
+    TraversalResponse,
 )
 from ..services.ontology_service import OntologyService
-from wip_auth import check_namespace_permission, get_current_identity
 from .auth import require_api_key
 
 router = APIRouter(prefix="/ontology", tags=["Ontology"])
@@ -61,7 +61,7 @@ async def create_relationships(
 async def list_relationships(
     term_id: str = Query(..., description="Term ID to query relationships for"),
     direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
-    relationship_type: Optional[str] = Query(None, description="Filter by relationship type"),
+    relationship_type: str | None = Query(None, description="Filter by relationship type"),
     namespace: str = Query("wip", description="Namespace"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
@@ -121,8 +121,8 @@ async def delete_relationships(
 )
 async def list_all_relationships(
     namespace: str = Query("wip", description="Namespace"),
-    relationship_type: Optional[str] = Query(None, description="Filter by type"),
-    source_terminology_id: Optional[str] = Query(None, description="Filter by source terminology ID"),
+    relationship_type: str | None = Query(None, description="Filter by type"),
+    source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),

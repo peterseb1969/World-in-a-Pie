@@ -16,7 +16,7 @@ Example usage:
         return {"admin": identity.username}
 """
 
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from fastapi import HTTPException, Request
 

@@ -7,9 +7,9 @@ Events are published after successful template operations (create, update, delet
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ async def configure_nats_client(nats_url: str) -> bool:
 
     try:
         import nats
-        from nats.js.api import StreamConfig, RetentionPolicy
+        from nats.js.api import RetentionPolicy, StreamConfig
 
         _nats_client = await nats.connect(nats_url)
         _jetstream = _nats_client.jetstream()
@@ -107,7 +107,7 @@ def is_nats_enabled() -> bool:
 async def publish_template_event(
     event_type: EventType,
     template: dict[str, Any],
-    changed_by: Optional[str] = None
+    changed_by: str | None = None
 ) -> bool:
     """
     Publish a template event to NATS.
@@ -130,7 +130,7 @@ async def publish_template_event(
         # Build event payload
         event = {
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "changed_by": changed_by,
             "template": template,
         }

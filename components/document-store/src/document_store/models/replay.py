@@ -1,8 +1,7 @@
 """Replay session model."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -19,8 +18,8 @@ class ReplayStatus(str, Enum):
 
 class ReplayFilter(BaseModel):
     """Filter for replay — which documents to replay."""
-    template_id: Optional[str] = None
-    template_value: Optional[str] = None
+    template_id: str | None = None
+    template_value: str | None = None
     namespace: str = "wip"
     status: str = "active"
 
@@ -43,10 +42,10 @@ class ReplaySession(BaseModel):
     throttle_ms: int = 10
     batch_size: int = 100
     status: ReplayStatus = ReplayStatus.PENDING
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    error: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error: str | None = None
 
 
 class ReplaySessionResponse(BaseModel):

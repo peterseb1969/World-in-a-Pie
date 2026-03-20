@@ -9,7 +9,6 @@ import secrets
 import string
 import uuid
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -21,7 +20,7 @@ class IdAlgorithmConfig(BaseModel):
         default="uuid7",
         description="ID generation algorithm: uuid7, uuid4, prefixed, nanoid, pattern, any"
     )
-    prefix: Optional[str] = Field(
+    prefix: str | None = Field(
         None,
         description="Prefix for 'prefixed' algorithm (e.g., 'TERM-')"
     )
@@ -33,7 +32,7 @@ class IdAlgorithmConfig(BaseModel):
         default=21,
         description="Character length for 'nanoid' algorithm"
     )
-    pattern: Optional[str] = Field(
+    pattern: str | None = Field(
         None,
         description="Regex pattern for 'pattern' algorithm validation"
     )

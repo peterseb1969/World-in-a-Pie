@@ -1,0 +1,5 @@
+# shellcheck configuration
+severity=warning
+# SC2086: Double quote to prevent globbing and word splitting
+# Extremely noisy in existing scripts — will address incrementally
+disable=SC2086

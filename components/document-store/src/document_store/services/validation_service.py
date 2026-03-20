@@ -1,15 +1,14 @@
 """Validation service for document validation against templates."""
 
+import logging
 import re
 import time
-import logging
-from datetime import datetime, date
-from typing import Any, Optional
+from datetime import date, datetime
+from typing import Any
 
-from .template_store_client import get_template_store_client, TemplateStoreError
-from .def_store_client import get_def_store_client, DefStoreError
+from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
-
+from .template_store_client import TemplateStoreError, get_template_store_client
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +20,11 @@ class ValidationResult:
         self.valid = True
         self.errors: list[dict[str, Any]] = []
         self.warnings: list[str] = []
-        self.identity_hash: Optional[str] = None
+        self.identity_hash: str | None = None
         self.identity_values: dict[str, Any] = {}
         self.identity_fields: list[str] = []
-        self.template_version: Optional[int] = None
-        self.template_value: Optional[str] = None
+        self.template_version: int | None = None
+        self.template_value: str | None = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -38,8 +37,8 @@ class ValidationResult:
         self,
         code: str,
         message: str,
-        field: Optional[str] = None,
-        details: Optional[dict[str, Any]] = None
+        field: str | None = None,
+        details: dict[str, Any] | None = None
     ):
         """Add a validation error."""
         self.valid = False
@@ -164,9 +163,9 @@ class ValidationService:
         self,
         template_id: str,
         data: dict[str, Any],
-        template_version: Optional[int] = None,
+        template_version: int | None = None,
         namespace: str = "wip",
-        doc_ref_cache: Optional[dict] = None
+        doc_ref_cache: dict | None = None
     ) -> ValidationResult:
         """
         Validate document data against a template.
@@ -275,8 +274,8 @@ class ValidationService:
         self,
         template_id: str,
         result: ValidationResult,
-        version: Optional[int] = None
-    ) -> Optional[dict[str, Any]]:
+        version: int | None = None
+    ) -> dict[str, Any] | None:
         """
         Stage 2: Template resolution.
 
@@ -305,7 +304,7 @@ class ValidationService:
         except TemplateStoreError as e:
             result.add_error(
                 code="template_error",
-                message=f"Failed to fetch template: {str(e)}"
+                message=f"Failed to fetch template: {e!s}"
             )
             return None
 
@@ -1016,7 +1015,7 @@ class ValidationService:
 
         except DefStoreError as e:
             result.add_warning(
-                f"Could not validate duration unit for '{field_path}': {str(e)}"
+                f"Could not validate duration unit for '{field_path}': {e!s}"
             )
 
     async def _validate_semantic_geo_point(
@@ -1147,7 +1146,7 @@ class ValidationService:
 
         except DefStoreError as e:
             # If Def-Store is unavailable, add a warning but don't fail
-            result.add_warning(f"Could not validate terminology values: {str(e)}")
+            result.add_warning(f"Could not validate terminology values: {e!s}")
 
     def _collect_term_values(
         self,
@@ -1197,7 +1196,7 @@ class ValidationService:
         template: dict[str, Any],
         result: ValidationResult,
         namespace: str = "wip",
-        doc_ref_cache: Optional[dict] = None
+        doc_ref_cache: dict | None = None
     ):
         """
         Validate and resolve reference fields.
@@ -1205,8 +1204,6 @@ class ValidationService:
         Handles document references by looking up the target document
         by document_id, identity_hash, or business key.
         """
-        from .document_service import DocumentService  # Import here to avoid circular import
-        from ..models.document import Document
 
         # Collect all reference values to validate
         ref_validations = self._collect_reference_values(data, template.get("fields", []), "")
@@ -1299,7 +1296,7 @@ class ValidationService:
                         })
 
             except Exception as e:
-                result.add_warning(f"Could not resolve reference for field '{field_path}': {str(e)}")
+                result.add_warning(f"Could not resolve reference for field '{field_path}': {e!s}")
 
     async def _validate_files(
         self,
@@ -1315,7 +1312,7 @@ class ValidationService:
         - File meets field constraints (allowed_types, max_size_mb)
         - Builds file_references array for storage
         """
-        from .file_service import get_file_service, FileServiceError
+        from .file_service import FileServiceError, get_file_service
         from .file_storage_client import is_file_storage_enabled
 
         # Collect all file values to validate
@@ -1368,7 +1365,7 @@ class ValidationService:
             except FileServiceError as e:
                 result.add_error(
                     code="file_validation_error",
-                    message=f"Failed to validate file for field '{field_path}': {str(e)}",
+                    message=f"Failed to validate file for field '{field_path}': {e!s}",
                     field=field_path
                 )
 
@@ -1481,8 +1478,8 @@ class ValidationService:
         field_path: str,
         version_strategy: str = "latest",
         namespace: str = "wip",
-        doc_ref_cache: Optional[dict] = None
-    ) -> Optional[dict[str, Any]]:
+        doc_ref_cache: dict | None = None
+    ) -> dict[str, Any] | None:
         """Resolve a document reference by ID, hash, or business key.
 
         When doc_ref_cache is provided (bulk operations), resolved documents
@@ -1571,7 +1568,7 @@ class ValidationService:
         result: "ValidationResult",
         field_path: str,
         version_strategy: str = "latest"
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Verify referenced document's template and build the resolved result."""
         from ..models.document import DocumentStatus
 
@@ -1622,7 +1619,7 @@ class ValidationService:
         self,
         value: Any,
         target_templates: list[str]
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """Look up a document by business key value(s)."""
         from ..models.document import Document, DocumentStatus
 
@@ -1669,7 +1666,7 @@ class ValidationService:
         value: str,
         namespace: str,
         entity_type: str
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """
         Resolve a reference value via the Registry's extended lookup.
 
@@ -1677,7 +1674,7 @@ class ValidationService:
         identity_hash chain to find the latest active version.
         """
         from ..models.document import Document, DocumentStatus
-        from .registry_client import get_registry_client, RegistryError
+        from .registry_client import RegistryError, get_registry_client
 
         try:
             registry = get_registry_client()
@@ -1715,7 +1712,7 @@ class ValidationService:
         target_terminologies: list[str],
         result: ValidationResult,
         field_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Resolve a term reference."""
         client = get_def_store_client()
 
@@ -1745,7 +1742,7 @@ class ValidationService:
         value: str,
         result: ValidationResult,
         field_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Resolve a terminology reference."""
         client = get_def_store_client()
 
@@ -1773,7 +1770,7 @@ class ValidationService:
         value: str,
         result: ValidationResult,
         field_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Resolve a template reference."""
         client = get_template_store_client()
 

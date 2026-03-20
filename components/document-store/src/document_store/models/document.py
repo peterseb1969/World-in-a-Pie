@@ -1,12 +1,12 @@
 """Document model for the Document Store service."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
-from pymongo import IndexModel, DESCENDING
+from pymongo import DESCENDING, IndexModel
 
 
 class DocumentStatus(str, Enum):
@@ -19,7 +19,7 @@ class DocumentStatus(str, Enum):
 class DocumentMetadata(BaseModel):
     """Additional metadata for a document."""
 
-    source_system: Optional[str] = Field(
+    source_system: str | None = Field(
         None,
         description="System that created this document"
     )
@@ -66,7 +66,7 @@ class Document(BeanieDocument):
         ...,
         description="Version of template used for validation"
     )
-    template_value: Optional[str] = Field(
+    template_value: str | None = Field(
         None,
         description="Template value (e.g., PLANNED_VISIT) for easier identification"
     )
@@ -116,16 +116,16 @@ class Document(BeanieDocument):
         description="Document status"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this document"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this document"
     )

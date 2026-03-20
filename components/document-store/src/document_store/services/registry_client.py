@@ -1,7 +1,7 @@
 """Client for communicating with the WIP Registry service."""
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -22,8 +22,8 @@ class RegistryClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0
     ):
         """
@@ -54,12 +54,12 @@ class RegistryClient:
     async def generate_document_id(
         self,
         template_id: str,
-        identity_values: Optional[dict[str, Any]] = None,
+        identity_values: dict[str, Any] | None = None,
         has_identity_fields: bool = True,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip",
-        entry_id: Optional[str] = None,
-    ) -> tuple[str, bool, Optional[str]]:
+        entry_id: str | None = None,
+    ) -> tuple[str, bool, str | None]:
         """
         Generate or retrieve a document ID from the Registry.
 
@@ -128,7 +128,7 @@ class RegistryClient:
     async def generate_document_ids_bulk(
         self,
         items: list[dict[str, Any]],
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
@@ -234,10 +234,10 @@ class RegistryClient:
 
     async def resolve_identifier(
         self,
-        namespace: Optional[str],
-        entity_type: Optional[str],
+        namespace: str | None,
+        entity_type: str | None,
         value: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Resolve any identifier to a canonical entry_id via POST /api/registry/entries/lookup/by-id.
 
@@ -291,7 +291,7 @@ class RegistryError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[RegistryClient] = None
+_client: RegistryClient | None = None
 
 
 def get_registry_client() -> RegistryClient:
@@ -303,8 +303,8 @@ def get_registry_client() -> RegistryClient:
 
 
 def configure_registry_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    base_url: str | None = None,
+    api_key: str | None = None
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client

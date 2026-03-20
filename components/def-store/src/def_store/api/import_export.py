@@ -1,13 +1,13 @@
 """API endpoints for import/export operations."""
 
-from typing import Any, Optional
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Body, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from ..models.api_models import ImportTerminologyRequest, ExportFormat
-from ..services.import_export import ImportExportService
 from wip_auth import check_namespace_permission, get_current_identity
+
+from ..services.import_export import ImportExportService
 from .auth import require_api_key
 
 router = APIRouter(prefix="/import-export", tags=["Import/Export"])
@@ -23,7 +23,7 @@ async def export_terminology(
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
     include_relationships: bool = Query(False, description="Include ontology relationships"),
-    languages: Optional[str] = Query(None, description="Comma-separated language codes"),
+    languages: str | None = Query(None, description="Comma-separated language codes"),
     api_key: str = Depends(require_api_key)
 ):
     """
@@ -85,7 +85,7 @@ async def import_terminology(
     format: str = Query("json", description="Import format: json, csv"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: Optional[str] = Query(None, description="User performing import"),
+    created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -147,7 +147,7 @@ async def import_terminology(
         status = 409 if "already exists" in msg else 400
         raise HTTPException(status_code=status, detail=msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")
 
 
 @router.post(
@@ -156,10 +156,10 @@ async def import_terminology(
 )
 async def import_ontology(
     data: dict[str, Any] = Body(...),
-    terminology_value: Optional[str] = Query(None, description="WIP terminology value (e.g., HPO, GO). Auto-detected if not set."),
-    terminology_label: Optional[str] = Query(None, description="Display label. Auto-detected if not set."),
+    terminology_value: str | None = Query(None, description="WIP terminology value (e.g., HPO, GO). Auto-detected if not set."),
+    terminology_label: str | None = Query(None, description="Display label. Auto-detected if not set."),
     namespace: str = Query("wip", description="Target namespace"),
-    prefix_filter: Optional[str] = Query(None, description="Only import nodes with this OBO prefix"),
+    prefix_filter: str | None = Query(None, description="Only import nodes with this OBO prefix"),
     include_deprecated: bool = Query(False, description="Import deprecated/obsolete nodes"),
     max_synonyms: int = Query(10, description="Max aliases per term"),
     batch_size: int = Query(1000, description="Terms per MongoDB batch"),
@@ -167,7 +167,7 @@ async def import_ontology(
     relationship_batch_size: int = Query(500, description="Relationships per batch"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: Optional[str] = Query(None, description="User performing import"),
+    created_by: str | None = Query(None, description="User performing import"),
     api_key: str = Depends(require_api_key),
 ):
     """
@@ -207,7 +207,7 @@ async def import_ontology(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ontology import failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ontology import failed: {e!s}")
 
 
 @router.post(
@@ -217,11 +217,11 @@ async def import_ontology(
 async def import_from_url(
     url: str = Query(..., description="URL to fetch terminology from"),
     format: str = Query("json", description="Expected format: json, csv"),
-    terminology_value: Optional[str] = Query(None, description="Value for CSV import"),
-    terminology_label: Optional[str] = Query(None, description="Label for CSV import"),
+    terminology_value: str | None = Query(None, description="Value for CSV import"),
+    terminology_label: str | None = Query(None, description="Label for CSV import"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: Optional[str] = Query(None, description="User performing import"),
+    created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -266,4 +266,4 @@ async def import_from_url(
         status = 409 if "already exists" in msg else 400
         raise HTTPException(status_code=status, detail=msg)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}")

@@ -13,15 +13,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import setup_auth, RejectUnknownQueryParamsMiddleware
+from wip_auth import RejectUnknownQueryParamsMiddleware, setup_auth
 
-from .models.terminology import Terminology
-from .models.term import Term
-from .models.audit_log import TermAuditLog
-from .models.term_relationship import TermRelationship
 from .api import api_router
+from .models.audit_log import TermAuditLog
+from .models.term import Term
+from .models.term_relationship import TermRelationship
+from .models.terminology import Terminology
+from .services.nats_client import close_nats_client, configure_nats_client
 from .services.registry_client import configure_registry_client, get_registry_client
-from .services.nats_client import configure_nats_client, close_nats_client
 from .services.system_terminologies import ensure_system_terminologies
 
 
@@ -183,7 +183,7 @@ async def health_check():
         await app.state.mongodb_client.admin.command('ping')
         mongo_status = "connected"
     except Exception as e:
-        mongo_status = f"error: {str(e)}"
+        mongo_status = f"error: {e!s}"
 
     # Check Registry
     registry_client = get_registry_client()

@@ -127,7 +127,7 @@ class ImportService:
         for row in rows:
             data = {}
             for csv_col, field_name in column_mapping.items():
-                if csv_col in row and row[csv_col]:
+                if row.get(csv_col):
                     value = row[csv_col]
                     # Try to convert numeric strings
                     # Leave as string if it fails - let doc-store validation handle it

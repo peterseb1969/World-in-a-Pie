@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -17,8 +17,8 @@ class RegistryClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0
     ):
         """
@@ -50,7 +50,7 @@ class RegistryClient:
         self,
         value: str,
         label: str,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip"
     ) -> str:
         """
@@ -105,7 +105,7 @@ class RegistryClient:
         self,
         terminology_id: str,
         value: str,
-        created_by: Optional[str] = None,
+        created_by: str | None = None,
         namespace: str = "wip"
     ) -> str:
         """
@@ -159,8 +159,8 @@ class RegistryClient:
         self,
         terminology_id: str,
         terms: list[dict[str, Any]],
-        created_by: Optional[str] = None,
-        timeout: Optional[float] = None,
+        created_by: str | None = None,
+        timeout: float | None = None,
         registry_batch_size: int = 100,
         namespace: str = "wip"
     ) -> list[dict[str, Any]]:
@@ -240,7 +240,7 @@ class RegistryClient:
         entity_type: str,
         target_id: str,
         new_value: str,
-        additional_fields: Optional[dict[str, Any]] = None
+        additional_fields: dict[str, Any] | None = None
     ) -> bool:
         """
         Add a synonym when a value changes.
@@ -289,8 +289,8 @@ class RegistryClient:
         namespace: str,
         entity_type: str,
         value: str,
-        additional_fields: Optional[dict[str, Any]] = None
-    ) -> Optional[str]:
+        additional_fields: dict[str, Any] | None = None
+    ) -> str | None:
         """
         Look up a registry ID by value.
 
@@ -344,7 +344,7 @@ class RegistryError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[RegistryClient] = None
+_client: RegistryClient | None = None
 
 
 def get_registry_client() -> RegistryClient:
@@ -356,8 +356,8 @@ def get_registry_client() -> RegistryClient:
 
 
 def configure_registry_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None
+    base_url: str | None = None,
+    api_key: str | None = None
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client

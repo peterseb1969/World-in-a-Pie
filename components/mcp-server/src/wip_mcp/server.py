@@ -9,7 +9,6 @@ Run with:  python -m wip_mcp.server          (stdio, for Claude Code / Cursor)
 """
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -580,7 +579,7 @@ async def get_term_hierarchy(
                 max_depth=max_depth,
             )
         else:
-            return f"Error: direction must be children, parents, ancestors, or descendants"
+            return "Error: direction must be children, parents, ancestors, or descendants"
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)

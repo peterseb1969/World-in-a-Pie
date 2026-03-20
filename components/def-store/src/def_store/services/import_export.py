@@ -6,23 +6,20 @@ import json
 import logging
 import time
 from collections import Counter
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
-from ..models.terminology import Terminology, TerminologyMetadata
-from ..models.term import Term, TermTranslation
-from ..models.term_relationship import TermRelationship
 from ..models.api_models import (
-    CreateTerminologyRequest,
-    CreateTermRequest,
-    TerminologyResponse,
-    TermResponse,
-    ExportTerminologyResponse,
     BulkResultItem,
     CreateRelationshipRequest,
+    CreateTerminologyRequest,
+    CreateTermRequest,
 )
-from .terminology_service import TerminologyService
+from ..models.term import Term, TermTranslation
+from ..models.term_relationship import TermRelationship
+from ..models.terminology import Terminology, TerminologyMetadata
 from .ontology_service import OntologyService
+from .terminology_service import TerminologyService
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +33,13 @@ class ImportExportService:
 
     @staticmethod
     async def export_terminology(
-        terminology_id: Optional[str] = None,
-        terminology_value: Optional[str] = None,
+        terminology_id: str | None = None,
+        terminology_value: str | None = None,
         format: str = "json",
         include_metadata: bool = True,
         include_inactive: bool = False,
         include_relationships: bool = False,
-        languages: Optional[list[str]] = None
+        languages: list[str] | None = None
     ) -> dict[str, Any]:
         """
         Export a terminology with all its terms.
@@ -120,7 +117,7 @@ class ImportExportService:
         terminology: Terminology,
         terms: list[Term],
         include_metadata: bool,
-        relationships: Optional[list["TermRelationship"]] = None,
+        relationships: list["TermRelationship"] | None = None,
     ) -> dict[str, Any]:
         """Export as JSON."""
         # Build term_id → value lookup for relationship denormalization
@@ -162,7 +159,7 @@ class ImportExportService:
                 "extensible": terminology.extensible,
             },
             "terms": term_data,
-            "export_date": datetime.now(timezone.utc).isoformat(),
+            "export_date": datetime.now(UTC).isoformat(),
             "format": "json",
             "version": "2.0"
         }
@@ -232,7 +229,7 @@ class ImportExportService:
                 "label": terminology.label,
             },
             "csv_content": output.getvalue(),
-            "export_date": datetime.now(timezone.utc).isoformat(),
+            "export_date": datetime.now(UTC).isoformat(),
             "format": "csv"
         }
 
@@ -264,7 +261,7 @@ class ImportExportService:
     async def import_terminology(
         data: dict[str, Any],
         format: str = "json",
-        options: Optional[dict[str, Any]] = None
+        options: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """
         Import a terminology with terms.
@@ -415,7 +412,6 @@ class ImportExportService:
         terminology_value = data.get("terminology_value")
         terminology_label = data.get("terminology_label", terminology_value)
         csv_content = data.get("csv_content", "")
-        created_by = options.get("created_by")
 
         if not terminology_value:
             raise ValueError("terminology_value is required for CSV import")
@@ -457,7 +453,7 @@ class ImportExportService:
         terminology_id: str,
         namespace: str,
         term_results: list[BulkResultItem],
-        options: Optional[dict[str, Any]] = None,
+        options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Import relationships from export format (source_term_value/target_term_value).
@@ -529,7 +525,7 @@ class ImportExportService:
     async def import_from_url(
         url: str,
         format: str = "json",
-        options: Optional[dict[str, Any]] = None
+        options: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """
         Import terminology from a URL.
@@ -740,7 +736,7 @@ class ImportExportService:
             term_requests.append(CreateTermRequest(
                 value=rel_type,
                 label=label,
-                description=f"Auto-created from ontology import",
+                description="Auto-created from ontology import",
                 sort_order=max_sort + i + 1,
                 created_by="system:ontology-import",
             ))

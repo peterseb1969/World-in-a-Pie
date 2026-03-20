@@ -1,0 +1,27 @@
+{
+  "generated": "2026-03-20T13:01:29.676687+00:00",
+  "commit": "2f24669",
+  "dimensions": {
+    "ruff": {
+      "count": 171
+    },
+    "mypy": {
+      "count": 276
+    },
+    "vulture": {
+      "count": 1
+    },
+    "eslint": {
+      "count": 0
+    },
+    "shellcheck": {
+      "count": 120
+    },
+    "vue-tsc": {
+      "count": 0
+    },
+    "ts-prune": {
+      "count": 0
+    }
+  }
+}

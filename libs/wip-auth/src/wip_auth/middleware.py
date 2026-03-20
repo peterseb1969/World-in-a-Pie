@@ -5,7 +5,7 @@ the configured providers. The authenticated identity is stored in a
 context variable for access by route handlers.
 """
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint

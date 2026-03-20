@@ -9,7 +9,7 @@ import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import asyncpg
@@ -20,31 +20,29 @@ from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .batch_sync import BatchSyncService
 from .config import settings
 from .metrics import metrics
 from .models import (
     AlertConfig,
     AlertsResponse,
+    BatchSyncJob,
+    BatchSyncResponse,
     ConsumerInfo,
     HealthResponse,
     MetricsResponse,
     SyncStatus,
-    BatchSyncJob,
-    BatchSyncRequest,
-    BatchSyncResponse,
-    BatchSyncStatus,
 )
-from .worker import run_sync_worker
-from .batch_sync import BatchSyncService
 from .search_service import (
-    SearchService,
-    SearchRequest,
-    SearchResponse,
     ActivityResponse,
-    TermDocumentsResponse,
     EntityReferencesResponse,
     ReferencedByResponse,
+    SearchRequest,
+    SearchResponse,
+    SearchService,
+    TermDocumentsResponse,
 )
+from .worker import run_sync_worker
 
 # Configure logging
 logging.basicConfig(
@@ -772,7 +770,7 @@ class AggregatedIntegrityResult(BaseModel):
         description="Overall status: healthy, warning, error, partial (if some services unreachable)"
     )
     checked_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     services_checked: list[str] = Field(default_factory=list)
     services_unavailable: list[str] = Field(default_factory=list)

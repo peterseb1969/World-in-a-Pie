@@ -1,19 +1,18 @@
 """Search API endpoints."""
 
-from typing import List
 
 from fastapi import APIRouter, Body, Depends
 
-from ..models.entry import RegistryEntry
 from ..models.api_models import (
-    SearchItem,
-    SearchByTermItem,
-    SearchResult,
-    SearchResponse,
     SearchBulkResponse,
+    SearchByTermItem,
+    SearchItem,
+    SearchResponse,
+    SearchResult,
 )
-from ..services.search import SearchService
+from ..models.entry import RegistryEntry
 from ..services.auth import require_api_key
+from ..services.search import SearchService
 
 router = APIRouter()
 
@@ -24,7 +23,7 @@ router = APIRouter()
     summary="Search by field values (bulk)"
 )
 async def search_by_fields(
-    items: List[SearchItem] = Body(...),
+    items: list[SearchItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for registry entries by field values in composite keys."""
@@ -77,7 +76,7 @@ async def search_by_fields(
     summary="Search by free-text term (bulk)"
 )
 async def search_by_term(
-    items: List[SearchByTermItem] = Body(...),
+    items: list[SearchByTermItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for a term across any field in any composite key."""
@@ -159,7 +158,7 @@ async def search_by_term(
     summary="Search across all namespaces (bulk)"
 )
 async def search_across_namespaces(
-    items: List[SearchItem] = Body(...),
+    items: list[SearchItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> SearchBulkResponse:
     """Search for entries across ALL namespaces."""

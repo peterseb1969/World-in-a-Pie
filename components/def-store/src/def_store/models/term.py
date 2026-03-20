@@ -1,7 +1,7 @@
 """Term model for the Def-Store service."""
 
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -19,7 +19,7 @@ class TermTranslation(BaseModel):
         ...,
         description="Translated display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Translated description"
     )
@@ -54,7 +54,7 @@ class Term(Document):
         ...,
         description="ID of the parent terminology"
     )
-    terminology_value: Optional[str] = Field(
+    terminology_value: str | None = Field(
         None,
         description="Value of the parent terminology (e.g., 'GENDER'). Denormalized for efficient lookups."
     )
@@ -72,11 +72,11 @@ class Term(Document):
     )
 
     # Display information
-    label: Optional[str] = Field(
+    label: str | None = Field(
         None,
         description="Display label for UI (e.g., 'Approved'). Defaults to value if not set."
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description of what this term means"
     )
@@ -86,7 +86,7 @@ class Term(Document):
         default=0,
         description="Sort order within the terminology"
     )
-    parent_term_id: Optional[str] = Field(
+    parent_term_id: str | None = Field(
         None,
         description="Parent term ID for hierarchical terminologies"
     )
@@ -108,25 +108,25 @@ class Term(Document):
         default="active",
         description="Status: active, deprecated, inactive"
     )
-    deprecated_reason: Optional[str] = Field(
+    deprecated_reason: str | None = Field(
         None,
         description="Why this term was deprecated"
     )
-    replaced_by_term_id: Optional[str] = Field(
+    replaced_by_term_id: str | None = Field(
         None,
         description="ID of the term that replaces this one"
     )
     created_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system that created this term"
     )
     updated_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system that last updated this term"
     )

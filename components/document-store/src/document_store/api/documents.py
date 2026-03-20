@@ -1,25 +1,24 @@
 """Document API endpoints."""
 
 import asyncio
-from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from ..models.document import DocumentStatus
-from ..models.api_models import (
-    BulkResultItem,
-    BulkResponse,
-    DocumentCreateRequest,
-    DocumentResponse,
-    DocumentListResponse,
-    DocumentVersionResponse,
-    DocumentQueryRequest,
-    DocumentQueryResponse,
-    DeleteItem,
-    ArchiveItem,
-)
 from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 
+from ..models.api_models import (
+    ArchiveItem,
+    BulkResponse,
+    BulkResultItem,
+    DeleteItem,
+    DocumentCreateRequest,
+    DocumentListResponse,
+    DocumentQueryRequest,
+    DocumentQueryResponse,
+    DocumentResponse,
+    DocumentVersionResponse,
+)
+from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
 from ..services.nats_client import get_throttle_delay
 from .auth import require_api_key
@@ -89,14 +88,14 @@ async def create_documents(
     description="List documents with optional filtering and pagination."
 )
 async def list_documents(
-    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
-    template_id: Optional[str] = Query(None, description="Filter by template ID"),
-    template_value: Optional[str] = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
-    status: Optional[DocumentStatus] = Query(None, description="Filter by status"),
+    namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
+    template_id: str | None = Query(None, description="Filter by template ID"),
+    template_value: str | None = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
+    status: DocumentStatus | None = Query(None, description="Filter by status"),
     latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
+    cursor: str | None = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
     _: str = Depends(require_api_key)
 ):
     """List documents with pagination.
@@ -134,7 +133,7 @@ async def list_documents(
 )
 async def get_document(
     document_id: str,
-    version: Optional[int] = Query(None, description="Specific version (default: latest)"),
+    version: int | None = Query(None, description="Specific version (default: latest)"),
     _: str = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""

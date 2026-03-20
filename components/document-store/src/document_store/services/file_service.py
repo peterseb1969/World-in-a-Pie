@@ -2,34 +2,29 @@
 
 import hashlib
 import math
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from ..models.file import File, FileStatus, FileMetadata, FileReference
+# Import identity helper from wip-auth
+from ..api.auth import get_identity_string
 from ..models.api_models import (
-    BulkResultItem,
-    BulkResponse,
-    FileResponse,
-    FileListResponse,
     FileDownloadResponse,
-    FileUploadMetadata,
-    UpdateFileMetadataRequest,
-    DeleteItem,
     FileIntegrityIssue,
     FileIntegrityResponse,
+    FileListResponse,
+    FileResponse,
+    FileUploadMetadata,
+    UpdateFileMetadataRequest,
 )
-from .registry_client import get_registry_client, RegistryError
+from ..models.file import File, FileMetadata, FileReference, FileStatus
 from .file_storage_client import (
-    get_file_storage_client,
     FileStorageError,
+    get_file_storage_client,
     is_file_storage_enabled,
 )
 from .nats_client import EventType, publish_file_event
-
-# Import identity helper from wip-auth
-from ..api.auth import get_identity_string
+from .registry_client import RegistryError, get_registry_client
 
 
 class FileServiceError(Exception):
@@ -55,9 +50,9 @@ class FileService:
         content: bytes,
         filename: str,
         content_type: str,
-        metadata: Optional[FileUploadMetadata] = None,
+        metadata: FileUploadMetadata | None = None,
         namespace: str = "wip",
-        file_id: Optional[str] = None,
+        file_id: str | None = None,
     ) -> FileResponse:
         """
         Upload a file to storage.
@@ -115,7 +110,7 @@ class FileService:
             raise FileServiceError(f"Failed to upload file to storage: {e}")
 
         # Create File document in MongoDB
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         file_metadata = FileMetadata(
             description=metadata.description if metadata else None,
             tags=metadata.tags if metadata else [],
@@ -154,9 +149,9 @@ class FileService:
         self,
         registry,
         checksum: str,
-        created_by: Optional[str],
+        created_by: str | None,
         namespace: str = "wip",
-        entry_id: Optional[str] = None,
+        entry_id: str | None = None,
     ) -> str:
         """Generate a file ID from the Registry (empty composite key — always fresh,
         unless entry_id is provided for restore/migration)."""
@@ -190,7 +185,7 @@ class FileService:
 
             return result["registry_id"]
 
-    async def get_file(self, file_id: str) -> Optional[FileResponse]:
+    async def get_file(self, file_id: str) -> FileResponse | None:
         """
         Get file metadata by ID.
 
@@ -209,7 +204,7 @@ class FileService:
         self,
         file_id: str,
         expires_in: int = 3600
-    ) -> Optional[FileDownloadResponse]:
+    ) -> FileDownloadResponse | None:
         """
         Generate a pre-signed download URL for a file.
 
@@ -249,7 +244,7 @@ class FileService:
             expires_in=expires_in,
         )
 
-    async def download_file(self, file_id: str) -> Optional[tuple[bytes, File]]:
+    async def download_file(self, file_id: str) -> tuple[bytes, File] | None:
         """
         Download file content.
 
@@ -310,7 +305,7 @@ class FileService:
         actor = get_identity_string()
 
         file_doc.status = FileStatus.INACTIVE
-        file_doc.updated_at = datetime.now(timezone.utc)
+        file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
         await file_doc.save()
 
@@ -359,7 +354,7 @@ class FileService:
         self,
         file_id: str,
         request: UpdateFileMetadataRequest
-    ) -> Optional[FileResponse]:
+    ) -> FileResponse | None:
         """
         Update file metadata.
 
@@ -391,7 +386,7 @@ class FileService:
         if request.allowed_templates is not None:
             file_doc.allowed_templates = request.allowed_templates
 
-        file_doc.updated_at = datetime.now(timezone.utc)
+        file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
         await file_doc.save()
 
@@ -406,11 +401,11 @@ class FileService:
 
     async def list_files(
         self,
-        status: Optional[FileStatus] = None,
-        content_type: Optional[str] = None,
-        category: Optional[str] = None,
-        tags: Optional[list[str]] = None,
-        uploaded_by: Optional[str] = None,
+        status: FileStatus | None = None,
+        content_type: str | None = None,
+        category: str | None = None,
+        tags: list[str] | None = None,
+        uploaded_by: str | None = None,
         page: int = 1,
         page_size: int = 20,
         namespace: str = "wip"
@@ -470,7 +465,7 @@ class FileService:
         self,
         file_id: str,
         delta: int
-    ) -> Optional[File]:
+    ) -> File | None:
         """
         Update file reference count.
 
@@ -496,7 +491,7 @@ class FileService:
             else:
                 file_doc.status = FileStatus.ORPHAN
 
-        file_doc.updated_at = datetime.now(timezone.utc)
+        file_doc.updated_at = datetime.now(UTC)
         await file_doc.save()
 
         return file_doc
@@ -523,7 +518,7 @@ class FileService:
 
         # Only add time filter if older_than_hours > 0
         if older_than_hours > 0:
-            cutoff = datetime.now(timezone.utc) - timedelta(hours=older_than_hours)
+            cutoff = datetime.now(UTC) - timedelta(hours=older_than_hours)
             query["uploaded_at"] = {"$lt": cutoff}
 
         orphans = await File.find(query).limit(limit).to_list()
@@ -535,8 +530,8 @@ class FileService:
         file_id: str,
         allowed_types: list[str],
         max_size_mb: float,
-        allowed_templates: Optional[list[str]] = None
-    ) -> tuple[bool, Optional[str], Optional[FileReference]]:
+        allowed_templates: list[str] | None = None
+    ) -> tuple[bool, str | None, FileReference | None]:
         """
         Validate that a file meets field constraints.
 
@@ -677,7 +672,7 @@ class FileService:
 
         return FileIntegrityResponse(
             status=status,
-            checked_at=datetime.now(timezone.utc),
+            checked_at=datetime.now(UTC),
             summary=summary,
             issues=issues,
         )
@@ -738,7 +733,7 @@ class FileService:
 
 
 # Singleton instance
-_service: Optional[FileService] = None
+_service: FileService | None = None
 
 
 def get_file_service() -> FileService:

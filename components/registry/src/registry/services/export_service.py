@@ -10,14 +10,14 @@ import logging
 import os
 import tempfile
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
-from ..models.namespace import Namespace
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES
+from ..models.namespace import Namespace
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class ExportService:
             # Export manifest
             manifest = {
                 "version": "2.0",
-                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "exported_at": datetime.now(UTC).isoformat(),
                 "prefix": namespace.prefix,
                 "description": namespace.description,
                 "isolation_mode": namespace.isolation_mode,

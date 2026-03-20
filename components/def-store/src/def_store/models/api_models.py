@@ -1,12 +1,12 @@
 """API request/response models for the Def-Store service."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .terminology import TerminologyMetadata
 from .term import TermTranslation
+from .terminology import TerminologyMetadata
 
 
 class StrictModel(BaseModel):
@@ -29,7 +29,7 @@ class CreateTerminologyRequest(StrictModel):
         ...,
         description="Display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description"
     )
@@ -49,11 +49,11 @@ class CreateTerminologyRequest(StrictModel):
         default=False,
         description="Whether users can add new terms at runtime"
     )
-    metadata: Optional[TerminologyMetadata] = Field(
+    metadata: TerminologyMetadata | None = Field(
         None,
         description="Additional metadata"
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system creating this terminology"
     )
@@ -62,35 +62,35 @@ class CreateTerminologyRequest(StrictModel):
 class UpdateTerminologyRequest(StrictModel):
     """Request to update an existing terminology."""
 
-    value: Optional[str] = Field(
+    value: str | None = Field(
         None,
         description="New value (triggers Registry synonym)"
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         None,
         description="New display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="New description"
     )
-    case_sensitive: Optional[bool] = Field(
+    case_sensitive: bool | None = Field(
         None,
         description="Update case sensitivity"
     )
-    allow_multiple: Optional[bool] = Field(
+    allow_multiple: bool | None = Field(
         None,
         description="Update multi-select setting"
     )
-    extensible: Optional[bool] = Field(
+    extensible: bool | None = Field(
         None,
         description="Update extensibility"
     )
-    metadata: Optional[TerminologyMetadata] = Field(
+    metadata: TerminologyMetadata | None = Field(
         None,
         description="Update metadata"
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system updating this terminology"
     )
@@ -103,7 +103,7 @@ class TerminologyResponse(BaseModel):
     namespace: str
     value: str
     label: str
-    description: Optional[str] = None
+    description: str | None = None
     case_sensitive: bool = False
     allow_multiple: bool = False
     extensible: bool = False
@@ -111,9 +111,9 @@ class TerminologyResponse(BaseModel):
     status: str
     term_count: int = 0
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
 
 
 class TerminologyListResponse(BaseModel):
@@ -141,11 +141,11 @@ class CreateTermRequest(StrictModel):
         default_factory=list,
         description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         None,
         description="Display label for UI. Defaults to value if not provided."
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Detailed description"
     )
@@ -153,7 +153,7 @@ class CreateTermRequest(StrictModel):
         default=0,
         description="Sort order within terminology"
     )
-    parent_term_id: Optional[str] = Field(
+    parent_term_id: str | None = Field(
         None,
         description="Parent term ID for hierarchical terms"
     )
@@ -165,7 +165,7 @@ class CreateTermRequest(StrictModel):
         default_factory=dict,
         description="Custom metadata"
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system creating this term"
     )
@@ -174,39 +174,39 @@ class CreateTermRequest(StrictModel):
 class UpdateTermRequest(StrictModel):
     """Request to update an existing term."""
 
-    value: Optional[str] = Field(
+    value: str | None = Field(
         None,
         description="New value (unique within terminology)"
     )
-    aliases: Optional[list[str]] = Field(
+    aliases: list[str] | None = Field(
         None,
         description="Update aliases (replaces existing list)"
     )
-    label: Optional[str] = Field(
+    label: str | None = Field(
         None,
         description="New display label"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="New description"
     )
-    sort_order: Optional[int] = Field(
+    sort_order: int | None = Field(
         None,
         description="New sort order"
     )
-    parent_term_id: Optional[str] = Field(
+    parent_term_id: str | None = Field(
         None,
         description="New parent term ID"
     )
-    translations: Optional[list[TermTranslation]] = Field(
+    translations: list[TermTranslation] | None = Field(
         None,
         description="Update translations"
     )
-    metadata: Optional[dict[str, Any]] = Field(
+    metadata: dict[str, Any] | None = Field(
         None,
         description="Update metadata (merged with existing)"
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system updating this term"
     )
@@ -219,11 +219,11 @@ class DeprecateTermRequest(StrictModel):
         ...,
         description="Why this term is being deprecated"
     )
-    replaced_by_term_id: Optional[str] = Field(
+    replaced_by_term_id: str | None = Field(
         None,
         description="ID of the replacement term"
     )
-    updated_by: Optional[str] = Field(
+    updated_by: str | None = Field(
         None,
         description="User or system deprecating this term"
     )
@@ -235,22 +235,22 @@ class TermResponse(BaseModel):
     term_id: str
     namespace: str
     terminology_id: str
-    terminology_value: Optional[str] = None
+    terminology_value: str | None = None
     value: str
     aliases: list[str] = []
-    label: Optional[str] = None
-    description: Optional[str] = None
+    label: str | None = None
+    description: str | None = None
     sort_order: int = 0
-    parent_term_id: Optional[str] = None
+    parent_term_id: str | None = None
     translations: list[TermTranslation] = []
     metadata: dict[str, Any] = {}
     status: str
-    deprecated_reason: Optional[str] = None
-    replaced_by_term_id: Optional[str] = None
+    deprecated_reason: str | None = None
+    replaced_by_term_id: str | None = None
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
     updated_at: datetime
-    updated_by: Optional[str] = None
+    updated_by: str | None = None
 
 
 class TermListResponse(BaseModel):
@@ -274,9 +274,9 @@ class BulkResultItem(BaseModel):
 
     index: int
     status: str  # created, updated, deleted, skipped, error
-    id: Optional[str] = None
-    value: Optional[str] = None
-    error: Optional[str] = None
+    id: str | None = None
+    value: str | None = None
+    error: str | None = None
 
 
 class BulkResponse(BaseModel):
@@ -299,7 +299,7 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if dependencies exist")
-    updated_by: Optional[str] = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(None, description="User performing deletion")
 
 
 class UpdateTermItem(UpdateTermRequest):
@@ -369,11 +369,11 @@ class ExportTerminologyResponse(BaseModel):
 class ValidateValueRequest(StrictModel):
     """Request to validate a value against a terminology."""
 
-    terminology_id: Optional[str] = Field(
+    terminology_id: str | None = Field(
         None,
         description="Terminology ID (use this or terminology_value)"
     )
-    terminology_value: Optional[str] = Field(
+    terminology_value: str | None = Field(
         None,
         description="Terminology value (use this or id)"
     )
@@ -390,16 +390,16 @@ class ValidateValueResponse(BaseModel):
     terminology_id: str
     terminology_value: str
     value: str
-    matched_term: Optional[TermResponse] = None
-    matched_via: Optional[str] = Field(
+    matched_term: TermResponse | None = None
+    matched_via: str | None = Field(
         None,
         description="How the match was made: 'value' or 'alias'"
     )
-    suggestion: Optional[TermResponse] = Field(
+    suggestion: TermResponse | None = Field(
         None,
         description="Suggested term if value is close but not exact"
     )
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class BulkValidateRequest(StrictModel):
@@ -431,11 +431,11 @@ class AuditLogEntry(BaseModel):
         description="Type of change: created, updated, deprecated, deleted"
     )
     changed_at: datetime
-    changed_by: Optional[str] = None
+    changed_by: str | None = None
     changed_fields: list[str] = []
     previous_values: dict[str, Any] = {}
     new_values: dict[str, Any] = {}
-    comment: Optional[str] = None
+    comment: str | None = None
 
 
 class AuditLogResponse(BaseModel):
@@ -470,7 +470,7 @@ class CreateRelationshipRequest(StrictModel):
         default_factory=dict,
         description="Provenance, confidence, OWL axioms"
     )
-    created_by: Optional[str] = Field(
+    created_by: str | None = Field(
         None,
         description="User or system creating this relationship"
     )
@@ -491,13 +491,13 @@ class RelationshipResponse(BaseModel):
     source_term_id: str
     target_term_id: str
     relationship_type: str
-    relationship_value: Optional[str] = None
-    source_terminology_id: Optional[str] = None
-    target_terminology_id: Optional[str] = None
+    relationship_value: str | None = None
+    source_terminology_id: str | None = None
+    target_terminology_id: str | None = None
     metadata: dict[str, Any] = {}
     status: str
     created_at: datetime
-    created_by: Optional[str] = None
+    created_by: str | None = None
 
 
 class RelationshipListResponse(BaseModel):
@@ -514,8 +514,8 @@ class TraversalNode(BaseModel):
     """A single node in a traversal result."""
 
     term_id: str
-    value: Optional[str] = None
-    terminology_id: Optional[str] = None
+    value: str | None = None
+    terminology_id: str | None = None
     depth: int
     path: list[str]
 

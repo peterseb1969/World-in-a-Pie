@@ -3,11 +3,11 @@
 from fastapi import APIRouter, HTTPException
 
 from ..models.api_models import (
-    ValidateValueRequest,
-    ValidateValueResponse,
     BulkValidateRequest,
     BulkValidateResponse,
     TermResponse,
+    ValidateValueRequest,
+    ValidateValueResponse,
 )
 from ..services.terminology_service import TerminologyService
 

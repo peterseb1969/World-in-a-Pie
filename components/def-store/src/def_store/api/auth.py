@@ -34,8 +34,8 @@ __all__ = [
     "require_groups",
     "require_identity",
     "reset_auth_config",
-    "set_auth_config",
     "set_api_key",
+    "set_auth_config",
 ]
 
 

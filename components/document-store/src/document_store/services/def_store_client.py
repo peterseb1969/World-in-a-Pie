@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -23,7 +23,7 @@ class TerminologyCache:
         self._hits = 0
         self._misses = 0
 
-    def get(self, terminology_ref: str) -> Optional[dict[str, Any]]:
+    def get(self, terminology_ref: str) -> dict[str, Any] | None:
         """Get a cached terminology if not expired."""
         if terminology_ref in self._cache:
             data, timestamp = self._cache[terminology_ref]
@@ -70,8 +70,8 @@ class DefStoreClient:
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        api_key: Optional[str] = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
         timeout: float = 10.0,
         cache_ttl: int = DEFAULT_CACHE_TTL,
     ):
@@ -132,7 +132,7 @@ class DefStoreClient:
     async def _fetch_terminology_with_terms(
         self,
         terminology_ref: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """
         Fetch a terminology with ALL its terms from Def-Store.
 
@@ -194,7 +194,7 @@ class DefStoreClient:
                 return terminology
 
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            raise DefStoreError(f"Request failed: {e!s}")
 
     def _build_term_lookup(self, terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """
@@ -227,7 +227,7 @@ class DefStoreClient:
 
         return lookup
 
-    async def _get_terminology_cached(self, terminology_ref: str) -> Optional[dict[str, Any]]:
+    async def _get_terminology_cached(self, terminology_ref: str) -> dict[str, Any] | None:
         """Get a terminology, using cache if available."""
         # Check cache first
         cached = self._terminology_cache.get(terminology_ref)
@@ -283,9 +283,9 @@ class DefStoreClient:
 
     async def get_terminology(
         self,
-        terminology_id: Optional[str] = None,
-        terminology_value: Optional[str] = None
-    ) -> Optional[dict[str, Any]]:
+        terminology_id: str | None = None,
+        terminology_value: str | None = None
+    ) -> dict[str, Any] | None:
         """
         Get a terminology by ID or value.
 
@@ -389,7 +389,7 @@ class DefStoreClient:
 
         return results
 
-    async def get_term(self, term_id: str) -> Optional[dict[str, Any]]:
+    async def get_term(self, term_id: str) -> dict[str, Any] | None:
         """
         Get a term by ID.
 
@@ -415,7 +415,7 @@ class DefStoreClient:
 
                 return response.json()
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {str(e)}")
+            raise DefStoreError(f"Request failed: {e!s}")
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
@@ -433,7 +433,7 @@ class DefStoreError(Exception):
 
 
 # Singleton instance for convenience
-_client: Optional[DefStoreClient] = None
+_client: DefStoreClient | None = None
 
 
 def get_def_store_client() -> DefStoreClient:
@@ -445,9 +445,9 @@ def get_def_store_client() -> DefStoreClient:
 
 
 def configure_def_store_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-    cache_ttl: Optional[int] = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    cache_ttl: int | None = None,
 ) -> DefStoreClient:
     """Configure and return the Def-Store client."""
     global _client

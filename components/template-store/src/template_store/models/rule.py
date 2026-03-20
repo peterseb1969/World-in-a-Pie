@@ -1,7 +1,7 @@
 """Validation rule models for cross-field validation."""
 
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -28,7 +28,7 @@ class Condition(BaseModel):
         ...,
         description="Comparison operator"
     )
-    value: Optional[Any] = Field(
+    value: Any | None = Field(
         None,
         description="Value to compare (not needed for exists operators)"
     )
@@ -41,7 +41,7 @@ class ValidationRule(BaseModel):
         ...,
         description="Type of validation rule"
     )
-    description: Optional[str] = Field(
+    description: str | None = Field(
         None,
         description="Human-readable description of the rule"
     )
@@ -51,47 +51,47 @@ class ValidationRule(BaseModel):
     )
 
     # For rules targeting a single field
-    target_field: Optional[str] = Field(
+    target_field: str | None = Field(
         None,
         description="Field affected by the rule"
     )
 
     # For mutual_exclusion: fields that are mutually exclusive
-    target_fields: Optional[list[str]] = Field(
+    target_fields: list[str] | None = Field(
         None,
         description="Fields affected (for mutual_exclusion)"
     )
 
     # For conditional_required
-    required: Optional[bool] = Field(
+    required: bool | None = Field(
         None,
         description="For conditional_required: is field required?"
     )
 
     # For conditional_value
-    allowed_values: Optional[list[Any]] = Field(
+    allowed_values: list[Any] | None = Field(
         None,
         description="For conditional_value: allowed values"
     )
 
     # For pattern rule
-    pattern: Optional[str] = Field(
+    pattern: str | None = Field(
         None,
         description="For pattern: regex pattern"
     )
 
     # For range rule
-    minimum: Optional[float] = Field(
+    minimum: float | None = Field(
         None,
         description="For range: minimum value"
     )
-    maximum: Optional[float] = Field(
+    maximum: float | None = Field(
         None,
         description="For range: maximum value"
     )
 
     # Error message
-    error_message: Optional[str] = Field(
+    error_message: str | None = Field(
         None,
         description="Custom error message"
     )

@@ -59,5 +59,8 @@ results.json
 # Setup logs
 logs/
 
+# Quality audit raw output
+reports/quality-audit/raw/
+
 # MongoDB data (local dev)
 data/

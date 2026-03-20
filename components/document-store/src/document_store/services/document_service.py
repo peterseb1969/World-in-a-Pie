@@ -2,37 +2,36 @@
 
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone
-from typing import Any, Optional
 import math
-
-from ..models.document import Document, DocumentStatus, DocumentMetadata
-from ..models.api_models import (
-    DocumentCreateRequest,
-    DocumentResponse,
-    DocumentCreateResponse,
-    DocumentListResponse,
-    DocumentVersionSummary,
-    DocumentVersionResponse,
-    DocumentQueryRequest,
-    DocumentQueryResponse,
-    BulkResultItem,
-    BulkResponse,
-    ValidationResponse,
-    ValidationError,
-)
-from .registry_client import get_registry_client, RegistryError
-from .validation_service import ValidationService
-from .template_store_client import get_template_store_client
-from .def_store_client import get_def_store_client
-from .nats_client import publish_document_event, EventType, is_nats_enabled
-from .file_storage_client import is_file_storage_enabled
-from .reference_validator import get_reference_validator, ReferenceValidationError
+import time
+from datetime import UTC, datetime
+from typing import Any
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
+from ..models.api_models import (
+    BulkResponse,
+    BulkResultItem,
+    DocumentCreateRequest,
+    DocumentCreateResponse,
+    DocumentListResponse,
+    DocumentQueryRequest,
+    DocumentQueryResponse,
+    DocumentResponse,
+    DocumentVersionResponse,
+    DocumentVersionSummary,
+    ValidationError,
+    ValidationResponse,
+)
+from ..models.document import Document, DocumentMetadata, DocumentStatus
+from .def_store_client import get_def_store_client
+from .file_storage_client import is_file_storage_enabled
+from .nats_client import EventType, publish_document_event
+from .reference_validator import ReferenceValidationError, get_reference_validator
+from .registry_client import RegistryError, get_registry_client
+from .template_store_client import get_template_store_client
+from .validation_service import ValidationService
 
 
 class DocumentService:
@@ -99,7 +98,7 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         namespace: str = "wip",
-    ) -> tuple[DocumentCreateResponse, Optional[str]]:
+    ) -> tuple[DocumentCreateResponse, str | None]:
         """
         Create or update a document.
 
@@ -166,7 +165,7 @@ class DocumentService:
                 entry_id=request.document_id,
             )
         except RegistryError as e:
-            return None, f"Failed to generate document ID: {str(e)}"
+            return None, f"Failed to generate document ID: {e!s}"
         timing["2_registry"] = (time.perf_counter() - start) * 1000
 
         # Store the registry-returned identity_hash on the validation result
@@ -217,9 +216,9 @@ class DocumentService:
         validation_result: Any,
         document_id: str,
         namespace: str = "wip",
-        synonyms: Optional[list[dict]] = None,
-        version_override: Optional[int] = None,
-    ) -> tuple[DocumentCreateResponse, Optional[str]]:
+        synonyms: list[dict] | None = None,
+        version_override: int | None = None,
+    ) -> tuple[DocumentCreateResponse, str | None]:
         """Create a brand new document with the given stable document_id."""
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -241,7 +240,7 @@ class DocumentService:
                 )
 
         # Create document
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         metadata = DocumentMetadata(
             warnings=validation_result.warnings,
             custom=request.metadata or {}
@@ -418,7 +417,7 @@ class DocumentService:
         validation_result: Any,
         document_id: str,
         namespace: str = "wip"
-    ) -> tuple[DocumentCreateResponse, Optional[str]]:
+    ) -> tuple[DocumentCreateResponse, str | None]:
         """Create a new version of an existing document with stable document_id."""
         # Check if data has actually changed
         if not self._data_has_changed(
@@ -446,12 +445,12 @@ class DocumentService:
 
         # Deactivate old version
         existing.status = DocumentStatus.INACTIVE
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.updated_at = datetime.now(UTC)
         existing.updated_by = actor
         await existing.save()
 
         # Create new version with SAME document_id (stable)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         new_version = existing.version + 1
         metadata = DocumentMetadata(
             warnings=validation_result.warnings,
@@ -503,7 +502,7 @@ class DocumentService:
         self,
         identity_hash: str,
         namespace: str = "wip"
-    ) -> Optional[Document]:
+    ) -> Document | None:
         """Find the active document with the given identity hash within namespace."""
         return await Document.find_one({
             "namespace": namespace,
@@ -542,8 +541,8 @@ class DocumentService:
     async def get_document(
         self,
         document_id: str,
-        version: Optional[int] = None
-    ) -> Optional[DocumentResponse]:
+        version: int | None = None
+    ) -> DocumentResponse | None:
         """Get a document by ID (stable across versions). Returns latest version by default."""
         if version is not None:
             document = await Document.find_one({
@@ -564,7 +563,7 @@ class DocumentService:
         self,
         identity_hash: str,
         include_inactive: bool = False
-    ) -> Optional[DocumentResponse]:
+    ) -> DocumentResponse | None:
         """Get a document by identity hash."""
         query = {"identity_hash": identity_hash}
         if not include_inactive:
@@ -577,15 +576,15 @@ class DocumentService:
 
     async def list_documents(
         self,
-        template_id: Optional[str] = None,
-        template_value: Optional[str] = None,
-        status: Optional[DocumentStatus] = None,
+        template_id: str | None = None,
+        template_value: str | None = None,
+        status: DocumentStatus | None = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: Optional[str] = None,
+        namespace: str | None = None,
         latest_only: bool = False,
-        cursor: Optional[str] = None,
-        allowed_namespaces: Optional[list[str]] = None,
+        cursor: str | None = None,
+        allowed_namespaces: list[str] | None = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -662,7 +661,7 @@ class DocumentService:
         items = await self._batch_to_responses(documents)
 
         # Compute next_cursor from the last document's MongoDB _id
-        next_cursor: Optional[str] = None
+        next_cursor: str | None = None
         if cursor is not None and len(documents) == page_size:
             last_doc = documents[-1]
             if hasattr(last_doc, 'id') and last_doc.id is not None:
@@ -680,7 +679,7 @@ class DocumentService:
     async def get_document_versions(
         self,
         document_id: str
-    ) -> Optional[DocumentVersionResponse]:
+    ) -> DocumentVersionResponse | None:
         """Get all versions of a document by its stable document_id."""
         # document_id is stable — query directly
         versions = await Document.find(
@@ -709,7 +708,7 @@ class DocumentService:
         self,
         document_id: str,
         version: int
-    ) -> Optional[DocumentResponse]:
+    ) -> DocumentResponse | None:
         """Get a specific version of a document by stable document_id."""
         version_doc = await Document.find_one({
             "document_id": document_id,
@@ -724,7 +723,7 @@ class DocumentService:
     async def get_latest_document(
         self,
         document_id: str
-    ) -> Optional[DocumentResponse]:
+    ) -> DocumentResponse | None:
         """
         Get the latest version of a document.
 
@@ -749,7 +748,7 @@ class DocumentService:
     async def delete_document(
         self,
         document_id: str,
-        deleted_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        deleted_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Soft-delete a document (set latest active version to inactive)."""
         # Find latest active version
@@ -767,7 +766,7 @@ class DocumentService:
         actor = get_identity_string()
 
         document.status = DocumentStatus.INACTIVE
-        document.updated_at = datetime.now(timezone.utc)
+        document.updated_at = datetime.now(UTC)
         document.updated_by = actor
         await document.save()
 
@@ -788,7 +787,7 @@ class DocumentService:
     async def archive_document(
         self,
         document_id: str,
-        archived_by: Optional[str] = None  # Deprecated: uses authenticated identity
+        archived_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """Archive a document (latest version)."""
         results = await Document.find(
@@ -802,7 +801,7 @@ class DocumentService:
         actor = get_identity_string()
 
         document.status = DocumentStatus.ARCHIVED
-        document.updated_at = datetime.now(timezone.utc)
+        document.updated_at = datetime.now(UTC)
         document.updated_by = actor
         await document.save()
 
@@ -1100,7 +1099,7 @@ class DocumentService:
             for i, item, _ in validation_results:
                 failed += 1
                 results.append(BulkResultItem(
-                    index=i, status="error", error=f"Registry error: {str(e)}"
+                    index=i, status="error", error=f"Registry error: {e!s}"
                 ))
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
             timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -1137,7 +1136,7 @@ class DocumentService:
         # NATS events are collected and published concurrently after the loop
         # to avoid per-document ACK wait (~10ms each).
         start = time.perf_counter()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         pending_events: list[tuple[EventType, dict]] = []
 
         for idx, ((i, item, validation_result), registry_result) in enumerate(
@@ -1453,7 +1452,7 @@ class DocumentService:
 
 
 # Singleton instance
-_service: Optional[DocumentService] = None
+_service: DocumentService | None = None
 
 
 def get_document_service() -> DocumentService:

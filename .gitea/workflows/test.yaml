@@ -5,6 +5,31 @@ on:
   pull_request:
 
 jobs:
+  # Fast lint checks (parallel with tests)
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install tools
+        run: pip install ruff shellcheck-py
+
+      - name: Ruff
+        run: |
+          ruff check components/registry/src components/def-store/src \
+            components/template-store/src components/document-store/src \
+            components/reporting-sync/src components/ingest-gateway/src \
+            components/mcp-server/src libs/wip-auth/src \
+            --config pyproject.toml --output-format=github
+
+      - name: ShellCheck
+        run: find scripts/ -name '*.sh' -exec shellcheck {} +
+
   # Components that need MongoDB
   test-services:
     runs-on: ubuntu-latest

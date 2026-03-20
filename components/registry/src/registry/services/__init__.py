@@ -1,13 +1,13 @@
 """Services for the Registry."""
 
-from .id_generator import IdGeneratorService
-from .hash import HashService
-from .search import SearchService
 from .auth import AuthService
+from .hash import HashService
+from .id_generator import IdGeneratorService
+from .search import SearchService
 
 __all__ = [
-    "IdGeneratorService",
-    "HashService",
-    "SearchService",
     "AuthService",
+    "HashService",
+    "IdGeneratorService",
+    "SearchService",
 ]

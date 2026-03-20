@@ -11,7 +11,7 @@ Responsibilities:
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime
 from typing import Any
 
 from .models import ReportingConfig, SemanticType
@@ -42,9 +42,6 @@ TIME_UNIT_FACTORS = {
     "wk": 604800,
     "w": 604800,
 }
-
-
-from datetime import date
 
 
 def _parse_datetime(value: Any) -> datetime | None:

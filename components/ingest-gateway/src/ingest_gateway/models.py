@@ -1,8 +1,8 @@
 """Data models for the Ingest Gateway service."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -52,7 +52,7 @@ class IngestMessage(BaseModel):
         description="Optional metadata"
     )
     timestamp: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
 
 
@@ -70,11 +70,11 @@ class IngestResult(BaseModel):
     correlation_id: str
     action: IngestAction
     status: IngestResultStatus
-    http_status_code: Optional[int] = None
-    response: Optional[dict[str, Any]] = None
-    error: Optional[str] = None
+    http_status_code: int | None = None
+    response: dict[str, Any] | None = None
+    error: str | None = None
     processed_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(UTC)
     )
     duration_ms: float = 0.0
 

@@ -2,7 +2,7 @@
 
 import hashlib
 import json
-from typing import Any, Optional
+from typing import Any
 
 
 class IdentityService:
@@ -46,7 +46,7 @@ class IdentityService:
         return identity_values
 
     @staticmethod
-    def _get_nested_value(data: dict[str, Any], field_path: str) -> Optional[Any]:
+    def _get_nested_value(data: dict[str, Any], field_path: str) -> Any | None:
         """
         Get a value from nested data using dot notation.
 

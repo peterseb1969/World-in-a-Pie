@@ -4,12 +4,13 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, File, Form, UploadFile, Depends
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+
 from wip_auth import check_namespace_permission, get_current_identity, require_api_key
 
-from ..services.import_service import ImportService
-from ..services.document_service import DocumentService
 from ..models.api_models import DocumentCreateRequest
+from ..services.document_service import DocumentService
+from ..services.import_service import ImportService
 
 logger = logging.getLogger(__name__)
 

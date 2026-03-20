@@ -40,13 +40,6 @@ from .dependencies import (
     require_namespace_read,
     require_namespace_write,
 )
-from .permissions import (
-    check_namespace_permission,
-    clear_permission_cache,
-    permission_sufficient,
-    resolve_accessible_namespaces,
-    resolve_permission,
-)
 from .identity import (
     clear_current_identity,
     get_actor_info,
@@ -57,7 +50,13 @@ from .identity import (
 )
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
-from .query_validation import RejectUnknownQueryParamsMiddleware
+from .permissions import (
+    check_namespace_permission,
+    clear_permission_cache,
+    permission_sufficient,
+    resolve_accessible_namespaces,
+    resolve_permission,
+)
 from .providers import (
     APIKeyProvider,
     AuthProvider,
@@ -65,6 +64,7 @@ from .providers import (
     OIDCProvider,
     hash_api_key,
 )
+from .query_validation import RejectUnknownQueryParamsMiddleware
 
 __version__ = "0.1.0"
 

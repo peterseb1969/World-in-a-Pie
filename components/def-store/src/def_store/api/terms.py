@@ -1,28 +1,28 @@
 """API endpoints for term management."""
 
 import math
-from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Query, Depends
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+
+from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
 
 from ..models.api_models import (
-    BulkResultItem,
     BulkResponse,
-    CreateTermRequest,
-    UpdateTermItem,
-    DeleteItem,
-    DeprecateTermItem,
-    TermResponse,
-    TermListResponse,
-    ValidateValueRequest,
-    ValidateValueResponse,
+    BulkResultItem,
     BulkValidateRequest,
     BulkValidateResponse,
+    CreateTermRequest,
+    DeleteItem,
+    DeprecateTermItem,
+    TermListResponse,
+    TermResponse,
+    UpdateTermItem,
+    ValidateValueRequest,
+    ValidateValueResponse,
 )
 from ..models.terminology import Terminology
-from ..services.terminology_service import TerminologyService
 from ..services.registry_client import RegistryError
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from ..services.terminology_service import TerminologyService
 from .auth import require_api_key
 
 router = APIRouter(tags=["Terms"])
@@ -79,7 +79,7 @@ async def create_terms(
                 raise HTTPException(status_code=404, detail=msg)
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=msg)]
         except RegistryError as e:
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {str(e)}")]
+            results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
     else:
         # Bulk path — uses batch Registry calls and insert_many
         try:
@@ -95,7 +95,7 @@ async def create_terms(
                 raise HTTPException(status_code=404, detail=msg)
             raise HTTPException(status_code=400, detail=msg)
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {str(e)}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -109,11 +109,11 @@ async def create_terms(
 )
 async def list_terms(
     terminology_id: str,
-    namespace: Optional[str] = Query(default=None, description="Namespace to query (omit for all)"),
+    namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Items per page"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    search: Optional[str] = Query(None, description="Search in value, aliases"),
+    status: str | None = Query(None, description="Filter by status"),
+    search: str | None = Query(None, description="Search in value, aliases"),
     api_key: str = Depends(require_api_key)
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
@@ -193,7 +193,7 @@ async def update_terms(
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=str(e)))
         except RegistryError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=f"Registry error: {str(e)}"))
+            results.append(BulkResultItem(index=i, status="error", id=item.term_id, error=f"Registry error: {e!s}"))
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),

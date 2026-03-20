@@ -4,10 +4,9 @@ Dependency Service for Template Store.
 Checks what depends on a template before allowing deactivation.
 """
 
-from typing import Optional
-import httpx
 import os
 
+import httpx
 from pydantic import BaseModel, Field
 
 from ..models.template import Template
@@ -30,7 +29,7 @@ class TemplateDependencies(BaseModel):
     # Summary
     has_dependencies: bool = False
     can_deactivate: bool = True
-    warning_message: Optional[str] = None
+    warning_message: str | None = None
 
 
 class DependencyService:
@@ -75,7 +74,7 @@ class DependencyService:
         try:
             document_count = await cls._get_document_count(template_id)
             result.document_count = document_count
-        except Exception as e:
+        except Exception:
             # If Document Store is unavailable, we can't check documents
             # Set to -1 to indicate unknown
             result.document_count = -1
