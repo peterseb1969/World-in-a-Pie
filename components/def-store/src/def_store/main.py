@@ -221,4 +221,4 @@ async def ready_check():
         await app.state.mongodb_client.admin.command('ping')
         return {"ready": True}
     except Exception:
-        raise HTTPException(status_code=503, detail={"ready": False})
+        raise HTTPException(status_code=503, detail={"ready": False}) from None

@@ -136,7 +136,7 @@ async def upload_file(
         await asyncio.sleep(get_throttle_delay())
         return result
     except FileServiceError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @router.get(
@@ -224,7 +224,7 @@ async def get_download_url(
             raise HTTPException(status_code=404, detail="File not found")
         return response
     except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get(
@@ -411,7 +411,7 @@ async def hard_delete_file(
             raise HTTPException(status_code=404, detail="File not found")
         return {"status": "permanently_deleted", "file_id": file_id}
     except FileServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.get(
