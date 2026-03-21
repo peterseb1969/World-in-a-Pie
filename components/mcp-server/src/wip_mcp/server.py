@@ -775,6 +775,31 @@ async def activate_template(
 
 
 @mcp.tool()
+async def deactivate_template(
+    template_id: str,
+    version: int | None = None,
+    force: bool = False,
+) -> str:
+    """Deactivate (soft-delete) a template version.
+
+    Sets the template status to 'inactive'. Blocked if other templates extend it.
+    If documents reference it, use force=true to deactivate anyway.
+
+    Args:
+        template_id: Template to deactivate.
+        version: Specific version to deactivate (default: latest).
+        force: Force deactivation even if documents exist.
+    """
+    try:
+        data = await get_client().deactivate_template(
+            template_id=template_id, version=version, force=force
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_template_dependencies(template_id: str) -> str:
     """Show what depends on a template: child templates and documents."""
     try:

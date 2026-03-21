@@ -401,6 +401,21 @@ class WipClient:
             dry_run=dry_run,
         )
 
+    async def deactivate_template(
+        self, template_id: str, version: int | None = None, force: bool = False
+    ) -> dict:
+        item: dict[str, Any] = {"id": template_id}
+        if version is not None:
+            item["version"] = version
+        if force:
+            item["force"] = True
+        resp = await self._delete(
+            self.template_store_url,
+            "/api/template-store/templates",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
+
     async def get_template_dependencies(self, template_id: str) -> dict:
         return await self._get(
             self.template_store_url,
