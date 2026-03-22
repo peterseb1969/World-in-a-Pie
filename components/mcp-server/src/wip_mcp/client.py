@@ -19,6 +19,25 @@ class BulkError(Exception):
         super().__init__(error)
 
 
+def _resolve_api_key() -> str:
+    """Resolve the API key from env var or file.
+
+    Priority: WIP_API_KEY env var > WIP_API_KEY_FILE contents > default dev key.
+    WIP_API_KEY_FILE allows key rotation without updating each app's .mcp.json.
+    """
+    key = os.getenv("WIP_API_KEY")
+    if key:
+        return key
+    key_file = os.getenv("WIP_API_KEY_FILE")
+    if key_file:
+        try:
+            return open(key_file).read().strip()
+        except OSError as e:
+            import logging
+            logging.getLogger("wip_mcp").warning("Cannot read WIP_API_KEY_FILE %s: %s", key_file, e)
+    return "dev_master_key_for_testing"
+
+
 class WipClient:
     """Client for all WIP service APIs."""
 
@@ -47,9 +66,7 @@ class WipClient:
         self.reporting_sync_url = reporting_sync_url or os.getenv(
             "REPORTING_SYNC_URL", "http://localhost:8005"
         )
-        self.api_key = api_key or os.getenv(
-            "WIP_API_KEY", "dev_master_key_for_testing"
-        )
+        self.api_key = api_key or _resolve_api_key()
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
 
