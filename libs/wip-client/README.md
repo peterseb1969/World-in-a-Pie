@@ -312,6 +312,14 @@ const rels = await client.defStore.listRelationships({
   relationship_type: 'is_a',
 })
 
+// List all relationships across all terminologies
+const allRels = await client.defStore.listAllRelationships({
+  relationship_type: 'is_a',
+  status: 'active',
+  page: 1,
+  page_size: 50,
+})
+
 // Create relationships
 await client.defStore.createRelationships([
   { source_term_id: 'TERM-002', target_term_id: 'TERM-001', relationship_type: 'is_a' },
@@ -593,8 +601,13 @@ await client.registry.createNamespace({
   prefix: 'my-app',
   description: 'My application namespace',
 })
+await client.registry.updateNamespace('my-app', {
+  description: 'Updated description',
+  isolation_mode: 'strict',           // 'open' or 'strict'
+})
 await client.registry.archiveNamespace('my-app')
 await client.registry.restoreNamespace('my-app')
+await client.registry.deleteNamespace('my-app', 'admin@wip.local')
 
 // Initialize the default WIP namespaces (one-time setup)
 await client.registry.initializeWipNamespace()

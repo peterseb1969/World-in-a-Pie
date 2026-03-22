@@ -106,7 +106,7 @@ Three resources provide baseline context to the AI without tool calls:
 | `get_term_hierarchy(term_id, direction)` | Traverse relationships: `children`, `parents`, `ancestors`, `descendants`. Optional `relationship_type` filter. |
 | `create_relationships(relationships)` | Create typed relationships (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
 
-### Templates (7 tools)
+### Templates (10 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -114,10 +114,13 @@ Three resources provide baseline context to the AI without tool calls:
 | `get_template(id, version?)` | Get resolved template (with inherited fields). |
 | `get_template_by_value(value)` | Get by value code (e.g., `BANK_TRANSACTION`). |
 | `get_template_raw(id)` | Get without inheritance resolution. |
+| `get_template_fields(template_value)` | Clean summary of a template's fields — name, type, mandatory, references. Returns `template_id` for use in queries. |
 | `create_template(template)` | Create a single template. Supports draft mode. |
 | `create_templates_bulk(templates)` | Create multiple templates. |
 | `activate_template(id)` | Activate a draft template with cascading validation. |
+| `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
+| `query_by_template(template_value, field_filters?, ...)` | Query documents by template value code. Auto-resolves `template_value` to `template_id`. Field names auto-prefixed with `data.` — write `country` not `data.country`. |
 
 ### Documents (5 tools)
 
@@ -143,12 +146,34 @@ Three resources provide baseline context to the AI without tool calls:
 | `search(query, types?)` | Unified full-text search across all entity types (via reporting-sync / PostgreSQL). |
 | `search_registry(query)` | Search Registry entries by ID or composite key. |
 
-### Files (2 tools)
+### Files (3 tools)
 
 | Tool | Description |
 |------|-------------|
 | `list_files()` | List files stored in MinIO. |
 | `get_file_metadata(id)` | Get file metadata (not content). |
+| `upload_file(file_path, namespace?, description?, tags?, category?)` | Upload a file from a local path. Auto-detects content type. Tags are comma-separated. |
+
+### Reporting & SQL (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `list_report_tables()` | List available PostgreSQL reporting tables (doc_* tables + terminologies/terms) with columns, types, and row counts. |
+| `run_report_query(sql, params?, max_rows?)` | Execute a read-only SQL SELECT against the reporting database. Use for cross-template JOINs and aggregations. Table names: `doc_{template_value}`. Use `$1, $2` for parameters. |
+
+### CSV Import (1 tool)
+
+| Tool | Description |
+|------|-------------|
+| `import_documents_csv(file_path, template_value, column_mapping?, namespace?, skip_errors?)` | Import documents from a CSV/XLSX file. Auto-maps columns to template fields by name if no explicit mapping given. |
+
+### Event Replay (3 tools)
+
+| Tool | Description |
+|------|-------------|
+| `start_replay(template_value?, template_id?, namespace?, throttle_ms?, batch_size?)` | Start replaying stored documents as NATS events. Use to onboard new consumers or backfill data. |
+| `get_replay_status(session_id)` | Get current replay session status (published count, total, status). |
+| `cancel_replay(session_id)` | Cancel a replay session and delete its NATS stream. |
 
 ---
 
@@ -192,14 +217,14 @@ The MCP server is designed around a 4-phase process for building applications on
 |-------|---------|---------------|
 | **1. Explore** | Discover existing data model | `get_wip_status`, `list_namespaces`, `list_terminologies`, `list_templates` |
 | **2. Design** | Plan terminologies, templates, relationships | `get_terminology_by_value`, `get_template_by_value`, `get_template_dependencies` |
-| **3. Implement** | Create data model in WIP | `create_terminology`, `create_terms`, `create_template`, `activate_template`, `create_document` |
-| **4. Build App** | Build frontend (uses @wip/client, not MCP) | MCP used for debugging only |
+| **3. Implement** | Create data model in WIP | `create_terminology`, `create_terms`, `create_template`, `activate_template`, `create_document`, `import_documents_csv` |
+| **4. Build App** | Build frontend (uses @wip/client, not MCP) | MCP used for debugging and `query_by_template`, `run_report_query` |
 
 ---
 
 ## Known Limitations
 
-- **No file upload tool** — files can be listed and inspected, but upload requires direct HTTP to Document-Store
-- **No event replay tools** — event replay is designed but not implemented in any service
-- **No delete tools** — consistent with WIP's soft-delete convention; use the Console UI or direct API for deactivation
 - **No template update tools** — create a new version instead (WIP's versioning model)
+- **No term/terminology update or delete tools** — use the Console UI or direct API
+- **No file download** — files can be uploaded, listed, and inspected, but content download requires direct HTTP
+- **No Registry entry management** — register, lookup, synonym, and merge operations require direct API calls
