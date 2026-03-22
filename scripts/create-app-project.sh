@@ -112,24 +112,30 @@ done
 
 echo "4. Generating .mcp.json..."
 
-# Determine API key source: use key file if secrets dir exists, else env var
-SECRETS_DIR="$WIP_ROOT/data/secrets"
-if [ -f "$SECRETS_DIR/api_key" ]; then
-    # Production or setup.sh deployment — read key from file at runtime
-    MCP_ENV=$(cat <<ENVEOF
-        "WIP_API_KEY_FILE": "$SECRETS_DIR/api_key",
-        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
-ENVEOF
-)
-    echo "   API key: via WIP_API_KEY_FILE (rotates automatically)"
-else
-    # Dev mode — use default key
+# Determine API key from .env (source of truth for running containers)
+ACTIVE_KEY=""
+if [ -f "$WIP_ROOT/.env" ]; then
+    ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+fi
+ACTIVE_KEY="${ACTIVE_KEY:-dev_master_key_for_testing}"
+
+if [ "$ACTIVE_KEY" = "dev_master_key_for_testing" ]; then
+    # Dev mode — hardcode the well-known dev key
     MCP_ENV=$(cat <<ENVEOF
         "WIP_API_KEY": "dev_master_key_for_testing",
         "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
 ENVEOF
 )
-    echo "   API key: dev_master_key_for_testing (hardcoded dev key)"
+    echo "   API key: dev_master_key_for_testing (dev mode)"
+else
+    # Production — embed the actual key from .env
+    MCP_ENV=$(cat <<ENVEOF
+        "WIP_API_KEY": "$ACTIVE_KEY",
+        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
+ENVEOF
+)
+    echo "   API key: production key from .env (${#ACTIVE_KEY} chars)"
+    echo "   Note: if you rotate the API key, re-run this script or update .mcp.json"
 fi
 
 # Determine Python path
