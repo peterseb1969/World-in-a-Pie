@@ -60,13 +60,14 @@ Or in `.claude/mcp.json`:
 
 ## Resources (Static Context)
 
-Three resources provide baseline context to the AI without tool calls:
+Four resources provide baseline context to the AI without tool calls:
 
 | Resource URI | Description |
 |---|---|
-| `wip://conventions` | Bulk-first API patterns, identity hashing, versioning, pagination |
+| `wip://conventions` | Bulk-first API patterns, identity hashing, versioning, pagination, querying |
 | `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relationships |
 | `wip://development-guide` | The 4-phase development process with guidance per phase |
+| `wip://ponifs` | Powerful, Non-Intuitive Features — 6 WIP behaviours that violate conventional expectations, plus the Compactheimer's Warning for AI assistants |
 
 ---
 
@@ -170,11 +171,12 @@ Three resources provide baseline context to the AI without tool calls:
 | `export_terminology(id)` | Export terminology with terms and optional relationships. JSON or CSV. |
 | `import_terminology(data)` | Import terminology from JSON. Supports `skip_duplicates` and `update_existing`. |
 
-### Search (1 tool)
+### Search (2 tools)
 
 | Tool | Description |
 |------|-------------|
 | `search(query, types?)` | Unified full-text search across all entity types (via reporting-sync / PostgreSQL). |
+| `search_registry(query)` | Search Registry entries by ID or composite key values. |
 
 ### Files (6 tools)
 

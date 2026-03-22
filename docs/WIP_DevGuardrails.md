@@ -30,6 +30,8 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 # Guide 1: Gateway & Portal
 
+> **Status: Not yet implemented.** This guide describes an aspirational architecture. The gateway and portal do not exist yet. Current deployments access apps directly by port. This guide is included to capture the design intent for when the second constellation app is deployed.
+
 > **Priority: Critical — deploy before the second app**
 > On a Raspberry Pi with a single IP address, every containerised app needs its own port. Without a gateway, users must remember that the Statement Manager is on port 8081, the Receipt Scanner is on 8082, WIP Console is on 8443, and so on. This is unworkable beyond two apps. The gateway solves port management, TLS termination, and app discovery in a single container.
 

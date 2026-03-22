@@ -64,20 +64,24 @@ def get_conventions() -> str:
     """WIP API conventions: bulk-first, versioning, namespaces, authorization."""
     return """# WIP API Conventions
 
-## Bulk-First: Every Write is Bulk, 200 OK Always
-All write endpoints (POST/PUT/DELETE) accept a JSON array and return BulkResponse.
-Single operations are just [item]. There are no single-entity write endpoints.
-
-Response: { results: [...], total: N, succeeded: N, failed: N }
-
-CRITICAL: Always parse results[i].status — never rely on HTTP status codes.
-A 200 OK response can contain per-item errors. Statuses: created, updated, error, skipped.
-
-- Updates use PUT with entity ID in the body (not URL)
-- Deletes use DELETE with JSON body: [{"id": "..."}] (NOT DELETE /resource/{id})
-
+## Bulk-First: 200 OK Always
+WIP's write APIs accept arrays and return BulkResponse with per-item results.
 This MCP server handles the bulk envelope for you — single-item tool calls
-unwrap the response and return the result directly.
+unwrap the response and return the result directly. Bulk tools (create_documents_bulk,
+create_templates_bulk, create_terminologies_bulk) return the full BulkResponse.
+
+CRITICAL: When using bulk tools, always check results[i].status — a 200 OK
+response can contain per-item errors. Statuses: created, updated, error, skipped.
+
+## Querying Documents
+Two primary query tools:
+- query_by_template(template_value, field_filters) — the most common way to
+  query documents. Filters on field values, auto-resolves template_value to ID.
+- run_report_query(sql) — raw SQL against PostgreSQL reporting tables (doc_*).
+  Use for cross-template JOINs, aggregations, and complex analytics.
+
+For a spreadsheet-like view: get_table_view(template_value).
+For CSV export: export_table_csv(template_value).
 
 ## Soft Delete — Inactive Means Retired, Not Deleted
 Entities are never hard-deleted, only set to status: "inactive".
@@ -106,7 +110,7 @@ versions are active.
 ### Documents: Identity Fields Control Dedup
 Templates define identity_fields. WIP hashes those fields to decide:
 same hash = new version (update), different hash = new document (create).
-The same POST endpoint handles both — it's an upsert.
+The same create_document tool handles both — it's an upsert.
 
 - Zero identity fields = every submission creates a new document (append-only, no update path)
 - Too many identity fields = corrections create duplicates instead of versions
@@ -126,8 +130,6 @@ All entities are scoped to a namespace.
 Namespaces have permission grants (read, write, admin) assigned to users or groups.
 Superadmins (wip-admins group) bypass all checks. Users without a grant on a
 namespace get 404 (not 403) — the namespace's existence is not leaked.
-
-Discover your accessible namespaces: GET /api/registry/my/namespaces
 
 ### Cross-Namespace References
 Isolation mode controls what a namespace can reference:
@@ -268,29 +270,37 @@ def get_development_guide() -> str:
 ## The Golden Rule
 Never modify WIP. Only consume its APIs.
 
+IMPORTANT: Read wip://ponifs before Phase 3. WIP has several powerful but
+non-intuitive behaviours that will cause silent failures if you rely on
+conventional assumptions.
+
 ## Phase 1: Exploratory
-Understand WIP's capabilities:
+Understand WIP's capabilities and inventory what already exists:
 - get_wip_status — check all services are running
 - list_namespaces — see available namespaces
 - list_terminologies — see existing controlled vocabularies
 - list_templates — see existing document schemas
 - query_by_template — query documents with field filters
+- get_template_fields — inspect a template's field definitions
+
+Do NOT recreate terminologies or templates that already exist. Reuse them.
 
 ## Phase 2: Data Model Design
 Map your domain onto WIP primitives:
 
-1. Identify controlled vocabularies → create terminologies
-2. Identify document types → design templates with fields
+1. Identify controlled vocabularies → terminologies (value + label + aliases)
+2. Identify document types → templates with typed fields
 3. Define relationships between templates (references, inheritance)
 4. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
    - Zero → append-only, no update path (fine for event logs)
-   - NEVER include timestamps or per-run data in identity fields —
-     it makes every submission a "new" document instead of a version
-   - Avoid them in non-identity fields too — they trigger unnecessary
+   - NEVER include timestamps or per-run data in identity fields
+   - Avoid timestamps in non-identity fields too — they trigger unnecessary
      version updates on otherwise unchanged documents
 5. Apply semantic_types where applicable (email, url, geo_point, etc.)
+6. Field naming: use "mandatory" (NOT "required"), "terminology_ref" (NOT
+   "terminology_id"). These are the WIP API field names.
 
 ### Namespace Strategy
 - Shared terminologies (COUNTRY, CURRENCY) → "wip" namespace
@@ -298,22 +308,23 @@ Map your domain onto WIP primitives:
 - Domain-specific terminologies used by only one app → app namespace
 - If a second app needs a terminology, promote it to "wip"
 
-Use create_terminology, create_terms, create_template (with status: "draft"
-for circular dependencies, then activate_template).
-
 ## Phase 3: Implementation
-Create the data model in WIP:
+Create the data model in WIP using MCP tools:
 
-1. Create terminologies and populate with terms
-2. Create templates — use draft mode for circular dependencies,
-   then activate (all-or-nothing validation across the chain)
-3. Create test documents to verify validation
+1. Create terminologies: create_terminology(value, label, description)
+   Populate with terms: create_terms(terminology_id, terms)
+   Verify: list_terms(terminology_id)
+2. Create templates: create_template(template) — use draft mode for
+   circular dependencies, then activate_template (all-or-nothing validation)
+   Verify: get_template_fields(template_value)
+3. Create test documents: create_document(document)
    - Pass template_version explicitly — without it, WIP resolves "latest active",
      which may not be the version you expect if multiple versions are active
    - Updating a template does NOT deactivate the old version — both stay active.
-     Deactivate the old version explicitly if you don't need it.
+     Deactivate the old version explicitly with deactivate_template.
 4. Verify term resolution and reference resolution work
-5. Register external ID synonyms if integrating with other systems
+5. Register external ID synonyms if integrating with other systems:
+   add_synonym(target_id, ...)
 6. Configure reporting (sync_strategy, table_name) if using PostgreSQL
 
 ## Phase 4: Application Layer
@@ -321,8 +332,10 @@ Build the frontend/app using @wip/client and @wip/react.
 The MCP server is mainly useful in Phases 1-3. In Phase 4,
 the app uses the TypeScript client library directly.
 
-For analytics, use query_by_template or run_report_query (SQL).
-For bulk data loading, use import_documents_csv.
+MCP tools remain useful for debugging and data queries:
+- query_by_template — query documents with field-level filters
+- run_report_query — raw SQL for cross-template JOINs and aggregations
+- import_documents_csv — bulk data loading from CSV/XLSX files
 
 ## Key Patterns
 - Template inheritance: create a base template, extend it
@@ -330,6 +343,90 @@ For bulk data loading, use import_documents_csv.
 - Identity hashing: define identity_fields so duplicate submissions update, not duplicate
 - Draft mode: create templates with status: "draft" to handle circular deps
 - Registry synonyms: register external IDs for cross-system lookups
+
+Detailed step-by-step procedures for each phase are in the slash commands:
+/explore, /design-model, /implement, /build-app.
+"""
+
+
+@mcp.resource("wip://ponifs")
+def get_ponifs() -> str:
+    """WIP's Powerful, Non-Intuitive Features — the traps that catch every new developer."""
+    return """# PoNIFs — Powerful, Non-Intuitive Features
+
+These are WIP behaviours that violate conventional expectations. They are
+by design, not bugs. Every one enables a capability that simpler designs
+cannot provide. But they WILL cause silent failures if you assume
+conventional patterns.
+
+## 1. Nothing Ever Dies
+Deactivation (soft-delete) makes an entity unavailable for NEW data, but it
+always resolves for EXISTING references. "Inactive" means "retired", not
+"deleted." Historical data never breaks.
+
+Trap: You deactivate a term and expect documents using it to fail. They don't.
+Rule: Never treat inactive as deleted. Inactive entities are invisible to new
+      data but always visible to existing data.
+
+## 2. Template Versioning — Update Does NOT Replace
+Updating a template creates a new version. The OLD version stays active.
+Multiple versions coexist. New documents can be created against ANY active version.
+
+Trap: You update a template to fix a field. Both v1 and v2 are now active.
+      Documents may still be created against v1 (from cache or explicit version).
+Rule: After updating, deactivate the old version with deactivate_template()
+      unless you specifically need multi-version operation. Always pass
+      template_version when creating documents.
+
+## 3. Document Identity — The Hash Decides
+Templates define identity_fields. WIP hashes them to decide: same hash = new
+version (update), different hash = new document (create). The same
+create_document call handles both — it's an upsert.
+
+Trap: Adding a timestamp to document data makes every hash unique — you get
+      duplicates instead of versions. Too many identity fields means corrections
+      create new documents instead of new versions. Zero identity fields means
+      every submission creates a new document (no update path).
+Rule: Identity fields answer "is this the same real-world thing?" — no more,
+      no less. Never include timestamps, run IDs, or per-execution data.
+
+## 4. Bulk-First — 200 OK Always
+All WIP write APIs return HTTP 200 even when individual items fail. Per-item
+status is in results[i].status (created, updated, error, skipped).
+
+Trap: You check the HTTP status, see 200, and assume success. Meanwhile,
+      items silently failed validation inside the response body.
+Rule: The MCP server's single-item tools handle this for you — they unwrap
+      and surface errors. But when using bulk tools (create_documents_bulk,
+      etc.), always check per-item results.
+
+## 5. Registry Synonyms — Multiple IDs Are Normal
+Any entity can have multiple identifiers (synonyms). Two WIP IDs for the same
+real-world entity is a normal state, not corruption. Merge resolves this.
+
+Trap: You find two IDs for the same entity and think the data is corrupt.
+Rule: Use merge_entries() to reconcile duplicates. Synonyms enable cross-system
+      integration — your bank's ID, your ERP's code, and WIP's UUID all resolve
+      to the same entity.
+
+## 6. Template Cache — Changes Aren't Instant
+"Latest active" template resolution has a 5-second cache TTL. After updating
+a template, the old definition may be used for up to 5 seconds. Lookups by
+explicit version are cached permanently (immutable).
+
+Trap: You update a template and immediately create a document — it validates
+      against the OLD version from cache.
+Rule: Pass explicit template_version, or wait 5 seconds after template changes.
+
+## The Compactheimer's Warning
+If you are an AI assistant and your context has been compacted, you may have
+lost these warnings and reverted to conventional assumptions. Signs of drift:
+- Assuming template update replaces the old version
+- Adding timestamps or run-specific data to documents
+- Treating inactive entities as deleted
+- Not checking per-item results in bulk operations
+
+If any of these feel natural, re-read this resource.
 """
 
 
