@@ -867,6 +867,54 @@ async def create_relationships(relationships: list[dict]) -> str:
         return _error(e)
 
 
+@mcp.tool()
+async def list_relationships(
+    term_id: str,
+    direction: str = "outgoing",
+    relationship_type: str | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> str:
+    """List ontology relationships for a specific term.
+
+    Args:
+        term_id: The term to list relationships for.
+        direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
+        relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
+        page: Page number.
+        page_size: Results per page (max 100).
+    """
+    try:
+        data = await get_client().list_relationships(
+            term_id=term_id, direction=direction,
+            relationship_type=relationship_type, page=page, page_size=page_size,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_relationships(relationships: list[dict]) -> str:
+    """Delete ontology relationships between terms.
+
+    Args:
+        relationships: List of {source_term_id, target_term_id, relationship_type}.
+
+    Example:
+        delete_relationships([{
+            "source_term_id": "T-001",
+            "target_term_id": "T-002",
+            "relationship_type": "is_a"
+        }])
+    """
+    try:
+        data = await get_client().delete_relationships(relationships)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Templates
 # ===================================================================
@@ -1069,6 +1117,50 @@ async def get_template_dependencies(template_id: str) -> str:
         return _error(e)
 
 
+@mcp.tool()
+async def get_template_versions(
+    template_value: str | None = None,
+    template_id: str | None = None,
+) -> str:
+    """List all versions of a template.
+
+    Provide either template_value or template_id. Returns all versions
+    sorted by version number descending.
+
+    Args:
+        template_value: Template value code (e.g., 'PATIENT').
+        template_id: Template ID (e.g., 'TPL-xxx').
+    """
+    try:
+        client = get_client()
+        if template_value:
+            data = await client.get_template_versions_by_value(template_value)
+        elif template_id:
+            data = await client.get_template_versions(template_id)
+        else:
+            return "Error: Provide either template_value or template_id."
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def validate_template(template_id: str) -> str:
+    """Validate a template's references (terminologies, parent templates).
+
+    Checks that all terminology_ref and extends references point to
+    active entities. Useful for draft templates before activation.
+
+    Args:
+        template_id: Template ID to validate.
+    """
+    try:
+        data = await get_client().validate_template(template_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Documents
 # ===================================================================
@@ -1193,6 +1285,36 @@ async def query_documents(filters: dict) -> str:
     """
     try:
         data = await get_client().query_documents(filters)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_document_versions(document_id: str) -> str:
+    """List all versions of a document.
+
+    Returns all versions with the latest version number and total count.
+
+    Args:
+        document_id: Document ID (e.g., 'DOC-xxx').
+    """
+    try:
+        data = await get_client().get_document_versions(document_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def archive_document(document_id: str) -> str:
+    """Archive a document (soft-delete, sets status to inactive).
+
+    Args:
+        document_id: Document ID to archive.
+    """
+    try:
+        data = await get_client().archive_document(document_id)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1447,6 +1569,57 @@ async def upload_file(
             tags=tag_list,
             category=category,
         )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_file(file_id: str, force: bool = False) -> str:
+    """Soft-delete a file (sets status to inactive).
+
+    Blocked if documents reference the file unless force=true.
+
+    Args:
+        file_id: File ID to delete.
+        force: Force deletion even if referenced by documents.
+    """
+    try:
+        data = await get_client().delete_file(file_id, force=force)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def hard_delete_file(file_id: str) -> str:
+    """Permanently delete a file from MinIO storage.
+
+    The file must already be soft-deleted (inactive). This is irreversible
+    and reclaims storage. Use delete_file first, then hard_delete_file.
+
+    Args:
+        file_id: File ID to permanently remove.
+    """
+    try:
+        data = await get_client().hard_delete_file(file_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_file_documents(file_id: str) -> str:
+    """Find which documents reference a file.
+
+    Returns document IDs, template info, and the field path where
+    the file is referenced.
+
+    Args:
+        file_id: File ID to check references for.
+    """
+    try:
+        data = await get_client().get_file_documents(file_id)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1752,6 +1925,48 @@ async def cancel_replay(session_id: str) -> str:
     """Cancel a replay session and delete its NATS stream."""
     try:
         data = await get_client().cancel_replay(session_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def pause_replay(session_id: str) -> str:
+    """Pause a running replay session. Can be resumed later.
+
+    Args:
+        session_id: The replay session ID.
+    """
+    try:
+        data = await get_client().pause_replay(session_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def resume_replay(session_id: str) -> str:
+    """Resume a paused replay session.
+
+    Args:
+        session_id: The replay session ID.
+    """
+    try:
+        data = await get_client().resume_replay(session_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_sync_status() -> str:
+    """Get the reporting-sync service status.
+
+    Shows NATS connection, PostgreSQL connection, events processed/failed,
+    and tables managed. Useful for diagnosing sync issues.
+    """
+    try:
+        data = await get_client().get_sync_status()
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)

@@ -116,14 +116,16 @@ Three resources provide baseline context to the AI without tool calls:
 | `delete_term(id)` | Deactivate (soft-delete) a term. |
 | `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
 
-### Ontology / Relationships (2 tools)
+### Ontology / Relationships (4 tools)
 
 | Tool | Description |
 |------|-------------|
 | `get_term_hierarchy(term_id, direction)` | Traverse relationships: `children`, `parents`, `ancestors`, `descendants`. Optional `relationship_type` filter. |
+| `list_relationships(term_id, direction?, relationship_type?)` | List relationships for a term. Direction: `outgoing`, `incoming`, or `both`. |
 | `create_relationships(relationships)` | Create typed relationships (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
+| `delete_relationships(relationships)` | Delete relationships. Each item: `{source_term_id, target_term_id, relationship_type}`. |
 
-### Templates (10 tools)
+### Templates (12 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -132,20 +134,24 @@ Three resources provide baseline context to the AI without tool calls:
 | `get_template_by_value(value)` | Get by value code (e.g., `BANK_TRANSACTION`). |
 | `get_template_raw(id)` | Get without inheritance resolution. |
 | `get_template_fields(template_value)` | Clean summary of a template's fields — name, type, mandatory, references. Returns `template_id` for use in queries. |
+| `get_template_versions(template_value?, template_id?)` | List all versions of a template. Provide either value or ID. |
+| `validate_template(template_id)` | Validate a template's references (terminologies, parent templates). Useful before activation. |
 | `create_template(template)` | Create a single template. Supports draft mode. |
 | `create_templates_bulk(templates)` | Create multiple templates. |
 | `activate_template(id)` | Activate a draft template with cascading validation. |
 | `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
 
-### Documents (7 tools)
+### Documents (9 tools)
 
 | Tool | Description |
 |------|-------------|
 | `list_documents()` | List documents. Filter by `template_value`, `template_id`, status, namespace. |
 | `get_document(id, version?)` | Get a document by ID. |
+| `get_document_versions(document_id)` | List all versions of a document with latest version and total count. |
 | `create_document(document)` | Create a single document. Term values are auto-resolved. |
 | `create_documents_bulk(documents)` | Create multiple documents. Returns per-item results. |
+| `archive_document(document_id)` | Archive (soft-delete) a document. |
 | `query_documents(filters)` | Query with complex field-level filters. |
 | `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
 | `get_table_view(template_value, status?, page?, page_size?)` | Flattened, spreadsheet-like view. Arrays are cross-product expanded. |
@@ -170,20 +176,24 @@ Three resources provide baseline context to the AI without tool calls:
 |------|-------------|
 | `search(query, types?)` | Unified full-text search across all entity types (via reporting-sync / PostgreSQL). |
 
-### Files (3 tools)
+### Files (6 tools)
 
 | Tool | Description |
 |------|-------------|
 | `list_files()` | List files stored in MinIO. |
 | `get_file_metadata(id)` | Get file metadata (not content). |
 | `upload_file(file_path, namespace?, description?, tags?, category?)` | Upload a file from a local path. Auto-detects content type. Tags are comma-separated. |
+| `delete_file(file_id, force?)` | Soft-delete a file. Blocked if referenced by documents unless `force=true`. |
+| `hard_delete_file(file_id)` | Permanently remove from MinIO. File must be soft-deleted first. Irreversible. |
+| `get_file_documents(file_id)` | Find which documents reference a file — document IDs, templates, and field paths. |
 
-### Reporting & SQL (2 tools)
+### Reporting & SQL (3 tools)
 
 | Tool | Description |
 |------|-------------|
 | `list_report_tables()` | List available PostgreSQL reporting tables (doc_* tables + terminologies/terms) with columns, types, and row counts. |
 | `run_report_query(sql, params?, max_rows?)` | Execute a read-only SQL SELECT against the reporting database. Use for cross-template JOINs and aggregations. Table names: `doc_{template_value}`. Use `$1, $2` for parameters. |
+| `get_sync_status()` | Get reporting-sync status: NATS/PostgreSQL connections, events processed/failed, tables managed. |
 
 ### CSV Import (1 tool)
 
@@ -191,12 +201,14 @@ Three resources provide baseline context to the AI without tool calls:
 |------|-------------|
 | `import_documents_csv(file_path, template_value, column_mapping?, namespace?, skip_errors?)` | Import documents from a CSV/XLSX file. Auto-maps columns to template fields by name if no explicit mapping given. |
 
-### Event Replay (3 tools)
+### Event Replay (5 tools)
 
 | Tool | Description |
 |------|-------------|
 | `start_replay(template_value?, template_id?, namespace?, throttle_ms?, batch_size?)` | Start replaying stored documents as NATS events. Use to onboard new consumers or backfill data. |
 | `get_replay_status(session_id)` | Get current replay session status (published count, total, status). |
+| `pause_replay(session_id)` | Pause a running replay session. Can be resumed later. |
+| `resume_replay(session_id)` | Resume a paused replay session. |
 | `cancel_replay(session_id)` | Cancel a replay session and delete its NATS stream. |
 
 ---
@@ -250,5 +262,4 @@ The MCP server is designed around a 4-phase process for building applications on
 
 - **No template update tools** — create a new version instead (WIP's versioning model)
 - **No file download** — files can be uploaded, listed, and inspected, but content download requires direct HTTP
-- **No document delete/archive tools** — use the Console UI or direct API
 - **CSV export truncated** — `export_table_csv` truncates at 100 rows to avoid overwhelming AI context

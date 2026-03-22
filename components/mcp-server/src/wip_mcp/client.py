@@ -456,6 +456,32 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
+    async def delete_relationships(self, relationships: list[dict], namespace: str | None = None) -> dict:
+        resp = await self._delete(
+            self.def_store_url,
+            "/api/def-store/ontology/relationships",
+            json=relationships,
+        )
+        return self._unwrap_bulk(resp)
+
+    async def list_relationships(
+        self,
+        term_id: str,
+        direction: str = "outgoing",
+        relationship_type: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        return await self._get(
+            self.def_store_url,
+            "/api/def-store/ontology/relationships",
+            term_id=term_id,
+            direction=direction,
+            relationship_type=relationship_type,
+            page=page,
+            page_size=page_size,
+        )
+
     # ========================================================
     # Def-Store: Import/Export
     # ========================================================
@@ -574,6 +600,25 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def get_template_versions(self, template_id: str) -> dict:
+        return await self._get(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/versions",
+        )
+
+    async def get_template_versions_by_value(self, value: str) -> dict:
+        return await self._get(
+            self.template_store_url,
+            f"/api/template-store/templates/by-value/{value}/versions",
+        )
+
+    async def validate_template(self, template_id: str) -> dict:
+        return await self._post(
+            self.template_store_url,
+            f"/api/template-store/templates/{template_id}/validate",
+            json={},
+        )
+
     async def get_template_dependencies(self, template_id: str) -> dict:
         return await self._get(
             self.template_store_url,
@@ -630,6 +675,23 @@ class WipClient:
             json=documents,
         )
         return self._unwrap_bulk(resp)
+
+    async def get_document_versions(self, document_id: str) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/documents/{document_id}/versions",
+        )
+
+    async def archive_document(self, document_id: str, archived_by: str | None = None) -> dict:
+        item: dict[str, Any] = {"id": document_id}
+        if archived_by:
+            item["archived_by"] = archived_by
+        resp = await self._post(
+            self.document_store_url,
+            "/api/document-store/documents/archive",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
 
     async def query_documents(self, filters: dict) -> dict:
         return await self._post(
@@ -726,6 +788,33 @@ class WipClient:
         )
         resp.raise_for_status()
         return resp.json()
+
+    async def delete_file(self, file_id: str, force: bool = False) -> dict:
+        item: dict[str, Any] = {"id": file_id}
+        if force:
+            item["force"] = True
+        resp = await self._delete(
+            self.document_store_url,
+            "/api/document-store/files",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
+
+    async def hard_delete_file(self, file_id: str) -> dict:
+        return await self._delete(
+            self.document_store_url,
+            f"/api/document-store/files/{file_id}/hard",
+        )
+
+    async def get_file_documents(
+        self, file_id: str, page: int = 1, page_size: int = 50
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/files/{file_id}/documents",
+            page=page,
+            page_size=page_size,
+        )
 
     # ========================================================
     # Document-Store: Import

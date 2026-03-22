@@ -46,7 +46,7 @@ All core services are implemented and working:
 - Template draft mode — create templates with `status: "draft"`, cascading activation with full validation
 - Bulk-first API convention — all write endpoints accept `List[Item]`, return `BulkResponse`; no single-entity write endpoints
 - Ontology support — OBO Graph JSON import, typed relationships (is_a, part_of, etc.), relationship type validation, traversal queries, unified import view with auto-format detection
-- MCP server — 56 tools for AI-assisted development, 3 resources (conventions, data model, development guide), OpenAPI schema patching, stdio + SSE transport
+- MCP server — 68 tools for AI-assisted development, 3 resources (conventions, data model, development guide), OpenAPI schema patching, stdio + SSE transport
 - @wip/client — TypeScript client library with 6 service classes, typed error hierarchy, bulk abstraction, `templateToFormSchema()` utility
 - @wip/react — React hooks library wrapping @wip/client with TanStack Query, 30+ hooks with sensible stale times, `WipProvider` context
 
@@ -60,7 +60,7 @@ All core services are implemented and working:
 | 2 | Semantic Types | ✅ Complete — 7 types, validation, reporting sync, UI hints |
 | 3 | BI Dashboard (Metabase) | ✅ Optional deployment ready (`deploy/optional/metabase/`), pre-built dashboards pending |
 | 4 | Ontology Support | ✅ Complete — OBO Graph JSON import, typed relationships, traversal, unified import UI |
-| 5 | MCP Server | ✅ Complete — 56 tools, 3 resources, OpenAPI schema patching, stdio + SSE transport |
+| 5 | MCP Server | ✅ Complete — 68 tools, 3 resources, OpenAPI schema patching, stdio + SSE transport |
 | 6 | @wip/client + @wip/react | ✅ Complete — TypeScript client (6 services, error hierarchy, bulk abstraction), React hooks (TanStack Query) |
 | 7 | File Upload (CSV/XLSX) | Pending |
 | 8 | Event Replay | Design complete, implementation pending |
@@ -262,7 +262,7 @@ WorldInPie/
 │   ├── document-store/    # Document storage
 │   ├── reporting-sync/    # PostgreSQL sync
 │   ├── ingest-gateway/    # Async ingestion via NATS JetStream
-│   ├── mcp-server/        # MCP server — 56 tools for AI-assisted development (stdio + SSE)
+│   ├── mcp-server/        # MCP server — 68 tools for AI-assisted development (stdio + SSE)
 │   └── seed_data/         # Test data generation
 ├── deploy/
 │   └── optional/          # Optional services (e.g., Metabase)
