@@ -37,11 +37,12 @@ export const oidcConfig: UserManagerSettings = {
 
   // OAuth2 settings
   response_type: 'code',
-  scope: 'openid profile email groups',
+  scope: 'openid profile email groups offline_access',
 
-  // Token handling
-  automaticSilentRenew: false, // Disable - requires iframe which can have issues
+  // Token handling — silent renew uses refresh tokens (not iframes)
+  automaticSilentRenew: true,
   includeIdTokenInSilentRenew: true,
+  accessTokenExpiringNotificationTimeInSeconds: 120,
 
   // User info
   loadUserInfo: true,

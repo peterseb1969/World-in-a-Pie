@@ -8,6 +8,7 @@ import { defStoreClient, templateStoreClient, documentStoreClient, fileStoreClie
 interface PasswordGrantUser {
   access_token: string
   id_token?: string
+  refresh_token?: string
   token_type: string
   expires_at: number
   profile: {
@@ -169,9 +170,26 @@ export const useAuthStore = defineStore('auth', () => {
               authMode.value = 'oidc'
               passwordGrantUser.value = user
               updateClients()
+              // Schedule refresh for remaining lifetime
+              const remainingSeconds = user.expires_at - Math.floor(Date.now() / 1000)
+              if (user.refresh_token) {
+                schedulePasswordRefresh(remainingSeconds)
+              }
               return
+            } else if (user.refresh_token) {
+              // Token expired but we have a refresh token — try to refresh
+              passwordGrantUser.value = user
+              authMode.value = 'oidc'
+              const success = await refreshPasswordGrantToken()
+              if (success) {
+                return
+              }
+              // Refresh failed — fall through to clear
+              passwordGrantUser.value = null
+              authMode.value = 'none'
+              localStorage.removeItem('wip-console-password-grant-user')
             } else {
-              // Token expired
+              // Token expired, no refresh token
               localStorage.removeItem('wip-console-password-grant-user')
             }
           } catch (err) {
@@ -247,7 +265,7 @@ export const useAuthStore = defineStore('auth', () => {
         password,
         client_id: oidcConfig.client_id || 'wip-console',
         client_secret: oidcConfig.client_secret || 'wip-console-secret',
-        scope: 'openid profile email groups',
+        scope: 'openid profile email groups offline_access',
       })
 
       const response = await fetch(tokenEndpoint, {
@@ -289,6 +307,7 @@ export const useAuthStore = defineStore('auth', () => {
       const user: PasswordGrantUser = {
         access_token: tokenResponse.access_token,
         id_token: tokenResponse.id_token,
+        refresh_token: tokenResponse.refresh_token,
         token_type: tokenResponse.token_type || 'Bearer',
         expires_at: expiresAt,
         profile,
@@ -304,6 +323,12 @@ export const useAuthStore = defineStore('auth', () => {
       apiKey.value = ''
 
       updateClients()
+
+      // Schedule automatic refresh if we got a refresh token
+      if (tokenResponse.refresh_token) {
+        schedulePasswordRefresh(expiresIn)
+      }
+
       return user
     } catch (err) {
       error.value = err instanceof Error ? err.message : 'Login failed'
@@ -342,9 +367,77 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // Refresh password grant tokens using refresh_token (M1)
+  let passwordRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+  async function refreshPasswordGrantToken(): Promise<boolean> {
+    const user = passwordGrantUser.value
+    if (!user?.refresh_token) return false
+
+    try {
+      const authority = oidcConfig.authority || '/dex'
+      const params = new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: user.refresh_token,
+        client_id: oidcConfig.client_id || 'wip-console',
+        client_secret: oidcConfig.client_secret || 'wip-console-secret',
+        scope: 'openid profile email groups offline_access',
+      })
+
+      const response = await fetch(`${authority}/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: params.toString(),
+      })
+
+      if (!response.ok) {
+        console.warn('[Auth] Password grant refresh failed:', response.status)
+        return false
+      }
+
+      const tokenResponse = await response.json()
+      const expiresIn = tokenResponse.expires_in || 900
+      const expiresAt = Math.floor(Date.now() / 1000) + expiresIn
+
+      passwordGrantUser.value = {
+        ...user,
+        access_token: tokenResponse.access_token,
+        id_token: tokenResponse.id_token || user.id_token,
+        refresh_token: tokenResponse.refresh_token || user.refresh_token,
+        expires_at: expiresAt,
+      }
+
+      localStorage.setItem('wip-console-password-grant-user', JSON.stringify(passwordGrantUser.value))
+      updateClients()
+      schedulePasswordRefresh(expiresIn)
+      console.log('[Auth] Password grant token refreshed, expires in', expiresIn, 's')
+      return true
+    } catch (err) {
+      console.error('[Auth] Password grant refresh error:', err)
+      return false
+    }
+  }
+
+  function schedulePasswordRefresh(expiresIn: number) {
+    if (passwordRefreshTimer) clearTimeout(passwordRefreshTimer)
+    // Refresh 2 minutes before expiry (or halfway if token is very short-lived)
+    const refreshIn = Math.max((expiresIn - 120) * 1000, (expiresIn / 2) * 1000)
+    passwordRefreshTimer = setTimeout(async () => {
+      const success = await refreshPasswordGrantToken()
+      if (!success) {
+        console.warn('[Auth] Password grant refresh failed, session will expire')
+        error.value = 'Session renewal failed. Please log in again.'
+      }
+    }, refreshIn)
+  }
+
   function clearOidcUser() {
     oidcUser.value = null
     passwordGrantUser.value = null
+    if (passwordRefreshTimer) {
+      clearTimeout(passwordRefreshTimer)
+      passwordRefreshTimer = null
+    }
     if (authMode.value === 'oidc') {
       authMode.value = 'none'
       localStorage.removeItem(AUTH_STORAGE_KEYS.AUTH_MODE)

@@ -1160,11 +1160,13 @@ generate_dex_config() {
     - https://localhost:${HTTPS_PORT}"
     fi
 
-    # Build redirect URIs
-    local redirect_uris="    - https://${HOSTNAME:-localhost}:${HTTPS_PORT}/auth/callback"
+    # Build redirect URIs (include silent-renew for token refresh)
+    local redirect_uris="    - https://${HOSTNAME:-localhost}:${HTTPS_PORT}/auth/callback
+    - https://${HOSTNAME:-localhost}:${HTTPS_PORT}/auth/silent-renew"
     if [ "$LOCALHOST_MODE" != "true" ]; then
         redirect_uris="$redirect_uris
-    - https://localhost:${HTTPS_PORT}/auth/callback"
+    - https://localhost:${HTTPS_PORT}/auth/callback
+    - https://localhost:${HTTPS_PORT}/auth/silent-renew"
     fi
 
     # Generate bcrypt password hashes dynamically
@@ -1203,9 +1205,18 @@ web:
   allowedOrigins:
 $origins
 
+expiry:
+  idTokens: 15m
+  signingKeys: 6h
+  refreshTokens:
+    validIfNotUsedFor: 168h   # 7 days unused
+    absoluteLifetime: 720h    # 30 days max
+
 oauth2:
   skipApprovalScreen: true
   passwordConnector: local
+  responseTypes:
+    - code
 
 staticClients:
   - id: wip-console
@@ -1564,27 +1575,31 @@ generate_caddy_config() {
         log_info "TLS: Self-signed internal certificates"
     fi
 
-    # Build security headers (all deployment modes)
-    local security_headers="
-    # Security headers
-    header {
-        X-Content-Type-Options \"nosniff\"
-        X-Frame-Options \"SAMEORIGIN\"
-        Referrer-Policy \"strict-origin-when-cross-origin\"
-        X-XSS-Protection \"0\"
-        -Server
-    }"
+    # Build security headers
+    # In localhost mode, OIDC token exchange goes to http://localhost:5556
+    # (not through Caddy), so CSP connect-src must allow it.
+    local connect_src="'self'"
+    if [ "$LOCALHOST_MODE" = "true" ] && has_feature "oidc"; then
+        connect_src="'self' http://localhost:5556"
+    fi
+
     if [ "$VARIANT" = "prod" ]; then
-        # In localhost mode, OIDC token exchange goes to http://localhost:5556
-        # (not through Caddy), so CSP connect-src must allow it.
-        local connect_src="'self'"
-        if [ "$LOCALHOST_MODE" = "true" ] && has_feature "oidc"; then
-            connect_src="'self' http://localhost:5556"
-        fi
         security_headers="
     # Security headers (production)
     header {
         Strict-Transport-Security \"max-age=31536000; includeSubDomains\"
+        X-Content-Type-Options \"nosniff\"
+        X-Frame-Options \"SAMEORIGIN\"
+        Referrer-Policy \"strict-origin-when-cross-origin\"
+        Content-Security-Policy \"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src $connect_src\"
+        X-XSS-Protection \"0\"
+        -Server
+    }"
+    else
+        security_headers="
+    # Security headers (development)
+    header {
+        Strict-Transport-Security \"max-age=86400\"
         X-Content-Type-Options \"nosniff\"
         X-Frame-Options \"SAMEORIGIN\"
         Referrer-Policy \"strict-origin-when-cross-origin\"

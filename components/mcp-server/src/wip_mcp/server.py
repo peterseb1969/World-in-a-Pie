@@ -2146,8 +2146,14 @@ _patch_tool_schemas()
 def main():
     transport = "sse" if "--sse" in sys.argv else "stdio"
 
-    if transport == "sse":
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    else:
         import os
+        import uvicorn
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+
         api_key = os.getenv("API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY")
         if not api_key:
             print(
@@ -2157,7 +2163,33 @@ def main():
                 file=sys.stderr,
             )
 
-    mcp.run(transport=transport)
+        # Wrap the SSE app with API key auth middleware (M7)
+        starlette_app = mcp.sse_app()
+
+        if api_key:
+            from starlette.middleware.base import BaseHTTPMiddleware
+
+            class ApiKeyMiddleware(BaseHTTPMiddleware):
+                async def dispatch(self, request: Request, call_next):
+                    key = request.headers.get("x-api-key") or request.query_params.get("api_key")
+                    if not key or key != api_key:
+                        return JSONResponse(
+                            {"error": "Missing or invalid API key. Pass X-API-Key header."},
+                            status_code=401,
+                        )
+                    return await call_next(request)
+
+            starlette_app.add_middleware(ApiKeyMiddleware)
+
+        config = uvicorn.Config(
+            starlette_app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+        )
+        server = uvicorn.Server(config)
+        import anyio
+        anyio.run(server.serve)
 
 
 if __name__ == "__main__":
