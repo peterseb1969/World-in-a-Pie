@@ -143,7 +143,7 @@ Four resources provide baseline context to the AI without tool calls:
 | `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
 
-### Documents (9 tools)
+### Documents (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -155,7 +155,6 @@ Four resources provide baseline context to the AI without tool calls:
 | `archive_document(document_id)` | Archive (soft-delete) a document. |
 | `query_documents(filters)` | Query with complex field-level filters. |
 | `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
-| `get_table_view(template_value, status?, page?, page_size?)` | Flattened, spreadsheet-like view. Arrays are cross-product expanded. |
 
 ### Table View & Export (2 tools)
 

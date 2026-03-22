@@ -203,26 +203,40 @@ Follow the 4-phase development process. Start with:
 /explore
 \`\`\`
 
-The slash commands in \`.claude/commands/\` guide each phase:
-1. \`/explore\` — Understand WIP and the user's domain
-2. \`/design-model\` — Map the domain to WIP primitives (user must approve)
-3. \`/implement\` — Create terminologies and templates in WIP
-4. \`/build-app\` — Build the user-facing application
+**Core phases** (in order):
+1. \`/explore\` — Read MCP resources, discover existing data model, understand the domain
+2. \`/design-model\` — Map the domain to WIP primitives (user must approve before proceeding)
+3. \`/implement\` — Create terminologies and templates in WIP, verify with test documents
+4. \`/build-app\` — Scaffold and build the React/TypeScript application
 
-After Phase 4: \`/improve\` for iterations, \`/document\` for docs.
+**After Phase 4:**
+- \`/improve\` — Iterate (add features, fix bugs, refine UI)
+- \`/document\` — Generate README, ARCHITECTURE, etc.
+
+**Available at any time:**
+- \`/wip-status\` — Check WIP service health and data state
+- \`/export-model\` — Save data model to git as seed files
+- \`/bootstrap\` — Recreate data model from seed files
+- \`/add-app\` — Add a second app that cross-references the first
+- \`/resume\` — Recover context after compaction or at start of a new session
+
+**Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
 ## Reference Documentation
 
 Read these before starting:
-- \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs
-- \`docs/WIP_PoNIFs.md\` — Full guide to WIP's non-intuitive behaviours
+- \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
+- \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (69 tools, 4 resources). Before starting:
+WIP is accessed exclusively via MCP tools (68 tools, 4 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
+- Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
 - Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
+
+\`wip://development-guide\` provides the full 4-phase workflow reference if needed.
 
 ## Client Libraries
 
@@ -257,4 +271,4 @@ echo "  claude          # Launch Claude Code"
 echo "  /explore        # Start Phase 1"
 echo ""
 echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+echo "  In Claude Code, run /mcp — you should see 68 tools and 4 resources."

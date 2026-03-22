@@ -25,7 +25,7 @@ claude          # Launch Claude Code
 /explore        # Start Phase 1
 ```
 
-**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 69 tools and 4 resources.
+**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 68 tools and 4 resources.
 
 ---
 
@@ -97,7 +97,7 @@ The helper script generates `.mcp.json` automatically with correct paths and API
 
 **`WIP_API_KEY_FILE` vs `WIP_API_KEY`:** Use `WIP_API_KEY_FILE` (points to a file) for production — key rotation in WIP propagates to all apps automatically. Use `WIP_API_KEY` (inline value) for dev mode where the key never changes. If both are set, `WIP_API_KEY` takes precedence.
 
-**Verify after first launch:** The Claude should see WIP tools (69 tools, 4 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
+**Verify after first launch:** The Claude should see WIP tools (68 tools, 4 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
 
 ### 4. Copying Files from the WIP Repo
 

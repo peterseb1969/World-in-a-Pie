@@ -1,126 +1,63 @@
-# Claude Session Context
+# WIP — Developer Guide
 
-Essential context for AI assistant sessions working on the World In a Pie (WIP) project.
-
-For detailed documentation, see `docs/` directory.
+Essential context for working on the World In a Pie (WIP) codebase.
 
 ---
 
-## Project Overview
+## What Is WIP
 
-World In a Pie (WIP) is a universal template-driven document storage system designed to run on resource-constrained devices (Raspberry Pi) up to cloud deployments.
-
-**Target:** Raspberry Pi 5 with 8GB RAM (Standard profile)
-
-**Core Services:**
-- **Registry** (port 8001) - ID generation and namespace management
-- **Def-Store** (port 8002) - Terminologies and terms
-- **Template-Store** (port 8003) - Document schemas
-- **Document-Store** (port 8004) - Document storage and validation
-- **Reporting-Sync** (port 8005) - MongoDB → PostgreSQL sync
-- **WIP Console** (port 3000/8443) - Vue 3 + PrimeVue UI
+WIP is a universal template-driven document storage system. It runs on anything from a Raspberry Pi 5 (8GB) to cloud infrastructure. Users define terminologies and templates, then store validated documents against those templates. A reporting pipeline syncs data to PostgreSQL for analytics.
 
 ---
 
-## Current Status
+## Architecture
 
-### Completed (Phase 1-2)
+### Services
 
-All core services are implemented and working:
+| Service | Port | Purpose |
+|---------|------|---------|
+| **Registry** | 8001 | ID generation, namespace management, synonyms |
+| **Def-Store** | 8002 | Terminologies, terms, aliases, ontology relationships |
+| **Template-Store** | 8003 | Document schemas, field definitions, inheritance, draft mode |
+| **Document-Store** | 8004 | Document CRUD, versioning, term validation, file storage (MinIO), CSV/XLSX import, event replay |
+| **Reporting-Sync** | 8005 | MongoDB → PostgreSQL sync via NATS events |
+| **Ingest Gateway** | 8006 | Async bulk ingestion via NATS JetStream |
+| **MCP Server** | stdio/SSE | 68 tools, 4 resources for AI-assisted development |
+| **WIP Console** | 8443 | Vue 3 + PrimeVue UI (served via Caddy reverse proxy) |
 
-- [x] Registry - Namespace management, ID generation, bulk operations
-- [x] Def-Store - Terminologies, terms, aliases, audit log, import/export, ontology relationships
-- [x] Template-Store - Templates, fields, validation rules, inheritance
-- [x] Document-Store - Documents, versioning, term validation, table view
-- [x] Reporting-Sync - NATS consumer, PostgreSQL sync, batch operations, alerts
-- [x] WIP Console - Full CRUD for all entities, OIDC support
-- [x] Authentication - Dex OIDC + API key dual mode (wip-auth library)
-- [x] Referential Integrity - Health checks, cascade warnings, reference protection
+### Infrastructure
 
-### Recently Added
+- **MongoDB** — primary data store for all services
+- **PostgreSQL** — reporting/analytics (synced from MongoDB)
+- **NATS JetStream** — event bus (document events → reporting-sync, ingest-gateway)
+- **MinIO** — binary file storage (S3-compatible)
+- **Caddy** — reverse proxy, TLS termination, security headers
+- **Dex** — OIDC identity provider (optional, for SSO)
 
-- Bulk import tuning for 200k+ terms (sub-batching, throttling)
-- Binary file storage via MinIO — full API, UI upload/list, reference tracking, orphan detection
-- Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point) with validation, reporting sync, UI
-- Metabase optional deployment (`deploy/optional/metabase/`) with PostgreSQL reporting infrastructure
-- Template draft mode — create templates with `status: "draft"`, cascading activation with full validation
-- Bulk-first API convention — all write endpoints accept `List[Item]`, return `BulkResponse`; no single-entity write endpoints
-- Ontology support — OBO Graph JSON import, typed relationships (is_a, part_of, etc.), relationship type validation, traversal queries, unified import view with auto-format detection
-- MCP server — 69 tools for AI-assisted development, 4 resources (conventions, data model, development guide, PoNIFs), OpenAPI schema patching, stdio + SSE transport
-- @wip/client — TypeScript client library with 6 service classes, typed error hierarchy, bulk abstraction, `templateToFormSchema()` utility
-- @wip/react — React hooks library wrapping @wip/client with TanStack Query, 30+ hooks with sensible stale times, `WipProvider` context
+### Shared Libraries
 
----
-
-## Roadmap
-
-| Priority | Task | Status |
-|----------|------|--------|
-| 1 | Binary File Storage (MinIO) | ✅ Complete — Full CRUD API, UI, reference tracking, orphan detection |
-| 2 | Semantic Types | ✅ Complete — 7 types, validation, reporting sync, UI hints |
-| 3 | BI Dashboard (Metabase) | ✅ Optional deployment ready (`deploy/optional/metabase/`), pre-built dashboards pending |
-| 4 | Ontology Support | ✅ Complete — OBO Graph JSON import, typed relationships, traversal, unified import UI |
-| 5 | MCP Server | ✅ Complete — 69 tools, 4 resources, OpenAPI schema patching, stdio + SSE transport |
-| 6 | @wip/client + @wip/react | ✅ Complete — TypeScript client (6 services, error hierarchy, bulk abstraction), React hooks (TanStack Query) |
-| 7 | File Upload (CSV/XLSX) | Pending |
-| 8 | Event Replay | Design complete, implementation pending |
-| 9 | Docker support | Test/document running with standard Docker |
-| 10 | Rootful Podman | Test/document running with `sudo podman` |
-| 11 | Registry entry reactivation | Pending — `POST /entries/{id}/reactivate` for reversible merges |
-
-See `docs/` for detailed specifications:
-- `docs/architecture.md` - System architecture
-- `docs/reporting-layer.md` - Reporting sync details
-- `docs/authentication.md` - Auth configuration
-- `docs/network-configuration.md` - **Network & OIDC setup (4 deployment scenarios)**
-- `docs/production-deployment.md` - Production security guide
-- `docs/data-models.md` - Document, template, term models
-- `docs/design/ontology-support.md` - Ontology import, relationships, traversal
-- `docs/uniqueness-and-identity.md` - **Uniqueness rules, Registry synonyms, ID generation**
-- `docs/api-conventions.md` - **Bulk-first API convention, BulkResponse contract, client examples**
-- `docs/mcp-server.md` - **MCP server tools, resources, and AI development workflow**
-- `docs/design/event-replay.md` - Event replay for consumer onboarding
+- **wip-auth** (`libs/wip-auth/`) — Python auth library used by all services. API key (bcrypt) + JWT/OIDC dual mode, rate limiting (slowapi), RBAC permissions.
+- **@wip/client** (`libs/wip-client/`) — TypeScript client for app developers. 6 service classes, typed error hierarchy, bulk abstraction.
+- **@wip/react** (`libs/wip-react/`) — React hooks wrapping @wip/client with TanStack Query.
 
 ---
 
-## Quick Start
+## Running WIP
 
-### Automated Setup (Recommended)
+### Automated Setup
 
 ```bash
-# Development (localhost, default passwords)
+# Development (localhost, self-signed TLS)
 ./scripts/setup.sh --preset standard --localhost
 
-# Network deployment (self-signed TLS)
+# Network deployment (hostname, self-signed TLS)
 ./scripts/setup.sh --preset standard --hostname wip-pi.local
 
-# Production (random secrets, auth enabled)
+# Production (random secrets, auth hardened)
 ./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
-
-# Validate production security
-./scripts/security/production-check.sh
 ```
 
-### Manual Development
-
-```bash
-# 1. Start infrastructure
-podman-compose -f docker-compose.infra.yml up -d
-
-# 2. Start services (in order — uses docker-compose.yml + auto-generated override)
-cd components/registry && podman-compose -f docker-compose.yml up -d --build
-cd ../def-store && podman-compose -f docker-compose.yml up -d --build
-cd ../template-store && podman-compose -f docker-compose.yml up -d --build
-cd ../document-store && podman-compose -f docker-compose.yml up -d --build
-cd ../reporting-sync && podman-compose -f docker-compose.yml up -d --build
-
-# 3. Initialize namespaces (one-time)
-curl -X POST http://localhost:8001/api/registry/namespaces/initialize-wip \
-  -H "X-API-Key: dev_master_key_for_testing"
-
-# 4. Start UI
-cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
-```
+Presets: `core` (minimal), `standard` (+ reporting + ingest), `full` (all services), `headless` (no console), `analytics` (BI focus). See `config/presets/`.
 
 ### Access Points
 
@@ -128,9 +65,8 @@ cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
 |---------|-----|
 | WIP Console | https://localhost:8443 |
 | API Docs | http://localhost:{port}/docs |
-| Mongo Express | http://localhost:8081 (admin/admin) |
+| Mongo Express | http://localhost:8081 |
 | MinIO Console | http://localhost:9001 |
-| PostgreSQL | `podman exec -it wip-postgres psql -U wip -d wip_reporting` |
 
 ### Test Users (Dex OIDC)
 
@@ -140,107 +76,129 @@ cd ui/wip-console && podman-compose -f docker-compose.yml up -d --build
 | editor@wip.local | editor123 | wip-editors |
 | viewer@wip.local | viewer123 | wip-viewers |
 
-**API Key:** `dev_master_key_for_testing`
+**Dev API Key:** `dev_master_key_for_testing`
 
 ---
 
-## Key Technical Concepts
+## Development
+
+### Running Tests
+
+```bash
+# Activate venv first
+source .venv/bin/activate
+
+# Run a component's tests locally
+cd components/registry && PYTHONPATH=src pytest tests/ -v
+
+# Run inside container
+podman exec -it wip-registry pytest /app/tests -v
+```
+
+CI runs all component tests via `.gitea/workflows/test.yaml`.
+
+### Quality Audit
+
+```bash
+# Quick check (no services needed): ruff, shellcheck, vulture, radon, mypy, eslint
+./scripts/quality-audit.sh --quick
+
+# Full check (services running): adds pytest coverage, API consistency
+./scripts/quality-audit.sh
+
+# CI mode (fails if issues exceed baseline)
+./scripts/quality-audit.sh --quick --ci
+```
+
+### Security Checks
+
+```bash
+# Validate production hardening
+./scripts/security/production-check.sh
+
+# Generate a new API key
+./scripts/security/generate-api-key.sh
+```
+
+### Seed Data
+
+```bash
+source .venv/bin/activate
+pip install faker requests
+python scripts/seed_comprehensive.py --profile standard
+```
+
+Profiles: `minimal` (50 docs), `standard` (500), `full` (2000), `performance` (100k).
+
+---
+
+## Key Conventions
+
+### Bulk-First API
+
+**Every write endpoint is bulk.** Single operations are `[item]`. No single-entity write endpoints exist.
+
+- Request: `List[ItemRequest]` via `Body(...)`
+- Response: `BulkResponse { results, total, succeeded, failed }`
+- **Always HTTP 200** — errors are per-item in `results[i].status == "error"`
+- Never check HTTP status for duplicates; check `result.status` and `result.error`
+- Updates: `PUT /endpoint` with ID in body (not URL)
+- Deletes: `DELETE /endpoint` with `[{"id": "..."}]` body
+- Pagination: default 50, max 100; all list responses include `pages` field
+
+See `docs/api-conventions.md` for full details and examples.
 
 ### Uniqueness & Identity
 
-Two tiers of uniqueness:
-- **Global:** Registry `entry_id` and namespace `prefix` are unique across the entire instance
-- **Namespace-scoped:** All domain entities use `(namespace, ...)` compound keys
+- **Registry** is the central ID authority. Services compute composite keys → Registry hashes and deduplicates.
+- **Versioned entities** (templates, documents): `entity_id` stays the same across versions; `(entity_id, version)` is the true unique key.
+- **Document identity**: Template defines `identity_fields` → Document-Store sends values to Registry → SHA-256 hash → same hash = same document_id, new version.
+- **Synonyms**: One entry can have multiple composite keys. Enables cross-namespace linking and external ID mapping.
 
-| Entity | Unique Key(s) | Scope |
-|--------|--------------|-------|
-| Namespace | `prefix` | Global |
-| Registry Entry | `entry_id` | Global |
-| Terminology | `(ns, terminology_id)`, `(ns, value)` | Namespace |
-| Term | `(ns, term_id)`, `(ns, terminology_id, value)` | Namespace |
-| Template | `(ns, template_id, version)`, `(ns, value, version)` | Namespace |
-| Document | `(ns, document_id, version)` | Namespace |
-| File | `(ns, file_id)` | Namespace |
+See `docs/uniqueness-and-identity.md` for the full rules.
 
-**ID generation flow:** Service computes a composite key → calls Registry → Registry hashes the key and checks for existing entries → returns existing ID (upsert) or generates a new ID. For versioned entities (templates, documents), the entity_id stays the same across versions; `(entity_id, version)` is the true unique key.
+### OIDC Configuration (Critical)
 
-**Document identity hash:** Template defines `identity_fields` (e.g., `["email"]`). Document-Store sends raw `identity_values` to Registry, which computes SHA-256 hash, injects it into the composite key `{namespace, identity_hash, template_id}`, and creates a synonym with the raw values. Same hash = same `document_id`, new version. No identity_fields = empty composite key = always new `document_id`.
+**These THREE values MUST be identical — mismatch causes 401 errors:**
 
-**Registry synonyms:** An entry can have multiple composite keys (synonyms) that all resolve to the same canonical `entry_id`. The Registry is a standalone registrar; WIP services are its primary consumer. Synonyms enable cross-namespace linking, ID merging, and external/vendor ID mapping.
+| Config File | Variable |
+|-------------|----------|
+| `config/dex/config.yaml` | `issuer` |
+| `.env` | `WIP_AUTH_JWT_ISSUER_URL` |
+| `.env` | `VITE_OIDC_AUTHORITY` |
 
-**Cross-namespace:** Same entity_id can exist in different namespaces (by design, for restore/migration). Uniqueness is enforced per-namespace, not globally.
+**After changing `.env`, recreate containers** (`podman-compose down && up -d`), not just restart.
 
-See `docs/uniqueness-and-identity.md` for detailed rules, examples, and synonym use cases.
-
-### Template Versioning
-
-Templates support multi-version operation (e.g., different data model versions for different vendors):
-- Update keeps the SAME `template_id`, increments `version`
-- Multiple versions can be active simultaneously
-- `extends_version` field pins inheritance to a specific parent version (None = latest)
-
-### Template Draft Mode
-
-Templates can be created with `status: "draft"` to skip reference validation:
-- Enables circular dependencies and order-independent creation
-- `POST /templates/{id}/activate` validates and activates (cascading to referenced drafts)
-- All-or-nothing: if any template in the set fails, none activate
-- See `docs/design/template-draft-mode.md` for details
-
-### Term Storage
-
-Documents store both original value AND resolved term_id:
-```json
-{
-  "data": { "country": "United Kingdom" },
-  "term_references": { "country": "T-000042" }
-}
-```
-
-### Reporting Sync
-
-Real-time sync from MongoDB → PostgreSQL via NATS events.
-See `docs/reporting-layer.md` for architecture details.
+See `docs/network-configuration.md` for all deployment scenarios.
 
 ---
 
-## API Conventions
+## Security Hardening
 
-### Bulk-First: Every Write Endpoint is Bulk
+The following protections are in place (implemented during the security audit, March 2026):
 
-All write endpoints (POST/PUT/DELETE) accept a JSON array and return `BulkResponse`. Single operations are just `[item]`. There are no single-entity write endpoints.
+- **CORS lockdown** — origins restricted (not wildcard), configurable via `WIP_CORS_ORIGINS`
+- **Rate limiting** — slowapi on all services, configurable limits
+- **API key hashing** — bcrypt with per-deployment salt, timing-safe comparison
+- **File upload limits** — configurable max size (`WIP_MAX_UPLOAD_SIZE`, default 100MB)
+- **Content-type validation** — magic-byte checking, configurable MIME allowlist
+- **Security headers** — HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy (via Caddy)
+- **Debug endpoints gated** — require API key in production
+- **Default key rejection** — services refuse to start with `dev_master_key_for_testing` in prod mode
 
-**Request:** `List[ItemRequest]` via `Body(...)`
-**Response:** `BulkResponse { results: List[BulkResultItem], total, succeeded, failed }`
+See `docs/production-deployment.md` and `docs/security/` for details.
 
-```python
-# Creating one terminology
-POST /api/def-store/terminologies
-Body: [{"value": "GENDER", "label": "Gender"}]
-→ {"results": [{"index": 0, "status": "created", "id": "..."}], "total": 1, "succeeded": 1, "failed": 0}
+---
 
-# Creating multiple
-POST /api/def-store/terminologies
-Body: [{"value": "GENDER", ...}, {"value": "COUNTRY", ...}]
-→ {"results": [...], "total": 2, "succeeded": 2, "failed": 0}
+## Building Apps on WIP
+
+To create a new app project that builds on WIP (not modifying WIP itself):
+
+```bash
+./scripts/create-app-project.sh /path/to/my-app --name "My App"
 ```
 
-**Key rules:**
-- Write endpoints always return HTTP 200 — errors are per-item in `results[i].status == "error"`
-- Never check HTTP status codes for duplicates/conflicts; check `result.status` and `result.error`
-- `BulkResultItem` is subclassed per service for extra fields (e.g., `version`, `identity_hash`)
-- Updates use PUT with entity ID in the body (not URL): `PUT /templates` with `[{"template_id": "...", ...}]`
-- Deletes use DELETE with body: `DELETE /templates` with `[{"id": "..."}]`
-- GET endpoints (single by ID, list with pagination) are NOT bulk — they stay as-is
-- Pagination: default 50, max 100 for all services
-- All list responses include `pages: int` (computed `ceil(total / page_size)`)
-
-### Other Conventions
-
-- Authentication: `X-API-Key` header or `Authorization: Bearer <token>`
-- RESTful design with OpenAPI docs at `/docs`
-- Data is never deleted, only soft-deleted (status: inactive). Exception: files support hard-delete (`DELETE /files/{id}/hard`) to reclaim MinIO storage after soft-delete.
-- Upstream service errors return HTTP 502 (Bad Gateway)
+This generates the full project scaffold with MCP config, slash commands, reference docs, client libraries, and a starter CLAUDE.md. See `docs/WIP_AppSetup_Guide.md` for the full guide.
 
 ---
 
@@ -248,113 +206,63 @@ Body: [{"value": "GENDER", ...}, {"value": "COUNTRY", ...}]
 
 ```
 WorldInPie/
-├── CLAUDE.md              # This file
-├── docs/                  # Detailed documentation
-├── scripts/               # Setup and utility scripts
-├── config/                # Configuration files
-├── libs/wip-auth/         # Shared auth library (Python)
-├── libs/wip-client/       # @wip/client — TypeScript client for apps (6 services, error hierarchy, bulk abstraction)
-├── libs/wip-react/        # @wip/react — React hooks wrapping @wip/client (TanStack Query, 30+ hooks)
+├── CLAUDE.md                 # This file
+├── docs/                     # Documentation (architecture, APIs, security, design specs)
+│   ├── design/               # Feature design documents
+│   ├── security/             # Security docs (key rotation, encryption at rest)
+│   └── slash-commands/       # Slash commands for app-building AI instances
+├── scripts/                  # Setup, security, quality audit, seed data
+├── config/                   # Caddy, Dex, presets, API key configs
+├── libs/
+│   ├── wip-auth/             # Shared Python auth library
+│   ├── wip-client/           # @wip/client TypeScript library
+│   └── wip-react/            # @wip/react hooks library
 ├── components/
-│   ├── registry/          # ID & namespace management
-│   ├── def-store/         # Terminologies & terms
-│   ├── template-store/    # Document schemas
-│   ├── document-store/    # Document storage
-│   ├── reporting-sync/    # PostgreSQL sync
-│   ├── ingest-gateway/    # Async ingestion via NATS JetStream
-│   ├── mcp-server/        # MCP server — 69 tools for AI-assisted development (stdio + SSE)
-│   └── seed_data/         # Test data generation
-├── deploy/
-│   └── optional/          # Optional services (e.g., Metabase)
-├── docker-compose/        # Compose overrides
-├── k8s/                   # Kubernetes manifests
-├── data/                  # Runtime data (volumes)
-├── testdata/              # Test fixtures
-├── WIP-Toolkit/           # CLI toolkit
-└── ui/wip-console/        # Vue 3 + PrimeVue UI
+│   ├── registry/             # ID & namespace management
+│   ├── def-store/            # Terminologies & terms
+│   ├── template-store/       # Document schemas
+│   ├── document-store/       # Document storage, files, import, replay
+│   ├── reporting-sync/       # PostgreSQL sync
+│   ├── ingest-gateway/       # Async ingestion via NATS
+│   ├── mcp-server/           # MCP server (68 tools, 4 resources)
+│   └── seed_data/            # Test data generation
+├── docker-compose/           # Modular compose: base.yml + modules/
+├── k8s/                      # Kubernetes manifests
+├── deploy/optional/          # Optional services (Metabase)
+├── ui/wip-console/           # Vue 3 + PrimeVue UI
+├── WIP-Toolkit/              # CLI toolkit
+├── data/                     # Runtime data (volumes, secrets)
+└── testdata/                 # Test fixtures
 ```
 
 ---
 
-## WIP Namespaces
+## Documentation Index
 
-| Namespace | ID Format | Service |
-|-----------|-----------|---------|
-| wip-terminologies | UUID7 | Def-Store |
-| wip-terms | UUID7 | Def-Store |
-| wip-templates | UUID7 | Template Store |
-| wip-documents | UUID7 | Document Store |
-| wip-files | UUID7 | Document Store |
-
----
-
-## Running Tests
-
-```bash
-# Run tests inside container
-podman exec -it wip-{service} bash -c \
-  "pip install pytest pytest-asyncio httpx && pytest /app/tests -v"
-```
-
----
-
-## Seed Test Data
-
-```bash
-pip install faker requests
-python scripts/seed_comprehensive.py --profile standard
-```
-
-Profiles: minimal (50 docs), standard (500 docs), full (2000 docs), performance (100k docs)
+| Document | What it covers |
+|----------|---------------|
+| `docs/architecture.md` | System architecture, service interactions |
+| `docs/api-conventions.md` | Bulk-first convention, BulkResponse contract |
+| `docs/uniqueness-and-identity.md` | ID generation, Registry synonyms, identity hashing |
+| `docs/data-models.md` | Document, template, term data models |
+| `docs/authentication.md` | Auth modes, API keys, JWT/OIDC configuration |
+| `docs/network-configuration.md` | 4 deployment scenarios, OIDC setup |
+| `docs/production-deployment.md` | Production hardening guide |
+| `docs/mcp-server.md` | MCP tools, resources, AI development workflow |
+| `docs/reporting-layer.md` | MongoDB → PostgreSQL sync architecture |
+| `docs/semantic-types.md` | 7 semantic field types with validation rules |
+| `docs/bulk-import-tuning.md` | Tuning batch sizes for 100k+ imports |
+| `docs/WIP_AppSetup_Guide.md` | Setting up app projects that build on WIP |
+| `docs/roadmap.md` | Future plans, pending features, design docs |
+| `docs/security/` | Key rotation, encryption at rest |
+| `docs/design/` | Feature design documents (ontology, replay, draft mode, etc.) |
 
 ---
 
-## Bulk Import Tuning
+## Caddy Proxy Gotcha
 
-For large imports (100k+ terms), tune batch sizes to avoid timeouts:
-
-```bash
-# Via API parameters
-POST /api/def-store/import-export/import?batch_size=1000&registry_batch_size=50
+Use `handle` NOT `handle_path` for API routes. Services expect the full path:
 ```
-
-See `docs/bulk-import-tuning.md` for details.
-
----
-
-## Environment Variables
-
-Key auth variables:
-```bash
-WIP_AUTH_MODE=dual                    # api_key_only, jwt_only, dual
-WIP_AUTH_LEGACY_API_KEY=...           # API key for service auth
-WIP_AUTH_JWT_ISSUER_URL=...           # OIDC issuer
-WIP_AUTH_JWT_JWKS_URI=...             # JWKS endpoint
+handle /api/def-store/*    # CORRECT — preserves /api/def-store/
+handle_path /api/def-store/*  # WRONG — strips prefix
 ```
-
-See `config/profiles/*.env` for profile-specific settings.
-
----
-
-## OIDC Configuration (Critical)
-
-**When OIDC is enabled, these THREE values MUST be identical:**
-
-| Config File | Variable | Example Value |
-|-------------|----------|---------------|
-| `config/dex/config.yaml` | `issuer` | `https://localhost:8443/dex` |
-| `.env` | `WIP_AUTH_JWT_ISSUER_URL` | `https://localhost:8443/dex` |
-| `.env` | `VITE_OIDC_AUTHORITY` | `https://localhost:8443/dex` |
-
-**Mismatch causes 401 "Invalid token issuer" errors.**
-
-**After changing `.env`, recreate containers (not just restart):**
-```bash
-# WRONG - env vars not reloaded
-podman-compose restart
-
-# CORRECT - containers pick up new env
-podman-compose down && podman-compose up -d
-```
-
-See `docs/network-configuration.md` for all 4 deployment scenarios.
