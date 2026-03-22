@@ -379,6 +379,127 @@ async def get_namespace_stats(prefix: str) -> str:
 
 
 # ===================================================================
+# Tools — Registry Entries & Synonyms
+# ===================================================================
+
+
+@mcp.tool()
+async def get_entry(entry_id: str) -> str:
+    """Get full details for a Registry entry — synonyms, composite keys, metadata."""
+    try:
+        data = await get_client().get_entry(entry_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def lookup_entry(
+    entry_id: str | None = None,
+    namespace: str | None = None,
+    entity_type: str | None = None,
+    composite_key: dict | None = None,
+) -> str:
+    """Look up a Registry entry by ID or by composite key.
+
+    Provide either entry_id (lookup by ID) or namespace + entity_type + composite_key
+    (lookup by key). Key lookup also searches synonyms.
+
+    Args:
+        entry_id: Look up by entry ID (e.g., 'T-000042').
+        namespace: Namespace for key lookup (e.g., 'wip').
+        entity_type: Entity type for key lookup (e.g., 'terms').
+        composite_key: Composite key dict for key lookup.
+    """
+    try:
+        client = get_client()
+        if entry_id:
+            data = await client.lookup_by_id(entry_id)
+        elif namespace and entity_type and composite_key:
+            data = await client.lookup_by_key(namespace, entity_type, composite_key)
+        else:
+            return "Error: Provide either entry_id, or namespace + entity_type + composite_key."
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def add_synonym(
+    target_id: str,
+    synonym_namespace: str,
+    synonym_entity_type: str,
+    synonym_composite_key: dict,
+) -> str:
+    """Add an alternative composite key (synonym) that resolves to an existing entry.
+
+    Use this for cross-namespace linking, external/vendor ID mapping, or
+    mapping multiple identifiers to the same canonical entity.
+
+    Args:
+        target_id: The canonical entry ID to add the synonym to.
+        synonym_namespace: Namespace for the synonym key.
+        synonym_entity_type: Entity type for the synonym key.
+        synonym_composite_key: The alternative composite key dict.
+    """
+    try:
+        data = await get_client().add_synonym(
+            target_id=target_id,
+            synonym_namespace=synonym_namespace,
+            synonym_entity_type=synonym_entity_type,
+            synonym_composite_key=synonym_composite_key,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def remove_synonym(
+    target_id: str,
+    synonym_namespace: str,
+    synonym_entity_type: str,
+    synonym_composite_key: dict,
+) -> str:
+    """Remove a synonym (alternative composite key) from a Registry entry.
+
+    Args:
+        target_id: The entry ID to remove the synonym from.
+        synonym_namespace: Namespace of the synonym to remove.
+        synonym_entity_type: Entity type of the synonym to remove.
+        synonym_composite_key: The composite key dict to remove.
+    """
+    try:
+        data = await get_client().remove_synonym(
+            target_id=target_id,
+            synonym_namespace=synonym_namespace,
+            synonym_entity_type=synonym_entity_type,
+            synonym_composite_key=synonym_composite_key,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def merge_entries(preferred_id: str, deprecated_id: str) -> str:
+    """Merge two Registry entries. The deprecated entry becomes inactive and its
+    entry_id is added as a synonym to the preferred entry (for backward compatibility).
+
+    Args:
+        preferred_id: The entry ID to keep as canonical.
+        deprecated_id: The entry ID to deprecate and merge into the preferred one.
+    """
+    try:
+        data = await get_client().merge_entries(
+            preferred_id=preferred_id, deprecated_id=deprecated_id
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
 # Tools — Terminologies
 # ===================================================================
 
@@ -460,6 +581,69 @@ async def create_terminologies_bulk(items: list[dict]) -> str:
         return _error(e)
 
 
+@mcp.tool()
+async def update_terminology(
+    terminology_id: str,
+    label: str | None = None,
+    description: str | None = None,
+) -> str:
+    """Update a terminology's label or description.
+
+    Args:
+        terminology_id: ID of the terminology to update.
+        label: New label (optional).
+        description: New description (optional).
+    """
+    try:
+        updates = {}
+        if label is not None:
+            updates["label"] = label
+        if description is not None:
+            updates["description"] = description
+        if not updates:
+            return "Error: Provide at least one field to update (label, description)."
+        data = await get_client().update_terminology(terminology_id, updates)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_terminology(terminology_id: str, force: bool = False) -> str:
+    """Deactivate (soft-delete) a terminology.
+
+    Blocked if terms depend on it unless force=true.
+
+    Args:
+        terminology_id: ID of the terminology to deactivate.
+        force: Force deactivation even if terms exist.
+    """
+    try:
+        data = await get_client().delete_terminology(terminology_id, force=force)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def restore_terminology(
+    terminology_id: str, restore_terms: bool = True
+) -> str:
+    """Restore a previously deactivated terminology back to active status.
+
+    Args:
+        terminology_id: ID of the inactive terminology.
+        restore_terms: Also reactivate its inactive terms (default: true).
+    """
+    try:
+        data = await get_client().restore_terminology(
+            terminology_id, restore_terms=restore_terms
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Terms
 # ===================================================================
@@ -534,6 +718,82 @@ async def validate_term_value(terminology_id: str, value: str) -> str:
     try:
         data = await get_client().validate_term(
             terminology_id=terminology_id, value=value
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def update_term(
+    term_id: str,
+    label: str | None = None,
+    aliases: list[str] | None = None,
+    description: str | None = None,
+    sort_order: int | None = None,
+) -> str:
+    """Update a term's label, aliases, description, or sort order.
+
+    Args:
+        term_id: ID of the term to update.
+        label: New label (optional).
+        aliases: New aliases list (optional). Replaces existing aliases.
+        description: New description (optional).
+        sort_order: New sort order (optional).
+    """
+    try:
+        updates: dict = {}
+        if label is not None:
+            updates["label"] = label
+        if aliases is not None:
+            updates["aliases"] = aliases
+        if description is not None:
+            updates["description"] = description
+        if sort_order is not None:
+            updates["sort_order"] = sort_order
+        if not updates:
+            return "Error: Provide at least one field to update."
+        data = await get_client().update_term(term_id, updates)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_term(term_id: str) -> str:
+    """Deactivate (soft-delete) a term. Sets status to inactive.
+
+    Args:
+        term_id: ID of the term to deactivate.
+    """
+    try:
+        data = await get_client().delete_term(term_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def deprecate_term(
+    term_id: str,
+    reason: str,
+    replaced_by_term_id: str | None = None,
+) -> str:
+    """Deprecate a term with a reason and optional replacement pointer.
+
+    Deprecated terms remain queryable but are flagged as superseded.
+    Use this instead of delete when the term was valid historically but
+    has been replaced by a better term.
+
+    Args:
+        term_id: ID of the term to deprecate.
+        reason: Reason for deprecation (e.g., 'Merged with TERM-002').
+        replaced_by_term_id: ID of the replacement term (optional).
+    """
+    try:
+        data = await get_client().deprecate_term(
+            term_id=term_id, reason=reason,
+            replaced_by_term_id=replaced_by_term_id,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -990,6 +1250,80 @@ async def import_terminology(
             update_existing=update_existing,
         )
         return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
+# Tools — Table View (Denormalized Export)
+# ===================================================================
+
+
+@mcp.tool()
+async def get_table_view(
+    template_value: str,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
+    namespace: str | None = None,
+) -> str:
+    """Get a flattened, spreadsheet-like view of documents for a template.
+
+    Arrays are cross-product expanded into rows (up to 1000 row limit).
+    Returns columns with type info and denormalized rows — ideal for
+    data analysis and review.
+
+    Args:
+        template_value: Template value code (e.g., 'PATIENT').
+        status: Filter by status (default: active).
+        page: Page number (default: 1).
+        page_size: Rows per page (default: 100, max: 1000).
+        namespace: Namespace filter.
+    """
+    try:
+        tmpl = await get_client().get_template_by_value(
+            value=template_value, namespace=namespace
+        )
+        template_id = tmpl.get("template_id")
+        data = await get_client().get_table_view(
+            template_id=template_id, status=status, page=page, page_size=page_size
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def export_table_csv(
+    template_value: str,
+    status: str | None = None,
+    include_metadata: bool = True,
+    namespace: str | None = None,
+) -> str:
+    """Export documents for a template as CSV.
+
+    Returns the raw CSV content. Useful for data export, sharing, or
+    importing into spreadsheets or other tools.
+
+    Args:
+        template_value: Template value code (e.g., 'PATIENT').
+        status: Filter by status (default: active).
+        include_metadata: Include document_id, version, timestamps (default: true).
+        namespace: Namespace filter.
+    """
+    try:
+        tmpl = await get_client().get_template_by_value(
+            value=template_value, namespace=namespace
+        )
+        template_id = tmpl.get("template_id")
+        csv_content = await get_client().export_table_csv(
+            template_id=template_id, status=status, include_metadata=include_metadata
+        )
+        # Truncate if very large to avoid overwhelming the AI
+        lines = csv_content.split("\n")
+        if len(lines) > 102:
+            return "\n".join(lines[:102]) + f"\n\n... truncated ({len(lines)} total lines)"
+        return csv_content
     except Exception as e:
         return _error(e)
 

@@ -168,6 +168,115 @@ class WipClient:
         )
 
     # ========================================================
+    # Registry: Entries & Synonyms
+    # ========================================================
+
+    async def get_entry(self, entry_id: str) -> dict:
+        return await self._get(
+            self.registry_url, f"/api/registry/entries/{entry_id}"
+        )
+
+    async def register_entry(
+        self,
+        namespace: str,
+        entity_type: str,
+        composite_key: dict | None = None,
+        identity_values: dict | None = None,
+        created_by: str | None = None,
+    ) -> dict:
+        item: dict[str, Any] = {
+            "namespace": namespace,
+            "entity_type": entity_type,
+            "composite_key": composite_key or {},
+        }
+        if identity_values:
+            item["identity_values"] = identity_values
+        if created_by:
+            item["created_by"] = created_by
+        resp = await self._post(
+            self.registry_url, "/api/registry/entries/register", json=[item]
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    async def lookup_by_id(self, entry_id: str, fetch_source_data: bool = False) -> dict:
+        resp = await self._post(
+            self.registry_url,
+            "/api/registry/entries/lookup/by-id",
+            json=[{"entry_id": entry_id, "fetch_source_data": fetch_source_data}],
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    async def lookup_by_key(
+        self,
+        namespace: str,
+        entity_type: str,
+        composite_key: dict,
+        search_synonyms: bool = True,
+    ) -> dict:
+        resp = await self._post(
+            self.registry_url,
+            "/api/registry/entries/lookup/by-key",
+            json=[{
+                "namespace": namespace,
+                "entity_type": entity_type,
+                "composite_key": composite_key,
+                "search_synonyms": search_synonyms,
+            }],
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    async def add_synonym(
+        self,
+        target_id: str,
+        synonym_namespace: str,
+        synonym_entity_type: str,
+        synonym_composite_key: dict,
+    ) -> dict:
+        resp = await self._post(
+            self.registry_url,
+            "/api/registry/synonyms/add",
+            json=[{
+                "target_id": target_id,
+                "synonym_namespace": synonym_namespace,
+                "synonym_entity_type": synonym_entity_type,
+                "synonym_composite_key": synonym_composite_key,
+            }],
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    async def remove_synonym(
+        self,
+        target_id: str,
+        synonym_namespace: str,
+        synonym_entity_type: str,
+        synonym_composite_key: dict,
+    ) -> dict:
+        resp = await self._post(
+            self.registry_url,
+            "/api/registry/synonyms/remove",
+            json=[{
+                "target_id": target_id,
+                "synonym_namespace": synonym_namespace,
+                "synonym_entity_type": synonym_entity_type,
+                "synonym_composite_key": synonym_composite_key,
+            }],
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    async def merge_entries(
+        self, preferred_id: str, deprecated_id: str
+    ) -> dict:
+        resp = await self._post(
+            self.registry_url,
+            "/api/registry/synonyms/merge",
+            json=[{
+                "preferred_id": preferred_id,
+                "deprecated_id": deprecated_id,
+            }],
+        )
+        return resp["results"][0] if resp.get("results") else resp
+
+    # ========================================================
     # Def-Store: Terminologies
     # ========================================================
 
@@ -212,6 +321,31 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
+    async def update_terminology(self, terminology_id: str, updates: dict) -> dict:
+        item = {"terminology_id": terminology_id, **updates}
+        resp = await self._put(
+            self.def_store_url, "/api/def-store/terminologies", json=[item]
+        )
+        return self._unwrap_single(resp)
+
+    async def delete_terminology(self, terminology_id: str, force: bool = False) -> dict:
+        item: dict[str, Any] = {"id": terminology_id}
+        if force:
+            item["force"] = True
+        resp = await self._delete(
+            self.def_store_url, "/api/def-store/terminologies", json=[item]
+        )
+        return self._unwrap_single(resp)
+
+    async def restore_terminology(
+        self, terminology_id: str, restore_terms: bool = True
+    ) -> dict:
+        return await self._post(
+            self.def_store_url,
+            f"/api/def-store/terminologies/{terminology_id}/restore",
+            restore_terms=restore_terms,
+        )
+
     # ========================================================
     # Def-Store: Terms
     # ========================================================
@@ -246,6 +380,30 @@ class WipClient:
             batch_size=batch_size,
         )
         return self._unwrap_bulk(resp)
+
+    async def update_term(self, term_id: str, updates: dict) -> dict:
+        item = {"term_id": term_id, **updates}
+        resp = await self._put(
+            self.def_store_url, "/api/def-store/terms", json=[item]
+        )
+        return self._unwrap_single(resp)
+
+    async def delete_term(self, term_id: str) -> dict:
+        resp = await self._delete(
+            self.def_store_url, "/api/def-store/terms", json=[{"id": term_id}]
+        )
+        return self._unwrap_single(resp)
+
+    async def deprecate_term(
+        self, term_id: str, reason: str, replaced_by_term_id: str | None = None
+    ) -> dict:
+        item: dict[str, Any] = {"term_id": term_id, "reason": reason}
+        if replaced_by_term_id:
+            item["replaced_by_term_id"] = replaced_by_term_id
+        resp = await self._post(
+            self.def_store_url, "/api/def-store/terms/deprecate", json=[item]
+        )
+        return self._unwrap_single(resp)
 
     async def validate_term(self, terminology_id: str, value: str) -> dict:
         return await self._post(
@@ -479,6 +637,39 @@ class WipClient:
             "/api/document-store/documents/query",
             json=filters,
         )
+
+    async def get_table_view(
+        self,
+        template_id: str,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/table/{template_id}",
+            status=status,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def export_table_csv(
+        self,
+        template_id: str,
+        status: str | None = None,
+        include_metadata: bool = True,
+    ) -> str:
+        """Returns raw CSV content as a string."""
+        client = await self._get_client()
+        params = {"include_metadata": include_metadata}
+        if status:
+            params["status"] = status
+        resp = await client.get(
+            f"{self.document_store_url}/api/document-store/table/{template_id}/csv",
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.text
 
     # ========================================================
     # Document-Store: Files

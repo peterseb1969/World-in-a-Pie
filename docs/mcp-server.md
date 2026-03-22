@@ -80,7 +80,18 @@ Three resources provide baseline context to the AI without tool calls:
 | `list_namespaces()` | List all namespaces. Namespaces scope all entities. |
 | `get_namespace_stats(prefix)` | Entity counts by type for a namespace. |
 
-### Terminologies (5 tools)
+### Registry Entries & Synonyms (6 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_entry(entry_id)` | Get full details for a Registry entry — synonyms, composite keys, metadata. |
+| `lookup_entry(entry_id?, namespace?, entity_type?, composite_key?)` | Look up by ID or by composite key. Key lookup also searches synonyms. |
+| `add_synonym(target_id, synonym_namespace, synonym_entity_type, synonym_composite_key)` | Add an alternative composite key that resolves to an existing entry. For cross-namespace linking and external ID mapping. |
+| `remove_synonym(target_id, synonym_namespace, synonym_entity_type, synonym_composite_key)` | Remove a synonym from a Registry entry. |
+| `merge_entries(preferred_id, deprecated_id)` | Merge two entries. Deprecated entry becomes inactive; its ID is added as synonym to the preferred entry. |
+| `search_registry(query)` | Search Registry entries by ID or composite key. |
+
+### Terminologies (8 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -89,8 +100,11 @@ Three resources provide baseline context to the AI without tool calls:
 | `get_terminology_by_value(value)` | Get by value code (e.g., `COUNTRY`). Case-sensitive. |
 | `create_terminology(value, label, ...)` | Create a single terminology. Returns unwrapped result. |
 | `create_terminologies_bulk(items)` | Create multiple. Returns full `BulkResponse`. |
+| `update_terminology(id, label?, description?)` | Update a terminology's label or description. |
+| `delete_terminology(id, force?)` | Deactivate (soft-delete). Blocked if terms depend on it unless `force=true`. |
+| `restore_terminology(id, restore_terms?)` | Restore a previously deactivated terminology. Optionally reactivates its terms. |
 
-### Terms (4 tools)
+### Terms (7 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -98,6 +112,9 @@ Three resources provide baseline context to the AI without tool calls:
 | `get_term(id)` | Get a term by ID. |
 | `create_terms(terminology_id, terms)` | Create terms in bulk. Each needs `value` and `label`. |
 | `validate_term_value(terminology_id, value)` | Test whether a value exists in a terminology. |
+| `update_term(id, label?, aliases?, description?, sort_order?)` | Update a term's properties. |
+| `delete_term(id)` | Deactivate (soft-delete) a term. |
+| `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
 
 ### Ontology / Relationships (2 tools)
 
@@ -120,9 +137,8 @@ Three resources provide baseline context to the AI without tool calls:
 | `activate_template(id)` | Activate a draft template with cascading validation. |
 | `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
-| `query_by_template(template_value, field_filters?, ...)` | Query documents by template value code. Auto-resolves `template_value` to `template_id`. Field names auto-prefixed with `data.` — write `country` not `data.country`. |
 
-### Documents (5 tools)
+### Documents (7 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -131,6 +147,15 @@ Three resources provide baseline context to the AI without tool calls:
 | `create_document(document)` | Create a single document. Term values are auto-resolved. |
 | `create_documents_bulk(documents)` | Create multiple documents. Returns per-item results. |
 | `query_documents(filters)` | Query with complex field-level filters. |
+| `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
+| `get_table_view(template_value, status?, page?, page_size?)` | Flattened, spreadsheet-like view. Arrays are cross-product expanded. |
+
+### Table View & Export (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_table_view(template_value, ...)` | Denormalized view with columns and rows — ideal for data analysis. |
+| `export_table_csv(template_value, status?, include_metadata?)` | Export documents as CSV. Returns raw CSV content (truncated at 100 rows for AI context). |
 
 ### Import / Export (2 tools)
 
@@ -139,12 +164,11 @@ Three resources provide baseline context to the AI without tool calls:
 | `export_terminology(id)` | Export terminology with terms and optional relationships. JSON or CSV. |
 | `import_terminology(data)` | Import terminology from JSON. Supports `skip_duplicates` and `update_existing`. |
 
-### Search & Reporting (2 tools)
+### Search (1 tool)
 
 | Tool | Description |
 |------|-------------|
 | `search(query, types?)` | Unified full-text search across all entity types (via reporting-sync / PostgreSQL). |
-| `search_registry(query)` | Search Registry entries by ID or composite key. |
 
 ### Files (3 tools)
 
@@ -225,6 +249,6 @@ The MCP server is designed around a 4-phase process for building applications on
 ## Known Limitations
 
 - **No template update tools** — create a new version instead (WIP's versioning model)
-- **No term/terminology update or delete tools** — use the Console UI or direct API
 - **No file download** — files can be uploaded, listed, and inspected, but content download requires direct HTTP
-- **No Registry entry management** — register, lookup, synonym, and merge operations require direct API calls
+- **No document delete/archive tools** — use the Console UI or direct API
+- **CSV export truncated** — `export_table_csv` truncates at 100 rows to avoid overwhelming AI context
