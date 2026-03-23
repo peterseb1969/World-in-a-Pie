@@ -167,10 +167,26 @@ echo "5. Copying client libraries..."
 CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
 REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
 
+# Auto-build tarballs if missing and npm is available
+if [ -z "$CLIENT_TARBALL" ] && command -v npm &>/dev/null; then
+    echo "   Building @wip/client tarball..."
+    (cd "$WIP_ROOT/libs/wip-client" && npm pack --quiet 2>/dev/null)
+    CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
+fi
+if [ -z "$REACT_TARBALL" ] && command -v npm &>/dev/null; then
+    echo "   Building @wip/react tarball..."
+    (cd "$WIP_ROOT/libs/wip-react" && npm pack --quiet 2>/dev/null)
+    REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
+fi
+
 if [ -n "$CLIENT_TARBALL" ]; then
     cp "$CLIENT_TARBALL" "$APP_DIR/libs/"
-    tar -xzf "$CLIENT_TARBALL" package/README.md -O > "$APP_DIR/libs/wip-client-README.md" 2>/dev/null || true
-    echo "   Copied: $(basename "$CLIENT_TARBALL") + README"
+    if tar -xzf "$CLIENT_TARBALL" --to-stdout package/README.md > "$APP_DIR/libs/wip-client-README.md" 2>/dev/null; then
+        echo "   Copied: $(basename "$CLIENT_TARBALL") + README"
+    else
+        rm -f "$APP_DIR/libs/wip-client-README.md"
+        echo "   Copied: $(basename "$CLIENT_TARBALL") (README extraction failed)"
+    fi
 else
     echo "   Warning: @wip/client tarball not found in libs/wip-client/"
     echo "   Build with: cd $WIP_ROOT/libs/wip-client && npm pack"
@@ -178,8 +194,12 @@ fi
 
 if [ -n "$REACT_TARBALL" ]; then
     cp "$REACT_TARBALL" "$APP_DIR/libs/"
-    tar -xzf "$REACT_TARBALL" package/README.md -O > "$APP_DIR/libs/wip-react-README.md" 2>/dev/null || true
-    echo "   Copied: $(basename "$REACT_TARBALL") + README"
+    if tar -xzf "$REACT_TARBALL" --to-stdout package/README.md > "$APP_DIR/libs/wip-react-README.md" 2>/dev/null; then
+        echo "   Copied: $(basename "$REACT_TARBALL") + README"
+    else
+        rm -f "$APP_DIR/libs/wip-react-README.md"
+        echo "   Copied: $(basename "$REACT_TARBALL") (README extraction failed)"
+    fi
 else
     echo "   Warning: @wip/react tarball not found in libs/wip-react/"
     echo "   Build with: cd $WIP_ROOT/libs/wip-react && npm pack"

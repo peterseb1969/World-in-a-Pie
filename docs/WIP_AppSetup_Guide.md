@@ -126,8 +126,8 @@ The helper script copies tarballs and extracts READMEs automatically. For manual
 - [ ] Tarballs available (rebuild with `npm pack` from WIP libs directory if READMEs have been updated)
 - [ ] **README files extracted** alongside the tarballs in `libs/`:
   ```bash
-  tar -xzf libs/wip-client-X.Y.Z.tgz package/README.md -O > libs/wip-client-README.md
-  tar -xzf libs/wip-react-X.Y.Z.tgz package/README.md -O > libs/wip-react-README.md
+  tar -xzf libs/wip-client-X.Y.Z.tgz --to-stdout package/README.md > libs/wip-client-README.md
+  tar -xzf libs/wip-react-X.Y.Z.tgz --to-stdout package/README.md > libs/wip-react-README.md
   ```
 - [ ] Claude Code can see the READMEs during `/explore` without extracting tarballs
 
