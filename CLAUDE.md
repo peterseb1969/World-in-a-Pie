@@ -68,13 +68,15 @@ Presets: `core` (minimal), `standard` (+ reporting + ingest), `full` (all servic
 | Mongo Express | http://localhost:8081 |
 | MinIO Console | http://localhost:9001 |
 
-### Test Users (Dex OIDC)
+### Test Users (Dex OIDC — dev mode only)
 
 | Email | Password | Group |
 |-------|----------|-------|
 | admin@wip.local | admin123 | wip-admins |
 | editor@wip.local | editor123 | wip-editors |
 | viewer@wip.local | viewer123 | wip-viewers |
+
+In production mode (`--prod`), random passwords are generated and saved to `data/secrets/credentials.txt`.
 
 **Dev API Key:** `dev_master_key_for_testing`
 

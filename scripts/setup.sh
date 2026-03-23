@@ -105,6 +105,9 @@ WIP_MONGO_USER=""
 WIP_MONGO_PASSWORD=""
 WIP_DEX_CLIENT_SECRET=""
 WIP_NATS_TOKEN=""
+WIP_DEX_ADMIN_PASS=""
+WIP_DEX_EDITOR_PASS=""
+WIP_DEX_VIEWER_PASS=""
 
 # Available modules
 AVAILABLE_MODULES="console oidc nats reporting files ingest dev-tools"
@@ -153,7 +156,12 @@ generate_prod_secrets() {
     WIP_DEX_CLIENT_SECRET=$(generate_secret 32)
     WIP_NATS_TOKEN=$(generate_secret 32)
 
-    log_info "Generated 6 secrets (API key, Postgres, MinIO, MongoDB, Dex, NATS)"
+    # Random Dex user passwords (not well-known defaults)
+    WIP_DEX_ADMIN_PASS=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+    WIP_DEX_EDITOR_PASS=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+    WIP_DEX_VIEWER_PASS=$(openssl rand -base64 16 | tr -d '/+=' | head -c 16)
+
+    log_info "Generated 9 secrets (API key, Postgres, MinIO, MongoDB, Dex client + 3 users, NATS)"
 }
 
 # Save secrets to files with restrictive permissions
@@ -204,6 +212,11 @@ MinIO (S3):
 Dex (OIDC):
   Client ID: wip-console
   Client Secret: $WIP_DEX_CLIENT_SECRET
+
+Dex Users:
+  admin@wip.local:  $WIP_DEX_ADMIN_PASS  (group: wip-admins)
+  editor@wip.local: $WIP_DEX_EDITOR_PASS  (group: wip-editors)
+  viewer@wip.local: $WIP_DEX_VIEWER_PASS  (group: wip-viewers)
 
 NATS:
   Token: $WIP_NATS_TOKEN
@@ -1170,20 +1183,30 @@ generate_dex_config() {
     - https://localhost:${HTTPS_PORT}/auth/silent-renew"
     fi
 
-    # Generate bcrypt password hashes dynamically
-    # This ensures hashes always match the documented passwords
+    # Dex user passwords
+    # Dev mode: well-known passwords (admin123, editor123, viewer123)
+    # Prod mode: random passwords (generated in generate_prod_secrets, saved in credentials.txt)
+    local admin_pass="${WIP_DEX_ADMIN_PASS:-admin123}"
+    local editor_pass="${WIP_DEX_EDITOR_PASS:-editor123}"
+    local viewer_pass="${WIP_DEX_VIEWER_PASS:-viewer123}"
+
     local admin_hash editor_hash viewer_hash
     if command -v htpasswd &> /dev/null; then
         log_info "Generating password hashes..."
         # htpasswd -nbBC 10 generates bcrypt hash, we extract just the hash part
         # sed converts $2y (htpasswd) to $2a (Dex expects $2a)
-        admin_hash=$(htpasswd -nbBC 10 "" "admin123" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
-        editor_hash=$(htpasswd -nbBC 10 "" "editor123" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
-        viewer_hash=$(htpasswd -nbBC 10 "" "viewer123" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
+        admin_hash=$(htpasswd -nbBC 10 "" "$admin_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
+        editor_hash=$(htpasswd -nbBC 10 "" "$editor_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
+        viewer_hash=$(htpasswd -nbBC 10 "" "$viewer_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
     else
+        if [ "$VARIANT" = "prod" ]; then
+            log_error "htpasswd is required for production mode (needed to hash Dex passwords)"
+            log_error "Install: apt install apache2-utils (Linux) or brew install httpd (Mac)"
+            exit 1
+        fi
         log_warn "htpasswd not found - using pre-generated hashes"
         log_warn "Install apache2-utils (Linux) or run 'brew install httpd' (Mac) for dynamic hash generation"
-        # Fallback hashes - verified correct for these passwords
+        # Fallback hashes - verified correct for admin123/editor123/viewer123
         # Generated with: htpasswd -nbBC 10 "" "password" | sed 's/$2y/$2a/'
         admin_hash='$2a$10$8lJl/57PSwRj/6tDGsrUzOJZEIliaG4HJlL66q.mIfJjNzHLI6qJe'
         editor_hash='$2a$10$EAOJokg1r0OmVhltE4gNtu2F/fRr0DePUOrBRdp01kR0qiwjNtwcm'
@@ -1252,7 +1275,11 @@ staticPasswords:
 EOF
 
     log_info "Generated Dex config"
-    log_info "Test users: admin@wip.local/admin123, editor@wip.local/editor123, viewer@wip.local/viewer123"
+    if [ "$VARIANT" = "prod" ]; then
+        log_info "Dex users configured with random passwords (see credentials.txt)"
+    else
+        log_info "Test users: admin@wip.local/admin123, editor@wip.local/editor123, viewer@wip.local/viewer123"
+    fi
 }
 
 generate_console_nginx_config() {
@@ -2227,9 +2254,13 @@ print_status() {
             echo "  Console:  http://localhost:${HTTP_PORT} (proxying to $REMOTE_CORE)"
             if has_feature "oidc"; then
                 echo ""
-                echo "  Login:    admin@wip.local / admin123"
-                echo "            editor@wip.local / editor123"
-                echo "            viewer@wip.local / viewer123"
+                if [ "$VARIANT" = "prod" ]; then
+                    echo "  Login:    See $WIP_DATA_DIR/secrets/credentials.txt"
+                else
+                    echo "  Login:    admin@wip.local / admin123"
+                    echo "            editor@wip.local / editor123"
+                    echo "            viewer@wip.local / viewer123"
+                fi
             else
                 echo ""
                 echo "  Auth:     API Key only"
@@ -2244,9 +2275,13 @@ print_status() {
                 echo "            https://localhost:${HTTPS_PORT} (local)"
             fi
             echo ""
-            echo "  Login:    admin@wip.local / admin123"
-            echo "            editor@wip.local / editor123"
-            echo "            viewer@wip.local / viewer123"
+            if [ "$VARIANT" = "prod" ]; then
+                echo "  Login:    See $WIP_DATA_DIR/secrets/credentials.txt"
+            else
+                echo "  Login:    admin@wip.local / admin123"
+                echo "            editor@wip.local / editor123"
+                echo "            viewer@wip.local / viewer123"
+            fi
         else
             echo "  Console:  http://localhost:${HTTP_PORT} (direct, no TLS)"
             echo ""
