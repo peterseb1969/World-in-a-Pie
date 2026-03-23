@@ -92,7 +92,7 @@ mkdir -p "$APP_DIR/libs"
 
 # --- Copy slash commands ---
 
-echo "2. Copying slash commands (11 files)..."
+echo "2. Copying slash commands (12 files)..."
 cp "$WIP_ROOT/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(ls "$APP_DIR/.claude/commands/" | wc -l | tr -d ' ') commands"
 

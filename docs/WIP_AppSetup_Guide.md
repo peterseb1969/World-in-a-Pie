@@ -52,7 +52,7 @@ my-new-app/
 │   ├── WIP_PoNIFs.md              # Full PoNIFs reference (deep context beyond MCP resource)
 │   └── WIP_DevGuardrails.md       # UI stack, app skeleton, client library, testing conventions
 ├── .claude/
-│   └── commands/                  # 11 slash commands (copied from WIP repo)
+│   └── commands/                  # 12 slash commands (copied from WIP repo)
 │       ├── explore.md
 │       ├── design-model.md
 │       ├── implement.md
@@ -63,7 +63,8 @@ my-new-app/
 │       ├── export-model.md
 │       ├── bootstrap.md
 │       ├── wip-status.md
-│       └── add-app.md
+│       ├── add-app.md
+│       └── analyst.md
 └── libs/
     ├── wip-client-X.Y.Z.tgz     # @wip/client tarball
     ├── wip-client-README.md      # Extracted README (visible without extracting tarball)
@@ -281,4 +282,4 @@ That's it. The script creates the directory, copies all files, generates `.mcp.j
 
 ---
 
-*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (69 MCP tools, 4 resources, 11 slash commands, rewritten reference docs).*
+*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (69 MCP tools, 4 resources, 12 slash commands, rewritten reference docs).*
