@@ -1198,9 +1198,12 @@ generate_dex_config() {
         log_info "Generating password hashes..."
         # htpasswd -nbBC 10 generates bcrypt hash, we extract just the hash part
         # sed converts $2y (htpasswd) to $2a (Dex expects $2a)
-        # shellcheck disable=SC2016 — single quotes intentional: sed must match literal $2y/$2a
+        # Single quotes intentional: sed must match literal $2y/$2a
+        # shellcheck disable=SC2016
         admin_hash=$(htpasswd -nbBC 10 "" "$admin_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
+        # shellcheck disable=SC2016
         editor_hash=$(htpasswd -nbBC 10 "" "$editor_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
+        # shellcheck disable=SC2016
         viewer_hash=$(htpasswd -nbBC 10 "" "$viewer_pass" 2>/dev/null | tr -d ':\n' | sed 's/\$2y/\$2a/')
     else
         if [ "$VARIANT" = "prod" ]; then
@@ -1212,9 +1215,12 @@ generate_dex_config() {
         log_warn "Install apache2-utils (Linux) or run 'brew install httpd' (Mac) for dynamic hash generation"
         # Fallback hashes - verified correct for admin123/editor123/viewer123
         # Generated with: htpasswd -nbBC 10 "" "password" | sed 's/$2y/$2a/'
-        # shellcheck disable=SC2016 — single quotes intentional: these are bcrypt hashes, not shell variables
+        # Single quotes intentional: these are bcrypt hashes, not shell variables
+        # shellcheck disable=SC2016
         admin_hash='$2a$10$8lJl/57PSwRj/6tDGsrUzOJZEIliaG4HJlL66q.mIfJjNzHLI6qJe'
+        # shellcheck disable=SC2016
         editor_hash='$2a$10$EAOJokg1r0OmVhltE4gNtu2F/fRr0DePUOrBRdp01kR0qiwjNtwcm'
+        # shellcheck disable=SC2016
         viewer_hash='$2a$10$2VIGAKxj5VFmlIxqLnfAkOfIKudQks/3BDy4QaJ1k94qW6eFhYfGC'
     fi
 
