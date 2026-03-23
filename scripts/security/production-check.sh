@@ -285,7 +285,7 @@ echo "TLS Configuration:"
 
 if [[ "$WIP_MODULES" == *"oidc"* ]]; then
     if [ -f "$PROJECT_ROOT/config/caddy/Caddyfile" ]; then
-        if grep -q "tls internal" "$PROJECT_ROOT/config/caddy/Caddyfile"; then
+        if grep -q "tls internal\|issuer internal" "$PROJECT_ROOT/config/caddy/Caddyfile"; then
             if [ -n "$WIP_ADMIN_EMAIL" ]; then
                 warn "Caddy using self-signed certs but --email was provided"
             else
