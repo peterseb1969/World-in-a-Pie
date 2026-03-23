@@ -1063,6 +1063,7 @@ WIP_DEX_CLIENT_SECRET=$dex_client_secret
 VITE_OIDC_ENABLED=$oidc_enabled
 VITE_OIDC_AUTHORITY=$issuer_url
 VITE_OIDC_CLIENT_ID=wip-console
+VITE_OIDC_CLIENT_SECRET=$dex_client_secret
 VITE_OIDC_REDIRECT_URI=https://${HOSTNAME:-localhost}:${HTTPS_PORT}/auth/callback
 VITE_OIDC_PROVIDER_NAME=Dex
 VITE_API_BASE_URL=
@@ -1221,7 +1222,7 @@ oauth2:
 staticClients:
   - id: wip-console
     name: WIP Console
-    secret: wip-console-secret
+    secret: ${WIP_DEX_CLIENT_SECRET:-wip-console-secret}
     redirectURIs:
 $redirect_uris
 
