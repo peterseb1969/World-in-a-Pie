@@ -228,7 +228,11 @@ echo "Secrets Storage:"
 SECRETS_DIR="$WIP_DATA_DIR/secrets"
 if [ -d "$SECRETS_DIR" ]; then
     # Check directory permissions
-    dir_perms=$(stat -f "%Lp" "$SECRETS_DIR" 2>/dev/null || stat -c "%a" "$SECRETS_DIR" 2>/dev/null)
+    if [[ "$(uname)" == "Darwin" ]]; then
+        dir_perms=$(stat -f "%Lp" "$SECRETS_DIR" 2>/dev/null)
+    else
+        dir_perms=$(stat -c "%a" "$SECRETS_DIR" 2>/dev/null)
+    fi
     if [ "$dir_perms" = "700" ]; then
         pass "Secrets directory has correct permissions (700)"
     else
@@ -243,7 +247,11 @@ if [ -d "$SECRETS_DIR" ]; then
     insecure_files=0
     for secret_file in "$SECRETS_DIR"/*; do
         if [ -f "$secret_file" ]; then
-            file_perms=$(stat -f "%Lp" "$secret_file" 2>/dev/null || stat -c "%a" "$secret_file" 2>/dev/null)
+            if [[ "$(uname)" == "Darwin" ]]; then
+                file_perms=$(stat -f "%Lp" "$secret_file" 2>/dev/null)
+            else
+                file_perms=$(stat -c "%a" "$secret_file" 2>/dev/null)
+            fi
             if [ "$file_perms" != "600" ]; then
                 ((insecure_files++))
                 if [ "$FIX_MODE" = true ]; then
