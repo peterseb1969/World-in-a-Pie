@@ -16,6 +16,10 @@ Core permission system is implemented (grant model, CRUD API, service enforcemen
 
 `POST /entries/{id}/reactivate` for reversible merges. Currently, merged/deactivated entries cannot be restored. Not yet implemented.
 
+### MCP Read-Only Mode
+
+`WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Also add a `--preset query` option to `create-app-project.sh` that generates a project with the readonly MCP config and only the query-focused slash commands.
+
 ### Container Runtime Support
 
 Currently tested with rootless Podman only. Need to test and document:
@@ -49,6 +53,20 @@ Conversational data query UI powered by MCP tools. BYOK (bring your own key) mod
 
 - Design: `docs/design/natural-language-interface.md`
 
+### `/init-nl-interface` Command — Data Model Snapshot
+
+A forced refresh command that reads all templates, field names, terminology values, and document counts before answering any question. `/wip-status` on steroids. Motivation: the D&D Claude lost template awareness across compaction (missed 5 templates, gave wrong answers on Q6 and Q11). This command would build the Claude's working memory of the data model at the start of every query session, ensuring complete and accurate answers regardless of prior context.
+
+### Deterministic SQL Dashboard App
+
+NL queries are impressive but non-reproducible. A dashboard with saved SQL queries against the PostgreSQL reporting backend provides: reproducibility (same query, same results), performance (no LLM context overhead), shareability (bookmarkable queries), and debuggability (visible, editable SQL). The AI's role shifts from "answer questions" to "help me write queries" — build once, run forever. Could be a standalone WIP app or a Metabase extension.
+
+### Query Claude — Read-Only Family Member
+
+A Claude instance with a restricted MCP tool set: no `create_*` tools, no app scaffolding skills. Only `query_by_template`, `run_report_query`, `search`, `list_*`, `get_*`, and `/init-nl-interface`. The analyst who queries the data warehouse but doesn't build the ETL pipeline. Different skills, different permissions, different risk profile. Safe to hand to any user because it can't modify the data model. Implementation: a separate MCP server config (or tool filter) plus a dedicated slash command set.
+
+**These three ideas are complementary:** `/init-nl-interface` makes any Claude query-ready, Query Claude is a family member built around that command, and the SQL dashboard is the production-grade deterministic alternative.
+
 ---
 
 ## Longer-Term / Ideas
@@ -64,6 +82,10 @@ Standard packaging for apps built on WIP. Container image contract, `app-manifes
 Ultra-lightweight variant for Pi Zero and embedded systems. Minimal footprint, subset of features. Design only — future consideration.
 
 - Design: `docs/design/wip-nano.md`
+
+### Domain-Specific Ontology Relationships
+
+Consider enabling namespace-scoped relationship type terminologies, so domains can define their own ontology relationship types rather than everything living in the global `_ONTOLOGY_RELATIONSHIP_TYPES` terminology. For example, a biomedical namespace might define `inhibits`, `activates`, `binds_to` without polluting the shared vocabulary. Likely overkill for most use cases — the extensible global terminology works fine — but worth considering if WIP is used across very different domains on the same instance.
 
 ### Metabase Pre-Built Dashboards
 
