@@ -52,18 +52,25 @@ def restore_import(
     _ensure_namespace(client, target_namespace, stats)
 
     # Step 1: Create terminologies via Def-Store (service handles Registry)
+    # Def-Store doesn't support terminology_id pass-through, so we track
+    # old→new ID mappings and remap all downstream references.
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies")
     terminologies = list(reader.read_entities("terminologies"))
-    _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
+    term_id_map = _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
+    if term_id_map:
+        console.print(f"  ID mappings: {len(term_id_map)} terminology ID(s) remapped")
 
-    # Step 2: Create terms via Def-Store
+    # Step 2: Create terms via Def-Store (using remapped terminology IDs)
     console.print("\n[bold cyan]Step 2:[/bold cyan] Creating terms")
     terms = list(reader.read_entities("terms"))
-    _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error)
+    _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error, term_id_map)
 
     # Step 3: Create templates as drafts with ID pass-through
+    # Remap terminology_ref fields to new IDs
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (as drafts)")
     templates = list(reader.read_entities("templates"))
+    if term_id_map:
+        _remap_template_terminology_refs(templates, term_id_map)
     _create_templates(client, target_namespace, templates, stats, continue_on_error)
 
     # Step 4: Activate all draft templates
@@ -123,9 +130,16 @@ def _create_terminologies(
     terminologies: list[dict],
     stats: ImportStats,
     continue_on_error: bool,
-) -> None:
-    """Create terminologies via Def-Store API."""
+) -> dict[str, str]:
+    """Create terminologies via Def-Store API.
+
+    Returns a mapping of old_terminology_id → new_terminology_id for any
+    IDs that changed (cross-instance restore where IDs are regenerated).
+    """
+    id_map: dict[str, str] = {}
+
     for t in terminologies:
+        old_id = t["terminology_id"]
         try:
             payload = {
                 "value": t["value"],
@@ -142,11 +156,18 @@ def _create_terminologies(
             r = result["results"][0]
             if r["status"] == "created":
                 stats.created.terminologies += 1
+                new_id = r.get("id", "")
+                if new_id and new_id != old_id:
+                    id_map[old_id] = new_id
             elif r["status"] == "error" and "already exists" in r.get("error", ""):
                 stats.skipped.terminologies += 1
+                # Look up the existing terminology's ID by value
+                new_id = _lookup_terminology_id(client, namespace, t["value"])
+                if new_id and new_id != old_id:
+                    id_map[old_id] = new_id
             else:
                 stats.failed.terminologies += 1
-                stats.errors.append(f"Failed to create terminology {t['terminology_id']}: {r.get('error')}")
+                stats.errors.append(f"Failed to create terminology {old_id}: {r.get('error')}")
                 if not continue_on_error:
                     raise WIPClientError(r.get("error", "Unknown error"))
         except WIPClientError:
@@ -158,6 +179,17 @@ def _create_terminologies(
         f"skipped {stats.skipped.terminologies}, "
         f"failed {stats.failed.terminologies}"
     )
+    return id_map
+
+
+def _lookup_terminology_id(client: WIPClient, namespace: str, value: str) -> str | None:
+    """Look up a terminology's ID by value and namespace."""
+    try:
+        data = client.get("def-store", f"/terminologies/by-value/{value}",
+                          params={"namespace": namespace})
+        return data.get("terminology_id")
+    except WIPClientError:
+        return None
 
 
 def _create_terms(
@@ -167,12 +199,15 @@ def _create_terms(
     batch_size: int,
     stats: ImportStats,
     continue_on_error: bool,
+    term_id_map: dict[str, str] | None = None,
 ) -> None:
     """Create terms via Def-Store bulk API, grouped by terminology."""
-    # Group terms by terminology_id
+    # Group terms by terminology_id (remapped if needed)
     by_terminology: dict[str, list[dict]] = {}
     for t in terms:
         tid = t["terminology_id"]
+        if term_id_map:
+            tid = term_id_map.get(tid, tid)
         by_terminology.setdefault(tid, []).append(t)
 
     for tid, term_group in by_terminology.items():
@@ -265,6 +300,23 @@ def _create_templates(
         f"skipped {stats.skipped.templates}, "
         f"failed {stats.failed.templates}"
     )
+
+
+def _remap_template_terminology_refs(
+    templates: list[dict], term_id_map: dict[str, str],
+) -> None:
+    """Remap terminology_ref IDs in template fields to new IDs."""
+    for tpl in templates:
+        for field in tpl.get("fields", []):
+            for key in ("terminology_ref", "array_terminology_ref"):
+                val = field.get(key)
+                if val and val in term_id_map:
+                    field[key] = term_id_map[val]
+            target_terms = field.get("target_terminologies")
+            if target_terms:
+                field["target_terminologies"] = [
+                    term_id_map.get(t, t) for t in target_terms
+                ]
 
 
 def _template_create_payload(tpl: dict, namespace: str) -> dict[str, Any]:
