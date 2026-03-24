@@ -37,7 +37,7 @@ claude          # Launch Claude Code
 - [ ] Existing data model bootstrapped (if building an app that integrates with existing apps)
 - [ ] Some existing data present (the new app may need to reference it)
 - [ ] API key available (default dev key: `dev_master_key_for_testing`)
-- [ ] All services healthy: Registry (:8001), Def-Store (:8002), Template-Store (:8003), Document-Store (:8004)
+- [ ] All services healthy: `curl -k https://localhost:8443/api/registry/namespaces` (also check `/api/def-store/terminologies`, `/api/template-store/templates`, `/api/document-store/documents`)
 
 ### 2. Directory Structure
 
@@ -247,7 +247,7 @@ If running this as an experiment, track:
 ### MCP Server Not Connecting
 Claude Code spawns MCP servers on startup. If the WIP tools aren't available:
 1. Check `.mcp.json` exists in the project root (not `.claude/mcp_settings.json`)
-2. Verify WIP services are running (`curl http://localhost:8001/health`)
+2. Verify WIP services are running (`curl -k https://localhost:8443/api/registry/namespaces`)
 3. Verify the Python module imports (`PYTHONPATH=... python -c "import wip_mcp"`)
 4. Restart Claude Code (`/exit` then `claude`)
 

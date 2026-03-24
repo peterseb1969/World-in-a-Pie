@@ -269,6 +269,7 @@ class OIDCProvider:
         signing_key = await self._get_signing_key(token)
 
         # Build PyJWT key from JWK
+        public_key: Any
         try:
             public_key = jwt.algorithms.RSAAlgorithm.from_jwk(signing_key)
         except Exception:

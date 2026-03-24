@@ -2,6 +2,8 @@
 
 The Document Store service manages documents that conform to templates defined in the Template Store. It provides document validation, versioning, and identity-based upsert logic.
 
+> **Note:** The curl examples below use direct service ports (e.g., `localhost:8004`) for local development and testing. In production and for application code, always use the Caddy reverse proxy at `https://<hostname>:8443/api/document-store/...` instead.
+
 ## Features
 
 - **Template Validation**: Validates documents against template schemas

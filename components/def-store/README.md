@@ -2,6 +2,8 @@
 
 Terminology and ontology management service for the World In a Pie ecosystem.
 
+> **Note:** The curl examples below use direct service ports (e.g., `localhost:8002`) for local development and testing. In production and for application code, always use the Caddy reverse proxy at `https://<hostname>:8443/api/def-store/...` instead.
+
 ## Features
 
 - **Terminology Management**: Create and manage controlled vocabularies
@@ -18,10 +20,10 @@ Terminology and ontology management service for the World In a Pie ecosystem.
 
 ```bash
 # Ensure Registry service is running first
-cd ../registry && docker-compose -f docker-compose.yml up -d --build
+cd ../registry && podman-compose -f podman-compose.yml up -d --build
 
 # Start Def-Store with hot reload
-docker-compose -f docker-compose.yml up --build
+podman-compose -f podman-compose.yml up --build
 
 # Access the API
 curl http://localhost:8002/health
@@ -38,7 +40,7 @@ export API_KEY=$(openssl rand -hex 32)
 export REGISTRY_API_KEY=your_registry_api_key
 
 # Start services
-docker-compose up -d
+podman-compose up -d
 ```
 
 ## Authentication
@@ -52,7 +54,7 @@ For local development, the default API key is:
 dev_master_key_for_testing
 ```
 
-This is configured in `docker-compose.yml` via the `API_KEY` environment variable.
+This is configured in `podman-compose.yml` via the `API_KEY` environment variable.
 
 ### Using the Swagger UI
 
@@ -105,29 +107,25 @@ This is configured in `docker-compose.yml` via the `API_KEY` environment variabl
 curl -X POST http://localhost:8002/api/def-store/terminologies \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
-  -d '{
-    "code": "DOC_STATUS",
-    "name": "Document Status",
-    "description": "Status codes for documents in the system",
-    "case_sensitive": false,
-    "allow_multiple": false,
-    "extensible": true
-  }'
+  -d '[{
+    "value": "DOC_STATUS",
+    "label": "Document Status",
+    "description": "Status codes for documents in the system"
+  }]'
 ```
 
-### Add a term
+### Add terms
 
 ```bash
-curl -X POST http://localhost:8002/api/def-store/terms/TERM-000001 \
+curl -X POST http://localhost:8002/api/def-store/terminologies/<terminology_id>/terms \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
-  -d '{
-    "code": "DRAFT",
+  -d '[{
     "value": "draft",
     "label": "Draft",
     "description": "Document is in draft state",
     "sort_order": 1
-  }'
+  }]'
 ```
 
 ### Validate a value
@@ -156,15 +154,14 @@ curl -X POST "http://localhost:8002/api/def-store/import-export/import?format=js
   -H "Content-Type: application/json" \
   -d '{
     "terminology": {
-      "code": "PRIORITY",
-      "name": "Priority Levels",
-      "description": "Task priority levels",
-      "case_sensitive": false
+      "value": "PRIORITY",
+      "label": "Priority Levels",
+      "description": "Task priority levels"
     },
     "terms": [
-      {"code": "LOW", "value": "low", "label": "Low", "sort_order": 1},
-      {"code": "MEDIUM", "value": "medium", "label": "Medium", "sort_order": 2},
-      {"code": "HIGH", "value": "high", "label": "High", "sort_order": 3}
+      {"value": "low", "label": "Low", "sort_order": 1},
+      {"value": "medium", "label": "Medium", "sort_order": 2},
+      {"value": "high", "label": "High", "sort_order": 3}
     ]
   }'
 ```
@@ -175,30 +172,27 @@ curl -X POST "http://localhost:8002/api/def-store/import-export/import?format=js
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `terminology_id` | string | Unique ID from Registry (TERM-XXXXXX) |
-| `code` | string | Human-friendly code (e.g., DOC_STATUS) |
-| `name` | string | Display name |
+| `terminology_id` | string | Unique ID from Registry (UUID7) |
+| `value` | string | Unique code (e.g., DOC_STATUS) |
+| `label` | string | Display name |
 | `description` | string | Description |
-| `case_sensitive` | boolean | Whether values are case-sensitive |
-| `allow_multiple` | boolean | Whether multiple values can be selected |
-| `extensible` | boolean | Whether users can add new terms |
-| `status` | string | active, deprecated, draft |
-| `term_count` | integer | Number of terms |
+| `status` | string | active, inactive |
+| `namespace` | string | Namespace scope |
 
 ### Term
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `term_id` | string | Unique ID from Registry (T-XXXXXX) |
+| `term_id` | string | Unique ID from Registry (UUID7) |
 | `terminology_id` | string | Parent terminology ID |
-| `code` | string | Human-friendly code (e.g., DRAFT) |
-| `value` | string | The actual value stored/used |
+| `value` | string | The canonical value stored/used |
 | `label` | string | Display label |
+| `aliases` | array | Alternative values that resolve to this term |
 | `description` | string | Description |
 | `sort_order` | integer | Display order |
 | `parent_term_id` | string | Parent term for hierarchies |
-| `translations` | object | Labels in other languages |
-| `status` | string | active, deprecated, draft |
+| `translations` | array | Labels in other languages |
+| `status` | string | active, inactive, deprecated |
 
 ## Project Structure
 
@@ -220,8 +214,8 @@ def-store/
 │   │   └── import_export.py
 │   └── main.py               # FastAPI application
 ├── tests/                    # Test suite
-├── docker-compose.yml        # Compose configuration
-├── docker-compose.override.yml  # Dev overrides (auto-generated)
+├── podman-compose.yml        # Compose configuration
+├── podman-compose.override.yml  # Dev overrides (auto-generated)
 ├── Dockerfile
 └── requirements.txt
 ```

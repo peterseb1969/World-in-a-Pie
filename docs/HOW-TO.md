@@ -7,8 +7,14 @@ Hands-on guide with curl examples for every WIP operation. All examples build on
 ```bash
 # Set these once for all examples
 export API_KEY="dev_master_key_for_testing"
-export HOST="http://localhost"
+
+# All requests go through the Caddy reverse proxy, which routes /api/* to the correct service.
+# Use -k to accept self-signed certificates (default on localhost and .local domains).
+export HOST="https://localhost:8443"
+alias curlk='curl -k'
 ```
+
+> **Note:** All examples use the Caddy proxy URL. Never call services on their internal ports (8001-8005) directly — app code and scripts should always go through Caddy to get authentication, TLS, security headers, and unified routing.
 
 ---
 
@@ -61,15 +67,15 @@ Every entity lives in a namespace. The default `wip` namespace is created by `in
 ### Initialize default namespaces
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/namespaces/initialize-wip" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/namespaces/initialize-wip" | jq .
 ```
 
 ### Create a custom namespace
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/namespaces" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/namespaces" \
   -d '{
     "prefix": "clinic",
     "description": "Clinical data namespace",
@@ -80,15 +86,15 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### List namespaces
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/namespaces" | jq '.[].prefix'
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/namespaces" | jq '.[].prefix'
 ```
 
 ### Get namespace stats
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/namespaces/wip/stats" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/namespaces/wip/stats" | jq .
 # Returns: entity_counts by type (terminologies, terms, templates, documents, files)
 ```
 
@@ -101,8 +107,8 @@ Terminologies are controlled vocabularies. They must exist before templates can 
 ### Create a terminology
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies" \
   -d '[{
     "value": "COUNTRY",
     "label": "Country",
@@ -119,9 +125,9 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 Save the terminology ID:
 ```bash
-COUNTRY_TERM_ID=$(curl -s -X POST -H "X-API-Key: $API_KEY" \
+COUNTRY_TERM_ID=$(curlk -s -X POST -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies" \
+  "$HOST/api/def-store/terminologies" \
   -d '[{"value": "CURRENCY", "label": "Currency", "namespace": "wip"}]' \
   | jq -r '.results[0].id')
 
@@ -131,8 +137,8 @@ echo "Currency terminology ID: $COUNTRY_TERM_ID"
 ### Create multiple terminologies at once
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies" \
   -d '[
     {"value": "GENDER", "label": "Gender", "namespace": "wip"},
     {"value": "DOC_STATUS", "label": "Document Status", "namespace": "wip"}
@@ -142,29 +148,29 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### List terminologies
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies?namespace=wip" | jq '.items[] | {terminology_id, value, term_count}'
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies?namespace=wip" | jq '.items[] | {terminology_id, value, term_count}'
 ```
 
 ### Get a terminology by value
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/by-value/COUNTRY" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/by-value/COUNTRY" | jq .
 ```
 
 ### Get a terminology by ID
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/$TERMINOLOGY_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/$TERMINOLOGY_ID" | jq .
 ```
 
 ### Update a terminology
 
 ```bash
-curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies" \
+curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies" \
   -d '[{
     "terminology_id": "'"$TERMINOLOGY_ID"'",
     "label": "Country (ISO 3166)",
@@ -175,8 +181,8 @@ curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Delete a terminology (soft)
 
 ```bash
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies" \
   -d '[{"id": "'"$TERMINOLOGY_ID"'"}]' | jq .
 
 # Force delete (even if templates reference it):
@@ -186,8 +192,8 @@ curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Restore a deleted terminology
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/$TERMINOLOGY_ID/restore?restore_terms=true" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/$TERMINOLOGY_ID/restore?restore_terms=true" | jq .
 ```
 
 ---
@@ -200,14 +206,14 @@ Terms are values within a terminology. They support aliases for fuzzy matching.
 
 First, get the terminology ID:
 ```bash
-COUNTRY_ID=$(curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/by-value/COUNTRY" | jq -r '.terminology_id')
+COUNTRY_ID=$(curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/by-value/COUNTRY" | jq -r '.terminology_id')
 ```
 
 Create terms (bulk):
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies/$COUNTRY_ID/terms" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies/$COUNTRY_ID/terms" \
   -d '[
     {"value": "Germany", "aliases": ["DE", "DEU", "deutschland"], "label": "Germany"},
     {"value": "United Kingdom", "aliases": ["UK", "GB", "GBR", "Great Britain"], "label": "UK"},
@@ -219,8 +225,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 For 10k+ terms, use batch parameters:
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terminologies/$COUNTRY_ID/terms?batch_size=1000&registry_batch_size=50" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terminologies/$COUNTRY_ID/terms?batch_size=1000&registry_batch_size=50" \
   -d '[
     {"value": "France", "aliases": ["FR", "FRA"]},
     {"value": "Italy", "aliases": ["IT", "ITA"]}
@@ -230,31 +236,31 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### List terms in a terminology
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/$COUNTRY_ID/terms?page=1&page_size=50" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/$COUNTRY_ID/terms?page=1&page_size=50" \
   | jq '.items[] | {term_id, value, aliases}'
 ```
 
 ### Search terms
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terminologies/$COUNTRY_ID/terms?search=united" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terminologies/$COUNTRY_ID/terms?search=united" \
   | jq '.items[] | {term_id, value}'
 ```
 
 ### Get a term by ID
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8002/api/def-store/terms/$TERM_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/def-store/terms/$TERM_ID" | jq .
 ```
 
 ### Update terms
 
 ```bash
-curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terms" \
+curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terms" \
   -d '[{
     "term_id": "'"$TERM_ID"'",
     "aliases": ["DE", "DEU", "deutschland", "BRD"],
@@ -265,8 +271,8 @@ curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Deprecate a term
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terms/deprecate" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terms/deprecate" \
   -d '[{
     "term_id": "'"$OLD_TERM_ID"'",
     "reason": "Replaced by more specific term",
@@ -277,8 +283,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Delete terms (soft)
 
 ```bash
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/terms" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/terms" \
   -d '[{"id": "'"$TERM_ID"'"}]' | jq .
 ```
 
@@ -291,8 +297,8 @@ Templates define document schemas. Create templates for referenced entities befo
 ### Create a simple template
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "CUSTOMER",
     "label": "Customer",
@@ -313,9 +319,9 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 Save the template ID:
 ```bash
-CUSTOMER_TPL=$(curl -s -X POST -H "X-API-Key: $API_KEY" \
+CUSTOMER_TPL=$(curlk -s -X POST -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "CUSTOMER",
     "label": "Customer",
@@ -338,8 +344,8 @@ echo "Customer template ID: $CUSTOMER_TPL"
 The INVOICE template references CUSTOMER — so CUSTOMER must exist first:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "INVOICE",
     "label": "Invoice",
@@ -370,8 +376,8 @@ Child templates inherit parent fields:
 
 ```bash
 # Parent template
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "BASE_ENTITY",
     "label": "Base Entity",
@@ -385,8 +391,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   }]' | jq .
 
 # Child template — extends BASE_ENTITY, adds its own fields
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "FACILITY",
     "label": "Facility",
@@ -407,8 +413,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 Drafts allow circular dependencies and order-independent creation:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "value": "DRAFT_EXAMPLE",
     "label": "Draft Example",
@@ -420,52 +426,52 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
   }]' | jq .
 
 # Activate when ready (validates all references):
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/$DRAFT_TPL_ID/activate" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/$DRAFT_TPL_ID/activate" | jq .
 ```
 
 ### List templates
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates?namespace=wip&latest_only=true" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates?namespace=wip&latest_only=true" \
   | jq '.items[] | {template_id, value, version, status}'
 ```
 
 ### Get a template by value
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/by-value/CUSTOMER" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/by-value/CUSTOMER" | jq .
 ```
 
 ### Get a template by ID (resolved — includes inherited fields)
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/$TEMPLATE_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/$TEMPLATE_ID" | jq .
 ```
 
 ### Get a template raw (own fields only, no inheritance resolution)
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/$TEMPLATE_ID/raw" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/$TEMPLATE_ID/raw" | jq .
 ```
 
 ### Get all versions of a template
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/by-value/CUSTOMER/versions" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/by-value/CUSTOMER/versions" \
   | jq '.items[] | {version, status, fields: (.fields | length)}'
 ```
 
 ### Update a template (creates new version)
 
 ```bash
-curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{
     "template_id": "'"$CUSTOMER_TPL"'",
     "fields": [
@@ -485,23 +491,23 @@ curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Check template dependencies
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/$TEMPLATE_ID/dependencies" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/$TEMPLATE_ID/dependencies" | jq .
 # Returns: child_template_count, document_count
 ```
 
 ### Cascade parent update to children
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8003/api/template-store/templates/$PARENT_TPL_ID/cascade" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/template-store/templates/$PARENT_TPL_ID/cascade" | jq .
 ```
 
 ### Delete a template (soft)
 
 ```bash
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates" \
   -d '[{"id": "'"$TEMPLATE_ID"'"}]' | jq .
 
 # Force delete (even if documents exist):
@@ -517,8 +523,8 @@ Documents store validated, versioned data conforming to a template.
 ### Create a document
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$CUSTOMER_TPL"'",
     "namespace": "wip",
@@ -550,8 +556,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Create a document with synonyms (external IDs)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$CUSTOMER_TPL"'",
     "namespace": "wip",
@@ -577,8 +583,8 @@ The INVOICE references a CUSTOMER. You can reference by:
 
 ```bash
 # Reference by business key (customer_id value)
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$INVOICE_TPL"'",
     "namespace": "wip",
@@ -596,8 +602,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 # Reference by synonym (external ID)
 # Note: synonym resolution uses Registry lookup. The synonym must be registered
 # for the same entity (see "Create a document with synonyms" above).
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$INVOICE_TPL"'",
     "namespace": "wip",
@@ -614,8 +620,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Create multiple documents (bulk)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents?continue_on_error=true" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents?continue_on_error=true" \
   -d '[
     {
       "template_id": "'"$CUSTOMER_TPL"'",
@@ -634,8 +640,8 @@ If the template has `identity_fields: ["customer_id"]`, submitting a document wi
 
 ```bash
 # Version 1: original
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$CUSTOMER_TPL"'",
     "data": {"customer_id": "CUS-001", "name": "Acme Corp", "email": "old@acme.com", "country": "Germany"}
@@ -643,8 +649,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 # → {"status": "created", "version": 1, "is_new": true}
 
 # Version 2: same customer_id, different data
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$CUSTOMER_TPL"'",
     "data": {"customer_id": "CUS-001", "name": "Acme Corp", "email": "new@acme.com", "country": "Germany"}
@@ -656,53 +662,53 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Get a document by ID
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents/$DOCUMENT_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents/$DOCUMENT_ID" | jq .
 ```
 
 ### Get a specific version
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents/$DOCUMENT_ID/versions/1" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents/$DOCUMENT_ID/versions/1" | jq .
 ```
 
 ### Get version history
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents/$DOCUMENT_ID/versions" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents/$DOCUMENT_ID/versions" | jq .
 # Returns: identity_hash, current_version, versions[]
 ```
 
 ### Get document by identity hash
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents/by-identity/$IDENTITY_HASH" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents/by-identity/$IDENTITY_HASH" | jq .
 ```
 
 ### List documents
 
 ```bash
 # By namespace
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents?namespace=wip&page=1&page_size=50" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents?namespace=wip&page=1&page_size=50" \
   | jq '{total, pages, items: [.items[] | {document_id, template_value, version}]}'
 
 # By template (ID or value)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents?template_id=$CUSTOMER_TPL" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents?template_id=$CUSTOMER_TPL" | jq .
 
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/documents?template_value=CUSTOMER" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/documents?template_value=CUSTOMER" | jq .
 ```
 
 ### Query documents (complex filters)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents/query" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents/query" \
   -d '{
     "template_id": "'"$INVOICE_TPL"'",
     "filters": [
@@ -721,16 +727,16 @@ Available operators: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`, `nin`, `exists`
 ### Delete documents (soft)
 
 ```bash
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{"id": "'"$DOCUMENT_ID"'"}]' | jq .
 ```
 
 ### Archive documents
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents/archive" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents/archive" \
   -d '[{"id": "'"$DOCUMENT_ID"'", "archived_by": "admin"}]' | jq .
 ```
 
@@ -743,8 +749,8 @@ Files are binary objects stored in MinIO. Upload first, then reference from docu
 ### Upload a file
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files" \
   -F "file=@/path/to/contract.pdf" \
   -F "namespace=wip" \
   -F "description=Signed contract" \
@@ -760,8 +766,8 @@ Use the file ID in a document's `type: "file"` field:
 
 ```bash
 # Assuming the template has a field: {"name": "contract", "type": "file", ...}
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/documents" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/documents" \
   -d '[{
     "template_id": "'"$CONTRACT_TPL"'",
     "data": {
@@ -776,35 +782,35 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### List files
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files?namespace=wip" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files?namespace=wip" \
   | jq '.items[] | {file_id, filename, status, reference_count}'
 ```
 
 ### Get file metadata
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files/$FILE_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files/$FILE_ID" | jq .
 ```
 
 ### Download a file
 
 ```bash
 # Get a pre-signed URL (default: 1 hour expiry)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files/$FILE_ID/download" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files/$FILE_ID/download" | jq .
 
 # Or stream directly
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files/$FILE_ID/content" -o downloaded_file.pdf
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files/$FILE_ID/content" -o downloaded_file.pdf
 ```
 
 ### Update file metadata
 
 ```bash
-curl -s -X PATCH -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/files" \
+curlk -s -X PATCH -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/files" \
   -d '[{
     "file_id": "'"$FILE_ID"'",
     "tags": ["legal", "contracts", "signed"],
@@ -815,21 +821,21 @@ curl -s -X PATCH -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### List orphan files
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files/orphans/list" | jq '.[].file_id'
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files/orphans/list" | jq '.[].file_id'
 ```
 
 ### Delete files (soft, then hard)
 
 ```bash
 # Soft-delete
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/files" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/files" \
   -d '[{"id": "'"$FILE_ID"'"}]' | jq .
 
 # Hard-delete (permanent — only works on inactive files)
-curl -s -X DELETE -H "X-API-Key: $API_KEY" \
-  "$HOST:8004/api/document-store/files/$FILE_ID/hard" | jq .
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" \
+  "$HOST/api/document-store/files/$FILE_ID/hard" | jq .
 ```
 
 ---
@@ -841,23 +847,23 @@ The Registry is the central ID generator and identity resolver. Every entity get
 ### Browse registry entries
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/entries?namespace=wip&entity_type=documents&page=1&page_size=10" \
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/entries?namespace=wip&entity_type=documents&page=1&page_size=10" \
   | jq '.items[] | {entry_id, entity_type, primary_composite_key}'
 ```
 
 ### Search the registry
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/entries/search?q=CUS-001&namespace=wip" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/entries/search?q=CUS-001&namespace=wip" | jq .
 ```
 
 ### Get entry detail
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8001/api/registry/entries/$ENTRY_ID" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/registry/entries/$ENTRY_ID" | jq .
 
 # Returns: entry_id, primary_composite_key, synonyms[], search_values[], ...
 ```
@@ -867,8 +873,8 @@ curl -s -H "X-API-Key: $API_KEY" \
 This is the low-level call that services use internally. You can also use it directly:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/register" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/register" \
   -d '[{
     "namespace": "wip",
     "entity_type": "documents",
@@ -891,8 +897,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 
 **Empty composite key = always generates a new ID** (no dedup):
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/register" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/register" \
   -d '[{
     "namespace": "wip",
     "entity_type": "documents",
@@ -903,15 +909,15 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 **Same composite key = returns existing ID** (upsert):
 ```bash
 # First call: creates new entry
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/register" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/register" \
   -d '[{"namespace": "wip", "entity_type": "terms", "composite_key": {"terminology": "COUNTRY", "value": "Germany"}}]' \
   | jq '.results[0] | {status, registry_id}'
 # → {"status": "created", "registry_id": "019abc..."}
 
 # Second call: returns same ID
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/register" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/register" \
   -d '[{"namespace": "wip", "entity_type": "terms", "composite_key": {"terminology": "COUNTRY", "value": "Germany"}}]' \
   | jq '.results[0] | {status, registry_id}'
 # → {"status": "already_exists", "registry_id": "019abc..."} — same ID
@@ -922,8 +928,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 Resolves any identifier — canonical ID, synonym value, or merged ID:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/lookup/by-id" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/lookup/by-id" \
   -d '[
     {"entry_id": "019abc12-def3-7abc-..."},
     {"entry_id": "SAP-WIDGET-001", "namespace": "wip", "entity_type": "documents"}
@@ -936,8 +942,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Lookup by composite key
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/lookup/by-key" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/lookup/by-key" \
   -d '[{
     "namespace": "wip",
     "entity_type": "documents",
@@ -951,8 +957,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 Register an additional identifier for an existing entry:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/synonyms/add" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/synonyms/add" \
   -d '[{
     "target_id": "'"$DOCUMENT_ID"'",
     "synonym_namespace": "wip",
@@ -967,8 +973,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Remove a synonym
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/synonyms/remove" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/synonyms/remove" \
   -d '[{
     "target_id": "'"$DOCUMENT_ID"'",
     "synonym_namespace": "wip",
@@ -982,8 +988,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 Merge moves all synonyms from the deprecated entry to the preferred entry:
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/synonyms/merge" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/synonyms/merge" \
   -d '[{
     "preferred_id": "'"$PREFERRED_DOC_ID"'",
     "deprecated_id": "'"$DEPRECATED_DOC_ID"'"
@@ -995,8 +1001,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Provision IDs (registry generates)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/provision" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/provision" \
   -d '{
     "namespace": "wip",
     "entity_type": "documents",
@@ -1014,8 +1020,8 @@ The ID must match the configured format for the entity type (e.g., UUID7 for doc
 # Use one of the provisioned IDs, or generate a UUID7
 RESERVE_ID="019abc12-def3-7abc-8000-000000000001"
 
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/reserve" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/reserve" \
   -d '[{
     "entry_id": "'"$RESERVE_ID"'",
     "namespace": "wip",
@@ -1026,16 +1032,16 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Activate reserved entries
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries/activate" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries/activate" \
   -d '[{"entry_id": "'"$RESERVE_ID"'"}]' | jq .
 ```
 
 ### Update registry entries
 
 ```bash
-curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries" \
+curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries" \
   -d '[{
     "entry_id": "'"$ENTRY_ID"'",
     "metadata": {"imported_from": "legacy-system"},
@@ -1046,8 +1052,8 @@ curl -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Delete registry entries (soft)
 
 ```bash
-curl -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8001/api/registry/entries" \
+curlk -s -X DELETE -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/registry/entries" \
   -d '[{"entry_id": "'"$ENTRY_ID"'"}]' | jq .
 ```
 
@@ -1060,8 +1066,8 @@ The Reporting-Sync service provides unified search, activity tracking, and integ
 ### Unified search (across all entity types)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8005/api/reporting-sync/search" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/reporting-sync/search" \
   -d '{
     "query": "Acme",
     "types": ["terminology", "term", "template", "document", "file"],
@@ -1072,74 +1078,73 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Recent activity
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/activity/recent?limit=20" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/activity/recent?limit=20" | jq .
 ```
 
 ### Find documents referencing a term
 
 ```bash
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/references/term/$TERM_ID/documents?limit=100" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/references/term/$TERM_ID/documents?limit=100" | jq .
 ```
 
 ### Find entities referencing a target entity
 
 ```bash
 # What references this template?
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/entity/template/$TEMPLATE_ID/referenced-by?limit=100" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/entity/template/$TEMPLATE_ID/referenced-by?limit=100" | jq .
 
 # What references this terminology?
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/entity/terminology/$TERMINOLOGY_ID/referenced-by" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/entity/terminology/$TERMINOLOGY_ID/referenced-by" | jq .
 ```
 
 ### Integrity check
 
 ```bash
 # Quick check (last 5000 documents)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/health/integrity?document_limit=5000&recent_first=true" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/health/integrity?document_limit=5000&recent_first=true" | jq .
 
 # Full check (all documents — may take minutes for 500k+ docs)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/health/integrity?document_limit=0" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/health/integrity?document_limit=0" | jq .
 ```
 
 ### Reporting sync status
 
 ```bash
-# Health check (root-level, not under /api prefix)
-curl -s "$HOST:8005/health" | jq .
-
 # Sync worker status
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/status" | jq .
+# Note: the /health endpoint is on the app root (not under /api/reporting-sync/),
+# so it's not accessible via Caddy. Use /status instead.
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/status" | jq .
 
 # Metrics (events/sec, consumer lag, latency)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/metrics" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/metrics" | jq .
 
 # Consumer metrics (NATS stream details)
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/metrics/consumer" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/metrics/consumer" | jq .
 ```
 
 ### Trigger batch sync
 
 ```bash
 # Sync a specific template
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/sync/batch/CUSTOMER?force=true" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/sync/batch/CUSTOMER?force=true" | jq .
 
 # Sync all templates
-curl -s -X POST -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/sync/batch?force=true" | jq .
+curlk -s -X POST -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/sync/batch?force=true" | jq .
 
 # Check sync job status
-curl -s -H "X-API-Key: $API_KEY" \
-  "$HOST:8005/api/reporting-sync/sync/batch/jobs" | jq .
+curlk -s -H "X-API-Key: $API_KEY" \
+  "$HOST/api/reporting-sync/sync/batch/jobs" | jq .
 ```
 
 ---
@@ -1149,8 +1154,8 @@ curl -s -H "X-API-Key: $API_KEY" \
 ### Validate a term value
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/validate" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/validate" \
   -d '{
     "terminology_value": "COUNTRY",
     "value": "UK"
@@ -1162,8 +1167,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Validate multiple term values
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8002/api/def-store/validate/bulk" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/def-store/validate/bulk" \
   -d '{
     "items": [
       {"terminology_value": "COUNTRY", "value": "Germany"},
@@ -1176,8 +1181,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Validate a document (dry run — no save)
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8004/api/document-store/validation/validate" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/document-store/validation/validate" \
   -d '{
     "template_id": "'"$CUSTOMER_TPL"'",
     "data": {
@@ -1191,8 +1196,8 @@ curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 ### Validate a template's references
 
 ```bash
-curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
-  "$HOST:8003/api/template-store/templates/$TEMPLATE_ID/validate" \
+curlk -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  "$HOST/api/template-store/templates/$TEMPLATE_ID/validate" \
   -d '{"check_terminologies": true, "check_templates": true}' | jq .
 ```
 
@@ -1222,8 +1227,8 @@ To iterate all pages:
 ```bash
 PAGE=1
 while true; do
-  RESPONSE=$(curl -s -H "X-API-Key: $API_KEY" \
-    "$HOST:8002/api/def-store/terminologies?page=$PAGE&page_size=100")
+  RESPONSE=$(curlk -s -H "X-API-Key: $API_KEY" \
+    "$HOST/api/def-store/terminologies?page=$PAGE&page_size=100")
   ITEMS=$(echo "$RESPONSE" | jq '.items | length')
   echo "Page $PAGE: $ITEMS items"
   [ "$ITEMS" -eq 0 ] && break

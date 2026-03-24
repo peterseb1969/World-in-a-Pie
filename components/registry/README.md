@@ -2,6 +2,8 @@
 
 Federated identity management service for the World In a Pie ecosystem.
 
+> **Note:** The curl examples below use direct service ports (e.g., `localhost:8001`) for local development and testing. In production and for application code, always use the Caddy reverse proxy at `https://<hostname>:8443/api/registry/...` instead.
+
 ## Features
 
 - **Namespace Management**: Logical partitions for ID isolation
@@ -18,7 +20,7 @@ Federated identity management service for the World In a Pie ecosystem.
 
 ```bash
 # Start with hot reload
-docker-compose -f docker-compose.yml up --build
+podman-compose -f docker-compose.yml up --build
 
 # Access the API
 curl http://localhost:8001/health
@@ -35,7 +37,7 @@ export MASTER_API_KEY=$(openssl rand -hex 32)
 export MONGO_PASSWORD=your_secure_password
 
 # Start services
-docker-compose up -d
+podman-compose up -d
 ```
 
 ## Authentication

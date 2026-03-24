@@ -28,9 +28,9 @@ This guide covers rotating secrets and keys in a WIP deployment.
 
 4. **Update clients** using the old key
 
-5. **Verify** the new key works:
+5. **Verify** the new key works (via Caddy proxy):
    ```bash
-   curl -H "X-API-Key: <new-key>" http://localhost:8001/health
+   curl -k -H "X-API-Key: <new-key>" https://localhost:8443/api/registry/namespaces
    ```
 
 ### Rotating Service-Specific Keys

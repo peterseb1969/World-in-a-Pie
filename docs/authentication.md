@@ -36,7 +36,7 @@ WIP has **two independent authentication layers**:
 An **API key** is a secret string that you include in your HTTP request. It's like a password for your application.
 
 ```bash
-curl http://localhost:8002/api/def-store/terminologies \
+curl -k https://localhost:8443/api/def-store/terminologies \
   -H "X-API-Key: dev_master_key_for_testing"
            ▲
            └── This is the API key
@@ -153,14 +153,14 @@ TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
   -d "client_id=wip-console&client_secret=wip-console-secret&scope=openid profile email" \
   | jq -r '.access_token')
 
-curl http://localhost:8002/api/def-store/terminologies \
+curl -k https://localhost:8443/api/def-store/terminologies \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### Or Use an API Key
 
 ```bash
-curl http://localhost:8002/api/def-store/terminologies \
+curl -k https://localhost:8443/api/def-store/terminologies \
   -H "X-API-Key: dev_master_key_for_testing"
 ```
 
@@ -547,7 +547,7 @@ environment:
 **Usage:**
 ```bash
 # No header needed
-curl http://localhost:8002/api/def-store/terminologies
+curl -k https://localhost:8443/api/def-store/terminologies
 ```
 
 ---
@@ -662,11 +662,11 @@ echo $TOKEN | cut -d'.' -f2 | base64 -d 2>/dev/null | jq .
 
 ```bash
 # Should succeed (200 OK)
-curl -s http://localhost:8002/api/def-store/terminologies \
+curl -sk https://localhost:8443/api/def-store/terminologies \
   -H "X-API-Key: dev_master_key_for_testing" | jq '.total'
 
 # Should fail (401 Unauthorized)
-curl -s http://localhost:8002/api/def-store/terminologies \
+curl -sk https://localhost:8443/api/def-store/terminologies \
   -H "X-API-Key: wrong_key"
 ```
 
@@ -680,11 +680,11 @@ TOKEN=$(curl -s -X POST http://localhost:5556/dex/token \
   | jq -r '.access_token')
 
 # Should succeed (200 OK)
-curl -s http://localhost:8002/api/def-store/terminologies \
+curl -sk https://localhost:8443/api/def-store/terminologies \
   -H "Authorization: Bearer $TOKEN" | jq '.total'
 
 # Should fail (401 Unauthorized) - expired or invalid token
-curl -s http://localhost:8002/api/def-store/terminologies \
+curl -sk https://localhost:8443/api/def-store/terminologies \
   -H "Authorization: Bearer invalid_token"
 ```
 
@@ -692,7 +692,7 @@ curl -s http://localhost:8002/api/def-store/terminologies \
 
 ```bash
 # With WIP_AUTH_MODE=none, no header needed
-curl -s http://localhost:8002/api/def-store/terminologies | jq '.total'
+curl -sk https://localhost:8443/api/def-store/terminologies | jq '.total'
 ```
 
 ---
@@ -887,7 +887,6 @@ WIP_AUTH_LEGACY_API_KEY=<random-key>  # NOT the dev key
 2. **API key registry** - Database-backed key management with rotation
 3. **mTLS** - Certificate-based service-to-service authentication
 4. **Audit logging** - Record all authentication events to external system
-5. **Rate limiting** - Built into services (currently rely on reverse proxy)
 
 ---
 

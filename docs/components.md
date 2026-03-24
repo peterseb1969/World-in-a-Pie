@@ -2,6 +2,8 @@
 
 This document provides detailed specifications for each component in the World In a Pie (WIP) system.
 
+> **Accessing services:** All API calls should go through the Caddy reverse proxy at `https://localhost:8443` (or `https://<hostname>:8443`). Caddy routes `/api/registry/*`, `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, and `/api/reporting-sync/*` to the correct service. The internal ports listed below (8001–8005) are for reference and service-to-service communication only — do not use them from external clients or application code.
+
 ---
 
 ## Table of Contents
@@ -664,7 +666,7 @@ Each namespace has its own ID algorithm configuration **per entity type**. When 
 **Example: Custom namespace with prefixed IDs:**
 
 ```bash
-curl -X POST http://localhost:8001/api/registry/namespaces \
+curl -k -X POST https://localhost:8443/api/registry/namespaces \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '{

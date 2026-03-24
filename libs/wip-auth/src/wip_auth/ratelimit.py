@@ -14,8 +14,9 @@ Usage in a service's main.py:
 """
 
 import os
+from typing import Any
 
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.requests import Request
@@ -37,7 +38,7 @@ def create_limiter() -> Limiter:
     Set to empty string to disable rate limiting.
     """
     default_limit = os.getenv("WIP_RATE_LIMIT", "40000/minute")
-    default_limits = [default_limit] if default_limit else []
+    default_limits: Any = [default_limit] if default_limit else []
 
     return Limiter(
         key_func=_get_client_ip,

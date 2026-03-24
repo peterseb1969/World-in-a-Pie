@@ -23,30 +23,39 @@ world-in-a-pie/
 ├── CLAUDE.md                              # AI assistant context and roadmap
 │
 ├── docs/                                  # Documentation
-│   ├── philosophy.md
 │   ├── architecture.md
+│   ├── api-conventions.md
 │   ├── authentication.md
 │   ├── components.md
 │   ├── data-models.md
-│   ├── deployment.md
-│   ├── glossary.md
+│   ├── production-deployment.md
+│   ├── network-configuration.md
+│   ├── uniqueness-and-identity.md
+│   ├── reporting-layer.md
+│   ├── mcp-server.md
+│   ├── semantic-types.md
+│   ├── bulk-import-tuning.md
+│   ├── HOW-TO.md                         # Comprehensive curl examples
 │   ├── project-structure.md              # This file
-│   ├── storage.md
-│   ├── technology-stack.md
-│   ├── design/                           # Design documents
-│   │   ├── reference-fields.md
+│   ├── glossary.md
+│   ├── roadmap.md
+│   ├── design/                           # Feature design documents
+│   │   ├── ontology-support.md
 │   │   ├── event-replay.md
 │   │   ├── template-draft-mode.md
 │   │   ├── namespace-scoped-data.md
+│   │   ├── reference-fields.md
 │   │   ├── template-reference-pinning.md
-│   │   ├── reporting-sync-test-plan.md
+│   │   ├── distributed-deployment.md
+│   │   ├── namespace-authorization.md
+│   │   ├── natural-language-interface.md
 │   │   ├── wip-tools-cli.md
-│   │   ├── wip-nano.md
-│   │   └── ontology-support.md
-│   └── use-cases/                        # Use case documentation
-│       ├── README.md
-│       └── master-data/
-│           └── README.md
+│   │   └── wip-nano.md
+│   ├── security/                         # Security documentation
+│   │   ├── key-rotation.md
+│   │   └── encryption-at-rest.md
+│   ├── slash-commands/                   # Slash commands for app-building AI
+│   └── guides/                           # Setup and operational guides
 │
 ├── libs/                                  # Shared libraries
 │   └── wip-auth/                         # Authentication library
