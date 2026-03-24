@@ -16,6 +16,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Activate project venv if present and not already active
 if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
+    # shellcheck source=/dev/null
     . "$ROOT_DIR/.venv/bin/activate"
 fi
 RAW_DIR="$ROOT_DIR/reports/quality-audit/raw"
@@ -216,7 +217,6 @@ info "Step 6: mypy..."
 STEP_START=$(date +%s)
 
 MYPY_TOTAL=0
-MYPY_RESULTS="{}"
 
 for component_dir in \
     "$ROOT_DIR/components/registry/src" \
@@ -229,8 +229,8 @@ for component_dir in \
 
     component_name=$(echo "$component_dir" | sed "s|$ROOT_DIR/||" | sed 's|/src||' | sed 's|/|-|g')
     mypy "$component_dir" --config-file "$ROOT_DIR/pyproject.toml" \
-        --no-error-summary 2>&1 \
-        > "$RAW_DIR/mypy-${component_name}.txt" || true
+        --no-error-summary \
+        > "$RAW_DIR/mypy-${component_name}.txt" 2>&1 || true
     count=$(grep -c '^.*: error:' "$RAW_DIR/mypy-${component_name}.txt" 2>/dev/null || echo "0")
     MYPY_TOTAL=$((MYPY_TOTAL + count))
 done
@@ -255,7 +255,7 @@ if $HAS_VUE_TSC; then
     STEP_START=$(date +%s)
 
     cd "$ROOT_DIR/ui/wip-console"
-    npx vue-tsc --noEmit 2>&1 > "$RAW_DIR/vue-tsc.txt" || true
+    npx vue-tsc --noEmit > "$RAW_DIR/vue-tsc.txt" 2>&1 || true
     cd "$ROOT_DIR"
 
     VUE_TSC_COUNT=$(grep -c '^.*error TS' "$RAW_DIR/vue-tsc.txt" 2>/dev/null || echo "0")
@@ -277,8 +277,6 @@ if $HAS_ESLINT; then
     fi
 
     # Lint each project separately (each has its own node_modules/eslint)
-    ESLINT_ALL="[]"
-
     for eslint_project in "ui/wip-console" "libs/wip-client" "libs/wip-react"; do
         eslint_dir="$ROOT_DIR/$eslint_project"
         if [ -f "$eslint_dir/node_modules/.bin/eslint" ]; then
@@ -322,7 +320,6 @@ if ! $QUICK; then
     info "Step 9: pytest-cov..."
     STEP_START=$(date +%s)
 
-    PYTEST_COV_RESULTS=()
     for component in registry def-store template-store document-store reporting-sync ingest-gateway; do
         component_dir="$ROOT_DIR/components/$component"
         if [ ! -d "$component_dir/tests" ]; then continue; fi
@@ -392,8 +389,6 @@ ok "API consistency: $API_VIOLATIONS violations ($(step_time $STEP_START))"
 info "Step 12: Dependency health..."
 STEP_START=$(date +%s)
 
-DEP_RESULTS="{}"
-
 # pip-audit (if available)
 if command -v pip-audit &>/dev/null; then
     pip-audit --format json 2>/dev/null > "$RAW_DIR/pip-audit.json" || true
@@ -420,13 +415,19 @@ STEP_START=$(date +%s)
 MODE="full"
 if $QUICK; then MODE="quick"; fi
 
-python3 "$SCRIPT_DIR/quality-audit-report.py" \
-    --raw-dir "$RAW_DIR" \
-    --output "$REPORT_DIR/REPORT.md" \
-    --mode "$MODE" \
-    $(if $UPDATE_BASELINE; then echo "--update-baseline --baseline $REPORT_DIR/baseline.json"; fi) \
-    $(if $CI_MODE; then echo "--ci --baseline $REPORT_DIR/baseline.json"; fi) \
-    2>&1
+REPORT_ARGS=(
+    "--raw-dir" "$RAW_DIR"
+    "--output" "$REPORT_DIR/REPORT.md"
+    "--mode" "$MODE"
+)
+if $UPDATE_BASELINE; then
+    REPORT_ARGS+=("--update-baseline" "--baseline" "$REPORT_DIR/baseline.json")
+fi
+if $CI_MODE; then
+    REPORT_ARGS+=("--ci" "--baseline" "$REPORT_DIR/baseline.json")
+fi
+
+python3 "$SCRIPT_DIR/quality-audit-report.py" "${REPORT_ARGS[@]}" 2>&1
 
 ok "Report generated ($(step_time $STEP_START))"
 
