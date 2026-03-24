@@ -179,10 +179,18 @@ def _build_terminology_id_map(
     """
     id_map: dict[str, str] = {}
     try:
-        # Fetch all terminologies in the target namespace
-        data = client.get("def-store", "/terminologies",
-                          params={"namespace": namespace, "page_size": 500})
-        target_by_value = {t["value"]: t["terminology_id"] for t in data.get("items", [])}
+        # Fetch all terminologies in the target namespace (paginated, max 100/page)
+        all_items: list[dict] = []
+        page = 1
+        while True:
+            data = client.get("def-store", "/terminologies",
+                              params={"namespace": namespace, "page_size": 100, "page": page})
+            items = data.get("items", [])
+            all_items.extend(items)
+            if len(items) < 100:
+                break
+            page += 1
+        target_by_value = {t["value"]: t["terminology_id"] for t in all_items}
 
         for t in terminologies:
             old_id = t["terminology_id"]
@@ -294,7 +302,11 @@ def _create_templates(
                             raise WIPClientError(r.get("error", "Unknown error"))
                 else:
                     stats.created.templates += 1
-            except WIPClientError:
+            except Exception as e:
+                stats.failed.templates += 1
+                stats.errors.append(
+                    f"Failed to create template {tid} v{tpl.get('version', '?')}: {e}"
+                )
                 if not continue_on_error:
                     raise
 
