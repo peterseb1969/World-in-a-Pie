@@ -72,7 +72,7 @@ class JWKSCache:
             # If we have cached keys, keep using them
             if self._keys:
                 return
-            raise RuntimeError(f"Failed to fetch JWKS from {self.jwks_url}: {e}")
+            raise RuntimeError(f"Failed to fetch JWKS from {self.jwks_url}: {e}") from e
 
     async def get_key(self, kid: str) -> dict | None:
         """Get a public key by ID.
@@ -196,7 +196,7 @@ class OIDCProvider:
             raise HTTPException(
                 status_code=401,
                 detail=f"Invalid token format: {e}",
-            )
+            ) from e
 
         kid = header.get("kid")
         if not kid:
@@ -279,7 +279,7 @@ class OIDCProvider:
                 raise HTTPException(
                     status_code=401,
                     detail=f"Unsupported key type: {e}",
-                )
+                ) from e
 
         # Verify and decode the token
         try:
@@ -296,29 +296,29 @@ class OIDCProvider:
                     "verify_iss": bool(self.issuer_url),
                 },
             )
-        except jwt.ExpiredSignatureError:
+        except jwt.ExpiredSignatureError as e:
             raise HTTPException(
                 status_code=401,
                 detail="Token has expired",
                 headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
-            )
-        except jwt.InvalidAudienceError:
+            ) from e
+        except jwt.InvalidAudienceError as e:
             raise HTTPException(
                 status_code=401,
                 detail="Invalid token audience",
                 headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
-            )
-        except jwt.InvalidIssuerError:
+            ) from e
+        except jwt.InvalidIssuerError as e:
             raise HTTPException(
                 status_code=401,
                 detail="Invalid token issuer",
                 headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
-            )
+            ) from e
         except jwt.PyJWTError as e:
             raise HTTPException(
                 status_code=401,
                 detail=f"Token validation failed: {e}",
                 headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
-            )
+            ) from e
 
         return self._extract_identity(claims)
