@@ -13,6 +13,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Activate project venv if present and not already active
+if [ -z "${VIRTUAL_ENV:-}" ] && [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
+    . "$ROOT_DIR/.venv/bin/activate"
+fi
 RAW_DIR="$ROOT_DIR/reports/quality-audit/raw"
 REPORT_DIR="$ROOT_DIR/reports/quality-audit"
 

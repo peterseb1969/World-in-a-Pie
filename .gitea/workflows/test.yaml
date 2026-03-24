@@ -19,10 +19,13 @@ jobs:
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Install tools
-        run: pip install ruff shellcheck-py
+        run: |
+          . .venv/bin/activate
+          pip install ruff shellcheck-py
 
       - name: Ruff (changed files only)
         run: |
+          . .venv/bin/activate
           CHANGED_PY=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.py')
           if [ -n "$CHANGED_PY" ]; then
             echo "$CHANGED_PY" | xargs ruff check --config pyproject.toml --output-format=github
@@ -32,6 +35,7 @@ jobs:
 
       - name: ShellCheck (changed files only)
         run: |
+          . .venv/bin/activate
           CHANGED_SH=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.sh')
           if [ -n "$CHANGED_SH" ]; then
             echo "$CHANGED_SH" | xargs shellcheck
@@ -41,6 +45,7 @@ jobs:
 
       - name: Bandit security scan (changed files only)
         run: |
+          . .venv/bin/activate
           pip install bandit
           CHANGED_PY=$(git diff --name-only --diff-filter=d HEAD~1 -- '*.py')
           if [ -n "$CHANGED_PY" ]; then
@@ -60,11 +65,10 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
-      - name: Install pip-audit
-        run: pip install pip-audit
-
       - name: Audit wip-auth dependencies
         run: |
+          . .venv/bin/activate
+          pip install pip-audit
           pip install -e libs/wip-auth
           pip-audit --desc --fix --dry-run || true
 
@@ -96,6 +100,7 @@ jobs:
       - name: Install dependencies
         working-directory: components/${{ matrix.component }}
         run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
           pip install pytest pytest-asyncio httpx
 
@@ -104,7 +109,9 @@ jobs:
         env:
           MONGO_URI: mongodb://localhost:27017/
           PYTHONPATH: src
-        run: pytest tests/ -v --tb=short
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
 
   # Ingest gateway (no DB needed)
   test-ingest-gateway:
@@ -120,6 +127,7 @@ jobs:
       - name: Install dependencies
         working-directory: components/ingest-gateway
         run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
           pip install pytest pytest-asyncio httpx
 
@@ -127,7 +135,9 @@ jobs:
         working-directory: components/ingest-gateway
         env:
           PYTHONPATH: src:tests
-        run: pytest tests/ -v --tb=short
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
 
   # Reporting-sync (no DB needed)
   test-reporting-sync:
@@ -143,6 +153,7 @@ jobs:
       - name: Install dependencies
         working-directory: components/reporting-sync
         run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
           pip install pytest pytest-asyncio httpx
 
@@ -150,7 +161,9 @@ jobs:
         working-directory: components/reporting-sync
         env:
           PYTHONPATH: src
-        run: pytest tests/ -v --tb=short
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
 
   # MCP server (no DB needed)
   test-mcp-server:
@@ -166,6 +179,7 @@ jobs:
       - name: Install dependencies
         working-directory: components/mcp-server
         run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
@@ -173,7 +187,9 @@ jobs:
         working-directory: components/mcp-server
         env:
           PYTHONPATH: src
-        run: pytest tests/ -v --tb=short
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
 
   # wip-auth library
   test-wip-auth:
@@ -187,10 +203,14 @@ jobs:
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: pip install -e "libs/wip-auth[dev]"
+        run: |
+          . .venv/bin/activate
+          pip install -e "libs/wip-auth[dev]"
 
       - name: Run tests
-        run: pytest libs/wip-auth/tests/ -v --tb=short
+        run: |
+          . .venv/bin/activate
+          pytest libs/wip-auth/tests/ -v --tb=short
 
   # WIP-Toolkit
   test-wip-toolkit:
@@ -205,8 +225,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          . .venv/bin/activate
           pip install -e WIP-Toolkit
           pip install pytest
 
       - name: Run tests
-        run: pytest WIP-Toolkit/tests/ -v --tb=short
+        run: |
+          . .venv/bin/activate
+          pytest WIP-Toolkit/tests/ -v --tb=short

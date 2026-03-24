@@ -4,6 +4,19 @@ Future plans, pending features, and design specifications.
 
 ---
 
+## v1.1
+
+### Namespace Deletion
+
+Delete an entire namespace and all its data permanently. A `deletion_mode` field on the namespace (`retain` or `full`) controls whether hard-delete is permitted. Deletion uses a persistent journal for crash-safe resumption — lock the namespace, build the journal, execute step-by-step across MongoDB, MinIO, and PostgreSQL. Dry-run mode shows full impact report (entity counts, inbound references from other namespaces) before committing. Completed journals serve as audit trail.
+
+Enables the dev→prod workflow: create a `full` dev namespace, iterate on the data model with AI, export, bootstrap into a `retain` prod namespace, delete the dev namespace cleanly.
+
+- Design: `docs/design/namespace-deletion.md`
+- Status: Design complete
+
+---
+
 ## Near-Term
 
 ### Namespace Authorization — UX Polish
@@ -105,6 +118,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `event-replay.md` | Implemented (API + MCP tools) |
 | `namespace-scoped-data.md` | Phase 1-2 complete, Phase 3-5 pending |
 | `namespace-authorization.md` | Core complete, UX polish remaining |
+| `namespace-deletion.md` | Design complete, implementation pending (v1.1) |
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
 | `distributed-deployment.md` | Phase 1-2 complete, Phase 3 pending |
 | `wip-tools-cli.md` | Partially implemented (`WIP-Toolkit/`) |
