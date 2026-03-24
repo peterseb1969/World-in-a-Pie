@@ -164,19 +164,26 @@ echo "   Written: .mcp.json"
 # --- Copy client libraries ---
 
 echo "5. Copying client libraries..."
+MISSING_LIBS=()
 CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
 REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
 
 # Auto-build tarballs if missing and npm is available
-if [ -z "$CLIENT_TARBALL" ] && command -v npm &>/dev/null; then
-    echo "   Building @wip/client tarball..."
-    (cd "$WIP_ROOT/libs/wip-client" && npm pack --quiet 2>/dev/null)
-    CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
-fi
-if [ -z "$REACT_TARBALL" ] && command -v npm &>/dev/null; then
-    echo "   Building @wip/react tarball..."
-    (cd "$WIP_ROOT/libs/wip-react" && npm pack --quiet 2>/dev/null)
-    REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
+if [ -z "$CLIENT_TARBALL" ] || [ -z "$REACT_TARBALL" ]; then
+    if command -v npm &>/dev/null; then
+        if [ -z "$CLIENT_TARBALL" ]; then
+            echo "   Building @wip/client tarball..."
+            (cd "$WIP_ROOT/libs/wip-client" && npm pack --quiet 2>/dev/null)
+            CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
+        fi
+        if [ -z "$REACT_TARBALL" ]; then
+            echo "   Building @wip/react tarball..."
+            (cd "$WIP_ROOT/libs/wip-react" && npm pack --quiet 2>/dev/null)
+            REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
+        fi
+    else
+        echo "   npm not found — cannot auto-build tarballs"
+    fi
 fi
 
 if [ -n "$CLIENT_TARBALL" ]; then
@@ -188,8 +195,7 @@ if [ -n "$CLIENT_TARBALL" ]; then
         echo "   Copied: $(basename "$CLIENT_TARBALL") (README extraction failed)"
     fi
 else
-    echo "   Warning: @wip/client tarball not found in libs/wip-client/"
-    echo "   Build with: cd $WIP_ROOT/libs/wip-client && npm pack"
+    MISSING_LIBS+=("@wip/client")
 fi
 
 if [ -n "$REACT_TARBALL" ]; then
@@ -201,8 +207,7 @@ if [ -n "$REACT_TARBALL" ]; then
         echo "   Copied: $(basename "$REACT_TARBALL") (README extraction failed)"
     fi
 else
-    echo "   Warning: @wip/react tarball not found in libs/wip-react/"
-    echo "   Build with: cd $WIP_ROOT/libs/wip-react && npm pack"
+    MISSING_LIBS+=("@wip/react")
 fi
 
 # --- Generate CLAUDE.md ---
@@ -291,6 +296,29 @@ echo "   Git repo initialised with initial commit"
 echo ""
 echo "Done! Your app project is ready at: $APP_DIR"
 echo ""
+
+# --- Prominent warning if client libraries are missing ---
+
+if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo "!!                                                              !!"
+    echo "!!  CLIENT LIBRARIES MISSING — APP BUILDING WILL NOT WORK       !!"
+    echo "!!                                                              !!"
+    echo "!!  Without these libraries, Claude falls back to raw API       !!"
+    echo "!!  calls instead of using the typed client SDK.                !!"
+    echo "!!                                                              !!"
+    echo "!!  Missing: ${MISSING_LIBS[*]}"
+    echo "!!                                                              !!"
+    echo "!!  Fix: install npm, then run from the WIP directory:          !!"
+    echo "!!                                                              !!"
+    echo "!!    cd $WIP_ROOT/libs/wip-client && npm pack"
+    echo "!!    cd $WIP_ROOT/libs/wip-react && npm pack"
+    echo "!!    # Then re-run this script                                 !!"
+    echo "!!                                                              !!"
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    echo ""
+fi
+
 echo "Next steps:"
 echo "  cd $APP_DIR"
 echo "  claude          # Launch Claude Code"
