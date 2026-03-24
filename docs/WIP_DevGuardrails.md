@@ -30,7 +30,7 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 # Guide 1: Gateway & Portal
 
-> **Status: Not yet implemented.** This guide describes an aspirational architecture. The gateway and portal do not exist yet. Current deployments access apps directly by port. This guide is included to capture the design intent for when the second constellation app is deployed.
+> **Status: Partially implemented.** The **API reverse proxy already exists** — Caddy routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. Apps should always use Caddy for WIP API access (e.g., `baseUrl: ''` in browser, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports. What is **not yet implemented** is the app gateway and portal described below: app manifest registration, automatic routing of `/apps/*` paths to app containers, and the portal landing page.
 
 > **Priority: Critical — deploy before the second app**
 > On a Raspberry Pi with a single IP address, every containerised app needs its own port. Without a gateway, users must remember that the Statement Manager is on port 8081, the Receipt Scanner is on 8082, WIP Console is on 8443, and so on. This is unworkable beyond two apps. The gateway solves port management, TLS termination, and app discovery in a single container.
@@ -112,7 +112,7 @@ The cleanest approach would be conditional behaviour based on the number of regi
 
 Importantly, the WIP Console would be one of the apps listed on the portal — not the portal itself. The Console is an administration and debugging tool; mixing it with app navigation would confuse both audiences. The portal is a separate, minimal UI whose only job is discovery and routing.
 
-**This is not required for the initial experiment** — direct port navigation is sufficient for development. But for community uptake and ease of onboarding, a single HTTPS entry point that “just works” on a Raspberry Pi would be a significant usability improvement. The detection mechanism is trivial (count routing entries at startup), and the implementation stays within Caddy’s existing configuration model.
+**The API proxy is already deployed** — Caddy routes all `/api/*` paths to the correct WIP services. What remains is extending this to handle app routing (`/apps/*`) and auto-generating the portal page from app manifests. The detection mechanism is trivial (count routing entries at startup), and the implementation stays within Caddy’s existing configuration model.
 
 # Guide 2: UI Stack & Styling
 

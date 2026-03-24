@@ -22,7 +22,7 @@ Avoid parallel background agents for code generation — they multiply context c
 ### Before Writing Any Code
 1. Run `/wip-status` to confirm all terminologies and templates from Phase 3 are intact.
 2. Read `docs/WIP_DevGuardrails.md` — all seven guides apply in this phase.
-   - Note: Guide 1 (Gateway & Portal) is not yet implemented. Apps currently use direct ports.
+   - Note: Guide 1 (App Gateway & Portal) is not yet implemented — apps don't yet register via manifests or appear on a portal page. However, the **API proxy already exists**: Caddy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service ports. Your app should use Caddy (e.g., `baseUrl: ''` in browser, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports.
 3. Read `libs/wip-client/README.md` and `libs/wip-react/README.md` — understand @wip/client and @wip/react APIs. The design spec (`docs/WIP_ClientLibrary_Spec.md`) is reference material for deeper questions.
 4. Read `docs/WIP_PoNIFs.md` — especially PoNIF #4 (bulk-first 200 OK) and PoNIF #3 (document identity). These affect every @wip/client call.
 5. Confirm the app name, gateway path, and internal port with the user.

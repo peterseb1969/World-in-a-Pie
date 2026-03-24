@@ -66,7 +66,7 @@ import { WipProvider, useTerminologies, useCreateDocument } from '@wip/react'
 
 const queryClient = new QueryClient()
 const wipClient = createWipClient({
-  baseUrl: 'http://localhost',
+  baseUrl: '',  // In browser: uses window.location.origin (e.g. https://localhost:8443)
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
@@ -132,7 +132,7 @@ import { WipProvider } from '@wip/react'
 
 const queryClient = new QueryClient()
 const wipClient = createWipClient({
-  baseUrl: 'http://localhost',
+  baseUrl: '',  // In browser: uses window.location.origin (e.g. https://localhost:8443)
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
