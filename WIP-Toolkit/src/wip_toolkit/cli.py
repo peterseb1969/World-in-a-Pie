@@ -45,6 +45,9 @@ def main(ctx: click.Context, host: str, proxy: bool, api_key: str, no_verify_ssl
 @click.option("--skip-closure", is_flag=True, help="Skip referential integrity closure")
 @click.option("--skip-synonyms", is_flag=True, help="Skip Registry synonym export")
 @click.option("--latest-only", is_flag=True, help="Export only latest document versions")
+@click.option("--filter-templates", default=None,
+              help="Only export templates matching this prefix (e.g., 'DND_'). "
+                   "Documents are filtered to matching templates. Comma-separated for multiple prefixes.")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.pass_context
 def export(
@@ -57,6 +60,7 @@ def export(
     skip_closure: bool,
     skip_synonyms: bool,
     latest_only: bool,
+    filter_templates: str | None,
     dry_run: bool,
 ) -> None:
     """Export a namespace to a ZIP archive.
@@ -80,6 +84,11 @@ def export(
             console.print("\n[red bold]Some services are not healthy. Aborting.[/red bold]")
             sys.exit(1)
 
+        # Parse template filter prefixes
+        template_prefixes = None
+        if filter_templates:
+            template_prefixes = [p.strip() for p in filter_templates.split(",") if p.strip()]
+
         stats = run_export(
             client, namespace, output_path,
             include_files=include_files,
@@ -88,6 +97,7 @@ def export(
             skip_closure=skip_closure,
             skip_synonyms=skip_synonyms,
             latest_only=latest_only,
+            template_prefixes=template_prefixes,
             dry_run=dry_run,
         )
 

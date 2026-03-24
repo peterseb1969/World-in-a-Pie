@@ -25,6 +25,7 @@ def compute_closure(
     terms: list[dict[str, Any]],
     templates: list[dict[str, Any]],
     documents: list[dict[str, Any]],
+    known_document_ids: set[str] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[str]]:
     """Compute referential integrity closure.
 
@@ -94,7 +95,7 @@ def compute_closure(
         )
 
     # Check documents for external document references (warn only)
-    _check_document_references(documents, known_template_ids, warnings)
+    _check_document_references(documents, known_template_ids, known_document_ids, warnings)
 
     return extra_terminologies, extra_terms, extra_templates, warnings
 
@@ -155,9 +156,17 @@ def _scan_template_references(
 def _check_document_references(
     documents: list[dict[str, Any]],
     known_template_ids: set[str],
+    known_document_ids: set[str] | None,
     warnings: list[str],
 ) -> None:
-    """Check documents for external references (warnings only)."""
+    """Check documents for external references (warnings only).
+
+    Only flags document references that point outside the export set.
+    If known_document_ids is None, builds it from the documents list.
+    """
+    if known_document_ids is None:
+        known_document_ids = {d["document_id"] for d in documents if "document_id" in d}
+
     external_doc_refs: set[str] = set()
     external_tpl_refs: set[str] = set()
 
@@ -171,7 +180,7 @@ def _check_document_references(
         for ref in doc.get("references") or []:
             resolved = ref.get("resolved") or {}
             doc_id = resolved.get("document_id")
-            if doc_id:
+            if doc_id and doc_id not in known_document_ids:
                 external_doc_refs.add(doc_id)
 
     if external_tpl_refs:

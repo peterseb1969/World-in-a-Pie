@@ -38,6 +38,7 @@ def run_export(
     skip_closure: bool = False,
     skip_synonyms: bool = False,
     latest_only: bool = False,
+    template_prefixes: list[str] | None = None,
     dry_run: bool = False,
 ) -> ExportStats:
     """Run a full namespace export.
@@ -69,6 +70,27 @@ def run_export(
     # Fetch raw (unresolved) versions of each template
     templates = _fetch_raw_templates(collector, templates)
 
+    # Apply template prefix filter
+    if template_prefixes:
+        before = len(templates)
+        templates = [
+            t for t in templates
+            if any(t.get("value", "").startswith(prefix) for prefix in template_prefixes)
+        ]
+        console.print(
+            f"  Filtered templates by prefix {template_prefixes}: "
+            f"{before} → {len(templates)}"
+        )
+        # Also filter terminologies to only those referenced by remaining templates
+        referenced_term_ids = _collect_terminology_refs(templates)
+        before_terms = len(terminologies)
+        terminologies = [t for t in terminologies if t["terminology_id"] in referenced_term_ids]
+        terms = [t for t in terms if t.get("terminology_id") in referenced_term_ids]
+        console.print(
+            f"  Filtered terminologies to referenced: "
+            f"{before_terms} → {len(terminologies)}"
+        )
+
     # Tag primary entities
     for entity in terminologies:
         entity.setdefault("_source", "primary")
@@ -80,6 +102,9 @@ def run_export(
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
 
+    # Build template_id set for document filtering
+    filtered_template_ids = {t["template_id"] for t in templates} if template_prefixes else None
+
     # Referential integrity closure (before documents)
     closure_info = ClosureInfo()
     if not skip_closure:
@@ -89,9 +114,13 @@ def run_export(
         closure_docs: list[dict[str, Any]] = []
         if not skip_documents:
             # Fetch a lightweight set for closure analysis
-            closure_docs = collector.fetch_documents(latest_only=latest_only)
+            closure_docs = collector.fetch_documents(
+                latest_only=latest_only, template_ids=filtered_template_ids,
+            )
+        known_document_ids = {d["document_id"] for d in closure_docs} if closure_docs else None
         extra_terms_list, extra_terms_items, extra_templates, warnings = compute_closure(
             client, namespace, terminologies, terms, templates, closure_docs,
+            known_document_ids=known_document_ids,
         )
 
         if extra_terms_list or extra_templates:
@@ -117,15 +146,20 @@ def run_export(
 
     if dry_run:
         if not skip_documents:
-            # Quick count via one page with page_size=1 to get total
-            try:
-                data = client.get(
-                    "document-store", "/documents",
-                    params={"namespace": namespace, "page_size": 1},
-                )
-                doc_count = data.get("total", 0)
-            except Exception:
-                doc_count = 0
+            if filtered_template_ids is not None:
+                # With template filter, we already fetched closure_docs — use that count
+                doc_count = len(closure_docs)
+                file_count = 0  # Can't cheaply count filtered files
+            else:
+                # Quick count via one page with page_size=1 to get total
+                try:
+                    data = client.get(
+                        "document-store", "/documents",
+                        params={"namespace": namespace, "page_size": 1},
+                    )
+                    doc_count = data.get("total", 0)
+                except Exception:
+                    doc_count = 0
             try:
                 data = client.get(
                     "document-store", "/files",
@@ -162,6 +196,8 @@ def run_export(
         console.print("\n[bold cyan]Phase 1b:[/bold cyan] Streaming documents")
         for page in collector.stream_documents(latest_only=latest_only, page_size=1000):
             for doc in page:
+                if filtered_template_ids is not None and doc.get("template_id") not in filtered_template_ids:
+                    continue
                 doc.setdefault("_source", "primary")
                 doc.setdefault("_namespace", namespace)
                 writer.add_entity("documents", doc)
@@ -228,6 +264,20 @@ def run_export(
     _print_counts(counts)
 
     return _build_stats(namespace, counts, closure_info, start)
+
+
+def _collect_terminology_refs(templates: list[dict[str, Any]]) -> set[str]:
+    """Collect all terminology IDs referenced by a set of templates."""
+    refs: set[str] = set()
+    for tpl in templates:
+        for field in tpl.get("fields", []):
+            for key in ("terminology_ref", "array_terminology_ref"):
+                val = field.get(key)
+                if val:
+                    refs.add(val)
+            for tterm in field.get("target_terminologies") or []:
+                refs.add(tterm)
+    return refs
 
 
 def _fetch_raw_templates(
