@@ -52,11 +52,12 @@ def restore_import(
     _ensure_namespace(client, target_namespace, stats)
 
     # Step 1: Create terminologies via Def-Store (service handles Registry)
-    # Def-Store doesn't support terminology_id pass-through, so we track
-    # old→new ID mappings and remap all downstream references.
+    # Def-Store doesn't support terminology_id pass-through, so we build
+    # old→new ID mappings after creation and remap all downstream references.
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies")
     terminologies = list(reader.read_entities("terminologies"))
-    term_id_map = _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
+    _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
+    term_id_map = _build_terminology_id_map(client, target_namespace, terminologies)
     if term_id_map:
         console.print(f"  ID mappings: {len(term_id_map)} terminology ID(s) remapped")
 
@@ -130,16 +131,9 @@ def _create_terminologies(
     terminologies: list[dict],
     stats: ImportStats,
     continue_on_error: bool,
-) -> dict[str, str]:
-    """Create terminologies via Def-Store API.
-
-    Returns a mapping of old_terminology_id → new_terminology_id for any
-    IDs that changed (cross-instance restore where IDs are regenerated).
-    """
-    id_map: dict[str, str] = {}
-
+) -> None:
+    """Create terminologies via Def-Store API."""
     for t in terminologies:
-        old_id = t["terminology_id"]
         try:
             payload = {
                 "value": t["value"],
@@ -156,18 +150,11 @@ def _create_terminologies(
             r = result["results"][0]
             if r["status"] == "created":
                 stats.created.terminologies += 1
-                new_id = r.get("id", "")
-                if new_id and new_id != old_id:
-                    id_map[old_id] = new_id
             elif r["status"] == "error" and "already exists" in r.get("error", ""):
                 stats.skipped.terminologies += 1
-                # Look up the existing terminology's ID by value
-                new_id = _lookup_terminology_id(client, namespace, t["value"])
-                if new_id and new_id != old_id:
-                    id_map[old_id] = new_id
             else:
                 stats.failed.terminologies += 1
-                stats.errors.append(f"Failed to create terminology {old_id}: {r.get('error')}")
+                stats.errors.append(f"Failed to create terminology {t['terminology_id']}: {r.get('error')}")
                 if not continue_on_error:
                     raise WIPClientError(r.get("error", "Unknown error"))
         except WIPClientError:
@@ -179,17 +166,33 @@ def _create_terminologies(
         f"skipped {stats.skipped.terminologies}, "
         f"failed {stats.failed.terminologies}"
     )
-    return id_map
 
 
-def _lookup_terminology_id(client: WIPClient, namespace: str, value: str) -> str | None:
-    """Look up a terminology's ID by value and namespace."""
+def _build_terminology_id_map(
+    client: WIPClient,
+    namespace: str,
+    terminologies: list[dict],
+) -> dict[str, str]:
+    """Build old→new ID mapping by fetching all terminologies in the target namespace.
+
+    Matches by value (e.g., DND_CLASS_NAME) which is unique within a namespace.
+    """
+    id_map: dict[str, str] = {}
     try:
-        data = client.get("def-store", f"/terminologies/by-value/{value}",
-                          params={"namespace": namespace})
-        return data.get("terminology_id")
-    except WIPClientError:
-        return None
+        # Fetch all terminologies in the target namespace
+        data = client.get("def-store", "/terminologies",
+                          params={"namespace": namespace, "page_size": 500})
+        target_by_value = {t["value"]: t["terminology_id"] for t in data.get("items", [])}
+
+        for t in terminologies:
+            old_id = t["terminology_id"]
+            new_id = target_by_value.get(t["value"])
+            if new_id and new_id != old_id:
+                id_map[old_id] = new_id
+    except WIPClientError as e:
+        console.print(f"  [yellow]Warning: Could not fetch target terminologies for ID mapping: {e}[/yellow]")
+
+    return id_map
 
 
 def _create_terms(
