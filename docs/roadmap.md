@@ -35,6 +35,19 @@ Alternative: Registry "draft" entity mode — register all IDs as draft (skip re
 
 ## Near-Term
 
+### dev-delete.py: Namespace and Prefix Support
+
+Add `--namespace` and `--prefix` flags to `scripts/dev-delete.py` for bulk deletion without needing individual entity IDs. Currently the script only accepts explicit WIP IDs, which is impractical for cleaning up entire namespaces (today requires a raw pymongo one-liner).
+
+Examples:
+- `python scripts/dev-delete.py --namespace dnd --force` — delete all entities in namespace `dnd` across MongoDB, MinIO, and PostgreSQL
+- `python scripts/dev-delete.py --namespace dnd --cascade --force` — same, with cascade to Registry entries
+- `python scripts/dev-delete.py --prefix DND_ --type terminology --force` — delete all terminologies matching a value prefix
+
+Should reuse the existing `ENTITY_MAP` and cascade logic, and respect `--no-minio` / `--no-postgres` flags.
+
+- Status: Not started
+
 ### Namespace Authorization — UX Polish
 
 Core permission system is implemented (grant model, CRUD API, service enforcement). Remaining work: ~50 button guards in the Console detail views (`v-if="namespaceStore.canWrite"`). The API already rejects unauthorized requests — this is cosmetic polish.
