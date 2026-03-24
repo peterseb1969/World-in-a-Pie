@@ -77,7 +77,7 @@ GET requests retry automatically on 502/503/504 with exponential backoff (defaul
 import { createWipClient } from '@wip/client'
 
 const client = createWipClient({
-  baseUrl: 'http://localhost',
+  baseUrl: '',  // In browser: uses window.location.origin (e.g. https://localhost:8443)
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
@@ -120,8 +120,9 @@ import { createWipClient, ApiKeyAuthProvider, OidcAuthProvider } from '@wip/clie
 
 const client = createWipClient({
   // Required: base URL of your WIP instance
-  // In browser, empty string defaults to window.location.origin
-  baseUrl: 'http://localhost',
+  // In browser, empty string defaults to window.location.origin (recommended)
+  // For Node.js scripts: 'https://localhost:8443' or 'https://your-host:8443'
+  baseUrl: '',
 
   // Auth: API key, OIDC token callback, or custom AuthProvider
   auth: { type: 'api-key', key: 'your-key' },
@@ -166,7 +167,7 @@ API key auth headers are cached internally for performance. OIDC headers call th
 | Registry | `client.registry` | 8001 | Namespaces, ID management, synonyms, merge |
 | Reporting-Sync | `client.reporting` | 8005 | Cross-service search, integrity checks, activity feed |
 
-All services route through the `baseUrl`. When behind a reverse proxy (Caddy), the proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service. In localhost mode, each service runs on its own port — the client prepends the correct port automatically based on the API path.
+All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps, use `baseUrl: ''` (resolves to `window.location.origin`). In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 
 ---
 

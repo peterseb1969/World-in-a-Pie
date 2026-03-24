@@ -183,7 +183,7 @@ onError: (error) =\> log(error), // Global error hook
 
 });
 
-The host URL can point to the gateway (which routes /api/\* to the correct services) or directly to individual services if no gateway is deployed. When using the gateway, all services share the same origin, simplifying CORS. When using direct access, the client constructs per-service URLs from the host and standard port offsets (Registry: 8001, Def-Store: 8002, Template-Store: 8003, Document-Store: 8004, Reporting-Sync: 8005), or accepts explicit per-service overrides.
+The `baseUrl` points to the Caddy reverse proxy, which routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. In browser apps, use `baseUrl: ''` (resolves to `window.location.origin`). In Node.js scripts, use `baseUrl: 'https://hostname:8443'`. The client does not support direct per-service port access — all requests go through the single `baseUrl` and rely on Caddy for routing.
 
 ## Service access
 
