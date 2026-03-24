@@ -445,42 +445,77 @@ def _create_documents_streamed(
     for versions in by_id.values():
         ordered_docs.extend(versions)
 
-    # Create in batches
+    # Create in batches, collecting failures for retry
+    failed_docs: list[dict] = []
+
     for i in range(0, len(ordered_docs), batch_size):
         batch = ordered_docs[i:i + batch_size]
-        items = []
-        for d in batch:
-            items.append({
-                "template_id": d["template_id"],
-                "template_version": d.get("template_version"),
-                "document_id": d["document_id"],
-                "version": d.get("version"),
-                "namespace": namespace,
-                "data": d["data"],
-                "created_by": "wip-toolkit-restore",
-                "metadata": d.get("metadata"),
-            })
+        items = _build_document_payloads(batch, namespace)
 
         try:
             result = client.post(
                 "document-store", "/documents",
                 json=items,
-                params={"continue_on_error": str(continue_on_error).lower()},
+                params={"continue_on_error": "true"},
             )
             stats.created.documents += result.get("succeeded", 0)
-            stats.failed.documents += result.get("failed", 0)
-            for r in result.get("results", []):
-                if r.get("error"):
-                    stats.errors.append(f"Document error: {r['error']}")
+            for idx_r, r in enumerate(result.get("results", [])):
+                if r.get("status") == "error":
+                    failed_docs.append(batch[idx_r])
         except WIPClientError as e:
-            stats.failed.documents += len(batch)
+            failed_docs.extend(batch)
             stats.errors.append(f"Failed to create document batch at index {i}: {e}")
             if not continue_on_error:
                 raise
 
+    # Retry failed documents (handles ordering issues like parent_class refs)
+    if failed_docs:
+        console.print(f"  Retrying {len(failed_docs)} failed document(s)...")
+        retry_items = _build_document_payloads(failed_docs, namespace)
+        try:
+            result = client.post(
+                "document-store", "/documents",
+                json=retry_items,
+                params={"continue_on_error": "true"},
+            )
+            stats.created.documents += result.get("succeeded", 0)
+            retry_failed = result.get("failed", 0)
+            stats.failed.documents += retry_failed
+            for r in result.get("results", []):
+                if r.get("error"):
+                    stats.errors.append(f"Document error: {r['error']}")
+            if retry_failed == 0:
+                console.print(f"  Retry succeeded — all {len(failed_docs)} document(s) created")
+            else:
+                console.print(f"  Retry: {result.get('succeeded', 0)} created, {retry_failed} still failed")
+        except WIPClientError as e:
+            stats.failed.documents += len(failed_docs)
+            stats.errors.append(f"Failed to retry documents: {e}")
+            if not continue_on_error:
+                raise
+    else:
+        stats.failed.documents = 0
+
     console.print(
         f"  Created {stats.created.documents}, failed {stats.failed.documents}"
     )
+
+
+def _build_document_payloads(docs: list[dict], namespace: str) -> list[dict]:
+    """Build document create payloads from archive data."""
+    return [
+        {
+            "template_id": d["template_id"],
+            "template_version": d.get("template_version"),
+            "document_id": d["document_id"],
+            "version": d.get("version"),
+            "namespace": namespace,
+            "data": d["data"],
+            "created_by": "wip-toolkit-restore",
+            "metadata": d.get("metadata"),
+        }
+        for d in docs
+    ]
 
 
 def _upload_files(
