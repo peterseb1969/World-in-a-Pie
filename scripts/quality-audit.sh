@@ -138,7 +138,7 @@ STEP_START=$(date +%s)
 
 SHELL_FILES=$(find "$ROOT_DIR/scripts" -name '*.sh' -type f 2>/dev/null || true)
 if [ -n "$SHELL_FILES" ]; then
-    # shellcheck reads .shellcheckrc from the file's directory or parents
+    # ShellCheck reads .shellcheckrc from the file's directory or parents
     shellcheck --format=json $SHELL_FILES > "$RAW_DIR/shellcheck.json" 2>&1 || true
     SHELLCHECK_COUNT=$(python3 -c "import json; print(len(json.load(open('$RAW_DIR/shellcheck.json'))))" 2>/dev/null || echo "?")
 else

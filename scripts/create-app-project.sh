@@ -94,7 +94,7 @@ mkdir -p "$APP_DIR/libs"
 
 echo "2. Copying slash commands (12 files)..."
 cp "$WIP_ROOT/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
-echo "   Copied: $(ls "$APP_DIR/.claude/commands/" | wc -l | tr -d ' ') commands"
+echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
 # --- Copy reference docs ---
 
@@ -165,8 +165,8 @@ echo "   Written: .mcp.json"
 
 echo "5. Copying client libraries..."
 MISSING_LIBS=()
-CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
-REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
+CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
+REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 
 # Auto-build tarballs if missing and npm is available
 if [ -z "$CLIENT_TARBALL" ] || [ -z "$REACT_TARBALL" ]; then
@@ -174,12 +174,12 @@ if [ -z "$CLIENT_TARBALL" ] || [ -z "$REACT_TARBALL" ]; then
         if [ -z "$CLIENT_TARBALL" ]; then
             echo "   Building @wip/client tarball..."
             (cd "$WIP_ROOT/libs/wip-client" && npm pack --quiet 2>/dev/null)
-            CLIENT_TARBALL=$(ls "$WIP_ROOT/libs/wip-client/"*.tgz 2>/dev/null | head -1)
+            CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
         fi
         if [ -z "$REACT_TARBALL" ]; then
             echo "   Building @wip/react tarball..."
             (cd "$WIP_ROOT/libs/wip-react" && npm pack --quiet 2>/dev/null)
-            REACT_TARBALL=$(ls "$WIP_ROOT/libs/wip-react/"*.tgz 2>/dev/null | head -1)
+            REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
         fi
     else
         echo "   npm not found — cannot auto-build tarballs"
