@@ -15,6 +15,10 @@ jobs:
           python3 -m venv "$PWD/.venv"
           . "$PWD/.venv/bin/activate"
           pip install ruff mypy vulture radon shellcheck-py
+          echo "DEBUG: which radon = $(which radon 2>&1 || echo 'NOT FOUND')"
+          echo "DEBUG: VIRTUAL_ENV = ${VIRTUAL_ENV:-unset}"
+          echo "DEBUG: PATH = $PATH"
+          echo "DEBUG: PWD = $PWD"
           ./scripts/quality-audit.sh --quick --ci
 
       - name: Upload report
