@@ -73,7 +73,7 @@ info "Preflight: checking tool availability..."
 
 MISSING=()
 check_tool() {
-    if ! command -v "$1" &>/dev/null; then
+    if ! command -v "$1" &>/dev/null && ! python3 -m "$1" --version &>/dev/null; then
         MISSING+=("$1")
     fi
 }
@@ -194,7 +194,7 @@ fi
 info "Step 5: Radon..."
 STEP_START=$(date +%s)
 
-radon cc \
+python3 -m radon cc \
     "$ROOT_DIR/components/registry/src" \
     "$ROOT_DIR/components/def-store/src" \
     "$ROOT_DIR/components/template-store/src" \
