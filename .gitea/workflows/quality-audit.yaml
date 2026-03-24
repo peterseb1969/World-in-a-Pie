@@ -15,15 +15,6 @@ jobs:
           python3 -m venv "$PWD/.venv"
           . "$PWD/.venv/bin/activate"
           pip install ruff mypy vulture radon shellcheck-py
-          echo "DEBUG: VIRTUAL_ENV = ${VIRTUAL_ENV:-unset}"
-          echo "DEBUG: pip show radon:"
-          pip show radon 2>&1 || true
-          echo "DEBUG: .venv/bin contents (r*):"
-          ls -la "$PWD/.venv/bin/r"* 2>&1 || echo "no r* files"
-          echo "DEBUG: python -m radon:"
-          python -m radon --version 2>&1 || echo "module not found"
-          echo "DEBUG: pip list | grep radon:"
-          pip list 2>/dev/null | grep -i radon || echo "not in pip list"
           ./scripts/quality-audit.sh --quick --ci
 
       - name: Upload report
