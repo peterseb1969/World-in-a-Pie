@@ -181,7 +181,8 @@ if $HAS_TS_PRUNE; then
     done
     cd "$ROOT_DIR"
     echo "$TS_PRUNE_OUTPUT" > "$RAW_DIR/ts-prune.txt"
-    TS_PRUNE_COUNT=$(echo "$TS_PRUNE_OUTPUT" | grep -c . || echo "0")
+    TS_PRUNE_COUNT=$(echo "$TS_PRUNE_OUTPUT" | grep -c . || true)
+    TS_PRUNE_COUNT=${TS_PRUNE_COUNT:-0}
     ok "ts-prune: $TS_PRUNE_COUNT unused exports ($(step_time $STEP_START))"
 else
     warn "Step 4: ts-prune — skipped (not installed)"
@@ -231,7 +232,8 @@ for component_dir in \
     mypy "$component_dir" --config-file "$ROOT_DIR/pyproject.toml" \
         --no-error-summary \
         > "$RAW_DIR/mypy-${component_name}.txt" 2>&1 || true
-    count=$(grep -c '^.*: error:' "$RAW_DIR/mypy-${component_name}.txt" 2>/dev/null || echo "0")
+    count=$(grep -c '^.*: error:' "$RAW_DIR/mypy-${component_name}.txt" 2>/dev/null || true)
+    count=${count:-0}
     MYPY_TOTAL=$((MYPY_TOTAL + count))
 done
 
@@ -258,7 +260,8 @@ if $HAS_VUE_TSC; then
     npx vue-tsc --noEmit > "$RAW_DIR/vue-tsc.txt" 2>&1 || true
     cd "$ROOT_DIR"
 
-    VUE_TSC_COUNT=$(grep -c '^.*error TS' "$RAW_DIR/vue-tsc.txt" 2>/dev/null || echo "0")
+    VUE_TSC_COUNT=$(grep -c '^.*error TS' "$RAW_DIR/vue-tsc.txt" 2>/dev/null || true)
+    VUE_TSC_COUNT=${VUE_TSC_COUNT:-0}
     ok "vue-tsc: $VUE_TSC_COUNT errors ($(step_time $STEP_START))"
 else
     warn "Step 7: vue-tsc — skipped (not installed)"
