@@ -16,7 +16,7 @@ from starlette.routing import Match
 logger = logging.getLogger(__name__)
 
 # Query param names that are always allowed (FastAPI/OpenAPI internals)
-_GLOBAL_ALLOW = frozenset()
+_GLOBAL_ALLOW: frozenset[str] = frozenset()
 
 # Cache: endpoint function id → declared query param names
 _DECLARED_CACHE: dict[int, frozenset[str]] = {}

@@ -18,6 +18,8 @@ The MCP server already provides 30+ tools for AI-assisted data access. Today the
 
 ## Architecture
 
+The NLI service runs on the same container network as WIP services, so it calls them directly (like the MCP server). Browser clients access the NLI service via the Caddy reverse proxy at `/api/nli/*`.
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                    Natural Language Interface                        │
@@ -25,10 +27,10 @@ The MCP server already provides 30+ tools for AI-assisted data access. Today the
 │                                                                      │
 │  Browser                   NLI Service (8007)         WIP Services   │
 │                                                                      │
-│  ┌──────────┐  1. Message  ┌──────────────┐                         │
-│  │ Console  │ ──────────> │  Agent Loop  │                          │
+│  ┌──────────┐  1. Message  ┌──────────────┐         (internal       │
+│  │ Console  │ ──────────> │  Agent Loop  │          network only)   │
 │  │ Chat     │  WebSocket   │              │  2. Tool calls           │
-│  │ Panel    │              │  ┌────────┐  │ ───────────────>  :8001  │
+│  │ Panel    │  via Caddy   │  ┌────────┐  │ ───────────────>  :8001  │
 │  │          │              │  │Provider│  │                   :8002  │
 │  │          │ <────────── │  │  API   │  │ <───────────────  :8003  │
 │  │          │  3. Stream   │  └────────┘  │  Tool results    :8004  │

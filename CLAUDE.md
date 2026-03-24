@@ -258,6 +258,7 @@ WorldInPie/
 | `docs/roadmap.md` | Future plans, pending features, design docs |
 | `docs/security/` | Key rotation, encryption at rest |
 | `docs/design/` | Feature design documents (ontology, replay, draft mode, etc.) |
+| `docs/release-checklist.md` | Pre-release verification checklist (code, tests, security, docs, deploy) |
 
 ---
 

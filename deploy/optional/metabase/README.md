@@ -40,7 +40,7 @@ During Metabase setup (or via Admin > Databases > Add Database):
 | Port | `5432` |
 | Database name | `wip_reporting` |
 | Username | `wip` |
-| Password | `wip_dev_password` (or your production password) |
+| Password | Dev: `wip_dev_password`. Production: check `data/secrets/postgres_password` or `.env` (`WIP_POSTGRES_PASSWORD`). |
 | Use secure connection (SSL) | **OFF** |
 
 ## Configuration

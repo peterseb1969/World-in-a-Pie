@@ -1,17 +1,17 @@
 # WIP Quality Audit Report
-Generated: 2026-03-20 13:03 UTC | Commit: 2f24669 | Mode: full
+Generated: 2026-03-24 07:31 UTC | Commit: 255a469 | Mode: full
 
 ## Summary
 
 | Dimension | Status | Issues | Baseline | Delta |
 |-----------|--------|--------|----------|-------|
-| Ruff (Python lint) | WARN | 171 | — | — |
-| mypy (Python types) | WARN | 276 | — | — |
-| Vulture (dead Python code) | WARN | 1 | — | — |
-| ShellCheck | WARN | 120 | — | — |
-| ESLint (Vue/TS lint) | PASS | 0 | — | — |
-| vue-tsc (Vue types) | PASS | 0 | — | — |
-| ts-prune (unused exports) | PASS | 0 | — | — |
+| Ruff (Python lint) | WARN | 166 | 171 | -5 |
+| mypy (Python types) | WARN | 256 | 276 | -20 |
+| Vulture (dead Python code) | WARN | 1 | 1 | 0 |
+| ShellCheck | WARN | 105 | 120 | -15 |
+| ESLint (Vue/TS lint) | PASS | 0 | 0 | 0 |
+| vue-tsc (Vue types) | PASS | 0 | 0 | 0 |
+| ts-prune (unused exports) | PASS | 0 | 0 | 0 |
 
 ## 1. Dead Code
 
@@ -25,17 +25,17 @@ No unused exports detected (or ts-prune not available).
 
 ## 2. Type Safety
 
-### Python (mypy) — 276 errors
+### Python (mypy) — 256 errors
 
 | Component | Errors |
 |-----------|--------|
 | components-def-store | 63 |
-| components-document-store | 91 |
+| components-document-store | 90 |
 | components-ingest-gateway | 1 |
-| components-registry | 31 |
+| components-registry | 30 |
 | components-reporting-sync | 24 |
 | components-template-store | 48 |
-| libs-wip-auth | 18 |
+| libs-wip-auth | 0 |
 
 **Top errors:**
 - `components/def-store/src/def_store/services/registry_client.py:45: error: Dict entry 0 has incompatible type "str": "str | None"; expected "str": "str"  [dict-item]`
@@ -60,44 +60,44 @@ No vue-tsc errors (or not available).
 
 ## 3. Linting
 
-### Python (ruff) — 171 issues
+### Python (ruff) — 166 issues
 
 | Rule | Count |
 |------|-------|
-| B904 | 68 |
+| B904 | 63 |
 | UP042 | 21 |
 | RUF012 | 19 |
 | SIM102 | 12 |
 | SIM105 | 10 |
-| RUF013 | 9 |
 | RUF005 | 7 |
 | B905 | 7 |
+| RUF013 | 7 |
 | SIM108 | 6 |
 | RUF022 | 3 |
 | B007 | 3 |
+| I001 | 2 |
 | SIM109 | 2 |
 | SIM118 | 1 |
 | SIM113 | 1 |
-| RUF034 | 1 |
 
 ### Vue/TypeScript (eslint) — 0 issues
 
 No ESLint issues (or not available).
 
-### Shell (shellcheck) — 120 issues
+### Shell (shellcheck) — 105 issues
 
 | Code | Count |
 |------|-------|
 | SC1091 | 39 |
-| SC2155 | 24 |
+| SC2155 | 18 |
 | SC2034 | 15 |
 | SC2162 | 9 |
 | SC2223 | 6 |
-| SC2016 | 6 |
+| SC2012 | 5 |
 | SC2329 | 4 |
-| SC2076 | 4 |
-| SC1090 | 3 |
 | SC2153 | 2 |
+| SC1090 | 2 |
+| SC2115 | 1 |
 
 ## 4. Test Coverage
 
@@ -105,11 +105,12 @@ No ESLint issues (or not available).
 
 | Component | Stmts | Miss | Cover% |
 |-----------|-------|------|--------|
-| def-store | 2166 | 796 | 63.3% |
-| document-store | 3620 | 1648 | 54.5% |
-| registry | 1686 | 1136 | 32.6% |
-| reporting-sync | 2401 | 1296 | 46.0% |
-| template-store | 1615 | 554 | 65.7% |
+| def-store | 2170 | 799 | 63.2% |
+| document-store | 3680 | 1659 | 54.9% |
+| ingest-gateway | 360 | 87 | 75.8% |
+| registry | 1694 | 621 | 63.3% |
+| reporting-sync | 2406 | 1297 | 46.1% |
+| template-store | 1619 | 557 | 65.6% |
 
 ### TypeScript
 
@@ -157,16 +158,18 @@ Top 20 functions by cyclomatic complexity (CC >= C):
 
 ### pip-audit — clean (or not installed)
 
-### npm outdated — wip-client (4 packages)
+### npm outdated — wip-client (6 packages)
 
 | Package | Current | Wanted | Latest |
 |---------|---------|--------|--------|
 | @eslint/js | 9.39.4 | 9.39.4 | 10.0.1 |
-| @vitest/coverage-v8 | 3.2.4 | 3.2.4 | 4.1.0 |
-| eslint | 9.39.4 | 9.39.4 | 10.0.3 |
-| vitest | 3.2.4 | 3.2.4 | 4.1.0 |
+| @vitest/coverage-v8 | 3.2.4 | 3.2.4 | 4.1.1 |
+| eslint | 9.39.4 | 9.39.4 | 10.1.0 |
+| typescript | 5.9.3 | 5.9.3 | 6.0.2 |
+| typescript-eslint | 8.57.1 | 8.57.2 | 8.57.2 |
+| vitest | 3.2.4 | 3.2.4 | 4.1.1 |
 
-### npm outdated — wip-console (13 packages)
+### npm outdated — wip-console (14 packages)
 
 | Package | Current | Wanted | Latest |
 |---------|---------|--------|--------|
@@ -174,29 +177,32 @@ Top 20 functions by cyclomatic complexity (CC >= C):
 | @types/node | 25.1.0 | 25.5.0 | 25.5.0 |
 | @vitejs/plugin-vue | 5.2.4 | 5.2.4 | 6.0.5 |
 | axios | 1.13.5 | 1.13.6 | 1.13.6 |
-| eslint | 9.39.4 | 9.39.4 | 10.0.3 |
+| eslint | 9.39.4 | 9.39.4 | 10.1.0 |
 | eslint-plugin-vue | 9.33.0 | 9.33.0 | 10.8.0 |
 | oidc-client-ts | 3.4.1 | 3.5.0 | 3.5.0 |
 | pinia | 2.3.1 | 2.3.1 | 3.0.4 |
-| typescript | 5.6.3 | 5.6.3 | 5.9.3 |
-| vite | 6.4.1 | 6.4.1 | 8.0.1 |
+| typescript | 5.6.3 | 5.6.3 | 6.0.2 |
+| typescript-eslint | 8.57.1 | 8.57.2 | 8.57.2 |
+| vite | 6.4.1 | 6.4.1 | 8.0.2 |
 | vue | 3.5.27 | 3.5.30 | 3.5.30 |
 | vue-router | 4.6.4 | 4.6.4 | 5.0.4 |
 | vue-tsc | 2.2.12 | 2.2.12 | 3.2.6 |
 
-### npm outdated — wip-react (9 packages)
+### npm outdated — wip-react (11 packages)
 
 | Package | Current | Wanted | Latest |
 |---------|---------|--------|--------|
 | @eslint/js | 9.39.4 | 9.39.4 | 10.0.1 |
-| @tanstack/react-query | 5.90.21 | 5.91.3 | 5.91.3 |
+| @tanstack/react-query | 5.90.21 | 5.95.2 | 5.95.2 |
 | @types/react | 18.3.28 | 18.3.28 | 19.2.14 |
-| @vitest/coverage-v8 | 3.2.4 | 3.2.4 | 4.1.0 |
-| eslint | 9.39.4 | 9.39.4 | 10.0.3 |
+| @vitest/coverage-v8 | 3.2.4 | 3.2.4 | 4.1.1 |
+| eslint | 9.39.4 | 9.39.4 | 10.1.0 |
 | jsdom | 28.1.0 | 28.1.0 | 29.0.1 |
 | react | 18.3.1 | 18.3.1 | 19.2.4 |
 | react-dom | 18.3.1 | 18.3.1 | 19.2.4 |
-| vitest | 3.2.4 | 3.2.4 | 4.1.0 |
+| typescript | 5.9.3 | 5.9.3 | 6.0.2 |
+| typescript-eslint | 8.57.1 | 8.57.2 | 8.57.2 |
+| vitest | 3.2.4 | 3.2.4 | 4.1.1 |
 
 
 ## 8. Security Audit

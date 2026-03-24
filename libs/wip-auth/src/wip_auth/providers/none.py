@@ -47,4 +47,5 @@ class NoAuthProvider:
             groups=self.default_groups,
             auth_method="none",
             provider="none",
+            raw_claims=None,
         )

@@ -185,6 +185,8 @@ class APIKeyProvider:
                 headers={"WWW-Authenticate": "ApiKey"},
             )
 
+        assert key_record is not None  # guaranteed when error is None
+
         # Update last used timestamp (in-memory only)
         key_record.last_used_at = datetime.now(UTC)
 

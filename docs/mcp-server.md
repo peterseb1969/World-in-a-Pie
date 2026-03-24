@@ -28,13 +28,15 @@ python -m wip_mcp.server --sse
 
 ### Environment Variables
 
+The MCP server connects **directly** to each service (not via Caddy), because it runs on the same host as the WIP services. These defaults are correct for local development. Application code should use `@wip/client` through the Caddy proxy instead — see `libs/wip-client/README.md`.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WIP_REGISTRY_URL` | `http://localhost:8001` | Registry service URL |
-| `WIP_DEF_STORE_URL` | `http://localhost:8002` | Def-Store service URL |
-| `WIP_TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service URL |
-| `WIP_DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service URL |
-| `WIP_REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service URL |
+| `WIP_REGISTRY_URL` | `http://localhost:8001` | Registry service URL (direct) |
+| `WIP_DEF_STORE_URL` | `http://localhost:8002` | Def-Store service URL (direct) |
+| `WIP_TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service URL (direct) |
+| `WIP_DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service URL (direct) |
+| `WIP_REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service URL (direct) |
 | `WIP_API_KEY` | `dev_master_key_for_testing` | API key for authentication |
 
 ### Claude Code Configuration

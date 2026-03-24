@@ -191,7 +191,11 @@ class AuthConfig(BaseSettings):
                 key_hash=hash_api_key(self.legacy_api_key, self.api_key_hash_salt),
                 owner="system:legacy",
                 groups=self.admin_groups,  # Legacy key gets admin access
-                description="Legacy API key from WIP_AUTH_LEGACY_API_KEY"
+                description="Legacy API key from WIP_AUTH_LEGACY_API_KEY",
+                created_at=None,
+                last_used_at=None,
+                expires_at=None,
+                namespaces=None,
             ))
             seen_names.add("legacy")
 

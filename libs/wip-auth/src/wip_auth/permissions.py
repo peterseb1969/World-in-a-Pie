@@ -61,7 +61,7 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     cache_key = f"{identity.user_id}:{namespace}"
 
     # Check cache (TTLCache handles expiry automatically)
-    cached = _grant_cache.get(cache_key)
+    cached: str | None = _grant_cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -110,7 +110,8 @@ async def _fetch_permission_from_registry(
             )
             if resp.status_code == 200:
                 data = resp.json()
-                return data.get("permission", "none")
+                permission: str = data.get("permission", "none")
+                return permission
             return "none"
     except Exception:
         # If Registry is unreachable, deny access (fail closed)
@@ -152,9 +153,9 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     cache_key = identity.user_id
 
     # Use sentinel to distinguish "not cached" from "cached None"
-    cached = _accessible_cache.get(cache_key, _SENTINEL)
+    cached: list[str] | None | object = _accessible_cache.get(cache_key, _SENTINEL)
     if cached is not _SENTINEL:
-        return cached
+        return cached  # type: ignore[return-value]
 
     namespaces = await _fetch_accessible_from_registry(identity)
     _accessible_cache[cache_key] = namespaces
@@ -164,7 +165,7 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
 _SENTINEL = object()
 
 
-async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
+async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] | None:
     """Call Registry's internal accessible-namespaces endpoint."""
     import httpx
 
@@ -196,7 +197,8 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
                 data = resp.json()
                 if data.get("is_superadmin"):
                     return None
-                return data.get("namespaces", [])
+                namespaces: list[str] = data.get("namespaces", [])
+                return namespaces
             return []
     except Exception:
         return []

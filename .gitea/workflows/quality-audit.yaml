@@ -16,13 +16,14 @@ jobs:
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: Install Python tools
-        run: pip install ruff mypy vulture radon
-
-      - name: Install ShellCheck
-        run: pip install shellcheck-py
+        run: |
+          . .venv/bin/activate
+          pip install ruff mypy vulture radon shellcheck-py
 
       - name: Run quality audit (quick)
-        run: ./scripts/quality-audit.sh --quick --ci
+        run: |
+          . .venv/bin/activate
+          ./scripts/quality-audit.sh --quick --ci
 
       - name: Upload report
         if: always()
