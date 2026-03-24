@@ -10,19 +10,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python venv
+      - name: Install tools and run quality audit
         run: |
-          python3 -m venv .venv
-          echo "$PWD/.venv/bin" >> $GITHUB_PATH
-
-      - name: Install Python tools
-        run: |
-          . .venv/bin/activate
+          python3 -m venv "$PWD/.venv"
+          . "$PWD/.venv/bin/activate"
           pip install ruff mypy vulture radon shellcheck-py
-
-      - name: Run quality audit (quick)
-        run: |
-          . .venv/bin/activate
           ./scripts/quality-audit.sh --quick --ci
 
       - name: Upload report
