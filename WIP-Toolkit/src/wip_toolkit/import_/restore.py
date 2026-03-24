@@ -78,20 +78,20 @@ def restore_import(
     console.print("\n[bold cyan]Step 4:[/bold cyan] Activating templates")
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
-    if not skip_documents:
-        # Step 5: Create documents (streamed from archive)
-        console.print("\n[bold cyan]Step 5:[/bold cyan] Creating documents")
-        _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
-    else:
-        console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
-
     if not skip_files and not skip_documents:
-        # Step 6: Upload files
-        console.print("\n[bold cyan]Step 6:[/bold cyan] Uploading files")
+        # Step 5: Upload files (before documents — documents may reference files)
+        console.print("\n[bold cyan]Step 5:[/bold cyan] Uploading files")
         files = list(reader.read_entities("files"))
         _upload_files(client, target_namespace, files, reader, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
+
+    if not skip_documents:
+        # Step 6: Create documents (streamed from archive)
+        console.print("\n[bold cyan]Step 6:[/bold cyan] Creating documents")
+        _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
+    else:
+        console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
 
     # Step 7: Restore synonyms (from synonyms.jsonl if present)
     console.print("\n[bold cyan]Step 7:[/bold cyan] Restoring Registry synonyms")
