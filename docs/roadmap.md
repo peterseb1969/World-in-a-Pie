@@ -15,6 +15,22 @@ Enables the dev→prod workflow: create a `full` dev namespace, iterate on the d
 - Design: `docs/design/namespace-deletion.md`
 - Status: Design complete
 
+### WIP-Toolkit: Cross-Instance Restore with ID Preservation
+
+The `wip-toolkit import --mode restore` must preserve all original entity IDs when restoring to a different instance. The backend services (template-store, document-store) already support ID pass-through via `entry_id` in the Registry API — the toolkit needs to use it correctly.
+
+Current state (tested 2026-03-25):
+- **Terminologies:** No API-level ID pass-through. Toolkit builds old→new ID map by value and remaps downstream references (terms, template fields). Works.
+- **Templates:** ID pass-through works (template_id + version in payload).
+- **Documents:** ID pass-through exists in the API but the toolkit isn't triggering it correctly — documents get new IDs, breaking document-to-document references (e.g., `parent_class`). 14/1384 documents failed in testing.
+- **Files:** Created with new IDs. File references in documents break.
+
+Fix approach: Debug why document_id pass-through isn't activating (the document-store checks `request.document_id and request.version is not None`). For terminologies, consider adding API-level pass-through to def-store (matching the template-store pattern). For files, add file_id pass-through to document-store upload endpoint.
+
+Alternative: Registry "draft" entity mode — register all IDs as draft (skip referential integrity), import all data, then promote all to active. This was discussed previously but may not have been implemented.
+
+- Status: Partially working, 99% success rate, needs ID pass-through debugging
+
 ---
 
 ## Near-Term
