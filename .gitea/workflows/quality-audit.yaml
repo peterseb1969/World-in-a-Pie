@@ -16,10 +16,3 @@ jobs:
           . "$PWD/.venv/bin/activate"
           pip install ruff mypy vulture radon shellcheck-py
           ./scripts/quality-audit.sh --quick --ci
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: quality-report
-          path: reports/quality-audit/REPORT.md
