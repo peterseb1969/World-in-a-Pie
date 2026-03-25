@@ -42,6 +42,7 @@ reachable, cleanup for that backend is skipped with a warning.
 
 import argparse
 import os
+import re
 import sys
 from pymongo import MongoClient
 
@@ -827,12 +828,6 @@ def delete_namespace(client, namespace, force, s3, s3_bucket, pg_conn):
         drop_pg_doc_table(pg_conn, tv, True)
 
     # Delete PG document rows (in case any survived table drops)
-    if "document" in totals:
-        doc_coll = client["wip_document_store"]["documents"]
-        # Documents already deleted from MongoDB, but PG rows may remain
-        # in tables not matching template_value. Already handled by table drops.
-        pass
-
     # MinIO cleanup
     if minio_keys:
         delete_minio_objects(s3, s3_bucket, minio_keys, True)
@@ -884,7 +879,6 @@ def delete_by_prefix(client, prefix, type_filter, cascade, force, s3, s3_bucket,
     for etype in search_types:
         info = ENTITY_MAP[etype]
         coll = client[info["db"]][info["collection"]]
-        import re
         regex = re.compile(f"^{re.escape(prefix)}", re.IGNORECASE)
         matches = list(coll.find({"value": regex}, {info["id_field"]: 1, "value": 1}))
 
@@ -1060,7 +1054,7 @@ def main():
     if args.prefix:
         delete_by_prefix(
             client, args.prefix, args.type,
-            args.cascade or True,  # cascade implied for prefix
+            True,  # cascade implied for prefix
             args.force, s3, s3_bucket, pg_conn,
         )
         if not args.force:
