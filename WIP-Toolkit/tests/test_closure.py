@@ -40,7 +40,7 @@ class TestScanTemplateReferences:
         known_terms: set[str] = set()
         known_tpls = {"TPL-A"}
 
-        ext_terms, ext_tpls = _scan_template_references(
+        _ext_terms, ext_tpls = _scan_template_references(
             templates, known_terms, known_tpls,
         )
 
@@ -58,7 +58,7 @@ class TestScanTemplateReferences:
             }
         ]
 
-        ext_terms, ext_tpls = _scan_template_references(
+        ext_terms, _ext_tpls = _scan_template_references(
             templates, set(), {"TPL-A"},
         )
 
@@ -76,7 +76,7 @@ class TestScanTemplateReferences:
             }
         ]
 
-        ext_terms, ext_tpls = _scan_template_references(
+        _ext_terms, ext_tpls = _scan_template_references(
             templates, set(), {"TPL-A"},
         )
 
@@ -251,7 +251,7 @@ class TestComputeClosureExternalTerminology:
             },
         ]
 
-        extra_terms_list, extra_items, extra_tpls, warnings = compute_closure(
+        extra_terms_list, extra_items, _extra_tpls, warnings = compute_closure(
             client, "wip", terminologies, [], templates, [],
         )
 

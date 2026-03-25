@@ -1,9 +1,8 @@
 """Tests for EntityCollector using mock WIPClient."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
 import pytest
-
 from wip_toolkit.export.collector import EntityCollector
 
 
