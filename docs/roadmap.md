@@ -66,6 +66,8 @@ Workflow:
 This requires:
 - Namespace deletion (v1.1 deliverable above) to be implemented first
 - Complete ID pass-through for restore (v1.1 deliverable above) so bootstrap preserves references
+- **MCP `create_namespace` tool** — currently the MCP server only has `list_namespaces` and `get_namespace_stats` (read-only). A `create_namespace` tool is needed so slash commands can create dev namespaces without the AI having to call the Registry API directly via curl.
+- **MCP namespace audit** — systematic review of all 68 MCP tools for namespace support. Known gaps: the ontology tools (`create_relationships`, `list_relationships`, `get_term_hierarchy`, `delete_relationships`) don't expose or pass namespace to the Def-Store API despite it being supported — they silently default to `"wip"`. This is likely a pattern across other tools too (traversal, search, import/export). Every MCP tool that calls a namespace-aware API endpoint must expose an optional `namespace` parameter and pass it through. Without this, all MCP-driven work is locked to the `wip` namespace.
 - Updates to all slash command prompts to default to dev namespace during phases 1-3
 - A new `/promote-namespace` or `/finalize` slash command (or extend `/bootstrap`) that orchestrates export→import→delete
 
