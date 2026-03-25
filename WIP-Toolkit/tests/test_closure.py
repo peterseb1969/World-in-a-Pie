@@ -437,7 +437,7 @@ class TestCheckDocumentReferences:
         ]
         warnings: list[str] = []
 
-        _check_document_references(documents, known_template_ids, warnings)
+        _check_document_references(documents, known_template_ids, None, warnings)
 
         assert warnings == []
 
@@ -448,7 +448,7 @@ class TestCheckDocumentReferences:
         ]
         warnings: list[str] = []
 
-        _check_document_references(documents, known_template_ids, warnings)
+        _check_document_references(documents, known_template_ids, None, warnings)
 
         assert len(warnings) == 1
         assert "external template" in warnings[0]
@@ -470,7 +470,7 @@ class TestCheckDocumentReferences:
         ]
         warnings: list[str] = []
 
-        _check_document_references(documents, known_template_ids, warnings)
+        _check_document_references(documents, known_template_ids, None, warnings)
 
         assert len(warnings) == 1
         assert "external document" in warnings[0]
@@ -478,7 +478,7 @@ class TestCheckDocumentReferences:
     def test_empty_documents_no_warnings(self):
         warnings: list[str] = []
 
-        _check_document_references([], {"TPL-001"}, warnings)
+        _check_document_references([], {"TPL-001"}, None, warnings)
 
         assert warnings == []
 
@@ -490,6 +490,6 @@ class TestCheckDocumentReferences:
         ]
         warnings: list[str] = []
 
-        _check_document_references(documents, known_template_ids, warnings)
+        _check_document_references(documents, known_template_ids, None, warnings)
 
         assert warnings == []

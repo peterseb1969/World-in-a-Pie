@@ -415,14 +415,18 @@ class TestStreamDocuments:
     def test_yields_pages(self, mock_client):
         """stream_documents yields one list per page."""
         collector = EntityCollector(mock_client, namespace="wip")
-        page1 = [
+        page1_items = [
             {"document_id": "DOC-1", "version": 1, "data": {}},
             {"document_id": "DOC-2", "version": 1, "data": {}},
         ]
-        page2 = [
+        page2_items = [
             {"document_id": "DOC-3", "version": 1, "data": {}},
         ]
-        mock_client.fetch_paginated_cursor.return_value = iter([page1, page2])
+        # stream_documents uses client.get() with manual pagination
+        mock_client.get.side_effect = [
+            {"items": page1_items},  # page 1: full page (size=2)
+            {"items": page2_items},  # page 2: partial page (< size, stops)
+        ]
 
         pages = list(collector.stream_documents(latest_only=False, page_size=2))
 
@@ -433,12 +437,14 @@ class TestStreamDocuments:
     def test_latest_only_deduplicates_within_page(self, mock_client):
         """latest_only keeps highest version per document_id within a page."""
         collector = EntityCollector(mock_client, namespace="wip")
-        page = [
+        page_items = [
             {"document_id": "DOC-1", "version": 1, "data": {}},
             {"document_id": "DOC-1", "version": 2, "data": {}},
             {"document_id": "DOC-2", "version": 1, "data": {}},
         ]
-        mock_client.fetch_paginated_cursor.return_value = iter([page])
+        mock_client.get.side_effect = [
+            {"items": page_items},  # partial page (< default page_size, stops)
+        ]
 
         pages = list(collector.stream_documents(latest_only=True))
 
@@ -450,7 +456,7 @@ class TestStreamDocuments:
     def test_empty_stream(self, mock_client):
         """Empty result yields nothing."""
         collector = EntityCollector(mock_client, namespace="wip")
-        mock_client.fetch_paginated_cursor.return_value = iter([])
+        mock_client.get.return_value = {"items": []}
 
         pages = list(collector.stream_documents())
 
@@ -459,14 +465,14 @@ class TestStreamDocuments:
     def test_passes_namespace_and_status(self, mock_client):
         """Correct params passed to client."""
         collector = EntityCollector(mock_client, namespace="wip", include_inactive=False)
-        mock_client.fetch_paginated_cursor.return_value = iter([])
+        mock_client.get.return_value = {"items": []}
 
         list(collector.stream_documents(page_size=500))
 
-        call_args = mock_client.fetch_paginated_cursor.call_args
+        call_args = mock_client.get.call_args
         assert call_args[1]["params"]["namespace"] == "wip"
         assert call_args[1]["params"]["status"] == "active"
-        assert call_args[1]["page_size"] == 500
+        assert call_args[1]["params"]["page_size"] == 500
 
 
 class TestFetchDocumentVersions:
