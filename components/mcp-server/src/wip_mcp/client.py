@@ -119,11 +119,14 @@ class WipClient:
         return resp.json()
 
     async def _delete(
-        self, base_url: str, path: str, json: Any = None
+        self, base_url: str, path: str, json: Any = None, **params
     ) -> dict[str, Any]:
         """DELETE request with body, return parsed JSON."""
         client = await self._get_client()
-        resp = await client.request("DELETE", f"{base_url}{path}", json=json)
+        params = {k: v for k, v in params.items() if v is not None}
+        resp = await client.request(
+            "DELETE", f"{base_url}{path}", json=json, params=params,
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -317,10 +320,11 @@ class WipClient:
             f"/api/def-store/terminologies/{terminology_id}",
         )
 
-    async def get_terminology_by_value(self, value: str) -> dict:
+    async def get_terminology_by_value(self, value: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/terminologies/by-value/{value}",
+            namespace=namespace,
         )
 
     async def create_terminology(
@@ -433,51 +437,63 @@ class WipClient:
     # Def-Store: Ontology
     # ========================================================
 
-    async def get_term_children(self, term_id: str) -> list[dict]:
+    async def get_term_children(self, term_id: str, namespace: str | None = None) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/children",
+            namespace=namespace,
         )
 
-    async def get_term_parents(self, term_id: str) -> list[dict]:
+    async def get_term_parents(self, term_id: str, namespace: str | None = None) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
+            namespace=namespace,
         )
 
     async def get_term_ancestors(
-        self, term_id: str, relationship_type: str | None = None, max_depth: int = 10
+        self, term_id: str, relationship_type: str | None = None,
+        max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
             relationship_type=relationship_type,
             max_depth=max_depth,
+            namespace=namespace,
         )
 
     async def get_term_descendants(
-        self, term_id: str, relationship_type: str | None = None, max_depth: int = 10
+        self, term_id: str, relationship_type: str | None = None,
+        max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/descendants",
             relationship_type=relationship_type,
             max_depth=max_depth,
+            namespace=namespace,
         )
 
-    async def create_relationships(self, relationships: list[dict]) -> dict:
+    async def create_relationships(
+        self, relationships: list[dict], namespace: str | None = None,
+    ) -> dict:
         resp = await self._post(
             self.def_store_url,
             "/api/def-store/ontology/relationships",
             json=relationships,
+            namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
-    async def delete_relationships(self, relationships: list[dict], namespace: str | None = None) -> dict:
+    async def delete_relationships(
+        self, relationships: list[dict], namespace: str | None = None,
+    ) -> dict:
         resp = await self._delete(
             self.def_store_url,
             "/api/def-store/ontology/relationships",
             json=relationships,
+            namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
@@ -486,6 +502,7 @@ class WipClient:
         term_id: str,
         direction: str = "outgoing",
         relationship_type: str | None = None,
+        namespace: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict:
@@ -495,6 +512,7 @@ class WipClient:
             term_id=term_id,
             direction=direction,
             relationship_type=relationship_type,
+            namespace=namespace,
             page=page,
             page_size=page_size,
         )
@@ -522,6 +540,7 @@ class WipClient:
         format: str = "json",
         skip_duplicates: bool = True,
         update_existing: bool = False,
+        namespace: str | None = None,
     ) -> dict:
         return await self._post(
             self.def_store_url,
@@ -530,6 +549,7 @@ class WipClient:
             format=format,
             skip_duplicates=skip_duplicates,
             update_existing=update_existing,
+            namespace=namespace,
         )
 
     # ========================================================
@@ -623,10 +643,11 @@ class WipClient:
             f"/api/template-store/templates/{template_id}/versions",
         )
 
-    async def get_template_versions_by_value(self, value: str) -> dict:
+    async def get_template_versions_by_value(self, value: str, namespace: str | None = None) -> dict:
         return await self._get(
             self.template_store_url,
             f"/api/template-store/templates/by-value/{value}/versions",
+            namespace=namespace,
         )
 
     async def validate_template(self, template_id: str) -> dict:
@@ -937,10 +958,15 @@ class WipClient:
             self.reporting_sync_url, "/api/reporting-sync/status"
         )
 
-    async def list_report_tables(self) -> dict:
-        """List available reporting tables (doc_* + terminologies/terms)."""
+    async def list_report_tables(self, table_name: str | None = None) -> dict:
+        """List available reporting tables (doc_* + terminologies/terms).
+
+        Without table_name: returns summary (name, row_count, column_count).
+        With table_name: returns full column detail for that table.
+        """
         return await self._get(
-            self.reporting_sync_url, "/api/reporting-sync/tables"
+            self.reporting_sync_url, "/api/reporting-sync/tables",
+            table_name=table_name,
         )
 
     async def run_report_query(
@@ -965,11 +991,14 @@ class WipClient:
         self,
         query: str,
         types: list[str] | None = None,
+        namespace: str | None = None,
         limit: int = 20,
     ) -> dict:
         body: dict[str, Any] = {"query": query, "limit": limit}
         if types:
             body["types"] = types
+        if namespace:
+            body["namespace"] = namespace
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/search", json=body
         )

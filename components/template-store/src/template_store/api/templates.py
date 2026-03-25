@@ -185,14 +185,21 @@ async def get_template_by_value_raw(value: str):
 
 
 @router.get("/by-value/{value}/versions", response_model=TemplateListResponse)
-async def get_template_versions(value: str):
+async def get_template_versions(
+    value: str,
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
+):
     """
     Get all versions of a template by value.
 
     Returns all versions sorted by version number (newest first).
     This allows viewing the full version history of a template.
     """
-    versions = await TemplateService.get_template_versions(value)
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
+    versions = await TemplateService.get_template_versions(value, namespace=namespace)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateListResponse(
