@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-WIP Dev Delete — Hard-delete entities from MongoDB, MinIO, and PostgreSQL by WIP ID.
+WIP Dev Delete — Hard-delete entities from MongoDB, MinIO, and PostgreSQL.
 
 DEVELOPMENT ONLY. Bypasses soft-delete, removes all versions, and cleans
 up Registry entries, MinIO blobs, and PostgreSQL rows so IDs can be re-used.
@@ -12,8 +12,15 @@ Usage:
     # Actually delete
     python scripts/dev-delete.py --force T-0001a2b3
 
-    # Delete with cascade (e.g., terminology + all its terms)
+    # Delete with full cascade (terminology → terms → relationships,
+    # template → child templates → documents → files, etc.)
     python scripts/dev-delete.py --cascade --force TERM-0001a2b3
+
+    # Delete entire namespace (cascade is implied)
+    python scripts/dev-delete.py --namespace dnd --force
+
+    # Delete by value prefix
+    python scripts/dev-delete.py --prefix DND_ --type terminology --force
 
     # Delete by type when ID format is ambiguous
     python scripts/dev-delete.py --type template --force TPL-0001a2b3
@@ -90,58 +97,6 @@ LIST_ALIASES = {
     "registry": "registry",
 }
 
-# Cascade rules: deleting parent also deletes children
-CASCADE_RULES = {
-    "terminology": [
-        {
-            "db": "wip_def_store",
-            "collection": "terms",
-            "foreign_key": "terminology_id",
-            "match_field": "terminology_id",
-            "label": "terms",
-        },
-        {
-            "db": "wip_def_store",
-            "collection": "term_relationships",
-            "foreign_key": "source_terminology_id",
-            "match_field": "terminology_id",
-            "label": "relationships (as source)",
-        },
-        {
-            "db": "wip_def_store",
-            "collection": "term_relationships",
-            "foreign_key": "target_terminology_id",
-            "match_field": "terminology_id",
-            "label": "relationships (as target)",
-        },
-    ],
-    "term": [
-        {
-            "db": "wip_def_store",
-            "collection": "term_relationships",
-            "foreign_key": "source_term_id",
-            "match_field": "term_id",
-            "label": "relationships (as source)",
-        },
-        {
-            "db": "wip_def_store",
-            "collection": "term_relationships",
-            "foreign_key": "target_term_id",
-            "match_field": "term_id",
-            "label": "relationships (as target)",
-        },
-    ],
-    "template": [
-        {
-            "db": "wip_document_store",
-            "collection": "documents",
-            "foreign_key": "template_id",
-            "match_field": "template_id",
-            "label": "documents using this template",
-        },
-    ],
-}
-
 # PostgreSQL tables that mirror MongoDB entities
 PG_TABLE_MAP = {
     "terminology": {"table": "_wip_terminologies", "id_field": "terminology_id"},
@@ -149,6 +104,17 @@ PG_TABLE_MAP = {
     "relationship": {"table": "_wip_term_relationships", "id_field": "relationship_id"},
     "document": None,  # Documents go into doc_{template_value} tables — handled specially
 }
+
+# Deletion order for namespace mode: children before parents
+NAMESPACE_DELETE_ORDER = [
+    "relationship",
+    "document",
+    "file",
+    "term",
+    "template",
+    "terminology",
+    "registry",
+]
 
 
 # ── MinIO helper ─────────────────────────────────────────────────────────
@@ -263,14 +229,38 @@ def delete_pg_rows(pg_conn, table, id_field, id_value, force):
         print(f"  [WARN] PostgreSQL cleanup failed for {table}: {e}")
 
 
-def delete_pg_document_rows(pg_conn, mongo_client, doc_ids, force):
+def delete_pg_rows_bulk(pg_conn, table, id_field, id_values, force):
+    """Delete rows from a PostgreSQL table by a list of IDs."""
+    if not pg_conn or not id_values:
+        return
+    try:
+        cur = pg_conn.cursor()
+        cur.execute(
+            f'SELECT COUNT(*) FROM "{table}" WHERE "{id_field}" = ANY(%s)',
+            (list(id_values),),
+        )
+        count = cur.fetchone()[0]
+        if count == 0:
+            return
+        print(f"  PostgreSQL: {count} row(s) in {table}")
+        if force:
+            cur.execute(
+                f'DELETE FROM "{table}" WHERE "{id_field}" = ANY(%s)',
+                (list(id_values),),
+            )
+            print(f"  Deleted {count} row(s) from {table}")
+        cur.close()
+    except Exception as e:
+        print(f"  [WARN] PostgreSQL bulk cleanup failed for {table}: {e}")
+
+
+def delete_pg_document_rows(pg_conn, doc_ids, force):
     """Delete document rows from doc_* tables in PostgreSQL."""
     if not pg_conn or not doc_ids:
         return
 
     try:
         cur = pg_conn.cursor()
-        # Find all doc_* tables
         cur.execute("""
             SELECT table_name FROM information_schema.tables
             WHERE table_schema = 'public' AND table_name LIKE 'doc\\_%'
@@ -280,7 +270,7 @@ def delete_pg_document_rows(pg_conn, mongo_client, doc_ids, force):
         for table in doc_tables:
             cur.execute(
                 f'SELECT COUNT(*) FROM "{table}" WHERE document_id = ANY(%s)',
-                (doc_ids,),
+                (list(doc_ids),),
             )
             count = cur.fetchone()[0]
             if count == 0:
@@ -289,7 +279,7 @@ def delete_pg_document_rows(pg_conn, mongo_client, doc_ids, force):
             if force:
                 cur.execute(
                     f'DELETE FROM "{table}" WHERE document_id = ANY(%s)',
-                    (doc_ids,),
+                    (list(doc_ids),),
                 )
                 print(f"  Deleted {count} row(s) from {table}")
         cur.close()
@@ -297,7 +287,73 @@ def delete_pg_document_rows(pg_conn, mongo_client, doc_ids, force):
         print(f"  [WARN] PostgreSQL document cleanup failed: {e}")
 
 
-# ── Core logic ───────────────────────────────────────────────────────────
+def drop_pg_doc_table(pg_conn, template_value, force):
+    """Drop a doc_* table from PostgreSQL when deleting a template."""
+    if not pg_conn or not template_value:
+        return
+    table_name = f"doc_{template_value.lower()}"
+    try:
+        cur = pg_conn.cursor()
+        cur.execute("""
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+        """, (table_name,))
+        if not cur.fetchone():
+            return
+        cur.execute(f'SELECT COUNT(*) FROM "{table_name}"')
+        count = cur.fetchone()[0]
+        print(f"  PostgreSQL: table {table_name} ({count} row(s))")
+        if force:
+            cur.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
+            print(f"  Dropped table {table_name}")
+            # Also remove migration tracking
+            cur.execute(
+                'DELETE FROM "_wip_schema_migrations" WHERE template_code = %s',
+                (template_value,),
+            )
+        cur.close()
+    except Exception as e:
+        print(f"  [WARN] PostgreSQL table drop failed for {table_name}: {e}")
+
+
+# ── File collection helpers ──────────────────────────────────────────────
+
+def collect_file_refs_from_documents(client, doc_query):
+    """Collect file_ids and storage_keys from documents matching a query."""
+    doc_coll = client["wip_document_store"]["documents"]
+    file_coll = client["wip_document_store"]["files"]
+    file_ids = set()
+    storage_keys = []
+
+    for doc in doc_coll.find(doc_query, {"file_references": 1}):
+        for ref in (doc.get("file_references") or []):
+            fid = ref.get("file_id")
+            if fid:
+                file_ids.add(fid)
+
+    if file_ids:
+        for fdoc in file_coll.find({"file_id": {"$in": list(file_ids)}}):
+            sk = fdoc.get("storage_key")
+            if sk:
+                storage_keys.append(sk)
+
+    return list(file_ids), storage_keys
+
+
+def collect_files_by_namespace(client, namespace):
+    """Collect all files in a namespace."""
+    file_coll = client["wip_document_store"]["files"]
+    file_ids = []
+    storage_keys = []
+    for fdoc in file_coll.find({"namespace": namespace}):
+        file_ids.append(fdoc.get("file_id"))
+        sk = fdoc.get("storage_key")
+        if sk:
+            storage_keys.append(sk)
+    return file_ids, storage_keys
+
+
+# ── Core delete logic ────────────────────────────────────────────────────
 
 def find_entity(client: MongoClient, wip_id: str, type_hint: str | None = None):
     """Find which collection(s) contain this ID."""
@@ -329,9 +385,10 @@ def delete_entity(
     s3_bucket=None,
     pg_conn=None,
 ):
-    """Delete an entity and optionally cascade."""
+    """Delete an entity and optionally cascade to all dependents."""
     db = client[info["db"]]
     coll = db[info["collection"]]
+    reg_coll = client["wip_registry"]["registry_entries"]
 
     # Show what we found
     docs = list(coll.find({info["id_field"]: wip_id}))
@@ -344,58 +401,77 @@ def delete_entity(
         label = f"v{version} " if version != "-" else ""
         print(f"    {label}[{status}] ns={ns} value={_truncate(str(value), 60)}")
 
-    # Collect MinIO storage keys for file entities
+    # ── Collect MinIO keys ───────────────────────────────────────────
     minio_keys = []
+    file_ids_to_delete = []
+
     if etype == "file":
         minio_keys = [doc.get("storage_key") for doc in docs if doc.get("storage_key")]
+        file_ids_to_delete = [doc.get("file_id") for doc in docs if doc.get("file_id")]
 
-    # Collect document IDs for PostgreSQL cleanup
+    elif etype == "document":
+        # Documents may reference files via file_references
+        fids, skeys = collect_file_refs_from_documents(
+            client, {info["id_field"]: wip_id}
+        )
+        file_ids_to_delete.extend(fids)
+        minio_keys.extend(skeys)
+        if fids:
+            print(f"  Referenced files: {len(fids)} file(s)")
+
+    # ── Collect document IDs for PostgreSQL cleanup ──────────────────
     pg_doc_ids = []
     if etype == "document":
         pg_doc_ids = [doc.get("document_id") for doc in docs if doc.get("document_id")]
 
-    # Cascade
-    cascade_deletes = []
-    if cascade and etype in CASCADE_RULES:
-        for rule in CASCADE_RULES[etype]:
-            match_val = docs[0].get(rule["match_field"]) if docs else wip_id
-            child_db = client[rule["db"]]
-            child_coll = child_db[rule["collection"]]
-            child_count = child_coll.count_documents({rule["foreign_key"]: match_val})
-            if child_count > 0:
-                cascade_deletes.append((rule, match_val, child_count))
-                print(f"  Cascade: {child_count} {rule['label']} in {rule['collection']}")
+    # ── Cascade ──────────────────────────────────────────────────────
+    cascade_plan = []  # [(collection_info, query, label)]
 
-                # Collect MinIO keys from cascaded file deletions
-                if rule["collection"] == "documents":
-                    # Documents may have attached files
-                    cascade_doc_ids = child_coll.distinct(
-                        "document_id", {rule["foreign_key"]: match_val}
-                    )
-                    pg_doc_ids.extend(cascade_doc_ids)
-                    # Find files attached to these documents
-                    file_coll = client["wip_document_store"]["files"]
-                    for did in cascade_doc_ids:
-                        for fdoc in file_coll.find({"document_id": did}):
-                            if fdoc.get("storage_key"):
-                                minio_keys.append(fdoc["storage_key"])
-                    if minio_keys:
-                        print(f"  Cascade: {len(minio_keys)} file(s) in MinIO")
+    if cascade:
+        if etype == "terminology":
+            term_id = docs[0].get("terminology_id") if docs else wip_id
+            _plan_terminology_cascade(
+                client, term_id, cascade_plan, pg_doc_ids,
+                file_ids_to_delete, minio_keys, pg_conn
+            )
 
-    # Registry cleanup info
-    reg_db = client["wip_registry"]
-    reg_coll = reg_db["registry_entries"]
+        elif etype == "template":
+            template_id = docs[0].get("template_id") if docs else wip_id
+            template_value = docs[0].get("value") if docs else None
+            _plan_template_cascade(
+                client, template_id, template_value, cascade_plan,
+                pg_doc_ids, file_ids_to_delete, minio_keys, pg_conn
+            )
+
+        elif etype == "term":
+            term_id = docs[0].get("term_id") if docs else wip_id
+            _plan_term_cascade(client, term_id, cascade_plan)
+
+        elif etype == "document":
+            # Document → files cascade already handled above
+            pass
+
+    # Print cascade summary
+    for label, count, _ in cascade_plan:
+        print(f"  Cascade: {count} {label}")
+
+    # ── Registry cleanup info ────────────────────────────────────────
     reg_count = reg_coll.count_documents({"entry_id": wip_id})
     if reg_count > 0:
         print(f"  Registry: {reg_count} entry(ies) for {wip_id}")
 
-    # MinIO info
+    # ── MinIO cleanup ────────────────────────────────────────────────
     if minio_keys:
         delete_minio_objects(s3, s3_bucket, minio_keys, force)
 
-    # PostgreSQL info
+    # ── PostgreSQL cleanup ───────────────────────────────────────────
     if etype == "document" and pg_doc_ids:
-        delete_pg_document_rows(pg_conn, client, pg_doc_ids, force)
+        delete_pg_document_rows(pg_conn, pg_doc_ids, force)
+    elif etype == "template" and cascade:
+        # Drop the whole doc_* table when cascading template deletion
+        template_value = docs[0].get("value") if docs else None
+        if template_value:
+            drop_pg_doc_table(pg_conn, template_value, force)
     elif etype in PG_TABLE_MAP and PG_TABLE_MAP[etype]:
         pg_info = PG_TABLE_MAP[etype]
         delete_pg_rows(pg_conn, pg_info["table"], pg_info["id_field"], wip_id, force)
@@ -403,50 +479,26 @@ def delete_entity(
     if not force:
         return
 
-    # Execute MongoDB deletes
+    # ── Execute cascade deletes (children first) ─────────────────────
+    for label, count, delete_fn in cascade_plan:
+        delete_fn()
+
+    # Delete file metadata for cascaded files
+    if file_ids_to_delete and etype != "file":
+        file_coll = client["wip_document_store"]["files"]
+        fr = file_coll.delete_many({"file_id": {"$in": file_ids_to_delete}})
+        if fr.deleted_count:
+            print(f"  Deleted {fr.deleted_count} file metadata entries")
+        # Registry cleanup for files
+        fr2 = reg_coll.delete_many({"entry_id": {"$in": file_ids_to_delete}})
+        if fr2.deleted_count:
+            print(f"  Cleaned {fr2.deleted_count} file registry entries")
+
+    # Delete the entity itself
     result = coll.delete_many({info["id_field"]: wip_id})
     print(f"  Deleted {result.deleted_count} from {info['collection']}")
 
-    # Cascade deletes
-    for rule, match_val, _ in cascade_deletes:
-        child_db = client[rule["db"]]
-        child_coll = child_db[rule["collection"]]
-
-        # Collect child IDs for registry cleanup
-        id_field_map = {
-            "terms": "term_id",
-            "term_relationships": "relationship_id",
-            "documents": "document_id",
-        }
-        child_id_field = id_field_map.get(rule["collection"])
-        if child_id_field:
-            child_ids = child_coll.distinct(child_id_field, {rule["foreign_key"]: match_val})
-            if child_ids:
-                reg_result = reg_coll.delete_many({"entry_id": {"$in": child_ids}})
-                if reg_result.deleted_count:
-                    print(f"  Cleaned {reg_result.deleted_count} child registry entries")
-
-            # PostgreSQL cleanup for cascaded children
-            if rule["collection"] == "documents" and child_ids:
-                delete_pg_document_rows(pg_conn, client, list(child_ids), force)
-            elif rule["collection"] in ("terms", "term_relationships"):
-                child_etype = "term" if rule["collection"] == "terms" else "relationship"
-                if child_etype in PG_TABLE_MAP and PG_TABLE_MAP[child_etype]:
-                    pg_info = PG_TABLE_MAP[child_etype]
-                    for cid in child_ids:
-                        delete_pg_rows(pg_conn, pg_info["table"], pg_info["id_field"], cid, force)
-
-        child_result = child_coll.delete_many({rule["foreign_key"]: match_val})
-        print(f"  Cascade deleted {child_result.deleted_count} from {rule['collection']}")
-
-        # Delete cascaded files from MongoDB (file metadata)
-        if rule["collection"] == "documents" and minio_keys:
-            file_coll = client["wip_document_store"]["files"]
-            file_result = file_coll.delete_many({"storage_key": {"$in": minio_keys}})
-            if file_result.deleted_count:
-                print(f"  Cascade deleted {file_result.deleted_count} file metadata entries")
-
-    # Registry cleanup
+    # Registry cleanup for the entity
     if reg_count > 0:
         reg_result = reg_coll.delete_many({"entry_id": wip_id})
         print(f"  Cleaned {reg_result.deleted_count} registry entry(ies)")
@@ -462,16 +514,424 @@ def delete_entity(
             print(f"  Cleaned {audit_result.deleted_count} audit log entries")
 
 
-def list_entities(client: MongoClient, etype: str, limit: int):
+# ── Cascade planners ─────────────────────────────────────────────────────
+
+def _plan_terminology_cascade(client, terminology_id, cascade_plan, pg_doc_ids,
+                               file_ids_to_delete, minio_keys, pg_conn):
+    """Plan cascade: terminology → terms → relationships.
+    Also warn about templates that reference this terminology."""
+    reg_coll = client["wip_registry"]["registry_entries"]
+    term_coll = client["wip_def_store"]["terms"]
+    rel_coll = client["wip_def_store"]["term_relationships"]
+
+    # Terms in this terminology
+    term_ids = term_coll.distinct("term_id", {"terminology_id": terminology_id})
+    if term_ids:
+        cascade_plan.append((
+            f"terms in terminology",
+            len(term_ids),
+            lambda ids=list(term_ids): _exec_cascade_delete(
+                client, "wip_def_store", "terms",
+                {"terminology_id": terminology_id}, "term_id", ids,
+                reg_coll, pg_conn, PG_TABLE_MAP.get("term"),
+            ),
+        ))
+
+        # Relationships involving these terms
+        rel_query = {"$or": [
+            {"source_term_id": {"$in": term_ids}},
+            {"target_term_id": {"$in": term_ids}},
+        ]}
+        rel_count = rel_coll.count_documents(rel_query)
+        if rel_count:
+            rel_ids = rel_coll.distinct("relationship_id", rel_query)
+            cascade_plan.append((
+                "relationships involving terms",
+                rel_count,
+                lambda q=rel_query, ids=rel_ids: _exec_cascade_delete(
+                    client, "wip_def_store", "term_relationships",
+                    q, "relationship_id", ids,
+                    reg_coll, pg_conn, PG_TABLE_MAP.get("relationship"),
+                ),
+            ))
+
+    # Relationships referencing the terminology directly
+    trel_query = {"$or": [
+        {"source_terminology_id": terminology_id},
+        {"target_terminology_id": terminology_id},
+    ]}
+    trel_count = rel_coll.count_documents(trel_query)
+    if trel_count:
+        trel_ids = rel_coll.distinct("relationship_id", trel_query)
+        cascade_plan.append((
+            "relationships referencing terminology",
+            trel_count,
+            lambda q=trel_query, ids=trel_ids: _exec_cascade_delete(
+                client, "wip_def_store", "term_relationships",
+                q, "relationship_id", ids,
+                reg_coll, pg_conn, PG_TABLE_MAP.get("relationship"),
+            ),
+        ))
+
+    # Audit log for terms
+    if term_ids:
+        audit_coll = client["wip_def_store"]["term_audit_log"]
+        audit_count = audit_coll.count_documents({"terminology_id": terminology_id})
+        if audit_count:
+            cascade_plan.append((
+                "audit log entries",
+                audit_count,
+                lambda: audit_coll.delete_many({"terminology_id": terminology_id}),
+            ))
+
+    # Warn about templates referencing this terminology (not auto-deleted)
+    tmpl_coll = client["wip_template_store"]["templates"]
+    referencing = tmpl_coll.count_documents({
+        "$or": [
+            {"fields.terminology_ref": terminology_id},
+            {"fields.array_terminology_ref": terminology_id},
+        ]
+    })
+    if referencing:
+        print(f"  [WARN] {referencing} template(s) reference this terminology — not auto-deleted")
+
+
+def _plan_template_cascade(client, template_id, template_value, cascade_plan,
+                            pg_doc_ids, file_ids_to_delete, minio_keys, pg_conn):
+    """Plan cascade: template → child templates (recursive) → documents → files."""
+    reg_coll = client["wip_registry"]["registry_entries"]
+    tmpl_coll = client["wip_template_store"]["templates"]
+    doc_coll = client["wip_document_store"]["documents"]
+
+    # Collect all template_ids to delete (self + descendants via extends)
+    all_template_ids = _collect_template_tree(client, template_id)
+    child_ids = [tid for tid in all_template_ids if tid != template_id]
+
+    if child_ids:
+        cascade_plan.append((
+            f"child template(s) (recursive inheritance)",
+            len(child_ids),
+            lambda ids=child_ids: _exec_cascade_delete(
+                client, "wip_template_store", "templates",
+                {"template_id": {"$in": ids}}, "template_id", ids,
+                reg_coll, None, None,  # PG table drop handled separately
+            ),
+        ))
+        # Drop PG tables for child templates
+        for cid in child_ids:
+            child_val = tmpl_coll.find_one({"template_id": cid}, {"value": 1})
+            if child_val and child_val.get("value"):
+                drop_pg_doc_table(pg_conn, child_val["value"], False)  # report only in plan
+
+    # Documents using any of these templates
+    doc_query = {"template_id": {"$in": all_template_ids}}
+    doc_count = doc_coll.count_documents(doc_query)
+    if doc_count:
+        doc_ids = doc_coll.distinct("document_id", doc_query)
+        pg_doc_ids.extend(doc_ids)
+
+        # Files referenced by these documents
+        fids, skeys = collect_file_refs_from_documents(client, doc_query)
+        file_ids_to_delete.extend(fids)
+        minio_keys.extend(skeys)
+
+        cascade_plan.append((
+            f"documents across {len(all_template_ids)} template(s)",
+            doc_count,
+            lambda q=doc_query, ids=list(doc_ids): _exec_cascade_delete(
+                client, "wip_document_store", "documents",
+                q, "document_id", ids,
+                reg_coll, pg_conn, None,  # PG handled via doc_ids
+            ),
+        ))
+
+        if pg_doc_ids:
+            cascade_plan.append((
+                "PostgreSQL document rows",
+                len(pg_doc_ids),
+                lambda ids=list(pg_doc_ids): delete_pg_document_rows(pg_conn, ids, True),
+            ))
+
+        if fids:
+            cascade_plan.append((
+                f"files referenced by documents",
+                len(fids),
+                lambda: None,  # actual deletion handled in delete_entity
+            ))
+
+    # Drop PG table for the main template
+    if template_value:
+        cascade_plan.append((
+            f"PostgreSQL table doc_{template_value.lower()}",
+            1,
+            lambda tv=template_value: drop_pg_doc_table(pg_conn, tv, True),
+        ))
+
+
+def _plan_term_cascade(client, term_id, cascade_plan):
+    """Plan cascade: term → relationships."""
+    reg_coll = client["wip_registry"]["registry_entries"]
+    rel_coll = client["wip_def_store"]["term_relationships"]
+
+    rel_query = {"$or": [
+        {"source_term_id": term_id},
+        {"target_term_id": term_id},
+    ]}
+    rel_count = rel_coll.count_documents(rel_query)
+    if rel_count:
+        rel_ids = rel_coll.distinct("relationship_id", rel_query)
+        cascade_plan.append((
+            "relationships involving this term",
+            rel_count,
+            lambda q=rel_query, ids=rel_ids: _exec_cascade_delete(
+                client, "wip_def_store", "term_relationships",
+                q, "relationship_id", ids,
+                reg_coll, None, PG_TABLE_MAP.get("relationship"),
+            ),
+        ))
+
+
+def _collect_template_tree(client, root_template_id):
+    """Recursively collect template_id for a template and all its descendants."""
+    tmpl_coll = client["wip_template_store"]["templates"]
+    collected = set()
+    to_process = [root_template_id]
+
+    while to_process:
+        tid = to_process.pop()
+        if tid in collected:
+            continue
+        collected.add(tid)
+        # Find templates that extend this one
+        children = tmpl_coll.distinct("template_id", {"extends": tid})
+        to_process.extend(children)
+
+    return list(collected)
+
+
+def _exec_cascade_delete(client, db_name, collection_name, query, id_field,
+                          entity_ids, reg_coll, pg_conn, pg_map):
+    """Execute a cascade delete: remove from MongoDB, Registry, and PostgreSQL."""
+    coll = client[db_name][collection_name]
+    result = coll.delete_many(query)
+    print(f"  Cascade deleted {result.deleted_count} from {collection_name}")
+
+    # Registry cleanup
+    if entity_ids:
+        reg_result = reg_coll.delete_many({"entry_id": {"$in": entity_ids}})
+        if reg_result.deleted_count:
+            print(f"  Cleaned {reg_result.deleted_count} registry entries for {collection_name}")
+
+    # PostgreSQL cleanup
+    if pg_conn and pg_map and entity_ids:
+        delete_pg_rows_bulk(pg_conn, pg_map["table"], pg_map["id_field"], entity_ids, True)
+
+
+# ── Namespace deletion ───────────────────────────────────────────────────
+
+def delete_namespace(client, namespace, force, s3, s3_bucket, pg_conn):
+    """Delete all entities in a namespace across all collections."""
+    print(f"\n{'='*60}")
+    print(f"NAMESPACE: {namespace}")
+    print(f"{'='*60}")
+
+    reg_coll = client["wip_registry"]["registry_entries"]
+
+    # Inventory
+    totals = {}
+    for etype in NAMESPACE_DELETE_ORDER:
+        if etype == "registry":
+            continue
+        info = ENTITY_MAP[etype]
+        coll = client[info["db"]][info["collection"]]
+        count = coll.count_documents({"namespace": namespace})
+        if count > 0:
+            totals[etype] = count
+
+    # Registry entries for this namespace
+    reg_count = reg_coll.count_documents({"namespace": namespace})
+
+    # Check if namespace record exists
+    ns_coll = client["wip_registry"]["namespaces"]
+    ns_exists = ns_coll.find_one({"prefix": namespace}) is not None
+
+    if not totals and reg_count == 0 and not ns_exists:
+        print(f"  Namespace '{namespace}' does not exist — nothing to delete")
+        return
+
+    if not totals and reg_count == 0 and ns_exists:
+        print(f"  Namespace '{namespace}' has no entities — only the namespace record remains")
+        if force:
+            ns_coll.delete_one({"prefix": namespace})
+            print(f"  Removed namespace record '{namespace}'")
+            counters_coll = client["wip_registry"]["counters"]
+            cr = counters_coll.delete_many({"_id": {"$regex": f"^{namespace}:"}})
+            if cr.deleted_count:
+                print(f"  Cleaned {cr.deleted_count} ID counter(s)")
+            print(f"\n  Namespace '{namespace}' deleted.")
+        return
+
+    print(f"\n  Impact report for namespace '{namespace}':")
+    for etype, count in totals.items():
+        print(f"    {etype:20s} {count:>6}")
+    if reg_count:
+        print(f"    {'registry':20s} {reg_count:>6}")
+    total_entities = sum(totals.values()) + reg_count
+    print(f"    {'─'*28}")
+    print(f"    {'TOTAL':20s} {total_entities:>6}")
+
+    # Collect files for MinIO cleanup
+    file_ids, minio_keys = collect_files_by_namespace(client, namespace)
+    if minio_keys:
+        print(f"\n  MinIO: {len(minio_keys)} file object(s) to delete")
+
+    # Collect template values for PG table drops
+    tmpl_coll = client["wip_template_store"]["templates"]
+    template_values = tmpl_coll.distinct("value", {"namespace": namespace})
+    if template_values and pg_conn:
+        print(f"  PostgreSQL: {len(template_values)} doc_* table(s) to drop")
+
+    if not force:
+        return
+
+    # Delete in dependency order
+    for etype in NAMESPACE_DELETE_ORDER:
+        if etype == "registry":
+            continue
+        if etype not in totals:
+            continue
+        info = ENTITY_MAP[etype]
+        coll = client[info["db"]][info["collection"]]
+
+        # Collect IDs for registry cleanup
+        entity_ids = coll.distinct(info["id_field"], {"namespace": namespace})
+
+        result = coll.delete_many({"namespace": namespace})
+        print(f"  Deleted {result.deleted_count} from {info['collection']}")
+
+        # Registry cleanup for these entities
+        if entity_ids:
+            rr = reg_coll.delete_many({"entry_id": {"$in": entity_ids}})
+            if rr.deleted_count:
+                print(f"    Cleaned {rr.deleted_count} registry entries")
+
+        # PostgreSQL cleanup
+        if etype in PG_TABLE_MAP and PG_TABLE_MAP[etype] and pg_conn:
+            delete_pg_rows_bulk(
+                pg_conn, PG_TABLE_MAP[etype]["table"],
+                PG_TABLE_MAP[etype]["id_field"], entity_ids, True
+            )
+
+    # Drop PG doc_* tables
+    for tv in template_values:
+        drop_pg_doc_table(pg_conn, tv, True)
+
+    # Delete PG document rows (in case any survived table drops)
+    if "document" in totals:
+        doc_coll = client["wip_document_store"]["documents"]
+        # Documents already deleted from MongoDB, but PG rows may remain
+        # in tables not matching template_value. Already handled by table drops.
+        pass
+
+    # MinIO cleanup
+    if minio_keys:
+        delete_minio_objects(s3, s3_bucket, minio_keys, True)
+
+    # Remaining registry entries (namespace-level, not tied to entities)
+    remaining_reg = reg_coll.count_documents({"namespace": namespace})
+    if remaining_reg:
+        reg_coll.delete_many({"namespace": namespace})
+        print(f"  Cleaned {remaining_reg} remaining registry entries")
+
+    # Audit log cleanup
+    audit_coll = client["wip_def_store"]["term_audit_log"]
+    audit_result = audit_coll.delete_many({"namespace": namespace})
+    if audit_result.deleted_count:
+        print(f"  Cleaned {audit_result.deleted_count} audit log entries")
+
+    # Delete the namespace record itself from the registry
+    ns_coll = client["wip_registry"]["namespaces"]
+    ns_doc = ns_coll.find_one({"prefix": namespace})
+    if ns_doc:
+        ns_coll.delete_one({"prefix": namespace})
+        print(f"  Removed namespace record '{namespace}'")
+        # Also clean up the counters collection for this namespace
+        counters_coll = client["wip_registry"]["counters"]
+        cr = counters_coll.delete_many({"_id": {"$regex": f"^{namespace}:"}})
+        if cr.deleted_count:
+            print(f"  Cleaned {cr.deleted_count} ID counter(s)")
+
+    print(f"\n  Namespace '{namespace}' deleted.")
+
+
+# ── Prefix deletion ──────────────────────────────────────────────────────
+
+def delete_by_prefix(client, prefix, type_filter, cascade, force, s3, s3_bucket, pg_conn):
+    """Delete entities whose value matches a prefix."""
+    # Determine which types to search
+    if type_filter:
+        search_types = [type_filter]
+    else:
+        # Only types that have a 'value' field
+        search_types = ["terminology", "template"]
+
+    print(f"\n{'='*60}")
+    print(f"PREFIX: {prefix}*" + (f" (type: {type_filter})" if type_filter else ""))
+    print(f"{'='*60}")
+
+    found_ids = []
+
+    for etype in search_types:
+        info = ENTITY_MAP[etype]
+        coll = client[info["db"]][info["collection"]]
+        import re
+        regex = re.compile(f"^{re.escape(prefix)}", re.IGNORECASE)
+        matches = list(coll.find({"value": regex}, {info["id_field"]: 1, "value": 1}))
+
+        if not matches:
+            continue
+
+        unique_ids = list(set(doc[info["id_field"]] for doc in matches))
+        unique_values = list(set(doc.get("value", "?") for doc in matches))
+        print(f"\n  {etype}: {len(unique_ids)} matching entity(ies)")
+        for v in sorted(unique_values)[:20]:
+            print(f"    {v}")
+        if len(unique_values) > 20:
+            print(f"    ... and {len(unique_values) - 20} more")
+
+        for uid in unique_ids:
+            found_ids.append((uid, etype))
+
+    if not found_ids:
+        print("  No entities found matching prefix")
+        return
+
+    if not force:
+        return
+
+    for uid, etype in found_ids:
+        info = ENTITY_MAP[etype]
+        print(f"\n  Deleting {etype} {uid}...")
+        delete_entity(
+            client, uid, etype, info, cascade, force,
+            s3=s3, s3_bucket=s3_bucket, pg_conn=pg_conn,
+        )
+
+
+# ── List and utilities ───────────────────────────────────────────────────
+
+def list_entities(client: MongoClient, etype: str, limit: int, namespace: str | None = None):
     """List entities in a collection."""
     info = ENTITY_MAP[etype]
     db = client[info["db"]]
     coll = db[info["collection"]]
 
-    total = coll.estimated_document_count()
-    print(f"\n{info['db']}.{info['collection']} ({total} total):\n")
+    query = {"namespace": namespace} if namespace else {}
+    total = coll.count_documents(query)
+    ns_label = f" (namespace: {namespace})" if namespace else ""
+    print(f"\n{info['db']}.{info['collection']}{ns_label} ({total} total):\n")
 
-    cursor = coll.find().sort("_id", -1).limit(limit)
+    cursor = coll.find(query).sort("_id", -1).limit(limit)
     for doc in cursor:
         wip_id = doc.get(info["id_field"], "?")
         version = doc.get("version", "")
@@ -501,11 +961,20 @@ def main():
     )
     parser.add_argument(
         "--cascade", action="store_true",
-        help="Also delete child entities (e.g., terms of a terminology)",
+        help="Also delete child entities (terminology→terms→relationships, "
+             "template→child templates→documents→files)",
     )
     parser.add_argument(
-        "--type", choices=list(ENTITY_MAP.keys()),
+        "--type", choices=[k for k in ENTITY_MAP.keys() if k != "registry"],
         help="Entity type (auto-detected if omitted)",
+    )
+    parser.add_argument(
+        "--namespace",
+        help="Delete ALL entities in a namespace (cascade is implied)",
+    )
+    parser.add_argument(
+        "--prefix",
+        help="Delete entities whose value starts with this prefix",
     )
     parser.add_argument(
         "--list", dest="list_type", metavar="COLLECTION",
@@ -539,7 +1008,7 @@ def main():
 
     args = parser.parse_args()
 
-    if not args.ids and not args.list_type:
+    if not args.ids and not args.list_type and not args.namespace and not args.prefix:
         parser.print_help()
         sys.exit(1)
 
@@ -559,14 +1028,13 @@ def main():
             print(f"Unknown type: {args.list_type}", file=sys.stderr)
             print(f"Valid: {', '.join(LIST_ALIASES.keys())}", file=sys.stderr)
             sys.exit(1)
-        list_entities(client, etype, args.limit)
+        list_entities(client, etype, args.limit, args.namespace)
         return
 
     # Connect to optional backends
     s3, s3_bucket = connect_minio(args)
     pg_conn = connect_postgres(args)
 
-    # Delete mode
     if not args.force:
         print("DRY RUN — add --force to actually delete\n")
 
@@ -575,8 +1043,35 @@ def main():
         backends.append("MinIO")
     if pg_conn:
         backends.append("PostgreSQL")
-    print(f"Backends: {', '.join(backends)}\n")
+    print(f"Backends: {', '.join(backends)}")
 
+    # Namespace mode
+    if args.namespace:
+        delete_namespace(client, args.namespace, args.force, s3, s3_bucket, pg_conn)
+        if not args.force:
+            print(f"\n{'='*60}")
+            print("DRY RUN complete. Re-run with --force to execute.")
+            print(f"{'='*60}")
+        if pg_conn:
+            pg_conn.close()
+        return
+
+    # Prefix mode
+    if args.prefix:
+        delete_by_prefix(
+            client, args.prefix, args.type,
+            args.cascade or True,  # cascade implied for prefix
+            args.force, s3, s3_bucket, pg_conn,
+        )
+        if not args.force:
+            print(f"\n{'='*60}")
+            print("DRY RUN complete. Re-run with --force to execute.")
+            print(f"{'='*60}")
+        if pg_conn:
+            pg_conn.close()
+        return
+
+    # ID mode
     for wip_id in args.ids:
         print(f"\n{'='*60}")
         print(f"ID: {wip_id}")

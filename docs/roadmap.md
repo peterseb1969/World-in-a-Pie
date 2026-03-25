@@ -15,38 +15,78 @@ Enables the dev→prod workflow: create a `full` dev namespace, iterate on the d
 - Design: `docs/design/namespace-deletion.md`
 - Status: Design complete
 
-### WIP-Toolkit: Cross-Instance Restore with ID Preservation
+### Complete ID Pass-Through for Restore
 
-The `wip-toolkit import --mode restore` must preserve all original entity IDs when restoring to a different instance. The backend services (template-store, document-store) already support ID pass-through via `entry_id` in the Registry API — the toolkit needs to use it correctly.
+The `wip-toolkit import --mode restore` must preserve **all** original entity IDs when restoring to a different instance. Every entity type — terminologies, terms, templates, documents, and files — must arrive with its original ID intact. This is a hard requirement for backup/restore, cross-instance migration, and the dev→prod namespace workflow.
 
 Current state (tested 2026-03-25):
-- **Terminologies:** No API-level ID pass-through. Toolkit builds old→new ID map by value and remaps downstream references (terms, template fields). Works.
+- **Terminologies:** No API-level ID pass-through. Toolkit builds old→new ID map by value and remaps downstream references (terms, template fields). Works but fragile — value collisions across namespaces would break it.
+- **Terms:** Inherit from terminology. Works via the value-based remap.
 - **Templates:** ID pass-through works (template_id + version in payload).
 - **Documents:** ID pass-through exists in the API but the toolkit isn't triggering it correctly — documents get new IDs, breaking document-to-document references (e.g., `parent_class`). 14/1384 documents failed in testing.
 - **Files:** Created with new IDs. File references in documents break.
 
-Fix approach: Debug why document_id pass-through isn't activating (the document-store checks `request.document_id and request.version is not None`). For terminologies, consider adding API-level pass-through to def-store (matching the template-store pattern). For files, add file_id pass-through to document-store upload endpoint.
+Fix approach:
+1. **Documents:** Debug why document_id pass-through isn't activating (the document-store checks `request.document_id and request.version is not None`). Fix the toolkit to send both fields correctly.
+2. **Files:** Add file_id pass-through to the document-store upload endpoint so restored files keep their original IDs. Update the toolkit to use it.
+3. **Terminologies:** Add API-level ID pass-through to def-store (matching the template-store pattern) so restore doesn't depend on value-based remapping.
+4. **End-to-end test:** Export a fully populated namespace (with doc-to-doc references, file references, and ontology relationships), restore to a clean instance, and verify 100% ID match with zero failures.
 
-Alternative: Registry "draft" entity mode — register all IDs as draft (skip referential integrity), import all data, then promote all to active. This was discussed previously but may not have been implemented.
+Alternative: Registry "draft" entity mode — register all IDs as draft (skip referential integrity), import all data, then promote all to active.
 
-- Status: Partially working, 99% success rate, needs ID pass-through debugging
+- Status: Partially working, 99% success rate, needs ID pass-through debugging for documents and files
+
+### Cross-Platform Test Suite
+
+Comprehensive end-to-end test of the full WIP universe across supported platforms. Must cover:
+
+- **All services:** Registry, Def-Store, Template-Store, Document-Store, Reporting-Sync, Ingest Gateway, MCP Server
+- **WIP-Toolkit:** Export, import (fresh and restore modes), closure computation
+- **Client libraries:** @wip/client (TypeScript), @wip/react hooks
+- **Scripts:** `setup.sh` (all presets), `quality-audit.sh`, `seed_comprehensive.py`, `dev-delete.py`, `create-app-project.sh`, security scripts
+- **WIP Console:** Build, OIDC login flow, CRUD operations
+- **Platforms:** macOS (Apple Silicon), Linux x86_64, Raspberry Pi 5 (aarch64), Raspberry Pi 4 (armv8.0)
+- **Container runtimes:** Rootless Podman, rootful Podman, Docker
+
+Deliverable: A CI-compatible test matrix script that can be run on each platform, reporting pass/fail per component. Should build on the existing `quality-audit.sh` and `.gitea/workflows/test.yaml` but extend to cover integration tests, toolkit round-trips, and client library type-checking.
+
+- Status: Not started
+
+### Dev-Namespace Workflow for Slash Commands
+
+Update the 12 AI-assisted development slash commands (`/explore`, `/design-model`, `/implement`, `/build-app`, `/add-app`, `/improve`, `/bootstrap`, `/export-model`, `/document`, `/analyst`, `/resume`, `/wip-status`) to use a **disposable dev namespace** for data modeling, with transfer to a clean production namespace on completion.
+
+Workflow:
+1. `/explore` and `/design-model` create terminologies and templates in a dev namespace (e.g., `dev-<app-name>`)
+2. `/implement` populates seed data in the dev namespace for validation
+3. On completion, `/export-model` exports the finalized data model from the dev namespace
+4. `/bootstrap` imports into a fresh production namespace (e.g., `<app-name>`)
+5. The dev namespace is deleted via namespace deletion (see above)
+
+This requires:
+- Namespace deletion (v1.1 deliverable above) to be implemented first
+- Complete ID pass-through for restore (v1.1 deliverable above) so bootstrap preserves references
+- Updates to all slash command prompts to default to dev namespace during phases 1-3
+- A new `/promote-namespace` or `/finalize` slash command (or extend `/bootstrap`) that orchestrates export→import→delete
+
+Benefits: AI can iterate freely during design without polluting the production namespace. Failed experiments are cleaned up completely. The production namespace only ever contains the validated, final data model.
+
+- Depends on: Namespace Deletion, Complete ID Pass-Through
+- Status: Not started
 
 ---
 
 ## Near-Term
 
-### dev-delete.py: Namespace and Prefix Support
+### ~~dev-delete.py: Namespace and Prefix Support~~ (Done)
 
-Add `--namespace` and `--prefix` flags to `scripts/dev-delete.py` for bulk deletion without needing individual entity IDs. Currently the script only accepts explicit WIP IDs, which is impractical for cleaning up entire namespaces (today requires a raw pymongo one-liner).
-
-Examples:
-- `python scripts/dev-delete.py --namespace dnd --force` — delete all entities in namespace `dnd` across MongoDB, MinIO, and PostgreSQL
-- `python scripts/dev-delete.py --namespace dnd --cascade --force` — same, with cascade to Registry entries
-- `python scripts/dev-delete.py --prefix DND_ --type terminology --force` — delete all terminologies matching a value prefix
-
-Should reuse the existing `ENTITY_MAP` and cascade logic, and respect `--no-minio` / `--no-postgres` flags.
-
-- Status: Not started
+Implemented 2026-03-25. The script now supports:
+- `--namespace` — delete all entities in a namespace (with impact report, namespace record + ID counters cleanup)
+- `--prefix` — delete by value prefix (e.g., `--prefix DND_ --type terminology`)
+- Full recursive cascade: terminology→terms→relationships, template→child templates (recursive via `extends`)→documents→files (via `file_references`)
+- Terminology→template reference warnings (not auto-deleted, but flagged)
+- PostgreSQL `doc_*` table DROP on template cascade deletion
+- Namespace record and ID counter cleanup after all entities are removed
 
 ### Namespace Authorization — UX Polish
 
@@ -67,6 +107,24 @@ Core permission system is implemented (grant model, CRUD API, service enforcemen
 Currently tested with rootless Podman only. Need to test and document:
 - Standard Docker
 - Rootful Podman (`sudo podman`)
+
+### Kubernetes Deployment — Validated and Tested
+
+Early K8s manifests exist in `k8s/` (image build scripts, StatefulSets for infrastructure, Deployments for services, NGINX Ingress) but are not production-ready. This deliverable turns them into a validated, documented installation path.
+
+Scope:
+- **Manifests:** Complete and test all K8s manifests for every service and infrastructure component (MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy/Ingress)
+- **Helm chart or Kustomize:** Package manifests for configurable deployment (presets, secrets, TLS, storage classes)
+- **Secret management:** Integrate with K8s Secrets (and document Vault/External Secrets Operator options)
+- **Storage:** PersistentVolumeClaims for all stateful services, document StorageClass recommendations
+- **Networking:** Ingress configuration with TLS termination, service mesh considerations
+- **OIDC:** Validate Dex issuer URL configuration works with Ingress hostnames
+- **Testing:** Deploy to a local cluster (k3s/minikube/kind) and run the cross-platform test suite against it
+- **Documentation:** Step-by-step installation guide covering single-node (k3s on Pi) through multi-node cloud clusters
+
+Existing work: `k8s/build-images.sh` bakes wip-auth into self-contained images. Initial manifests exist but haven't been validated end-to-end.
+
+- Status: Early manifests exist, not validated
 
 ---
 
@@ -132,6 +190,23 @@ Consider enabling namespace-scoped relationship type terminologies, so domains c
 ### Metabase Pre-Built Dashboards
 
 Metabase deployment works (`deploy/optional/metabase/`), but no pre-built dashboards yet. Would provide out-of-the-box analytics for common WIP data patterns.
+
+### Default Synonyms for Portable Referential Integrity
+
+Investigate creating a **default synonym** for every entity at registration time — a stable, human-readable composite key (e.g., `{namespace, entity_type, value}` for terminologies, `{namespace, terminology_value, term_value}` for terms) that survives export/import across instances.
+
+Problem: Today, referential integrity during import depends on either preserving UUIDs (ID pass-through) or remapping by value (fragile). If a terminology is exported from instance A and imported into instance B, the UUID changes, and any external system holding the old UUID loses its reference.
+
+Idea: At entity creation, the Registry automatically registers a deterministic synonym derived from the entity's natural key. This synonym is included in exports and used during import to resolve references — even when UUIDs differ between instances. The synonym acts as a portable, instance-independent identity anchor.
+
+Considerations:
+- What constitutes the "natural key" for each entity type? Terminologies have `(namespace, value)`, terms have `(terminology_value, term_value)`, templates have `(namespace, value, version)`, documents have `(namespace, template_value, identity_hash)`.
+- Should this be opt-in per namespace or always-on?
+- Interaction with the existing synonym system — these would be auto-managed synonyms distinct from user-created ones.
+- Performance impact of creating a synonym for every entity.
+- How does this interact with namespace deletion and the dev→prod workflow?
+
+- Status: Idea — needs design discussion
 
 ---
 
