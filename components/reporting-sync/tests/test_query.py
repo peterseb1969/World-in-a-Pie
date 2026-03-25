@@ -51,8 +51,8 @@ def http_client():
 
 
 @pytest.mark.asyncio
-async def test_list_tables(http_client: AsyncClient, mock_state):
-    """List tables returns doc_* and reference tables."""
+async def test_list_tables_summary(http_client: AsyncClient, mock_state):
+    """List tables without table_name returns summary (name, row_count, column_count)."""
     pool, conn = mock_state
 
     # Mock information_schema.tables query
@@ -68,7 +68,8 @@ async def test_list_tables(http_client: AsyncClient, mock_state):
         ],
         # Subsequent calls: columns for each allowed table (5 tables)
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
-        [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
+        [{"column_name": "id", "data_type": "text", "is_nullable": "NO"},
+         {"column_name": "name", "data_type": "text", "is_nullable": "YES"}],
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
         [{"column_name": "id", "data_type": "text", "is_nullable": "NO"}],
@@ -85,6 +86,64 @@ async def test_list_tables(http_client: AsyncClient, mock_state):
     assert "doc_patient" in table_names
     assert "terminologies" in table_names
     assert "_wip_schema_migrations" not in table_names
+    # Summary mode: column_count, no columns list
+    patient = next(t for t in data["tables"] if t["name"] == "doc_patient")
+    assert "column_count" in patient
+    assert "columns" not in patient
+    assert patient["row_count"] == 42
+    # doc_bank_transaction has 2 columns in mock
+    bank = next(t for t in data["tables"] if t["name"] == "doc_bank_transaction")
+    assert bank["column_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_tables_detail(http_client: AsyncClient, mock_state):
+    """List tables with table_name returns full column detail for that table."""
+    pool, conn = mock_state
+
+    conn.fetch = AsyncMock(side_effect=[
+        # First call: list all tables
+        [
+            {"table_name": "doc_patient"},
+            {"table_name": "terminologies"},
+        ],
+        # Column detail for doc_patient
+        [
+            {"column_name": "document_id", "data_type": "text", "is_nullable": "NO"},
+            {"column_name": "name", "data_type": "text", "is_nullable": "YES"},
+            {"column_name": "age", "data_type": "integer", "is_nullable": "YES"},
+        ],
+    ])
+    conn.fetchval = AsyncMock(return_value=100)
+
+    async with http_client:
+        response = await http_client.get("/api/reporting-sync/tables?table_name=doc_patient")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["tables"]) == 1
+    table = data["tables"][0]
+    assert table["name"] == "doc_patient"
+    assert table["row_count"] == 100
+    assert "columns" in table
+    assert len(table["columns"]) == 3
+    assert table["columns"][0]["name"] == "document_id"
+    assert table["columns"][1]["type"] == "text"
+
+
+@pytest.mark.asyncio
+async def test_list_tables_detail_not_found(http_client: AsyncClient, mock_state):
+    """List tables with unknown table_name returns 404."""
+    pool, conn = mock_state
+
+    conn.fetch = AsyncMock(side_effect=[
+        [{"table_name": "doc_patient"}],
+    ])
+
+    async with http_client:
+        response = await http_client.get("/api/reporting-sync/tables?table_name=doc_nonexistent")
+
+    assert response.status_code == 404
 
 
 @pytest.mark.asyncio

@@ -1106,8 +1106,14 @@ async def get_referenced_by(
 
 
 @router.get("/tables")
-async def list_tables():
-    """List available reporting tables with their columns and row counts."""
+async def list_tables(
+    table_name: str | None = Query(default=None, description="Return full column detail for a specific table"),
+):
+    """List available reporting tables.
+
+    Without table_name: returns table names, row counts, and column counts (summary).
+    With table_name: returns full column detail (name, type, nullable) for that table.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -1132,6 +1138,10 @@ async def list_tables():
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
 
+            # If filtering by table_name, skip non-matching tables
+            if table_name and tname != table_name:
+                continue
+
             # Get columns
             columns = await conn.fetch(
                 """
@@ -1149,18 +1159,29 @@ async def list_tables():
                 f'SELECT COUNT(*) FROM "{tname}"'
             )
 
-            tables.append({
+            entry: dict = {
                 "name": tname,
-                "columns": [
+                "row_count": count,
+            }
+
+            if table_name:
+                # Detail mode: include full column info
+                entry["columns"] = [
                     {
                         "name": c["column_name"],
                         "type": c["data_type"],
                         "nullable": c["is_nullable"] == "YES",
                     }
                     for c in columns
-                ],
-                "row_count": count,
-            })
+                ]
+            else:
+                # Summary mode: just column count
+                entry["column_count"] = len(columns)
+
+            tables.append(entry)
+
+        if table_name and not tables:
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     return {"tables": tables}
 
