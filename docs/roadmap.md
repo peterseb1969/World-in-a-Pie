@@ -44,11 +44,27 @@ Comprehensive end-to-end test of the full WIP universe across supported platform
 - **WIP-Toolkit:** Export, import (fresh and restore modes), closure computation
 - **Client libraries:** @wip/client (TypeScript), @wip/react hooks
 - **Scripts:** `setup.sh` (all presets), `quality-audit.sh`, `seed_comprehensive.py`, `dev-delete.py`, `create-app-project.sh`, security scripts
-- **WIP Console:** Build, OIDC login flow, CRUD operations
+- **WIP Console:** Build, OIDC login flow, CRUD operations (see UI testing below)
 - **Platforms:** macOS (Apple Silicon), Linux x86_64, Raspberry Pi 5 (aarch64), Raspberry Pi 4 (armv8.0)
 - **Container runtimes:** Rootless Podman, rootful Podman, Docker
 
-Deliverable: A CI-compatible test matrix script that can be run on each platform, reporting pass/fail per component. Should build on the existing `quality-audit.sh` and `.gitea/workflows/test.yaml` but extend to cover integration tests, toolkit round-trips, and client library type-checking.
+#### UI / E2E Testing Approaches
+
+Three complementary options for testing the WIP Console and WIP apps:
+
+1. **Playwright (CI backbone)** — Headless browser automation. Deterministic, fast, runs in CI without a display. Scripts cover: OIDC login flow, CRUD operations on all entity types, namespace switching, permission enforcement (button guards), file upload/download. This is the primary testing approach for the test suite. Available as an MCP server for AI-assisted test authoring.
+
+2. **Claude Desktop computer use (exploratory + doc verification)** — Claude sees the screen and interacts visually like a human. Two use cases:
+   - *Exploratory testing:* "Log in, create a template with these fields, verify it appears in the list, try creating a document against it." Catches visual/UX regressions that programmatic tests miss.
+   - *Documentation verification:* Follow the setup guide, WIP_AppSetup_Guide, or any tutorial step by step — clicking through the actual UI and reporting where docs don't match reality. Screenshots as evidence. This automates what was done manually in the documentation audit (78 files, curl examples) but extends it to UI workflows: "open the console, click Login, verify what you see matches what the docs say."
+
+   Non-deterministic, requires a display, not CI-friendly — but uniquely valuable for both purposes.
+
+3. **Cypress / other browser frameworks** — Alternative to Playwright. Cypress has a built-in test runner UI, time-travel debugging, and automatic screenshots on failure. Heavier dependency but better DX for writing/debugging UI tests interactively. Consider if the team has Cypress experience; otherwise Playwright is lighter and sufficient.
+
+**Recommendation:** Playwright for the CI test matrix (headless, all platforms). Claude Desktop computer use for manual validation sessions on Mac. Cypress only if Playwright proves insufficient.
+
+Deliverable: A CI-compatible test matrix script that can be run on each platform, reporting pass/fail per component. Should build on the existing `quality-audit.sh` and `.gitea/workflows/test.yaml` but extend to cover integration tests, toolkit round-trips, client library type-checking, and Playwright UI tests.
 
 - Status: Not started
 
@@ -67,7 +83,7 @@ This requires:
 - Namespace deletion (v1.1 deliverable above) to be implemented first
 - Complete ID pass-through for restore (v1.1 deliverable above) so bootstrap preserves references
 - **MCP `create_namespace` tool** — currently the MCP server only has `list_namespaces` and `get_namespace_stats` (read-only). A `create_namespace` tool is needed so slash commands can create dev namespaces without the AI having to call the Registry API directly via curl.
-- **MCP namespace audit** — systematic review of all 68 MCP tools for namespace support. Known gaps: the ontology tools (`create_relationships`, `list_relationships`, `get_term_hierarchy`, `delete_relationships`) don't expose or pass namespace to the Def-Store API despite it being supported — they silently default to `"wip"`. This is likely a pattern across other tools too (traversal, search, import/export). Every MCP tool that calls a namespace-aware API endpoint must expose an optional `namespace` parameter and pass it through. Without this, all MCP-driven work is locked to the `wip` namespace.
+- ~~**MCP namespace audit**~~ (Done) — systematic review of all 68 MCP tools completed. Fixed 13 tools: ontology tools (`create_relationships`, `list_relationships`, `get_term_hierarchy`, `delete_relationships`), terminology tools (`get_terminology_by_value`, `import_terminology`), unified `search`, bulk create tools (`create_terminologies_bulk`, `create_template`, `create_templates_bulk`, `create_document`, `create_documents_bulk`), and `get_template_versions`. All namespace-aware API endpoints now have namespace pass-through in the MCP layer.
 - Updates to all slash command prompts to default to dev namespace during phases 1-3
 - A new `/promote-namespace` or `/finalize` slash command (or extend `/bootstrap`) that orchestrates export→import→delete
 
@@ -102,7 +118,24 @@ Core permission system is implemented (grant model, CRUD API, service enforcemen
 
 ### MCP Read-Only Mode
 
-`WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Also add a `--preset query` option to `create-app-project.sh` that generates a project with the readonly MCP config and only the query-focused slash commands.
+`WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Prerequisite for the NL Query Scaffold (below).
+
+### NL Query Scaffold
+
+Turn the natural language interface pattern (validated in WIP-DnD Compendium with 1,384 entities) into reusable WIP infrastructure + app scaffolding. Every new WIP app should be NL-ready out of the box via `create-app-project.sh --preset query`.
+
+Four deliverables:
+1. **`describe_data_model` MCP tool** — returns all active templates with fields, formatted for system prompt injection. Replaces hardcoded template catalogs.
+2. **`wip://query-assistant-prompt` MCP resource** — complete system prompt combining generic query instructions + live template catalog. Apps read this at startup.
+3. **`--preset query` scaffold** — `create-app-project.sh` generates a working NL app: Express backend with Claude agentic loop, React chat widget, Vite proxy, all wired up.
+4. **Architecture guide** (`docs/nl-interface-guide.md`) — rationale behind key decisions (Haiku for cost, server-side sessions for security, dynamic prompts for compaction resilience).
+
+No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extract into a package after 3+ apps stabilize the pattern.
+
+- Design: `docs/design/nl-query-scaffold.md`
+- Depends on: MCP Read-Only Mode
+- Validated by: WIP-DnD Compendium
+- Status: Design complete
 
 ### Container Runtime Support
 
@@ -149,15 +182,21 @@ Make services independently deployable across multiple hosts. 80% ready — all 
 - Design: `docs/design/distributed-deployment.md`
 - Status: Phase 1-2 complete (console optional, reporting separable), Phase 3 pending
 
-### Natural Language Interface
+### Natural Language Interface — Standalone Deployment
 
-Conversational data query UI powered by MCP tools. BYOK (bring your own key) model, optional deployment. Blocked on namespace authorization completion.
+Conversational data query UI as a standalone deployable service (beyond the per-app scaffold in Near-Term). BYOK (bring your own key) model, optional deployment. Would serve as a generic query frontend for any WIP instance without building a custom app.
+
+The Near-Term NL Query Scaffold provides the per-app pattern. This item covers a shared, instance-wide NL service that works across all namespaces and templates.
 
 - Design: `docs/design/natural-language-interface.md`
+- Depends on: NL Query Scaffold (near-term)
+- Status: Planning (scaffold-first approach adopted)
 
 ### `/init-nl-interface` Command — Data Model Snapshot
 
 A forced refresh command that reads all templates, field names, terminology values, and document counts before answering any question. `/wip-status` on steroids. Motivation: the D&D Claude lost template awareness across compaction (missed 5 templates, gave wrong answers on Q6 and Q11). This command would build the Claude's working memory of the data model at the start of every query session, ensuring complete and accurate answers regardless of prior context.
+
+The `describe_data_model` MCP tool (Near-Term, NL Query Scaffold) provides the underlying data. This slash command would call that tool and inject the result into the conversation context.
 
 ### Deterministic SQL Dashboard App
 
@@ -193,22 +232,14 @@ Consider enabling namespace-scoped relationship type terminologies, so domains c
 
 Metabase deployment works (`deploy/optional/metabase/`), but no pre-built dashboards yet. Would provide out-of-the-box analytics for common WIP data patterns.
 
-### Default Synonyms for Portable Referential Integrity
+### Universal Synonym Resolution
 
-Investigate creating a **default synonym** for every entity at registration time — a stable, human-readable composite key (e.g., `{namespace, entity_type, value}` for terminologies, `{namespace, terminology_value, term_value}` for terms) that survives export/import across instances.
+Allow any registered synonym to be used wherever a canonical ID is accepted. Services resolve non-canonical identifiers through the Registry before processing. This solves three problems at once: cross-instance migration (references survive because portable synonyms resolve on both instances), app development roundtrips (use human-readable identifiers directly in API calls), and portable identity (instance-independent entity references for external systems).
 
-Problem: Today, referential integrity during import depends on either preserving UUIDs (ID pass-through) or remapping by value (fragile). If a terminology is exported from instance A and imported into instance B, the UUID changes, and any external system holding the old UUID loses its reference.
+Subsumes the earlier "Default Synonyms" idea — portable synonyms are one application of universal resolution, not a separate feature.
 
-Idea: At entity creation, the Registry automatically registers a deterministic synonym derived from the entity's natural key. This synonym is included in exports and used during import to resolve references — even when UUIDs differ between instances. The synonym acts as a portable, instance-independent identity anchor.
-
-Considerations:
-- What constitutes the "natural key" for each entity type? Terminologies have `(namespace, value)`, terms have `(terminology_value, term_value)`, templates have `(namespace, value, version)`, documents have `(namespace, template_value, identity_hash)`.
-- Should this be opt-in per namespace or always-on?
-- Interaction with the existing synonym system — these would be auto-managed synonyms distinct from user-created ones.
-- Performance impact of creating a synonym for every entity.
-- How does this interact with namespace deletion and the dev→prod workflow?
-
-- Status: Idea — needs design discussion
+- Design: `docs/design/universal-synonym-resolution.md`
+- Status: Proposed — needs discussion
 
 ---
 
@@ -231,6 +262,8 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
+| `nl-query-scaffold.md` | Design complete, ready to implement |
+| `universal-synonym-resolution.md` | Proposed — needs discussion |
 | `wip-nano.md` | Concept only |
 
 ---
