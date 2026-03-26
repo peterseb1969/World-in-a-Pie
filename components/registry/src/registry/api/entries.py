@@ -312,6 +312,14 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
+    # Phase 0: Batch-validate that all referenced namespaces exist
+    unique_namespaces = {item.namespace for item in items}
+    existing_ns_docs = await Namespace.find(
+        {"prefix": {"$in": list(unique_namespaces)}, "status": "active"}
+    ).to_list()
+    valid_namespaces = {ns.prefix for ns in existing_ns_docs}
+    invalid_namespaces = unique_namespaces - valid_namespaces
+
     # Phase 1: Compute hashes for items with composite keys.
     # When identity_values is provided, compute identity_hash and inject it
     # into composite_key before hashing the full key for dedup.
@@ -360,6 +368,16 @@ async def register_keys(
                     input_index=i,
                     status="error",
                     error=f"Invalid entity_type: {item.entity_type}"
+                )
+                error_count += 1
+                continue
+
+            # Validate namespace exists
+            if item.namespace in invalid_namespaces:
+                results[i] = RegisterKeyResponse(
+                    input_index=i,
+                    status="error",
+                    error=f"Namespace '{item.namespace}' does not exist or is not active"
                 )
                 error_count += 1
                 continue
@@ -554,17 +572,25 @@ async def reserve_ids(
                 error_count += 1
                 continue
 
-            # Validate format against namespace config
+            # Validate namespace exists
             ns = await Namespace.find_one({"prefix": item.namespace, "status": "active"})
-            if ns:
-                config = ns.get_id_algorithm(item.entity_type)
-                if not IdFormatValidator.validate(item.entry_id, config):
-                    results.append(ReserveItemResponse(
-                        input_index=i, status="invalid_format", entry_id=item.entry_id,
-                        error=f"ID does not match configured format for {item.entity_type}"
-                    ))
-                    error_count += 1
-                    continue
+            if not ns:
+                results.append(ReserveItemResponse(
+                    input_index=i, status="error", entry_id=item.entry_id,
+                    error=f"Namespace '{item.namespace}' does not exist or is not active"
+                ))
+                error_count += 1
+                continue
+
+            # Validate format against namespace config
+            config = ns.get_id_algorithm(item.entity_type)
+            if not IdFormatValidator.validate(item.entry_id, config):
+                results.append(ReserveItemResponse(
+                    input_index=i, status="invalid_format", entry_id=item.entry_id,
+                    error=f"ID does not match configured format for {item.entity_type}"
+                ))
+                error_count += 1
+                continue
 
             composite_key = item.composite_key or {}
             key_hash = HashService.compute_composite_key_hash(composite_key) if composite_key else ""
