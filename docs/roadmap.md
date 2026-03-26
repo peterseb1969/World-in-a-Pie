@@ -106,6 +106,38 @@ Implemented 2026-03-25. The script now supports:
 - PostgreSQL `doc_*` table DROP on template cascade deletion
 - Namespace record and ID counter cleanup after all entities are removed
 
+### Bug: Dashboard File Count Shows Zero
+
+The WIP Console dashboard displays a file count of 0 even when files exist in WIP. Likely the dashboard stats endpoint or the Console's stats query is not including files, or the file count is sourced from a field that isn't being populated.
+
+- Status: Not started
+
+### Bug: Reporting Sync Not Populating Terminologies/Terms Tables
+
+The PostgreSQL `terminologies` and `terms` tables exist with correct schemas but contain 0 rows, even when WIP has active terminologies and terms. The `term_relationships` table syncs correctly (99 rows observed).
+
+**Investigation findings (2026-03-26):**
+
+Code review confirms the full pipeline is implemented and logically correct on both sides:
+- **Def-Store publishes events** — `publish_terminology_event()` and `publish_term_event()` in `nats_client.py:180-275` are called from every CRUD operation in `terminology_service.py`. Event payloads include `event_type: "terminology.created"` etc. and a `terminology` / `term` dict with all fields including `terminology_id` / `term_id`.
+- **Reporting-Sync subscribes and routes** — `worker.py:481-484` routes on `event_type.startswith("terminology.")` and `event_type.startswith("term.")`. The handlers (`_process_terminology_event` at line 200, `_process_term_event` at line 282) perform correct PostgreSQL upserts.
+- **NATS stream subjects match** — both def-store and reporting-sync configure `WIP_EVENTS` with `wip.terminologies.>` and `wip.terms.>`.
+- **Batch sync endpoints exist** — `POST /sync/batch/terminologies` and `POST /sync/batch/terms` work by fetching from the Def-Store API.
+
+**Root cause — most likely a timing/lifecycle issue:**
+
+1. **No startup batch sync.** When reporting-sync starts (`main.py:251-277`), it initializes the `BatchSyncService` but never calls `batch_sync_terminologies()` or `batch_sync_terms()`. It only starts the NATS event worker. Contrast with relationships: those 99 rows likely arrived via NATS events during ontology import (which happened while reporting-sync was running), not via batch sync.
+2. **Terminologies/terms were likely created before NATS was configured**, or before the durable consumer was established. The consumer uses `DeliverPolicy.ALL` (`worker.py:520`), which replays from stream start — but only if the events were captured by the stream in the first place.
+3. **`start_batch_sync_all()` only syncs documents.** It iterates templates and syncs their documents (`batch_sync.py:343-372`). It does NOT call `batch_sync_terminologies()` or `batch_sync_terms()`. So even a "sync everything" operation misses terminologies and terms.
+4. **Manual batch sync was never triggered.** The `/sync/batch/terminologies` and `/sync/batch/terms` endpoints exist but there's no evidence they were ever called.
+
+**Fix approach:**
+1. **Immediate:** Trigger manual batch sync via `POST /api/reporting-sync/sync/batch/terminologies` and `POST /api/reporting-sync/sync/batch/terms` to backfill existing data.
+2. **Permanent:** Add terminology and term batch sync to the startup sequence in `main.py` (after schema creation at line 246), so reporting-sync self-heals on restart.
+3. **Belt-and-suspenders:** Include terminology and term sync in `start_batch_sync_all()` so the "sync everything" endpoint actually syncs everything.
+
+- Status: Investigated, root cause identified, fix pending
+
 ### Namespace Authorization — UX Polish
 
 Core permission system is implemented (grant model, CRUD API, service enforcement). Remaining work: ~50 button guards in the Console detail views (`v-if="namespaceStore.canWrite"`). The API already rejects unauthorized requests — this is cosmetic polish.
