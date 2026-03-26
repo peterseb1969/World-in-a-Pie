@@ -1,4 +1,4 @@
-"""Tests for the reporting query endpoints (cross-template joins)."""
+"""Tests for reporting query and batch sync endpoints."""
 
 import json
 import re
@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient, ASGITransport
 
 from reporting_sync.main import app, state
+from reporting_sync.batch_sync import BatchSyncService
 
 
 # =========================================================================
@@ -303,3 +304,108 @@ async def test_query_no_postgres(http_client: AsyncClient):
         assert response.status_code == 503
     finally:
         state.postgres_pool = original
+
+
+# =========================================================================
+# Batch Sync Endpoint Routing
+# =========================================================================
+# These tests verify that literal routes (/sync/batch/terminologies, etc.)
+# are not swallowed by the {template_value} wildcard route.
+
+
+@pytest.fixture
+def mock_batch_service():
+    """Patch state.batch_sync_service with a mock."""
+    mock_svc = AsyncMock(spec=BatchSyncService)
+    original = state.batch_sync_service
+    state.batch_sync_service = mock_svc
+    yield mock_svc
+    state.batch_sync_service = original
+
+
+@pytest.mark.asyncio
+async def test_batch_terminologies_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/terminologies hits the terminology handler, not {template_value}."""
+    mock_batch_service.batch_sync_terminologies = AsyncMock(
+        return_value={"synced": 5, "failed": 0, "total": 5}
+    )
+
+    async with http_client:
+        resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # The terminology endpoint returns {"status": "completed", "table": "terminologies", ...}
+    assert data["table"] == "terminologies"
+    assert data["synced"] == 5
+    mock_batch_service.batch_sync_terminologies.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_terms_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/terms hits the term handler, not {template_value}."""
+    mock_batch_service.batch_sync_terms = AsyncMock(
+        return_value={"synced": 42, "failed": 0, "total": 42}
+    )
+
+    async with http_client:
+        resp = await http_client.post("/api/reporting-sync/sync/batch/terms")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["table"] == "terms"
+    assert data["synced"] == 42
+    mock_batch_service.batch_sync_terms.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_relationships_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/relationships hits the relationship handler, not {template_value}."""
+    mock_batch_service.batch_sync_relationships = AsyncMock(
+        return_value={"synced": 99, "failed": 0, "total": 99}
+    )
+
+    async with http_client:
+        resp = await http_client.post("/api/reporting-sync/sync/batch/relationships")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["table"] == "term_relationships"
+    assert data["synced"] == 99
+    mock_batch_service.batch_sync_relationships.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_template_value_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/person hits the {template_value} handler."""
+    from reporting_sync.models import BatchSyncJob, BatchSyncStatus
+
+    job = BatchSyncJob(
+        job_id="test-123",
+        template_value="person",
+        status=BatchSyncStatus.RUNNING,
+    )
+    mock_batch_service.start_batch_sync = AsyncMock(return_value=job)
+
+    async with http_client:
+        resp = await http_client.post("/api/reporting-sync/sync/batch/person")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["template_value"] == "person"
+    mock_batch_service.start_batch_sync.assert_awaited_once_with(
+        template_value="person", force=False, page_size=100,
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_no_service_returns_503(http_client: AsyncClient):
+    """Batch endpoints return 503 when batch_sync_service is None."""
+    original = state.batch_sync_service
+    state.batch_sync_service = None
+    try:
+        async with http_client:
+            resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies")
+        assert resp.status_code == 503
+    finally:
+        state.batch_sync_service = original

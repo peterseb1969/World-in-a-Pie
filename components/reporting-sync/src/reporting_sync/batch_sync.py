@@ -682,7 +682,7 @@ class BatchSyncService:
                                     rel.get("target_terminology_id"),
                                     json.dumps(rel.get("metadata", {})),
                                     rel.get("status", "active"),
-                                    rel.get("created_at"),
+                                    _parse_datetime(rel.get("created_at")),
                                     rel.get("created_by"),
                                 )
                                 synced += 1
