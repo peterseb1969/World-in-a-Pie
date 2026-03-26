@@ -161,6 +161,73 @@ Existing work: `k8s/build-images.sh` bakes wip-auth into self-contained images. 
 
 - Status: Early manifests exist, not validated
 
+### Detailed Installation Guide
+
+Comprehensive, step-by-step installation instructions for every supported platform. Must cover:
+
+- **Raspberry Pi 5 (aarch64):** OS preparation (Raspberry Pi OS 64-bit), rootless Podman setup, storage considerations (SD card vs SSD), memory tuning for 8GB
+- **Raspberry Pi 4 (armv8.0):** Differences from Pi 5, performance expectations, recommended preset (`core` or `headless`)
+- **Linux x86_64 (Debian/Ubuntu):** Package prerequisites, Podman or Docker installation, firewall/port configuration
+- **Linux x86_64 (Fedora/RHEL):** SELinux considerations, Podman (default), cgroup v2 setup
+- **macOS (Apple Silicon):** Podman Machine setup, resource allocation, volume mount performance
+- **Each platform section includes:** Prerequisites, step-by-step install, preset selection guidance, TLS configuration (self-signed vs ACME), verification steps, common troubleshooting
+- **Production vs development:** Clear separation of dev setup (self-signed, default keys) from production hardening (random secrets, ACME TLS, `--prod` flag)
+
+Current state: `setup.sh` handles most of this automatically, but users need guidance on platform-specific prerequisites and post-install verification. The existing docs (`docs/production-deployment.md`, `docs/network-configuration.md`) cover pieces but there is no single end-to-end guide per platform.
+
+- Status: Not started
+
+### Data Migration Guide
+
+Detailed instructions for migrating data between WIP instances, versions, and deployment types. Must cover:
+
+- **Instance-to-instance migration:** Full namespace export via WIP-Toolkit, transfer, and restore on target instance (including ID pass-through requirements)
+- **Version upgrades:** Procedure for upgrading WIP (pull new images, run migrations if any, verify data integrity)
+- **Deployment type changes:** Moving from Podman Compose to Kubernetes, or from single-node to distributed deployment
+- **Partial migration:** Exporting and importing individual namespaces, terminologies, or template sets
+- **Rollback procedures:** How to revert a failed migration using backups and event replay
+- **Backup strategy:** MongoDB dump/restore, MinIO bucket sync, PostgreSQL pg_dump, coordinated backup across all stores
+- **Pre-migration checklist:** Verify source health, check disk space on target, confirm ID pass-through support, test with dry-run
+- **Post-migration verification:** Entity count comparison, referential integrity checks, file accessibility, reporting-sync re-trigger
+
+Depends on: Complete ID Pass-Through for Restore (v1.1) for fully reliable cross-instance migration.
+
+- Status: Not started
+
+### App Migration Guide
+
+Detailed instructions for migrating applications built on WIP when the underlying WIP instance changes. Must cover:
+
+- **App project relocation:** Moving an app project created by `create-app-project.sh` to point at a different WIP instance (updating MCP config, API base URLs, OIDC authority)
+- **Data model evolution:** How to update an app when its WIP templates or terminologies change (field additions, type changes, terminology expansions) — impact on queries, UI bindings, and seed files
+- **Namespace migration for apps:** Moving an app's namespace from one WIP instance to another, preserving all documents, files, and references
+- **Client library upgrades:** Updating `@wip/client` and `@wip/react` to new versions, handling breaking changes in the typed API
+- **Multi-app coordination:** When multiple apps share terminologies or reference each other's documents, migrating them together to maintain cross-app references
+- **OIDC reconfiguration:** Updating the app's auth configuration when the WIP instance changes its OIDC provider or hostname
+- **Seed file regeneration:** Using `/export-model` to regenerate seed files after data model changes, and `/bootstrap` to apply them to a new instance
+
+Depends on: Data Migration Guide (above) for the underlying WIP migration procedures.
+
+- Status: Not started
+
+### MCP Server Configuration Guide & SSE Transport Testing
+
+Detailed instructions for configuring the WIP MCP server across different AI clients and transports. The MCP server currently supports both stdio and SSE transport, but only stdio has been tested in practice.
+
+Must cover:
+
+- **Client configuration:** Step-by-step MCP config for Claude Code (`.mcp.json`), Claude Desktop (`claude_desktop_config.json`), Cursor, Windsurf, and other MCP-compatible clients
+- **stdio transport:** Configuration examples, environment variable pass-through, working directory considerations
+- **SSE transport:** Configuration and testing — currently implemented but **untested**. Verify connection lifecycle, reconnection behaviour, authentication (API key header pass-through), and concurrent client sessions
+- **Network scenarios:** Local (same host), LAN (e.g., app dev machine connecting to MCP server on a Pi), and remote (over SSH tunnel or reverse proxy)
+- **Authentication:** How the MCP server forwards API keys to WIP services, configuring keys per client, OIDC token pass-through considerations
+- **Tool filtering:** Documenting the planned `WIP_MCP_MODE=readonly` option (see MCP Read-Only Mode above) and how it affects tool registration per client
+- **Troubleshooting:** Common failure modes (port conflicts, TLS issues with SSE, environment variables not propagated, tool timeouts)
+
+Testing deliverable: End-to-end test of SSE transport — start MCP server in SSE mode, connect from at least two different clients, verify tool invocation, event streaming, and graceful disconnection.
+
+- Status: stdio tested and working, SSE untested
+
 ---
 
 ## Medium-Term
