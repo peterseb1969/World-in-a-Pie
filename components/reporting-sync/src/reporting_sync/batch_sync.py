@@ -18,6 +18,8 @@ from typing import Any
 import asyncpg
 import httpx
 
+from .transformer import _parse_datetime
+
 from .config import settings
 from .models import (
     BatchSyncJob,
@@ -462,9 +464,9 @@ class BatchSyncService:
                                     t.get("extensible", True),
                                     t.get("status", "active"),
                                     t.get("term_count", 0),
-                                    t.get("created_at"),
+                                    _parse_datetime(t.get("created_at")),
                                     t.get("created_by"),
-                                    t.get("updated_at"),
+                                    _parse_datetime(t.get("updated_at")),
                                     t.get("updated_by"),
                                 )
                                 synced += 1
@@ -583,9 +585,9 @@ class BatchSyncService:
                                         t.get("status", "active"),
                                         t.get("deprecated_reason"),
                                         t.get("replaced_by_term_id"),
-                                        t.get("created_at"),
+                                        _parse_datetime(t.get("created_at")),
                                         t.get("created_by"),
-                                        t.get("updated_at"),
+                                        _parse_datetime(t.get("updated_at")),
                                         t.get("updated_by"),
                                     )
                                     synced += 1

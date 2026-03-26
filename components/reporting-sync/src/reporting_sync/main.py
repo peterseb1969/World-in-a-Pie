@@ -538,95 +538,6 @@ async def get_schema(template_value: str) -> dict[str, Any]:
         }
 
 
-@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
-async def trigger_batch_sync(
-    template_value: str,
-    force: bool = False,
-    page_size: int = 100,
-) -> BatchSyncResponse:
-    """
-    Trigger a batch sync for a specific template.
-
-    This fetches all documents for the template from Document Store
-    and syncs them to PostgreSQL.
-
-    Args:
-        template_value: Template code to sync
-        force: Force re-sync even if table already has data
-        page_size: Number of documents to fetch per page (10-1000)
-    """
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    if page_size < 10 or page_size > 1000:
-        raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
-
-    job = await state.batch_sync_service.start_batch_sync(
-        template_value=template_value,
-        force=force,
-        page_size=page_size,
-    )
-
-    return BatchSyncResponse(
-        job_id=job.job_id,
-        template_value=job.template_value,
-        status=job.status,
-        message=f"Batch sync started for {template_value}",
-    )
-
-
-@router.post("/sync/batch", response_model=list[BatchSyncResponse])
-async def trigger_batch_sync_all(
-    force: bool = False,
-    page_size: int = 100,
-) -> list[BatchSyncResponse]:
-    """
-    Trigger batch sync for all templates.
-
-    This fetches all templates and syncs their documents to PostgreSQL.
-    Templates with sync_enabled=false are skipped.
-    """
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    jobs = await state.batch_sync_service.start_batch_sync_all(
-        force=force,
-        page_size=page_size,
-    )
-
-    return [
-        BatchSyncResponse(
-            job_id=job.job_id,
-            template_value=job.template_value,
-            status=job.status,
-            message=f"Batch sync started for {job.template_value}",
-        )
-        for job in jobs
-    ]
-
-
-@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
-async def list_batch_jobs() -> list[BatchSyncJob]:
-    """List all batch sync jobs."""
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    return state.batch_sync_service.list_jobs()
-
-
-@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
-async def get_batch_job(job_id: str) -> BatchSyncJob:
-    """Get a specific batch sync job by ID."""
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    job = state.batch_sync_service.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    return job
-
-
 @router.post("/sync/batch/terminologies")
 async def trigger_terminology_sync(
     namespace: str = "wip",
@@ -711,6 +622,95 @@ async def trigger_relationship_sync(
         "table": "term_relationships",
         **result,
     }
+
+
+@router.post("/sync/batch", response_model=list[BatchSyncResponse])
+async def trigger_batch_sync_all(
+    force: bool = False,
+    page_size: int = 100,
+) -> list[BatchSyncResponse]:
+    """
+    Trigger batch sync for all templates.
+
+    This fetches all templates and syncs their documents to PostgreSQL.
+    Templates with sync_enabled=false are skipped.
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    jobs = await state.batch_sync_service.start_batch_sync_all(
+        force=force,
+        page_size=page_size,
+    )
+
+    return [
+        BatchSyncResponse(
+            job_id=job.job_id,
+            template_value=job.template_value,
+            status=job.status,
+            message=f"Batch sync started for {job.template_value}",
+        )
+        for job in jobs
+    ]
+
+
+@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
+async def list_batch_jobs() -> list[BatchSyncJob]:
+    """List all batch sync jobs."""
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    return state.batch_sync_service.list_jobs()
+
+
+@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
+async def get_batch_job(job_id: str) -> BatchSyncJob:
+    """Get a specific batch sync job by ID."""
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    job = state.batch_sync_service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    return job
+
+
+@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
+async def trigger_batch_sync(
+    template_value: str,
+    force: bool = False,
+    page_size: int = 100,
+) -> BatchSyncResponse:
+    """
+    Trigger a batch sync for a specific template.
+
+    This fetches all documents for the template from Document Store
+    and syncs them to PostgreSQL.
+
+    Args:
+        template_value: Template code to sync
+        force: Force re-sync even if table already has data
+        page_size: Number of documents to fetch per page (10-1000)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    if page_size < 10 or page_size > 1000:
+        raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
+
+    job = await state.batch_sync_service.start_batch_sync(
+        template_value=template_value,
+        force=force,
+        page_size=page_size,
+    )
+
+    return BatchSyncResponse(
+        job_id=job.job_id,
+        template_value=job.template_value,
+        status=job.status,
+        message=f"Batch sync started for {template_value}",
+    )
 
 
 @router.delete("/sync/batch/jobs/{job_id}")
