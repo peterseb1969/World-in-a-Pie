@@ -106,6 +106,14 @@ Implemented 2026-03-25. The script now supports:
 - PostgreSQL `doc_*` table DROP on template cascade deletion
 - Namespace record and ID counter cleanup after all entities are removed
 
+### Bug: No Namespace Validation on Entity Creation
+
+Entities (terminologies, terms, templates, documents) can be created in a namespace that does not exist in the Registry. The services accept any namespace string without checking whether it has been registered via `POST /api/registry/namespaces`. This means typos or unregistered namespaces silently succeed, leading to orphaned data that doesn't appear in namespace-scoped queries or stats.
+
+Fix approach: Add a namespace existence check in each service's create path (or in wip-auth as shared middleware). Return 400/404 if the namespace is not registered. Consider a cached check to avoid per-request Registry calls.
+
+- Status: Not started
+
 ### Bug: Dashboard File Count Shows Zero
 
 The WIP Console dashboard displays a file count of 0 even when files exist in WIP. Likely the dashboard stats endpoint or the Console's stats query is not including files, or the file count is sourced from a field that isn't being populated.
@@ -137,6 +145,26 @@ Code review confirms the full pipeline is implemented and logically correct on b
 3. **Belt-and-suspenders:** Include terminology and term sync in `start_batch_sync_all()` so the "sync everything" endpoint actually syncs everything.
 
 - Status: Investigated, root cause identified, fix pending
+
+### Ontology Browser
+
+Interactive ego-graph browser for exploring ontology relationships in the WIP Console. Focus on one term, see all its relationships (all types, configurable depth), click any neighbour to refocus. Uses Cytoscape.js for force-directed graph rendering with concentric layout (focus term at centre, neighbours in rings by depth).
+
+The sidebar "Ontology Browser" menu entry already exists but links to a dead `?tab=ontology` parameter. This replaces it with a dedicated `/ontology` route and view.
+
+Key features:
+- Terminology selector + term search with autocomplete
+- Ego-graph showing all relationship types (colour-coded edges)
+- Click-to-navigate: click any node to refocus the graph on it
+- Depth slider (1-3, default 2)
+- Relationship type filter checkboxes
+- Detail panel for selected node with link to full term detail view
+- No backend changes — uses client-side fan-out of existing `listRelationships` endpoint
+
+New files: `OntologyBrowserView.vue`, `EgoGraph.vue`. New dependency: `cytoscape`.
+
+- Design: `docs/design/ontology-browser.md`
+- Status: Design complete, ready to implement
 
 ### Namespace Authorization — UX Polish
 
@@ -362,6 +390,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
+| `ontology-browser.md` | Design complete, ready to implement |
 | `universal-synonym-resolution.md` | Proposed — needs discussion |
 | `wip-nano.md` | Concept only |
 
