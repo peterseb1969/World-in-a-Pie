@@ -114,6 +114,20 @@ Fixed in the Registry's `register_keys` and `reserve_ids` endpoints (commit 1d37
 
 - Status: Fixed (2026-03-27)
 
+### Lint: RUF005 in Ontology Service
+
+Ruff reports `RUF005` at `components/def-store/src/def_store/services/ontology_service.py:576:32` — suggests `[*path, next_id]` instead of list concatenation. Trivial fix.
+
+- Status: Not started
+
+### Bug: Registry Tests Broken — Beanie/Motor Incompatibility
+
+All 162 Registry tests fail in CI with `TypeError: MotorDatabase object is not callable. If you meant to call the 'append_metadata' method on a AsyncIOMotorClient object it is failing because no such method exists.` The error occurs in `conftest.py:30` during `init_beanie()`. Root cause is a version mismatch between `beanie` and `motor` — the installed `motor` version changed its API (likely motor 3.x vs beanie expecting motor 2.x, or a beanie version that doesn't support the current motor). Only the hash service tests (which don't use Beanie) pass (46/162).
+
+**Fix approach:** Pin compatible versions of `beanie` and `motor` in Registry's dependencies. Check whether other services using Beanie (def-store, template-store, document-store) have the same issue or are pinned differently.
+
+- Status: Not started
+
 ### Bug: Dashboard File Count Shows Zero
 
 The WIP Console dashboard displays a file count of 0 even when files exist in WIP. Likely the dashboard stats endpoint or the Console's stats query is not including files, or the file count is sourced from a field that isn't being populated.
