@@ -156,7 +156,7 @@ Code review confirms the full pipeline is implemented and logically correct on b
 2. **Permanent:** Add terminology and term batch sync to the startup sequence in `main.py` (after schema creation at line 246), so reporting-sync self-heals on restart.
 3. **Belt-and-suspenders:** Include terminology and term sync in `start_batch_sync_all()` so the "sync everything" endpoint actually syncs everything.
 
-- Status: Investigated, root cause identified, fix pending
+- Status: **Fixed** (2026-03-27) — Made `batch_sync_terminologies` and `batch_sync_terms` namespace-optional (fetches all namespaces), added initial terminology/term sync at startup, and included terminology/term sync in `start_batch_sync_all()`
 
 ### Ontology Browser
 

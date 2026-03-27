@@ -353,6 +353,15 @@ class BatchSyncService:
         Returns:
             List of BatchSyncJob for each template
         """
+        # Sync terminologies and terms first (reference data)
+        logger.info("Batch syncing terminologies...")
+        term_results = await self.batch_sync_terminologies()
+        logger.info(f"Terminologies: {term_results}")
+        logger.info("Batch syncing terms...")
+        terms_results = await self.batch_sync_terms()
+        logger.info(f"Terms: {terms_results}")
+
+        # Then sync documents per template
         templates = await self._list_templates()
         jobs = []
 
@@ -393,7 +402,7 @@ class BatchSyncService:
 
     async def batch_sync_terminologies(
         self,
-        namespace: str = "wip",
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
@@ -411,13 +420,12 @@ class BatchSyncService:
                 page = 1
 
                 while True:
+                    params: dict = {"page": page, "page_size": page_size}
+                    if namespace:
+                        params["namespace"] = namespace
                     resp = await client.get(
                         f"{settings.def_store_url}/api/def-store/terminologies",
-                        params={
-                            "namespace": namespace,
-                            "page": page,
-                            "page_size": page_size,
-                        },
+                        params=params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
@@ -455,7 +463,7 @@ class BatchSyncService:
                                         "updated_by" = EXCLUDED."updated_by"
                                     """,
                                     t["terminology_id"],
-                                    t.get("namespace", namespace),
+                                    t.get("namespace", namespace or "wip"),
                                     t["value"],
                                     t.get("label"),
                                     t.get("description"),
@@ -487,7 +495,7 @@ class BatchSyncService:
 
     async def batch_sync_terms(
         self,
-        namespace: str = "wip",
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
@@ -508,9 +516,12 @@ class BatchSyncService:
                 terminology_ids = []
                 page = 1
                 while True:
+                    term_list_params: dict = {"page": page, "page_size": 100}
+                    if namespace:
+                        term_list_params["namespace"] = namespace
                     resp = await client.get(
                         f"{settings.def_store_url}/api/def-store/terminologies",
-                        params={"namespace": namespace, "page": page, "page_size": 100},
+                        params=term_list_params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
@@ -573,7 +584,7 @@ class BatchSyncService:
                                             "updated_by" = EXCLUDED."updated_by"
                                         """,
                                         t["term_id"],
-                                        t.get("namespace", namespace),
+                                        t.get("namespace", namespace or "wip"),
                                         t.get("terminology_id"),
                                         t.get("terminology_value"),
                                         t["value"],

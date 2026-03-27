@@ -253,6 +253,16 @@ async def lifespan(app: FastAPI):
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
 
+        # Run initial terminology and term sync
+        try:
+            logger.info("Running initial terminology batch sync...")
+            t_result = await state.batch_sync_service.batch_sync_terminologies()
+            logger.info(f"Initial terminology sync: {t_result}")
+            t_result = await state.batch_sync_service.batch_sync_terms()
+            logger.info(f"Initial term sync: {t_result}")
+        except Exception as e:
+            logger.error(f"Initial terminology/term sync failed: {e}")
+
     # Initialize search service (works with or without PostgreSQL)
     state.search_service = SearchService(state.postgres_pool)
     logger.info("Search service initialized")
