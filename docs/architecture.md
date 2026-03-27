@@ -74,7 +74,7 @@ World In a Pie (WIP) follows a microservices architecture with clear separation 
 │   │  • Metrics and alerting                                          │      │
 │   └──────────────────────────────────────────────────────────────────┘      │
 │                                                                             │
-│   All services use wip-auth library for pluggable authentication           │
+│   All services use wip-auth library for authentication + synonym resolution│
 │                                                                             │
 └───────────────────────────────────┬─────────────────────────────────────────┘
                                     │
@@ -194,7 +194,7 @@ World In a Pie (WIP) follows a microservices architecture with clear separation 
 │   Template Store ──► Def-Store (validate terminology references)            │
 │        :8003            :8002                                               │
 │                                                                              │
-│   All Services ──► Registry (generate IDs)                                  │
+│   All Services ──► Registry (generate IDs, resolve synonyms)                │
 │                      :8001                                                   │
 │                                                                              │
 │   ────────────────────────────────────────────────────────────────────────  │

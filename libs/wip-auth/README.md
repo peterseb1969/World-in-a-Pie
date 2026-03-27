@@ -221,6 +221,61 @@ class UserIdentity:
         # Returns: "user:<id>", "apikey:<name>", or "anonymous"
 ```
 
+## Synonym Resolution
+
+The `wip_auth.resolve` module provides universal synonym resolution — converting human-readable identifiers to canonical UUIDs via the Registry.
+
+### Functions
+
+```python
+from wip_auth.resolve import resolve_entity_id, resolve_entity_ids, EntityNotFoundError
+
+# Single resolution
+canonical_id = await resolve_entity_id("STATUS", "terminology", "wip")
+
+# Batch resolution
+id_map = await resolve_entity_ids(["STATUS", "GENDER"], "terminology", "wip")
+# Returns: {"STATUS": "019abc...", "GENDER": "019def..."}
+```
+
+**`resolve_entity_id(raw_id, entity_type, namespace)`** — Returns `raw_id` unchanged if it's already a UUID. Otherwise, resolves via the Registry's `POST /resolve` endpoint. Raises `EntityNotFoundError` if not found or Registry is unreachable.
+
+**`resolve_entity_ids(raw_ids, entity_type, namespace)`** — Batch variant. UUIDs pass through, cached results are reused, remaining IDs are resolved in a single Registry call. Returns `{raw_id: canonical_id}` dict.
+
+**`EntityNotFoundError`** — Raised when resolution fails. Has `.identifier` and `.entity_type` attributes.
+
+### Usage Pattern in Services
+
+At the API boundary, use `contextlib.suppress` for best-effort resolution:
+
+```python
+from contextlib import suppress
+from wip_auth.resolve import resolve_entity_id, EntityNotFoundError
+
+@router.get("/terms")
+async def list_terms(terminology_id: str, namespace: str = "wip"):
+    with suppress(EntityNotFoundError):
+        terminology_id = await resolve_entity_id(
+            terminology_id, "terminology", namespace,
+        )
+    # If resolution fails, the raw value passes through —
+    # downstream logic handles the "not found" case naturally
+    return await service.list_terms(terminology_id)
+```
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WIP_AUTH_REGISTRY_URL` | `REGISTRY_URL` or `http://localhost:8001` | Registry URL for resolution |
+| `REGISTRY_API_KEY` | `API_KEY` or `dev_master_key_for_testing` | API key for Registry calls |
+
+### Caching
+
+Results are cached in-process with a 5-minute TTL. Use `clear_resolution_cache()` in tests.
+
+---
+
 ## Testing
 
 For testing, you can set up auth with a specific configuration:

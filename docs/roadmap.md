@@ -375,15 +375,6 @@ Consider enabling namespace-scoped relationship type terminologies, so domains c
 
 Metabase deployment works (`deploy/optional/metabase/`), but no pre-built dashboards yet. Would provide out-of-the-box analytics for common WIP data patterns.
 
-### Universal Synonym Resolution
-
-Allow any registered synonym to be used wherever a canonical ID is accepted. Services resolve non-canonical identifiers through the Registry before processing. This solves three problems at once: cross-instance migration (references survive because portable synonyms resolve on both instances), app development roundtrips (use human-readable identifiers directly in API calls), and portable identity (instance-independent entity references for external systems).
-
-Subsumes the earlier "Default Synonyms" idea — portable synonyms are one application of universal resolution, not a separate feature.
-
-- Design: `docs/design/universal-synonym-resolution.md`
-- Status: Proposed — needs discussion
-
 ---
 
 ## Design Documents
@@ -407,7 +398,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
 | `ontology-browser.md` | Implemented |
-| `universal-synonym-resolution.md` | Proposed — needs discussion |
+| `universal-synonym-resolution.md` | Implemented |
 | `wip-nano.md` | Concept only |
 
 ---
@@ -427,3 +418,4 @@ These were previously on the roadmap and are now fully implemented:
 - Bulk-first API convention — all write endpoints accept arrays
 - Security hardening — CORS, rate limiting, bcrypt keys, upload limits, security headers
 - Information package for app-building AI — slash commands, reference docs, MCP resources
+- Universal synonym resolution — auto-synonym registration, resolve layer at API boundary, WIP-Toolkit backfill + namespace rewriting

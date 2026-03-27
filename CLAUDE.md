@@ -150,6 +150,10 @@ Profiles: `minimal` (50 docs), `standard` (500), `full` (2000), `performance` (1
 
 See `docs/api-conventions.md` for full details and examples.
 
+### Synonym Resolution
+
+All service APIs accept **human-readable synonyms** wherever a canonical ID is expected. For example, `template_id="PATIENT"` resolves to the canonical UUID transparently at the API boundary via `wip-auth`'s `resolve_entity_id()`. UUIDs pass through without any Registry call. Resolution is best-effort — if it fails, the raw value passes through and downstream validation handles it. Auto-synonyms are registered at entity creation. Use `wip-toolkit backfill-synonyms` to register synonyms for pre-existing entities. See `docs/design/universal-synonym-resolution.md`.
+
 ### Uniqueness & Identity
 
 - **Registry** is the central ID authority. Services compute composite keys → Registry hashes and deduplicates.

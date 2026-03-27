@@ -29,6 +29,8 @@ WIP has **two independent authentication layers**:
 
 **This guide only covers API authentication** - how clients authenticate to WIP services. Database authentication (MongoDB, PostgreSQL) is configured separately via connection strings and is not affected by the settings described here.
 
+**Note:** The `wip-auth` library also provides **synonym resolution** (`resolve_entity_id()`) — converting human-readable identifiers to canonical UUIDs at the API boundary. While not authentication per se, it lives in wip-auth because all services already depend on it for request processing middleware. See `docs/api-conventions.md` for details.
+
 ### Authentication Methods Explained
 
 #### Method 1: API Keys
