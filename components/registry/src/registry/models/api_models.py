@@ -371,6 +371,36 @@ class LookupBulkResponse(BaseModel):
 
 
 # =============================================================================
+# Resolve API Models (synonym resolution)
+# =============================================================================
+
+class ResolveItem(StrictModel):
+    """Request model for resolving a synonym composite key to an entry ID."""
+
+    composite_key: dict[str, Any] = Field(..., description="Synonym composite key to resolve")
+
+
+class ResolveResponse(BaseModel):
+    """Response model for a single resolve result."""
+
+    input_index: int
+    status: str  # found, not_found, error
+    composite_key: dict[str, Any] | None = None
+    entry_id: str | None = None
+    error: str | None = None
+
+
+class BulkResolveResponse(BaseModel):
+    """Response model for bulk resolve."""
+
+    results: list[ResolveResponse]
+    total: int
+    found: int
+    not_found: int
+    errors: int
+
+
+# =============================================================================
 # Search API Models
 # =============================================================================
 

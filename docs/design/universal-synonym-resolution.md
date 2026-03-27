@@ -1,6 +1,6 @@
 # Universal Synonym Resolution
 
-**Status:** Design complete — ready for implementation (2026-03-27)
+**Status:** Phases 1-3 implemented (2026-03-27). Phase 4 (import rewriting) and Phase 5 (backfill) pending.
 **Dependency for:** Cross-instance restore (v1.1), dev→prod namespace workflow, MCP ergonomics
 
 ---

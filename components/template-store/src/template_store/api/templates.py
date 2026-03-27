@@ -1,10 +1,17 @@
 """Template API endpoints."""
 
+import contextlib
 import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    EntityNotFoundError,
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_entity_id,
+)
 
 from ..models.api_models import (
     ActivateTemplateResponse,
@@ -117,16 +124,26 @@ async def list_templates(
 @router.get("/{template_id}", response_model=TemplateResponse)
 async def get_template(
     template_id: str,
-    version: int | None = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
-    Get a template by ID.
+    Get a template by ID or synonym value.
 
+    Accepts canonical UUID or human-readable value (e.g., "PATIENT").
     Template IDs are stable across versions. Without a version parameter,
     returns the latest version. Returns the template with inheritance resolved
     (all fields from parent templates merged).
     """
-    template = await TemplateService.get_template(template_id=template_id, version=version)
+    # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
+    resolved_id = template_id
+    with contextlib.suppress(EntityNotFoundError):
+        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+
+    template = await TemplateService.get_template(template_id=resolved_id, version=version)
+    if not template:
+        # Fallback: try as value
+        template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
@@ -135,17 +152,28 @@ async def get_template(
 @router.get("/{template_id}/raw", response_model=TemplateResponse)
 async def get_template_raw(
     template_id: str,
-    version: int | None = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
     Get a template by ID without inheritance resolution.
 
+    Accepts canonical UUID or human-readable value (e.g., "PATIENT").
     Returns the template as stored in the database, without merging
     fields from parent templates.
     """
+    try:
+        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+    except EntityNotFoundError:
+        resolved_id = template_id
+
     template = await TemplateService.get_template(
-        template_id=template_id, version=version, resolve_inheritance=False
+        template_id=resolved_id, version=version, resolve_inheritance=False
     )
+    if not template:
+        template = await TemplateService.get_template(
+            value=template_id, version=version, resolve_inheritance=False, namespace=namespace
+        )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template

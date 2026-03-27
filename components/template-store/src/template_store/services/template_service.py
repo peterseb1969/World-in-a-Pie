@@ -142,6 +142,22 @@ class TemplateService:
         )
         await template.insert()
 
+        # Register auto-synonym for human-readable resolution (best-effort)
+        # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
+        # Skip for restore mode (synonyms are imported separately)
+        if version == 1 and not is_restore:
+            client = get_registry_client()
+            await client.register_auto_synonym(
+                target_id=template_id,
+                namespace=namespace,
+                composite_key={
+                    "ns": namespace,
+                    "type": "template",
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
+
         # Publish template created event — skip for drafts
         if not is_draft:
             await publish_template_event(

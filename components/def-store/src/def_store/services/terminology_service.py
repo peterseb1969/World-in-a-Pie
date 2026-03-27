@@ -101,6 +101,19 @@ class TerminologyService:
                 f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
             )
 
+        # Register auto-synonym for human-readable resolution (best-effort)
+        await client.register_auto_synonym(
+            target_id=terminology_id,
+            namespace=namespace,
+            entity_type="terminologies",
+            composite_key={
+                "ns": namespace,
+                "type": "terminology",
+                "value": request.value,
+            },
+            created_by=actor,
+        )
+
         # Create audit log entry for terminology creation
         await TerminologyService._create_audit_log(
             term_id=terminology_id,
@@ -230,21 +243,25 @@ class TerminologyService:
         old_value = terminology.value
         value_changed = request.value and request.value != old_value
 
-        # If value changes, add synonym in Registry
+        # If value changes, add auto-synonym in Registry for new value
         if value_changed:
             # Check new value doesn't exist within the same namespace
             existing = await Terminology.find_one({"namespace": terminology.namespace, "value": request.value})
             if existing:
                 raise ValueError(f"Terminology with value '{request.value}' already exists in namespace '{terminology.namespace}'")
 
-            # Add synonym for new value
+            # Register auto-synonym for the new value (old auto-synonym persists)
             client = get_registry_client()
-            await client.add_synonym(
+            await client.register_auto_synonym(
+                target_id=terminology_id,
                 namespace=terminology.namespace,
                 entity_type="terminologies",
-                target_id=terminology_id,
-                new_value=request.value,
-                additional_fields={"label": request.label or terminology.label}
+                composite_key={
+                    "ns": terminology.namespace,
+                    "type": "terminology",
+                    "value": request.value,
+                },
+                created_by=get_identity_string(),
             )
 
         # Track changes for audit log
@@ -499,6 +516,21 @@ class TerminologyService:
             raise ValueError(
                 f"Term ID '{term_id}' already exists (collision across namespaces)"
             )
+
+        # Register auto-synonym for human-readable resolution (best-effort)
+        # Uses "TERMINOLOGY_VALUE:TERM_VALUE" colon notation for resolution
+        await client.register_auto_synonym(
+            target_id=term_id,
+            namespace=namespace,
+            entity_type="terms",
+            composite_key={
+                "ns": namespace,
+                "type": "term",
+                "terminology": terminology.value,
+                "value": request.value,
+            },
+            created_by=actor,
+        )
 
         # Create audit log entry
         await TerminologyService._create_audit_log(
@@ -765,6 +797,26 @@ class TerminologyService:
                     created_term_dicts,
                     changed_by=actor,
                 )
+
+            # Phase F3: Register auto-synonyms for created terms (best-effort)
+            synonym_items = [
+                {
+                    "target_id": terms_to_insert[pos].term_id,
+                    "namespace": namespace,
+                    "entity_type": "terms",
+                    "composite_key": {
+                        "ns": namespace,
+                        "type": "term",
+                        "terminology": terminology.value,
+                        "value": terms_to_insert[pos].value,
+                    },
+                    "created_by": actor,
+                }
+                for pos, idx in enumerate(insert_indices)
+                if results[idx] is not None and results[idx].status == "created"
+            ]
+            if synonym_items:
+                await client.register_auto_synonyms_bulk(synonym_items)
 
             total_created += batch_created
             logger.info(

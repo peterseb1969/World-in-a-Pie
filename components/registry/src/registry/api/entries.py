@@ -13,6 +13,7 @@ from ..models.api_models import (
     BrowseEntriesResponse,
     BrowseEntryItem,
     BulkDeleteResponse,
+    BulkResolveResponse,
     BulkUpdateResponse,
     DeleteItem,
     DeleteResponse,
@@ -30,6 +31,8 @@ from ..models.api_models import (
     ReserveBulkResponse,
     ReserveItem,
     ReserveItemResponse,
+    ResolveItem,
+    ResolveResponse,
     UnifiedSearchResponse,
     UnifiedSearchResultItem,
     UpdateEntryItem,
@@ -959,4 +962,69 @@ async def delete_entries(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "deactivated"),
         failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )
+
+
+@router.post(
+    "/resolve",
+    response_model=BulkResolveResponse,
+    summary="Resolve synonym composite keys to entry IDs (bulk)"
+)
+async def resolve_synonyms(
+    items: list[ResolveItem] = Body(...),
+    api_key: str = Depends(require_api_key)
+) -> BulkResolveResponse:
+    """
+    Resolve synonym composite keys to canonical entry IDs.
+
+    This is a read-only batch endpoint optimised for synonym resolution.
+    For each composite key, computes its hash and looks up the entry
+    that has a matching synonym (or primary key).
+
+    Returns entry_id for each found item, "not_found" otherwise.
+    """
+    results = []
+    found_count = 0
+    not_found_count = 0
+    error_count = 0
+
+    for i, item in enumerate(items):
+        try:
+            key_hash = HashService.compute_composite_key_hash(item.composite_key)
+
+            # Search both primary key and synonyms — no namespace/entity_type filter
+            # because the composite key itself contains ns and type for uniqueness
+            entry = await RegistryEntry.find_one({
+                "$or": [
+                    {"primary_composite_key_hash": key_hash},
+                    {"synonyms.composite_key_hash": key_hash},
+                ],
+                "status": "active",
+            })
+
+            if entry:
+                results.append(ResolveResponse(
+                    input_index=i,
+                    status="found",
+                    composite_key=item.composite_key,
+                    entry_id=entry.entry_id,
+                ))
+                found_count += 1
+            else:
+                results.append(ResolveResponse(
+                    input_index=i,
+                    status="not_found",
+                    composite_key=item.composite_key,
+                ))
+                not_found_count += 1
+
+        except Exception as e:
+            results.append(ResolveResponse(
+                input_index=i, status="error", error=str(e),
+            ))
+            error_count += 1
+
+    return BulkResolveResponse(
+        results=results, total=len(items),
+        found=found_count, not_found=not_found_count, errors=error_count,
     )

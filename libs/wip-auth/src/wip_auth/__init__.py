@@ -66,6 +66,13 @@ from .providers import (
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
+from .resolve import (
+    EntityNotFoundError,
+    clear_resolution_cache,
+    is_canonical_format,
+    resolve_entity_id,
+    resolve_entity_ids,
+)
 from .security import check_production_security
 
 __version__ = "0.1.0"
@@ -119,6 +126,12 @@ __all__ = [
     "setup_rate_limiting",
     # Security
     "check_production_security",
+    # Synonym resolution
+    "resolve_entity_id",
+    "resolve_entity_ids",
+    "is_canonical_format",
+    "EntityNotFoundError",
+    "clear_resolution_cache",
 ]
 
 

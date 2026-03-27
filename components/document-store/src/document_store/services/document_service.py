@@ -265,6 +265,18 @@ class DocumentService:
             now=now,
         )
 
+        # Register auto-synonym for migration portability (best-effort, version 1 only)
+        if version == 1 and not version_override:
+            registry = get_registry_client()
+            await registry.register_auto_synonym(
+                document_id=document_id,
+                namespace=namespace,
+                template_value=validation_result.template_value or "",
+                identity_hash=validation_result.identity_hash,
+                has_identity_fields=bool(validation_result.identity_hash),
+                created_by=actor,
+            )
+
         # Publish document created event
         await publish_document_event(
             EventType.DOCUMENT_CREATED,

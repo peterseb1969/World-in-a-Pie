@@ -1,10 +1,13 @@
 """Client for communicating with the WIP Registry service."""
 
 import asyncio
+import logging
 import os
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class RegistryClient:
@@ -269,9 +272,9 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "namespace": namespace,
-                    "entity_type": entity_type,
                     "target_id": target_id,
+                    "synonym_namespace": namespace,
+                    "synonym_entity_type": entity_type,
                     "synonym_composite_key": composite_key
                 }]
             )
@@ -282,7 +285,98 @@ class RegistryClient:
                 )
 
             data = response.json()
-            return data[0].get("status") == "added"
+            result = data.get("results", data) if isinstance(data, dict) else data
+            if isinstance(result, list):
+                return result[0].get("status") == "added"
+            return result.get("results", [{}])[0].get("status") == "added"
+
+    async def register_auto_synonym(
+        self,
+        target_id: str,
+        namespace: str,
+        entity_type: str,
+        composite_key: dict[str, Any],
+        created_by: str | None = None,
+    ) -> None:
+        """
+        Register an auto-synonym for an entity (best-effort).
+
+        Auto-synonyms enable human-readable resolution (e.g., "STATUS" → terminology ID).
+        Failure is logged but does not prevent entity creation.
+
+        Args:
+            target_id: The entity's canonical ID
+            namespace: Entity namespace
+            entity_type: Registry entity type (e.g., 'terminologies', 'terms')
+            composite_key: Auto-synonym composite key
+            created_by: Creator identifier
+        """
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/synonyms/add",
+                    headers=self._get_headers(),
+                    json=[{
+                        "target_id": target_id,
+                        "synonym_namespace": namespace,
+                        "synonym_entity_type": entity_type,
+                        "synonym_composite_key": composite_key,
+                        "created_by": created_by,
+                    }]
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Failed to register auto-synonym for %s: %s",
+                        target_id, response.text
+                    )
+        except Exception as e:
+            logger.warning("Failed to register auto-synonym for %s: %s", target_id, e)
+
+    async def register_auto_synonyms_bulk(
+        self,
+        items: list[dict[str, Any]],
+        batch_size: int = 100,
+    ) -> None:
+        """
+        Register auto-synonyms in bulk (best-effort).
+
+        Each item should have: target_id, namespace, entity_type, composite_key, created_by.
+
+        Args:
+            items: List of synonym registration dicts
+            batch_size: Number of synonyms per HTTP call
+        """
+        if not items:
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for batch_start in range(0, len(items), batch_size):
+                    batch = items[batch_start:batch_start + batch_size]
+                    payload = [
+                        {
+                            "target_id": item["target_id"],
+                            "synonym_namespace": item["namespace"],
+                            "synonym_entity_type": item["entity_type"],
+                            "synonym_composite_key": item["composite_key"],
+                            "created_by": item.get("created_by"),
+                        }
+                        for item in batch
+                    ]
+                    response = await client.post(
+                        f"{self.base_url}/api/registry/synonyms/add",
+                        headers=self._get_headers(),
+                        json=payload,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "Failed to register auto-synonyms batch %d-%d: %s",
+                            batch_start, batch_start + len(batch), response.text
+                        )
+                    if batch_start + batch_size < len(items):
+                        await asyncio.sleep(0.05)
+        except Exception as e:
+            logger.warning("Failed to register auto-synonyms bulk: %s", e)
 
     async def lookup_by_value(
         self,
