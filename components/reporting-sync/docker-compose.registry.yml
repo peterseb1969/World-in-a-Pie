@@ -9,7 +9,7 @@ services:
     env_file:
       - ../../.env
     environment:
-      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
+      - NATS_URL=${NATS_URL-nats://wip-nats:4222}
       - POSTGRES_HOST=wip-postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=wip_reporting
