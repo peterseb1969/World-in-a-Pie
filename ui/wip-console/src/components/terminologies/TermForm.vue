@@ -5,7 +5,7 @@ import InputText from 'primevue/inputtext'
 import InputNumber from 'primevue/inputnumber'
 import Textarea from 'primevue/textarea'
 import Chips from 'primevue/chips'
-import Dropdown from 'primevue/dropdown'
+import Select from 'primevue/select'
 import Button from 'primevue/button'
 import { useTermStore, useUiStore } from '@/stores'
 import type { Term, CreateTermRequest, UpdateTermRequest } from '@/types'
@@ -39,10 +39,10 @@ const form = ref({
 
 // Parent term options: all terms in the terminology except the current term (when editing)
 const parentTermOptions = computed(() => {
-  const options = termStore.terms
+  return termStore.terms
     .filter(t => t.status === 'active' && (!props.term || t.term_id !== props.term.term_id))
     .map(t => ({ label: t.label || t.value, value: t.term_id }))
-  return options
+    .sort((a, b) => a.label.localeCompare(b.label))
 })
 
 const loading = ref(false)
@@ -210,7 +210,7 @@ function onValueBlur() {
       <div class="form-row">
         <div class="form-field">
           <label for="parent_term">Parent Term</label>
-          <Dropdown
+          <Select
             id="parent_term"
             v-model="form.parent_term_id"
             :options="parentTermOptions"
@@ -218,6 +218,7 @@ function onValueBlur() {
             optionValue="value"
             placeholder="None (root term)"
             :showClear="true"
+            filter
             class="w-full"
           />
           <small class="help-text">Optional parent for hierarchical term structures</small>

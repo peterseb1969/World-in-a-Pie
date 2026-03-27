@@ -57,15 +57,15 @@ const filteredDocuments = computed(() => {
 const templateOptions = computed(() => {
   const options: { label: string; value: string | null }[] = [{ label: 'All Templates', value: null }]
 
-  templateStore.templates.forEach(t => {
-    if (t.status === 'active') {
-      options.push({
-        label: `${t.label} (${t.value})`,
-        value: t.template_id
-      })
-    }
-  })
+  const sorted = templateStore.templates
+    .filter(t => t.status === 'active')
+    .map(t => ({
+      label: `${t.label} (${t.value})`,
+      value: t.template_id
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label))
 
+  options.push(...sorted)
   return options
 })
 
@@ -76,6 +76,7 @@ const createTemplateOptions = computed(() => {
       label: `${t.label} (${t.value})`,
       value: t.template_id
     }))
+    .sort((a, b) => a.label.localeCompare(b.label))
 })
 
 // Get template name by ID
@@ -248,6 +249,7 @@ onMounted(async () => {
           optionLabel="label"
           optionValue="value"
           placeholder="Template"
+          filter
           class="filter-select"
         />
         <Select

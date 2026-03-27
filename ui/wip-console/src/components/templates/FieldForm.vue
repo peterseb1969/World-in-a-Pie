@@ -95,14 +95,14 @@ const terminologyOptions = computed(() =>
   props.terminologies.filter(t => t.label && t.value).map(t => ({
     label: `${t.label} (${t.value})`,
     value: t.terminology_id
-  }))
+  })).sort((a, b) => a.label.localeCompare(b.label))
 )
 
 const templateOptions = computed(() =>
   props.templates.filter(t => t.label && t.value).map(t => ({
     label: `${t.label} (${t.value})`,
     value: t.template_id
-  }))
+  })).sort((a, b) => a.label.localeCompare(b.label))
 )
 
 // Field types available for array items
@@ -140,7 +140,7 @@ const targetTemplateOptions = computed(() =>
   props.templates.filter(t => t.label && t.value).map(t => ({
     label: `${t.label} (${t.value})`,
     value: t.value
-  }))
+  })).sort((a, b) => a.label.localeCompare(b.label))
 )
 
 // Options for target terminologies (by value)
@@ -148,7 +148,7 @@ const targetTerminologyOptions = computed(() =>
   props.terminologies.filter(t => t.label && t.value).map(t => ({
     label: `${t.label} (${t.value})`,
     value: t.value
-  }))
+  })).sort((a, b) => a.label.localeCompare(b.label))
 )
 
 // Whether to show the validation fieldset at all
@@ -390,6 +390,7 @@ function save() {
             optionValue="value"
             placeholder="Select terminology (required)"
             :class="{ 'p-invalid': terminologyMissing }"
+            filter
             class="w-full"
           />
           <small v-if="terminologyMissing" class="p-error">
@@ -413,6 +414,7 @@ function save() {
             optionValue="value"
             placeholder="Select template (required)"
             :class="{ 'p-invalid': templateRefMissing }"
+            filter
             class="w-full"
           />
           <small v-if="templateRefMissing" class="p-error">
@@ -479,6 +481,7 @@ function save() {
             optionLabel="label"
             optionValue="value"
             placeholder="Select allowed templates"
+            filter
             class="w-full"
             display="chip"
           />
@@ -497,6 +500,7 @@ function save() {
             optionLabel="label"
             optionValue="value"
             placeholder="Select allowed terminologies"
+            filter
             class="w-full"
             display="chip"
           />
@@ -583,6 +587,7 @@ function save() {
             optionValue="value"
             placeholder="Select terminology (required)"
             :class="{ 'p-invalid': arrayTerminologyMissing }"
+            filter
             class="w-full"
           />
           <small v-if="arrayTerminologyMissing" class="p-error">
@@ -603,6 +608,7 @@ function save() {
             optionValue="value"
             placeholder="Select template (required)"
             :class="{ 'p-invalid': arrayTemplateRefMissing }"
+            filter
             class="w-full"
           />
           <small v-if="arrayTemplateRefMissing" class="p-error">
