@@ -118,18 +118,88 @@ NAMESPACE_DELETE_ORDER = [
 ]
 
 
+# ── Backend availability tracking ────────────────────────────────────────
+
+# Why a backend is unavailable: "skipped" (--no-*), "missing" (ImportError),
+# "unreachable" (connection failed), or None (available)
+_minio_unavailable_reason: str | None = None
+_postgres_unavailable_reason: str | None = None
+
+
+def check_backends_for_data(client, args, s3, pg_conn, namespace=None,
+                            entity_ids=None, entity_type=None):
+    """Abort if data exists in a backend whose Python module is missing.
+
+    When boto3 or psycopg2 is not installed, the script cannot clean up
+    MinIO or PostgreSQL. If there is data to clean up, we must abort
+    rather than silently leaving orphaned data behind.
+    """
+    problems = []
+
+    # Check MinIO: are there files that need cleaning?
+    if _minio_unavailable_reason == "missing" and not s3:
+        has_files = False
+        if namespace:
+            files_coll = client["wip_document_store"]["files"]
+            has_files = files_coll.count_documents({"namespace": namespace}) > 0
+        elif entity_ids and entity_type in ("file", "document"):
+            files_coll = client["wip_document_store"]["files"]
+            if entity_type == "file":
+                has_files = files_coll.count_documents(
+                    {"file_id": {"$in": list(entity_ids)}}
+                ) > 0
+            else:
+                has_files = files_coll.count_documents(
+                    {"document_id": {"$in": list(entity_ids)}}
+                ) > 0
+        if has_files:
+            problems.append(
+                "boto3 is not installed but there are files in MinIO to clean up.\n"
+                "  Install it:  pip install boto3\n"
+                "  Or skip:     --no-minio  (leaves MinIO objects orphaned)"
+            )
+
+    # Check PostgreSQL: are there reporting tables/rows?
+    if _postgres_unavailable_reason == "missing" and not pg_conn:
+        has_pg_data = False
+        if namespace:
+            tmpl_coll = client["wip_template_store"]["templates"]
+            has_pg_data = tmpl_coll.count_documents({"namespace": namespace}) > 0
+        elif entity_ids and entity_type in ("terminology", "term", "relationship",
+                                             "template", "document"):
+            has_pg_data = True  # any of these types may have PG rows
+        if has_pg_data:
+            problems.append(
+                "psycopg2 is not installed but there may be PostgreSQL rows to clean up.\n"
+                "  Install it:  pip install psycopg2-binary\n"
+                "  Or skip:     --no-postgres  (leaves PostgreSQL rows orphaned)"
+            )
+
+    if problems:
+        print("\n[ERROR] Cannot proceed — missing Python modules for required backends:\n",
+              file=sys.stderr)
+        for p in problems:
+            print(f"  {p}\n", file=sys.stderr)
+        print("Aborting to prevent incomplete cleanup.", file=sys.stderr)
+        sys.exit(1)
+
+
 # ── MinIO helper ─────────────────────────────────────────────────────────
 
 def connect_minio(args):
     """Connect to MinIO/S3. Returns (client, bucket) or (None, None)."""
+    global _minio_unavailable_reason
+
     if args.no_minio:
+        _minio_unavailable_reason = "skipped"
         return None, None
 
     try:
         import boto3
         from botocore.config import Config
     except ImportError:
-        print("  [WARN] boto3 not installed — skipping MinIO cleanup")
+        _minio_unavailable_reason = "missing"
+        print("  [INFO] boto3 not installed — MinIO cleanup not available")
         return None, None
 
     endpoint = args.minio_endpoint or os.getenv(
@@ -156,6 +226,7 @@ def connect_minio(args):
         s3.list_buckets()  # connectivity check
         return s3, bucket
     except Exception as e:
+        _minio_unavailable_reason = "unreachable"
         print(f"  [WARN] Cannot connect to MinIO at {endpoint}: {e}")
         return None, None
 
@@ -179,13 +250,17 @@ def delete_minio_objects(s3, bucket, storage_keys, force):
 
 def connect_postgres(args):
     """Connect to PostgreSQL. Returns connection or None."""
+    global _postgres_unavailable_reason
+
     if args.no_postgres:
+        _postgres_unavailable_reason = "skipped"
         return None
 
     try:
         import psycopg2
     except ImportError:
-        print("  [WARN] psycopg2 not installed — skipping PostgreSQL cleanup")
+        _postgres_unavailable_reason = "missing"
+        print("  [INFO] psycopg2 not installed — PostgreSQL cleanup not available")
         return None
 
     host = args.pg_host or os.getenv("POSTGRES_HOST", "localhost")
@@ -201,6 +276,7 @@ def connect_postgres(args):
         conn.autocommit = True
         return conn
     except Exception as e:
+        _postgres_unavailable_reason = "unreachable"
         print(f"  [WARN] Cannot connect to PostgreSQL at {host}:{port}: {e}")
         return None
 
@@ -1028,6 +1104,26 @@ def main():
     # Connect to optional backends
     s3, s3_bucket = connect_minio(args)
     pg_conn = connect_postgres(args)
+
+    # Pre-flight: abort early if Python modules are missing but data exists
+    if args.namespace:
+        check_backends_for_data(client, args, s3, pg_conn,
+                                namespace=args.namespace)
+    elif args.prefix:
+        check_backends_for_data(client, args, s3, pg_conn,
+                                namespace=args.namespace,
+                                entity_type=args.type)
+    elif args.ids:
+        all_entity_ids = set(args.ids)
+        all_types = set()
+        for wip_id in args.ids:
+            matches = find_entity(client, wip_id, args.type)
+            for etype, _info, _count in matches:
+                all_types.add(etype)
+        for etype in all_types:
+            check_backends_for_data(client, args, s3, pg_conn,
+                                    entity_ids=all_entity_ids,
+                                    entity_type=etype)
 
     if not args.force:
         print("DRY RUN — add --force to actually delete\n")
