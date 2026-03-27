@@ -69,7 +69,6 @@ def compute_closure(
             if terminology:
                 terminology["_source"] = "closure"
                 extra_terminologies.append(terminology)
-                known_terminology_ids.add(term_id)
 
                 # Fetch terms for this terminology
                 terms_for_terminology = collector.fetch_terms(term_id)
@@ -78,6 +77,8 @@ def compute_closure(
                 extra_terms.extend(terms_for_terminology)
             else:
                 warnings.append(f"External terminology {term_id} not found")
+            # Mark as known either way to avoid re-fetching missing refs
+            known_terminology_ids.add(term_id)
 
         # Fetch external templates (all versions)
         for tpl_id in ext_tpl_ids:
@@ -86,9 +87,10 @@ def compute_closure(
                 for tpl in tpl_versions:
                     tpl["_source"] = "closure"
                 extra_templates.extend(tpl_versions)
-                known_template_ids.add(tpl_id)
             else:
                 warnings.append(f"External template {tpl_id} not found")
+            # Mark as known either way to avoid re-fetching missing refs
+            known_template_ids.add(tpl_id)
     else:
         warnings.append(
             f"Closure did not converge after {MAX_CLOSURE_ITERATIONS} iterations"
