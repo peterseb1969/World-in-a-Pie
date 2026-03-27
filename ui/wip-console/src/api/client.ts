@@ -600,6 +600,19 @@ class DocumentStoreClient extends BaseApiClient {
     return response.data
   }
 
+  async queryDocuments(request: {
+    filters?: { field: string; operator: string; value: unknown }[]
+    template_id?: string
+    status?: string
+    page?: number
+    page_size?: number
+    sort_by?: string
+    sort_order?: string
+  }): Promise<DocumentListResponse> {
+    const response = await this.client.post<DocumentListResponse>('/documents/query', request)
+    return response.data
+  }
+
   // ===========================================================================
   // VALIDATION ENDPOINTS
   // ===========================================================================

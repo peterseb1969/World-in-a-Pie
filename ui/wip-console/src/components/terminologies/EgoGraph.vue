@@ -12,6 +12,7 @@ const props = defineProps<{
   focusTermId: string
   depth: number
   visibleTypes: string[]
+  namespace?: string
 }>()
 
 const emit = defineEmits<{
@@ -66,6 +67,7 @@ interface GraphNode {
   id: string
   value: string
   terminologyId?: string
+  namespace?: string
   depth: number
   isFocus: boolean
 }
@@ -85,22 +87,37 @@ async function fetchNeighbourhood(
   const edgeSet = new Set<string>() // dedup
   const allTypes = new Set<string>()
 
-  // Seed the focus node (we may not know its value yet)
-  nodes.set(focusId, { id: focusId, value: focusId, depth: 0, isFocus: true })
+  // Seed the focus node — use the selected namespace as starting point
+  nodes.set(focusId, { id: focusId, value: focusId, depth: 0, isFocus: true, namespace: props.namespace })
 
-  // BFS layer by layer
+  // BFS layer by layer — each node tracks its own namespace
   let frontier = new Set([focusId])
 
   for (let d = 0; d < depth; d++) {
     if (frontier.size === 0) break
 
-    const fetches = [...frontier].map(termId =>
-      defStoreClient.listRelationships({
-        term_id: termId,
-        direction: 'both',
-        page_size: 100,
-      }).catch(() => ({ items: [] as Relationship[], total: 0, page: 1, page_size: 100, pages: 1 }))
-    )
+    // Group frontier terms by namespace to minimise API calls
+    const byNamespace = new Map<string | undefined, string[]>()
+    for (const termId of frontier) {
+      const ns = nodes.get(termId)?.namespace
+      if (!byNamespace.has(ns)) byNamespace.set(ns, [])
+      byNamespace.get(ns)!.push(termId)
+    }
+
+    // Fetch relationships for each term, using its own namespace
+    const fetches: Promise<{ items: Relationship[]; total: number; page: number; page_size: number; pages: number }>[] = []
+    for (const [ns, termIds] of byNamespace) {
+      for (const termId of termIds) {
+        fetches.push(
+          defStoreClient.listRelationships({
+            term_id: termId,
+            direction: 'both',
+            page_size: 100,
+            namespace: ns,
+          }).catch(() => ({ items: [] as Relationship[], total: 0, page: 1, page_size: 100, pages: 1 }))
+        )
+      }
+    }
 
     const results = await Promise.all(fetches)
     const nextFrontier = new Set<string>()
@@ -118,22 +135,23 @@ async function fetchNeighbourhood(
         })
         allTypes.add(rel.relationship_type)
 
-        // Add discovered nodes
-        for (const [id, val] of [
-          [rel.source_term_id, rel.source_term_value],
-          [rel.target_term_id, rel.target_term_value],
-        ] as [string, string | undefined][]) {
+        // Add discovered nodes — inherit namespace from the relationship
+        for (const [id, label, val] of [
+          [rel.source_term_id, rel.source_term_label, rel.source_term_value],
+          [rel.target_term_id, rel.target_term_label, rel.target_term_value],
+        ] as [string, string | undefined, string | undefined][]) {
+          const displayName = label || val || id
           if (!nodes.has(id)) {
             nodes.set(id, {
               id,
-              value: val || id,
+              value: displayName,
+              namespace: rel.namespace,
               depth: d + 1,
               isFocus: false,
             })
             nextFrontier.add(id)
-          } else if (val && nodes.get(id)!.value === id) {
-            // Update value if we only had the ID
-            nodes.get(id)!.value = val
+          } else if (displayName !== id && nodes.get(id)!.value === id) {
+            nodes.get(id)!.value = displayName
           }
         }
       }
@@ -384,6 +402,7 @@ function applyTypeFilter() {
 // Watch for changes
 watch(() => props.focusTermId, () => renderGraph())
 watch(() => props.depth, () => renderGraph())
+watch(() => props.namespace, () => renderGraph())
 watch(() => props.visibleTypes, () => applyTypeFilter(), { deep: true })
 
 onMounted(async () => {

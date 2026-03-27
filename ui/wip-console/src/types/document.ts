@@ -46,6 +46,7 @@ export interface Document {
   namespace: string
   template_id: string
   template_version: number
+  template_value?: string
   identity_hash: string
   version: number
   data: Record<string, unknown>

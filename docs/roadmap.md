@@ -110,9 +110,9 @@ Implemented 2026-03-25. The script now supports:
 
 Entities (terminologies, terms, templates, documents) can be created in a namespace that does not exist in the Registry. The services accept any namespace string without checking whether it has been registered via `POST /api/registry/namespaces`. This means typos or unregistered namespaces silently succeed, leading to orphaned data that doesn't appear in namespace-scoped queries or stats.
 
-Fix approach: Add a namespace existence check in each service's create path (or in wip-auth as shared middleware). Return 400/404 if the namespace is not registered. Consider a cached check to avoid per-request Registry calls.
+Fixed in the Registry's `register_keys` and `reserve_ids` endpoints (commit 1d37656). A batch namespace lookup rejects items targeting nonexistent or inactive namespaces with a per-item error. The `id_generator.py` fallback (silent UUID7 for unknown namespaces) now raises `ValueError` as defense in depth. The `provision` endpoint already validated namespace existence.
 
-- Status: Not started
+- Status: Fixed (2026-03-27)
 
 ### Bug: Dashboard File Count Shows Zero
 
@@ -150,21 +150,25 @@ Code review confirms the full pipeline is implemented and logically correct on b
 
 Interactive ego-graph browser for exploring ontology relationships in the WIP Console. Focus on one term, see all its relationships (all types, configurable depth), click any neighbour to refocus. Uses Cytoscape.js for force-directed graph rendering with concentric layout (focus term at centre, neighbours in rings by depth).
 
-The sidebar "Ontology Browser" menu entry already exists but links to a dead `?tab=ontology` parameter. This replaces it with a dedicated `/ontology` route and view.
-
 Key features:
-- Terminology selector + term search with autocomplete
+- Terminology selector (dropdown) + term search with autocomplete (dropdown + type-ahead filter, capped at 20 results)
 - Ego-graph showing all relationship types (colour-coded edges)
 - Click-to-navigate: click any node to refocus the graph on it
 - Depth slider (1-3, default 2)
 - Relationship type filter checkboxes
-- Detail panel for selected node with link to full term detail view
-- No backend changes — uses client-side fan-out of existing `listRelationships` endpoint
+- Cross-namespace traversal: BFS tracks namespace per node, follows relationships into other namespaces automatically
+- Detail panel with term info, link to term detail view, and documents referencing the focused term
+- Namespace-aware: honours the global namespace selector
+- Relationship API enriched with `source_term_value/label`, `target_term_value/label` (batch term lookup, no N+1)
 
 New files: `OntologyBrowserView.vue`, `EgoGraph.vue`. New dependency: `cytoscape`.
 
+Known issues:
+- Some nodes still show UUID7 instead of human-readable labels (e.g., terms with no relationships return no label enrichment from the API — the term's own value/label is not fetched separately)
+- Document list in the detail panel is a simple list; UX needs rethinking (user feedback: not what was envisioned)
+
 - Design: `docs/design/ontology-browser.md`
-- Status: Design complete, ready to implement
+- Status: Implemented (2026-03-27), UX refinements pending
 
 ### Namespace Authorization — UX Polish
 
@@ -390,7 +394,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
-| `ontology-browser.md` | Design complete, ready to implement |
+| `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Proposed — needs discussion |
 | `wip-nano.md` | Concept only |
 

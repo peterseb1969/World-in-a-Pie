@@ -4,14 +4,14 @@ import { useRouter, useRoute } from 'vue-router'
 import Breadcrumb from 'primevue/breadcrumb'
 import Card from 'primevue/card'
 import Select from 'primevue/select'
-import InputText from 'primevue/inputtext'
+import AutoComplete from 'primevue/autocomplete'
 import Button from 'primevue/button'
 import Checkbox from 'primevue/checkbox'
 import Tag from 'primevue/tag'
 import SelectButton from 'primevue/selectbutton'
 import ProgressSpinner from 'primevue/progressspinner'
-import { useUiStore } from '@/stores'
-import { defStoreClient } from '@/api/client'
+import { useUiStore, useNamespaceStore } from '@/stores'
+import { defStoreClient, documentStoreClient } from '@/api/client'
 import type { Terminology, Term } from '@/types'
 import TruncatedId from '@/components/common/TruncatedId.vue'
 import EgoGraph from '@/components/terminologies/EgoGraph.vue'
@@ -19,6 +19,7 @@ import EgoGraph from '@/components/terminologies/EgoGraph.vue'
 const router = useRouter()
 const route = useRoute()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // -------------------------------------------------------------------------
 // State
@@ -28,10 +29,10 @@ const terminologies = ref<Terminology[]>([])
 const selectedTerminology = ref<Terminology | null>(null)
 const loadingTerminologies = ref(false)
 
-const termSearch = ref('')
-const searchResults = ref<Term[]>([])
+const termSearch = ref<Term | string | null>(null)
+const termSuggestions = ref<Term[]>([])
 const loadingSearch = ref(false)
-let searchTimeout: ReturnType<typeof setTimeout> | null = null
+const initialTerms = ref<Term[]>([])
 
 const focusTermId = ref<string | null>(null)
 const focusTerm = ref<Term | null>(null)
@@ -49,6 +50,17 @@ const allTypesVisible = computed(() => visibleTypes.value.length === discoveredT
 // Selected node detail (from hover)
 const selectedNodeId = ref<string | null>(null)
 const selectedNodeValue = ref('')
+
+// Documents referencing focus term
+interface TermDocument {
+  document_id: string
+  template_value: string
+  data: Record<string, unknown>
+  version: number
+}
+const termDocuments = ref<TermDocument[]>([])
+const termDocumentsTotal = ref(0)
+const loadingDocuments = ref(false)
 
 // Edge colour map (matches EgoGraph)
 const TYPE_COLOURS: Record<string, string> = {
@@ -80,7 +92,7 @@ async function loadTerminologies() {
     let page = 1
     const all: Terminology[] = []
     while (true) {
-      const data = await defStoreClient.listTerminologies({ page, page_size: 100 })
+      const data = await defStoreClient.listTerminologies({ page, page_size: 100, namespace: namespaceStore.currentNamespaceParam })
       all.push(...data.items)
       if (page >= data.pages) break
       page++
@@ -97,36 +109,55 @@ async function loadTerminologies() {
 // Term search within selected terminology
 // -------------------------------------------------------------------------
 
-function onSearchInput() {
-  if (searchTimeout) clearTimeout(searchTimeout)
-  if (!selectedTerminology.value || termSearch.value.length < 2) {
-    searchResults.value = []
+async function loadInitialTerms() {
+  if (!selectedTerminology.value) {
+    initialTerms.value = []
     return
   }
-  searchTimeout = setTimeout(() => searchTerms(), 300)
+  try {
+    const data = await defStoreClient.listTerms(
+      selectedTerminology.value.terminology_id,
+      { page_size: 20 }
+    )
+    initialTerms.value = data.items
+  } catch {
+    initialTerms.value = []
+  }
 }
 
-async function searchTerms() {
-  if (!selectedTerminology.value) return
+async function onTermSearch(event: { query: string }) {
+  if (!selectedTerminology.value) {
+    termSuggestions.value = []
+    return
+  }
+  if (!event.query || event.query.length < 1) {
+    // Show initial terms when field is focused/empty
+    termSuggestions.value = initialTerms.value
+    return
+  }
   loadingSearch.value = true
   try {
     const data = await defStoreClient.listTerms(
       selectedTerminology.value.terminology_id,
-      { search: termSearch.value, page_size: 20 }
+      { search: event.query, page_size: 20 }
     )
-    searchResults.value = data.items
-  } catch (e) {
-    searchResults.value = []
+    termSuggestions.value = data.items
+  } catch {
+    termSuggestions.value = []
   } finally {
     loadingSearch.value = false
   }
 }
 
+function onTermSelect(event: { value: Term }) {
+  selectTerm(event.value)
+}
+
 function selectTerm(term: Term) {
   focusTermId.value = term.term_id
   focusTerm.value = term
-  searchResults.value = []
-  termSearch.value = ''
+  termSearch.value = null
+  loadTermDocuments(term.term_id)
   // Update URL
   router.replace({
     query: {
@@ -141,6 +172,31 @@ function selectTerm(term: Term) {
 // -------------------------------------------------------------------------
 // Graph events
 // -------------------------------------------------------------------------
+
+async function loadTermDocuments(termId: string) {
+  loadingDocuments.value = true
+  termDocuments.value = []
+  termDocumentsTotal.value = 0
+  try {
+    const data = await documentStoreClient.queryDocuments({
+      filters: [{ field: 'term_references.term_id', operator: 'eq', value: termId }],
+      page_size: 10,
+      sort_by: 'updated_at',
+      sort_order: 'desc',
+    })
+    termDocuments.value = data.items.map(d => ({
+      document_id: d.document_id,
+      template_value: d.template_value || '?',
+      data: d.data,
+      version: d.version,
+    }))
+    termDocumentsTotal.value = data.total
+  } catch {
+    // Not critical
+  } finally {
+    loadingDocuments.value = false
+  }
+}
 
 function onFocus(termId: string) {
   focusTermId.value = termId
@@ -157,6 +213,7 @@ function onFocus(termId: string) {
   }).catch(() => {
     focusTerm.value = null
   })
+  loadTermDocuments(termId)
   router.replace({
     query: {
       ...route.query,
@@ -179,6 +236,19 @@ function onTypesDiscovered(types: string[]) {
   }
 }
 
+function getDocumentLabel(doc: TermDocument): string {
+  // Try common label fields from the document data
+  for (const key of ['name', 'label', 'title', 'value', 'display_name']) {
+    const val = doc.data[key]
+    if (val && typeof val === 'string') return val
+  }
+  // Fall back to first string field
+  for (const val of Object.values(doc.data)) {
+    if (val && typeof val === 'string' && val.length < 80) return val
+  }
+  return doc.document_id.slice(0, 12) + '...'
+}
+
 function toggleType(type: string) {
   const idx = visibleTypes.value.indexOf(type)
   if (idx >= 0) {
@@ -195,6 +265,19 @@ function toggleAllTypes() {
     visibleTypes.value = [...discoveredTypes.value]
   }
 }
+
+// Reload when namespace changes
+watch(() => namespaceStore.currentNamespaceParam, () => {
+  selectedTerminology.value = null
+  focusTermId.value = null
+  focusTerm.value = null
+  termSuggestions.value = []
+  initialTerms.value = []
+  termSearch.value = null
+  discoveredTypes.value = []
+  visibleTypes.value = []
+  loadTerminologies()
+})
 
 // -------------------------------------------------------------------------
 // Init from URL query params
@@ -223,6 +306,7 @@ onMounted(async () => {
       const term = await defStoreClient.getTerm(qTerm)
       focusTermId.value = term.term_id
       focusTerm.value = term
+      loadTermDocuments(term.term_id)
       // Auto-select terminology
       if (!selectedTerminology.value) {
         const t = terminologies.value.find(
@@ -236,10 +320,11 @@ onMounted(async () => {
   }
 })
 
-// Reset search when terminology changes
+// Reset search and load initial terms when terminology changes
 watch(selectedTerminology, () => {
-  termSearch.value = ''
-  searchResults.value = []
+  termSearch.value = null
+  termSuggestions.value = []
+  loadInitialTerms()
 })
 </script>
 
@@ -269,30 +354,26 @@ watch(selectedTerminology, () => {
             <!-- Term search -->
             <div class="control-group">
               <label class="control-label">Search term</label>
-              <div class="search-wrapper">
-                <InputText
-                  v-model="termSearch"
-                  placeholder="Type to search..."
-                  :disabled="!selectedTerminology"
-                  class="w-full"
-                  @input="onSearchInput"
-                />
-                <ProgressSpinner
-                  v-if="loadingSearch"
-                  style="width: 18px; height: 18px; position: absolute; right: 8px; top: 8px"
-                />
-              </div>
-              <div v-if="searchResults.length > 0" class="search-results">
-                <div
-                  v-for="term in searchResults"
-                  :key="term.term_id"
-                  class="search-result-item"
-                  @click="selectTerm(term)"
-                >
-                  <span class="result-value">{{ term.label || term.value }}</span>
-                  <code class="result-id">{{ term.value }}</code>
-                </div>
-              </div>
+              <AutoComplete
+                v-model="termSearch"
+                :suggestions="termSuggestions"
+                :option-label="(t: Term) => t.label || t.value"
+                placeholder="Type to search or browse..."
+                :disabled="!selectedTerminology"
+                :loading="loadingSearch"
+                :dropdown="true"
+                :min-length="0"
+                class="w-full"
+                @complete="onTermSearch"
+                @item-select="onTermSelect"
+              >
+                <template #option="{ option }">
+                  <div class="term-option">
+                    <span class="term-option-label">{{ (option as Term).label || (option as Term).value }}</span>
+                    <code class="term-option-code">{{ (option as Term).value }}</code>
+                  </div>
+                </template>
+              </AutoComplete>
             </div>
 
             <!-- Depth -->
@@ -351,6 +432,7 @@ watch(selectedTerminology, () => {
           :focus-term-id="focusTermId"
           :depth="depth"
           :visible-types="visibleTypes"
+          :namespace="namespaceStore.currentNamespaceParam"
           @focus="onFocus"
           @select="onSelect"
           @types-discovered="onTypesDiscovered"
@@ -394,6 +476,36 @@ watch(selectedTerminology, () => {
               class="detail-link-btn"
               @click="router.push(`/terms/${focusTerm.term_id}`)"
             />
+
+            <!-- Documents referencing this term -->
+            <div class="documents-section">
+              <h3 class="detail-title">
+                Documents
+                <Tag v-if="termDocumentsTotal > 0" :value="String(termDocumentsTotal)" severity="info" />
+              </h3>
+              <div v-if="loadingDocuments" class="documents-loading">
+                <ProgressSpinner style="width: 20px; height: 20px" />
+              </div>
+              <div v-else-if="termDocuments.length === 0" class="documents-empty">
+                No documents reference this term
+              </div>
+              <div v-else class="documents-list">
+                <div
+                  v-for="doc in termDocuments"
+                  :key="doc.document_id"
+                  class="document-item"
+                  @click="router.push(`/documents/${doc.document_id}`)"
+                >
+                  <div class="doc-template">
+                    <Tag :value="doc.template_value" severity="secondary" />
+                  </div>
+                  <div class="doc-summary">{{ getDocumentLabel(doc) }}</div>
+                </div>
+                <div v-if="termDocumentsTotal > termDocuments.length" class="documents-more">
+                  +{{ termDocumentsTotal - termDocuments.length }} more
+                </div>
+              </div>
+            </div>
           </div>
 
           <div v-else-if="selectedNodeId" class="detail-content">
@@ -486,41 +598,18 @@ watch(selectedTerminology, () => {
   text-decoration: underline;
 }
 
-.search-wrapper {
-  position: relative;
-}
-
-.search-results {
-  border: 1px solid var(--p-surface-200);
-  border-radius: 6px;
-  max-height: 200px;
-  overflow-y: auto;
-  background: var(--p-surface-0);
-}
-
-.search-result-item {
-  padding: 0.5rem 0.75rem;
-  cursor: pointer;
+.term-option {
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
-  border-bottom: 1px solid var(--p-surface-100);
 }
 
-.search-result-item:hover {
-  background: var(--p-surface-50);
-}
-
-.search-result-item:last-child {
-  border-bottom: none;
-}
-
-.result-value {
+.term-option-label {
   font-size: 0.85rem;
   font-weight: 500;
 }
 
-.result-id {
+.term-option-code {
   font-size: 0.7rem;
   color: var(--p-text-muted-color);
 }
@@ -634,5 +723,70 @@ watch(selectedTerminology, () => {
 
 .w-full {
   width: 100%;
+}
+
+/* Documents section */
+.documents-section {
+  margin-top: 0.5rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--p-surface-200);
+}
+
+.documents-section .detail-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.documents-loading {
+  display: flex;
+  justify-content: center;
+  padding: 0.5rem;
+}
+
+.documents-empty {
+  font-size: 0.8rem;
+  color: var(--p-text-muted-color);
+  font-style: italic;
+}
+
+.documents-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.document-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  border: 1px solid var(--p-surface-200);
+  transition: background-color 0.15s;
+}
+
+.document-item:hover {
+  background: var(--p-surface-100);
+}
+
+.doc-template {
+  font-size: 0.7rem;
+}
+
+.doc-summary {
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.documents-more {
+  font-size: 0.75rem;
+  color: var(--p-text-muted-color);
+  text-align: center;
+  padding: 0.25rem;
 }
 </style>

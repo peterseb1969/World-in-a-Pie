@@ -494,6 +494,10 @@ class RelationshipResponse(BaseModel):
     relationship_value: str | None = None
     source_terminology_id: str | None = None
     target_terminology_id: str | None = None
+    source_term_value: str | None = None
+    source_term_label: str | None = None
+    target_term_value: str | None = None
+    target_term_label: str | None = None
     metadata: dict[str, Any] = {}
     status: str
     created_at: datetime
