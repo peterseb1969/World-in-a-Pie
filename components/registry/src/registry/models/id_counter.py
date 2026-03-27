@@ -30,7 +30,7 @@ class IdCounter(Document):
 
         Creates the counter document on first use (upsert).
         """
-        result = await cls.get_pymongo_collection().find_one_and_update(
+        result = await cls.get_motor_collection().find_one_and_update(
             {"counter_key": counter_key},
             {"$inc": {"seq": 1}},
             upsert=True,
@@ -45,7 +45,7 @@ class IdCounter(Document):
         Used during startup migration so we never roll back an
         already-incremented counter.
         """
-        await cls.get_pymongo_collection().update_one(
+        await cls.get_motor_collection().update_one(
             {"counter_key": counter_key},
             {"$max": {"seq": value}},
             upsert=True,

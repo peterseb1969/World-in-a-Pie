@@ -13,7 +13,6 @@ import pytest
 
 from reporting_sync.batch_sync import BatchSyncService
 
-
 # =========================================================================
 # Fixtures
 # =========================================================================
@@ -98,6 +97,85 @@ class TestBatchSyncTerminologies:
         assert result["synced"] == 1
         assert result["failed"] == 0
         conn.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_namespace_none_omits_param(self, service, mock_pool):
+        """When namespace=None, the API request omits the namespace parameter."""
+        pool, conn = mock_pool
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_TERMINOLOGY]))
+            mock_client_cls.return_value = mock_client
+
+            await service.batch_sync_terminologies(namespace=None)
+
+        # Check the params passed to the GET request
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs.get("params") or call_args[1].get("params", {})
+        assert "namespace" not in params
+
+    @pytest.mark.asyncio
+    async def test_namespace_explicit_includes_param(self, service, mock_pool):
+        """When namespace is set, the API request includes the namespace parameter."""
+        pool, conn = mock_pool
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_TERMINOLOGY]))
+            mock_client_cls.return_value = mock_client
+
+            await service.batch_sync_terminologies(namespace="custom")
+
+        call_args = mock_client.get.call_args
+        params = call_args.kwargs.get("params") or call_args[1].get("params", {})
+        assert params.get("namespace") == "custom"
+
+    @pytest.mark.asyncio
+    async def test_namespace_fallback_in_insert(self, service, mock_pool):
+        """When namespace is None and item has no namespace, fallback to 'wip'."""
+        pool, conn = mock_pool
+
+        no_ns_terminology = {**SAMPLE_TERMINOLOGY}
+        del no_ns_terminology["namespace"]
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=_make_api_response([no_ns_terminology]))
+            mock_client_cls.return_value = mock_client
+
+            await service.batch_sync_terminologies(namespace=None)
+
+        args = conn.execute.call_args[0]
+        # $2 = namespace (index 2)
+        assert args[2] == "wip"
+
+    @pytest.mark.asyncio
+    async def test_multi_page_sync(self, service, mock_pool):
+        """Multiple pages are fetched and all terminologies synced."""
+        pool, conn = mock_pool
+
+        page1 = _make_api_response([SAMPLE_TERMINOLOGY], page=1, pages=2)
+        term2 = {**SAMPLE_TERMINOLOGY, "terminology_id": "TRM-002", "value": "CITIES"}
+        page2 = _make_api_response([term2], page=2, pages=2)
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(side_effect=[page1, page2])
+            mock_client_cls.return_value = mock_client
+
+            result = await service.batch_sync_terminologies()
+
+        assert result["synced"] == 2
+        assert result["failed"] == 0
 
     @pytest.mark.asyncio
     async def test_datetime_fields_are_parsed(self, service, mock_pool):
@@ -238,6 +316,59 @@ class TestBatchSyncTerms:
 
         assert result["synced"] == 1
         assert result["failed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_namespace_none_omits_param(self, service, mock_pool):
+        """When namespace=None, the terminology list request omits namespace."""
+        pool, conn = mock_pool
+
+        terminologies = [{"terminology_id": "TRM-001"}]
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = self._mock_client(terminologies, [[SAMPLE_TERM]])
+            mock_client_cls.return_value = mock_client
+
+            await service.batch_sync_terms(namespace=None)
+
+        # First call is the terminology list
+        first_call = mock_client.get.call_args_list[0]
+        params = first_call.kwargs.get("params") or first_call[1].get("params", {})
+        assert "namespace" not in params
+
+    @pytest.mark.asyncio
+    async def test_namespace_explicit_includes_param(self, service, mock_pool):
+        """When namespace is set, the terminology list request includes it."""
+        pool, conn = mock_pool
+
+        terminologies = [{"terminology_id": "TRM-001"}]
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client = self._mock_client(terminologies, [[SAMPLE_TERM]])
+            mock_client_cls.return_value = mock_client
+
+            await service.batch_sync_terms(namespace="custom")
+
+        first_call = mock_client.get.call_args_list[0]
+        params = first_call.kwargs.get("params") or first_call[1].get("params", {})
+        assert params.get("namespace") == "custom"
+
+    @pytest.mark.asyncio
+    async def test_namespace_fallback_in_term_insert(self, service, mock_pool):
+        """When namespace=None and term has no namespace, fallback to 'wip'."""
+        pool, conn = mock_pool
+
+        no_ns_term = {**SAMPLE_TERM}
+        del no_ns_term["namespace"]
+        terminologies = [{"terminology_id": "TRM-001"}]
+
+        with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
+            mock_client_cls.return_value = self._mock_client(terminologies, [[no_ns_term]])
+
+            await service.batch_sync_terms(namespace=None)
+
+        args = conn.execute.call_args[0]
+        # $2 = namespace (index 2)
+        assert args[2] == "wip"
 
     @pytest.mark.asyncio
     async def test_datetime_fields_are_parsed(self, service, mock_pool):

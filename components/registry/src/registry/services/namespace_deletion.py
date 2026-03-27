@@ -18,7 +18,6 @@ from ..models.deletion_journal import (
 )
 from ..models.entry import RegistryEntry
 from ..models.grant import NamespaceGrant
-from ..models.id_counter import IdCounter
 from ..models.namespace import Namespace
 
 logger = logging.getLogger("registry.namespace_deletion")
@@ -35,9 +34,10 @@ _MONGO_COLLECTIONS = [
     ("term_audit_log", "namespace", "def-store"),
     ("terminologies", "namespace", "def-store"),
     ("registry_entries", "namespace", "registry"),
-    ("id_counters", "namespace", "registry"),
     ("namespace_grants", "namespace", "registry"),
 ]
+
+# id_counters uses counter_key prefix, not a namespace field — handled separately
 
 
 class NamespaceDeletionService:
@@ -175,15 +175,15 @@ class NamespaceDeletionService:
         counts["registry_entries"] = await RegistryEntry.find(
             {"namespace": prefix}
         ).count()
-        counts["id_counters"] = await IdCounter.find(
-            {"namespace": prefix}
-        ).count()
+        db = Namespace.get_motor_collection().database
+        counts["id_counters"] = await db["id_counters"].count_documents(
+            {"counter_key": {"$regex": f"^{prefix}:"}}
+        )
         counts["namespace_grants"] = await NamespaceGrant.find(
             {"namespace": prefix}
         ).count()
 
         # For other collections, use raw Motor access
-        db = Namespace.get_motor_collection().database
         for coll_name, filter_field, _ in _MONGO_COLLECTIONS:
             if coll_name in ("registry_entries", "id_counters", "namespace_grants"):
                 continue  # Already counted via Beanie
@@ -319,6 +319,19 @@ class NamespaceDeletionService:
                     detail=f"Delete {count} documents from {coll_name}",
                 ))
                 order += 1
+
+        # id_counters: uses counter_key prefix, not a namespace field
+        id_counter_filter = {"counter_key": {"$regex": f"^{prefix}:"}}
+        id_counter_count = await db["id_counters"].count_documents(id_counter_filter)
+        if id_counter_count > 0:
+            steps.append(DeletionStep(
+                order=order,
+                store="mongodb",
+                collection="id_counters",
+                filter=id_counter_filter,
+                detail=f"Delete {id_counter_count} ID counters for {prefix}",
+            ))
+            order += 1
 
         # PostgreSQL rows (if reporting-sync is configured)
         if self._postgres_url:
