@@ -13,7 +13,7 @@ Delete an entire namespace and all its data permanently. A `deletion_mode` field
 Enables the dev→prod workflow: create a `full` dev namespace, iterate on the data model with AI, export, bootstrap into a `retain` prod namespace, delete the dev namespace cleanly.
 
 - Design: `docs/design/namespace-deletion.md`
-- Status: Design complete
+- Status: **Implemented** (2026-03-27) — deletion_mode field, persistent journal, dry-run, crash recovery, inbound reference checking, locked namespace status, MCP delete_namespace tool. 163 Registry tests pass.
 
 ### Complete ID Pass-Through for Restore
 
@@ -398,7 +398,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `event-replay.md` | Implemented (API + MCP tools) |
 | `namespace-scoped-data.md` | Phase 1-2 complete, Phase 3-5 pending |
 | `namespace-authorization.md` | Core complete, UX polish remaining |
-| `namespace-deletion.md` | Design complete, implementation pending (v1.1) |
+| `namespace-deletion.md` | Implemented |
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
 | `distributed-deployment.md` | Phase 1-2 complete, Phase 3 pending |
 | `wip-tools-cli.md` | Partially implemented (`WIP-Toolkit/`) |

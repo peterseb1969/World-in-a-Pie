@@ -16,6 +16,7 @@ os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
 from registry.main import app
+from registry.models.deletion_journal import DeletionJournal
 from registry.models.entry import RegistryEntry
 from registry.models.grant import NamespaceGrant
 from registry.models.id_counter import IdCounter
@@ -29,13 +30,14 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal]
     )
 
     # Clean up data from previous test
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
+    await DeletionJournal.delete_all()
 
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client

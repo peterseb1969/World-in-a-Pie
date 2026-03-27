@@ -169,6 +169,34 @@ class WipClient:
             self.registry_url, f"/api/registry/namespaces/{prefix}/stats"
         )
 
+    async def delete_namespace(
+        self, prefix: str, dry_run: bool = True, force: bool = False
+    ) -> dict:
+        return await self._delete(
+            self.registry_url,
+            f"/api/registry/namespaces/{prefix}",
+            dry_run=dry_run,
+            force=force,
+        )
+
+    async def update_deletion_mode(
+        self,
+        prefix: str,
+        deletion_mode: str,
+        confirm_enable_deletion: bool = False,
+    ) -> dict:
+        client = await self._get_client()
+        params = {
+            "deletion_mode": deletion_mode,
+            "confirm_enable_deletion": confirm_enable_deletion,
+        }
+        resp = await client.patch(
+            f"{self.registry_url}/api/registry/namespaces/{prefix}",
+            params=params,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     async def search_registry(
         self,
         query: str,

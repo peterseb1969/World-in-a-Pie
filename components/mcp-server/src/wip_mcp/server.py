@@ -519,6 +519,29 @@ async def get_namespace_stats(prefix: str) -> str:
         return _error(e)
 
 
+@mcp.tool()
+async def delete_namespace(
+    prefix: str, dry_run: bool = True, force: bool = False
+) -> str:
+    """Delete a namespace and ALL its data (terminologies, terms, templates, documents, files).
+
+    DESTRUCTIVE — requires deletion_mode='full' on the namespace.
+    Always run with dry_run=true first to see the impact report.
+
+    Args:
+        prefix: Namespace prefix to delete
+        dry_run: If true (default), return impact report without making changes
+        force: If true, proceed even if other namespaces reference this one
+    """
+    try:
+        data = await get_client().delete_namespace(
+            prefix, dry_run=dry_run, force=force
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Registry Entries & Synonyms
 # ===================================================================

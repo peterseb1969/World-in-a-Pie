@@ -34,6 +34,10 @@ class NamespaceCreate(StrictModel):
         None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
+    deletion_mode: str = Field(
+        default="retain",
+        description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
     created_by: str | None = Field(None, description="User creating the namespace")
 
 
@@ -55,6 +59,7 @@ class NamespaceResponse(BaseModel):
     isolation_mode: str
     allowed_external_refs: list[str]
     id_config: dict[str, Any]
+    deletion_mode: str = "retain"
     status: str
     created_at: datetime
     created_by: str | None
@@ -68,6 +73,7 @@ class NamespaceStatsResponse(BaseModel):
     prefix: str
     description: str
     isolation_mode: str
+    deletion_mode: str = "retain"
     status: str
     entity_counts: dict[str, int] = Field(
         default_factory=dict,

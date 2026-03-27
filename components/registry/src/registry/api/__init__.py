@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from .entries import router as entries_router
 from .grants import my_router as my_router
 from .grants import router as grants_router
+from .namespace_deletion import router as deletion_router
 from .namespaces import router as namespaces_router
 from .search import router as search_router
 from .synonyms import router as synonyms_router
@@ -12,7 +13,8 @@ from .synonyms import router as synonyms_router
 # Create main API router
 api_router = APIRouter(prefix="/api/registry")
 
-# Include sub-routers
+# Include sub-routers — deletion router BEFORE namespaces to avoid route conflicts
+api_router.include_router(deletion_router, prefix="/namespaces", tags=["Namespace Deletion"])
 api_router.include_router(namespaces_router, prefix="/namespaces", tags=["Namespaces"])
 api_router.include_router(grants_router, prefix="/namespaces", tags=["Grants"])
 api_router.include_router(entries_router, prefix="/entries", tags=["Entries"])

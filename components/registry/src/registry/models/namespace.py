@@ -44,9 +44,13 @@ class Namespace(Document):
         default_factory=dict,
         description="Per-entity-type ID algorithm config. Keys: terminologies, terms, templates, documents, files"
     )
-    status: Literal["active", "archived", "deleted"] = Field(
+    deletion_mode: Literal["retain", "full"] = Field(
+        default="retain",
+        description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
+    status: Literal["active", "archived", "deleted", "locked"] = Field(
         default="active",
-        description="Namespace status"
+        description="Namespace status. 'locked' means deletion is in progress."
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
