@@ -1,0 +1,21 @@
+# WIP Platform: Windows (Git Bash / WSL)
+#
+# Switches MongoDB from a bind mount to a named volume.
+# Windows/WSL cannot handle MongoDB's UID 999 file operations on
+# bind-mounted host directories — WiredTiger fails with "Operation
+# not permitted". Named volumes are managed inside the Podman VM
+# and work correctly.
+#
+# Trade-off: data lives inside the Podman WSL VM, not on the Windows
+# filesystem. Use `podman volume export` or `mongodump` for backups.
+#
+version: "3.8"
+
+services:
+  mongodb:
+    volumes:
+      - wip-mongodb-data:/data/db
+
+volumes:
+  wip-mongodb-data:
+    name: wip-mongodb-data
