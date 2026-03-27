@@ -114,19 +114,17 @@ Fixed in the Registry's `register_keys` and `reserve_ids` endpoints (commit 1d37
 
 - Status: Fixed (2026-03-27)
 
-### Lint: RUF005 in Ontology Service
+### ~~Lint: RUF005 in Ontology Service~~ (Fixed)
 
-Ruff reports `RUF005` at `components/def-store/src/def_store/services/ontology_service.py:576:32` — suggests `[*path, next_id]` instead of list concatenation. Trivial fix.
+Fixed in commit 4fb8829. Used `[*path, next_id]` instead of list concatenation.
 
-- Status: Not started
+- Status: Fixed (2026-03-27)
 
-### Bug: Registry Tests Broken — Beanie/Motor Incompatibility
+### ~~Bug: Registry Tests Broken — Beanie/Motor Incompatibility~~ (Fixed)
 
-All 162 Registry tests fail in CI with `TypeError: MotorDatabase object is not callable. If you meant to call the 'append_metadata' method on a AsyncIOMotorClient object it is failing because no such method exists.` The error occurs in `conftest.py:30` during `init_beanie()`. Root cause is a version mismatch between `beanie` and `motor` — the installed `motor` version changed its API (likely motor 3.x vs beanie expecting motor 2.x, or a beanie version that doesn't support the current motor). Only the hash service tests (which don't use Beanie) pass (46/162).
+All 162 Registry tests failed in CI with `TypeError: MotorDatabase object is not callable` during `init_beanie()`. Root cause: Registry's `requirements.txt` had no upper bounds on `beanie` and `motor`, unlike def-store which pinned `<2.0.0` and `<4.0.0`. CI resolved to an incompatible version combination. Also fixed: `NamespaceGrant` model was missing from test conftest's `document_models` list, and ruff lint errors (unsorted imports, unused `asyncio` import, `typing.AsyncGenerator` → `collections.abc`).
 
-**Fix approach:** Pin compatible versions of `beanie` and `motor` in Registry's dependencies. Check whether other services using Beanie (def-store, template-store, document-store) have the same issue or are pinned differently.
-
-- Status: Not started
+- Status: Fixed (2026-03-27)
 
 ### Bug: Dashboard File Count Shows Zero
 
