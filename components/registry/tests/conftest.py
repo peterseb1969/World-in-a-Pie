@@ -1,13 +1,12 @@
 """Pytest configuration and fixtures for Registry tests."""
 
-import asyncio
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 import pytest
 import pytest_asyncio
 from beanie import init_beanie
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Use existing env vars if set, otherwise defaults for local testing
@@ -17,10 +16,10 @@ os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
 from registry.main import app
-from registry.models.namespace import Namespace
 from registry.models.entry import RegistryEntry
-from registry.models.id_counter import IdCounter
 from registry.models.grant import NamespaceGrant
+from registry.models.id_counter import IdCounter
+from registry.models.namespace import Namespace
 from registry.services.auth import AuthService
 
 
