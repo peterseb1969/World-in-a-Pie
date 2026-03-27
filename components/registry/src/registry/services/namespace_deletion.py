@@ -23,10 +23,9 @@ from ..models.namespace import Namespace
 logger = logging.getLogger("registry.namespace_deletion")
 
 
-# MongoDB collections that contain namespace-scoped data.
+# External service databases with namespace-scoped data.
 # Each tuple: (database_name, collection_name, filter_field, service_label)
-# Each service uses its own database on the shared MongoDB instance.
-_MONGO_COLLECTIONS = [
+_EXTERNAL_COLLECTIONS = [
     ("wip_document_store", "files", "namespace", "document-store"),
     ("wip_document_store", "documents", "namespace", "document-store"),
     ("wip_template_store", "templates", "namespace", "template-store"),
@@ -34,9 +33,19 @@ _MONGO_COLLECTIONS = [
     ("wip_def_store", "term_relationships", "namespace", "def-store"),
     ("wip_def_store", "term_audit_log", "namespace", "def-store"),
     ("wip_def_store", "terminologies", "namespace", "def-store"),
-    ("wip_registry", "registry_entries", "namespace", "registry"),
-    ("wip_registry", "namespace_grants", "namespace", "registry"),
 ]
+
+# Registry-local collections — database name resolved at runtime from Beanie.
+# Each tuple: (collection_name, filter_field)
+_REGISTRY_COLLECTIONS = [
+    ("registry_entries", "namespace"),
+    ("namespace_grants", "namespace"),
+]
+
+
+def _registry_db_name() -> str:
+    """Get the actual registry database name from Beanie config."""
+    return Namespace.get_motor_collection().database.name
 
 # id_counters uses counter_key prefix, not a namespace field — handled separately
 
@@ -172,23 +181,21 @@ class NamespaceDeletionService:
         """Count all entities scoped to a namespace."""
         counts: dict[str, int] = {}
 
-        # Use Beanie models where available
+        # Use Beanie models for registry-local collections
         counts["registry_entries"] = await RegistryEntry.find(
             {"namespace": prefix}
         ).count()
         motor_client = Namespace.get_motor_collection().database.client
-        registry_db = motor_client["wip_registry"]
-        counts["id_counters"] = await registry_db["id_counters"].count_documents(
+        reg_db = motor_client[_registry_db_name()]
+        counts["id_counters"] = await reg_db["id_counters"].count_documents(
             {"counter_key": {"$regex": f"^{prefix}:"}}
         )
         counts["namespace_grants"] = await NamespaceGrant.find(
             {"namespace": prefix}
         ).count()
 
-        # Count across all service databases
-        for db_name, coll_name, filter_field, _ in _MONGO_COLLECTIONS:
-            if coll_name in ("registry_entries", "id_counters", "namespace_grants"):
-                continue  # Already counted via Beanie
+        # Count across external service databases
+        for db_name, coll_name, filter_field, _ in _EXTERNAL_COLLECTIONS:
             db = motor_client[db_name]
             coll = db[coll_name]
             counts[coll_name] = await coll.count_documents({filter_field: prefix})
@@ -311,7 +318,10 @@ class NamespaceDeletionService:
 
         # Steps 2-N: MongoDB collections (across all service databases)
         motor_client = Namespace.get_motor_collection().database.client
-        for db_name, coll_name, filter_field, _ in _MONGO_COLLECTIONS:
+        reg_db_name = _registry_db_name()
+
+        # External service databases
+        for db_name, coll_name, filter_field, _ in _EXTERNAL_COLLECTIONS:
             db = motor_client[db_name]
             coll = db[coll_name]
             count = await coll.count_documents({filter_field: prefix})
@@ -326,8 +336,24 @@ class NamespaceDeletionService:
                 ))
                 order += 1
 
+        # Registry-local collections
+        for coll_name, filter_field in _REGISTRY_COLLECTIONS:
+            db = motor_client[reg_db_name]
+            coll = db[coll_name]
+            count = await coll.count_documents({filter_field: prefix})
+            if count > 0:
+                steps.append(DeletionStep(
+                    order=order,
+                    store="mongodb",
+                    collection=coll_name,
+                    database=reg_db_name,
+                    filter={filter_field: prefix},
+                    detail=f"Delete {count} documents from {reg_db_name}.{coll_name}",
+                ))
+                order += 1
+
         # id_counters: uses counter_key prefix, not a namespace field
-        registry_db = motor_client["wip_registry"]
+        registry_db = motor_client[reg_db_name]
         id_counter_filter = {"counter_key": {"$regex": f"^{prefix}:"}}
         id_counter_count = await registry_db["id_counters"].count_documents(id_counter_filter)
         if id_counter_count > 0:
@@ -335,7 +361,7 @@ class NamespaceDeletionService:
                 order=order,
                 store="mongodb",
                 collection="id_counters",
-                database="wip_registry",
+                database=reg_db_name,
                 filter=id_counter_filter,
                 detail=f"Delete {id_counter_count} ID counters for {prefix}",
             ))
@@ -357,7 +383,7 @@ class NamespaceDeletionService:
             order=order,
             store="mongodb",
             collection="namespaces",
-            database="wip_registry",
+            database=reg_db_name,
             filter={"prefix": prefix},
             detail="Delete namespace record",
         ))
@@ -438,7 +464,7 @@ class NamespaceDeletionService:
     async def _exec_mongodb_step(self, step: DeletionStep) -> int:
         """Delete documents from a MongoDB collection."""
         motor_client = Namespace.get_motor_collection().database.client
-        db_name = step.database or "wip_registry"
+        db_name = step.database or _registry_db_name()
         db = motor_client[db_name]
         coll = db[step.collection]
         result = await coll.delete_many(step.filter)
