@@ -8,7 +8,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .archive import ArchiveReader, ENTITY_FILES
+from .archive import ENTITY_FILES, ArchiveReader
+from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
@@ -278,6 +279,53 @@ def _show_entity_ids(reader: ArchiveReader) -> None:
                 table.add_row(eid, source)
 
         console.print(table)
+
+
+@main.command(name="backfill-synonyms")
+@click.argument("namespace")
+@click.option("--skip-documents", is_flag=True, help="Skip document synonym backfill")
+@click.option("--batch-size", default=100, type=int, help="Synonym batch size (default: 100)")
+@click.option("--dry-run", is_flag=True, help="Preview without making changes")
+@click.pass_context
+def backfill_synonyms_cmd(
+    ctx: click.Context,
+    namespace: str,
+    skip_documents: bool,
+    batch_size: int,
+    dry_run: bool,
+) -> None:
+    """Backfill auto-synonyms for all entities in a namespace.
+
+    Iterates all terminologies, terms, templates, and (optionally) documents,
+    registering auto-synonyms with the Registry. Idempotent — existing
+    synonyms are skipped.
+
+    NAMESPACE is the WIP namespace to backfill (e.g., "wip").
+    """
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        console.print(f"[bold]Backfilling synonyms for namespace: {namespace}[/bold]")
+
+        summary = backfill_synonyms(
+            client, namespace,
+            skip_documents=skip_documents,
+            batch_size=batch_size,
+            dry_run=dry_run,
+        )
+
+        # Print summary
+        console.print("\n[bold green]Backfill complete[/bold green]")
+        total_added = 0
+        total_existing = 0
+        for entity_type, counts in summary.items():
+            added = counts.get("added", 0)
+            existing = counts.get("existing", 0)
+            failed = counts.get("failed", 0)
+            total_added += added
+            total_existing += existing
+            console.print(f"  {entity_type}: {added} new, {existing} existing, {failed} failed")
+
+        console.print(f"\n  Total: {total_added} new synonyms registered, {total_existing} already existed")
 
 
 def _show_references(reader: ArchiveReader) -> None:

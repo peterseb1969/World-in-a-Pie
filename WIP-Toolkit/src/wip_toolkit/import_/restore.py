@@ -22,7 +22,7 @@ from rich.console import Console
 
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import EntityCounts, ImportStats
+from ..models import ImportStats
 
 console = Console(stderr=True)
 
@@ -98,6 +98,7 @@ def restore_import(
     _restore_synonyms(
         client, target_namespace, reader, stats, continue_on_error,
         skip_documents=skip_documents, skip_files=skip_files,
+        source_namespace=stats.source_namespace,
     )
 
     return stats
@@ -114,7 +115,7 @@ def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> 
             try:
                 client.post("registry", "/namespaces", json={
                     "prefix": namespace,
-                    "description": f"Restored from backup",
+                    "description": "Restored from backup",
                     "isolation_mode": "open",
                     "created_by": "wip-toolkit",
                 })
@@ -580,21 +581,28 @@ def _restore_synonyms(
     *,
     skip_documents: bool = False,
     skip_files: bool = False,
+    source_namespace: str | None = None,
 ) -> None:
     """Restore Registry synonyms from synonyms.jsonl in the archive.
 
     Falls back to _registry metadata on entities for backward compatibility
     with archives that don't have synonyms.jsonl.
+
+    When target namespace differs from source, rewrites the ``ns`` field
+    in composite keys so synonyms resolve correctly in the new namespace.
     """
     if reader.has_synonyms():
         # New format: synonyms.jsonl
         synonym_items: list[dict] = []
         for syn in reader.read_synonyms():
+            composite_key = syn.get("composite_key", {})
+            # Phase 4: rewrite namespace in composite key
+            composite_key = _rewrite_namespace(composite_key, source_namespace, namespace)
             synonym_items.append({
                 "target_id": syn["entry_id"],
-                "synonym_namespace": syn.get("namespace", namespace),
+                "synonym_namespace": namespace,
                 "synonym_entity_type": syn.get("entity_type", ""),
-                "synonym_composite_key": syn.get("composite_key", {}),
+                "synonym_composite_key": composite_key,
                 "created_by": "wip-toolkit-restore",
             })
 
@@ -623,6 +631,7 @@ def _restore_synonyms(
         _restore_synonyms_legacy(
             client, namespace, reader, stats, continue_on_error,
             skip_documents=skip_documents, skip_files=skip_files,
+            source_namespace=source_namespace,
         )
 
 
@@ -635,6 +644,7 @@ def _restore_synonyms_legacy(
     *,
     skip_documents: bool = False,
     skip_files: bool = False,
+    source_namespace: str | None = None,
 ) -> None:
     """Restore synonyms from _registry metadata (legacy archive format)."""
     id_field_for_type = {
@@ -669,11 +679,14 @@ def _restore_synonyms_legacy(
 
             seen_ids.add(eid)
             for syn in synonyms:
+                composite_key = syn.get("composite_key", {})
+                # Phase 4: rewrite namespace in composite key
+                composite_key = _rewrite_namespace(composite_key, source_namespace, namespace)
                 synonym_items.append({
                     "target_id": eid,
-                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_namespace": namespace,
                     "synonym_entity_type": syn.get("entity_type", ""),
-                    "synonym_composite_key": syn.get("composite_key", {}),
+                    "synonym_composite_key": composite_key,
                     "created_by": "wip-toolkit-restore",
                 })
 
@@ -699,6 +712,25 @@ def _restore_synonyms_legacy(
     console.print(f"  Restored {total_registered} synonym(s)")
 
 
+def _rewrite_namespace(
+    composite_key: dict[str, Any],
+    source_namespace: str | None,
+    target_namespace: str,
+) -> dict[str, Any]:
+    """Rewrite the ``ns`` field in a composite key when namespaces differ.
+
+    Phase 4 of universal synonym resolution: when an archive is imported
+    into a different namespace, the ``ns`` component in auto-synonym
+    composite keys must be updated so resolution works in the target namespace.
+    """
+    if not source_namespace or source_namespace == target_namespace:
+        return composite_key
+    result = dict(composite_key)
+    if result.get("ns") == source_namespace:
+        result["ns"] = target_namespace
+    return result
+
+
 def _preview(
     reader: ArchiveReader,
     manifest: Any,
@@ -713,11 +745,11 @@ def _preview(
     if not skip_documents:
         console.print(f"  Documents:     {counts.documents}")
     else:
-        console.print(f"  Documents:     [dim]skipped[/dim]")
+        console.print("  Documents:     [dim]skipped[/dim]")
     if not skip_files:
         console.print(f"  Files:         {counts.files}")
     else:
-        console.print(f"  Files:         [dim]skipped[/dim]")
+        console.print("  Files:         [dim]skipped[/dim]")
     if reader.has_synonyms():
         syn_count = sum(1 for _ in reader.read_synonyms())
         console.print(f"  Synonyms:      {syn_count}")

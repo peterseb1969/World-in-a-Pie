@@ -1,6 +1,6 @@
 # Universal Synonym Resolution
 
-**Status:** Phases 1-3 implemented (2026-03-27). Phase 4 (import rewriting) and Phase 5 (backfill) pending.
+**Status:** All phases implemented (2026-03-27). Phases 1-3: auto-synonym registration, resolve layer, API integration. Phase 4: import namespace rewriting in WIP-Toolkit. Phase 5: `backfill-synonyms` CLI command.
 **Dependency for:** Cross-instance restore (v1.1), dev→prod namespace workflow, MCP ergonomics
 
 ---
