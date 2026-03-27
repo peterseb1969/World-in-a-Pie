@@ -88,13 +88,7 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
-        if has_identity_fields:
-            composite_key = {
-                "namespace": namespace,
-                "template_id": template_id,
-            }
-        else:
-            composite_key = {}
+        composite_key = {"namespace": namespace, "template_id": template_id} if has_identity_fields else {}
 
         item: dict[str, Any] = {
             "namespace": namespace,

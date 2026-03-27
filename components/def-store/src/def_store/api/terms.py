@@ -87,7 +87,7 @@ async def create_terms(
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg)
+                raise HTTPException(status_code=404, detail=msg) from None
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=msg)]
         except RegistryError as e:
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
@@ -103,10 +103,10 @@ async def create_terms(
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg)
-            raise HTTPException(status_code=400, detail=msg)
+                raise HTTPException(status_code=404, detail=msg) from None
+            raise HTTPException(status_code=400, detail=msg) from None
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")

@@ -72,7 +72,7 @@ async def create_templates(
                 namespace=items[0].namespace if items else "wip",
             )
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -302,7 +302,7 @@ async def get_template_dependencies(template_id: str):
     try:
         return await DependencyService.check_template_dependencies(template_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.delete("", response_model=BulkResponse)
@@ -398,7 +398,7 @@ async def activate_template(
             dry_run=dry_run
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{template_id}/cascade", response_model=CascadeResponse)
@@ -415,9 +415,9 @@ async def cascade_template(template_id: str):
     try:
         return await TemplateService.cascade_to_children(template_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)

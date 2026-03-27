@@ -363,7 +363,7 @@ async def register_keys(
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
 
-    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes)):
+    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
             # Validate entity_type
             if item.entity_type not in VALID_ENTITY_TYPES:
@@ -457,7 +457,7 @@ async def register_keys(
                 )
                 created_count += 1
         except Exception as e:
-            for pos, idx in enumerate(insert_indices):
+            for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = RegisterKeyResponse(
                         input_index=idx,
@@ -628,7 +628,7 @@ async def reserve_ids(
                 )
                 reserved_count += 1
         except Exception as e:
-            for pos, idx in enumerate(insert_indices):
+            for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = ReserveItemResponse(
                         input_index=idx, status="error",

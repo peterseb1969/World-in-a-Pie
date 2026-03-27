@@ -96,10 +96,10 @@ class TerminologyService:
         )
         try:
             await terminology.insert()
-        except DuplicateKeyError:
+        except DuplicateKeyError as e:
             raise ValueError(
                 f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
-            )
+            ) from e
 
         # Register auto-synonym for human-readable resolution (best-effort)
         await client.register_auto_synonym(
@@ -512,10 +512,10 @@ class TerminologyService:
         )
         try:
             await term.insert()
-        except DuplicateKeyError:
+        except DuplicateKeyError as e:
             raise ValueError(
                 f"Term ID '{term_id}' already exists (collision across namespaces)"
-            )
+            ) from e
 
         # Register auto-synonym for human-readable resolution (best-effort)
         # Uses "TERMINOLOGY_VALUE:TERM_VALUE" colon notation for resolution
@@ -666,7 +666,7 @@ class TerminologyService:
             terms_to_insert: list[Term] = []
             insert_indices: list[int] = []  # maps insert position -> global index
 
-            for i, (term_req, reg_result) in enumerate(zip(batch_terms, batch_registry_results)):
+            for i, (term_req, reg_result) in enumerate(zip(batch_terms, batch_registry_results, strict=False)):
                 global_idx = batch_start + i
 
                 if reg_result.get("status") == "error":
@@ -1274,9 +1274,9 @@ class TerminologyService:
         terminology_id: str,
         action: str,
         changed_by: str | None = None,
-        changed_fields: list[str] = None,
-        previous_values: dict = None,
-        new_values: dict = None,
+        changed_fields: list[str] | None = None,
+        previous_values: dict | None = None,
+        new_values: dict | None = None,
         comment: str | None = None,
         namespace: str = "wip"
     ):

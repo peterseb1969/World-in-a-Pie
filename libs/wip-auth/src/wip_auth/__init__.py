@@ -78,60 +78,60 @@ from .security import check_production_security
 __version__ = "0.1.0"
 
 __all__ = [
+    "APIKeyProvider",
+    "APIKeyRecord",
     # Config
     "AuthConfig",
-    "get_auth_config",
-    "set_auth_config",
-    "reset_auth_config",
-    # Models
-    "UserIdentity",
-    "APIKeyRecord",
-    "AuthResult",
-    # Providers
-    "AuthProvider",
-    "NoAuthProvider",
-    "APIKeyProvider",
-    "OIDCProvider",
-    "hash_api_key",
-    # Dependencies
-    "require_identity",
-    "require_groups",
-    "require_admin",
-    "require_api_key",
-    "require_namespace_read",
-    "require_namespace_write",
-    "require_namespace_admin",
-    "optional_identity",
-    # Permissions
-    "check_namespace_permission",
-    "resolve_permission",
-    "resolve_accessible_namespaces",
-    "permission_sufficient",
-    "clear_permission_cache",
-    # Identity context
-    "get_current_identity",
-    "set_current_identity",
-    "clear_current_identity",
-    "get_identity_string",
-    "get_identity_owner",
-    "get_actor_info",
     # Middleware
     "AuthMiddleware",
-    "create_auth_middleware",
+    # Providers
+    "AuthProvider",
+    "AuthResult",
+    "EntityNotFoundError",
+    "NoAuthProvider",
+    "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
-    # Setup
-    "setup_auth",
-    "create_providers_from_config",
-    # Rate limiting
-    "setup_rate_limiting",
+    # Models
+    "UserIdentity",
+    # Permissions
+    "check_namespace_permission",
     # Security
     "check_production_security",
+    "clear_current_identity",
+    "clear_permission_cache",
+    "clear_resolution_cache",
+    "create_auth_middleware",
+    "create_providers_from_config",
+    "get_actor_info",
+    "get_auth_config",
+    # Identity context
+    "get_current_identity",
+    "get_identity_owner",
+    "get_identity_string",
+    "hash_api_key",
+    "is_canonical_format",
+    "optional_identity",
+    "permission_sufficient",
+    "require_admin",
+    "require_api_key",
+    "require_groups",
+    # Dependencies
+    "require_identity",
+    "require_namespace_admin",
+    "require_namespace_read",
+    "require_namespace_write",
+    "reset_auth_config",
+    "resolve_accessible_namespaces",
     # Synonym resolution
     "resolve_entity_id",
     "resolve_entity_ids",
-    "is_canonical_format",
-    "EntityNotFoundError",
-    "clear_resolution_cache",
+    "resolve_permission",
+    "set_auth_config",
+    "set_current_identity",
+    # Setup
+    "setup_auth",
+    # Rate limiting
+    "setup_rate_limiting",
 ]
 
 
