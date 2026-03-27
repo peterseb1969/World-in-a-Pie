@@ -20,6 +20,7 @@ from registry.main import app
 from registry.models.namespace import Namespace
 from registry.models.entry import RegistryEntry
 from registry.models.id_counter import IdCounter
+from registry.models.grant import NamespaceGrant
 from registry.services.auth import AuthService
 
 
@@ -29,7 +30,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry, IdCounter]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant]
     )
 
     # Clean up data from previous test

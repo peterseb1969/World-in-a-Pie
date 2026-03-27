@@ -573,7 +573,7 @@ class OntologyService:
             for next_id in next_ids:
                 if next_id not in visited:
                     visited.add(next_id)
-                    new_path = path + [next_id]
+                    new_path = [*path, next_id]
                     nodes.append(TraversalNode(
                         term_id=next_id,
                         depth=depth + 1,
