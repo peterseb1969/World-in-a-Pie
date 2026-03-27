@@ -10,8 +10,8 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import { useAuthStore, useTerminologyStore, useTemplateStore, useUiStore, useNamespaceStore, useIntegrityStore } from '@/stores'
 import { getDocumentTitle, hasDocumentTitle } from '@/utils/document'
-import { isReportingEnabled } from '@/config/modules'
-import { documentStoreClient } from '@/api/client'
+import { isReportingEnabled, isFilesEnabled } from '@/config/modules'
+import { documentStoreClient, fileStoreClient } from '@/api/client'
 import type { Terminology, Template, Document } from '@/types'
 
 const router = useRouter()
@@ -78,6 +78,20 @@ async function loadDashboard() {
       entityCounts.value.documents = docResponse.total
     } catch {
       // Document store may not be available
+    }
+
+    // Fetch file count (file storage may not be enabled)
+    if (isFilesEnabled()) {
+      try {
+        const fileParams: Record<string, unknown> = { page_size: 1 }
+        if (namespaceStore.currentNamespaceParam) {
+          fileParams.namespace = namespaceStore.currentNamespaceParam
+        }
+        const fileResponse = await fileStoreClient.listFiles(fileParams as any)
+        entityCounts.value.files = fileResponse.total
+      } catch {
+        // File storage may not be available
+      }
     }
 
   } catch (error) {

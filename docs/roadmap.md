@@ -126,11 +126,11 @@ All 162 Registry tests failed in CI with `TypeError: MotorDatabase object is not
 
 - Status: Fixed (2026-03-27)
 
-### Bug: Dashboard File Count Shows Zero
+### ~~Bug: Dashboard File Count Shows Zero~~ (Fixed)
 
-The WIP Console dashboard displays a file count of 0 even when files exist in WIP. Likely the dashboard stats endpoint or the Console's stats query is not including files, or the file count is sourced from a field that isn't being populated.
+`HomeView.vue` `loadDashboard()` fetched terminologies, templates, and documents but never fetched files. Added `fileStoreClient.listFiles({ page_size: 1 })` call (guarded by `isFilesEnabled()`) to populate `entityCounts.files` from the API `total`.
 
-- Status: Not started
+- Status: Fixed (2026-03-27)
 
 ### Bug: Reporting Sync Not Populating Terminologies/Terms Tables
 
