@@ -160,14 +160,17 @@ class RegistryClient:
                 composite_key = {}
                 identity_values = None
 
-            registry_items.append({
+            entry: dict[str, Any] = {
                 "namespace": namespace,
                 "entity_type": "documents",
                 "composite_key": composite_key,
                 "identity_values": identity_values,
                 "created_by": created_by,
                 "source_info": {"system_id": "document-store"},
-            })
+            }
+            if item.get("entry_id"):
+                entry["entry_id"] = item["entry_id"]
+            registry_items.append(entry)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(

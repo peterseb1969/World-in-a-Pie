@@ -343,7 +343,7 @@ async def register_keys(
             identity_hashes.append(None)
             hashes.append("")  # Empty composite key = no dedup
 
-    # Phase 2: Batch check for existing entries (only for non-empty hashes)
+    # Phase 2: Batch check for existing entries (by hash and by entry_id)
     dedup_hashes = [h for h in hashes if h]
     existing_by_hash = {}
     if dedup_hashes:
@@ -358,6 +358,16 @@ async def register_keys(
             existing_by_hash[entry.primary_composite_key_hash] = entry
             for syn in entry.synonyms:
                 existing_by_hash[syn.composite_key_hash] = entry
+
+    # Also check for existing entries by entry_id (for restore/migration)
+    provided_ids = [item.entry_id for item in items if item.entry_id]
+    existing_by_entry_id: dict[str, RegistryEntry] = {}
+    if provided_ids:
+        id_entries = await RegistryEntry.find({
+            "entry_id": {"$in": provided_ids}
+        }).to_list()
+        for entry in id_entries:
+            existing_by_entry_id[entry.entry_id] = entry
 
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
@@ -385,7 +395,22 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists (only when composite key is non-empty)
+            # Check if provided entry_id already exists (collision detection)
+            if item.entry_id and item.entry_id in existing_by_entry_id:
+                existing = existing_by_entry_id[item.entry_id]
+                results[i] = RegisterKeyResponse(
+                    input_index=i,
+                    status="error",
+                    error=(
+                        f"entry_id '{item.entry_id}' already exists "
+                        f"(namespace='{existing.namespace}', entity_type='{existing.entity_type}'). "
+                        f"Restore mode requires a clean target — delete existing data first."
+                    ),
+                )
+                error_count += 1
+                continue
+
+            # Check if exists by composite key hash (dedup)
             if key_hash:
                 existing = existing_by_hash.get(key_hash)
                 if existing:

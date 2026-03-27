@@ -1090,14 +1090,17 @@ class DocumentService:
         # gets back identity_hash for each item)
         start = time.perf_counter()
         registry = get_registry_client()
-        registry_items = [
-            {
+        registry_items = []
+        for vr in validation_results:
+            reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
             }
-            for vr in validation_results
-        ]
+            # Pass through pre-assigned document_id for restore/migration
+            if vr[1].document_id:
+                reg_item["entry_id"] = vr[1].document_id
+            registry_items.append(reg_item)
 
         try:
             registry_results = await registry.generate_document_ids_bulk(
@@ -1172,7 +1175,15 @@ class DocumentService:
                 # the same batch correctly.
                 existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
 
-                if existing:
+                # Version override for restore/migration: if the request
+                # supplies both document_id and version, use them as-is.
+                version_override = (
+                    item.version
+                    if item.document_id and item.version is not None
+                    else None
+                )
+
+                if existing and version_override is None:
                     # Check if data has actually changed
                     if not self._data_has_changed(
                         existing,
@@ -1201,6 +1212,9 @@ class DocumentService:
                     await existing.save()
                     new_version = existing.version + 1
                     is_new = False
+                elif version_override is not None:
+                    new_version = version_override
+                    is_new = version_override == 1
                 else:
                     new_version = 1
                     is_new = True

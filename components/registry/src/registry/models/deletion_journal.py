@@ -17,6 +17,7 @@ class DeletionStep(BaseModel):
 
     order: int
     store: Literal["mongodb", "postgresql", "minio"]
+    database: str | None = None
     collection: str | None = None
     action: str | None = None
     detail: str | None = None

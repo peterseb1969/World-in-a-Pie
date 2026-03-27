@@ -33,6 +33,10 @@ class CreateTerminologyRequest(StrictModel):
         None,
         description="Detailed description"
     )
+    terminology_id: str | None = Field(
+        None,
+        description="Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)"
+    )
     namespace: str = Field(
         default="wip",
         description="Namespace for the terminology"
@@ -136,6 +140,10 @@ class CreateTermRequest(StrictModel):
     value: str = Field(
         ...,
         description="The value stored in documents (unique within terminology)"
+    )
+    term_id: str | None = Field(
+        None,
+        description="Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     aliases: list[str] = Field(
         default_factory=list,

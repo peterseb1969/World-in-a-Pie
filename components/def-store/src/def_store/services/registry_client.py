@@ -54,7 +54,8 @@ class RegistryClient:
         value: str,
         label: str,
         created_by: str | None = None,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        entry_id: str | None = None,
     ) -> str:
         """
         Register a new terminology in the Registry.
@@ -64,27 +65,32 @@ class RegistryClient:
             label: Terminology label
             created_by: User or system creating this
             namespace: Namespace for the terminology (default: wip)
+            entry_id: Pre-assigned ID (for restore/migration)
 
         Returns:
-            Generated terminology ID
+            Generated or pre-assigned terminology ID
 
         Raises:
             RegistryError: If registration fails
         """
+        item: dict[str, Any] = {
+            "namespace": namespace,
+            "entity_type": "terminologies",
+            "composite_key": {
+                "value": value,
+                "label": label
+            },
+            "created_by": created_by,
+            "metadata": {"type": "terminology"}
+        }
+        if entry_id:
+            item["entry_id"] = entry_id
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "terminologies",
-                    "composite_key": {
-                        "value": value,
-                        "label": label
-                    },
-                    "created_by": created_by,
-                    "metadata": {"type": "terminology"}
-                }]
+                json=[item]
             )
 
             if response.status_code != 200:
@@ -109,7 +115,8 @@ class RegistryClient:
         terminology_id: str,
         value: str,
         created_by: str | None = None,
-        namespace: str = "wip"
+        namespace: str = "wip",
+        entry_id: str | None = None,
     ) -> str:
         """
         Register a new term in the Registry.
@@ -119,27 +126,32 @@ class RegistryClient:
             value: Term value
             created_by: User or system creating this
             namespace: Namespace for the term (default: wip)
+            entry_id: Pre-assigned ID (for restore/migration)
 
         Returns:
-            Generated term ID
+            Generated or pre-assigned term ID
 
         Raises:
             RegistryError: If registration fails
         """
+        item: dict[str, Any] = {
+            "namespace": namespace,
+            "entity_type": "terms",
+            "composite_key": {
+                "terminology_id": terminology_id,
+                "value": value
+            },
+            "created_by": created_by,
+            "metadata": {"type": "term"}
+        }
+        if entry_id:
+            item["entry_id"] = entry_id
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "terms",
-                    "composite_key": {
-                        "terminology_id": terminology_id,
-                        "value": value
-                    },
-                    "created_by": created_by,
-                    "metadata": {"type": "term"}
-                }]
+                json=[item]
             )
 
             if response.status_code != 200:
@@ -201,8 +213,9 @@ class RegistryClient:
                 batch_end = min(batch_start + registry_batch_size, len(terms))
                 batch_terms = terms[batch_start:batch_end]
 
-                items = [
-                    {
+                items = []
+                for term in batch_terms:
+                    entry: dict[str, Any] = {
                         "namespace": namespace,
                         "entity_type": "terms",
                         "composite_key": {
@@ -212,8 +225,9 @@ class RegistryClient:
                         "created_by": created_by,
                         "metadata": {"type": "term"}
                     }
-                    for term in batch_terms
-                ]
+                    if term.get("entry_id"):
+                        entry["entry_id"] = term["entry_id"]
+                    items.append(entry)
 
                 response = await client.post(
                     f"{self.base_url}/api/registry/entries/register",

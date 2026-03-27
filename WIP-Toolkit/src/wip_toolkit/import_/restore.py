@@ -140,6 +140,7 @@ def _create_terminologies(
                 "value": t["value"],
                 "label": t.get("label", t["value"]),
                 "description": t.get("description", ""),
+                "terminology_id": t["terminology_id"],
                 "namespace": namespace,
                 "case_sensitive": t.get("case_sensitive", False),
                 "allow_multiple": t.get("allow_multiple", False),
@@ -227,8 +228,9 @@ def _create_terms(
             batch = term_group[i:i + batch_size]
             term_payloads = []
             for t in batch:
-                term_payloads.append({
+                payload = {
                     "value": t["value"],
+                    "term_id": t.get("term_id"),
                     "aliases": t.get("aliases", []),
                     "label": t.get("label", t["value"]),
                     "description": t.get("description", ""),
@@ -237,7 +239,8 @@ def _create_terms(
                     "translations": t.get("translations", []),
                     "metadata": t.get("metadata", {}),
                     "created_by": "wip-toolkit-restore",
-                })
+                }
+                term_payloads.append(payload)
 
             try:
                 result = client.post(

@@ -72,13 +72,14 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Register with Registry to get ID
+        # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
         terminology_id = await client.register_terminology(
             value=request.value,
             label=request.label,
             created_by=actor,
-            namespace=namespace
+            namespace=namespace,
+            entry_id=request.terminology_id,
         )
 
         # Create terminology document
@@ -485,13 +486,14 @@ class TerminologyService:
         # Default label to value if not provided
         label = request.label or request.value
 
-        # Register with Registry to get ID
+        # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
         term_id = await client.register_term(
             terminology_id=terminology_id,
             value=request.value,
             created_by=actor,
-            namespace=namespace
+            namespace=namespace,
+            entry_id=request.term_id,
         )
 
         # Create term document
@@ -633,7 +635,12 @@ class TerminologyService:
             logger.debug(f"Registering {len(batch_terms)} terms with registry...")
             batch_registry_results = await client.register_terms_bulk(
                 terminology_id=terminology_id,
-                terms=[{"value": t.value} for t in batch_terms],
+                terms=[
+                    {"value": t.value, "entry_id": t.term_id}
+                    if hasattr(t, "term_id") and t.term_id
+                    else {"value": t.value}
+                    for t in batch_terms
+                ],
                 created_by=actor,
                 registry_batch_size=registry_batch_size,
                 namespace=namespace,
