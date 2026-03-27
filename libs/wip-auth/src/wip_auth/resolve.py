@@ -159,12 +159,16 @@ async def resolve_entity_id(
     registry_url = _get_registry_url()
     api_key = _get_api_key()
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(
-            f"{registry_url}/api/registry/entries/resolve",
-            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-            json=[{"composite_key": composite_key}],
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{registry_url}/api/registry/entries/resolve",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=[{"composite_key": composite_key}],
+            )
+    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+        logger.debug("Registry unreachable for synonym resolution: %s", e)
+        raise EntityNotFoundError(raw_id, entity_type) from e
 
     if response.status_code != 200:
         logger.warning(
@@ -232,12 +236,16 @@ async def resolve_entity_ids(
     registry_url = _get_registry_url()
     api_key = _get_api_key()
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.post(
-            f"{registry_url}/api/registry/entries/resolve",
-            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-            json=[{"composite_key": ck} for ck in composite_keys],
-        )
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{registry_url}/api/registry/entries/resolve",
+                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+                json=[{"composite_key": ck} for ck in composite_keys],
+            )
+    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
+        logger.debug("Registry unreachable for batch synonym resolution: %s", e)
+        raise EntityNotFoundError(to_resolve[0], entity_type) from e
 
     if response.status_code != 200:
         logger.warning("Registry batch resolve failed: %s", response.status_code)
