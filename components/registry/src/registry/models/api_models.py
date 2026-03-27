@@ -48,6 +48,10 @@ class NamespaceUpdate(StrictModel):
     isolation_mode: str | None = None
     allowed_external_refs: list[str] | None = None
     id_config: dict[str, Any] | None = None
+    deletion_mode: str | None = Field(
+        default=None,
+        description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
     updated_by: str | None = None
 
 
