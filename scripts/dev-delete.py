@@ -48,12 +48,30 @@ from pathlib import Path
 
 from pymongo import MongoClient
 
+# Container hostnames that need translating to localhost for host-side access.
+_CONTAINER_HOSTS = ("wip-minio", "wip-mongodb", "wip-postgres", "wip-nats")
+
 
 def _load_dotenv():
-    """Load .env file from the project root into os.environ (no overwrite)."""
-    env_file = Path(__file__).resolve().parent.parent / ".env"
-    if not env_file.exists():
+    """Load .env file into os.environ as a convenience fallback.
+
+    Discovery: $WIP_ENV_FILE → ./.env → <script-dir>/../.env.
+    Never overwrites existing env vars (CLI flags and explicit env win).
+    Translates container-internal hostnames to localhost.
+    """
+    candidates = [
+        os.getenv("WIP_ENV_FILE"),
+        Path.cwd() / ".env",
+        Path(__file__).resolve().parent.parent / ".env",
+    ]
+    env_file = None
+    for c in candidates:
+        if c and Path(c).is_file():
+            env_file = Path(c)
+            break
+    if not env_file:
         return
+
     for line in env_file.read_text().splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -61,8 +79,12 @@ def _load_dotenv():
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
-        if key and key not in os.environ:
-            os.environ[key] = value
+        if not key or key in os.environ:
+            continue
+        # Translate container hostnames to localhost for host-side access
+        for chost in _CONTAINER_HOSTS:
+            value = value.replace(f"//{chost}:", "//localhost:")
+        os.environ[key] = value
 
 
 _load_dotenv()
