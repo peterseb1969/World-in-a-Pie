@@ -940,12 +940,8 @@ def delete_namespace(client, namespace, force, s3, s3_bucket, pg_conn):
 
 def delete_by_prefix(client, prefix, type_filter, cascade, force, s3, s3_bucket, pg_conn):
     """Delete entities whose value matches a prefix."""
-    # Determine which types to search
-    if type_filter:
-        search_types = [type_filter]
-    else:
-        # Only types that have a 'value' field
-        search_types = ["terminology", "template"]
+    # Only terminologies and templates have a 'value' field
+    search_types = [type_filter] if type_filter else ["terminology", "template"]
 
     print(f"\n{'='*60}")
     print(f"PREFIX: {prefix}*" + (f" (type: {type_filter})" if type_filter else ""))
