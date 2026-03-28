@@ -190,6 +190,24 @@ class TestImportCommand:
 
     @patch("wip_toolkit.cli.run_import")
     @patch("wip_toolkit.cli.WIPClient")
+    def test_import_default_mode_is_fresh(self, MockClient, mock_run_import):
+        from wip_toolkit.cli import main
+
+        mock_client = _make_mock_client()
+        MockClient.return_value = mock_client
+        mock_run_import.return_value = ImportStats(
+            mode="fresh", target_namespace="wip"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["import", "/tmp/test.zip"])
+
+        assert result.exit_code == 0
+        _, kwargs = mock_run_import.call_args
+        assert kwargs["mode"] == "fresh"
+
+    @patch("wip_toolkit.cli.run_import")
+    @patch("wip_toolkit.cli.WIPClient")
     def test_import_restore_mode(self, MockClient, mock_run_import):
         from wip_toolkit.cli import main
 
@@ -200,7 +218,7 @@ class TestImportCommand:
         )
 
         runner = CliRunner()
-        result = runner.invoke(main, ["import", "/tmp/test.zip"])
+        result = runner.invoke(main, ["import", "--mode", "restore", "/tmp/test.zip"])
 
         assert result.exit_code == 0
         _, kwargs = mock_run_import.call_args
