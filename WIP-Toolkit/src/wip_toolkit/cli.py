@@ -20,21 +20,25 @@ console = Console(stderr=True)
 
 @click.group()
 @click.option("--host", default="localhost", help="WIP host (default: localhost)")
-@click.option("--proxy", is_flag=True, help="Route through Caddy (https://HOST:8443)")
+@click.option("--proxy", is_flag=True, help="Route through Caddy/Ingress reverse proxy")
+@click.option("--port", default=None, type=int, help="Proxy port (default: 8443 for Caddy, 443 for K8s Ingress)")
 @click.option("--api-key", default="", help="API key (default: from .env or dev key)")
 @click.option("--no-verify-ssl", is_flag=True, help="Disable SSL verification")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 @click.pass_context
-def main(ctx: click.Context, host: str, proxy: bool, api_key: str, no_verify_ssl: bool, verbose: bool) -> None:
+def main(ctx: click.Context, host: str, proxy: bool, port: int | None, api_key: str, no_verify_ssl: bool, verbose: bool) -> None:
     """WIP Toolkit — Backup, migration, and data management for World In a Pie."""
     ctx.ensure_object(dict)
-    ctx.obj["config"] = WIPConfig(
+    config_kwargs: dict = dict(
         host=host,
         proxy=proxy,
         api_key=api_key,
         verify_ssl=not no_verify_ssl,
         verbose=verbose,
     )
+    if port is not None:
+        config_kwargs["proxy_port"] = port
+    ctx.obj["config"] = WIPConfig(**config_kwargs)
 
 
 @main.command()
