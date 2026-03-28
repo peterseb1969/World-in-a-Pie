@@ -44,8 +44,28 @@ import argparse
 import os
 import re
 import sys
+from pathlib import Path
 
 from pymongo import MongoClient
+
+
+def _load_dotenv():
+    """Load .env file from the project root into os.environ (no overwrite)."""
+    env_file = Path(__file__).resolve().parent.parent / ".env"
+    if not env_file.exists():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv()
 
 # ── Entity type detection and DB mapping ─────────────────────────────────
 
