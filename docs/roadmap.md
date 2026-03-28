@@ -6,199 +6,13 @@ Future plans, pending features, and design specifications.
 
 ## v1.1
 
-### Namespace Deletion
-
-Delete an entire namespace and all its data permanently. A `deletion_mode` field on the namespace (`retain` or `full`) controls whether hard-delete is permitted. Deletion uses a persistent journal for crash-safe resumption — lock the namespace, build the journal, execute step-by-step across MongoDB, MinIO, and PostgreSQL. Dry-run mode shows full impact report (entity counts, inbound references from other namespaces) before committing. Completed journals serve as audit trail.
-
-Enables the dev→prod workflow: create a `full` dev namespace, iterate on the data model with AI, export, bootstrap into a `retain` prod namespace, delete the dev namespace cleanly.
-
-- Design: `docs/design/namespace-deletion.md`
-- Status: **Implemented** (2026-03-27) — deletion_mode field, persistent journal, dry-run, crash recovery, inbound reference checking, locked namespace status, MCP delete_namespace tool. 163 Registry tests pass.
-
-### Complete ID Pass-Through for Restore
-
-The `wip-toolkit import --mode restore` must preserve **all** original entity IDs when restoring to a different instance. Every entity type — terminologies, terms, templates, documents, and files — must arrive with its original ID intact. This is a hard requirement for backup/restore, cross-instance migration, and the dev→prod namespace workflow.
-
-Current state (tested 2026-03-28):
-- **Terminologies:** API-level `entry_id` pass-through implemented in def-store's `register_terminology()` and `register_term()` (commit f87a9fb). Registry client accepts `entry_id` parameter; if provided, the original ID is preserved. Toolkit value-based remap still works as fallback.
-- **Terms:** Inherit from terminology. Both value-based remap and direct `entry_id` pass-through work.
-- **Templates:** ID pass-through works (template_id + version in payload).
-- **Documents:** ID pass-through exists in the API but the toolkit isn't triggering it correctly — documents get new IDs, breaking document-to-document references (e.g., `parent_class`). 14/1384 documents failed in testing.
-- **Files:** Created with new IDs. File references in documents break.
-
-Remaining fix approach:
-1. **Documents:** Debug why document_id pass-through isn't activating (the document-store checks `request.document_id and request.version is not None`). Fix the toolkit to send both fields correctly.
-2. **Files:** Add file_id pass-through to the document-store upload endpoint so restored files keep their original IDs. Update the toolkit to use it.
-3. **End-to-end test:** Export a fully populated namespace (with doc-to-doc references, file references, and ontology relationships), restore to a clean instance, and verify 100% ID match with zero failures.
-
-Alternative: Registry "draft" entity mode — register all IDs as draft (skip referential integrity), import all data, then promote all to active.
-
-- Status: Partially working, 99% success rate. Terminology/term ID pass-through done (2026-03-28). Documents and files still need debugging.
-
-### Cross-Platform Test Suite
-
-Comprehensive end-to-end test of the full WIP universe across supported platforms. Must cover:
-
-- **All services:** Registry, Def-Store, Template-Store, Document-Store, Reporting-Sync, Ingest Gateway, MCP Server
-- **WIP-Toolkit:** Export, import (fresh and restore modes), closure computation, namespace deletion
-- **Client libraries:** @wip/client (TypeScript), @wip/react hooks
-- **Scripts:** `setup.sh` (all presets), `quality-audit.sh`, `seed_comprehensive.py`, `dev-delete.py`, `create-app-project.sh`, security scripts
-- **WIP Console:** Build, OIDC login flow, CRUD operations (see UI testing below)
-- **Platforms:** macOS (Apple Silicon), Linux x86_64, Raspberry Pi 5 (aarch64), Raspberry Pi 4 (armv8.0), Windows 11 (Git Bash + Podman Desktop)
-- **Container runtimes:** Rootless Podman, rootful Podman, Docker
-- **Windows support:** Platform auto-detection added to `setup.sh` (2026-03-28). Named volume overlay (`docker-compose/platforms/windows.yml`) for MongoDB, PostgreSQL, and MinIO — WSL bind mounts fail for services running as non-root UIDs. NATS_URL variable substitution fixed (`:-` → `-`) so empty values are preserved for standard preset without NATS.
-
-#### UI / E2E Testing Approaches
-
-Three complementary options for testing the WIP Console and WIP apps:
-
-1. **Playwright (CI backbone)** — Headless browser automation. Deterministic, fast, runs in CI without a display. Scripts cover: OIDC login flow, CRUD operations on all entity types, namespace switching, permission enforcement (button guards), file upload/download. This is the primary testing approach for the test suite. Available as an MCP server for AI-assisted test authoring.
-
-2. **Claude Desktop computer use (exploratory + doc verification)** — Claude sees the screen and interacts visually like a human. Two use cases:
-   - *Exploratory testing:* "Log in, create a template with these fields, verify it appears in the list, try creating a document against it." Catches visual/UX regressions that programmatic tests miss.
-   - *Documentation verification:* Follow the setup guide, WIP_AppSetup_Guide, or any tutorial step by step — clicking through the actual UI and reporting where docs don't match reality. Screenshots as evidence. This automates what was done manually in the documentation audit (78 files, curl examples) but extends it to UI workflows: "open the console, click Login, verify what you see matches what the docs say."
-
-   Non-deterministic, requires a display, not CI-friendly — but uniquely valuable for both purposes.
-
-3. **Cypress / other browser frameworks** — Alternative to Playwright. Cypress has a built-in test runner UI, time-travel debugging, and automatic screenshots on failure. Heavier dependency but better DX for writing/debugging UI tests interactively. Consider if the team has Cypress experience; otherwise Playwright is lighter and sufficient.
-
-**Recommendation:** Playwright for the CI test matrix (headless, all platforms). Claude Desktop computer use for manual validation sessions on Mac. Cypress only if Playwright proves insufficient.
-
-Deliverable: A CI-compatible test matrix script that can be run on each platform, reporting pass/fail per component. Should build on the existing `quality-audit.sh` and `.gitea/workflows/test.yaml` but extend to cover integration tests, toolkit round-trips, client library type-checking, and Playwright UI tests.
-
-- Status: Not started
-
-### Dev-Namespace Workflow for Slash Commands
-
-Update the 12 AI-assisted development slash commands (`/explore`, `/design-model`, `/implement`, `/build-app`, `/add-app`, `/improve`, `/bootstrap`, `/export-model`, `/document`, `/analyst`, `/resume`, `/wip-status`) to use a **disposable dev namespace** for data modeling, with transfer to a clean production namespace on completion.
-
-Workflow:
-1. `/explore` and `/design-model` create terminologies and templates in a dev namespace (e.g., `dev-<app-name>`)
-2. `/implement` populates seed data in the dev namespace for validation
-3. On completion, `/export-model` exports the finalized data model from the dev namespace
-4. `/bootstrap` imports into a fresh production namespace (e.g., `<app-name>`)
-5. The dev namespace is deleted via namespace deletion (see above)
-
-This requires:
-- Namespace deletion (v1.1 deliverable above) to be implemented first
-- Complete ID pass-through for restore (v1.1 deliverable above) so bootstrap preserves references
-- **MCP `create_namespace` tool** — currently the MCP server only has `list_namespaces` and `get_namespace_stats` (read-only). A `create_namespace` tool is needed so slash commands can create dev namespaces without the AI having to call the Registry API directly via curl.
-- ~~**MCP namespace audit**~~ (Done) — systematic review of all 68 MCP tools completed. Fixed 13 tools: ontology tools (`create_relationships`, `list_relationships`, `get_term_hierarchy`, `delete_relationships`), terminology tools (`get_terminology_by_value`, `import_terminology`), unified `search`, bulk create tools (`create_terminologies_bulk`, `create_template`, `create_templates_bulk`, `create_document`, `create_documents_bulk`), and `get_template_versions`. All namespace-aware API endpoints now have namespace pass-through in the MCP layer.
-- Updates to all slash command prompts to default to dev namespace during phases 1-3
-- A new `/promote-namespace` or `/finalize` slash command (or extend `/bootstrap`) that orchestrates export→import→delete
-
-Benefits: AI can iterate freely during design without polluting the production namespace. Failed experiments are cleaned up completely. The production namespace only ever contains the validated, final data model.
-
-- Depends on: Namespace Deletion, Complete ID Pass-Through
-- Status: Not started
-
----
-
-## Near-Term
-
-### ~~dev-delete.py: Namespace and Prefix Support~~ (Done)
-
-Implemented 2026-03-25. The script now supports:
-- `--namespace` — delete all entities in a namespace (with impact report, namespace record + ID counters cleanup)
-- `--prefix` — delete by value prefix (e.g., `--prefix DND_ --type terminology`)
-- Full recursive cascade: terminology→terms→relationships, template→child templates (recursive via `extends`)→documents→files (via `file_references`)
-- Terminology→template reference warnings (not auto-deleted, but flagged)
-- PostgreSQL `doc_*` table DROP on template cascade deletion
-- Namespace record and ID counter cleanup after all entities are removed
-
-### Bug: No Namespace Validation on Entity Creation
-
-Entities (terminologies, terms, templates, documents) can be created in a namespace that does not exist in the Registry. The services accept any namespace string without checking whether it has been registered via `POST /api/registry/namespaces`. This means typos or unregistered namespaces silently succeed, leading to orphaned data that doesn't appear in namespace-scoped queries or stats.
-
-Fixed in the Registry's `register_keys` and `reserve_ids` endpoints (commit 1d37656). A batch namespace lookup rejects items targeting nonexistent or inactive namespaces with a per-item error. The `id_generator.py` fallback (silent UUID7 for unknown namespaces) now raises `ValueError` as defense in depth. The `provision` endpoint already validated namespace existence.
-
-- Status: Fixed (2026-03-27)
-
-### ~~Lint: RUF005 in Ontology Service~~ (Fixed)
-
-Fixed in commit 4fb8829. Used `[*path, next_id]` instead of list concatenation.
-
-- Status: Fixed (2026-03-27)
-
-### ~~Bug: Registry Tests Broken — Beanie/Motor Incompatibility~~ (Fixed)
-
-All 162 Registry tests failed in CI with `TypeError: MotorDatabase object is not callable` during `init_beanie()`. Root cause: Registry's `requirements.txt` had no upper bounds on `beanie` and `motor`, unlike def-store which pinned `<2.0.0` and `<4.0.0`. CI resolved to an incompatible version combination. Also fixed: `NamespaceGrant` model was missing from test conftest's `document_models` list, and ruff lint errors (unsorted imports, unused `asyncio` import, `typing.AsyncGenerator` → `collections.abc`).
-
-- Status: Fixed (2026-03-27)
-
-### ~~Bug: Dashboard File Count Shows Zero~~ (Fixed)
-
-`HomeView.vue` `loadDashboard()` fetched terminologies, templates, and documents but never fetched files. Added `fileStoreClient.listFiles({ page_size: 1 })` call (guarded by `isFilesEnabled()`) to populate `entityCounts.files` from the API `total`.
-
-- Status: Fixed (2026-03-27)
-
-### Bug: Reporting Sync Not Populating Terminologies/Terms Tables
-
-The PostgreSQL `terminologies` and `terms` tables exist with correct schemas but contain 0 rows, even when WIP has active terminologies and terms. The `term_relationships` table syncs correctly (99 rows observed).
-
-**Investigation findings (2026-03-26):**
-
-Code review confirms the full pipeline is implemented and logically correct on both sides:
-- **Def-Store publishes events** — `publish_terminology_event()` and `publish_term_event()` in `nats_client.py:180-275` are called from every CRUD operation in `terminology_service.py`. Event payloads include `event_type: "terminology.created"` etc. and a `terminology` / `term` dict with all fields including `terminology_id` / `term_id`.
-- **Reporting-Sync subscribes and routes** — `worker.py:481-484` routes on `event_type.startswith("terminology.")` and `event_type.startswith("term.")`. The handlers (`_process_terminology_event` at line 200, `_process_term_event` at line 282) perform correct PostgreSQL upserts.
-- **NATS stream subjects match** — both def-store and reporting-sync configure `WIP_EVENTS` with `wip.terminologies.>` and `wip.terms.>`.
-- **Batch sync endpoints exist** — `POST /sync/batch/terminologies` and `POST /sync/batch/terms` work by fetching from the Def-Store API.
-
-**Root cause — most likely a timing/lifecycle issue:**
-
-1. **No startup batch sync.** When reporting-sync starts (`main.py:251-277`), it initializes the `BatchSyncService` but never calls `batch_sync_terminologies()` or `batch_sync_terms()`. It only starts the NATS event worker. Contrast with relationships: those 99 rows likely arrived via NATS events during ontology import (which happened while reporting-sync was running), not via batch sync.
-2. **Terminologies/terms were likely created before NATS was configured**, or before the durable consumer was established. The consumer uses `DeliverPolicy.ALL` (`worker.py:520`), which replays from stream start — but only if the events were captured by the stream in the first place.
-3. **`start_batch_sync_all()` only syncs documents.** It iterates templates and syncs their documents (`batch_sync.py:343-372`). It does NOT call `batch_sync_terminologies()` or `batch_sync_terms()`. So even a "sync everything" operation misses terminologies and terms.
-4. **Manual batch sync was never triggered.** The `/sync/batch/terminologies` and `/sync/batch/terms` endpoints exist but there's no evidence they were ever called.
-
-**Fix approach:**
-1. **Immediate:** Trigger manual batch sync via `POST /api/reporting-sync/sync/batch/terminologies` and `POST /api/reporting-sync/sync/batch/terms` to backfill existing data.
-2. **Permanent:** Add terminology and term batch sync to the startup sequence in `main.py` (after schema creation at line 246), so reporting-sync self-heals on restart.
-3. **Belt-and-suspenders:** Include terminology and term sync in `start_batch_sync_all()` so the "sync everything" endpoint actually syncs everything.
-
-- Status: **Fixed** (2026-03-27) — Made `batch_sync_terminologies` and `batch_sync_terms` namespace-optional (fetches all namespaces), added initial terminology/term sync at startup, and included terminology/term sync in `start_batch_sync_all()`
-
-### Ontology Browser
-
-Interactive ego-graph browser for exploring ontology relationships in the WIP Console. Focus on one term, see all its relationships (all types, configurable depth), click any neighbour to refocus. Uses Cytoscape.js for force-directed graph rendering with concentric layout (focus term at centre, neighbours in rings by depth).
-
-Key features:
-- Terminology selector (dropdown) + term search with autocomplete (dropdown + type-ahead filter, capped at 20 results)
-- Ego-graph showing all relationship types (colour-coded edges)
-- Click-to-navigate: click any node to refocus the graph on it
-- Depth slider (1-3, default 2)
-- Relationship type filter checkboxes
-- Cross-namespace traversal: BFS tracks namespace per node, follows relationships into other namespaces automatically
-- Detail panel with term info, link to term detail view, and documents referencing the focused term
-- Namespace-aware: honours the global namespace selector
-- Relationship API enriched with `source_term_value/label`, `target_term_value/label` (batch term lookup, no N+1)
-
-New files: `OntologyBrowserView.vue`, `EgoGraph.vue`. New dependency: `cytoscape`.
-
-Known issues:
-- Some nodes still show UUID7 instead of human-readable labels (e.g., terms with no relationships return no label enrichment from the API — the term's own value/label is not fetched separately)
-- Document list in the detail panel is a simple list; UX needs rethinking (user feedback: not what was envisioned)
-
-- Design: `docs/design/ontology-browser.md`
-- Status: Implemented (2026-03-27), UX refinements pending
-
-### Namespace Authorization — UX Polish
-
-Core permission system is implemented (grant model, CRUD API, service enforcement). Remaining work: ~50 button guards in the Console detail views (`v-if="namespaceStore.canWrite"`). The API already rejects unauthorized requests — this is cosmetic polish.
-
-- Design: `docs/design/namespace-authorization.md`
-
-### Registry Entry Reactivation
-
-`POST /entries/{id}/reactivate` for reversible merges. Currently, merged/deactivated entries cannot be restored. Not yet implemented.
-
-### WIP-Toolkit: `delete-namespace` Command
-
-Add `wip-toolkit delete-namespace <prefix>` to wrap the two-step Registry API dance (set `deletion_mode=full`, then DELETE). Currently namespace deletion requires manual `curl` calls. Should include `--dry-run` (show impact report), `--force` (skip confirmation), and safety prompts.
+**Focus:** MCP Read-Only Mode + Natural Language Query Scaffold (flagship feature).
 
 ### MCP Read-Only Mode
 
 `WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Prerequisite for the NL Query Scaffold (below).
+
+- Status: Not started (small, ~1 hour)
 
 ### NL Query Scaffold
 
@@ -217,11 +31,41 @@ No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extr
 - Validated by: WIP-DnD Compendium
 - Status: Design complete
 
+---
+
+## Near-Term
+
+### Ontology Browser — UX Refinements
+
+Implemented (2026-03-27). Known issues remaining:
+- Some nodes show UUID7 instead of human-readable labels
+- Document list in detail panel needs rethinking
+
+- Design: `docs/design/ontology-browser.md`
+
+### Namespace Authorization — UX Polish
+
+~50 button guards in Console detail views. API already enforces — this is cosmetic.
+
+- Design: `docs/design/namespace-authorization.md`
+
+### Registry Entry Reactivation
+
+`POST /entries/{id}/reactivate` for reversible merges. Not yet implemented.
+
+### WIP-Toolkit: `delete-namespace` Command
+
+Wrap the two-step Registry API call into a single CLI command with `--dry-run` and `--force`. Low priority — `curl` and `dev-delete.py` already work.
+
+### Dev-Namespace Workflow for Slash Commands
+
+Update slash commands to use disposable dev namespaces during data modeling, with transfer to prod on completion. Mostly `create-app-project.sh` updates + minor slash command prompt changes. Depends on namespace deletion (done) and ID pass-through (done).
+
+- Status: Not started, not a blocker
+
 ### Container Runtime Support
 
-Currently tested with rootless Podman only. Need to test and document:
-- Standard Docker
-- Rootful Podman (`sudo podman`)
+Test and document `setup.sh` with standard Docker and rootful Podman. Part of broader test/deployment review.
 
 ### Kubernetes Deployment — Validated and Tested
 
@@ -412,6 +256,10 @@ All feature designs live in `docs/design/`. Status of each:
 
 These were previously on the roadmap and are now fully implemented:
 
+- Complete ID pass-through for restore — all entity types (terminologies, terms, templates, documents, files) preserve original IDs. 527/527 verified (2026-03-28)
+- Namespace deletion — persistent journal, crash-safe, dry-run, inbound reference checking, MCP tool (2026-03-27)
+- Ontology browser — ego-graph with Cytoscape.js, click-to-navigate, cross-namespace traversal (2026-03-27)
+- Reporting-sync terminology/term population — startup batch sync + event-driven sync (2026-03-27)
 - Windows/WSL platform support — auto-detection, named volume overlays for MongoDB/PostgreSQL/MinIO, NATS_URL fix
 - Binary file storage (MinIO) — full CRUD, UI, reference tracking, orphan detection
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
