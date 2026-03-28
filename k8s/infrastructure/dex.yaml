@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/name: dex
     app.kubernetes.io/part-of: wip
 spec:
+  storageClassName: rook-ceph-block
   accessModes: ["ReadWriteOnce"]
   resources:
     requests:
@@ -47,6 +48,8 @@ spec:
         app.kubernetes.io/name: dex
         app.kubernetes.io/part-of: wip
     spec:
+      securityContext:
+        fsGroup: 1001
       containers:
         - name: dex
           image: ghcr.io/dexidp/dex:v2.45.0
@@ -69,14 +72,16 @@ spec:
             httpGet:
               path: /dex/healthz
               port: 5556
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /dex/healthz
               port: 5556
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               memory: "64Mi"

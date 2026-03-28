@@ -1,0 +1,22 @@
+# LoadBalancer Service for the MicroK8s NGINX Ingress controller.
+# MetalLB assigns an IP from the pool — add that IP to DNS as wip-kubi.local.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wip-ingress-lb
+  namespace: ingress
+  labels:
+    app.kubernetes.io/part-of: wip
+spec:
+  type: LoadBalancer
+  selector:
+    name: nginx-ingress-microk8s
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+    - name: https
+      port: 443
+      targetPort: 443
+      protocol: TCP

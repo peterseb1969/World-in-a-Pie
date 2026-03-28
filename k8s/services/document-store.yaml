@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: document-store
-          image: wip/document-store:latest
+          image: localhost:32000/wip-document-store:latest
           ports:
             - containerPort: 8004
           command: ["uvicorn", "document_store.main:app", "--host", "0.0.0.0", "--port", "8004"]

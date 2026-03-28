@@ -19,7 +19,9 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app
 USER appuser
 
-# SSE mode for containerized deployment
-EXPOSE 8006
+# HTTP streamable transport for containerized deployment
+EXPOSE 8007
 
-CMD ["python", "-m", "wip_mcp", "--sse"]
+ENV MCP_PORT=8007
+
+CMD ["python", "-m", "wip_mcp", "--http"]

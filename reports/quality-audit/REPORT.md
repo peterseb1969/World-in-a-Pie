@@ -1,17 +1,17 @@
 # WIP Quality Audit Report
-Generated: 2026-03-27 18:50 UTC | Commit: be6142f | Mode: quick
+Generated: 2026-03-28 14:22 UTC | Commit: 6795b70 | Mode: full
 
 ## Summary
 
 | Dimension | Status | Issues | Baseline | Delta |
 |-----------|--------|--------|----------|-------|
-| Ruff (Python lint) | WARN | 123 | — | — |
-| mypy (Python types) | WARN | 258 | — | — |
-| Vulture (dead Python code) | WARN | 1 | — | — |
-| ShellCheck | WARN | 97 | — | — |
-| ESLint (Vue/TS lint) | PASS | 0 | — | — |
-| vue-tsc (Vue types) | PASS | 0 | — | — |
-| ts-prune (unused exports) | PASS | 0 | — | — |
+| Ruff (Python lint) | WARN | 123 | 171 | -48 |
+| mypy (Python types) | WARN | 264 | 276 | -12 |
+| Vulture (dead Python code) | WARN | 1 | 1 | 0 |
+| ShellCheck | WARN | 102 | 120 | -18 |
+| ESLint (Vue/TS lint) | PASS | 0 | 0 | 0 |
+| vue-tsc (Vue types) | PASS | 0 | 0 | 0 |
+| ts-prune (unused exports) | PASS | 0 | 0 | 0 |
 
 ## 1. Dead Code
 
@@ -25,24 +25,24 @@ No unused exports detected (or ts-prune not available).
 
 ## 2. Type Safety
 
-### Python (mypy) — 258 errors
+### Python (mypy) — 264 errors
 
 | Component | Errors |
 |-----------|--------|
-| components-def-store | 61 |
+| components-def-store | 66 |
 | components-document-store | 89 |
 | components-ingest-gateway | 1 |
-| components-registry | 36 |
+| components-registry | 37 |
 | components-reporting-sync | 21 |
 | components-template-store | 49 |
 | libs-wip-auth | 1 |
 
 **Top errors:**
-- `components/def-store/src/def_store/models/terminology.py:93: error: Argument "default_factory" to "Field" has incompatible type "type[TerminologyMetadata]"; expected "Callable[[], Never] | Callable[[dict[str, Any]], Never]"  [arg-type]`
 - `components/def-store/src/def_store/services/registry_client.py:48: error: Dict entry 0 has incompatible type "str": "str | None"; expected "str": "str"  [dict-item]`
-- `components/def-store/src/def_store/services/registry_client.py:103: error: Returning Any from function declared to return "str"  [no-any-return]`
-- `components/def-store/src/def_store/services/registry_client.py:105: error: Returning Any from function declared to return "str"  [no-any-return]`
-- `components/def-store/src/def_store/services/registry_client.py:157: error: Returning Any from function declared to return "str"  [no-any-return]`
+- `components/def-store/src/def_store/services/registry_client.py:109: error: Returning Any from function declared to return "str"  [no-any-return]`
+- `components/def-store/src/def_store/services/registry_client.py:111: error: Returning Any from function declared to return "str"  [no-any-return]`
+- `components/def-store/src/def_store/services/registry_client.py:169: error: Returning Any from function declared to return "str"  [no-any-return]`
+- `components/def-store/src/def_store/services/registry_client.py:171: error: Returning Any from function declared to return "str"  [no-any-return]`
 - `components/document-store/src/document_store/services/file_storage_client.py:105: error: Incompatible types in assignment (expression has type "dict[str, str]", target has type "str")  [assignment]`
 - `components/document-store/src/document_store/services/file_storage_client.py:136: error: Returning Any from function declared to return "bytes"  [no-any-return]`
 - `components/document-store/src/document_store/services/file_storage_client.py:266: error: Returning Any from function declared to return "str"  [no-any-return]`
@@ -84,24 +84,37 @@ No vue-tsc errors (or not available).
 
 No ESLint issues (or not available).
 
-### Shell (shellcheck) — 97 issues
+### Shell (shellcheck) — 102 issues
 
 | Code | Count |
 |------|-------|
 | SC1091 | 39 |
-| SC2155 | 18 |
-| SC2034 | 15 |
+| SC2155 | 19 |
+| SC2034 | 18 |
 | SC2162 | 9 |
 | SC2223 | 6 |
 | SC2329 | 4 |
 | SC2153 | 2 |
 | SC1090 | 2 |
 | SC2115 | 1 |
-| SC2015 | 1 |
+| SC2043 | 1 |
 
 ## 4. Test Coverage
 
-*Skipped in quick mode. Run without `--quick` for coverage data.*
+### Python
+
+| Component | Stmts | Miss | Cover% |
+|-----------|-------|------|--------|
+| def-store | 2252 | 834 | 63.0% |
+| document-store | 3712 | 1673 | 54.9% |
+| ingest-gateway | 360 | 87 | 75.8% |
+| registry | 2076 | 739 | 64.4% |
+| reporting-sync | 2451 | 1228 | 49.9% |
+| template-store | 1646 | 559 | 66.0% |
+
+### TypeScript
+
+No TypeScript coverage data available.
 
 ## 5. Complexity Hotspots
 
@@ -109,20 +122,20 @@ Top 20 functions by cyclomatic complexity (CC >= C):
 
 | Rank | Function | CC | File:Line |
 |------|----------|----|-----------|
-| F | bulk_create | 57 | document-store/src/document_store/services/document_service.py:908 |
-| F | create_terms_bulk | 45 | def-store/src/def_store/services/terminology_service.py:569 |
+| F | bulk_create | 62 | document-store/src/document_store/services/document_service.py:908 |
+| F | create_terms_bulk | 47 | def-store/src/def_store/services/terminology_service.py:571 |
 | E | _validate_activation_set | 40 | template-store/src/template_store/services/template_service.py:1168 |
 | E | validate_template | 37 | template-store/src/template_store/services/template_service.py:748 |
 | E | import_ontology | 33 | def-store/src/def_store/services/import_export.py:757 |
+| E | register_keys | 32 | registry/src/registry/api/entries.py:299 |
 | D | _template_has_changed | 29 | template-store/src/template_store/services/template_service.py:379 |
-| D | register_keys | 26 | registry/src/registry/api/entries.py:299 |
 | D | _validate_field_references | 26 | template-store/src/template_store/services/template_service.py:1697 |
 | D | check_alerts | 26 | reporting-sync/src/reporting_sync/metrics.py:239 |
 | D | update_template | 25 | template-store/src/template_store/services/template_service.py:459 |
 | D | create_template | 24 | template-store/src/template_store/services/template_service.py:37 |
 | D | _parse_obo_graph | 23 | def-store/src/def_store/services/import_export.py:607 |
 | D | check_all_documents | 23 | document-store/src/document_store/services/integrity_service.py:229 |
-| D | update_term | 22 | def-store/src/def_store/services/terminology_service.py:924 |
+| D | update_term | 22 | def-store/src/def_store/services/terminology_service.py:931 |
 | D | import_terminology | 21 | def-store/src/def_store/services/import_export.py:261 |
 | D | import_documents | 21 | document-store/src/document_store/api/import_api.py:45 |
 | D | get_template | 21 | document-store/src/document_store/services/template_store_client.py:81 |
@@ -167,7 +180,7 @@ Top 20 functions by cyclomatic complexity (CC >= C):
 | @eslint/js | 9.39.4 | 9.39.4 | 10.0.1 |
 | @types/node | 25.1.0 | 25.5.0 | 25.5.0 |
 | @vitejs/plugin-vue | 5.2.4 | 5.2.4 | 6.0.5 |
-| axios | 1.13.5 | 1.13.6 | 1.13.6 |
+| axios | 1.13.5 | 1.14.0 | 1.14.0 |
 | eslint | 9.39.4 | 9.39.4 | 10.1.0 |
 | eslint-plugin-vue | 9.33.0 | 9.33.0 | 10.8.0 |
 | oidc-client-ts | 3.4.1 | 3.5.0 | 3.5.0 |

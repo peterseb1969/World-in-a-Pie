@@ -5,7 +5,8 @@ applications on top of WIP connects to this server to discover, create, and
 query WIP entities without constructing raw HTTP calls.
 
 Run with:  python -m wip_mcp.server          (stdio, for Claude Code / Cursor)
-           python -m wip_mcp.server --sse     (SSE, for remote clients)
+           python -m wip_mcp.server --http    (HTTP streamable, for K8s / remote)
+           python -m wip_mcp.server --sse     (SSE, legacy — deprecated in MCP spec)
 """
 
 import json
@@ -2268,7 +2269,12 @@ _patch_tool_schemas()
 
 
 def main():
-    transport = "sse" if "--sse" in sys.argv else "stdio"
+    if "--http" in sys.argv:
+        transport = "streamable-http"
+    elif "--sse" in sys.argv:
+        transport = "sse"
+    else:
+        transport = "stdio"
 
     if transport == "stdio":
         mcp.run(transport="stdio")
@@ -2281,15 +2287,28 @@ def main():
         api_key = os.getenv("API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY")
         if not api_key:
             print(
-                "WARNING: MCP server running in SSE mode without API key protection.\n"
+                f"WARNING: MCP server running in {transport} mode without API key protection.\n"
                 "Anyone with network access will have full CRUD access via AI tools.\n"
-                "Set API_KEY environment variable for SSE transport.",
+                "Set API_KEY environment variable for network transports.",
                 file=sys.stderr,
             )
 
-        # Wrap the SSE app with API key auth middleware (M7)
-        starlette_app = mcp.sse_app()
+        # Configure allowed hosts for DNS rebinding protection
+        allowed_host = os.getenv("MCP_ALLOWED_HOST")
+        if allowed_host and mcp.settings.transport_security:
+            ts = mcp.settings.transport_security
+            ts.allowed_hosts.append(allowed_host)
+            ts.allowed_hosts.append(f"{allowed_host}:*")
+            ts.allowed_origins.append(f"https://{allowed_host}")
+            ts.allowed_origins.append(f"https://{allowed_host}:*")
 
+        # Create the transport-appropriate Starlette app
+        if transport == "streamable-http":
+            starlette_app = mcp.streamable_http_app()
+        else:
+            starlette_app = mcp.sse_app()
+
+        # API key auth middleware (M7)
         if api_key:
             from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -2305,10 +2324,14 @@ def main():
 
             starlette_app.add_middleware(ApiKeyMiddleware)
 
+        # Allow port override via env var (default: FastMCP's 8000)
+        port = int(os.getenv("MCP_PORT", mcp.settings.port))
+        host = os.getenv("MCP_HOST", "0.0.0.0")
+
         config = uvicorn.Config(
             starlette_app,
-            host=mcp.settings.host,
-            port=mcp.settings.port,
+            host=host,
+            port=port,
             log_level=mcp.settings.log_level.lower(),
         )
         server = uvicorn.Server(config)

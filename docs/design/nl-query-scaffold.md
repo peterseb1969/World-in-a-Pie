@@ -22,7 +22,7 @@ Key findings from the DnD implementation:
 |----------|---------|
 | **Haiku for queries** | Works. Facts live in documents, not the model's head. ~$0.01/query. |
 | **Server-side sessions** | Essential. Client-side history would expose `ANTHROPIC_API_KEY`. 30-min TTL, in-memory Map. |
-| **Read-only tool filter** | Critical. Without it, "delete all my spells" works. DnD app maintains a client-side allowlist of 23/68 tools — this should be server-side (`WIP_MCP_MODE=readonly`). |
+| **Read-only tool filter** | Critical. Without it, "delete all my spells" works. DnD app maintains a client-side allowlist of 23/69 tools — this should be server-side (`WIP_MCP_MODE=readonly`). |
 | **Static system prompt** | Works but breaks on compaction. The DnD Claude lost template awareness mid-session. Needs dynamic data model discovery. |
 | **23 read-only tools** | Sweet spot. Fewer = can't answer. More = token waste + mutation risk. |
 | **Express + MCP stdio** | Simple, reliable. Agent spawns MCP server as child process. No HTTP overhead for tool calls. |

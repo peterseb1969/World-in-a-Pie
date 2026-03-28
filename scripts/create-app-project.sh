@@ -331,7 +331,7 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (68 tools, 4 resources). Before starting:
+WIP is accessed exclusively via MCP tools (69 tools, 4 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
 - Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
 - Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
@@ -429,4 +429,4 @@ echo "  claude          # Launch Claude Code"
 echo "  /explore        # Start Phase 1"
 echo ""
 echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 68 tools and 4 resources."
+echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."

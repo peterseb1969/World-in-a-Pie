@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: def-store
-          image: wip/def-store:latest
+          image: localhost:32000/wip-def-store:latest
           ports:
             - containerPort: 8002
           command: ["uvicorn", "def_store.main:app", "--host", "0.0.0.0", "--port", "8002"]

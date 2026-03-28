@@ -67,23 +67,26 @@ Update slash commands to use disposable dev namespaces during data modeling, wit
 
 Test and document `setup.sh` with standard Docker and rootful Podman. Part of broader test/deployment review.
 
-### Kubernetes Deployment — Validated and Tested
+### Kubernetes Deployment — Validated on MicroK8s (2026-03-28)
 
-Early K8s manifests exist in `k8s/` (image build scripts, StatefulSets for infrastructure, Deployments for services, NGINX Ingress) but are not production-ready. This deliverable turns them into a validated, documented installation path.
+Deployed and validated on a 3-node MicroK8s cluster (Raspberry Pi 5, aarch64, Rook-Ceph storage). All 13 pods running, full end-to-end including Console login, OIDC, seeding, and remote MCP access.
 
-Scope:
-- **Manifests:** Complete and test all K8s manifests for every service and infrastructure component (MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy/Ingress)
-- **Helm chart or Kustomize:** Package manifests for configurable deployment (presets, secrets, TLS, storage classes)
-- **Secret management:** Integrate with K8s Secrets (and document Vault/External Secrets Operator options)
-- **Storage:** PersistentVolumeClaims for all stateful services, document StorageClass recommendations
-- **Networking:** Ingress configuration with TLS termination, service mesh considerations
-- **OIDC:** Validate Dex issuer URL configuration works with Ingress hostnames
-- **Testing:** Deploy to a local cluster (k3s/minikube/kind) and run the cross-platform test suite against it
-- **Documentation:** Step-by-step installation guide covering single-node (k3s on Pi) through multi-node cloud clusters
+**What's done:**
+- All K8s manifests validated: 5 infrastructure StatefulSets/Deployments, 7 service Deployments, NGINX Ingress with 9 routes
+- Rook-Ceph block storage for all PVCs (38Gi+ allocated)
+- K8s Secrets for credentials, ConfigMaps for service config + Dex OIDC
+- Self-signed TLS via Ingress, Dex OIDC with group claims
+- MCP server with HTTP streamable transport, accessible from Claude Code over HTTPS
+- Remote seeding from Mac via `--host --via-proxy --port 443`
+- Full installation log: `k8s-installation_log.md` (~1200 lines, 19 lessons learned)
 
-Existing work: `k8s/build-images.sh` bakes wip-auth into self-contained images. Initial manifests exist but haven't been validated end-to-end.
+**Remaining:**
+- Helm chart or Kustomize packaging for configurable deployment
+- Network Policies (Phase 6 of the installation plan)
+- Production hardening (resource limits tuning, pod disruption budgets, horizontal scaling)
+- Testing on other K8s distributions (k3s, cloud)
 
-- Status: Early manifests exist, not validated
+- Status: **Validated on MicroK8s** — see `k8s-installation_log.md` for full guide
 
 ### Detailed Installation Guide
 
@@ -154,24 +157,39 @@ Phase 1 unblocks early adopters. Phase 2 depends on the NL query scaffold provin
 
 - Status: Not started
 
-### MCP Server Configuration Guide & SSE Transport Testing
+### MCP Server Configuration Guide & Transport Testing
 
-Detailed instructions for configuring the WIP MCP server across different AI clients and transports. The MCP server currently supports both stdio and SSE transport, but only stdio has been tested in practice.
+Detailed instructions for configuring the WIP MCP server across different AI clients and transports. The MCP server supports three transports: stdio, SSE (deprecated in MCP spec), and HTTP streamable (current MCP spec).
 
 Must cover:
 
 - **Client configuration:** Step-by-step MCP config for Claude Code (`.mcp.json`), Claude Desktop (`claude_desktop_config.json`), Cursor, Windsurf, and other MCP-compatible clients
 - **stdio transport:** Configuration examples, environment variable pass-through, working directory considerations
-- **SSE transport:** Configuration and testing — currently implemented but **untested**. Verify connection lifecycle, reconnection behaviour, authentication (API key header pass-through), and concurrent client sessions
-- **Network scenarios:** Local (same host), LAN (e.g., app dev machine connecting to MCP server on a Pi), and remote (over SSH tunnel or reverse proxy)
-- **SSH stdio proxy:** Validated (2026-03-28) — SSH pipes the MCP server's stdio from a remote host to the local Claude Code client. Tested Mac→Pi with all 68 tools functional. Config: `"command": "ssh", "args": ["user@host", "cd /path && ... python -m wip_mcp"]` in `.mcp.json`. Requires service URLs overridden to `localhost` (container-internal hostnames don't resolve outside the container network).
+- **HTTP streamable transport:** Validated (2026-03-28) on K8s. Single `/mcp` endpoint, standard HTTP. Configured via `"type": "http"` in `.mcp.json`. Requires `NODE_EXTRA_CA_CERTS` for self-signed TLS (Node.js ignores macOS keychain).
+- **SSE transport:** Legacy, deprecated in MCP spec. Still functional but prefer HTTP streamable.
+- **Network scenarios:** Local (same host), LAN (e.g., app dev machine connecting to MCP server on a Pi), and remote (K8s Ingress, SSH tunnel, reverse proxy)
+- **SSH stdio proxy:** Validated (2026-03-28) — SSH pipes the MCP server's stdio from a remote host to the local Claude Code client. Tested Mac→Pi with all 69 tools functional. Config: `"command": "ssh", "args": ["user@host", "cd /path && ... python -m wip_mcp"]` in `.mcp.json`. Requires service URLs overridden to `localhost` (container-internal hostnames don't resolve outside the container network).
+- **K8s HTTP deployment:** Validated (2026-03-28) — MCP server as K8s Deployment with HTTP streamable transport, exposed via NGINX Ingress at `/mcp`. Key gotchas: DNS rebinding protection (`MCP_ALLOWED_HOST`), dual API keys (`API_KEY` for inbound, `WIP_API_KEY` for outbound), Node.js TLS trust (`NODE_EXTRA_CA_CERTS`).
 - **Authentication:** How the MCP server forwards API keys to WIP services, configuring keys per client, OIDC token pass-through considerations
 - **Tool filtering:** Documenting the planned `WIP_MCP_MODE=readonly` option (see MCP Read-Only Mode above) and how it affects tool registration per client
-- **Troubleshooting:** Common failure modes (port conflicts, TLS issues with SSE, environment variables not propagated, tool timeouts)
+- **Troubleshooting:** Common failure modes (port conflicts, TLS cert trust, DNS rebinding 421 errors, dual API key misconfiguration, session loss on pod restart)
 
-Testing deliverable: End-to-end test of SSE transport — start MCP server in SSE mode, connect from at least two different clients, verify tool invocation, event streaming, and graceful disconnection.
+- Status: stdio + SSH proxy + HTTP streamable all validated. SSE functional but untested end-to-end.
 
-- Status: stdio tested and working, SSH stdio proxy validated (Mac→Pi), SSE untested
+### MCP Server Transport Regression Tests
+
+Automated test coverage for the `--http`/`--sse` transport entry points added 2026-03-28. 32 existing tests cover client + tool wrappers; the transport layer has none.
+
+Tests needed:
+1. `--http` flag → `mcp.streamable_http_app()` is called (not `sse_app()`)
+2. `--sse` flag → `mcp.sse_app()` still works (backward compat)
+3. `MCP_ALLOWED_HOST` env var → appended to transport security allowed hosts/origins
+4. `MCP_PORT` / `MCP_HOST` env vars → override FastMCP defaults (8000/127.0.0.1)
+5. `API_KEY` middleware → rejects missing/wrong key, accepts correct key (both transports)
+
+Target file: `components/mcp-server/tests/test_server.py` (new). Can mock uvicorn/anyio.
+
+- Status: Not started
 
 ---
 
@@ -285,7 +303,7 @@ These were previously on the roadmap and are now fully implemented:
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
 - Ontology support — OBO Graph JSON import, typed relationships, traversal
 - Template draft mode — draft status, cascading activation
-- MCP server — 68 tools, 4 resources, stdio + SSE transport
+- MCP server — 69 tools, 4 resources, stdio + SSE + HTTP streamable transport, K8s deployment validated
 - @wip/client + @wip/react — TypeScript client and React hooks
 - CSV/XLSX import — preview + import endpoints in Document-Store
 - Event replay — start, pause, resume, cancel via API and MCP tools

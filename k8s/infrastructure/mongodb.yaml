@@ -56,13 +56,15 @@ spec:
           readinessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
-            initialDelaySeconds: 5
+            initialDelaySeconds: 30
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             exec:
               command: ["mongosh", "--quiet", "--eval", "db.runCommand({ping:1}).ok"]
-            initialDelaySeconds: 15
+            initialDelaySeconds: 60
             periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               memory: "256Mi"
@@ -74,6 +76,7 @@ spec:
     - metadata:
         name: data
       spec:
+        storageClassName: rook-ceph-block
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:

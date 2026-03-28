@@ -54,14 +54,16 @@ spec:
             httpGet:
               path: /healthz
               port: 8222
-            initialDelaySeconds: 5
+            initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8222
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 30
+            timeoutSeconds: 5
           resources:
             requests:
               memory: "64Mi"
@@ -73,7 +75,8 @@ spec:
     - metadata:
         name: data
       spec:
+        storageClassName: rook-ceph-block
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
-            storage: 2Gi
+            storage: 5Gi

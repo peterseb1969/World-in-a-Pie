@@ -1,6 +1,6 @@
 # MCP Server Setup Guide
 
-How to run the WIP MCP server on different hosts. The MCP server provides 68 tools and 4 resources for AI-assisted development against a running WIP instance.
+How to run the WIP MCP server on different hosts. The MCP server provides 69 tools and 4 resources for AI-assisted development against a running WIP instance.
 
 ---
 
@@ -243,5 +243,5 @@ Tested 2026-03-27 with the `full` preset (14 containers).
 | API key | `dev_master_key_for_testing` (dev mode) |
 | Services | All 6 healthy |
 | Claude Code | 2.1.85 (`/home/peter/.local/bin/claude`) |
-| MCP tools | 68 tools, 4 resources |
+| MCP tools | 69 tools, 4 resources |
 | Transport | stdio (local, Claude Code on Pi) |

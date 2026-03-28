@@ -32,7 +32,7 @@ Options:
   --tag TAG        Image tag (default: latest)
   --push           Push images after building
   --service NAME   Build only one service (registry|def-store|template-store|
-                   document-store|reporting-sync|ingest-gateway|wip-console)
+                   document-store|reporting-sync|ingest-gateway|mcp-server|wip-console)
   --builder CMD    Container build tool: docker or podman (default: docker)
   -h, --help       Show this help
 
@@ -71,7 +71,7 @@ image_name() {
 # ── Python services that need wip-auth baked in ──────────────────
 PYTHON_AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
 # Python services without wip-auth
-PYTHON_PLAIN_SERVICES=(ingest-gateway)
+PYTHON_PLAIN_SERVICES=(ingest-gateway mcp-server)
 
 build_python_with_auth() {
     local svc="$1"
@@ -162,9 +162,9 @@ echo ""
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        wip-console|console)  build_console ;;
-        ingest-gateway)       build_python_plain "$ONLY_SERVICE" ;;
-        *)                    build_python_with_auth "$ONLY_SERVICE" ;;
+        wip-console|console)           build_console ;;
+        ingest-gateway|mcp-server)     build_python_plain "$ONLY_SERVICE" ;;
+        *)                             build_python_with_auth "$ONLY_SERVICE" ;;
     esac
 else
     for svc in "${PYTHON_AUTH_SERVICES[@]}"; do

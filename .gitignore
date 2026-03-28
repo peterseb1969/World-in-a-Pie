@@ -62,5 +62,14 @@ logs/
 # Quality audit raw output
 reports/quality-audit/raw/
 
+# K8s deployment secrets (real credentials, never commit)
+k8s/secrets.local.yaml
+
+# MCP config (contains API keys)
+.mcp.json
+
+# Local dev helper scripts with embedded credentials
+start-wip-mcp.sh
+
 # MongoDB data (local dev)
 data/
