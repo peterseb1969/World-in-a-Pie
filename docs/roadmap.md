@@ -35,6 +35,13 @@ No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extr
 
 ## Near-Term
 
+### Console: Files Page Ignores Namespace
+
+The files page (`/files`) always queries `namespace=wip` regardless of the selected namespace. Root cause: `list_files` API defaults to `namespace="wip"` and the Console doesn't pass the active namespace. Files uploaded to other namespaces (e.g., `dnd`) are invisible in the UI.
+
+- Fix: Pass active namespace from Console's namespace selector to the files API call
+- Discovered: 2026-03-28 during DnD data migration to K8s
+
 ### Ontology Browser — UX Refinements
 
 Implemented (2026-03-27). Known issues remaining:

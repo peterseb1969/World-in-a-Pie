@@ -32,7 +32,8 @@ Options:
   --tag TAG        Image tag (default: latest)
   --push           Push images after building
   --service NAME   Build only one service (registry|def-store|template-store|
-                   document-store|reporting-sync|ingest-gateway|mcp-server|wip-console)
+                   document-store|reporting-sync|ingest-gateway|mcp-server|wip-console|
+                   dnd-compendium)
   --builder CMD    Container build tool: docker or podman (default: docker)
   -h, --help       Show this help
 
@@ -129,6 +130,45 @@ build_python_plain() {
     echo ""
 }
 
+build_dnd_compendium() {
+    local img
+    # DnD compendium is not a WIP service — use plain name
+    if [[ -n "$REGISTRY" ]]; then
+        img="${REGISTRY}/dnd-compendium:${TAG}"
+    else
+        img="dnd-compendium:${TAG}"
+    fi
+
+    echo "━━━ Building ${img} ━━━"
+
+    local app_dir="${PROJECT_ROOT}/../WIP-DnD/apps/dnd-compendium"
+    if [[ ! -d "$app_dir" ]]; then
+        echo "  ✗ DnD compendium not found at ${app_dir} — skipping"
+        return 0
+    fi
+
+    # Copy @wip/client and @wip/react tarballs into .docker-libs/
+    local dnd_libs="${app_dir}/../../libs"
+    local libs_dir="${app_dir}/.docker-libs"
+    mkdir -p "$libs_dir"
+    cp "${dnd_libs}/wip-client-0.1.0.tgz" "$libs_dir/"
+    cp "${dnd_libs}/wip-react-0.1.0.tgz" "$libs_dir/"
+
+    $BUILDER build \
+        --build-arg VITE_BASE_PATH=/apps/dnd/ \
+        -t "$img" \
+        "$app_dir"
+
+    # Clean up
+    rm -rf "$libs_dir"
+
+    if $PUSH; then
+        echo "  → Pushing ${img}"
+        $BUILDER push "$img"
+    fi
+    echo ""
+}
+
 build_console() {
     local img
     img="$(image_name "console")"
@@ -163,6 +203,7 @@ echo ""
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
         wip-console|console)           build_console ;;
+        dnd-compendium)                build_dnd_compendium ;;
         ingest-gateway|mcp-server)     build_python_plain "$ONLY_SERVICE" ;;
         *)                             build_python_with_auth "$ONLY_SERVICE" ;;
     esac
