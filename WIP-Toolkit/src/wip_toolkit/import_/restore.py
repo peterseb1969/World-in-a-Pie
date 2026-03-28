@@ -512,7 +512,7 @@ def _build_document_payloads(docs: list[dict], namespace: str) -> list[dict]:
             "template_id": d["template_id"],
             "template_version": d.get("template_version"),
             "document_id": d["document_id"],
-            "version": d.get("version"),
+            "version": d.get("version") or 1,
             "namespace": namespace,
             "data": d["data"],
             "created_by": "wip-toolkit-restore",
