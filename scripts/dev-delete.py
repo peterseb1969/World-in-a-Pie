@@ -44,6 +44,7 @@ import argparse
 import os
 import re
 import sys
+
 from pymongo import MongoClient
 
 # ── Entity type detection and DB mapping ─────────────────────────────────
@@ -549,7 +550,7 @@ def delete_entity(
         template_value = docs[0].get("value") if docs else None
         if template_value:
             drop_pg_doc_table(pg_conn, template_value, force)
-    elif etype in PG_TABLE_MAP and PG_TABLE_MAP[etype]:
+    elif PG_TABLE_MAP.get(etype):
         pg_info = PG_TABLE_MAP[etype]
         delete_pg_rows(pg_conn, pg_info["table"], pg_info["id_field"], wip_id, force)
 
@@ -557,7 +558,7 @@ def delete_entity(
         return
 
     # ── Execute cascade deletes (children first) ─────────────────────
-    for label, count, delete_fn in cascade_plan:
+    for _label, _count, delete_fn in cascade_plan:
         delete_fn()
 
     # Delete file metadata for cascaded files
@@ -605,7 +606,7 @@ def _plan_terminology_cascade(client, terminology_id, cascade_plan, pg_doc_ids,
     term_ids = term_coll.distinct("term_id", {"terminology_id": terminology_id})
     if term_ids:
         cascade_plan.append((
-            f"terms in terminology",
+            "terms in terminology",
             len(term_ids),
             lambda ids=list(term_ids): _exec_cascade_delete(
                 client, "wip_def_store", "terms",
@@ -686,7 +687,7 @@ def _plan_template_cascade(client, template_id, template_value, cascade_plan,
 
     if child_ids:
         cascade_plan.append((
-            f"child template(s) (recursive inheritance)",
+            "child template(s) (recursive inheritance)",
             len(child_ids),
             lambda ids=child_ids: _exec_cascade_delete(
                 client, "wip_template_store", "templates",
@@ -731,7 +732,7 @@ def _plan_template_cascade(client, template_id, template_value, cascade_plan,
 
         if fids:
             cascade_plan.append((
-                f"files referenced by documents",
+                "files referenced by documents",
                 len(fids),
                 lambda: None,  # actual deletion handled in delete_entity
             ))
@@ -858,7 +859,7 @@ def delete_namespace(client, namespace, force, s3, s3_bucket, pg_conn):
     print(f"    {'TOTAL':20s} {total_entities:>6}")
 
     # Collect files for MinIO cleanup
-    file_ids, minio_keys = collect_files_by_namespace(client, namespace)
+    _file_ids, minio_keys = collect_files_by_namespace(client, namespace)
     if minio_keys:
         print(f"\n  MinIO: {len(minio_keys)} file object(s) to delete")
 
@@ -1035,7 +1036,7 @@ def main():
              "template→child templates→documents→files)",
     )
     parser.add_argument(
-        "--type", choices=[k for k in ENTITY_MAP.keys() if k != "registry"],
+        "--type", choices=[k for k in ENTITY_MAP if k != "registry"],
         help="Entity type (auto-detected if omitted)",
     )
     parser.add_argument(
@@ -1181,7 +1182,7 @@ def main():
                     print("  Cleaned orphan registry entries")
             continue
 
-        for etype, info, count in matches:
+        for etype, info, _count in matches:
             print(f"\n  Type: {etype}")
             delete_entity(
                 client, wip_id, etype, info, args.cascade, args.force,
