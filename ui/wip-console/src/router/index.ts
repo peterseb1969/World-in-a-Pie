@@ -40,6 +40,11 @@ const router = createRouter({
       component: () => import('@/views/terminologies/ValidateView.vue')
     },
     {
+      path: '/ontology',
+      name: 'ontology-browser',
+      component: () => import('@/views/terminologies/OntologyBrowserView.vue')
+    },
+    {
       path: '/terminologies/:id',
       name: 'terminology-detail',
       component: () => import('@/views/terminologies/TerminologyDetailView.vue'),

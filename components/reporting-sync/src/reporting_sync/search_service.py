@@ -57,6 +57,7 @@ class SearchRequest(StrictModel):
         None,
         description="Entity types to search: terminology, term, template, document"
     )
+    namespace: str | None = Field(None, description="Filter by namespace")
     status: str | None = Field(None, description="Filter by status")
     limit: int = Field(50, ge=1, le=200, description="Max results per type")
 
@@ -184,21 +185,22 @@ class SearchService:
         """
         query = request.query.strip()
         types = request.types or ["terminology", "term", "template", "document", "file"]
+        namespace = request.namespace
         status = request.status
         limit = request.limit
 
         # Run searches in parallel
         tasks = []
         if "terminology" in types:
-            tasks.append(("terminology", self._search_terminologies(query, status, limit)))
+            tasks.append(("terminology", self._search_terminologies(query, namespace, status, limit)))
         if "term" in types:
-            tasks.append(("term", self._search_terms(query, status, limit)))
+            tasks.append(("term", self._search_terms(query, namespace, status, limit)))
         if "template" in types:
-            tasks.append(("template", self._search_templates(query, status, limit)))
+            tasks.append(("template", self._search_templates(query, namespace, status, limit)))
         if "document" in types:
-            tasks.append(("document", self._search_documents(query, status, limit)))
+            tasks.append(("document", self._search_documents(query, namespace, status, limit)))
         if "file" in types:
-            tasks.append(("file", self._search_files(query, status, limit)))
+            tasks.append(("file", self._search_files(query, namespace, status, limit)))
 
         # Gather results
         all_results: list[SearchResult] = []
@@ -235,13 +237,15 @@ class SearchService:
         )
 
     async def _search_terminologies(
-        self, query: str, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
         """Search terminologies in Def-Store."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Fetch more items than limit to search through, then filter
-                params = {"page_size": 100}
+                params: dict[str, Any] = {"page_size": 100}
+                if namespace:
+                    params["namespace"] = namespace
                 if status:
                     params["status"] = status
 
@@ -279,7 +283,7 @@ class SearchService:
             return []
 
     async def _search_terms(
-        self, query: str, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
         """Search terms across all terminologies."""
         # First get all terminologies, then search terms in each
@@ -287,9 +291,12 @@ class SearchService:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 # Get terminologies first
+                term_params: dict[str, Any] = {"status": "active", "page_size": 100}
+                if namespace:
+                    term_params["namespace"] = namespace
                 term_response = await client.get(
                     f"{settings.def_store_url}/api/def-store/terminologies",
-                    params={"status": "active", "page_size": 100},
+                    params=term_params,
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -341,13 +348,15 @@ class SearchService:
             return []
 
     async def _search_templates(
-        self, query: str, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
         """Search templates in Template Store."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Fetch more items than limit to search through, then filter
-                params = {"page_size": 100, "latest_only": True}
+                params: dict[str, Any] = {"page_size": 100, "latest_only": True}
+                if namespace:
+                    params["namespace"] = namespace
                 if status:
                     params["status"] = status
 
@@ -385,16 +394,19 @@ class SearchService:
             return []
 
     async def _search_documents(
-        self, query: str, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
         """Search documents in Document Store."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # First fetch templates to build template_id -> value mapping
                 # (Document list API returns template_value as null)
+                tpl_params: dict[str, Any] = {"page_size": 100}
+                if namespace:
+                    tpl_params["namespace"] = namespace
                 template_response = await client.get(
                     f"{settings.template_store_url}/api/template-store/templates",
-                    params={"page_size": 100},
+                    params=tpl_params,
                     headers={"X-API-Key": settings.api_key}
                 )
 
@@ -404,7 +416,9 @@ class SearchService:
                         template_map[tpl.get("template_id")] = tpl.get("value", "")
 
                 # Fetch more items than limit to search through, then filter
-                params = {"page_size": 100}
+                params: dict[str, Any] = {"page_size": 100}
+                if namespace:
+                    params["namespace"] = namespace
                 if status:
                     params["status"] = status
 
@@ -1213,12 +1227,14 @@ class SearchService:
             )
 
     async def _search_files(
-        self, query: str, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
         """Search files in Document Store."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 params: dict[str, Any] = {"page_size": 100}
+                if namespace:
+                    params["namespace"] = namespace
                 if status:
                     params["status"] = status
 

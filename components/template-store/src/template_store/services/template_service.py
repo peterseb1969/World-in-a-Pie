@@ -1,5 +1,6 @@
 """Template service for business logic."""
 
+import contextlib
 from datetime import UTC, datetime
 
 # Import identity helper from wip-auth
@@ -102,7 +103,7 @@ class TemplateService:
                     extends_template_namespace=parent_namespace,
                 )
             except ReferenceValidationError as e:
-                raise ValueError(f"Cross-namespace reference violation: {e.violations}")
+                raise ValueError(f"Cross-namespace reference violation: {e.violations}") from e
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -141,6 +142,22 @@ class TemplateService:
             created_by=actor,
         )
         await template.insert()
+
+        # Register auto-synonym for human-readable resolution (best-effort)
+        # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
+        # Skip for restore mode (synonyms are imported separately)
+        if version == 1 and not is_restore:
+            client = get_registry_client()
+            await client.register_auto_synonym(
+                target_id=template_id,
+                namespace=namespace,
+                composite_key={
+                    "ns": namespace,
+                    "type": "template",
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
 
         # Publish template created event — skip for drafts
         if not is_draft:
@@ -202,11 +219,8 @@ class TemplateService:
             return None
 
         if resolve_inheritance and template.extends:
-            try:
+            with contextlib.suppress(InheritanceError):
                 template = await InheritanceService.resolve_template(template)
-            except InheritanceError:
-                # Return unresolved if inheritance fails
-                pass
 
         return TemplateService._to_template_response(template)
 
@@ -283,14 +297,15 @@ class TemplateService:
             ]
 
             # Get total count
-            count_pipeline = pipeline + [{"$count": "total"}]
+            count_pipeline = [*pipeline, {"$count": "total"}]
             count_result = await Template.aggregate(count_pipeline).to_list()
             total = count_result[0]["total"] if count_result else 0
 
             # Get paginated results
-            paginated_pipeline = pipeline + [
+            paginated_pipeline = [
+                *pipeline,
                 {"$skip": (page - 1) * page_size},
-                {"$limit": page_size}
+                {"$limit": page_size},
             ]
             results = await Template.aggregate(paginated_pipeline).to_list()
             templates = [Template(**doc) for doc in results]
@@ -355,10 +370,8 @@ class TemplateService:
             return None
 
         if resolve_inheritance and template.extends:
-            try:
+            with contextlib.suppress(InheritanceError):
                 template = await InheritanceService.resolve_template(template)
-            except InheritanceError:
-                pass
 
         return TemplateService._to_template_response(template)
 
@@ -385,9 +398,8 @@ class TemplateService:
             return True
         if request.extends_version is not None and request.extends_version != original.extends_version:
             return True
-        if request.identity_fields is not None:
-            if request.identity_fields != original.identity_fields:
-                return True
+        if request.identity_fields is not None and request.identity_fields != original.identity_fields:
+            return True
 
         # Compare fields using JSON serialization
         if request.fields is not None:
@@ -648,7 +660,7 @@ class TemplateService:
 
         results = []
 
-        for i, (template_req, reg_result) in enumerate(zip(templates, registry_results)):
+        for i, (template_req, reg_result) in enumerate(zip(templates, registry_results, strict=False)):
             if reg_result["status"] == "error":
                 results.append(BulkResultItem(
                     index=i,

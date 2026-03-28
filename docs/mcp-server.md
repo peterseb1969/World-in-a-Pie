@@ -261,6 +261,18 @@ The MCP server is designed around a 4-phase process for building applications on
 
 ---
 
+### Synonym Resolution Transparency
+
+All MCP tools that accept entity IDs (e.g., `terminology_id`, `template_id`, `template_value`) benefit from universal synonym resolution in the underlying services. You can pass human-readable values like `"PATIENT"` or `"STATUS"` wherever a canonical UUID is expected — the service resolves it transparently. This means:
+
+- `create_document({"template_id": "PATIENT", ...})` works — `PATIENT` resolves to the canonical template UUID
+- `list_terms(terminology_id="STATUS")` works — `STATUS` resolves to the canonical terminology UUID
+- `query_by_template(template_value="PERSON")` already worked by value lookup, but synonym resolution adds an additional fallback path
+
+Tools that already accept `value` parameters (like `get_template_by_value`) do direct value lookup, not synonym resolution. Both approaches reach the same entity.
+
+---
+
 ## Known Limitations
 
 - **No template update tools** — create a new version instead (WIP's versioning model)

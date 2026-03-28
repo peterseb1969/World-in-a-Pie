@@ -26,7 +26,7 @@ from .config import settings
 from .metrics import metrics
 from .models import EventType, ReportingConfig, SyncStatus
 from .schema_manager import SchemaManager
-from .transformer import DocumentTransformer
+from .transformer import DocumentTransformer, _parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -262,9 +262,9 @@ class SyncWorker:
                         term_data.get("extensible", True),
                         term_data.get("status", "active"),
                         term_data.get("term_count", 0),
-                        term_data.get("created_at"),
+                        _parse_datetime(term_data.get("created_at")),
                         term_data.get("created_by"),
-                        term_data.get("updated_at"),
+                        _parse_datetime(term_data.get("updated_at")),
                         term_data.get("updated_by"),
                     )
 
@@ -368,9 +368,9 @@ class SyncWorker:
                         term_data.get("status", "active"),
                         term_data.get("deprecated_reason"),
                         term_data.get("replaced_by_term_id"),
-                        term_data.get("created_at"),
+                        _parse_datetime(term_data.get("created_at")),
                         term_data.get("created_by"),
-                        term_data.get("updated_at"),
+                        _parse_datetime(term_data.get("updated_at")),
                         term_data.get("updated_by"),
                     )
 

@@ -8,7 +8,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
-from .archive import ArchiveReader, ENTITY_FILES
+from .archive import ENTITY_FILES, ArchiveReader
+from .backfill import backfill_synonyms
 from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
@@ -45,6 +46,9 @@ def main(ctx: click.Context, host: str, proxy: bool, api_key: str, no_verify_ssl
 @click.option("--skip-closure", is_flag=True, help="Skip referential integrity closure")
 @click.option("--skip-synonyms", is_flag=True, help="Skip Registry synonym export")
 @click.option("--latest-only", is_flag=True, help="Export only latest document versions")
+@click.option("--filter-templates", default=None,
+              help="Only export templates matching this prefix (e.g., 'DND_'). "
+                   "Documents are filtered to matching templates. Comma-separated for multiple prefixes.")
 @click.option("--dry-run", is_flag=True, help="Show what would be exported")
 @click.pass_context
 def export(
@@ -57,6 +61,7 @@ def export(
     skip_closure: bool,
     skip_synonyms: bool,
     latest_only: bool,
+    filter_templates: str | None,
     dry_run: bool,
 ) -> None:
     """Export a namespace to a ZIP archive.
@@ -80,6 +85,11 @@ def export(
             console.print("\n[red bold]Some services are not healthy. Aborting.[/red bold]")
             sys.exit(1)
 
+        # Parse template filter prefixes
+        template_prefixes = None
+        if filter_templates:
+            template_prefixes = [p.strip() for p in filter_templates.split(",") if p.strip()]
+
         stats = run_export(
             client, namespace, output_path,
             include_files=include_files,
@@ -88,6 +98,7 @@ def export(
             skip_closure=skip_closure,
             skip_synonyms=skip_synonyms,
             latest_only=latest_only,
+            template_prefixes=template_prefixes,
             dry_run=dry_run,
         )
 
@@ -99,8 +110,8 @@ def export(
 
 @main.command(name="import")
 @click.argument("archive_path")
-@click.option("--mode", type=click.Choice(["restore", "fresh"]), default="restore",
-              help="Import mode (default: restore)")
+@click.option("--mode", type=click.Choice(["fresh", "restore"]), default="fresh",
+              help="Import mode (default: fresh)")
 @click.option("--target-namespace", default=None, help="Override target namespace")
 @click.option("--register-synonyms", is_flag=True, help="Register old→new ID synonyms (fresh mode)")
 @click.option("--skip-documents", is_flag=True, help="Skip document import")
@@ -268,6 +279,53 @@ def _show_entity_ids(reader: ArchiveReader) -> None:
                 table.add_row(eid, source)
 
         console.print(table)
+
+
+@main.command(name="backfill-synonyms")
+@click.argument("namespace")
+@click.option("--skip-documents", is_flag=True, help="Skip document synonym backfill")
+@click.option("--batch-size", default=100, type=int, help="Synonym batch size (default: 100)")
+@click.option("--dry-run", is_flag=True, help="Preview without making changes")
+@click.pass_context
+def backfill_synonyms_cmd(
+    ctx: click.Context,
+    namespace: str,
+    skip_documents: bool,
+    batch_size: int,
+    dry_run: bool,
+) -> None:
+    """Backfill auto-synonyms for all entities in a namespace.
+
+    Iterates all terminologies, terms, templates, and (optionally) documents,
+    registering auto-synonyms with the Registry. Idempotent — existing
+    synonyms are skipped.
+
+    NAMESPACE is the WIP namespace to backfill (e.g., "wip").
+    """
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        console.print(f"[bold]Backfilling synonyms for namespace: {namespace}[/bold]")
+
+        summary = backfill_synonyms(
+            client, namespace,
+            skip_documents=skip_documents,
+            batch_size=batch_size,
+            dry_run=dry_run,
+        )
+
+        # Print summary
+        console.print("\n[bold green]Backfill complete[/bold green]")
+        total_added = 0
+        total_existing = 0
+        for entity_type, counts in summary.items():
+            added = counts.get("added", 0)
+            existing = counts.get("existing", 0)
+            failed = counts.get("failed", 0)
+            total_added += added
+            total_existing += existing
+            console.print(f"  {entity_type}: {added} new, {existing} existing, {failed} failed")
+
+        console.print(f"\n  Total: {total_added} new synonyms registered, {total_existing} already existed")
 
 
 def _show_references(reader: ArchiveReader) -> None:

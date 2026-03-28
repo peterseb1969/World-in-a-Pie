@@ -1,9 +1,13 @@
 """Client for communicating with the WIP Registry service."""
 
+import logging
 import os
+import uuid
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class RegistryClient:
@@ -84,13 +88,7 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
-        if has_identity_fields:
-            composite_key = {
-                "namespace": namespace,
-                "template_id": template_id,
-            }
-        else:
-            composite_key = {}
+        composite_key = {"namespace": namespace, "template_id": template_id} if has_identity_fields else {}
 
         item: dict[str, Any] = {
             "namespace": namespace,
@@ -162,14 +160,17 @@ class RegistryClient:
                 composite_key = {}
                 identity_values = None
 
-            registry_items.append({
+            entry: dict[str, Any] = {
                 "namespace": namespace,
                 "entity_type": "documents",
                 "composite_key": composite_key,
                 "identity_values": identity_values,
                 "created_by": created_by,
                 "source_info": {"system_id": "document-store"},
-            })
+            }
+            if item.get("entry_id"):
+                entry["entry_id"] = item["entry_id"]
+            registry_items.append(entry)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
@@ -231,6 +232,67 @@ class RegistryClient:
                 )
 
             return response.json()
+
+    async def register_auto_synonym(
+        self,
+        document_id: str,
+        namespace: str,
+        template_value: str,
+        identity_hash: str | None,
+        has_identity_fields: bool,
+        created_by: str | None = None,
+    ) -> None:
+        """
+        Register an auto-synonym for a document (best-effort).
+
+        For documents with identity fields: composite key includes template + identity_hash.
+        For documents without identity fields: composite key includes a portable UUID4.
+        Failure is logged but does not prevent document creation.
+
+        Args:
+            document_id: The document's canonical ID
+            namespace: Document namespace
+            template_value: Template value (human-readable name)
+            identity_hash: Identity hash (for documents with identity fields)
+            has_identity_fields: Whether the template has identity fields
+            created_by: Creator identifier
+        """
+        if has_identity_fields and identity_hash:
+            composite_key = {
+                "ns": namespace,
+                "type": "document",
+                "template": template_value,
+                "identity_hash": identity_hash,
+            }
+        else:
+            composite_key = {
+                "ns": namespace,
+                "type": "document",
+                "portable_id": str(uuid.uuid4()),
+            }
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/synonyms/add",
+                    headers=self._get_headers(),
+                    json=[{
+                        "target_id": document_id,
+                        "synonym_namespace": namespace,
+                        "synonym_entity_type": "documents",
+                        "synonym_composite_key": composite_key,
+                        "created_by": created_by,
+                    }]
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Failed to register auto-synonym for document %s: %s",
+                        document_id, response.text
+                    )
+        except Exception as e:
+            logger.warning(
+                "Failed to register auto-synonym for document %s: %s", document_id, e
+            )
 
     async def resolve_identifier(
         self,

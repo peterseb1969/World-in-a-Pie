@@ -1,9 +1,12 @@
 """Client for communicating with the WIP Registry service."""
 
+import logging
 import os
 from typing import Any
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class RegistryClient:
@@ -178,8 +181,6 @@ class RegistryClient:
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
                 json=[{
-                    "target_namespace": namespace,
-                    "target_entity_type": "templates",
                     "target_id": target_id,
                     "synonym_namespace": namespace,
                     "synonym_entity_type": "templates",
@@ -193,7 +194,50 @@ class RegistryClient:
                 )
 
             data = response.json()
-            return data[0].get("status") == "added"
+            result = data.get("results", data) if isinstance(data, dict) else data
+            if isinstance(result, list):
+                return result[0].get("status") == "added"
+            return result.get("results", [{}])[0].get("status") == "added"
+
+    async def register_auto_synonym(
+        self,
+        target_id: str,
+        namespace: str,
+        composite_key: dict[str, Any],
+        created_by: str | None = None,
+    ) -> None:
+        """
+        Register an auto-synonym for a template (best-effort).
+
+        Auto-synonyms enable human-readable resolution (e.g., "PATIENT" → template ID).
+        Failure is logged but does not prevent template creation.
+
+        Args:
+            target_id: The template's canonical ID
+            namespace: Template namespace
+            composite_key: Auto-synonym composite key
+            created_by: Creator identifier
+        """
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/synonyms/add",
+                    headers=self._get_headers(),
+                    json=[{
+                        "target_id": target_id,
+                        "synonym_namespace": namespace,
+                        "synonym_entity_type": "templates",
+                        "synonym_composite_key": composite_key,
+                        "created_by": created_by,
+                    }]
+                )
+                if response.status_code != 200:
+                    logger.warning(
+                        "Failed to register auto-synonym for template %s: %s",
+                        target_id, response.text
+                    )
+        except Exception as e:
+            logger.warning("Failed to register auto-synonym for template %s: %s", target_id, e)
 
     async def lookup_by_value(
         self,

@@ -232,6 +232,9 @@ EOF
 detect_platform() {
     if [[ "$(uname)" == "Darwin" ]]; then
         echo "default"
+    elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* || -n "${MSYSTEM:-}" ]]; then
+        # Git Bash / MSYS2 on Windows
+        echo "windows"
     elif [[ -f /proc/device-tree/model ]] && grep -qi "raspberry" /proc/device-tree/model 2>/dev/null; then
         if grep -qi "pi 5" /proc/device-tree/model 2>/dev/null; then
             echo "default"  # Pi 5 supports MongoDB 7
@@ -328,7 +331,7 @@ OPTIONS:
   --prod              Production variant (stricter settings)
   --localhost         Local-only access (default: remote/network)
   --hostname NAME     Hostname for network access (required unless --localhost)
-  --platform NAME     Platform override: default, pi4 (auto-detected)
+  --platform NAME     Platform override: default, pi4, windows (auto-detected)
   --https-port PORT   HTTPS port (default: 8443)
   --http-port PORT    HTTP port (default: 8080)
   --data-dir DIR      Data storage directory (default: ./data)
@@ -1748,6 +1751,11 @@ check_dependencies() {
 
     if ! command -v podman-compose &> /dev/null; then
         missing+=("podman-compose")
+        if [ "$PLATFORM" = "windows" ]; then
+            log_warn "On Windows, install podman-compose via pip:"
+            log_warn "  python -m pip install podman-compose"
+            log_warn "Then add the Scripts directory to your PATH."
+        fi
     else
         echo "  podman-compose: installed"
     fi

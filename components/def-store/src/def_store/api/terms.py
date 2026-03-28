@@ -1,10 +1,17 @@
 """API endpoints for term management."""
 
+import contextlib
 import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    EntityNotFoundError,
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_entity_id,
+)
 
 from ..models.api_models import (
     BulkResponse,
@@ -62,6 +69,10 @@ async def create_terms(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
+    with contextlib.suppress(EntityNotFoundError):
+        terminology_id = await resolve_entity_id(terminology_id, "terminology", "wip")
+
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     if term_parent:
@@ -76,7 +87,7 @@ async def create_terms(
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg)
+                raise HTTPException(status_code=404, detail=msg) from None
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=msg)]
         except RegistryError as e:
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
@@ -92,10 +103,10 @@ async def create_terms(
         except ValueError as e:
             msg = str(e)
             if "not found" in msg:
-                raise HTTPException(status_code=404, detail=msg)
-            raise HTTPException(status_code=400, detail=msg)
+                raise HTTPException(status_code=404, detail=msg) from None
+            raise HTTPException(status_code=400, detail=msg) from None
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -123,6 +134,12 @@ async def list_terms(
         await check_namespace_permission(identity, namespace, "read")
     else:
         allowed_namespaces = await resolve_accessible_namespaces(identity)
+
+    # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
+    with contextlib.suppress(EntityNotFoundError):
+        terminology_id = await resolve_entity_id(
+            terminology_id, "terminology", namespace or "wip"
+        )
 
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
@@ -163,9 +180,14 @@ async def list_terms(
 )
 async def get_term(
     term_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> TermResponse:
-    """Get a term by its ID."""
+    """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
+    # Resolve synonym — supports colon notation for terms
+    with contextlib.suppress(EntityNotFoundError):
+        term_id = await resolve_entity_id(term_id, "term", namespace or "wip")
+
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
         raise HTTPException(status_code=404, detail="Term not found")

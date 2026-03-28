@@ -334,7 +334,8 @@ class OntologyService:
 
         rels = await TermRelationship.find(query).skip(skip).limit(page_size).to_list()
 
-        items = [OntologyService._to_relationship_response(r) for r in rels]
+        term_lookup = await OntologyService._build_term_lookup(rels)
+        items = [OntologyService._to_relationship_response(r, term_lookup) for r in rels]
         return items, total
 
     @staticmethod
@@ -360,7 +361,8 @@ class OntologyService:
 
         rels = await TermRelationship.find(query).skip(skip).limit(page_size).to_list()
 
-        items = [OntologyService._to_relationship_response(r) for r in rels]
+        term_lookup = await OntologyService._build_term_lookup(rels)
+        items = [OntologyService._to_relationship_response(r, term_lookup) for r in rels]
         return items, total
 
     # =========================================================================
@@ -571,7 +573,7 @@ class OntologyService:
             for next_id in next_ids:
                 if next_id not in visited:
                     visited.add(next_id)
-                    new_path = path + [next_id]
+                    new_path = [*path, next_id]
                     nodes.append(TraversalNode(
                         term_id=next_id,
                         depth=depth + 1,
@@ -605,8 +607,26 @@ class OntologyService:
         )
 
     @staticmethod
-    def _to_relationship_response(rel: TermRelationship) -> RelationshipResponse:
+    def _to_relationship_response(
+        rel: TermRelationship,
+        term_lookup: dict[str, Term] | None = None,
+    ) -> RelationshipResponse:
         """Convert a TermRelationship document to an API response."""
+        source_term_value = None
+        source_term_label = None
+        target_term_value = None
+        target_term_label = None
+
+        if term_lookup:
+            src = term_lookup.get(rel.source_term_id)
+            if src:
+                source_term_value = src.value
+                source_term_label = src.label
+            tgt = term_lookup.get(rel.target_term_id)
+            if tgt:
+                target_term_value = tgt.value
+                target_term_label = tgt.label
+
         return RelationshipResponse(
             namespace=rel.namespace,
             source_term_id=rel.source_term_id,
@@ -615,8 +635,24 @@ class OntologyService:
             relationship_value=rel.relationship_value,
             source_terminology_id=rel.source_terminology_id,
             target_terminology_id=rel.target_terminology_id,
+            source_term_value=source_term_value,
+            source_term_label=source_term_label,
+            target_term_value=target_term_value,
+            target_term_label=target_term_label,
             metadata=rel.metadata,
             status=rel.status,
             created_at=rel.created_at,
             created_by=rel.created_by,
         )
+
+    @staticmethod
+    async def _build_term_lookup(rels: list[TermRelationship]) -> dict[str, Term]:
+        """Batch-fetch term documents for all term IDs referenced in relationships."""
+        term_ids = set()
+        for r in rels:
+            term_ids.add(r.source_term_id)
+            term_ids.add(r.target_term_id)
+        if not term_ids:
+            return {}
+        terms = await Term.find({"term_id": {"$in": list(term_ids)}}).to_list()
+        return {t.term_id: t for t in terms}

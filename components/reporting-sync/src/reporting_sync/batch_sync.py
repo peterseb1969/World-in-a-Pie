@@ -18,6 +18,8 @@ from typing import Any
 import asyncpg
 import httpx
 
+from .transformer import _parse_datetime
+
 from .config import settings
 from .models import (
     BatchSyncJob,
@@ -351,6 +353,15 @@ class BatchSyncService:
         Returns:
             List of BatchSyncJob for each template
         """
+        # Sync terminologies and terms first (reference data)
+        logger.info("Batch syncing terminologies...")
+        term_results = await self.batch_sync_terminologies()
+        logger.info(f"Terminologies: {term_results}")
+        logger.info("Batch syncing terms...")
+        terms_results = await self.batch_sync_terms()
+        logger.info(f"Terms: {terms_results}")
+
+        # Then sync documents per template
         templates = await self._list_templates()
         jobs = []
 
@@ -391,7 +402,7 @@ class BatchSyncService:
 
     async def batch_sync_terminologies(
         self,
-        namespace: str = "wip",
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
@@ -409,13 +420,12 @@ class BatchSyncService:
                 page = 1
 
                 while True:
+                    params: dict = {"page": page, "page_size": page_size}
+                    if namespace:
+                        params["namespace"] = namespace
                     resp = await client.get(
                         f"{settings.def_store_url}/api/def-store/terminologies",
-                        params={
-                            "namespace": namespace,
-                            "page": page,
-                            "page_size": page_size,
-                        },
+                        params=params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
@@ -453,7 +463,7 @@ class BatchSyncService:
                                         "updated_by" = EXCLUDED."updated_by"
                                     """,
                                     t["terminology_id"],
-                                    t.get("namespace", namespace),
+                                    t.get("namespace", namespace or "wip"),
                                     t["value"],
                                     t.get("label"),
                                     t.get("description"),
@@ -462,9 +472,9 @@ class BatchSyncService:
                                     t.get("extensible", True),
                                     t.get("status", "active"),
                                     t.get("term_count", 0),
-                                    t.get("created_at"),
+                                    _parse_datetime(t.get("created_at")),
                                     t.get("created_by"),
-                                    t.get("updated_at"),
+                                    _parse_datetime(t.get("updated_at")),
                                     t.get("updated_by"),
                                 )
                                 synced += 1
@@ -485,7 +495,7 @@ class BatchSyncService:
 
     async def batch_sync_terms(
         self,
-        namespace: str = "wip",
+        namespace: str | None = None,
         page_size: int = 100,
     ) -> dict:
         """
@@ -506,9 +516,12 @@ class BatchSyncService:
                 terminology_ids = []
                 page = 1
                 while True:
+                    term_list_params: dict = {"page": page, "page_size": 100}
+                    if namespace:
+                        term_list_params["namespace"] = namespace
                     resp = await client.get(
                         f"{settings.def_store_url}/api/def-store/terminologies",
-                        params={"namespace": namespace, "page": page, "page_size": 100},
+                        params=term_list_params,
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
@@ -571,7 +584,7 @@ class BatchSyncService:
                                             "updated_by" = EXCLUDED."updated_by"
                                         """,
                                         t["term_id"],
-                                        t.get("namespace", namespace),
+                                        t.get("namespace", namespace or "wip"),
                                         t.get("terminology_id"),
                                         t.get("terminology_value"),
                                         t["value"],
@@ -583,9 +596,9 @@ class BatchSyncService:
                                         t.get("status", "active"),
                                         t.get("deprecated_reason"),
                                         t.get("replaced_by_term_id"),
-                                        t.get("created_at"),
+                                        _parse_datetime(t.get("created_at")),
                                         t.get("created_by"),
-                                        t.get("updated_at"),
+                                        _parse_datetime(t.get("updated_at")),
                                         t.get("updated_by"),
                                     )
                                     synced += 1
@@ -680,7 +693,7 @@ class BatchSyncService:
                                     rel.get("target_terminology_id"),
                                     json.dumps(rel.get("metadata", {})),
                                     rel.get("status", "active"),
-                                    rel.get("created_at"),
+                                    _parse_datetime(rel.get("created_at")),
                                     rel.get("created_by"),
                                 )
                                 synced += 1

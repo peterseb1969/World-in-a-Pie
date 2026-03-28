@@ -9,7 +9,9 @@ export interface Relationship {
   relationship_type: string
   relationship_value?: string
   source_term_value?: string
+  source_term_label?: string
   target_term_value?: string
+  target_term_label?: string
   source_terminology_id?: string
   target_terminology_id?: string
   metadata: Record<string, unknown>

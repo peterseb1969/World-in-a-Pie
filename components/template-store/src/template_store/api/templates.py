@@ -1,10 +1,17 @@
 """Template API endpoints."""
 
+import contextlib
 import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    EntityNotFoundError,
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_entity_id,
+)
 
 from ..models.api_models import (
     ActivateTemplateResponse,
@@ -65,7 +72,7 @@ async def create_templates(
                 namespace=items[0].namespace if items else "wip",
             )
         except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
@@ -117,16 +124,26 @@ async def list_templates(
 @router.get("/{template_id}", response_model=TemplateResponse)
 async def get_template(
     template_id: str,
-    version: int | None = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
-    Get a template by ID.
+    Get a template by ID or synonym value.
 
+    Accepts canonical UUID or human-readable value (e.g., "PATIENT").
     Template IDs are stable across versions. Without a version parameter,
     returns the latest version. Returns the template with inheritance resolved
     (all fields from parent templates merged).
     """
-    template = await TemplateService.get_template(template_id=template_id, version=version)
+    # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
+    resolved_id = template_id
+    with contextlib.suppress(EntityNotFoundError):
+        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+
+    template = await TemplateService.get_template(template_id=resolved_id, version=version)
+    if not template:
+        # Fallback: try as value
+        template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
@@ -135,17 +152,28 @@ async def get_template(
 @router.get("/{template_id}/raw", response_model=TemplateResponse)
 async def get_template_raw(
     template_id: str,
-    version: int | None = Query(None, description="Specific version (default: latest)")
+    version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
     Get a template by ID without inheritance resolution.
 
+    Accepts canonical UUID or human-readable value (e.g., "PATIENT").
     Returns the template as stored in the database, without merging
     fields from parent templates.
     """
+    try:
+        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+    except EntityNotFoundError:
+        resolved_id = template_id
+
     template = await TemplateService.get_template(
-        template_id=template_id, version=version, resolve_inheritance=False
+        template_id=resolved_id, version=version, resolve_inheritance=False
     )
+    if not template:
+        template = await TemplateService.get_template(
+            value=template_id, version=version, resolve_inheritance=False, namespace=namespace
+        )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
@@ -185,14 +213,21 @@ async def get_template_by_value_raw(value: str):
 
 
 @router.get("/by-value/{value}/versions", response_model=TemplateListResponse)
-async def get_template_versions(value: str):
+async def get_template_versions(
+    value: str,
+    namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
+):
     """
     Get all versions of a template by value.
 
     Returns all versions sorted by version number (newest first).
     This allows viewing the full version history of a template.
     """
-    versions = await TemplateService.get_template_versions(value)
+    if namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, namespace, "read")
+
+    versions = await TemplateService.get_template_versions(value, namespace=namespace)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
     return TemplateListResponse(
@@ -267,7 +302,7 @@ async def get_template_dependencies(template_id: str):
     try:
         return await DependencyService.check_template_dependencies(template_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.delete("", response_model=BulkResponse)
@@ -363,7 +398,7 @@ async def activate_template(
             dry_run=dry_run
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.post("/{template_id}/cascade", response_model=CascadeResponse)
@@ -380,9 +415,9 @@ async def cascade_template(template_id: str):
     try:
         return await TemplateService.cascade_to_children(template_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except RegistryError as e:
-        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}")
+        raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)

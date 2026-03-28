@@ -59,7 +59,7 @@ const menuSections = computed<MenuSection[]>(() => {
         { label: 'New Terminology', icon: 'pi pi-plus', route: '/terminologies?create=true' },
         { label: 'Import', icon: 'pi pi-upload', route: '/terminologies/import' },
         { label: 'Validate', icon: 'pi pi-check-circle', route: '/terminologies/validate' },
-        { label: 'Ontology Browser', icon: 'pi pi-sitemap', route: '/terminologies?tab=ontology' }
+        { label: 'Ontology Browser', icon: 'pi pi-sitemap', route: '/ontology' }
       ]
     },
     {

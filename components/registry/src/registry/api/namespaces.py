@@ -41,6 +41,7 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
         isolation_mode=ns.isolation_mode,
         allowed_external_refs=ns.allowed_external_refs,
         id_config=id_config,
+        deletion_mode=ns.deletion_mode,
         status=ns.status,
         created_at=ns.created_at,
         created_by=ns.created_by,
@@ -111,6 +112,7 @@ async def get_namespace_stats(
         prefix=ns.prefix,
         description=ns.description,
         isolation_mode=ns.isolation_mode,
+        deletion_mode=ns.deletion_mode,
         status=ns.status,
         entity_counts=entity_counts,
     )
@@ -164,6 +166,7 @@ async def create_namespace(
         isolation_mode=request.isolation_mode,
         allowed_external_refs=request.allowed_external_refs,
         id_config=request.id_config or {},
+        deletion_mode=request.deletion_mode,
         created_by=request.created_by,
     )
     await ns.create()
@@ -248,38 +251,6 @@ async def restore_namespace(
     await ns.save()
 
     return namespace_to_response(ns)
-
-
-@router.delete(
-    "/{prefix}",
-    summary="Delete namespace"
-)
-async def delete_namespace(
-    prefix: str,
-    confirm: bool = Query(False, description="Confirm permanent deletion"),
-    deleted_by: str = Query(None, description="User deleting the namespace"),
-    api_key: str = Depends(require_admin_key)
-):
-    """Permanently delete a namespace (soft delete). Must be archived first."""
-    if prefix == "wip":
-        raise HTTPException(status_code=400, detail="Cannot delete the default 'wip' namespace")
-
-    if not confirm:
-        raise HTTPException(status_code=400, detail="Deletion requires confirm=true query parameter")
-
-    ns = await Namespace.find_one({"prefix": prefix})
-    if not ns:
-        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
-
-    if ns.status != "archived":
-        raise HTTPException(status_code=400, detail="Namespace must be archived before deletion")
-
-    ns.status = "deleted"
-    ns.updated_at = datetime.now(UTC)
-    ns.updated_by = deleted_by
-    await ns.save()
-
-    return {"status": "deleted", "prefix": prefix}
 
 
 @router.post(

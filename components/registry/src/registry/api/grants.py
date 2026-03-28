@@ -47,12 +47,18 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     """Resolve the effective permission for an identity on a namespace.
 
     Resolution order:
+    0. Locked namespace → always "none" (deletion in progress)
     1. Superadmin bypass (wip-admins group)
     2. Direct user grant (by email or API key name)
     3. Group grants (any matching group)
     4. API key namespace list (read-only)
     5. Default: none
     """
+    # Locked namespaces are inaccessible to everyone
+    ns = await Namespace.find_one({"prefix": namespace})
+    if ns and ns.status == "locked":
+        return "none"
+
     if _is_superadmin(identity):
         return "admin"
 

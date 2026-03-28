@@ -330,6 +330,7 @@ class WIPSeeder:
                     "prefix": self.namespace,
                     "description": f"Seed data namespace ({self.namespace})",
                     "isolation_mode": "open",
+                    "deletion_mode": "full",
                     "created_by": "seed_script",
                 })
                 print(f"  Namespace '{self.namespace}' created")

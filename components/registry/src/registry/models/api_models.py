@@ -34,6 +34,10 @@ class NamespaceCreate(StrictModel):
         None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
+    deletion_mode: str = Field(
+        default="retain",
+        description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
     created_by: str | None = Field(None, description="User creating the namespace")
 
 
@@ -44,6 +48,10 @@ class NamespaceUpdate(StrictModel):
     isolation_mode: str | None = None
     allowed_external_refs: list[str] | None = None
     id_config: dict[str, Any] | None = None
+    deletion_mode: str | None = Field(
+        default=None,
+        description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
+    )
     updated_by: str | None = None
 
 
@@ -55,6 +63,7 @@ class NamespaceResponse(BaseModel):
     isolation_mode: str
     allowed_external_refs: list[str]
     id_config: dict[str, Any]
+    deletion_mode: str = "retain"
     status: str
     created_at: datetime
     created_by: str | None
@@ -68,6 +77,7 @@ class NamespaceStatsResponse(BaseModel):
     prefix: str
     description: str
     isolation_mode: str
+    deletion_mode: str = "retain"
     status: str
     entity_counts: dict[str, int] = Field(
         default_factory=dict,
@@ -358,6 +368,36 @@ class LookupBulkResponse(BaseModel):
     """Response model for bulk lookups."""
 
     results: list[LookupResponse]
+    total: int
+    found: int
+    not_found: int
+    errors: int
+
+
+# =============================================================================
+# Resolve API Models (synonym resolution)
+# =============================================================================
+
+class ResolveItem(StrictModel):
+    """Request model for resolving a synonym composite key to an entry ID."""
+
+    composite_key: dict[str, Any] = Field(..., description="Synonym composite key to resolve")
+
+
+class ResolveResponse(BaseModel):
+    """Response model for a single resolve result."""
+
+    input_index: int
+    status: str  # found, not_found, error
+    composite_key: dict[str, Any] | None = None
+    entry_id: str | None = None
+    error: str | None = None
+
+
+class BulkResolveResponse(BaseModel):
+    """Response model for bulk resolve."""
+
+    results: list[ResolveResponse]
     total: int
     found: int
     not_found: int

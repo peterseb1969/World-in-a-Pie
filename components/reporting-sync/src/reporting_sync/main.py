@@ -253,6 +253,16 @@ async def lifespan(app: FastAPI):
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
 
+        # Run initial terminology and term sync
+        try:
+            logger.info("Running initial terminology batch sync...")
+            t_result = await state.batch_sync_service.batch_sync_terminologies()
+            logger.info(f"Initial terminology sync: {t_result}")
+            t_result = await state.batch_sync_service.batch_sync_terms()
+            logger.info(f"Initial term sync: {t_result}")
+        except Exception as e:
+            logger.error(f"Initial terminology/term sync failed: {e}")
+
     # Initialize search service (works with or without PostgreSQL)
     state.search_service = SearchService(state.postgres_pool)
     logger.info("Search service initialized")
@@ -538,95 +548,6 @@ async def get_schema(template_value: str) -> dict[str, Any]:
         }
 
 
-@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
-async def trigger_batch_sync(
-    template_value: str,
-    force: bool = False,
-    page_size: int = 100,
-) -> BatchSyncResponse:
-    """
-    Trigger a batch sync for a specific template.
-
-    This fetches all documents for the template from Document Store
-    and syncs them to PostgreSQL.
-
-    Args:
-        template_value: Template code to sync
-        force: Force re-sync even if table already has data
-        page_size: Number of documents to fetch per page (10-1000)
-    """
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    if page_size < 10 or page_size > 1000:
-        raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
-
-    job = await state.batch_sync_service.start_batch_sync(
-        template_value=template_value,
-        force=force,
-        page_size=page_size,
-    )
-
-    return BatchSyncResponse(
-        job_id=job.job_id,
-        template_value=job.template_value,
-        status=job.status,
-        message=f"Batch sync started for {template_value}",
-    )
-
-
-@router.post("/sync/batch", response_model=list[BatchSyncResponse])
-async def trigger_batch_sync_all(
-    force: bool = False,
-    page_size: int = 100,
-) -> list[BatchSyncResponse]:
-    """
-    Trigger batch sync for all templates.
-
-    This fetches all templates and syncs their documents to PostgreSQL.
-    Templates with sync_enabled=false are skipped.
-    """
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    jobs = await state.batch_sync_service.start_batch_sync_all(
-        force=force,
-        page_size=page_size,
-    )
-
-    return [
-        BatchSyncResponse(
-            job_id=job.job_id,
-            template_value=job.template_value,
-            status=job.status,
-            message=f"Batch sync started for {job.template_value}",
-        )
-        for job in jobs
-    ]
-
-
-@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
-async def list_batch_jobs() -> list[BatchSyncJob]:
-    """List all batch sync jobs."""
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    return state.batch_sync_service.list_jobs()
-
-
-@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
-async def get_batch_job(job_id: str) -> BatchSyncJob:
-    """Get a specific batch sync job by ID."""
-    if not state.batch_sync_service:
-        raise HTTPException(status_code=503, detail="Batch sync service not available")
-
-    job = state.batch_sync_service.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-
-    return job
-
-
 @router.post("/sync/batch/terminologies")
 async def trigger_terminology_sync(
     namespace: str = "wip",
@@ -711,6 +632,95 @@ async def trigger_relationship_sync(
         "table": "term_relationships",
         **result,
     }
+
+
+@router.post("/sync/batch", response_model=list[BatchSyncResponse])
+async def trigger_batch_sync_all(
+    force: bool = False,
+    page_size: int = 100,
+) -> list[BatchSyncResponse]:
+    """
+    Trigger batch sync for all templates.
+
+    This fetches all templates and syncs their documents to PostgreSQL.
+    Templates with sync_enabled=false are skipped.
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    jobs = await state.batch_sync_service.start_batch_sync_all(
+        force=force,
+        page_size=page_size,
+    )
+
+    return [
+        BatchSyncResponse(
+            job_id=job.job_id,
+            template_value=job.template_value,
+            status=job.status,
+            message=f"Batch sync started for {job.template_value}",
+        )
+        for job in jobs
+    ]
+
+
+@router.get("/sync/batch/jobs", response_model=list[BatchSyncJob])
+async def list_batch_jobs() -> list[BatchSyncJob]:
+    """List all batch sync jobs."""
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    return state.batch_sync_service.list_jobs()
+
+
+@router.get("/sync/batch/jobs/{job_id}", response_model=BatchSyncJob)
+async def get_batch_job(job_id: str) -> BatchSyncJob:
+    """Get a specific batch sync job by ID."""
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    job = state.batch_sync_service.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    return job
+
+
+@router.post("/sync/batch/{template_value}", response_model=BatchSyncResponse)
+async def trigger_batch_sync(
+    template_value: str,
+    force: bool = False,
+    page_size: int = 100,
+) -> BatchSyncResponse:
+    """
+    Trigger a batch sync for a specific template.
+
+    This fetches all documents for the template from Document Store
+    and syncs them to PostgreSQL.
+
+    Args:
+        template_value: Template code to sync
+        force: Force re-sync even if table already has data
+        page_size: Number of documents to fetch per page (10-1000)
+    """
+    if not state.batch_sync_service:
+        raise HTTPException(status_code=503, detail="Batch sync service not available")
+
+    if page_size < 10 or page_size > 1000:
+        raise HTTPException(status_code=400, detail="page_size must be between 10 and 1000")
+
+    job = await state.batch_sync_service.start_batch_sync(
+        template_value=template_value,
+        force=force,
+        page_size=page_size,
+    )
+
+    return BatchSyncResponse(
+        job_id=job.job_id,
+        template_value=job.template_value,
+        status=job.status,
+        message=f"Batch sync started for {template_value}",
+    )
 
 
 @router.delete("/sync/batch/jobs/{job_id}")
@@ -1106,8 +1116,14 @@ async def get_referenced_by(
 
 
 @router.get("/tables")
-async def list_tables():
-    """List available reporting tables with their columns and row counts."""
+async def list_tables(
+    table_name: str | None = Query(default=None, description="Return full column detail for a specific table"),
+):
+    """List available reporting tables.
+
+    Without table_name: returns table names, row counts, and column counts (summary).
+    With table_name: returns full column detail (name, type, nullable) for that table.
+    """
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -1132,6 +1148,10 @@ async def list_tables():
             if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
                 continue
 
+            # If filtering by table_name, skip non-matching tables
+            if table_name and tname != table_name:
+                continue
+
             # Get columns
             columns = await conn.fetch(
                 """
@@ -1149,18 +1169,29 @@ async def list_tables():
                 f'SELECT COUNT(*) FROM "{tname}"'
             )
 
-            tables.append({
+            entry: dict = {
                 "name": tname,
-                "columns": [
+                "row_count": count,
+            }
+
+            if table_name:
+                # Detail mode: include full column info
+                entry["columns"] = [
                     {
                         "name": c["column_name"],
                         "type": c["data_type"],
                         "nullable": c["is_nullable"] == "YES",
                     }
                     for c in columns
-                ],
-                "row_count": count,
-            })
+                ]
+            else:
+                # Summary mode: just column count
+                entry["column_count"] = len(columns)
+
+            tables.append(entry)
+
+        if table_name and not tables:
+            raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     return {"tables": tables}
 

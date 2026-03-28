@@ -6,6 +6,7 @@ All external dependencies (NATS, PostgreSQL, httpx) are mocked.
 """
 
 import json
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -106,6 +107,25 @@ class TestTerminologyEvents:
         sql = conn.execute.call_args[0][0]
         assert "INSERT INTO" in sql
         assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_create_event_arg_types(self, worker, mock_pool):
+        """Positional args to conn.execute have correct types for asyncpg."""
+        pool, conn = mock_pool
+        event = self._make_event("terminology.created")
+
+        await worker._process_terminology_event(event)
+
+        args = conn.execute.call_args[0]
+        # $6=case_sensitive, $7=allow_multiple, $8=extensible (booleans)
+        assert isinstance(args[6], bool), f"case_sensitive: expected bool, got {type(args[6])}"
+        assert isinstance(args[7], bool), f"allow_multiple: expected bool, got {type(args[7])}"
+        assert isinstance(args[8], bool), f"extensible: expected bool, got {type(args[8])}"
+        # $10=term_count (int)
+        assert isinstance(args[10], int), f"term_count: expected int, got {type(args[10])}"
+        # $11=created_at, $13=updated_at (datetime)
+        assert isinstance(args[11], datetime), f"created_at: expected datetime, got {type(args[11])}"
+        assert isinstance(args[13], datetime), f"updated_at: expected datetime, got {type(args[13])}"
 
     @pytest.mark.asyncio
     async def test_update_event_upserts(self, worker, mock_pool):
@@ -209,6 +229,24 @@ class TestTermEvents:
         sql = conn.execute.call_args[0][0]
         assert "INSERT INTO" in sql
         assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_create_event_arg_types(self, worker, mock_pool):
+        """Positional args to conn.execute have correct types for asyncpg."""
+        pool, conn = mock_pool
+        event = self._make_event("term.created")
+
+        await worker._process_term_event(event)
+
+        args = conn.execute.call_args[0]
+        # $6=aliases (JSON string)
+        assert isinstance(args[6], str), f"aliases: expected JSON str, got {type(args[6])}"
+        assert json.loads(args[6]) == ["UK", "GB"]  # valid JSON
+        # $9=sort_order (int)
+        assert isinstance(args[9], int), f"sort_order: expected int, got {type(args[9])}"
+        # $14=created_at, $16=updated_at (datetime)
+        assert isinstance(args[14], datetime), f"created_at: expected datetime, got {type(args[14])}"
+        assert isinstance(args[16], datetime), f"updated_at: expected datetime, got {type(args[16])}"
 
     @pytest.mark.asyncio
     async def test_update_event_upserts(self, worker, mock_pool):
@@ -327,6 +365,20 @@ class TestRelationshipEvents:
         sql = conn.execute.call_args[0][0]
         assert "INSERT INTO" in sql
         assert "ON CONFLICT" in sql
+
+    @pytest.mark.asyncio
+    async def test_create_event_arg_types(self, worker, mock_pool):
+        """Positional args to conn.execute have correct types for asyncpg."""
+        pool, conn = mock_pool
+        event = self._make_event("relationship.created")
+
+        await worker._process_relationship_event(event)
+
+        args = conn.execute.call_args[0]
+        # $9=metadata (JSON string, not dict)
+        assert isinstance(args[9], str), f"metadata: expected JSON str, got {type(args[9])}"
+        parsed = json.loads(args[9])
+        assert isinstance(parsed, dict)
 
     @pytest.mark.asyncio
     async def test_delete_event_sets_inactive(self, worker, mock_pool):

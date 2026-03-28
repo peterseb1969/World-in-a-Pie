@@ -16,6 +16,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from wip_auth import check_production_security, setup_auth, setup_rate_limiting
 
 from .api import api_router
+from .models.deletion_journal import DeletionJournal
 from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
@@ -51,12 +52,19 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
     # Store client in app state
     app.state.mongodb_client = client
+
+    # Recover any incomplete namespace deletions
+    from .api.namespace_deletion import get_deletion_service
+    try:
+        await get_deletion_service().recover_incomplete_deletions()
+    except Exception as e:
+        print(f"WARNING: Failed to recover incomplete deletions: {e}")
 
     # Initialize auth service
     if settings.MASTER_API_KEY:

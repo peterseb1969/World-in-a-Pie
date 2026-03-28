@@ -45,17 +45,17 @@ def create_mock_registry_client():
 
     mock_client = AsyncMock(spec=RegistryClient)
 
-    async def mock_register_terminology(value: str, label: str, created_by=None, namespace: str = "wip"):
+    async def mock_register_terminology(value: str, label: str, created_by=None, namespace: str = "wip", entry_id=None):
         global _terminology_counter
         _terminology_counter += 1
         return f"TERM-{_terminology_counter:06d}"
 
-    async def mock_register_term(terminology_id: str, value: str, created_by=None, namespace: str = "wip"):
+    async def mock_register_term(terminology_id: str, value: str, created_by=None, namespace: str = "wip", entry_id=None):
         global _term_counter
         _term_counter += 1
         return f"T-{_term_counter:06d}"
 
-    async def mock_register_terms_bulk(terminology_id: str, terms: list, created_by=None, registry_batch_size: int = 100, namespace: str = "wip"):
+    async def mock_register_terms_bulk(terminology_id: str, terms: list, created_by=None, registry_batch_size: int = 100, namespace: str = "wip", entry_id=None):
         global _term_counter
         results = []
         for term in terms:

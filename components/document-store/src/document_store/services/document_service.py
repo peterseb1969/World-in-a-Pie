@@ -5,7 +5,7 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -46,7 +46,7 @@ class DocumentService:
     """
 
     # Class-level timing statistics for document creation
-    _creation_timing: dict[str, list[float]] = {}
+    _creation_timing: ClassVar[dict[str, list[float]]] = {}
     _creation_count: int = 0
 
     @classmethod
@@ -265,6 +265,18 @@ class DocumentService:
             now=now,
         )
 
+        # Register auto-synonym for migration portability (best-effort, version 1 only)
+        if version == 1 and not version_override:
+            registry = get_registry_client()
+            await registry.register_auto_synonym(
+                document_id=document_id,
+                namespace=namespace,
+                template_value=validation_result.template_value or "",
+                identity_hash=validation_result.identity_hash,
+                has_identity_fields=bool(validation_result.identity_hash),
+                created_by=actor,
+            )
+
         # Publish document created event
         await publish_document_event(
             EventType.DOCUMENT_CREATED,
@@ -295,7 +307,7 @@ class DocumentService:
         new_data: dict[str, Any],
         new_term_references: list[dict[str, Any]],
         new_references: list[dict[str, Any]],
-        new_file_references: list[dict[str, Any]] = None
+        new_file_references: list[dict[str, Any]] | None = None
     ) -> bool:
         """
         Check if document data has changed.
@@ -622,12 +634,13 @@ class DocumentService:
                 {"$sort": {"created_at": -1}},
             ]
 
-            count_pipeline = pipeline + [{"$count": "total"}]
+            count_pipeline = [*pipeline, {"$count": "total"}]
             count_result = await Document.aggregate(count_pipeline).to_list()
             total = count_result[0]["total"] if count_result else 0
 
             skip = (page - 1) * page_size
-            paginated_pipeline = pipeline + [
+            paginated_pipeline = [
+                *pipeline,
                 {"$skip": skip},
                 {"$limit": page_size},
             ]
@@ -637,8 +650,8 @@ class DocumentService:
             # Cursor-based pagination: use _id > cursor, sorted by _id ASC
             try:
                 cursor_oid = ObjectId(cursor)
-            except Exception:
-                raise ValueError(f"Invalid cursor: {cursor}")
+            except Exception as e:
+                raise ValueError(f"Invalid cursor: {cursor}") from e
             query["_id"] = {"$gt": cursor_oid}
 
             # No total count for cursor mode (expensive and unnecessary)
@@ -1053,9 +1066,7 @@ class DocumentService:
 
         # Aggregate per-stage validation timing from all individual results
         val_stage_totals: dict[str, float] = {}
-        val_count = 0
         for _, _, vr in validation_results:
-            val_count += 1
             for stage, ms in vr.timing.items():
                 val_stage_totals[stage] = val_stage_totals.get(stage, 0) + ms
         if val_stage_totals:
@@ -1079,14 +1090,17 @@ class DocumentService:
         # gets back identity_hash for each item)
         start = time.perf_counter()
         registry = get_registry_client()
-        registry_items = [
-            {
+        registry_items = []
+        for vr in validation_results:
+            reg_item: dict[str, Any] = {
                 "identity_values": vr[2].identity_values or None,
                 "template_id": vr[1].template_id,
                 "has_identity_fields": bool(vr[2].identity_fields),
             }
-            for vr in validation_results
-        ]
+            # Pass through pre-assigned document_id for restore/migration
+            if vr[1].document_id:
+                reg_item["entry_id"] = vr[1].document_id
+            registry_items.append(reg_item)
 
         try:
             registry_results = await registry.generate_document_ids_bulk(
@@ -1096,7 +1110,7 @@ class DocumentService:
             )
         except RegistryError as e:
             # All valid documents fail due to Registry error
-            for i, item, _ in validation_results:
+            for i, _item, _ in validation_results:
                 failed += 1
                 results.append(BulkResultItem(
                     index=i, status="error", error=f"Registry error: {e!s}"
@@ -1114,7 +1128,7 @@ class DocumentService:
         timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
 
         # Assign registry-returned identity_hashes back to validation results
-        for (_, _, vr), reg_result in zip(validation_results, registry_results):
+        for (_, _, vr), reg_result in zip(validation_results, registry_results, strict=False):
             if reg_result.get("status") != "error":
                 vr.identity_hash = reg_result.get("identity_hash")
 
@@ -1140,7 +1154,7 @@ class DocumentService:
         pending_events: list[tuple[EventType, dict]] = []
 
         for idx, ((i, item, validation_result), registry_result) in enumerate(
-            zip(validation_results, registry_results)
+            zip(validation_results, registry_results, strict=False)
         ):
             try:
                 if registry_result.get("status") == "error":
@@ -1161,7 +1175,15 @@ class DocumentService:
                 # the same batch correctly.
                 existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
 
-                if existing:
+                # Version override for restore/migration: if the request
+                # supplies both document_id and version, use them as-is.
+                version_override = (
+                    item.version
+                    if item.document_id and item.version is not None
+                    else None
+                )
+
+                if existing and version_override is None:
                     # Check if data has actually changed
                     if not self._data_has_changed(
                         existing,
@@ -1190,6 +1212,9 @@ class DocumentService:
                     await existing.save()
                     new_version = existing.version + 1
                     is_new = False
+                elif version_override is not None:
+                    new_version = version_override
+                    is_new = version_override == 1
                 else:
                     new_version = 1
                     is_new = True

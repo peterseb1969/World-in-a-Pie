@@ -8,11 +8,13 @@
 # This script:
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/
-#   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md)
+#   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
+#      ontology-support.md, dev-delete.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
-#   6. Generates a starter CLAUDE.md
-#   7. Initialises a git repo
+#   6. Copies wip-toolkit wheel and dev-delete.py
+#   7. Generates a starter CLAUDE.md
+#   8. Initialises a git repo
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
@@ -89,6 +91,7 @@ echo "1. Creating directory structure..."
 mkdir -p "$APP_DIR/.claude/commands"
 mkdir -p "$APP_DIR/docs"
 mkdir -p "$APP_DIR/libs"
+mkdir -p "$APP_DIR/tools"
 
 # --- Copy slash commands ---
 
@@ -99,12 +102,21 @@ echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l
 # --- Copy reference docs ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md; do
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
     else
         echo "   Warning: docs/$doc not found, skipping"
+    fi
+done
+# Design docs live in a subdirectory
+for doc in ontology-support.md; do
+    if [ -f "$WIP_ROOT/docs/design/$doc" ]; then
+        cp "$WIP_ROOT/docs/design/$doc" "$APP_DIR/docs/"
+        echo "   Copied: docs/design/$doc"
+    else
+        echo "   Warning: docs/design/$doc not found, skipping"
     fi
 done
 
@@ -163,56 +175,111 @@ echo "   Written: .mcp.json"
 
 # --- Copy client libraries ---
 
+# Validate that a tarball contains compiled output (dist/*.js), not just metadata.
+# This catches the four-time offender: npm pack run without npm run build first.
+# The prepack hook in each library's package.json should prevent this, but belt-and-suspenders.
+validate_tarball() {
+    local tarball="$1"
+    local lib_name="$2"
+    if [ -z "$tarball" ]; then return 1; fi
+    local js_count
+    js_count=$(tar -tzf "$tarball" 2>/dev/null | grep -c 'dist/.*\.js$' || true)
+    if [ "$js_count" -eq 0 ]; then
+        echo "   ERROR: $lib_name tarball contains no compiled JS in dist/"
+        echo "   Fix: cd $WIP_ROOT/libs/$lib_name && npm run build && npm pack"
+        return 1
+    fi
+    return 0
+}
+
 echo "5. Copying client libraries..."
 MISSING_LIBS=()
 CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 
-# Auto-build tarballs if missing and npm is available
-if [ -z "$CLIENT_TARBALL" ] || [ -z "$REACT_TARBALL" ]; then
-    if command -v npm &>/dev/null; then
-        if [ -z "$CLIENT_TARBALL" ]; then
-            echo "   Building @wip/client tarball..."
-            (cd "$WIP_ROOT/libs/wip-client" && npm pack --quiet 2>/dev/null)
-            CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-        fi
-        if [ -z "$REACT_TARBALL" ]; then
-            echo "   Building @wip/react tarball..."
-            (cd "$WIP_ROOT/libs/wip-react" && npm pack --quiet 2>/dev/null)
-            REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
-        fi
+# Auto-build tarballs if missing or empty (npm pack triggers prepack → build automatically)
+rebuild_tarball() {
+    local lib_dir="$1"
+    local lib_name="$2"
+    echo "   Building $lib_name tarball..."
+    (cd "$lib_dir" && npm pack --quiet 2>/dev/null)
+    find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
+}
+
+if command -v npm &>/dev/null; then
+    if [ -z "$CLIENT_TARBALL" ] || ! validate_tarball "$CLIENT_TARBALL" "wip-client"; then
+        CLIENT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-client" "@wip/client")
+    fi
+    if [ -z "$REACT_TARBALL" ] || ! validate_tarball "$REACT_TARBALL" "wip-react"; then
+        REACT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-react" "@wip/react")
+    fi
+else
+    echo "   npm not found — cannot auto-build tarballs"
+fi
+
+# Copy and validate each tarball
+copy_tarball() {
+    local tarball="$1"
+    local lib_name="$2"
+    local readme_name="$3"
+
+    if [ -z "$tarball" ]; then
+        MISSING_LIBS+=("$lib_name")
+        return
+    fi
+
+    if ! validate_tarball "$tarball" "$lib_name"; then
+        MISSING_LIBS+=("$lib_name (tarball has no dist/ — run npm run build first)")
+        return
+    fi
+
+    cp "$tarball" "$APP_DIR/libs/"
+    if tar -xzf "$tarball" --to-stdout package/README.md > "$APP_DIR/libs/$readme_name" 2>/dev/null; then
+        echo "   Copied: $(basename "$tarball") + README"
     else
-        echo "   npm not found — cannot auto-build tarballs"
+        rm -f "$APP_DIR/libs/$readme_name"
+        echo "   Copied: $(basename "$tarball") (README extraction failed)"
+    fi
+}
+
+copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
+copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
+
+# --- Copy wip-toolkit and dev-delete.py ---
+
+echo "6. Copying wip-toolkit and dev-delete.py..."
+
+# wip-toolkit wheel
+TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
+if [ -z "$TOOLKIT_WHEEL" ]; then
+    # Try to build it
+    if command -v python3 &>/dev/null || command -v python &>/dev/null; then
+        PYTHON_CMD="$(command -v python3 2>/dev/null || command -v python)"
+        echo "   Building wip-toolkit wheel..."
+        (cd "$WIP_ROOT/WIP-Toolkit" && "$PYTHON_CMD" -m build . --wheel -q 2>/dev/null) || true
+        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
     fi
 fi
 
-if [ -n "$CLIENT_TARBALL" ]; then
-    cp "$CLIENT_TARBALL" "$APP_DIR/libs/"
-    if tar -xzf "$CLIENT_TARBALL" --to-stdout package/README.md > "$APP_DIR/libs/wip-client-README.md" 2>/dev/null; then
-        echo "   Copied: $(basename "$CLIENT_TARBALL") + README"
-    else
-        rm -f "$APP_DIR/libs/wip-client-README.md"
-        echo "   Copied: $(basename "$CLIENT_TARBALL") (README extraction failed)"
-    fi
+if [ -n "$TOOLKIT_WHEEL" ]; then
+    cp "$TOOLKIT_WHEEL" "$APP_DIR/libs/"
+    echo "   Copied: $(basename "$TOOLKIT_WHEEL")"
 else
-    MISSING_LIBS+=("@wip/client")
+    echo "   Warning: wip-toolkit wheel not found. Build it with:"
+    echo "            cd $WIP_ROOT/WIP-Toolkit && python -m build . --wheel"
 fi
 
-if [ -n "$REACT_TARBALL" ]; then
-    cp "$REACT_TARBALL" "$APP_DIR/libs/"
-    if tar -xzf "$REACT_TARBALL" --to-stdout package/README.md > "$APP_DIR/libs/wip-react-README.md" 2>/dev/null; then
-        echo "   Copied: $(basename "$REACT_TARBALL") + README"
-    else
-        rm -f "$APP_DIR/libs/wip-react-README.md"
-        echo "   Copied: $(basename "$REACT_TARBALL") (README extraction failed)"
-    fi
+# dev-delete.py
+if [ -f "$WIP_ROOT/scripts/dev-delete.py" ]; then
+    cp "$WIP_ROOT/scripts/dev-delete.py" "$APP_DIR/tools/"
+    echo "   Copied: tools/dev-delete.py"
 else
-    MISSING_LIBS+=("@wip/react")
+    echo "   Warning: scripts/dev-delete.py not found"
 fi
 
 # --- Generate CLAUDE.md ---
 
-echo "6. Generating CLAUDE.md..."
+echo "7. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
 
@@ -259,6 +326,8 @@ Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
+- \`docs/ontology-support.md\` — Term relationships, polyhierarchy, typed relationships, traversal queries
+- \`docs/dev-delete.md\` — Hard-delete entities during development (modes, backends, remote usage)
 
 ## MCP
 
@@ -279,12 +348,47 @@ Install from tarballs in \`libs/\`:
 \`\`\`bash
 npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz
 \`\`\`
+
+## WIP Toolkit
+
+\`wip-toolkit\` is a CLI for backup, export, import, and data migration. Install from the wheel in \`libs/\`:
+
+\`\`\`bash
+pip install libs/wip_toolkit-*.whl
+\`\`\`
+
+Key commands:
+- \`wip-toolkit export <namespace> <output.zip>\` — Export namespace to archive
+- \`wip-toolkit import <archive.zip> --mode fresh\` — Import with new IDs (cross-namespace)
+- \`wip-toolkit import <archive.zip> --mode restore\` — Restore with original IDs (disaster recovery)
+
+Remote WIP instances:
+\`\`\`bash
+wip-toolkit --host pi-poe-8gb.local --proxy export wip /tmp/backup.zip
+\`\`\`
+
+## Dev Delete
+
+\`tools/dev-delete.py\` hard-deletes entities during iterative development. See \`docs/dev-delete.md\` for full usage.
+
+\`\`\`bash
+# Dry run (default)
+python tools/dev-delete.py --namespace myapp
+
+# Actually delete
+python tools/dev-delete.py --namespace myapp --force
+
+# Remote MongoDB
+python tools/dev-delete.py --mongo-uri mongodb://remote-host:27017/ --namespace myapp --force
+\`\`\`
+
+Requires \`pymongo\`. For file/reporting cleanup also install \`boto3\` and \`psycopg2-binary\`.
 EOF
 echo "   Written: CLAUDE.md"
 
 # --- Initialise git ---
 
-echo "7. Initialising git repository..."
+echo "8. Initialising git repository..."
 (cd "$APP_DIR" && git init -q && git add -A && git commit -q -m "Initial project setup for $APP_NAME
 
 Generated by WIP create-app-project.sh from:

@@ -244,6 +244,58 @@ The `pages` field is computed as `ceil(total / page_size)`.
 
 ---
 
+## Synonym Resolution
+
+All service APIs accept **human-readable synonyms** wherever a canonical ID (UUID) is expected. This is transparent — callers can use either form interchangeably.
+
+### How It Works
+
+When a non-UUID identifier is passed (e.g., `template_id="PATIENT"` instead of `template_id="019abc..."`), the service resolves it via the Registry's synonym lookup before processing. Canonical UUIDs pass through without any Registry call.
+
+Resolution happens at the API boundary (in the service's route handler) using `resolve_entity_id()` from `wip-auth`. A 5-minute TTL cache minimises latency for repeated lookups.
+
+### Supported ID Fields
+
+| Service | Fields that accept synonyms |
+|---------|-----------------------------|
+| **Def-Store** | `terminology_id` in term endpoints |
+| **Template-Store** | `terminology_ref`, `template_ref`, `target_templates`, `target_terminologies` in template fields |
+| **Document-Store** | `template_id` in document creation |
+
+### Term Colon Notation
+
+For term references, use `TERMINOLOGY:TERM_VALUE` notation:
+
+```
+STATUS:approved    → resolves to the term "approved" in terminology "STATUS"
+COUNTRY:Germany    → resolves to the term "Germany" in terminology "COUNTRY"
+```
+
+### Best-Effort Semantics
+
+Resolution is **best-effort** at the API boundary. If the Registry is unreachable or the synonym is not found, the raw value passes through unchanged. This means:
+
+- Existing code using canonical UUIDs continues to work unchanged
+- Services degrade gracefully when the Registry is down
+- Invalid synonyms are caught by downstream validation (e.g., "template not found"), not by the resolve layer
+
+### Auto-Synonyms
+
+Services automatically register synonyms when entities are created:
+
+| Entity | Auto-synonym composite key |
+|--------|---------------------------|
+| Terminology | `{"ns": namespace, "type": "terminology", "value": "STATUS"}` |
+| Term | `{"ns": namespace, "type": "term", "terminology": "STATUS", "value": "approved"}` |
+| Template | `{"ns": namespace, "type": "template", "value": "PATIENT"}` |
+| Document (with identity) | `{"ns": namespace, "type": "document", "template": "PATIENT", "identity_hash": "abc..."}` |
+
+Auto-synonym registration is fire-and-forget — failures are logged but don't block entity creation.
+
+For details, see `docs/design/universal-synonym-resolution.md`.
+
+---
+
 ## Status Codes
 
 | Code | When |

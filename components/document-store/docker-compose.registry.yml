@@ -18,7 +18,7 @@ services:
       - TEMPLATE_STORE_API_KEY=${API_KEY}
       - DEF_STORE_URL=${DEF_STORE_URL:-http://wip-def-store:8002}
       - DEF_STORE_API_KEY=${API_KEY}
-      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
+      - NATS_URL=${NATS_URL-nats://wip-nats:4222}
       - CORS_ORIGINS=${WIP_CORS_ORIGINS:-}
     command: ["uvicorn", "document_store.main:app", "--host", "0.0.0.0", "--port", "8004"]
     networks:

@@ -1,0 +1,34 @@
+# WIP Platform: Windows (Git Bash / WSL)
+#
+# Switches all stateful services from bind mounts to named volumes.
+# Windows/WSL cannot handle POSIX file ownership on bind-mounted host
+# directories — services running as non-root UIDs (MongoDB 999,
+# PostgreSQL 999, MinIO) fail with "Operation not permitted".
+# Named volumes are managed inside the Podman VM and work correctly.
+#
+# Trade-off: data lives inside the Podman WSL VM, not on the Windows
+# filesystem. Use `podman volume export`, `mongodump`, or `pg_dump`
+# for backups.
+#
+version: "3.8"
+
+services:
+  mongodb:
+    volumes:
+      - wip-mongodb-data:/data/db
+
+  postgres:
+    volumes:
+      - wip-postgres-data:/var/lib/postgresql/data
+
+  minio:
+    volumes:
+      - wip-minio-data:/data
+
+volumes:
+  wip-mongodb-data:
+    name: wip-mongodb-data
+  wip-postgres-data:
+    name: wip-postgres-data
+  wip-minio-data:
+    name: wip-minio-data

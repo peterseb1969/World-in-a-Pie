@@ -281,6 +281,54 @@ Both primary and synonym key hashes are indexed for O(1) lookup performance.
 
 ---
 
+## Synonym Resolution at the API Boundary
+
+While the synonym infrastructure (above) enables any composite key to resolve to a canonical entry, **universal synonym resolution** makes this transparent at every service API.
+
+### How It Works
+
+Every WIP service endpoint that accepts an entity ID will resolve it automatically:
+
+1. **UUID format?** → pass through unchanged (no Registry call)
+2. **Non-UUID string?** → build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
+3. **Resolution fails?** → pass the raw value through unchanged (best-effort); downstream validation catches invalid IDs
+
+This is implemented in `wip-auth`'s `resolve_entity_id()` function, called at the API boundary before business logic runs.
+
+### Caching
+
+Resolved synonyms are cached in-process with a 5-minute TTL to avoid repeated Registry calls. The cache is keyed by `namespace:entity_type:raw_id`. Batch resolution (`resolve_entity_ids()`) uses a single Registry call for all unresolved IDs.
+
+### Auto-Synonym Registration
+
+When an entity is created, services automatically register a synonym composite key with the Registry:
+
+```
+Terminology "STATUS" created → synonym: {"ns": "wip", "type": "terminology", "value": "STATUS"}
+Term "approved" in STATUS   → synonym: {"ns": "wip", "type": "term", "terminology": "STATUS", "value": "approved"}
+Template "PATIENT" created  → synonym: {"ns": "wip", "type": "template", "value": "PATIENT"}
+```
+
+This registration is fire-and-forget — it runs asynchronously and failures don't block entity creation. The `wip-toolkit backfill-synonyms` command can register auto-synonyms for entities that existed before this feature was implemented.
+
+### Practical Examples
+
+```bash
+# These are equivalent — both resolve to the same template
+POST /api/document-store/documents
+{"template_id": "019abc12-def3-7abc-...", "data": {...}}
+
+POST /api/document-store/documents
+{"template_id": "PATIENT", "data": {...}}
+
+# Term colon notation for term references
+# Resolves "STATUS:approved" to the canonical term ID
+```
+
+For the full design, see `docs/design/universal-synonym-resolution.md`.
+
+---
+
 ## Cross-Namespace Behavior
 
 ### Design Decision: Namespace-Scoped, Not Global

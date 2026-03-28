@@ -22,7 +22,7 @@ from rich.console import Console
 
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import EntityCounts, ImportStats
+from ..models import ImportStats
 
 console = Console(stderr=True)
 
@@ -52,44 +52,53 @@ def restore_import(
     _ensure_namespace(client, target_namespace, stats)
 
     # Step 1: Create terminologies via Def-Store (service handles Registry)
+    # Def-Store doesn't support terminology_id pass-through, so we build
+    # old→new ID mappings after creation and remap all downstream references.
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies")
     terminologies = list(reader.read_entities("terminologies"))
     _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
+    term_id_map = _build_terminology_id_map(client, target_namespace, terminologies)
+    if term_id_map:
+        console.print(f"  ID mappings: {len(term_id_map)} terminology ID(s) remapped")
 
-    # Step 2: Create terms via Def-Store
+    # Step 2: Create terms via Def-Store (using remapped terminology IDs)
     console.print("\n[bold cyan]Step 2:[/bold cyan] Creating terms")
     terms = list(reader.read_entities("terms"))
-    _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error)
+    _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error, term_id_map)
 
     # Step 3: Create templates as drafts with ID pass-through
+    # Remap terminology_ref fields to new IDs
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (as drafts)")
     templates = list(reader.read_entities("templates"))
+    if term_id_map:
+        _remap_template_terminology_refs(templates, term_id_map)
     _create_templates(client, target_namespace, templates, stats, continue_on_error)
 
     # Step 4: Activate all draft templates
     console.print("\n[bold cyan]Step 4:[/bold cyan] Activating templates")
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
-    if not skip_documents:
-        # Step 5: Create documents (streamed from archive)
-        console.print("\n[bold cyan]Step 5:[/bold cyan] Creating documents")
-        _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
-    else:
-        console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
-
     if not skip_files and not skip_documents:
-        # Step 6: Upload files
-        console.print("\n[bold cyan]Step 6:[/bold cyan] Uploading files")
+        # Step 5: Upload files (before documents — documents may reference files)
+        console.print("\n[bold cyan]Step 5:[/bold cyan] Uploading files")
         files = list(reader.read_entities("files"))
         _upload_files(client, target_namespace, files, reader, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
+
+    if not skip_documents:
+        # Step 6: Create documents (streamed from archive)
+        console.print("\n[bold cyan]Step 6:[/bold cyan] Creating documents")
+        _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
+    else:
+        console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
 
     # Step 7: Restore synonyms (from synonyms.jsonl if present)
     console.print("\n[bold cyan]Step 7:[/bold cyan] Restoring Registry synonyms")
     _restore_synonyms(
         client, target_namespace, reader, stats, continue_on_error,
         skip_documents=skip_documents, skip_files=skip_files,
+        source_namespace=stats.source_namespace,
     )
 
     return stats
@@ -106,7 +115,7 @@ def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> 
             try:
                 client.post("registry", "/namespaces", json={
                     "prefix": namespace,
-                    "description": f"Restored from backup",
+                    "description": "Restored from backup",
                     "isolation_mode": "open",
                     "created_by": "wip-toolkit",
                 })
@@ -131,6 +140,7 @@ def _create_terminologies(
                 "value": t["value"],
                 "label": t.get("label", t["value"]),
                 "description": t.get("description", ""),
+                "terminology_id": t["terminology_id"],
                 "namespace": namespace,
                 "case_sensitive": t.get("case_sensitive", False),
                 "allow_multiple": t.get("allow_multiple", False),
@@ -160,6 +170,41 @@ def _create_terminologies(
     )
 
 
+def _build_terminology_id_map(
+    client: WIPClient,
+    namespace: str,
+    terminologies: list[dict],
+) -> dict[str, str]:
+    """Build old→new ID mapping by fetching all terminologies in the target namespace.
+
+    Matches by value (e.g., DND_CLASS_NAME) which is unique within a namespace.
+    """
+    id_map: dict[str, str] = {}
+    try:
+        # Fetch all terminologies in the target namespace (paginated, max 100/page)
+        all_items: list[dict] = []
+        page = 1
+        while True:
+            data = client.get("def-store", "/terminologies",
+                              params={"namespace": namespace, "page_size": 100, "page": page})
+            items = data.get("items", [])
+            all_items.extend(items)
+            if len(items) < 100:
+                break
+            page += 1
+        target_by_value = {t["value"]: t["terminology_id"] for t in all_items}
+
+        for t in terminologies:
+            old_id = t["terminology_id"]
+            new_id = target_by_value.get(t["value"])
+            if new_id and new_id != old_id:
+                id_map[old_id] = new_id
+    except WIPClientError as e:
+        console.print(f"  [yellow]Warning: Could not fetch target terminologies for ID mapping: {e}[/yellow]")
+
+    return id_map
+
+
 def _create_terms(
     client: WIPClient,
     namespace: str,
@@ -167,12 +212,15 @@ def _create_terms(
     batch_size: int,
     stats: ImportStats,
     continue_on_error: bool,
+    term_id_map: dict[str, str] | None = None,
 ) -> None:
     """Create terms via Def-Store bulk API, grouped by terminology."""
-    # Group terms by terminology_id
+    # Group terms by terminology_id (remapped if needed)
     by_terminology: dict[str, list[dict]] = {}
     for t in terms:
         tid = t["terminology_id"]
+        if term_id_map:
+            tid = term_id_map.get(tid, tid)
         by_terminology.setdefault(tid, []).append(t)
 
     for tid, term_group in by_terminology.items():
@@ -180,8 +228,9 @@ def _create_terms(
             batch = term_group[i:i + batch_size]
             term_payloads = []
             for t in batch:
-                term_payloads.append({
+                payload = {
                     "value": t["value"],
+                    "term_id": t.get("term_id"),
                     "aliases": t.get("aliases", []),
                     "label": t.get("label", t["value"]),
                     "description": t.get("description", ""),
@@ -190,7 +239,8 @@ def _create_terms(
                     "translations": t.get("translations", []),
                     "metadata": t.get("metadata", {}),
                     "created_by": "wip-toolkit-restore",
-                })
+                }
+                term_payloads.append(payload)
 
             try:
                 result = client.post(
@@ -256,7 +306,11 @@ def _create_templates(
                             raise WIPClientError(r.get("error", "Unknown error"))
                 else:
                     stats.created.templates += 1
-            except WIPClientError:
+            except Exception as e:
+                stats.failed.templates += 1
+                stats.errors.append(
+                    f"Failed to create template {tid} v{tpl.get('version', '?')}: {e}"
+                )
                 if not continue_on_error:
                     raise
 
@@ -265,6 +319,23 @@ def _create_templates(
         f"skipped {stats.skipped.templates}, "
         f"failed {stats.failed.templates}"
     )
+
+
+def _remap_template_terminology_refs(
+    templates: list[dict], term_id_map: dict[str, str],
+) -> None:
+    """Remap terminology_ref IDs in template fields to new IDs."""
+    for tpl in templates:
+        for field in tpl.get("fields", []):
+            for key in ("terminology_ref", "array_terminology_ref"):
+                val = field.get(key)
+                if val and val in term_id_map:
+                    field[key] = term_id_map[val]
+            target_terms = field.get("target_terminologies")
+            if target_terms:
+                field["target_terminologies"] = [
+                    term_id_map.get(t, t) for t in target_terms
+                ]
 
 
 def _template_create_payload(tpl: dict, namespace: str) -> dict[str, Any]:
@@ -378,42 +449,77 @@ def _create_documents_streamed(
     for versions in by_id.values():
         ordered_docs.extend(versions)
 
-    # Create in batches
+    # Create in batches, collecting failures for retry
+    failed_docs: list[dict] = []
+
     for i in range(0, len(ordered_docs), batch_size):
         batch = ordered_docs[i:i + batch_size]
-        items = []
-        for d in batch:
-            items.append({
-                "template_id": d["template_id"],
-                "template_version": d.get("template_version"),
-                "document_id": d["document_id"],
-                "version": d.get("version"),
-                "namespace": namespace,
-                "data": d["data"],
-                "created_by": "wip-toolkit-restore",
-                "metadata": d.get("metadata"),
-            })
+        items = _build_document_payloads(batch, namespace)
 
         try:
             result = client.post(
                 "document-store", "/documents",
                 json=items,
-                params={"continue_on_error": str(continue_on_error).lower()},
+                params={"continue_on_error": "true"},
             )
             stats.created.documents += result.get("succeeded", 0)
-            stats.failed.documents += result.get("failed", 0)
-            for r in result.get("results", []):
-                if r.get("error"):
-                    stats.errors.append(f"Document error: {r['error']}")
+            for idx_r, r in enumerate(result.get("results", [])):
+                if r.get("status") == "error":
+                    failed_docs.append(batch[idx_r])
         except WIPClientError as e:
-            stats.failed.documents += len(batch)
+            failed_docs.extend(batch)
             stats.errors.append(f"Failed to create document batch at index {i}: {e}")
             if not continue_on_error:
                 raise
 
+    # Retry failed documents (handles ordering issues like parent_class refs)
+    if failed_docs:
+        console.print(f"  Retrying {len(failed_docs)} failed document(s)...")
+        retry_items = _build_document_payloads(failed_docs, namespace)
+        try:
+            result = client.post(
+                "document-store", "/documents",
+                json=retry_items,
+                params={"continue_on_error": "true"},
+            )
+            stats.created.documents += result.get("succeeded", 0)
+            retry_failed = result.get("failed", 0)
+            stats.failed.documents += retry_failed
+            for r in result.get("results", []):
+                if r.get("error"):
+                    stats.errors.append(f"Document error: {r['error']}")
+            if retry_failed == 0:
+                console.print(f"  Retry succeeded — all {len(failed_docs)} document(s) created")
+            else:
+                console.print(f"  Retry: {result.get('succeeded', 0)} created, {retry_failed} still failed")
+        except WIPClientError as e:
+            stats.failed.documents += len(failed_docs)
+            stats.errors.append(f"Failed to retry documents: {e}")
+            if not continue_on_error:
+                raise
+    else:
+        stats.failed.documents = 0
+
     console.print(
         f"  Created {stats.created.documents}, failed {stats.failed.documents}"
     )
+
+
+def _build_document_payloads(docs: list[dict], namespace: str) -> list[dict]:
+    """Build document create payloads from archive data."""
+    return [
+        {
+            "template_id": d["template_id"],
+            "template_version": d.get("template_version"),
+            "document_id": d["document_id"],
+            "version": d.get("version") or 1,
+            "namespace": namespace,
+            "data": d["data"],
+            "created_by": "wip-toolkit-restore",
+            "metadata": d.get("metadata"),
+        }
+        for d in docs
+    ]
 
 
 def _upload_files(
@@ -478,21 +584,28 @@ def _restore_synonyms(
     *,
     skip_documents: bool = False,
     skip_files: bool = False,
+    source_namespace: str | None = None,
 ) -> None:
     """Restore Registry synonyms from synonyms.jsonl in the archive.
 
     Falls back to _registry metadata on entities for backward compatibility
     with archives that don't have synonyms.jsonl.
+
+    When target namespace differs from source, rewrites the ``ns`` field
+    in composite keys so synonyms resolve correctly in the new namespace.
     """
     if reader.has_synonyms():
         # New format: synonyms.jsonl
         synonym_items: list[dict] = []
         for syn in reader.read_synonyms():
+            composite_key = syn.get("composite_key", {})
+            # Phase 4: rewrite namespace in composite key
+            composite_key = _rewrite_namespace(composite_key, source_namespace, namespace)
             synonym_items.append({
                 "target_id": syn["entry_id"],
-                "synonym_namespace": syn.get("namespace", namespace),
+                "synonym_namespace": namespace,
                 "synonym_entity_type": syn.get("entity_type", ""),
-                "synonym_composite_key": syn.get("composite_key", {}),
+                "synonym_composite_key": composite_key,
                 "created_by": "wip-toolkit-restore",
             })
 
@@ -521,6 +634,7 @@ def _restore_synonyms(
         _restore_synonyms_legacy(
             client, namespace, reader, stats, continue_on_error,
             skip_documents=skip_documents, skip_files=skip_files,
+            source_namespace=source_namespace,
         )
 
 
@@ -533,6 +647,7 @@ def _restore_synonyms_legacy(
     *,
     skip_documents: bool = False,
     skip_files: bool = False,
+    source_namespace: str | None = None,
 ) -> None:
     """Restore synonyms from _registry metadata (legacy archive format)."""
     id_field_for_type = {
@@ -567,11 +682,14 @@ def _restore_synonyms_legacy(
 
             seen_ids.add(eid)
             for syn in synonyms:
+                composite_key = syn.get("composite_key", {})
+                # Phase 4: rewrite namespace in composite key
+                composite_key = _rewrite_namespace(composite_key, source_namespace, namespace)
                 synonym_items.append({
                     "target_id": eid,
-                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_namespace": namespace,
                     "synonym_entity_type": syn.get("entity_type", ""),
-                    "synonym_composite_key": syn.get("composite_key", {}),
+                    "synonym_composite_key": composite_key,
                     "created_by": "wip-toolkit-restore",
                 })
 
@@ -597,6 +715,25 @@ def _restore_synonyms_legacy(
     console.print(f"  Restored {total_registered} synonym(s)")
 
 
+def _rewrite_namespace(
+    composite_key: dict[str, Any],
+    source_namespace: str | None,
+    target_namespace: str,
+) -> dict[str, Any]:
+    """Rewrite the ``ns`` field in a composite key when namespaces differ.
+
+    Phase 4 of universal synonym resolution: when an archive is imported
+    into a different namespace, the ``ns`` component in auto-synonym
+    composite keys must be updated so resolution works in the target namespace.
+    """
+    if not source_namespace or source_namespace == target_namespace:
+        return composite_key
+    result = dict(composite_key)
+    if result.get("ns") == source_namespace:
+        result["ns"] = target_namespace
+    return result
+
+
 def _preview(
     reader: ArchiveReader,
     manifest: Any,
@@ -611,11 +748,11 @@ def _preview(
     if not skip_documents:
         console.print(f"  Documents:     {counts.documents}")
     else:
-        console.print(f"  Documents:     [dim]skipped[/dim]")
+        console.print("  Documents:     [dim]skipped[/dim]")
     if not skip_files:
         console.print(f"  Files:         {counts.files}")
     else:
-        console.print(f"  Files:         [dim]skipped[/dim]")
+        console.print("  Files:         [dim]skipped[/dim]")
     if reader.has_synonyms():
         syn_count = sum(1 for _ in reader.read_synonyms())
         console.print(f"  Synonyms:      {syn_count}")

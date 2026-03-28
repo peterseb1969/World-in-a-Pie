@@ -18,8 +18,7 @@ class IdGeneratorService:
         """
         ns = await Namespace.find_one({"prefix": namespace, "status": "active"})
         if not ns:
-            # Default to UUID7 if namespace not found
-            return IdGenerator.generate_uuid7()
+            raise ValueError(f"Namespace '{namespace}' does not exist or is not active")
 
         config = ns.get_id_algorithm(entity_type)
         return await cls.generate_from_config(config, namespace, entity_type)

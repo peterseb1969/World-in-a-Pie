@@ -13,6 +13,7 @@ from ..models.api_models import (
     BrowseEntriesResponse,
     BrowseEntryItem,
     BulkDeleteResponse,
+    BulkResolveResponse,
     BulkUpdateResponse,
     DeleteItem,
     DeleteResponse,
@@ -30,6 +31,8 @@ from ..models.api_models import (
     ReserveBulkResponse,
     ReserveItem,
     ReserveItemResponse,
+    ResolveItem,
+    ResolveResponse,
     UnifiedSearchResponse,
     UnifiedSearchResultItem,
     UpdateEntryItem,
@@ -312,6 +315,14 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
+    # Phase 0: Batch-validate that all referenced namespaces exist
+    unique_namespaces = {item.namespace for item in items}
+    existing_ns_docs = await Namespace.find(
+        {"prefix": {"$in": list(unique_namespaces)}, "status": "active"}
+    ).to_list()
+    valid_namespaces = {ns.prefix for ns in existing_ns_docs}
+    invalid_namespaces = unique_namespaces - valid_namespaces
+
     # Phase 1: Compute hashes for items with composite keys.
     # When identity_values is provided, compute identity_hash and inject it
     # into composite_key before hashing the full key for dedup.
@@ -332,7 +343,7 @@ async def register_keys(
             identity_hashes.append(None)
             hashes.append("")  # Empty composite key = no dedup
 
-    # Phase 2: Batch check for existing entries (only for non-empty hashes)
+    # Phase 2: Batch check for existing entries (by hash and by entry_id)
     dedup_hashes = [h for h in hashes if h]
     existing_by_hash = {}
     if dedup_hashes:
@@ -348,11 +359,21 @@ async def register_keys(
             for syn in entry.synonyms:
                 existing_by_hash[syn.composite_key_hash] = entry
 
+    # Also check for existing entries by entry_id (for restore/migration)
+    provided_ids = [item.entry_id for item in items if item.entry_id]
+    existing_by_entry_id: dict[str, RegistryEntry] = {}
+    if provided_ids:
+        id_entries = await RegistryEntry.find({
+            "entry_id": {"$in": provided_ids}
+        }).to_list()
+        for entry in id_entries:
+            existing_by_entry_id[entry.entry_id] = entry
+
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
 
-    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes)):
+    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
             # Validate entity_type
             if item.entity_type not in VALID_ENTITY_TYPES:
@@ -364,7 +385,32 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists (only when composite key is non-empty)
+            # Validate namespace exists
+            if item.namespace in invalid_namespaces:
+                results[i] = RegisterKeyResponse(
+                    input_index=i,
+                    status="error",
+                    error=f"Namespace '{item.namespace}' does not exist or is not active"
+                )
+                error_count += 1
+                continue
+
+            # Check if provided entry_id already exists (collision detection)
+            if item.entry_id and item.entry_id in existing_by_entry_id:
+                existing = existing_by_entry_id[item.entry_id]
+                results[i] = RegisterKeyResponse(
+                    input_index=i,
+                    status="error",
+                    error=(
+                        f"entry_id '{item.entry_id}' already exists "
+                        f"(namespace='{existing.namespace}', entity_type='{existing.entity_type}'). "
+                        f"Restore mode requires a clean target — delete existing data first."
+                    ),
+                )
+                error_count += 1
+                continue
+
+            # Check if exists by composite key hash (dedup)
             if key_hash:
                 existing = existing_by_hash.get(key_hash)
                 if existing:
@@ -436,7 +482,7 @@ async def register_keys(
                 )
                 created_count += 1
         except Exception as e:
-            for pos, idx in enumerate(insert_indices):
+            for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = RegisterKeyResponse(
                         input_index=idx,
@@ -554,17 +600,25 @@ async def reserve_ids(
                 error_count += 1
                 continue
 
-            # Validate format against namespace config
+            # Validate namespace exists
             ns = await Namespace.find_one({"prefix": item.namespace, "status": "active"})
-            if ns:
-                config = ns.get_id_algorithm(item.entity_type)
-                if not IdFormatValidator.validate(item.entry_id, config):
-                    results.append(ReserveItemResponse(
-                        input_index=i, status="invalid_format", entry_id=item.entry_id,
-                        error=f"ID does not match configured format for {item.entity_type}"
-                    ))
-                    error_count += 1
-                    continue
+            if not ns:
+                results.append(ReserveItemResponse(
+                    input_index=i, status="error", entry_id=item.entry_id,
+                    error=f"Namespace '{item.namespace}' does not exist or is not active"
+                ))
+                error_count += 1
+                continue
+
+            # Validate format against namespace config
+            config = ns.get_id_algorithm(item.entity_type)
+            if not IdFormatValidator.validate(item.entry_id, config):
+                results.append(ReserveItemResponse(
+                    input_index=i, status="invalid_format", entry_id=item.entry_id,
+                    error=f"ID does not match configured format for {item.entity_type}"
+                ))
+                error_count += 1
+                continue
 
             composite_key = item.composite_key or {}
             key_hash = HashService.compute_composite_key_hash(composite_key) if composite_key else ""
@@ -599,7 +653,7 @@ async def reserve_ids(
                 )
                 reserved_count += 1
         except Exception as e:
-            for pos, idx in enumerate(insert_indices):
+            for _pos, idx in enumerate(insert_indices):
                 if results[idx] is None:
                     results[idx] = ReserveItemResponse(
                         input_index=idx, status="error",
@@ -933,4 +987,69 @@ async def delete_entries(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "deactivated"),
         failed=sum(1 for r in results if r.status in ("not_found", "error")),
+    )
+
+
+@router.post(
+    "/resolve",
+    response_model=BulkResolveResponse,
+    summary="Resolve synonym composite keys to entry IDs (bulk)"
+)
+async def resolve_synonyms(
+    items: list[ResolveItem] = Body(...),
+    api_key: str = Depends(require_api_key)
+) -> BulkResolveResponse:
+    """
+    Resolve synonym composite keys to canonical entry IDs.
+
+    This is a read-only batch endpoint optimised for synonym resolution.
+    For each composite key, computes its hash and looks up the entry
+    that has a matching synonym (or primary key).
+
+    Returns entry_id for each found item, "not_found" otherwise.
+    """
+    results = []
+    found_count = 0
+    not_found_count = 0
+    error_count = 0
+
+    for i, item in enumerate(items):
+        try:
+            key_hash = HashService.compute_composite_key_hash(item.composite_key)
+
+            # Search both primary key and synonyms — no namespace/entity_type filter
+            # because the composite key itself contains ns and type for uniqueness
+            entry = await RegistryEntry.find_one({
+                "$or": [
+                    {"primary_composite_key_hash": key_hash},
+                    {"synonyms.composite_key_hash": key_hash},
+                ],
+                "status": "active",
+            })
+
+            if entry:
+                results.append(ResolveResponse(
+                    input_index=i,
+                    status="found",
+                    composite_key=item.composite_key,
+                    entry_id=entry.entry_id,
+                ))
+                found_count += 1
+            else:
+                results.append(ResolveResponse(
+                    input_index=i,
+                    status="not_found",
+                    composite_key=item.composite_key,
+                ))
+                not_found_count += 1
+
+        except Exception as e:
+            results.append(ResolveResponse(
+                input_index=i, status="error", error=str(e),
+            ))
+            error_count += 1
+
+    return BulkResolveResponse(
+        results=results, total=len(items),
+        found=found_count, not_found=not_found_count, errors=error_count,
     )

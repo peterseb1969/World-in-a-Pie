@@ -81,7 +81,10 @@ def fresh_import(
     # Step 8: Register synonyms
     if register_synonyms:
         console.print("\n[bold cyan]Step 7:[/bold cyan] Registering ID synonyms")
-        _register_synonyms(client, target_namespace, reader, remapper, stats, continue_on_error)
+        _register_synonyms(
+            client, target_namespace, reader, remapper, stats, continue_on_error,
+            source_namespace=stats.source_namespace,
+        )
 
     stats.id_mappings = remapper.total_mappings
     return stats
@@ -98,7 +101,7 @@ def _ensure_namespace(client: WIPClient, namespace: str, stats: ImportStats) -> 
             try:
                 client.post("registry", "/namespaces", json={
                     "prefix": namespace,
-                    "description": f"Fresh import from backup",
+                    "description": "Fresh import from backup",
                     "isolation_mode": "open",
                     "created_by": "wip-toolkit",
                 })
@@ -492,6 +495,7 @@ def _register_synonyms(
     remapper: IDRemapper,
     stats: ImportStats,
     continue_on_error: bool,
+    source_namespace: str | None = None,
 ) -> None:
     """Register old→new ID mappings and restore _registry synonyms with remapped IDs."""
     all_items: list[dict] = []
@@ -548,9 +552,11 @@ def _register_synonyms(
                 remapped_key = _remap_composite_key(
                     syn.get("composite_key", {}), all_maps,
                 )
+                # Phase 4: rewrite namespace in composite key
+                remapped_key = _rewrite_namespace(remapped_key, source_namespace, namespace)
                 all_items.append({
                     "target_id": new_eid,
-                    "synonym_namespace": syn.get("namespace", namespace),
+                    "synonym_namespace": namespace,
                     "synonym_entity_type": syn.get("entity_type", ""),
                     "synonym_composite_key": remapped_key,
                     "created_by": "wip-toolkit-fresh",
@@ -577,6 +583,20 @@ def _register_synonyms(
 
     stats.synonyms_registered = total_registered
     console.print(f"  Registered {total_registered} synonym(s)")
+
+
+def _rewrite_namespace(
+    composite_key: dict[str, Any],
+    source_namespace: str | None,
+    target_namespace: str,
+) -> dict[str, Any]:
+    """Rewrite the ``ns`` field in a composite key when namespaces differ."""
+    if not source_namespace or source_namespace == target_namespace:
+        return composite_key
+    result = dict(composite_key)
+    if result.get("ns") == source_namespace:
+        result["ns"] = target_namespace
+    return result
 
 
 def _remap_id(old_id: str, all_maps: list[dict[str, str]]) -> str:

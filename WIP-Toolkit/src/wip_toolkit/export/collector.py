@@ -79,7 +79,9 @@ class EntityCollector:
 
     # --- Document-Store ---
 
-    def fetch_documents(self, latest_only: bool = True) -> list[dict[str, Any]]:
+    def fetch_documents(
+        self, latest_only: bool = True, template_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Fetch documents in the namespace.
 
         Always uses the fast indexed query path (no server-side aggregation).
@@ -89,6 +91,8 @@ class EntityCollector:
         Args:
             latest_only: If True, return only the latest version of each
                 document_id. If False, return all versions.
+            template_ids: If provided, only return documents matching these
+                template IDs (client-side filter).
         """
         params: dict[str, Any] = {"namespace": self.namespace}
         if not self.include_inactive:
@@ -98,6 +102,11 @@ class EntityCollector:
         items = self.client.fetch_all_paginated(
             "document-store", "/documents", params=params, page_size=1000,
         )
+
+        # Apply template filter before dedup (reduces work)
+        if template_ids is not None:
+            items = [d for d in items if d.get("template_id") in template_ids]
+
         # Deduplicate by (document_id, version) — pagination can return
         # duplicates across page boundaries.
         seen: set[tuple[str, int]] = set()
@@ -117,8 +126,8 @@ class EntityCollector:
                     latest[did] = doc
             result = list(latest.values())
             console.print(
-                f"  Fetched {len(items)} document versions, "
-                f"deduplicated to {len(result)} latest documents"
+                f"  Fetched {len(result)} documents"
+                + (f" (filtered by {len(template_ids)} templates)" if template_ids else "")
             )
             return result
 
@@ -133,20 +142,26 @@ class EntityCollector:
         latest_only: bool = True,
         page_size: int = 1000,
     ) -> Iterator[list[dict[str, Any]]]:
-        """Stream documents page-by-page using cursor-based pagination.
+        """Stream documents page-by-page using offset pagination.
 
         Yields one page (list of dicts) at a time for O(page_size) memory.
         When latest_only=True, deduplicates within each page keeping only
         the highest version per document_id.
         """
-        params: dict[str, Any] = {"namespace": self.namespace}
+        params: dict[str, Any] = {"namespace": self.namespace, "page_size": page_size}
         if not self.include_inactive:
             params["status"] = "active"
 
         total_yielded = 0
-        for page_items in self.client.fetch_paginated_cursor(
-            "document-store", "/documents", params=params, page_size=page_size,
-        ):
+        page = 1
+
+        while True:
+            params["page"] = page
+            data = self.client.get("document-store", "/documents", params=params)
+            page_items = data.get("items", [])
+            if not page_items:
+                break
+
             if latest_only:
                 # Deduplicate within page: keep highest version per document_id
                 latest: dict[str, dict[str, Any]] = {}
@@ -158,6 +173,10 @@ class EntityCollector:
 
             total_yielded += len(page_items)
             yield page_items
+
+            if len(data.get("items", [])) < page_size:
+                break
+            page += 1
 
         console.print(f"  Streamed {total_yielded} documents")
 

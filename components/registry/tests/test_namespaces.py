@@ -251,24 +251,19 @@ class TestListNamespaces:
 
     @pytest.mark.asyncio
     async def test_list_namespaces_excludes_deleted(self, client: AsyncClient, auth_headers: dict):
-        """Test that deleted namespaces are excluded even with include_archived."""
-        # Create, archive, then delete
+        """Test that journal-deleted namespaces are excluded from listing."""
+        # Create with deletion_mode=full, then delete via journal
         await client.post(
             "/api/registry/namespaces",
-            json={"prefix": "to-delete-list"},
-            headers=auth_headers,
-        )
-        await client.post(
-            "/api/registry/namespaces/to-delete-list/archive",
+            json={"prefix": "to-delete-list", "deletion_mode": "full"},
             headers=auth_headers,
         )
         await client.delete(
             "/api/registry/namespaces/to-delete-list",
-            params={"confirm": True},
             headers=auth_headers,
         )
 
-        # Even with include_archived, deleted should not appear
+        # Should not appear in any listing
         response = await client.get(
             "/api/registry/namespaces",
             params={"include_archived": True},
@@ -634,75 +629,72 @@ class TestRestoreNamespace:
 
 
 class TestDeleteNamespace:
-    """Tests for deleting namespaces."""
+    """Tests for journal-based namespace deletion."""
 
     @pytest.mark.asyncio
-    async def test_delete_archived_namespace(self, client: AsyncClient, auth_headers: dict):
-        """Test deleting an archived namespace with confirm=true."""
-        # Create and archive
+    async def test_dry_run(self, client: AsyncClient, auth_headers: dict):
+        """Test dry run returns impact report without making changes."""
         await client.post(
             "/api/registry/namespaces",
-            json={"prefix": "to-delete"},
-            headers=auth_headers,
-        )
-        await client.post(
-            "/api/registry/namespaces/to-delete/archive",
+            json={"prefix": "dry-run-ns", "deletion_mode": "full"},
             headers=auth_headers,
         )
 
-        # Delete with confirm
         response = await client.delete(
-            "/api/registry/namespaces/to-delete",
-            params={"confirm": True, "deleted_by": "admin-user"},
+            "/api/registry/namespaces/dry-run-ns",
+            params={"dry_run": True},
             headers=auth_headers,
         )
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "deleted"
-        assert data["prefix"] == "to-delete"
+        assert data["dry_run"] is True
+        assert "entity_counts" in data
 
-    @pytest.mark.asyncio
-    async def test_delete_without_confirm_fails(self, client: AsyncClient, auth_headers: dict):
-        """Test that deleting without confirm=true returns 400."""
-        # Create and archive
-        await client.post(
-            "/api/registry/namespaces",
-            json={"prefix": "no-confirm-del"},
+        # Namespace should still exist
+        get_resp = await client.get(
+            "/api/registry/namespaces/dry-run-ns",
             headers=auth_headers,
         )
+        assert get_resp.status_code == 200
+        assert get_resp.json()["status"] == "active"
+
+    @pytest.mark.asyncio
+    async def test_delete_full_mode_namespace(self, client: AsyncClient, auth_headers: dict):
+        """Test deleting a namespace with deletion_mode=full."""
         await client.post(
-            "/api/registry/namespaces/no-confirm-del/archive",
+            "/api/registry/namespaces",
+            json={"prefix": "to-delete", "deletion_mode": "full"},
             headers=auth_headers,
         )
 
         response = await client.delete(
-            "/api/registry/namespaces/no-confirm-del",
+            "/api/registry/namespaces/to-delete",
+            params={"deleted_by": "admin-user"},
             headers=auth_headers,
         )
-        assert response.status_code == 400
-        assert "confirm" in response.json()["detail"].lower()
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_delete_active_namespace_fails(self, client: AsyncClient, auth_headers: dict):
-        """Test that deleting an active (non-archived) namespace returns 400."""
+    async def test_delete_retain_mode_fails(self, client: AsyncClient, auth_headers: dict):
+        """Test that deleting a retain-mode namespace returns 400."""
         await client.post(
             "/api/registry/namespaces",
-            json={"prefix": "still-active-del"},
+            json={"prefix": "retain-del"},
             headers=auth_headers,
         )
 
         response = await client.delete(
-            "/api/registry/namespaces/still-active-del",
-            params={"confirm": True},
+            "/api/registry/namespaces/retain-del",
             headers=auth_headers,
         )
         assert response.status_code == 400
-        assert "archived" in response.json()["detail"].lower()
+        assert "retain" in response.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_delete_wip_namespace_forbidden(self, client: AsyncClient, auth_headers: dict):
         """Test that deleting the 'wip' namespace is forbidden."""
-        # Initialize the wip namespace
         await client.post(
             "/api/registry/namespaces/initialize-wip",
             headers=auth_headers,
@@ -710,7 +702,6 @@ class TestDeleteNamespace:
 
         response = await client.delete(
             "/api/registry/namespaces/wip",
-            params={"confirm": True},
             headers=auth_headers,
         )
         assert response.status_code == 400
@@ -721,37 +712,57 @@ class TestDeleteNamespace:
         """Test that deleting a non-existent namespace returns 404."""
         response = await client.delete(
             "/api/registry/namespaces/nonexistent",
-            params={"confirm": True},
             headers=auth_headers,
         )
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_deleted_namespace_not_retrievable(self, client: AsyncClient, auth_headers: dict):
-        """Test that a deleted namespace can still be retrieved by prefix (soft delete)."""
-        # Create, archive, delete
+    async def test_deletion_status(self, client: AsyncClient, auth_headers: dict):
+        """Test getting deletion status after a completed deletion."""
         await client.post(
             "/api/registry/namespaces",
-            json={"prefix": "deleted-but-visible"},
-            headers=auth_headers,
-        )
-        await client.post(
-            "/api/registry/namespaces/deleted-but-visible/archive",
+            json={"prefix": "status-check", "deletion_mode": "full"},
             headers=auth_headers,
         )
         await client.delete(
-            "/api/registry/namespaces/deleted-but-visible",
-            params={"confirm": True},
+            "/api/registry/namespaces/status-check",
             headers=auth_headers,
         )
 
-        # The namespace document still exists (soft-deleted), so get by prefix returns it
         response = await client.get(
-            "/api/registry/namespaces/deleted-but-visible",
+            "/api/registry/namespaces/status-check/deletion-status",
             headers=auth_headers,
         )
         assert response.status_code == 200
-        assert response.json()["status"] == "deleted"
+        data = response.json()
+        assert data["status"] == "completed"
+        assert data["namespace"] == "status-check"
+
+    @pytest.mark.asyncio
+    async def test_update_deletion_mode(self, client: AsyncClient, auth_headers: dict):
+        """Test changing deletion_mode from retain to full."""
+        await client.post(
+            "/api/registry/namespaces",
+            json={"prefix": "mode-change"},
+            headers=auth_headers,
+        )
+
+        # Without confirm flag should fail
+        resp = await client.patch(
+            "/api/registry/namespaces/mode-change",
+            params={"deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 400
+
+        # With confirm flag
+        resp = await client.patch(
+            "/api/registry/namespaces/mode-change",
+            params={"deletion_mode": "full", "confirm_enable_deletion": True},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200
+        assert resp.json()["deletion_mode"] == "full"
 
 
 class TestInitializeWipNamespace:

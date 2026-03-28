@@ -29,6 +29,10 @@ mcp = FastMCP(
         "WIP uses a bulk-first API: all write operations accept arrays and "
         "return per-item results. This MCP server handles the bulk envelope "
         "for you — single-item calls return the unwrapped result directly. "
+        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
+        "part_of, etc.) for hierarchical data modeling — use create_relationships "
+        "and get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
+        "aggregations, cross-template JOINs, and analytics via run_report_query. "
         "IMPORTANT: Before creating any templates or documents, read the "
         "wip://conventions and wip://data-model resources. WIP has several "
         "non-obvious behaviours (multi-version templates, identity-based "
@@ -141,6 +145,37 @@ Shared vocabularies (in "wip") are the common language — you need a grant to
 list or modify a namespace's data, but not to reference its terms.
 
 Reference validation runs at document creation, not template creation.
+
+## Ontology Relationships
+Terms can be connected via typed relationships to model hierarchies and
+associations. This is powerful for taxonomies, classification trees, org charts,
+part-of-whole relationships, and any domain with inherent structure.
+
+Available relationship types: is_a, part_of, has_part, regulates,
+positively_regulates, negatively_regulates. Custom types can be added via the
+_ONTOLOGY_RELATIONSHIP_TYPES terminology.
+
+Key tools:
+- create_relationships — connect terms (e.g., "Cat is_a Animal")
+- list_relationships — see connections for a term
+- get_term_hierarchy — traverse ancestors, descendants, parents, children
+- import_terminology with OBO Graph JSON — bulk-load entire ontologies
+
+When to use: If a terminology has natural parent-child or part-whole structure
+(species taxonomy, disease classification, org hierarchy, geographic containment),
+model it with ontology relationships rather than flat term lists.
+
+## Reporting & Aggregation (PostgreSQL)
+WIP syncs document data to PostgreSQL tables (one per template: doc_*).
+This enables SQL queries for aggregation, cross-template JOINs, and analytics
+that the document API does not support.
+
+Key tools:
+- list_report_tables — discover available tables and their columns
+- run_report_query — execute SQL (SELECT only) with parameterised queries
+
+The reporting layer requires the reporting-sync service (included in "standard"
+and "full" presets, not in "core"). Data syncs within seconds of document changes.
 
 ## Template Cache
 Template changes may take up to 5 seconds to propagate (cache TTL on "latest"
@@ -289,17 +324,22 @@ Do NOT recreate terminologies or templates that already exist. Reuse them.
 Map your domain onto WIP primitives:
 
 1. Identify controlled vocabularies → terminologies (value + label + aliases)
-2. Identify document types → templates with typed fields
-3. Define relationships between templates (references, inheritance)
-4. Define identity_fields for deduplication — choose carefully:
+2. Identify hierarchical vocabularies → terminologies WITH ontology relationships
+   Ask: "Are any of these vocabularies hierarchical? Do terms have parent-child
+   or part-of-whole relationships?" Examples: species taxonomy, disease
+   classification, org hierarchy, geographic containment, product categories.
+   If yes, plan ontology relationships (is_a, part_of, etc.) alongside terms.
+3. Identify document types → templates with typed fields
+4. Define relationships between templates (references, inheritance)
+5. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
    - Zero → append-only, no update path (fine for event logs)
    - NEVER include timestamps or per-run data in identity fields
    - Avoid timestamps in non-identity fields too — they trigger unnecessary
      version updates on otherwise unchanged documents
-5. Apply semantic_types where applicable (email, url, geo_point, etc.)
-6. Field naming: use "mandatory" (NOT "required"), "terminology_ref" (NOT
+6. Apply semantic_types where applicable (email, url, geo_point, etc.)
+7. Field naming: use "mandatory" (NOT "required"), "terminology_ref" (NOT
    "terminology_id"). These are the WIP API field names.
 
 ### Namespace Strategy
@@ -314,6 +354,8 @@ Create the data model in WIP using MCP tools:
 1. Create terminologies: create_terminology(value, label, description)
    Populate with terms: create_terms(terminology_id, terms)
    Verify: list_terms(terminology_id)
+   If hierarchical: create_relationships([{source_term_id, target_term_id,
+   relationship_type}]) — e.g., "Cat is_a Animal". Verify: get_term_hierarchy.
 2. Create templates: create_template(template) — use draft mode for
    circular dependencies, then activate_template (all-or-nothing validation)
    Verify: get_template_fields(template_value)
@@ -343,6 +385,8 @@ MCP tools remain useful for debugging and data queries:
 - Identity hashing: define identity_fields so duplicate submissions update, not duplicate
 - Draft mode: create templates with status: "draft" to handle circular deps
 - Registry synonyms: register external IDs for cross-system lookups
+- Ontology relationships: connect terms hierarchically (is_a, part_of) for taxonomies
+- SQL aggregation: use run_report_query for GROUP BY, COUNT, JOINs across templates
 
 Detailed step-by-step procedures for each phase are in the slash commands:
 /explore, /design-model, /implement, /build-app.
@@ -470,6 +514,29 @@ async def get_namespace_stats(prefix: str) -> str:
     """Get statistics for a namespace — entity counts by type."""
     try:
         data = await get_client().get_namespace_stats(prefix)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_namespace(
+    prefix: str, dry_run: bool = True, force: bool = False
+) -> str:
+    """Delete a namespace and ALL its data (terminologies, terms, templates, documents, files).
+
+    DESTRUCTIVE — requires deletion_mode='full' on the namespace.
+    Always run with dry_run=true first to see the impact report.
+
+    Args:
+        prefix: Namespace prefix to delete
+        dry_run: If true (default), return impact report without making changes
+        force: If true, proceed even if other namespaces reference this one
+    """
+    try:
+        data = await get_client().delete_namespace(
+            prefix, dry_run=dry_run, force=force
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -628,10 +695,15 @@ async def get_terminology(terminology_id: str) -> str:
 
 
 @mcp.tool()
-async def get_terminology_by_value(value: str) -> str:
-    """Get a terminology by its value code (e.g., 'COUNTRY', 'GENDER'). Case-sensitive."""
+async def get_terminology_by_value(value: str, namespace: str | None = None) -> str:
+    """Get a terminology by its value code (e.g., 'COUNTRY', 'GENDER'). Case-sensitive.
+
+    Args:
+        value: The terminology value code.
+        namespace: Namespace to search in. Omit to search all namespaces.
+    """
     try:
-        data = await get_client().get_terminology_by_value(value)
+        data = await get_client().get_terminology_by_value(value, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -665,13 +737,17 @@ async def create_terminology(
 
 
 @mcp.tool()
-async def create_terminologies_bulk(items: list[dict]) -> str:
+async def create_terminologies_bulk(items: list[dict], namespace: str | None = None) -> str:
     """Create multiple terminologies at once.
 
     Args:
-        items: List of {value, label, namespace?, description?} objects.
+        items: List of {value, label, description?} objects.
+        namespace: Namespace for all items. Omit to use per-item namespace or server default.
     """
     try:
+        if namespace:
+            for item in items:
+                item.setdefault("namespace", namespace)
         data = await get_client().create_terminologies(items)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -908,6 +984,7 @@ async def get_term_hierarchy(
     direction: str = "children",
     relationship_type: str | None = None,
     max_depth: int = 10,
+    namespace: str | None = None,
 ) -> str:
     """Traverse ontology relationships for a term.
 
@@ -916,24 +993,27 @@ async def get_term_hierarchy(
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relationship_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
         max_depth: Max traversal depth for ancestors/descendants.
+        namespace: Namespace to query in. Omit to use server default.
     """
     try:
         client = get_client()
         if direction == "children":
-            data = await client.get_term_children(term_id)
+            data = await client.get_term_children(term_id, namespace=namespace)
         elif direction == "parents":
-            data = await client.get_term_parents(term_id)
+            data = await client.get_term_parents(term_id, namespace=namespace)
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
                 term_id,
                 relationship_type=relationship_type,
                 max_depth=max_depth,
+                namespace=namespace,
             )
         elif direction == "descendants":
             data = await client.get_term_descendants(
                 term_id,
                 relationship_type=relationship_type,
                 max_depth=max_depth,
+                namespace=namespace,
             )
         else:
             return "Error: direction must be children, parents, ancestors, or descendants"
@@ -943,12 +1023,16 @@ async def get_term_hierarchy(
 
 
 @mcp.tool()
-async def create_relationships(relationships: list[dict]) -> str:
+async def create_relationships(
+    relationships: list[dict],
+    namespace: str | None = None,
+) -> str:
     """Create ontology relationships between terms.
 
     Args:
-        relationships: List of {source_term_id, target_term_id, relationship_type, namespace?}.
+        relationships: List of {source_term_id, target_term_id, relationship_type}.
             relationship_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+        namespace: Namespace to create in. Omit to use server default.
 
     Example:
         create_relationships([{
@@ -958,7 +1042,7 @@ async def create_relationships(relationships: list[dict]) -> str:
         }])
     """
     try:
-        data = await get_client().create_relationships(relationships)
+        data = await get_client().create_relationships(relationships, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -969,6 +1053,7 @@ async def list_relationships(
     term_id: str,
     direction: str = "outgoing",
     relationship_type: str | None = None,
+    namespace: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> str:
@@ -978,13 +1063,15 @@ async def list_relationships(
         term_id: The term to list relationships for.
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
+        namespace: Namespace to query in. Omit to use server default.
         page: Page number.
         page_size: Results per page (max 100).
     """
     try:
         data = await get_client().list_relationships(
             term_id=term_id, direction=direction,
-            relationship_type=relationship_type, page=page, page_size=page_size,
+            relationship_type=relationship_type, namespace=namespace,
+            page=page, page_size=page_size,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -992,11 +1079,15 @@ async def list_relationships(
 
 
 @mcp.tool()
-async def delete_relationships(relationships: list[dict]) -> str:
+async def delete_relationships(
+    relationships: list[dict],
+    namespace: str | None = None,
+) -> str:
     """Delete ontology relationships between terms.
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
+        namespace: Namespace to delete from. Omit to use server default.
 
     Example:
         delete_relationships([{
@@ -1006,7 +1097,7 @@ async def delete_relationships(relationships: list[dict]) -> str:
         }])
     """
     try:
-        data = await get_client().delete_relationships(relationships)
+        data = await get_client().delete_relationships(relationships, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1088,7 +1179,7 @@ async def get_template_raw(template_id: str) -> str:
 
 
 @mcp.tool()
-async def create_template(template: dict) -> str:
+async def create_template(template: dict, namespace: str | None = None) -> str:
     """Create a template (document schema).
 
     NOTE: Updating an existing template creates a new version — the old version
@@ -1099,7 +1190,7 @@ async def create_template(template: dict) -> str:
             - value: Unique code (e.g., 'BANK_TRANSACTION'). UPPER_SNAKE_CASE.
             - label: Display name.
             - fields: List of field definitions.
-            - namespace: Namespace (default: 'wip').
+        namespace: Namespace. Omit to use template's namespace field or server default.
 
         Optional:
             - description: What this template represents.
@@ -1139,6 +1230,8 @@ async def create_template(template: dict) -> str:
         })
     """
     try:
+        if namespace:
+            template.setdefault("namespace", namespace)
         data = await get_client().create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1146,11 +1239,19 @@ async def create_template(template: dict) -> str:
 
 
 @mcp.tool()
-async def create_templates_bulk(templates: list[dict]) -> str:
+async def create_templates_bulk(templates: list[dict], namespace: str | None = None) -> str:
     """Create multiple templates. Use status: 'draft' for circular dependencies, then activate.
 
-    Updates create new versions — old versions stay active. See wip://conventions."""
+    Updates create new versions — old versions stay active. See wip://conventions.
+
+    Args:
+        templates: List of template definitions.
+        namespace: Namespace for all templates. Omit to use per-template namespace or server default.
+    """
     try:
+        if namespace:
+            for tpl in templates:
+                tpl.setdefault("namespace", namespace)
         data = await get_client().create_templates(templates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1218,6 +1319,7 @@ async def get_template_dependencies(template_id: str) -> str:
 async def get_template_versions(
     template_value: str | None = None,
     template_id: str | None = None,
+    namespace: str | None = None,
 ) -> str:
     """List all versions of a template.
 
@@ -1227,11 +1329,12 @@ async def get_template_versions(
     Args:
         template_value: Template value code (e.g., 'PATIENT').
         template_id: Template ID (e.g., 'TPL-xxx').
+        namespace: Namespace to search in (only used with template_value). Omit for all namespaces.
     """
     try:
         client = get_client()
         if template_value:
-            data = await client.get_template_versions_by_value(template_value)
+            data = await client.get_template_versions_by_value(template_value, namespace=namespace)
         elif template_id:
             data = await client.get_template_versions(template_id)
         else:
@@ -1315,7 +1418,7 @@ async def get_document(document_id: str, version: int | None = None) -> str:
 
 
 @mcp.tool()
-async def create_document(document: dict) -> str:
+async def create_document(document: dict, namespace: str | None = None) -> str:
     """Create a document (an instance of a template).
 
     Args:
@@ -1325,7 +1428,7 @@ async def create_document(document: dict) -> str:
               without it, WIP resolves "latest active" which may not be what you
               expect if multiple versions are active. See wip://conventions.
             - data: The field values (a dict matching the template's fields).
-            - namespace: Namespace (default: 'wip').
+        namespace: Namespace. Omit to use document's namespace field or server default.
 
     Term fields: Submit the human-readable value (e.g., "United Kingdom").
     WIP resolves it to the term_id automatically. If resolution fails,
@@ -1349,6 +1452,8 @@ async def create_document(document: dict) -> str:
         })
     """
     try:
+        if namespace:
+            document.setdefault("namespace", namespace)
         data = await get_client().create_document(document)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1356,9 +1461,17 @@ async def create_document(document: dict) -> str:
 
 
 @mcp.tool()
-async def create_documents_bulk(documents: list[dict]) -> str:
-    """Create multiple documents at once. Returns per-item results."""
+async def create_documents_bulk(documents: list[dict], namespace: str | None = None) -> str:
+    """Create multiple documents at once. Returns per-item results.
+
+    Args:
+        documents: List of document data dicts.
+        namespace: Namespace for all documents. Omit to use per-document namespace or server default.
+    """
     try:
+        if namespace:
+            for doc in documents:
+                doc.setdefault("namespace", namespace)
         data = await get_client().create_documents(documents)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1452,6 +1565,7 @@ async def import_terminology(
     format: str = "json",
     skip_duplicates: bool = True,
     update_existing: bool = False,
+    namespace: str | None = None,
 ) -> str:
     """Import a terminology with terms from JSON data.
 
@@ -1460,6 +1574,7 @@ async def import_terminology(
         format: Import format ('json').
         skip_duplicates: Skip terms that already exist.
         update_existing: Update existing terms with new data.
+        namespace: Target namespace. Omit to use server default.
     """
     try:
         result = await get_client().import_terminology(
@@ -1467,6 +1582,7 @@ async def import_terminology(
             format=format,
             skip_duplicates=skip_duplicates,
             update_existing=update_existing,
+            namespace=namespace,
         )
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
@@ -1556,6 +1672,7 @@ async def export_table_csv(
 async def search(
     query: str,
     types: list[str] | None = None,
+    namespace: str | None = None,
     limit: int = 20,
 ) -> str:
     """Unified search across all WIP entities (via reporting-sync).
@@ -1563,11 +1680,12 @@ async def search(
     Args:
         query: Search string.
         types: Filter by entity type: 'terminology', 'term', 'template', 'document'.
+        namespace: Filter by namespace. Omit to search all namespaces.
         limit: Max results.
     """
     try:
         data = await get_client().unified_search(
-            query=query, types=types, limit=limit
+            query=query, types=types, namespace=namespace, limit=limit
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1840,14 +1958,20 @@ async def query_by_template(
 
 
 @mcp.tool()
-async def list_report_tables() -> str:
+async def list_report_tables(table_name: str | None = None) -> str:
     """List available reporting tables in PostgreSQL (doc_* tables + terminologies/terms).
 
     Use this to discover what tables exist before running SQL queries.
-    Each table includes column names, types, and row counts.
+
+    Args:
+        table_name: If omitted, returns a compact summary of all tables (name,
+            row_count, column_count) — typically a few KB. If provided, returns
+            full column detail (name, type, nullable) for that specific table.
+            Call without table_name first to discover tables, then with table_name
+            to inspect columns before writing SQL.
     """
     try:
-        data = await get_client().list_report_tables()
+        data = await get_client().list_report_tables(table_name=table_name)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)

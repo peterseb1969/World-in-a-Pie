@@ -1,10 +1,17 @@
 """Document API endpoints."""
 
 import asyncio
+import contextlib
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    EntityNotFoundError,
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_entity_id,
+)
 
 from ..models.api_models import (
     ArchiveItem,
@@ -43,11 +50,22 @@ async def create_documents(
     continue_on_error: bool = Query(True, description="Continue processing if an item fails"),
     _: str = Depends(require_api_key)
 ):
-    """Create or update documents. Namespace is read from each item (default: "wip")."""
+    """Create or update documents. Namespace is read from each item (default: "wip").
+
+    Template IDs accept both canonical UUIDs and human-readable values
+    (e.g., "PATIENT" instead of "019..."). Values are resolved via Registry synonyms.
+    """
     identity = get_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
+
+    # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID)
+    for item in items:
+        with contextlib.suppress(EntityNotFoundError):
+            item.template_id = await resolve_entity_id(
+                item.template_id, "template", item.namespace
+            )
 
     service = get_document_service()
 
@@ -110,6 +128,13 @@ async def list_documents(
         await check_namespace_permission(identity, namespace, "read")
     else:
         allowed_namespaces = await resolve_accessible_namespaces(identity)
+
+    # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
+    if template_id:
+        with contextlib.suppress(EntityNotFoundError):
+            template_id = await resolve_entity_id(
+                template_id, "template", namespace or "wip"
+            )
 
     service = get_document_service()
     return await service.list_documents(

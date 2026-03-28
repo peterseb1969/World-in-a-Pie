@@ -968,6 +968,8 @@ class RegistryEntry(BaseModel):
     metadata: dict[str, Any]
 ```
 
+**Auto-synonyms:** When entities are created, services automatically register a synonym composite key (e.g., `{"ns": "wip", "type": "terminology", "value": "STATUS"}` for a terminology with value "STATUS"). This enables universal synonym resolution — any API endpoint that accepts an entity ID can also accept the human-readable value. See `docs/api-conventions.md` for details.
+
 **`search_values`** is a flat array containing all string values extracted from `primary_composite_key` and all `synonyms[].composite_key`. It is automatically rebuilt whenever synonyms are added, removed, or entries are merged. Merged/deprecated IDs are also added to `search_values`. This enables efficient value-based lookups — any string value from any composite key can be resolved to its canonical entry via a single indexed query.
 
 **Example:**

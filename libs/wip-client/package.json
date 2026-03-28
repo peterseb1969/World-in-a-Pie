@@ -29,6 +29,7 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
+    "prepack": "npm run build",
     "clean": "rm -rf dist",
     "generate-types": "tsx scripts/generate-types.ts",
     "smoke-test": "tsx scripts/smoke-test.ts"

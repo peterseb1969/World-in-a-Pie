@@ -102,7 +102,7 @@ const termOptions = computed(() => {
   return terms.value.map(t => ({
     label: t.label,
     value: t.value
-  }))
+  })).sort((a, b) => (a.label || '').localeCompare(b.label || ''))
 })
 
 // Helper to parse date strings
@@ -188,10 +188,12 @@ const refTemplateOptions = computed(() => {
     return templateStore.templates
       .filter(t => props.field.target_templates!.includes(t.template_id) || props.field.target_templates!.includes(t.value))
       .map(t => ({ label: `${t.label} (${t.value})`, value: t.template_id }))
+      .sort((a, b) => a.label.localeCompare(b.label))
   }
   return templateStore.templates
     .filter(t => t.status === 'active')
     .map(t => ({ label: `${t.label} (${t.value})`, value: t.template_id }))
+    .sort((a, b) => a.label.localeCompare(b.label))
 })
 
 // Whether template filter should be locked (single target template)
@@ -601,6 +603,7 @@ onMounted(() => {
                 placeholder="All templates"
                 :showClear="!refTemplateLocked"
                 :disabled="refTemplateLocked"
+                filter
                 class="ref-template-filter"
                 @change="searchDocuments"
               />

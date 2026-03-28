@@ -20,7 +20,7 @@ services:
       - DEF_STORE_API_KEY=${API_KEY}
       - DOCUMENT_STORE_URL=${DOCUMENT_STORE_URL:-http://wip-document-store:8004}
       - DOCUMENT_STORE_API_KEY=${API_KEY}
-      - NATS_URL=${NATS_URL:-nats://wip-nats:4222}
+      - NATS_URL=${NATS_URL-nats://wip-nats:4222}
       - CORS_ORIGINS=${WIP_CORS_ORIGINS:-}
     volumes:
       - ../../libs/wip-auth:/app/libs/wip-auth:ro
