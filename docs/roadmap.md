@@ -19,22 +19,21 @@ Enables the dev→prod workflow: create a `full` dev namespace, iterate on the d
 
 The `wip-toolkit import --mode restore` must preserve **all** original entity IDs when restoring to a different instance. Every entity type — terminologies, terms, templates, documents, and files — must arrive with its original ID intact. This is a hard requirement for backup/restore, cross-instance migration, and the dev→prod namespace workflow.
 
-Current state (tested 2026-03-25):
-- **Terminologies:** No API-level ID pass-through. Toolkit builds old→new ID map by value and remaps downstream references (terms, template fields). Works but fragile — value collisions across namespaces would break it.
-- **Terms:** Inherit from terminology. Works via the value-based remap.
+Current state (tested 2026-03-28):
+- **Terminologies:** API-level `entry_id` pass-through implemented in def-store's `register_terminology()` and `register_term()` (commit f87a9fb). Registry client accepts `entry_id` parameter; if provided, the original ID is preserved. Toolkit value-based remap still works as fallback.
+- **Terms:** Inherit from terminology. Both value-based remap and direct `entry_id` pass-through work.
 - **Templates:** ID pass-through works (template_id + version in payload).
 - **Documents:** ID pass-through exists in the API but the toolkit isn't triggering it correctly — documents get new IDs, breaking document-to-document references (e.g., `parent_class`). 14/1384 documents failed in testing.
 - **Files:** Created with new IDs. File references in documents break.
 
-Fix approach:
+Remaining fix approach:
 1. **Documents:** Debug why document_id pass-through isn't activating (the document-store checks `request.document_id and request.version is not None`). Fix the toolkit to send both fields correctly.
 2. **Files:** Add file_id pass-through to the document-store upload endpoint so restored files keep their original IDs. Update the toolkit to use it.
-3. **Terminologies:** Add API-level ID pass-through to def-store (matching the template-store pattern) so restore doesn't depend on value-based remapping.
-4. **End-to-end test:** Export a fully populated namespace (with doc-to-doc references, file references, and ontology relationships), restore to a clean instance, and verify 100% ID match with zero failures.
+3. **End-to-end test:** Export a fully populated namespace (with doc-to-doc references, file references, and ontology relationships), restore to a clean instance, and verify 100% ID match with zero failures.
 
 Alternative: Registry "draft" entity mode — register all IDs as draft (skip referential integrity), import all data, then promote all to active.
 
-- Status: Partially working, 99% success rate, needs ID pass-through debugging for documents and files
+- Status: Partially working, 99% success rate. Terminology/term ID pass-through done (2026-03-28). Documents and files still need debugging.
 
 ### Cross-Platform Test Suite
 
@@ -45,8 +44,9 @@ Comprehensive end-to-end test of the full WIP universe across supported platform
 - **Client libraries:** @wip/client (TypeScript), @wip/react hooks
 - **Scripts:** `setup.sh` (all presets), `quality-audit.sh`, `seed_comprehensive.py`, `dev-delete.py`, `create-app-project.sh`, security scripts
 - **WIP Console:** Build, OIDC login flow, CRUD operations (see UI testing below)
-- **Platforms:** macOS (Apple Silicon), Linux x86_64, Raspberry Pi 5 (aarch64), Raspberry Pi 4 (armv8.0)
+- **Platforms:** macOS (Apple Silicon), Linux x86_64, Raspberry Pi 5 (aarch64), Raspberry Pi 4 (armv8.0), Windows 11 (Git Bash + Podman Desktop)
 - **Container runtimes:** Rootless Podman, rootful Podman, Docker
+- **Windows support:** Platform auto-detection added to `setup.sh` (2026-03-28). Named volume overlay (`docker-compose/platforms/windows.yml`) for MongoDB, PostgreSQL, and MinIO — WSL bind mounts fail for services running as non-root UIDs. NATS_URL variable substitution fixed (`:-` → `-`) so empty values are preserved for standard preset without NATS.
 
 #### UI / E2E Testing Approaches
 
@@ -296,13 +296,14 @@ Must cover:
 - **stdio transport:** Configuration examples, environment variable pass-through, working directory considerations
 - **SSE transport:** Configuration and testing — currently implemented but **untested**. Verify connection lifecycle, reconnection behaviour, authentication (API key header pass-through), and concurrent client sessions
 - **Network scenarios:** Local (same host), LAN (e.g., app dev machine connecting to MCP server on a Pi), and remote (over SSH tunnel or reverse proxy)
+- **SSH stdio proxy:** Validated (2026-03-28) — SSH pipes the MCP server's stdio from a remote host to the local Claude Code client. Tested Mac→Pi with all 68 tools functional. Config: `"command": "ssh", "args": ["user@host", "cd /path && ... python -m wip_mcp"]` in `.mcp.json`. Requires service URLs overridden to `localhost` (container-internal hostnames don't resolve outside the container network).
 - **Authentication:** How the MCP server forwards API keys to WIP services, configuring keys per client, OIDC token pass-through considerations
 - **Tool filtering:** Documenting the planned `WIP_MCP_MODE=readonly` option (see MCP Read-Only Mode above) and how it affects tool registration per client
 - **Troubleshooting:** Common failure modes (port conflicts, TLS issues with SSE, environment variables not propagated, tool timeouts)
 
 Testing deliverable: End-to-end test of SSE transport — start MCP server in SSE mode, connect from at least two different clients, verify tool invocation, event streaming, and graceful disconnection.
 
-- Status: stdio tested and working, SSE untested
+- Status: stdio tested and working, SSH stdio proxy validated (Mac→Pi), SSE untested
 
 ---
 
@@ -407,6 +408,7 @@ All feature designs live in `docs/design/`. Status of each:
 
 These were previously on the roadmap and are now fully implemented:
 
+- Windows/WSL platform support — auto-detection, named volume overlays for MongoDB/PostgreSQL/MinIO, NATS_URL fix
 - Binary file storage (MinIO) — full CRUD, UI, reference tracking, orphan detection
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
 - Ontology support — OBO Graph JSON import, typed relationships, traversal

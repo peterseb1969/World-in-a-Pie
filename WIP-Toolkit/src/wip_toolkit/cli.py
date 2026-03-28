@@ -110,8 +110,8 @@ def export(
 
 @main.command(name="import")
 @click.argument("archive_path")
-@click.option("--mode", type=click.Choice(["restore", "fresh"]), default="restore",
-              help="Import mode (default: restore)")
+@click.option("--mode", type=click.Choice(["fresh", "restore"]), default="fresh",
+              help="Import mode (default: fresh)")
 @click.option("--target-namespace", default=None, help="Override target namespace")
 @click.option("--register-synonyms", is_flag=True, help="Register old→new ID synonyms (fresh mode)")
 @click.option("--skip-documents", is_flag=True, help="Skip document import")
