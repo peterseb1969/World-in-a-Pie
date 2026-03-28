@@ -134,6 +134,26 @@ Depends on: Data Migration Guide (above) for the underlying WIP migration proced
 
 - Status: Not started
 
+### App Deployment & Distribution Guide
+
+Document the full lifecycle of deploying a WIP app to a different machine or handing it to another user. Two phases:
+
+**Phase 1 — Manual deployment docs (near-term):**
+- Step-by-step: clone app repo, install deps, configure MCP/API endpoints, run `/bootstrap` to seed data model, start the server
+- Document what `create-app-project.sh` produces and how each piece maps to a deployment target
+- Cover: Mac→Pi, Mac→VPS, dev→prod on same host
+- Include the data pipeline: `/export-model` → transfer → `wip-toolkit import` or `/bootstrap`
+
+**Phase 2 — One-click app distribution (medium-term):**
+- Container image contract (app + data model seed in one image)
+- `app-manifest.json` — metadata, WIP version requirements, namespace config
+- Install tooling: `wip-toolkit install-app <image>` or similar
+- Design doc exists: `docs/design/distributable-app-format.md` (specification only)
+
+Phase 1 unblocks early adopters. Phase 2 depends on the NL query scaffold proving the app-building pattern at scale.
+
+- Status: Not started
+
 ### MCP Server Configuration Guide & SSE Transport Testing
 
 Detailed instructions for configuring the WIP MCP server across different AI clients and transports. The MCP server currently supports both stdio and SSE transport, but only stdio has been tested in practice.
