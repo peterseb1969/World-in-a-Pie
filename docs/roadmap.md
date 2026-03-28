@@ -40,7 +40,7 @@ Alternative: Registry "draft" entity mode — register all IDs as draft (skip re
 Comprehensive end-to-end test of the full WIP universe across supported platforms. Must cover:
 
 - **All services:** Registry, Def-Store, Template-Store, Document-Store, Reporting-Sync, Ingest Gateway, MCP Server
-- **WIP-Toolkit:** Export, import (fresh and restore modes), closure computation
+- **WIP-Toolkit:** Export, import (fresh and restore modes), closure computation, namespace deletion
 - **Client libraries:** @wip/client (TypeScript), @wip/react hooks
 - **Scripts:** `setup.sh` (all presets), `quality-audit.sh`, `seed_comprehensive.py`, `dev-delete.py`, `create-app-project.sh`, security scripts
 - **WIP Console:** Build, OIDC login flow, CRUD operations (see UI testing below)
@@ -191,6 +191,10 @@ Core permission system is implemented (grant model, CRUD API, service enforcemen
 ### Registry Entry Reactivation
 
 `POST /entries/{id}/reactivate` for reversible merges. Currently, merged/deactivated entries cannot be restored. Not yet implemented.
+
+### WIP-Toolkit: `delete-namespace` Command
+
+Add `wip-toolkit delete-namespace <prefix>` to wrap the two-step Registry API dance (set `deletion_mode=full`, then DELETE). Currently namespace deletion requires manual `curl` calls. Should include `--dry-run` (show impact report), `--force` (skip confirmation), and safety prompts.
 
 ### MCP Read-Only Mode
 
