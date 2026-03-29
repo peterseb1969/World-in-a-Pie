@@ -111,14 +111,12 @@ for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-del
     fi
 done
 # Design docs live in a subdirectory
-for doc in ontology-support.md; do
-    if [ -f "$WIP_ROOT/docs/design/$doc" ]; then
-        cp "$WIP_ROOT/docs/design/$doc" "$APP_DIR/docs/"
-        echo "   Copied: docs/design/$doc"
-    else
-        echo "   Warning: docs/design/$doc not found, skipping"
-    fi
-done
+if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
+    cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
+    echo "   Copied: docs/design/ontology-support.md"
+else
+    echo "   Warning: docs/design/ontology-support.md not found, skipping"
+fi
 
 # --- Generate .mcp.json ---
 

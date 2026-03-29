@@ -84,7 +84,7 @@ For working ON WIP itself — modifying services, libraries, infrastructure.
 ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST]
 ```
 
-Provides: `/resume`, `/wip-status`, `/understand`, `/test`, `/quality`, `/review-changes`, `/pre-commit`, `/roadmap`
+Provides: `/setup`, `/resume`, `/wip-status`, `/understand`, `/test`, `/quality`, `/review-changes`, `/pre-commit`, `/roadmap`
 
 ### App Builder Agent
 

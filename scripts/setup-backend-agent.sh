@@ -213,9 +213,10 @@ WIP is a universal template-driven document storage system. It runs on anything 
 
 ## Getting Started
 
-1. Run `/wip-status` — verify MCP connectivity and service health
-2. Run `/roadmap` — see current priorities
-3. Run `/understand <component>` — deep-dive into what you're working on
+1. Run `/setup` — verify environment (venv, containers, MCP connectivity)
+2. Run `/wip-status` — check service health and data state
+3. Run `/roadmap` — see current priorities
+4. Run `/understand <component>` — deep-dive into what you're working on
 
 ## Essential Reading
 
@@ -254,6 +255,7 @@ See `docs/architecture.md` for full details.
 
 | Command | Purpose |
 |---------|---------|
+| `/setup` | First-run environment check and guided setup |
 | `/resume` | Recover context after compaction or new session |
 | `/wip-status` | Check service health and data state |
 | `/understand` | Deep-dive into a component or library |
@@ -318,7 +320,7 @@ echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -
 # --- 4. Set up Python venv (if missing) ---
 
 echo "4. Checking Python venv..."
-if [ -d "$WIP_ROOT/.venv" ]; then
+if [ -d "$WIP_ROOT/.venv" ] && [ -f "$WIP_ROOT/.venv/bin/python" ]; then
     echo "   Venv exists: $WIP_ROOT/.venv"
 else
     echo "   Creating venv..."
@@ -326,12 +328,27 @@ else
     # shellcheck disable=SC1091
     source "$WIP_ROOT/.venv/bin/activate"
 
-    # Install MCP server and its dependencies
+    # Install MCP server and its dependencies — this is critical for MCP connectivity
+    MCP_INSTALL_OK=false
     if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
-        pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>/dev/null || {
-            echo "   Warning: MCP server install failed. Install manually:"
-            echo "            source .venv/bin/activate && pip install -e components/mcp-server/"
-        }
+        if pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>/dev/null; then
+            MCP_INSTALL_OK=true
+        fi
+    fi
+
+    if [ "$MCP_INSTALL_OK" = false ]; then
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   !!  MCP SERVER INSTALL FAILED                          !!"
+        echo "   !!                                                     !!"
+        echo "   !!  Without this, Claude cannot connect to WIP.        !!"
+        echo "   !!  Fix manually:                                      !!"
+        echo "   !!    source .venv/bin/activate                        !!"
+        echo "   !!    pip install -e components/mcp-server/            !!"
+        echo "   !!                                                     !!"
+        echo "   !!  Then run /setup in Claude to verify.               !!"
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
     fi
 
     # Install test dependencies
@@ -362,6 +379,5 @@ echo "Done! Backend agent is configured."
 echo ""
 echo "Next steps:"
 echo "  claude"
-echo "  /wip-status    # verify MCP connectivity"
-echo "  /roadmap       # see priorities"
+echo "  /setup         # first-run environment checks"
 echo ""
