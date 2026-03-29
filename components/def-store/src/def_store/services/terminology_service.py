@@ -21,11 +21,13 @@ from ..models.api_models import (
 )
 from ..models.audit_log import TermAuditLog
 from ..models.term import Term
+from ..models.term_relationship import TermRelationship
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
     EventType as NatsEventType,
 )
 from .nats_client import (
+    publish_relationship_event,
     publish_term_event,
     publish_term_events_bulk,
     publish_terminology_event,
@@ -82,6 +84,9 @@ class TerminologyService:
             entry_id=request.terminology_id,
         )
 
+        # mutable implies extensible
+        extensible = request.extensible or request.mutable
+
         # Create terminology document
         terminology = Terminology(
             namespace=namespace,
@@ -91,7 +96,8 @@ class TerminologyService:
             description=request.description,
             case_sensitive=request.case_sensitive,
             allow_multiple=request.allow_multiple,
-            extensible=request.extensible,
+            extensible=extensible,
+            mutable=request.mutable,
             metadata=request.metadata or TerminologyMetadata(),
             created_by=actor,
         )
@@ -282,6 +288,14 @@ class TerminologyService:
         _track("case_sensitive", terminology.case_sensitive, request.case_sensitive)
         _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
         _track("extensible", terminology.extensible, request.extensible)
+        _track("mutable", terminology.mutable, request.mutable)
+
+        # Reject mutable changes if terms exist
+        if request.mutable is not None and request.mutable != terminology.mutable:
+            if terminology.term_count > 0:
+                raise ValueError(
+                    "Cannot change mutable flag on terminology with existing terms"
+                )
 
         # Apply updates
         if request.value is not None:
@@ -296,6 +310,11 @@ class TerminologyService:
             terminology.allow_multiple = request.allow_multiple
         if request.extensible is not None:
             terminology.extensible = request.extensible
+        if request.mutable is not None:
+            terminology.mutable = request.mutable
+            # mutable implies extensible
+            if request.mutable:
+                terminology.extensible = True
         if request.metadata is not None:
             terminology.metadata = request.metadata
 
@@ -334,9 +353,9 @@ class TerminologyService:
         updated_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
         """
-        Soft-delete a terminology (set status to inactive).
+        Delete a terminology. Hard-deletes if mutable, soft-deletes otherwise.
 
-        Also deactivates all terms in the terminology.
+        Also deletes/deactivates all terms and relationships in the terminology.
 
         Args:
             terminology_id: Terminology to delete
@@ -352,25 +371,54 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Deactivate terminology
-        terminology.status = "inactive"
-        terminology.updated_at = datetime.now(UTC)
-        terminology.updated_by = actor
-        await terminology.save()
+        if terminology.mutable:
+            # HARD DELETE: remove terminology, all terms, and all relationships
 
-        # Deactivate all terms
-        await Term.find({"terminology_id": terminology_id}).update_many({
-            "$set": {
-                "status": "inactive",
-                "updated_at": datetime.now(UTC),
-                "updated_by": actor
-            }
-        })
+            # 1. Get all term IDs in this terminology
+            term_ids = [
+                t.term_id
+                for t in await Term.find({"terminology_id": terminology_id}).to_list()
+            ]
+
+            # 2. Delete all relationships involving these terms
+            if term_ids:
+                await TermRelationship.find({
+                    "$or": [
+                        {"source_term_id": {"$in": term_ids}},
+                        {"target_term_id": {"$in": term_ids}}
+                    ]
+                }).delete()
+
+            # 3. Hard-delete all terms
+            await Term.find({"terminology_id": terminology_id}).delete()
+
+            # 4. Capture event dict before deleting
+            event_dict = TerminologyService._terminology_to_event_dict(terminology)
+            event_dict["hard_delete"] = True
+
+            # 5. Hard-delete the terminology document
+            await terminology.delete()
+        else:
+            # SOFT DELETE: deactivate terminology and all terms (existing behavior)
+            terminology.status = "inactive"
+            terminology.updated_at = datetime.now(UTC)
+            terminology.updated_by = actor
+            await terminology.save()
+
+            await Term.find({"terminology_id": terminology_id}).update_many({
+                "$set": {
+                    "status": "inactive",
+                    "updated_at": datetime.now(UTC),
+                    "updated_by": actor
+                }
+            })
+
+            event_dict = TerminologyService._terminology_to_event_dict(terminology)
 
         # Publish NATS event
         await publish_terminology_event(
             NatsEventType.TERMINOLOGY_DELETED,
-            TerminologyService._terminology_to_event_dict(terminology),
+            event_dict,
             changed_by=actor,
         )
 
@@ -1079,7 +1127,7 @@ class TerminologyService:
         term_id: str,
         updated_by: str | None = None  # Deprecated: uses authenticated identity
     ) -> bool:
-        """Soft-delete a term."""
+        """Delete a term. Hard-deletes if terminology is mutable, soft-deletes otherwise."""
         term = await Term.find_one({"term_id": term_id})
         if not term:
             return False
@@ -1087,13 +1135,59 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        term.status = "inactive"
-        term.updated_at = datetime.now(UTC)
-        term.updated_by = actor
-        await term.save()
+        # Check if parent terminology is mutable
+        terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
+        is_mutable = terminology and terminology.mutable
+
+        if is_mutable:
+            # HARD DELETE: remove term and cascade relationships
+
+            # 1. Find and delete relationships involving this term
+            relationships = await TermRelationship.find({
+                "$or": [
+                    {"source_term_id": term_id},
+                    {"target_term_id": term_id}
+                ]
+            }).to_list()
+
+            if relationships:
+                # Publish relationship.deleted events before removing
+                for rel in relationships:
+                    await publish_relationship_event(
+                        NatsEventType.RELATIONSHIP_DELETED,
+                        {
+                            "namespace": rel.namespace,
+                            "source_term_id": rel.source_term_id,
+                            "target_term_id": rel.target_term_id,
+                            "relationship_type": rel.relationship_type,
+                            "hard_delete": True,
+                        },
+                        changed_by=actor,
+                    )
+
+                # Delete relationships from MongoDB
+                await TermRelationship.find({
+                    "$or": [
+                        {"source_term_id": term_id},
+                        {"target_term_id": term_id}
+                    ]
+                }).delete()
+
+            # 2. Capture event dict before deleting the document
+            event_dict = TerminologyService._term_to_event_dict(term)
+            event_dict["hard_delete"] = True
+
+            # 3. Hard-delete the term document
+            await term.delete()
+        else:
+            # SOFT DELETE: set status to inactive (existing behavior)
+            term.status = "inactive"
+            term.updated_at = datetime.now(UTC)
+            term.updated_by = actor
+            await term.save()
+            event_dict = TerminologyService._term_to_event_dict(term)
 
         # Update terminology term count
-        terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
         if terminology:
             terminology.term_count = await Term.find({
                 "terminology_id": term.terminology_id,
@@ -1104,7 +1198,7 @@ class TerminologyService:
         # Publish NATS event
         await publish_term_event(
             NatsEventType.TERM_DELETED,
-            TerminologyService._term_to_event_dict(term),
+            event_dict,
             changed_by=actor,
         )
 
@@ -1198,6 +1292,7 @@ class TerminologyService:
             case_sensitive=t.case_sensitive,
             allow_multiple=t.allow_multiple,
             extensible=t.extensible,
+            mutable=t.mutable,
             metadata=t.metadata,
             status=t.status,
             term_count=t.term_count,
@@ -1244,6 +1339,7 @@ class TerminologyService:
             "case_sensitive": t.case_sensitive,
             "allow_multiple": t.allow_multiple,
             "extensible": t.extensible,
+            "mutable": t.mutable,
             "status": t.status,
             "term_count": t.term_count,
             "created_at": t.created_at.isoformat() if t.created_at else None,

@@ -192,10 +192,10 @@ class TestBatchSyncTerminologies:
             await service.batch_sync_terminologies()
 
         args = conn.execute.call_args[0]
-        # args[0] is SQL, args[1..14] are positional values
-        # $11 = created_at (index 11), $13 = updated_at (index 13)
-        created_at = args[11]
-        updated_at = args[13]
+        # args[0] is SQL, args[1..15] are positional values
+        # $12 = created_at (index 12), $14 = updated_at (index 14)
+        created_at = args[12]
+        updated_at = args[14]
         assert isinstance(created_at, datetime), f"created_at should be datetime, got {type(created_at)}"
         assert isinstance(updated_at, datetime), f"updated_at should be datetime, got {type(updated_at)}"
 
@@ -234,8 +234,8 @@ class TestBatchSyncTerminologies:
             await service.batch_sync_terminologies()
 
         args = conn.execute.call_args[0]
-        # $10 = term_count (index 10)
-        assert isinstance(args[10], int), f"term_count should be int, got {type(args[10])}"
+        # $11 = term_count (index 11)
+        assert isinstance(args[11], int), f"term_count should be int, got {type(args[11])}"
 
     @pytest.mark.asyncio
     async def test_none_datetime_handled(self, service, mock_pool):
@@ -255,8 +255,8 @@ class TestBatchSyncTerminologies:
 
         assert result["synced"] == 1
         args = conn.execute.call_args[0]
-        assert args[11] is None  # created_at
-        assert args[13] is None  # updated_at
+        assert args[12] is None  # created_at
+        assert args[14] is None  # updated_at
 
 
 # =========================================================================

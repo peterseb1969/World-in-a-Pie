@@ -394,6 +394,7 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
     "case_sensitive" BOOLEAN DEFAULT FALSE,
     "allow_multiple" BOOLEAN DEFAULT FALSE,
     "extensible" BOOLEAN DEFAULT TRUE,
+    "mutable" BOOLEAN NOT NULL DEFAULT FALSE,
     "status" VARCHAR(20) NOT NULL DEFAULT 'active',
     "term_count" INTEGER DEFAULT 0,
     "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

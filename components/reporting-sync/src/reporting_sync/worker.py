@@ -287,26 +287,34 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "terminology.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive',
-                            "updated_at" = NOW(),
-                            "updated_by" = $3
-                        WHERE "namespace" = $1
-                          AND "terminology_id" = $2
-                        """,
-                        namespace, terminology_id, event_data.get("changed_by"),
-                    )
+                    if term_data.get("hard_delete"):
+                        # Hard delete: remove from terminologies table
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "terminology_id" = $2',
+                            namespace, terminology_id,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive',
+                                "updated_at" = NOW(),
+                                "updated_by" = $3
+                            WHERE "namespace" = $1
+                              AND "terminology_id" = $2
+                            """,
+                            namespace, terminology_id, event_data.get("changed_by"),
+                        )
                 else:
                     await conn.execute(
                         f"""
                         INSERT INTO "{table_name}" (
                             "terminology_id", "namespace", "value", "label",
                             "description", "case_sensitive", "allow_multiple",
-                            "extensible", "status", "term_count",
+                            "extensible", "mutable", "status", "term_count",
                             "created_at", "created_by", "updated_at", "updated_by"
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         ON CONFLICT ("namespace", "terminology_id")
                         DO UPDATE SET
                             "value" = EXCLUDED."value",
@@ -315,6 +323,7 @@ class SyncWorker:
                             "case_sensitive" = EXCLUDED."case_sensitive",
                             "allow_multiple" = EXCLUDED."allow_multiple",
                             "extensible" = EXCLUDED."extensible",
+                            "mutable" = EXCLUDED."mutable",
                             "status" = EXCLUDED."status",
                             "term_count" = EXCLUDED."term_count",
                             "updated_at" = EXCLUDED."updated_at",
@@ -328,6 +337,7 @@ class SyncWorker:
                         term_data.get("case_sensitive", False),
                         term_data.get("allow_multiple", False),
                         term_data.get("extensible", True),
+                        term_data.get("mutable", False),
                         term_data.get("status", "active"),
                         term_data.get("term_count", 0),
                         _parse_datetime(term_data.get("created_at")),
@@ -369,17 +379,30 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive',
-                            "updated_at" = NOW(),
-                            "updated_by" = $3
-                        WHERE "namespace" = $1
-                          AND "term_id" = $2
-                        """,
-                        namespace, term_id, event_data.get("changed_by"),
-                    )
+                    if term_data.get("hard_delete"):
+                        # Hard delete: remove from terms and cascade relationships
+                        rel_table = await self.schema_manager.ensure_term_relationships_table()
+                        await conn.execute(
+                            f'DELETE FROM "{rel_table}" WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            namespace, term_id,
+                        )
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "term_id" = $2',
+                            namespace, term_id,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive',
+                                "updated_at" = NOW(),
+                                "updated_by" = $3
+                            WHERE "namespace" = $1
+                              AND "term_id" = $2
+                            """,
+                            namespace, term_id, event_data.get("changed_by"),
+                        )
                 elif event_type == "term.deprecated":
                     await conn.execute(
                         f"""
@@ -478,17 +501,31 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "relationship.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive'
-                        WHERE "namespace" = $1
-                          AND "source_term_id" = $2
-                          AND "target_term_id" = $3
-                          AND "relationship_type" = $4
-                        """,
-                        namespace, source_term_id, target_term_id, relationship_type,
-                    )
+                    if rel.get("hard_delete"):
+                        # Hard delete: remove from table
+                        await conn.execute(
+                            f"""
+                            DELETE FROM "{table_name}"
+                            WHERE "namespace" = $1
+                              AND "source_term_id" = $2
+                              AND "target_term_id" = $3
+                              AND "relationship_type" = $4
+                            """,
+                            namespace, source_term_id, target_term_id, relationship_type,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive'
+                            WHERE "namespace" = $1
+                              AND "source_term_id" = $2
+                              AND "target_term_id" = $3
+                              AND "relationship_type" = $4
+                            """,
+                            namespace, source_term_id, target_term_id, relationship_type,
+                        )
                 else:
                     # Upsert for create/reactivate
                     await conn.execute(

@@ -117,15 +117,16 @@ class TestTerminologyEvents:
         await worker._process_terminology_event(event)
 
         args = conn.execute.call_args[0]
-        # $6=case_sensitive, $7=allow_multiple, $8=extensible (booleans)
+        # $6=case_sensitive, $7=allow_multiple, $8=extensible, $9=mutable (booleans)
         assert isinstance(args[6], bool), f"case_sensitive: expected bool, got {type(args[6])}"
         assert isinstance(args[7], bool), f"allow_multiple: expected bool, got {type(args[7])}"
         assert isinstance(args[8], bool), f"extensible: expected bool, got {type(args[8])}"
-        # $10=term_count (int)
-        assert isinstance(args[10], int), f"term_count: expected int, got {type(args[10])}"
-        # $11=created_at, $13=updated_at (datetime)
-        assert isinstance(args[11], datetime), f"created_at: expected datetime, got {type(args[11])}"
-        assert isinstance(args[13], datetime), f"updated_at: expected datetime, got {type(args[13])}"
+        assert isinstance(args[9], bool), f"mutable: expected bool, got {type(args[9])}"
+        # $11=term_count (int)
+        assert isinstance(args[11], int), f"term_count: expected int, got {type(args[11])}"
+        # $12=created_at, $14=updated_at (datetime)
+        assert isinstance(args[12], datetime), f"created_at: expected datetime, got {type(args[12])}"
+        assert isinstance(args[14], datetime), f"updated_at: expected datetime, got {type(args[14])}"
 
     @pytest.mark.asyncio
     async def test_update_event_upserts(self, worker, mock_pool):

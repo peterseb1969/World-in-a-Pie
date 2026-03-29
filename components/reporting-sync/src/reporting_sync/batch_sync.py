@@ -444,9 +444,9 @@ class BatchSyncService:
                                     INSERT INTO "{table_name}" (
                                         "terminology_id", "namespace", "value", "label",
                                         "description", "case_sensitive", "allow_multiple",
-                                        "extensible", "status", "term_count",
+                                        "extensible", "mutable", "status", "term_count",
                                         "created_at", "created_by", "updated_at", "updated_by"
-                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                                     ON CONFLICT ("namespace", "terminology_id")
                                     DO UPDATE SET
                                         "value" = EXCLUDED."value",
@@ -455,6 +455,7 @@ class BatchSyncService:
                                         "case_sensitive" = EXCLUDED."case_sensitive",
                                         "allow_multiple" = EXCLUDED."allow_multiple",
                                         "extensible" = EXCLUDED."extensible",
+                                        "mutable" = EXCLUDED."mutable",
                                         "status" = EXCLUDED."status",
                                         "term_count" = EXCLUDED."term_count",
                                         "updated_at" = EXCLUDED."updated_at",
@@ -468,6 +469,7 @@ class BatchSyncService:
                                     t.get("case_sensitive", False),
                                     t.get("allow_multiple", False),
                                     t.get("extensible", True),
+                                    t.get("mutable", False),
                                     t.get("status", "active"),
                                     t.get("term_count", 0),
                                     _parse_datetime(t.get("created_at")),

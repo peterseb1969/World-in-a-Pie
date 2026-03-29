@@ -133,6 +133,7 @@ def _create_terminologies(
                 "case_sensitive": t.get("case_sensitive", False),
                 "allow_multiple": t.get("allow_multiple", False),
                 "extensible": t.get("extensible", False),
+                "mutable": t.get("mutable", False),
                 "metadata": t.get("metadata"),
                 "created_by": "wip-toolkit-fresh",
             }

@@ -87,6 +87,10 @@ class Terminology(Document):
         default=False,
         description="Whether users can add new terms at runtime"
     )
+    mutable: bool = Field(
+        default=False,
+        description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
+    )
 
     # Metadata
     metadata: TerminologyMetadata = Field(

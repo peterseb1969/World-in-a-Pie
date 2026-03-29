@@ -53,6 +53,10 @@ class CreateTerminologyRequest(StrictModel):
         default=False,
         description="Whether users can add new terms at runtime"
     )
+    mutable: bool = Field(
+        default=False,
+        description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
+    )
     metadata: TerminologyMetadata | None = Field(
         None,
         description="Additional metadata"
@@ -90,6 +94,10 @@ class UpdateTerminologyRequest(StrictModel):
         None,
         description="Update extensibility"
     )
+    mutable: bool | None = Field(
+        None,
+        description="Update mutability (only allowed when term_count is 0)"
+    )
     metadata: TerminologyMetadata | None = Field(
         None,
         description="Update metadata"
@@ -111,6 +119,7 @@ class TerminologyResponse(BaseModel):
     case_sensitive: bool = False
     allow_multiple: bool = False
     extensible: bool = False
+    mutable: bool = False
     metadata: TerminologyMetadata
     status: str
     term_count: int = 0

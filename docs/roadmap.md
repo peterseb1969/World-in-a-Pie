@@ -147,7 +147,7 @@ Add `mutable: true` flag on terminologies to support user-editable controlled vo
 
 - Design: `docs/design/mutable-terminologies.md`
 - Discovered: 2026-03-29 during ClinTrial app development
-- Status: Design complete, not started
+- Status: Implemented (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client). Console UI pending.
 
 ### Namespace Authorization — UX Polish
 
@@ -428,7 +428,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
-| `mutable-terminologies.md` | Design complete, not started |
+| `mutable-terminologies.md` | Implemented (Console UI pending) |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |

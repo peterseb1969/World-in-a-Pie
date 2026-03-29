@@ -1,6 +1,6 @@
 # Design: Mutable Terminologies
 
-**Status:** Design complete, not started
+**Status:** Implemented (Phase 1 core + Phase 2 downstream, pending Console UI)
 
 ## Motivation
 
