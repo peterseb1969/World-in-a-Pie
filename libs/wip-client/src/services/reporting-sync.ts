@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipError } from '../errors.js'
 import type {
   IntegrityCheckResult,
   SearchResponse,
@@ -48,6 +49,54 @@ export class ReportingSyncService extends BaseService {
       ...options,
     }
     return this.post('/query', body)
+  }
+
+  // ── Sync Awareness ──
+
+  /**
+   * Wait for the reporting sync to catch up.
+   *
+   * Simple form — waits until at least one new event is processed:
+   *   await client.reporting.awaitSync()
+   *
+   * Query form — waits until a specific row exists in PostgreSQL:
+   *   await client.reporting.awaitSync({
+   *     query: "SELECT 1 FROM dnd_monster WHERE document_id = $1",
+   *     params: [docId],
+   *   })
+   */
+  async awaitSync(options?: {
+    /** SQL query that should return rows when sync is complete */
+    query?: string
+    /** Parameters for the SQL query */
+    params?: unknown[]
+    /** Timeout in milliseconds (default: 5000) */
+    timeout?: number
+    /** Poll interval in milliseconds (default: 200) */
+    interval?: number
+  }): Promise<void> {
+    const timeout = options?.timeout ?? 5000
+    const interval = options?.interval ?? 200
+    const deadline = Date.now() + timeout
+
+    if (options?.query) {
+      // Query-based: poll until the expected row(s) appear
+      while (Date.now() < deadline) {
+        const result = await this.runQuery(options.query, options.params, { max_rows: 1 })
+        if (result.row_count > 0) return
+        await new Promise((resolve) => setTimeout(resolve, interval))
+      }
+      throw new WipError('Sync timeout: expected data not found in PostgreSQL')
+    }
+
+    // Event-count based: wait until at least one new event processes
+    const before = await this.getSyncStatus()
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, interval))
+      const current = await this.getSyncStatus()
+      if (current.events_processed > before.events_processed) return
+    }
+    throw new WipError('Sync timeout: no new events processed')
   }
 
   // ── Table Introspection ──

@@ -61,12 +61,11 @@ Template status changes (deactivated/deleted) are NOT propagated to PostgreSQL. 
 - All bulk methods exposed alongside single-item convenience methods
 
 **Remaining:**
-- `reporting.awaitSync()` — poll-based helper that waits for MongoDB→PG sync completion
 - Sync-aware read guidance documentation (API for state, PG for analytics)
 
 **App agent system prompt directive:** "Use @wip/client for ALL WIP interactions. Do not make direct API calls."
 
-- Status: **Mostly complete** (2026-03-29) — reporting query, table introspection, bulk templates added. `awaitSync()` helper remaining.
+- Status: **Complete** (2026-03-29) — all methods implemented including `awaitSync()`. Documentation remaining.
 
 ### Sync-Aware Helpers for Reporting Reads
 
