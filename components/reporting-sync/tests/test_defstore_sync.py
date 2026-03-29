@@ -156,6 +156,34 @@ class TestTerminologyEvents:
         assert "inactive" in sql
 
     @pytest.mark.asyncio
+    async def test_terminology_hard_delete(self, worker, mock_pool):
+        """terminology.deleted with hard_delete=True removes row via DELETE."""
+        pool, conn = mock_pool
+        event = self._make_event("terminology.deleted", hard_delete=True)
+
+        result = await worker._process_terminology_event(event)
+
+        assert result is True
+        sql = conn.execute.call_args[0][0]
+        assert "DELETE FROM" in sql
+        assert '"terminologies"' in sql
+
+    @pytest.mark.asyncio
+    async def test_terminology_soft_delete_unchanged(self, worker, mock_pool):
+        """terminology.deleted WITHOUT hard_delete preserves UPDATE behavior."""
+        pool, conn = mock_pool
+        event = self._make_event("terminology.deleted")
+        event["changed_by"] = "admin"
+
+        result = await worker._process_terminology_event(event)
+
+        assert result is True
+        sql = conn.execute.call_args[0][0]
+        assert "UPDATE" in sql
+        assert "inactive" in sql
+        assert "DELETE" not in sql
+
+    @pytest.mark.asyncio
     async def test_missing_terminology_id_returns_false(self, worker):
         """Event without terminology_id returns False."""
         event = {"event_type": "terminology.created", "terminology": {"value": "X"}}
@@ -294,6 +322,56 @@ class TestTermEvents:
         assert "deprecated" in sql
 
     @pytest.mark.asyncio
+    async def test_term_hard_delete(self, worker, mock_pool):
+        """term.deleted with hard_delete=True removes row via DELETE."""
+        pool, conn = mock_pool
+        event = self._make_event("term.deleted", hard_delete=True)
+
+        result = await worker._process_term_event(event)
+
+        assert result is True
+        # Hard delete calls execute twice: first relationships, then terms
+        calls = conn.execute.call_args_list
+        assert len(calls) == 2
+        terms_sql = calls[1][0][0]
+        assert "DELETE FROM" in terms_sql
+        assert '"terms"' in terms_sql
+
+    @pytest.mark.asyncio
+    async def test_term_hard_delete_cascades_relationships(self, worker, mock_pool):
+        """term.deleted with hard_delete=True also deletes from term_relationships."""
+        pool, conn = mock_pool
+        event = self._make_event("term.deleted", hard_delete=True)
+
+        result = await worker._process_term_event(event)
+
+        assert result is True
+        calls = conn.execute.call_args_list
+        assert len(calls) == 2
+        rel_sql = calls[0][0][0]
+        assert "DELETE FROM" in rel_sql
+        assert '"term_relationships"' in rel_sql
+        terms_sql = calls[1][0][0]
+        assert "DELETE FROM" in terms_sql
+        assert '"terms"' in terms_sql
+
+    @pytest.mark.asyncio
+    async def test_term_soft_delete_unchanged(self, worker, mock_pool):
+        """term.deleted WITHOUT hard_delete preserves UPDATE behavior."""
+        pool, conn = mock_pool
+        event = self._make_event("term.deleted")
+        event["changed_by"] = "admin"
+
+        result = await worker._process_term_event(event)
+
+        assert result is True
+        conn.execute.assert_awaited_once()
+        sql = conn.execute.call_args[0][0]
+        assert "UPDATE" in sql
+        assert "inactive" in sql
+        assert "DELETE" not in sql
+
+    @pytest.mark.asyncio
     async def test_missing_term_id_returns_false(self, worker):
         """Event without term_id returns False."""
         event = {"event_type": "term.created", "term": {"value": "X"}}
@@ -393,6 +471,33 @@ class TestRelationshipEvents:
         sql = conn.execute.call_args[0][0]
         assert "UPDATE" in sql
         assert "inactive" in sql
+
+    @pytest.mark.asyncio
+    async def test_relationship_hard_delete(self, worker, mock_pool):
+        """relationship.deleted with hard_delete=True removes row via DELETE."""
+        pool, conn = mock_pool
+        event = self._make_event("relationship.deleted", hard_delete=True)
+
+        result = await worker._process_relationship_event(event)
+
+        assert result is True
+        sql = conn.execute.call_args[0][0]
+        assert "DELETE FROM" in sql
+        assert '"term_relationships"' in sql
+
+    @pytest.mark.asyncio
+    async def test_relationship_soft_delete_unchanged(self, worker, mock_pool):
+        """relationship.deleted WITHOUT hard_delete preserves UPDATE behavior."""
+        pool, conn = mock_pool
+        event = self._make_event("relationship.deleted")
+
+        result = await worker._process_relationship_event(event)
+
+        assert result is True
+        sql = conn.execute.call_args[0][0]
+        assert "UPDATE" in sql
+        assert "inactive" in sql
+        assert "DELETE" not in sql
 
     @pytest.mark.asyncio
     async def test_missing_source_returns_false(self, worker):

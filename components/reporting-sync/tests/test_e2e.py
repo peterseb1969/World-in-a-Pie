@@ -388,6 +388,49 @@ class TestTerminologyEventPipeline:
             assert row["value"] == "Female"
             assert row["terminology_value"] == "Gender"
 
+    async def test_term_hard_delete_pipeline(self, pg_pool, nats_client):
+        """Insert a term, then hard delete it → row gone from PostgreSQL."""
+        nc, js, stream_name = nats_client
+        await init_postgres_schema(pg_pool)
+
+        status = SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True)
+        worker = SyncWorker(nc, js, pg_pool, status)
+
+        # Create first
+        create_event = make_event("term.created", "term", {
+            "term_id": "TERM-E2E-HD",
+            "namespace": "test",
+            "terminology_id": "VOCAB-001",
+            "terminology_value": "TestVocab",
+            "value": "HardDeleteMe",
+            "aliases": [],
+            "status": "active",
+            "sort_order": 0,
+            "created_at": "2026-01-15T10:00:00Z",
+            "created_by": "test-user",
+        })
+        await js.publish("wip.terms", create_event)
+
+        # Then hard delete
+        delete_event = make_event("term.deleted", "term", {
+            "term_id": "TERM-E2E-HD",
+            "namespace": "test",
+            "hard_delete": True,
+        })
+        await js.publish("wip.terms", delete_event)
+
+        sub = await js.pull_subscribe("wip.>", durable="test-e2e-term-hd", stream=stream_name)
+        messages = await sub.fetch(batch=2, timeout=5)
+        for msg in messages:
+            await worker._process_message(msg)
+
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval(
+                'SELECT COUNT(*) FROM terms WHERE term_id = $1',
+                "TERM-E2E-HD",
+            )
+            assert count == 0
+
     async def test_term_deprecated_via_nats(self, pg_pool, nats_client):
         """term.deprecated → status and reason updated in PG."""
         nc, js, stream_name = nats_client
@@ -482,6 +525,53 @@ class TestRelationshipEventPipeline:
             assert row["relationship_type"] == "is_a"
             assert row["source_term_value"] == "Cat"
             assert row["status"] == "active"
+
+    async def test_relationship_hard_delete_pipeline(self, pg_pool, nats_client):
+        """Insert a relationship, then hard delete it → row gone from PostgreSQL."""
+        nc, js, stream_name = nats_client
+        await init_postgres_schema(pg_pool)
+
+        status = SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True)
+        worker = SyncWorker(nc, js, pg_pool, status)
+
+        # Create
+        create_event = make_event("relationship.created", "relationship", {
+            "namespace": "test",
+            "source_term_id": "TERM-HD-A",
+            "target_term_id": "TERM-HD-B",
+            "relationship_type": "is_a",
+            "source_term_value": "Child",
+            "target_term_value": "Parent",
+            "source_terminology_id": "VOCAB-1",
+            "target_terminology_id": "VOCAB-1",
+            "metadata": {},
+            "status": "active",
+            "created_by": "test-user",
+        })
+        await js.publish("wip.relationships", create_event)
+
+        # Hard delete
+        delete_event = make_event("relationship.deleted", "relationship", {
+            "namespace": "test",
+            "source_term_id": "TERM-HD-A",
+            "target_term_id": "TERM-HD-B",
+            "relationship_type": "is_a",
+            "hard_delete": True,
+        })
+        await js.publish("wip.relationships", delete_event)
+
+        sub = await js.pull_subscribe("wip.>", durable="test-e2e-rel-hd", stream=stream_name)
+        messages = await sub.fetch(batch=2, timeout=5)
+        for msg in messages:
+            await worker._process_message(msg)
+
+        async with pg_pool.acquire() as conn:
+            count = await conn.fetchval(
+                """SELECT COUNT(*) FROM term_relationships
+                   WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
+                "TERM-HD-A", "TERM-HD-B", "test",
+            )
+            assert count == 0
 
     async def test_relationship_deleted_via_nats(self, pg_pool, nats_client):
         nc, js, stream_name = nats_client
