@@ -1262,6 +1262,75 @@ async def execute_query(body: ReportQuery):
         raise HTTPException(status_code=400, detail=f"Query error: {e}") from e
 
 
+# =============================================================================
+# NAMESPACE DELETION
+# =============================================================================
+
+
+@router.delete("/namespace/{prefix}")
+async def delete_namespace(prefix: str):
+    """Delete all reporting data for a namespace.
+
+    Removes rows from all doc_* tables, metadata tables (terminologies, terms,
+    term_relationships, templates), and sync status where namespace matches.
+
+    Called by Registry during namespace deletion.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if not prefix or not prefix.strip():
+        raise HTTPException(status_code=400, detail="Namespace prefix is required")
+
+    total_deleted = 0
+
+    async with state.postgres_pool.acquire() as conn:
+        # Find all doc_* tables
+        doc_tables = await conn.fetch(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+              AND table_name LIKE 'doc_%'
+            ORDER BY table_name
+            """
+        )
+
+        # Delete from each doc_* table
+        for row in doc_tables:
+            table_name = row["table_name"]
+            result = await conn.execute(
+                f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
+            )
+            count = int(result.split()[-1])  # "DELETE N"
+            if count > 0:
+                logger.info(
+                    f"Deleted {count} rows from {table_name} for namespace {prefix}"
+                )
+            total_deleted += count
+
+        # Delete from metadata tables
+        for table_name in ("terminologies", "templates", "terms", "term_relationships"):
+            try:
+                result = await conn.execute(
+                    f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
+                )
+                count = int(result.split()[-1])
+                if count > 0:
+                    logger.info(
+                        f"Deleted {count} rows from {table_name} for namespace {prefix}"
+                    )
+                total_deleted += count
+            except asyncpg.UndefinedTableError:
+                pass  # Table doesn't exist yet — nothing to clean
+
+    logger.info(
+        f"Namespace {prefix} cleanup complete: {total_deleted} total rows deleted"
+    )
+    return {"total_deleted": total_deleted}
+
+
 @router.get("/")
 async def root():
     """Root endpoint."""
