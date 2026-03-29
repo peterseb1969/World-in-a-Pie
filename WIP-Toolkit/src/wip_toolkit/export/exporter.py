@@ -91,11 +91,17 @@ def run_export(
             f"{before_terms} → {len(terminologies)}"
         )
 
+    # Fetch relationships for all terminologies
+    relationships = collector.fetch_all_relationships(terminologies)
+
     # Tag primary entities
     for entity in terminologies:
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
     for entity in terms:
+        entity.setdefault("_source", "primary")
+        entity.setdefault("_namespace", namespace)
+    for entity in relationships:
         entity.setdefault("_source", "primary")
         entity.setdefault("_namespace", namespace)
     for entity in templates:
@@ -172,6 +178,7 @@ def run_export(
         counts = EntityCounts(
             terminologies=len(terminologies),
             terms=len(terms),
+            relationships=len(relationships),
             templates=len(templates),
             documents=doc_count,
             files=file_count,
@@ -188,6 +195,8 @@ def run_export(
         writer.add_entity("terminologies", entity)
     for entity in terms:
         writer.add_entity("terms", entity)
+    for entity in relationships:
+        writer.add_entity("relationships", entity)
     for entity in templates:
         writer.add_entity("templates", entity)
 
@@ -242,6 +251,7 @@ def run_export(
     counts = EntityCounts(
         terminologies=len(terminologies),
         terms=len(terms),
+        relationships=len(relationships),
         templates=len(templates),
         documents=doc_count,
         files=file_count,
@@ -372,12 +382,14 @@ def _fetch_synonyms(
 
 
 def _print_counts(counts: EntityCounts) -> None:
-    console.print(f"  Terminologies: {counts.terminologies}")
-    console.print(f"  Terms:         {counts.terms}")
-    console.print(f"  Templates:     {counts.templates}")
-    console.print(f"  Documents:     {counts.documents}")
-    console.print(f"  Files:         {counts.files}")
-    console.print(f"  [bold]Total:       {counts.total}[/bold]")
+    console.print(f"  Terminologies:  {counts.terminologies}")
+    console.print(f"  Terms:          {counts.terms}")
+    if counts.relationships:
+        console.print(f"  Relationships:  {counts.relationships}")
+    console.print(f"  Templates:      {counts.templates}")
+    console.print(f"  Documents:      {counts.documents}")
+    console.print(f"  Files:          {counts.files}")
+    console.print(f"  [bold]Total:        {counts.total}[/bold]")
 
 
 def _build_stats(

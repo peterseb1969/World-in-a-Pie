@@ -58,6 +58,12 @@ def fresh_import(
     terms = list(reader.read_entities("terms"))
     _create_terms(client, target_namespace, terms, remapper, batch_size, stats, continue_on_error)
 
+    # Step 3b: Create relationships (after terms, using remapped IDs)
+    relationships = list(reader.read_entities("relationships"))
+    if relationships:
+        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships (remapped IDs)")
+        _create_relationships(client, target_namespace, relationships, remapper, batch_size, stats, continue_on_error)
+
     # Step 4: Create and activate templates (multi-pass dependency resolution)
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (multi-pass)")
     templates = list(reader.read_entities("templates"))
@@ -232,6 +238,63 @@ def _create_terms(
         f"  Created {stats.created.terms}, failed {stats.failed.terms} "
         f"({len(remapper.term_map)} mapped)"
     )
+
+
+def _create_relationships(
+    client: WIPClient,
+    namespace: str,
+    relationships: list[dict],
+    remapper: IDRemapper,
+    batch_size: int,
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Create relationships with remapped term IDs."""
+    created = 0
+    failed = 0
+    skipped = 0
+
+    for i in range(0, len(relationships), batch_size):
+        batch = relationships[i:i + batch_size]
+        payloads = []
+        for r in batch:
+            source = remapper.term_map.get(r["source_term_id"], r["source_term_id"])
+            target = remapper.term_map.get(r["target_term_id"], r["target_term_id"])
+            payloads.append({
+                "source_term_id": source,
+                "target_term_id": target,
+                "relationship_type": r["relationship_type"],
+                "metadata": r.get("metadata") or {},
+            })
+
+        try:
+            result = client.post(
+                "def-store", "/ontology/relationships",
+                json=payloads,
+                params={"namespace": namespace},
+            )
+            for r in result.get("results", []):
+                if r.get("status") == "created":
+                    created += 1
+                elif r.get("status") == "skipped":
+                    skipped += 1
+                else:
+                    failed += 1
+        except WIPClientError as e:
+            failed += len(batch)
+            stats.errors.append(f"Failed to create relationship batch at index {i}: {e}")
+            if not continue_on_error:
+                raise
+
+    stats.created.relationships = created
+    stats.failed.relationships = failed
+    stats.skipped.relationships = skipped
+    msg = f"  Created {created}"
+    if skipped:
+        msg += f", skipped {skipped}"
+    if failed:
+        msg += f", failed {failed}"
+    console.print(msg)
 
 
 # ---------------------------------------------------------------------------

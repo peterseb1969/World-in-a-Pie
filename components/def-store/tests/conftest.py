@@ -103,6 +103,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await TermAuditLog.delete_all()
     await TermRelationship.delete_all()
 
+    # Invalidate OntologyService cache so each test starts fresh
+    from def_store.services.ontology_service import OntologyService
+    OntologyService.invalidate_relationship_type_cache()
+
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
 

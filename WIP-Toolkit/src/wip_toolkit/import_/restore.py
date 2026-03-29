@@ -66,6 +66,12 @@ def restore_import(
     terms = list(reader.read_entities("terms"))
     _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error, term_id_map)
 
+    # Step 2b: Create relationships (after terms exist)
+    relationships = list(reader.read_entities("relationships"))
+    if relationships:
+        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships")
+        _create_relationships(client, target_namespace, relationships, batch_size, stats, continue_on_error)
+
     # Step 3: Create templates as drafts with ID pass-through
     # Remap terminology_ref fields to new IDs
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (as drafts)")
@@ -260,6 +266,60 @@ def _create_terms(
     console.print(
         f"  Created {stats.created.terms}, failed {stats.failed.terms}"
     )
+
+
+def _create_relationships(
+    client: WIPClient,
+    namespace: str,
+    relationships: list[dict],
+    batch_size: int,
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Create relationships via Def-Store ontology API."""
+    created = 0
+    failed = 0
+    skipped = 0
+
+    for i in range(0, len(relationships), batch_size):
+        batch = relationships[i:i + batch_size]
+        payloads = []
+        for r in batch:
+            payloads.append({
+                "source_term_id": r["source_term_id"],
+                "target_term_id": r["target_term_id"],
+                "relationship_type": r["relationship_type"],
+                "metadata": r.get("metadata") or {},
+            })
+
+        try:
+            result = client.post(
+                "def-store", "/ontology/relationships",
+                json=payloads,
+                params={"namespace": namespace},
+            )
+            for r in result.get("results", []):
+                if r.get("status") == "created":
+                    created += 1
+                elif r.get("status") == "skipped":
+                    skipped += 1
+                else:
+                    failed += 1
+        except WIPClientError as e:
+            failed += len(batch)
+            stats.errors.append(f"Failed to create relationship batch at index {i}: {e}")
+            if not continue_on_error:
+                raise
+
+    stats.created.relationships = created
+    stats.failed.relationships = failed
+    stats.skipped.relationships = skipped
+    msg = f"  Created {created}"
+    if skipped:
+        msg += f", skipped {skipped}"
+    if failed:
+        msg += f", failed {failed}"
+    console.print(msg)
 
 
 def _create_templates(
@@ -743,9 +803,11 @@ def _preview(
 ) -> None:
     """Preview what would be imported."""
     counts = manifest.counts
-    console.print(f"  Terminologies: {counts.terminologies}")
-    console.print(f"  Terms:         {counts.terms}")
-    console.print(f"  Templates:     {counts.templates}")
+    console.print(f"  Terminologies:  {counts.terminologies}")
+    console.print(f"  Terms:          {counts.terms}")
+    if counts.relationships:
+        console.print(f"  Relationships:  {counts.relationships}")
+    console.print(f"  Templates:      {counts.templates}")
     if not skip_documents:
         console.print(f"  Documents:     {counts.documents}")
     else:

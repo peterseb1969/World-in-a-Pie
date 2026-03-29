@@ -498,7 +498,7 @@ class ImportExportService:
                         source_term_id=src_id,
                         target_term_id=tgt_id,
                         relationship_type=rd["relationship_type"],
-                        metadata=rd.get("metadata"),
+                        metadata=rd.get("metadata") or {},
                     ))
 
             if rel_requests:

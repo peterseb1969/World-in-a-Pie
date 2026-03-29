@@ -212,7 +212,6 @@ class TestRelationshipImport:
     """Tests for importing terminologies with relationships."""
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Relationship import not yet implemented in import service")
     async def test_import_with_relationships(self, client: AsyncClient, auth_headers: dict):
         """Import terminology with relationships in the JSON payload."""
         import_data = {
@@ -248,7 +247,6 @@ class TestRelationshipImport:
         assert result["relationships_result"]["created"] == 2
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(reason="Relationship import not yet implemented in import service")
     async def test_export_import_relationships_round_trip(self, client: AsyncClient, auth_headers: dict):
         """Create terminology with relationships, export, re-import under new name."""
         # Create original

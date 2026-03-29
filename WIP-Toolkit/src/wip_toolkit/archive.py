@@ -20,12 +20,14 @@ TERMS_FILE = "terms.jsonl"
 TEMPLATES_FILE = "templates.jsonl"
 DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
+RELATIONSHIPS_FILE = "relationships.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
 BLOBS_DIR = "blobs/"
 
 ENTITY_FILES = {
     "terminologies": TERMINOLOGIES_FILE,
     "terms": TERMS_FILE,
+    "relationships": RELATIONSHIPS_FILE,
     "templates": TEMPLATES_FILE,
     "documents": DOCUMENTS_FILE,
     "files": FILES_FILE,
