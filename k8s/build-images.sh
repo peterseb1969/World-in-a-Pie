@@ -33,7 +33,7 @@ Options:
   --push           Push images after building
   --service NAME   Build only one service (registry|def-store|template-store|
                    document-store|reporting-sync|ingest-gateway|mcp-server|wip-console|
-                   dnd-compendium)
+                   dnd-compendium|statement-manager)
   --builder CMD    Container build tool: docker or podman (default: docker)
   -h, --help       Show this help
 
@@ -169,6 +169,45 @@ build_dnd_compendium() {
     echo ""
 }
 
+build_statement_manager() {
+    local img
+    # Statement Manager is not a WIP service — use plain name
+    if [[ -n "$REGISTRY" ]]; then
+        img="${REGISTRY}/statement-manager:${TAG}"
+    else
+        img="statement-manager:${TAG}"
+    fi
+
+    echo "━━━ Building ${img} ━━━"
+
+    local app_dir="${PROJECT_ROOT}/../WIP-Constellations/apps/statement-manager"
+    if [[ ! -d "$app_dir" ]]; then
+        echo "  ✗ Statement Manager not found at ${app_dir} — skipping"
+        return 0
+    fi
+
+    # Pack @wip/client, @wip/react, and @wip/proxy into .docker-libs/
+    local libs_dir="${app_dir}/.docker-libs"
+    mkdir -p "$libs_dir"
+    (cd "${PROJECT_ROOT}/libs/wip-client" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-react" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-proxy" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+
+    $BUILDER build \
+        --build-arg VITE_BASE_PATH=/apps/finance/ \
+        -t "$img" \
+        "$app_dir"
+
+    # Clean up
+    rm -rf "$libs_dir"
+
+    if $PUSH; then
+        echo "  → Pushing ${img}"
+        $BUILDER push "$img"
+    fi
+    echo ""
+}
+
 build_console() {
     local img
     img="$(image_name "console")"
@@ -204,6 +243,7 @@ if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
         wip-console|console)           build_console ;;
         dnd-compendium)                build_dnd_compendium ;;
+        statement-manager)             build_statement_manager ;;
         ingest-gateway|mcp-server)     build_python_plain "$ONLY_SERVICE" ;;
         *)                             build_python_with_auth "$ONLY_SERVICE" ;;
     esac
