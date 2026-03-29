@@ -161,6 +161,33 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ value: 'PATIENT', label: 'Patient', fields: [] }])
     })
 
+    it('createTemplates sends bulk POST with multiple items', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'created', id: 'TPL-1' },
+          { index: 1, status: 'created', id: 'TPL-2' },
+        ],
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+      })
+
+      const result = await client.templates.createTemplates([
+        { value: 'PATIENT', label: 'Patient', fields: [] } as any,
+        { value: 'VISIT', label: 'Visit', fields: [] } as any,
+      ])
+
+      expect(result.succeeded).toBe(2)
+      expect(result.results).toHaveLength(2)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/template-store/templates')
+      expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body).toHaveLength(2)
+      expect(body[0].value).toBe('PATIENT')
+      expect(body[1].value).toBe('VISIT')
+    })
+
     it('createTemplate throws WipBulkItemError on error result', async () => {
       mockJsonResponse({
         results: [{ index: 0, status: 'error', error: 'Invalid fields' }],
@@ -935,6 +962,178 @@ describe('Service classes via createWipClient', () => {
       const result = await client.reporting.healthCheck()
 
       expect(result).toBe(false)
+    })
+
+    it('getSyncStatus sends GET', async () => {
+      mockJsonResponse({
+        running: true,
+        connected_to_nats: true,
+        connected_to_postgres: true,
+        last_event_processed: '2026-03-29T12:00:00Z',
+        events_processed: 42,
+        events_failed: 0,
+        tables_managed: 5,
+      })
+
+      const result = await client.reporting.getSyncStatus()
+
+      expect(result.running).toBe(true)
+      expect(result.events_processed).toBe(42)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/status')
+    })
+
+    it('runQuery sends POST with SQL and params', async () => {
+      mockJsonResponse({
+        columns: ['id', 'name'],
+        rows: [['D-001', 'Test']],
+        row_count: 1,
+        truncated: false,
+      })
+
+      const result = await client.reporting.runQuery(
+        'SELECT * FROM dnd_monster WHERE document_id = $1',
+        ['D-001'],
+        { timeout_seconds: 10, max_rows: 100 },
+      )
+
+      expect(result.columns).toEqual(['id', 'name'])
+      expect(result.row_count).toBe(1)
+      expect(result.truncated).toBe(false)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/query')
+      expect(options.method).toBe('POST')
+      const body = JSON.parse(options.body)
+      expect(body.sql).toBe('SELECT * FROM dnd_monster WHERE document_id = $1')
+      expect(body.params).toEqual(['D-001'])
+      expect(body.timeout_seconds).toBe(10)
+      expect(body.max_rows).toBe(100)
+    })
+
+    it('runQuery sends POST with defaults when no options', async () => {
+      mockJsonResponse({ columns: [], rows: [], row_count: 0, truncated: false })
+
+      await client.reporting.runQuery('SELECT 1')
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body.sql).toBe('SELECT 1')
+      expect(body.params).toEqual([])
+      expect(body.timeout_seconds).toBeUndefined()
+      expect(body.max_rows).toBeUndefined()
+    })
+
+    it('listTables sends GET without filter', async () => {
+      mockJsonResponse({ tables: [{ table_name: 'dnd_monster', row_count: 100 }] })
+
+      const result = await client.reporting.listTables()
+
+      expect(result.tables).toHaveLength(1)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/tables')
+      expect(url).not.toContain('table_name')
+    })
+
+    it('listTables sends GET with table name filter', async () => {
+      mockJsonResponse({ tables: [{ table_name: 'dnd_monster', row_count: 100 }] })
+
+      await client.reporting.listTables('dnd_monster')
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/tables')
+      expect(url).toContain('table_name=dnd_monster')
+    })
+
+    it('getTableSchema sends GET with template value', async () => {
+      mockJsonResponse({
+        template_value: 'DND_MONSTER',
+        table_name: 'dnd_monster',
+        columns: [{ name: 'document_id', type: 'text', nullable: false }],
+        row_count: 100,
+      })
+
+      const result = await client.reporting.getTableSchema('DND_MONSTER')
+
+      expect(result.template_value).toBe('DND_MONSTER')
+      expect(result.columns).toHaveLength(1)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/reporting-sync/schema/DND_MONSTER')
+    })
+
+    it('awaitSync resolves when events_processed increases', async () => {
+      // First call: getSyncStatus returns events_processed=10
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          running: true, connected_to_nats: true, connected_to_postgres: true,
+          last_event_processed: null, events_processed: 10, events_failed: 0, tables_managed: 0,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      )
+      // Second call (after interval): events_processed=11
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          running: true, connected_to_nats: true, connected_to_postgres: true,
+          last_event_processed: null, events_processed: 11, events_failed: 0, tables_managed: 0,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      )
+
+      await client.reporting.awaitSync({ timeout: 2000, interval: 50 })
+
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('awaitSync throws on timeout when no events process', async () => {
+      // Always return the same events_processed count (fresh Response each call)
+      fetchMock.mockImplementation(() => Promise.resolve(
+        new Response(JSON.stringify({
+          running: true, connected_to_nats: true, connected_to_postgres: true,
+          last_event_processed: null, events_processed: 10, events_failed: 0, tables_managed: 0,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      ))
+
+      await expect(
+        client.reporting.awaitSync({ timeout: 200, interval: 50 }),
+      ).rejects.toThrow('Sync timeout: no new events processed')
+    })
+
+    it('awaitSync query mode resolves when row found', async () => {
+      // First query: no rows
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          columns: ['id'], rows: [], row_count: 0, truncated: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      )
+      // Second query: row found
+      fetchMock.mockResolvedValueOnce(
+        new Response(JSON.stringify({
+          columns: ['id'], rows: [['D-001']], row_count: 1, truncated: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      )
+
+      await client.reporting.awaitSync({
+        query: 'SELECT 1 FROM dnd_monster WHERE document_id = $1',
+        params: ['D-001'],
+        timeout: 2000,
+        interval: 50,
+      })
+
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('awaitSync query mode throws on timeout when row not found', async () => {
+      // Always return empty result (fresh Response each call)
+      fetchMock.mockImplementation(() => Promise.resolve(
+        new Response(JSON.stringify({
+          columns: ['id'], rows: [], row_count: 0, truncated: false,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      ))
+
+      await expect(
+        client.reporting.awaitSync({
+          query: 'SELECT 1 FROM missing_table',
+          timeout: 200,
+          interval: 50,
+        }),
+      ).rejects.toThrow('Sync timeout: expected data not found')
     })
   })
 
