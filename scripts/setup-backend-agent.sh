@@ -403,6 +403,12 @@ git push gitea develop && git push github develop
 
 **CI:** Gitea Actions via act_runner on `wip-pi.local`. Workflow: `.gitea/workflows/test.yaml`. Runs all component tests. Use `/pre-commit` locally before pushing.
 
+## Working Principles
+
+- **You own what you see.** Multiple AI agents work on this codebase. If you encounter a bug, lint issue, or broken test — fix it. Don't say "another agent should handle this." The user doesn't care who introduced a problem, only that it gets fixed quickly.
+- **Don't over-engineer.** Make the minimal change needed. No speculative abstractions, no "while I'm here" refactors.
+- **Ask before destructive actions.** Git force-push, dropping data, deleting branches — confirm first.
+
 ## Critical Gotchas
 
 - **OIDC three-value rule** — issuer URL must match in 3 places. See `docs/network-configuration.md`.
