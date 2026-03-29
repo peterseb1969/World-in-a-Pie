@@ -95,6 +95,28 @@ Every browser-based WIP app needs auth injection (browser can't hold API keys) a
 - Discovered: 2026-03-28 during DnD K8s deployment
 - Status: **Phase 1 complete** (2026-03-29) — `@wip/proxy` middleware, DnD refactored, `create-app-project.sh` updated. Phase 2-3 not started.
 
+### App User Authentication — REQUIRED
+
+`@wip/proxy` handles the app-to-WIP leg (API key injection), but there is **no user authentication** for the apps themselves. Anyone who can reach the URL can use the app. Even on a home network, WiFi access must not equal app access — guest WiFi credentials should not expose salary payslips or medical data.
+
+**Solution:** OIDC session auth at the gateway level, extending the Caddy + Dex pattern already used for the Console:
+
+1. User opens an app → gateway sees no session cookie → redirects to Dex login
+2. User authenticates (same users/groups as Console: admin, editor, viewer)
+3. Dex issues token → gateway establishes session cookie
+4. Gateway injects user identity (`X-WIP-User`, `X-WIP-Groups`) into upstream requests
+5. App receives authenticated context — zero per-app auth code
+
+**Podman (Caddy):** Caddy already does this for the Console via `caddy-security` plugin. Extend the same config to `/apps/*` routes.
+
+**K8s (NGINX Ingress):** `oauth2-proxy` sidecar or Ingress-level OIDC annotation, same Dex backend.
+
+**`@wip/proxy` change:** Accept forwarded user identity from gateway headers instead of (or in addition to) a hardcoded API key. Per-user API keys or a gateway service account key are both viable.
+
+- Design: Phase 4 in `docs/design/app-gateway.md`
+- Depends on: App Gateway (Phase 2-3) for multi-app routing, but can be implemented for single-app Caddy deployments independently
+- Status: Not started — required before any app serves sensitive data
+
 ### Console: Files Page Ignores Namespace
 
 The files page (`/files`) always queries `namespace=wip` regardless of the selected namespace. Root cause: `list_files` API defaults to `namespace="wip"` and the Console doesn't pass the active namespace. Files uploaded to other namespaces (e.g., `dnd`) are invisible in the UI.

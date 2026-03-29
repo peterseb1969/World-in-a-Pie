@@ -195,7 +195,7 @@ Two modes, depending on deployment:
 
 **OIDC session (future):** The gateway handles OIDC login, establishes a session cookie, and injects the user's identity into upstream requests. Apps receive an authenticated context without implementing any auth. This is the Caddy + Dex pattern already used for the Console, extended to apps.
 
-OIDC session mode is a future enhancement. API key injection via `@wip/proxy` is sufficient for now and avoids the complexity of session management at the gateway level.
+OIDC session mode is required before any app serves sensitive data. API key injection via `@wip/proxy` handles the app-to-WIP leg, but without user authentication anyone on the network can access the app. Even on a home network, WiFi access must not equal app access.
 
 ## Implementation Plan
 
