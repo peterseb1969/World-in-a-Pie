@@ -1,3 +1,57 @@
+// ── SQL Query types ──
+
+export interface ReportQueryParams {
+  /** SQL SELECT query (write operations forbidden) */
+  sql: string
+  /** Positional parameters ($1, $2, ...) */
+  params?: unknown[]
+  /** Query timeout in seconds (1-300, default 30) */
+  timeout_seconds?: number
+  /** Max rows returned (1-50000, default 1000) */
+  max_rows?: number
+}
+
+export interface ReportQueryResult {
+  columns: string[]
+  rows: unknown[][]
+  row_count: number
+  truncated: boolean
+}
+
+// ── Table/Schema types ──
+
+export interface ReportTableColumn {
+  name: string
+  type: string
+  nullable: boolean
+}
+
+export interface ReportTable {
+  table_name: string
+  row_count: number
+}
+
+export interface ReportTableSchema {
+  template_value: string
+  table_name: string
+  columns: ReportTableColumn[]
+  row_count: number
+}
+
+// ── Sync Status types ──
+
+export interface SyncStatus {
+  running: boolean
+  connected_to_nats: boolean
+  connected_to_postgres: boolean
+  last_event_processed: string | null
+  events_processed: number
+  events_failed: number
+  tables_managed: number
+}
+
+// ── Existing types ──
+
 export interface IntegrityIssue {
   type: string
   severity: string

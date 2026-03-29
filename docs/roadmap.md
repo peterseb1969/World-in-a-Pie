@@ -53,15 +53,20 @@ Template status changes (deactivated/deleted) are NOT propagated to PostgreSQL. 
 
 `@wip/client` is the ONLY supported path for AI-assisted app development. Every app and agent that bypasses the client hits the same WIP conventions (bulk-first 200 OK, identity dedup, synonym resolution, pagination) and wastes significant time working around them.
 
-**Missing methods that force apps to use raw fetch:**
-- `files.upload()`, `files.downloadContent()` — file operations
-- `reporting.awaitSync()` — sync-aware helper for PostgreSQL reads
-- Server-side auth mode for K8s (no browser key exposure)
-- Ensure all bulk methods are exposed alongside single-item convenience methods
+**Already complete:**
+- `files.uploadFile()`, `files.downloadFileContent()` — file operations
+- `reporting.runQuery()`, `reporting.listTables()`, `reporting.getTableSchema()`, `reporting.getSyncStatus()` — SQL query execution and table introspection
+- `templates.createTemplates()` — bulk template creation
+- Server-side auth handled by `@wip/proxy` (no client change needed)
+- All bulk methods exposed alongside single-item convenience methods
+
+**Remaining:**
+- `reporting.awaitSync()` — poll-based helper that waits for MongoDB→PG sync completion
+- Sync-aware read guidance documentation (API for state, PG for analytics)
 
 **App agent system prompt directive:** "Use @wip/client for ALL WIP interactions. Do not make direct API calls."
 
-- Status: Not started
+- Status: **Mostly complete** (2026-03-29) — reporting query, table introspection, bulk templates added. `awaitSync()` helper remaining.
 
 ### Sync-Aware Helpers for Reporting Reads
 

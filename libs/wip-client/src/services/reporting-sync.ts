@@ -6,12 +6,19 @@ import type {
   TermDocumentsResponse,
   EntityReferencesResponse,
   ReferencedByResponse,
+  ReportQueryParams,
+  ReportQueryResult,
+  ReportTable,
+  ReportTableSchema,
+  SyncStatus,
 } from '../types/reporting.js'
 
 export class ReportingSyncService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/reporting-sync')
   }
+
+  // ── Health & Status ──
 
   async healthCheck(): Promise<boolean> {
     try {
@@ -22,6 +29,40 @@ export class ReportingSyncService extends BaseService {
       return false
     }
   }
+
+  async getSyncStatus(): Promise<SyncStatus> {
+    return this.get('/status')
+  }
+
+  // ── SQL Query Execution ──
+
+  /** Execute a read-only SQL query against the PostgreSQL reporting database */
+  async runQuery(
+    sql: string,
+    params?: unknown[],
+    options?: { timeout_seconds?: number; max_rows?: number },
+  ): Promise<ReportQueryResult> {
+    const body: ReportQueryParams = {
+      sql,
+      params: params || [],
+      ...options,
+    }
+    return this.post('/query', body)
+  }
+
+  // ── Table Introspection ──
+
+  /** List all PostgreSQL reporting tables */
+  async listTables(tableName?: string): Promise<{ tables: ReportTable[] }> {
+    return this.get('/tables', tableName ? { table_name: tableName } : undefined)
+  }
+
+  /** Get PostgreSQL schema for a template's reporting table */
+  async getTableSchema(templateValue: string): Promise<ReportTableSchema> {
+    return this.get(`/schema/${templateValue}`)
+  }
+
+  // ── Integrity ──
 
   async getIntegrityCheck(params?: {
     template_status?: string
@@ -34,9 +75,12 @@ export class ReportingSyncService extends BaseService {
     return this.get('/health/integrity', params)
   }
 
+  // ── Search & Activity ──
+
   async search(params: {
     query: string
     types?: string[]
+    namespace?: string
     status?: string
     limit?: number
   }): Promise<SearchResponse> {
@@ -49,6 +93,8 @@ export class ReportingSyncService extends BaseService {
   }): Promise<ActivityResponse> {
     return this.get('/activity/recent', params)
   }
+
+  // ── References ──
 
   async getTermDocuments(termId: string, limit?: number): Promise<TermDocumentsResponse> {
     return this.get(`/references/term/${termId}/documents`, limit ? { limit } : undefined)

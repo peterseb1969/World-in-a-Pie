@@ -1,5 +1,5 @@
 import { BaseService } from './base.js'
-import type { BulkResultItem } from '../types/common.js'
+import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Template,
   TemplateListResponse,
@@ -54,6 +54,10 @@ export class TemplateStoreService extends BaseService {
 
   async createTemplate(data: CreateTemplateRequest): Promise<BulkResultItem> {
     return this.bulkWriteOne('/templates', data)
+  }
+
+  async createTemplates(data: CreateTemplateRequest[]): Promise<BulkResponse> {
+    return this.bulkWrite('/templates', data)
   }
 
   async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem> {
