@@ -6,10 +6,10 @@
 #   ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST] [--cert CERT_PATH]
 #
 # This script:
-#   1. Generates .mcp.json for the chosen transport
-#   2. Generates a backend-focused CLAUDE.md
-#   3. Copies backend slash commands to .claude/commands/
-#   4. Sets up Python venv (if missing)
+#   1. Sets up Python venv with a compatible Python (3.11-3.13)
+#   2. Generates .mcp.json for the chosen transport
+#   3. Generates a backend-focused CLAUDE.md
+#   4. Copies backend slash commands to .claude/commands/
 #   5. Verifies MCP connectivity
 #
 
@@ -74,9 +74,104 @@ echo "  Target:    $TARGET"
 [[ -n "$CERT_PATH" ]] && echo "  Cert:      $CERT_PATH"
 echo ""
 
-# --- 1. Generate .mcp.json ---
+# --- Helper: find a compatible Python (3.11-3.13) ---
 
-echo "1. Generating .mcp.json..."
+find_compatible_python() {
+    # Prefer specific versions known to work, newest first
+    for cmd in python3.13 python3.12 python3.11; do
+        local p
+        p="$(command -v "$cmd" 2>/dev/null)" || continue
+        if [ -n "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+
+    # Fall back to python3 if it's a compatible version
+    local p
+    p="$(command -v python3 2>/dev/null)" || true
+    if [ -n "$p" ]; then
+        local ver
+        ver="$("$p" -c 'import sys; print(f"{sys.version_info.minor}")' 2>/dev/null)" || true
+        if [ -n "$ver" ] && [ "$ver" -ge 11 ] && [ "$ver" -le 13 ]; then
+            echo "$p"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+# --- 1. Set up Python venv (if missing) ---
+
+echo "1. Checking Python venv..."
+if [ -d "$WIP_ROOT/.venv" ] && [ -f "$WIP_ROOT/.venv/bin/python" ]; then
+    VENV_PYTHON="$WIP_ROOT/.venv/bin/python"
+    VENV_VERSION="$("$VENV_PYTHON" --version 2>&1)"
+    echo "   Venv exists: $VENV_VERSION"
+else
+    # Find a compatible Python
+    SYSTEM_PYTHON=""
+    if SYSTEM_PYTHON="$(find_compatible_python)"; then
+        SYSTEM_VERSION="$("$SYSTEM_PYTHON" --version 2>&1)"
+        echo "   Using $SYSTEM_VERSION ($SYSTEM_PYTHON)"
+    else
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   !!  NO COMPATIBLE PYTHON FOUND                        !!"
+        echo "   !!                                                     !!"
+        echo "   !!  WIP requires Python 3.11, 3.12, or 3.13.          !!"
+        echo "   !!  Python 3.14+ is not yet supported.                !!"
+        echo "   !!                                                     !!"
+        echo "   !!  Install a compatible version:                      !!"
+        echo "   !!    macOS:  brew install python@3.13                 !!"
+        echo "   !!    Linux:  apt install python3.13 (or similar)      !!"
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+        exit 1
+    fi
+
+    echo "   Creating venv..."
+    "$SYSTEM_PYTHON" -m venv "$WIP_ROOT/.venv"
+    VENV_PYTHON="$WIP_ROOT/.venv/bin/python"
+
+    # shellcheck disable=SC1091
+    source "$WIP_ROOT/.venv/bin/activate"
+
+    # Install MCP server and its dependencies — this is critical for MCP connectivity
+    MCP_INSTALL_OK=false
+    if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
+        echo "   Installing MCP server dependencies..."
+        if pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>&1; then
+            MCP_INSTALL_OK=true
+            echo "   MCP server installed successfully"
+        fi
+    fi
+
+    if [ "$MCP_INSTALL_OK" = false ]; then
+        echo ""
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo "   !!  MCP SERVER INSTALL FAILED                          !!"
+        echo "   !!                                                     !!"
+        echo "   !!  Without this, Claude cannot connect to WIP.        !!"
+        echo "   !!  Fix manually:                                      !!"
+        echo "   !!    source .venv/bin/activate                        !!"
+        echo "   !!    pip install -e components/mcp-server/            !!"
+        echo "   !!                                                     !!"
+        echo "   !!  Then run /setup in Claude to verify.               !!"
+        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        echo ""
+    fi
+
+    # Install test dependencies
+    pip install pytest ruff mypy -q 2>/dev/null || true
+
+    echo "   Venv created"
+fi
+
+# --- 2. Generate .mcp.json ---
+
+echo "2. Generating .mcp.json..."
 
 # Determine API key
 API_KEY=""
@@ -95,20 +190,13 @@ else
     fi
 fi
 
-# Determine Python path (local only)
-PYTHON_PATH="$WIP_ROOT/.venv/bin/python"
-if [[ "$TARGET" == "local" ]] && [ ! -f "$PYTHON_PATH" ]; then
-    PYTHON_PATH="$(which python3 2>/dev/null || which python 2>/dev/null || echo "python")"
-    echo "   Warning: $WIP_ROOT/.venv/bin/python not found, using: $PYTHON_PATH"
-fi
-
 case "$TARGET" in
     local)
         cat > "$WIP_ROOT/.mcp.json" << EOF
 {
   "mcpServers": {
     "wip": {
-      "command": "$PYTHON_PATH",
+      "command": "$VENV_PYTHON",
       "args": ["-m", "wip_mcp"],
       "cwd": "$WIP_ROOT",
       "env": {
@@ -119,7 +207,7 @@ case "$TARGET" in
   }
 }
 EOF
-        echo "   Written: .mcp.json (stdio, local)"
+        echo "   Written: .mcp.json (stdio, local — $VENV_PYTHON)"
         ;;
 
     ssh)
@@ -201,9 +289,9 @@ EOF
         ;;
 esac
 
-# --- 2. Generate CLAUDE.md ---
+# --- 3. Generate CLAUDE.md ---
 
-echo "2. Generating CLAUDE.md..."
+echo "3. Generating CLAUDE.md..."
 cat > "$WIP_ROOT/CLAUDE.md" << 'CLAUDEEOF'
 # WIP — Backend Development
 
@@ -306,9 +394,9 @@ WorldInPie/
 CLAUDEEOF
 echo "   Written: CLAUDE.md"
 
-# --- 3. Copy backend slash commands ---
+# --- 4. Copy backend slash commands ---
 
-echo "3. Copying backend slash commands..."
+echo "4. Copying backend slash commands..."
 mkdir -p "$WIP_ROOT/.claude/commands"
 
 # Remove any existing commands (from a previous setup)
@@ -316,46 +404,6 @@ rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
 
 cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
-
-# --- 4. Set up Python venv (if missing) ---
-
-echo "4. Checking Python venv..."
-if [ -d "$WIP_ROOT/.venv" ] && [ -f "$WIP_ROOT/.venv/bin/python" ]; then
-    echo "   Venv exists: $WIP_ROOT/.venv"
-else
-    echo "   Creating venv..."
-    python3 -m venv "$WIP_ROOT/.venv"
-    # shellcheck disable=SC1091
-    source "$WIP_ROOT/.venv/bin/activate"
-
-    # Install MCP server and its dependencies — this is critical for MCP connectivity
-    MCP_INSTALL_OK=false
-    if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
-        if pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>/dev/null; then
-            MCP_INSTALL_OK=true
-        fi
-    fi
-
-    if [ "$MCP_INSTALL_OK" = false ]; then
-        echo ""
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo "   !!  MCP SERVER INSTALL FAILED                          !!"
-        echo "   !!                                                     !!"
-        echo "   !!  Without this, Claude cannot connect to WIP.        !!"
-        echo "   !!  Fix manually:                                      !!"
-        echo "   !!    source .venv/bin/activate                        !!"
-        echo "   !!    pip install -e components/mcp-server/            !!"
-        echo "   !!                                                     !!"
-        echo "   !!  Then run /setup in Claude to verify.               !!"
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo ""
-    fi
-
-    # Install test dependencies
-    pip install pytest ruff mypy -q 2>/dev/null || true
-
-    echo "   Venv created and dependencies installed"
-fi
 
 # --- 5. Verify MCP connectivity (local only) ---
 
