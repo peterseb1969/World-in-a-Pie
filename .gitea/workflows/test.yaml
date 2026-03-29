@@ -161,6 +161,16 @@ jobs:
             sleep 1
           done
 
+      - name: Start NATS
+        run: |
+          docker start test-nats 2>/dev/null || \
+            docker run -d --name test-nats --restart unless-stopped \
+              -p 4223:4222 -p 8223:8222 nats:2 -js -m 8222
+          for i in $(seq 1 10); do
+            curl -s http://localhost:8223/healthz && break
+            sleep 1
+          done
+
       - name: Install dependencies
         working-directory: components/reporting-sync
         run: |
@@ -173,6 +183,7 @@ jobs:
         env:
           PYTHONPATH: src
           POSTGRES_TEST_URI: postgresql://test:test@localhost:5433/wip_test
+          NATS_TEST_URL: nats://localhost:4223
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
