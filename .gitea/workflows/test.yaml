@@ -139,7 +139,7 @@ jobs:
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
 
-  # Reporting-sync (no DB needed)
+  # Reporting-sync (unit tests + PostgreSQL integration tests)
   test-reporting-sync:
     runs-on: ubuntu-latest
     steps:
@@ -149,6 +149,17 @@ jobs:
         run: |
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Start PostgreSQL
+        run: |
+          docker start test-postgres 2>/dev/null || \
+            docker run -d --name test-postgres -p 5433:5432 \
+              -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
+              -e POSTGRES_DB=wip_test postgres:16
+          for i in $(seq 1 10); do
+            docker exec test-postgres pg_isready -U test && break
+            sleep 1
+          done
 
       - name: Install dependencies
         working-directory: components/reporting-sync
@@ -161,6 +172,7 @@ jobs:
         working-directory: components/reporting-sync
         env:
           PYTHONPATH: src
+          POSTGRES_TEST_URI: postgresql://test:test@localhost:5433/wip_test
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short

@@ -297,6 +297,51 @@ Target file: `components/mcp-server/tests/test_server.py` (new). Can mock uvicor
 
 - Status: Not started
 
+### PostgreSQL Reporting Integration Tests
+
+Reporting-sync tests currently mock PostgreSQL entirely (`components/reporting-sync/tests/` uses mocked connections). The bash integration suite (`scripts/tests/suites/05-reporting.sh`) tests against real PostgreSQL but only via API calls — it cannot verify schema correctness, type mapping, or edge cases at the database level. This is how the template deactivation bug (`_wip_templates` not synced) went undetected.
+
+The new `DELETE /namespace/{prefix}` endpoint (namespace cleanup) is another example: raw SQL with dynamic table names, `asyncpg` result string parsing, and silently swallowed `UndefinedTableError` — none of which is meaningfully testable with mocks.
+
+**Need:** pytest integration tests that run against a real PostgreSQL instance:
+
+1. Schema creation and migration for all template types
+2. Data type mapping (MongoDB → PostgreSQL) for all field types including semantic types
+3. Terminology and template metadata sync (`_wip_terminologies`, `_wip_terms`, `_wip_templates`)
+4. Event-driven sync: create, update, and delete events produce correct PostgreSQL state
+5. Batch sync on startup matches event-driven sync results
+6. Namespace deletion: verify `DELETE /namespace/{prefix}` removes all rows from doc_* and metadata tables
+7. Edge cases: large documents, special characters, null handling, concurrent syncs
+
+**CI integration:** Gitea runs on the K8s cluster; CI jobs execute on `wip-pi.local` via act_runner (host execution, not containerised). A persistent `test-mongo` container already runs on the Pi for integration tests — `test-services` uses it directly. The same pattern works for PostgreSQL: add a persistent `test-postgres` container on the Pi and wire `test-reporting-sync` to use it.
+
+Target: `components/reporting-sync/tests/` with a `conftest.py` fixture that connects to a real PostgreSQL instance (CI container on the Pi, configurable via `POSTGRES_URI` env var).
+
+- Status: Not started
+
+### End-to-End UI Testing with Claude Desktop
+
+The WIP Console (`ui/wip-console/`) has zero test coverage — no test framework, no test scripts in `package.json`, no test files. Traditional browser automation (Selenium, Playwright) would require ongoing maintenance of a test suite that duplicates UI knowledge.
+
+Claude Desktop can now drive browser interactions, making E2E testing feasible without a traditional automation framework. Claude Desktop acts as both the test driver and the assertion layer, validating visual and functional correctness in a single pass.
+
+**Workflows to verify:**
+
+1. Login via OIDC (Dex) and session management
+2. Namespace creation, selection, and switching
+3. Terminology CRUD and ontology relationship management
+4. Template creation, field definitions, draft→active lifecycle
+5. Document creation, editing, versioning, and search
+6. File upload, download, and reference display
+7. Ontology browser navigation and graph interaction
+8. CSV/XLSX import preview and execution
+9. Files page namespace filtering
+10. Reporting page query execution
+
+**Open questions:** How to integrate with Gitea CI (Claude Desktop is interactive, not headless). May be a manual pre-release gate rather than automated CI. Investigate whether test scripts can be codified as reproducible Claude Desktop prompts.
+
+- Status: Not started
+
 ---
 
 ## Medium-Term
