@@ -413,3 +413,4 @@ These were previously on the roadmap and are now fully implemented:
 - Security hardening — CORS, rate limiting, bcrypt keys, upload limits, security headers
 - Information package for app-building AI — slash commands, reference docs, MCP resources
 - Universal synonym resolution — auto-synonym registration, resolve layer at API boundary, WIP-Toolkit backfill + namespace rewriting
+- Backend developer agent setup — `setup-backend-agent.sh`, role-specific CLAUDE.md, 8 backend slash commands, MCP transport selection (local/SSH/HTTP)

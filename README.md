@@ -108,11 +108,15 @@ WIP is built on three principles:
 | [Vision](docs/Vision.md) | Philosophy, design principles, and use cases |
 | [Architecture](docs/architecture.md) | Detailed system architecture |
 | [Data Models](docs/data-models.md) | Conceptual data structures |
+| [API Conventions](docs/api-conventions.md) | Bulk-first API, BulkResponse contract |
 | [Authentication](docs/authentication.md) | API keys, JWT/OIDC, Dex configuration |
-| [Network Configuration](docs/network-configuration.md) | Hostnames, TLS, and OIDC setup |
+| [Network Configuration](docs/network-configuration.md) | Hostnames, TLS, OIDC setup, critical gotchas |
 | [Reporting Layer](docs/reporting-layer.md) | PostgreSQL sync for analytics |
+| [Development Guide](docs/development-guide.md) | Running tests, quality audit, seed data, agent modes |
 | [Production Deployment](docs/production-deployment.md) | Secure production setup guide |
+| [App Setup Guide](docs/WIP_AppSetup_Guide.md) | Setting up app projects that build on WIP |
 | [Namespace Implementation](docs/namespace-implementation.md) | Namespace scoping and data isolation |
+| [Roadmap](docs/roadmap.md) | Future plans, pending features, design docs |
 | [FAQ](docs/faq.md) | Common issues and solutions |
 
 ---
@@ -132,6 +136,22 @@ cd World-in-a-Pie
 # Access the UI
 open https://localhost:8443
 ```
+
+### AI Agent Setup
+
+WIP supports two agent roles, each with role-specific instructions, slash commands, and MCP connectivity:
+
+```bash
+# Backend developer agent — for working ON WIP itself
+./scripts/setup-backend-agent.sh                                    # local MCP
+./scripts/setup-backend-agent.sh --target ssh --host pi-poe.local   # SSH proxy
+./scripts/setup-backend-agent.sh --target http --host wip-kubi.local # HTTP transport
+
+# App builder agent — for building apps ON TOP of WIP
+./scripts/create-app-project.sh /path/to/my-app --name "My App"
+```
+
+See [Development Guide](docs/development-guide.md) for details on both modes.
 
 ### Production Deployment
 
@@ -186,7 +206,7 @@ See [Production Deployment Guide](docs/production-deployment.md) for complete in
 - Namespace-scoped referential integrity
 - Ontology support — OBO Graph JSON import, typed relationships, polyhierarchy, traversal queries, unified import with auto-format detection
 
-Current focus: File upload (CSV/XLSX) and event replay.
+See [Roadmap](docs/roadmap.md) for current priorities and design documents.
 
 ---
 
@@ -259,7 +279,7 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 }
 ```
 
-33 tools covering all CRUD operations, plus resources for API conventions and data model documentation. Tool schemas are generated from OpenAPI specs, so the AI always sees field names and types that match the actual API — no drift, no silent failures.
+69 tools covering all CRUD operations, plus 4 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**

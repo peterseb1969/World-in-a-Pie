@@ -108,9 +108,9 @@ The helper script handles all copying automatically. For manual setup:
 WIP_REPO="/path/to/WorldInPie"
 APP_DIR="/path/to/my-new-app"
 
-# Slash commands (canonical source)
+# Slash commands (canonical source — note the app-builder/ subdirectory)
 mkdir -p "$APP_DIR/.claude/commands"
-cp "$WIP_REPO/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
+cp "$WIP_REPO/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 
 # Reference docs
 mkdir -p "$APP_DIR/docs"

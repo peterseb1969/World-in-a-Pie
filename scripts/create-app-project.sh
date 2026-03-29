@@ -7,7 +7,7 @@
 #
 # This script:
 #   1. Creates the directory structure
-#   2. Copies slash commands from docs/slash-commands/
+#   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
 #      ontology-support.md, dev-delete.md)
 #   4. Generates .mcp.json pointing to this WIP installation
@@ -79,8 +79,8 @@ if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
     exit 1
 fi
 
-if [ ! -d "$WIP_ROOT/docs/slash-commands" ]; then
-    echo "Error: $WIP_ROOT/docs/slash-commands/ not found."
+if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
+    echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
     echo "Run this script from the WIP project root."
     exit 1
 fi
@@ -96,7 +96,7 @@ mkdir -p "$APP_DIR/tools"
 # --- Copy slash commands ---
 
 echo "2. Copying slash commands (12 files)..."
-cp "$WIP_ROOT/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
+cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
 # --- Copy reference docs ---
