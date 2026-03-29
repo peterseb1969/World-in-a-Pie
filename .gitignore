@@ -69,6 +69,9 @@ k8s/secrets.local.yaml
 CLAUDE.md
 .claude/
 
+# Local-only docs (deployment-specific)
+docs/ci-setup.md
+
 # MCP config (contains API keys)
 .mcp.json
 
