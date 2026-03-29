@@ -687,7 +687,7 @@ async def list_terminologies(
 
 @mcp.tool()
 async def get_terminology(terminology_id: str) -> str:
-    """Get a terminology by its ID (e.g., 'T-xxxxxxxx')."""
+    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID)."""
     try:
         data = await get_client().get_terminology(terminology_id)
         return json.dumps(data, indent=2, default=str)
@@ -841,8 +841,7 @@ async def list_terms(
     """List terms in a terminology. Use search to filter by value/label/alias.
 
     Args:
-        terminology_id: The terminology ID (e.g., 'T-xxxxxxxx') or use
-            get_terminology_by_value first to find the ID.
+        terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         search: Optional search string to filter terms.
     """
     try:
@@ -875,7 +874,7 @@ async def create_terms(
     """Create terms in a terminology.
 
     Args:
-        terminology_id: The terminology to add terms to.
+        terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         terms: List of term objects. Each must have 'value' and 'label'.
             Optional: 'description', 'aliases' (list of strings).
 
@@ -895,11 +894,16 @@ async def create_terms(
 
 
 @mcp.tool()
-async def validate_term_value(terminology_id: str, value: str) -> str:
-    """Validate whether a value exists in a terminology. Use to test term resolution."""
+async def validate_term_value(terminology: str, value: str) -> str:
+    """Validate whether a value exists in a terminology. Use to test term resolution.
+
+    Args:
+        terminology: Terminology ID (UUID) or value (e.g., 'COUNTRY', 'CT_AE_TERM_TEST').
+        value: The term value to validate.
+    """
     try:
         data = await get_client().validate_term(
-            terminology_id=terminology_id, value=value
+            terminology=terminology, value=value
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

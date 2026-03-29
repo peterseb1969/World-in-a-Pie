@@ -454,11 +454,18 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
-    async def validate_term(self, terminology_id: str, value: str) -> dict:
+    async def validate_term(self, terminology: str, value: str) -> dict:
+        # Use terminology_value when it's not a UUID, terminology_id when it is
+        import re
+        is_uuid = bool(re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            terminology, re.IGNORECASE
+        ))
+        key = "terminology_id" if is_uuid else "terminology_value"
         return await self._post(
             self.def_store_url,
             "/api/def-store/validate",
-            json={"terminology_id": terminology_id, "value": value},
+            json={key: terminology, "value": value},
         )
 
     # ========================================================
