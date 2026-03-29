@@ -35,6 +35,68 @@ No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extr
 
 ## Near-Term
 
+### BUG: Reporting-Sync — Template Deactivation Not Synced
+
+Template status changes (deactivated/deleted) are NOT propagated to PostgreSQL. `_process_template_event()` handles all template events identically (create/update schema) and never checks for `template.deleted`. No `_wip_templates` metadata table exists in PostgreSQL (unlike `terminologies` and `terms` which DO have status tracking).
+
+**Impact:** DnD Compendium agent read from PostgreSQL, couldn't detect deactivated templates, ran in circles creating workarounds. Resolved by switching to API reads.
+
+**Fix:**
+1. Add `_wip_templates` metadata table (like `terminologies`)
+2. Update `_process_template_event()` to check event type and upsert template status
+3. For `template.deleted`: set status to `inactive` in PG
+
+- Discovered: 2026-03-28 during DnD K8s deployment
+- Status: Not started — fix before any more apps use the reporting layer
+
+### `@wip/client` Completion — Mandatory Interface for App Agents
+
+`@wip/client` is the ONLY supported path for AI-assisted app development. Every app and agent that bypasses the client hits the same WIP conventions (bulk-first 200 OK, identity dedup, synonym resolution, pagination) and wastes significant time working around them.
+
+**Missing methods that force apps to use raw fetch:**
+- `files.upload()`, `files.downloadContent()` — file operations
+- `reporting.awaitSync()` — sync-aware helper for PostgreSQL reads
+- Server-side auth mode for K8s (no browser key exposure)
+- Ensure all bulk methods are exposed alongside single-item convenience methods
+
+**App agent system prompt directive:** "Use @wip/client for ALL WIP interactions. Do not make direct API calls."
+
+- Status: Not started
+
+### Sync-Aware Helpers for Reporting Reads
+
+Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL). PostgreSQL is eventually consistent — sync delay + template deactivation bug (above) cause stale state.
+
+**Guidance to formalize:**
+- **State management** (current truth, status checks): Read from API (MongoDB)
+- **Analytics/reporting** (aggregations, cross-template joins): Read from PostgreSQL
+- **Never** use PostgreSQL as source of truth for entity status
+
+**Two helper approaches under consideration:**
+1. Explicit wait — `{ waitForSync: true, timeout: 5000 }` parameter on `run_report_query`
+2. Versioned reads — `sync_version` column from NATS sequence, `WHERE sync_version >= X`
+
+- Status: Design discussion — see memory for details
+
+### Gateway & Portal — TOP PRIORITY
+
+Elevated from medium-term after DnD Compendium deployment exposed fundamental gaps. Every app on K8s currently requires hand-rolling an Express reverse proxy for auth injection, MinIO URL rewriting, and sub-path routing. This is the same pattern as the Dex situation — constant hassle, token-expensive debugging, one-off workarounds per app.
+
+**Problems the Gateway must solve:**
+1. **Auth injection** — Browser apps can't hold API keys. Gateway injects credentials for WIP API calls.
+2. **MinIO URL rewriting** — Presigned URLs use internal hostnames (`wip-minio:9000`). Gateway must proxy file downloads via `/files/{id}/content`.
+3. **Sub-path routing** — Multiple apps at `/apps/{name}/` with proper base path handling.
+4. **App registration** — `app-manifest.json` pattern.
+5. **MCP transport** — Node.js SDK has content-length bug with streamable HTTP; SSE works but needs BaseHTTPMiddleware fix for auth. Gateway could provide a unified MCP proxy.
+
+**Current workaround (DnD):** Express proxy with `express.raw()` forwarding + API key injection, dedicated SSE-mode MCP server pod (no auth, internal only), `BASE_PATH`-relative URLs throughout frontend, `@wip/client` with `baseUrl` set to `BASE_PATH` for proxy routing.
+
+**Design questions:** Caddy-based vs nginx ingress annotations vs dedicated gateway service? Should `@wip/client` have a "proxied" mode? Cookie-based sessions vs API key injection? OIDC/Dex for user-facing apps vs API-key for service apps?
+
+- Design: `docs/WIP_DevGuardrails.md` (Guide 1)
+- Status: **Top priority** — block app deployment guide until Gateway design is done
+- Discovered: 2026-03-28 during DnD K8s deployment
+
 ### Console: Files Page Ignores Namespace
 
 The files page (`/files`) always queries `namespace=wip` regardless of the selected namespace. Root cause: `list_files` API defaults to `namespace="wip"` and the Console doesn't pass the active namespace. Files uploaded to other namespaces (e.g., `dnd`) are invisible in the UI.
@@ -202,13 +264,6 @@ Target file: `components/mcp-server/tests/test_server.py` (new). Can mock uvicor
 
 ## Medium-Term
 
-### Gateway & Portal
-
-Caddy-based reverse proxy for multi-app routing. Required before deploying a second app alongside WIP Console. Includes app-manifest.json registration, landing page, path-based routing.
-
-- Design: `docs/WIP_DevGuardrails.md` (Guide 1)
-- Status: Not yet implemented
-
 ### Distributed Deployment
 
 Make services independently deployable across multiple hosts. 80% ready — all service URLs are env vars. Main gaps:
@@ -301,6 +356,7 @@ All feature designs live in `docs/design/`. Status of each:
 
 These were previously on the roadmap and are now fully implemented:
 
+- DnD Compendium K8s deployment — first WIP app on Pi cluster. Express reverse proxy for auth injection, SSE-mode MCP, sub-path hosting at `/apps/dnd/`, all features working (data, images, AI chat). Exposed Gateway design as top priority (2026-03-28)
 - Complete ID pass-through for restore — all entity types (terminologies, terms, templates, documents, files) preserve original IDs. 527/527 verified (2026-03-28)
 - Namespace deletion — persistent journal, crash-safe, dry-run, inbound reference checking, MCP tool (2026-03-27)
 - Ontology browser — ego-graph with Cytoscape.js, click-to-navigate, cross-namespace traversal (2026-03-27)

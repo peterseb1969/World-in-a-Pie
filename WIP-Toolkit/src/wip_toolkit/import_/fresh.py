@@ -280,6 +280,7 @@ def _create_templates_multipass(
 
     # Track what's been created and the order for activation
     pending = set(archive_tpl_ids)
+    failed_tids: set[str] = set()  # Templates already counted in stats.failed
     activation_order: list[str] = []
     pass_num = 0
 
@@ -327,6 +328,7 @@ def _create_templates_multipass(
                             )
                             if not continue_on_error:
                                 raise WIPClientError(r.get("error", "Unknown error"))
+                            failed_tids.add(old_tid)
                             break
                         new_tid = r["id"]
                         remapper.add_template_mapping(old_tid, new_tid)
@@ -355,12 +357,14 @@ def _create_templates_multipass(
                             )
                             if not continue_on_error:
                                 raise WIPClientError(r.get("error", "Unknown error"))
+                            failed_tids.add(old_tid)
                             break
 
                     stats.created.templates += 1
                 except WIPClientError:
                     if not continue_on_error:
                         raise
+                    failed_tids.add(old_tid)
                     break
 
             if old_tid in remapper.template_map:
@@ -370,6 +374,9 @@ def _create_templates_multipass(
         for tid in created_this_pass:
             pending.discard(tid)
             activation_order.append(tid)
+        # Remove failed templates from pending (already counted in stats.failed)
+        for tid in list(failed_tids):
+            pending.discard(tid)
 
         console.print(
             f"  Pass {pass_num}: created {len(created_this_pass)} template(s), "
