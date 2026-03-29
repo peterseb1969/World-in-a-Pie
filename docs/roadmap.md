@@ -47,7 +47,7 @@ Template status changes (deactivated/deleted) are NOT propagated to PostgreSQL. 
 3. For `template.deleted`: set status to `inactive` in PG
 
 - Discovered: 2026-03-28 during DnD K8s deployment
-- Status: Not started — fix before any more apps use the reporting layer
+- Status: **Fixed** (2026-03-29) — `_wip_templates` metadata table, event-driven + batch sync, tests
 
 ### `@wip/client` Completion — Mandatory Interface for App Agents
 
@@ -103,11 +103,12 @@ The files page (`/files`) always queries `namespace=wip` regardless of the selec
 
 - Fix: Pass active namespace from Console's namespace selector to the files API call
 - Discovered: 2026-03-28 during DnD data migration to K8s
+- Status: **Fixed** (2026-03-29)
 
 ### Ontology Browser — UX Refinements
 
 Implemented (2026-03-27). Known issues remaining:
-- Some nodes show UUID7 instead of human-readable labels
+- ~~Some nodes show UUID7 instead of human-readable labels~~ Fixed (2026-03-29)
 - Document list in detail panel needs rethinking
 
 - Design: `docs/design/ontology-browser.md`
