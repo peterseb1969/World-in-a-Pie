@@ -138,6 +138,10 @@ else
     # shellcheck disable=SC1091
     source "$WIP_ROOT/.venv/bin/activate"
 
+    # Upgrade pip and setuptools — fresh venvs bundle old versions that may not
+    # support modern pyproject.toml build backends
+    pip install --upgrade pip setuptools -q 2>/dev/null || true
+
     # Install MCP server and its dependencies — this is critical for MCP connectivity
     MCP_INSTALL_OK=false
     if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
