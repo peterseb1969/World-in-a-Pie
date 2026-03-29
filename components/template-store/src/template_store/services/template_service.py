@@ -1,7 +1,10 @@
 """Template service for business logic."""
 
 import contextlib
+import logging
 from datetime import UTC, datetime
+
+logger = logging.getLogger(__name__)
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -722,6 +725,25 @@ class TemplateService:
                 created_by=actor,
             )
             await template.insert()
+
+            # Register auto-synonym for human-readable resolution (best-effort)
+            # Version is always 1 for bulk create (existing templates are skipped above)
+            try:
+                await client.register_auto_synonym(
+                    target_id=template_id,
+                    namespace=namespace,
+                    composite_key={
+                        "ns": namespace,
+                        "type": "template",
+                        "value": template_req.value,
+                    },
+                    created_by=actor,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to register auto-synonym for template %s: %s",
+                    template_req.value, e
+                )
 
             # Publish event — skip for drafts
             if not is_draft:
