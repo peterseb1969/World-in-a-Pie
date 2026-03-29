@@ -39,17 +39,17 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 The gateway is a reverse proxy (Caddy is recommended for its automatic TLS and simple configuration) that listens on the host’s ports 80 and 443. All constellation apps sit behind it, accessible via path-based routing on a single hostname.
 
-https://wip-pi.local/ → Portal (landing page)
+https://your-host.local/ → Portal (landing page)
 
-https://wip-pi.local/apps/statements/ → Statement Manager (port 3001 internal)
+https://your-host.local/apps/statements/ → Statement Manager (port 3001 internal)
 
-https://wip-pi.local/apps/receipts/ → Receipt Scanner (port 3002 internal)
+https://your-host.local/apps/receipts/ → Receipt Scanner (port 3002 internal)
 
-https://wip-pi.local/apps/energy/ → Energy Monitor (port 3003 internal)
+https://your-host.local/apps/energy/ → Energy Monitor (port 3003 internal)
 
-https://wip-pi.local/console/ → WIP Console (port 8443 internal)
+https://your-host.local/console/ → WIP Console (port 8443 internal)
 
-https://wip-pi.local/api/ → WIP API services (ports 8001-8005)
+https://your-host.local/api/ → WIP API services (ports 8001-8005)
 
 Each app binds to its own internal port (never exposed to the host). The gateway is the only container that binds to host ports 80 and 443. This eliminates all port conflicts.
 
@@ -336,7 +336,7 @@ import { WipProvider, useDocuments, useCreateDocument } from '@wip/react';
 
 const wip = createWipClient({
 
-host: 'https://wip-pi.local',
+host: 'https://your-host.local',
 
 auth: { mode: 'api-key', key: import.meta.env.VITE_WIP_API_KEY },
 
