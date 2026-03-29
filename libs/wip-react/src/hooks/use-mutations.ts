@@ -105,6 +105,38 @@ export function useUploadFile(
   })
 }
 
+export function useDeleteTerminology(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+) {
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => client.defStore.deleteTerminology(id),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
+      options?.onSuccess?.(...args)
+    },
+    ...options,
+  })
+}
+
+export function useDeleteTerm(
+  terminologyId: string,
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+) {
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (termId: string) => client.defStore.deleteTerm(termId),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
+      options?.onSuccess?.(...args)
+    },
+    ...options,
+  })
+}
+
 export function useDeleteDocument(
   options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; updatedBy?: string }>, 'mutationFn'>,
 ) {

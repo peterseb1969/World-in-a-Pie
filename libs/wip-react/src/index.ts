@@ -18,6 +18,8 @@ export { useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
 export {
   useCreateTerminology,
   useCreateTerm,
+  useDeleteTerminology,
+  useDeleteTerm,
   useCreateTemplate,
   useCreateDocument,
   useCreateDocuments,
