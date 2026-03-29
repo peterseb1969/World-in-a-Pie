@@ -315,6 +315,7 @@ WIP is a universal template-driven document storage system. It runs on anything 
 - `docs/api-conventions.md` — bulk-first API, BulkResponse contract
 - `docs/uniqueness-and-identity.md` — Registry, identity hashing, composite keys
 - `docs/development-guide.md` — running tests, quality audit, seed data
+- `docs/change-propagation-checklist.md` — what to update when adding/changing fields or features
 - `docs/design/ontology-support.md` — term relationships
 - MCP resource `wip://ponifs` — 6 non-intuitive behaviours
 

@@ -43,6 +43,12 @@ CI runs all component tests via `.gitea/workflows/test.yaml`.
 
 ---
 
+## Change Propagation
+
+When adding or modifying fields/features, changes must propagate across multiple layers (API → client libs → UI → MCP → scripts → tests). See **[Change Propagation Checklist](change-propagation-checklist.md)** for the full list.
+
+---
+
 ## Security Checks
 
 ```bash
