@@ -196,12 +196,16 @@ CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -ty
 REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 
-# Auto-build tarballs if missing or empty (npm pack triggers prepack → build automatically)
+# Auto-build tarballs if missing or invalid
+# Fresh clones have no node_modules, so we must npm install before npm pack
 rebuild_tarball() {
     local lib_dir="$1"
     local lib_name="$2"
     echo "   Building $lib_name tarball..."
-    (cd "$lib_dir" && npm pack --quiet 2>/dev/null)
+    if ! (cd "$lib_dir" && npm install --quiet 2>&1 | tail -1 && npm pack --quiet 2>&1 | tail -1); then
+        echo "   Warning: failed to build $lib_name tarball"
+        return 1
+    fi
     find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
 }
 
