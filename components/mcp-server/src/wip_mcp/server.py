@@ -716,6 +716,7 @@ async def create_terminology(
     label: str,
     namespace: str = "wip",
     description: str | None = None,
+    mutable: bool = False,
 ) -> str:
     """Create a terminology (controlled vocabulary).
 
@@ -724,11 +725,14 @@ async def create_terminology(
         label: Human-readable name (e.g., 'Country', 'Gender').
         namespace: Namespace to create in. Default: 'wip'.
         description: Optional description of what this terminology contains.
+        mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
     """
     try:
         kwargs = {}
         if description:
             kwargs["description"] = description
+        if mutable:
+            kwargs["mutable"] = True
         data = await get_client().create_terminology(
             value=value, label=label, namespace=namespace, **kwargs
         )
@@ -760,13 +764,15 @@ async def update_terminology(
     terminology_id: str,
     label: str | None = None,
     description: str | None = None,
+    mutable: bool | None = None,
 ) -> str:
-    """Update a terminology's label or description.
+    """Update a terminology's label, description, or mutability.
 
     Args:
         terminology_id: ID of the terminology to update.
         label: New label (optional).
         description: New description (optional).
+        mutable: Set mutability (optional). Only allowed when term_count is 0.
     """
     try:
         updates = {}
@@ -774,8 +780,10 @@ async def update_terminology(
             updates["label"] = label
         if description is not None:
             updates["description"] = description
+        if mutable is not None:
+            updates["mutable"] = mutable
         if not updates:
-            return "Error: Provide at least one field to update (label, description)."
+            return "Error: Provide at least one field to update (label, description, mutable)."
         data = await get_client().update_terminology(terminology_id, updates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -784,13 +792,13 @@ async def update_terminology(
 
 @mcp.tool()
 async def delete_terminology(terminology_id: str, force: bool = False) -> str:
-    """Deactivate (soft-delete) a terminology.
+    """Delete a terminology. Mutable terminologies are hard-deleted; immutable ones are soft-deleted (deactivated).
 
     Blocked if terms depend on it unless force=true.
 
     Args:
-        terminology_id: ID of the terminology to deactivate.
-        force: Force deactivation even if terms exist.
+        terminology_id: ID of the terminology to delete.
+        force: Force deletion even if terms exist.
     """
     try:
         data = await get_client().delete_terminology(terminology_id, force=force)
