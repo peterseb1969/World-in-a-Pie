@@ -6,6 +6,7 @@ The actual sync work is done by the worker module.
 """
 
 import asyncio
+import contextlib
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -18,6 +19,9 @@ import nats
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
+
+from wip_auth.ratelimit import setup_rate_limiting
+from wip_auth.security import check_production_security
 
 from . import __version__
 from .batch_sync import BatchSyncService
@@ -43,8 +47,6 @@ from .search_service import (
     TermDocumentsResponse,
 )
 from .worker import run_sync_worker
-from wip_auth.ratelimit import setup_rate_limiting
-from wip_auth.security import check_production_security
 
 # Configure logging
 logging.basicConfig(
@@ -238,11 +240,12 @@ async def lifespan(app: FastAPI):
         # Initialize schema
         await init_postgres_schema(state.postgres_pool)
 
-        # Ensure def-store tables exist
+        # Ensure metadata tables exist
         from .schema_manager import SchemaManager
         sm = SchemaManager(state.postgres_pool)
         await sm.ensure_terminologies_table()
         await sm.ensure_terms_table()
+        await sm.ensure_templates_table()
         await sm.ensure_term_relationships_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
@@ -296,18 +299,14 @@ async def lifespan(app: FastAPI):
     # Cancel alert check task
     if state.alert_check_task:
         state.alert_check_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await state.alert_check_task
-        except asyncio.CancelledError:
-            pass
 
     # Cancel sync task
     if state.sync_task:
         state.sync_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await state.sync_task
-        except asyncio.CancelledError:
-            pass
 
     # Close connections
     if state.postgres_pool:
@@ -796,8 +795,8 @@ class AggregatedIntegrityResult(BaseModel):
 
 @router.get("/health/integrity", response_model=AggregatedIntegrityResult)
 async def aggregated_integrity_check(
-    template_status: str = None,
-    document_status: str = None,
+    template_status: str | None = None,
+    document_status: str | None = None,
     template_limit: int = 0,
     document_limit: int = 0,
     check_term_refs: bool = True,
@@ -927,12 +926,7 @@ async def aggregated_integrity_check(
     has_warnings = any(i.severity == "warning" for i in all_issues)
 
     if services_unavailable:
-        if services_checked:
-            # Partial check
-            status = "partial"
-        else:
-            # No services reachable
-            status = "error"
+        status = "partial" if services_checked else "error"
     elif has_errors:
         status = "error"
     elif has_warnings:
@@ -1257,15 +1251,15 @@ async def execute_query(body: ReportQuery):
                 "truncated": truncated,
             }
 
-    except asyncpg.QueryCanceledError:
+    except asyncpg.QueryCanceledError as e:
         raise HTTPException(
             status_code=408,
             detail=f"Query timed out after {body.timeout_seconds} seconds",
-        )
+        ) from e
     except asyncpg.PostgresSyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}")
+        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}") from e
     except asyncpg.PostgresError as e:
-        raise HTTPException(status_code=400, detail=f"Query error: {e}")
+        raise HTTPException(status_code=400, detail=f"Query error: {e}") from e
 
 
 @router.get("/")

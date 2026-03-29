@@ -3,7 +3,7 @@ Data models for the Reporting Sync service.
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,7 +14,7 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra='forbid')
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Types of events published to NATS."""
 
     # Document events
@@ -26,6 +26,7 @@ class EventType(str, Enum):
     TEMPLATE_CREATED = "template.created"
     TEMPLATE_UPDATED = "template.updated"
     TEMPLATE_DELETED = "template.deleted"
+    TEMPLATE_ACTIVATED = "template.activated"
 
     # File events
     FILE_UPLOADED = "file.uploaded"
@@ -49,7 +50,7 @@ class EventType(str, Enum):
     RELATIONSHIP_DELETED = "relationship.deleted"
 
 
-class SyncStrategy(str, Enum):
+class SyncStrategy(StrEnum):
     """Sync strategy for a template."""
 
     LATEST_ONLY = "latest_only"  # UPSERT - one row per document_id
@@ -88,7 +89,7 @@ class ReportingConfig(BaseModel):
     max_array_elements: int = 10
 
 
-class FieldType(str, Enum):
+class FieldType(StrEnum):
     """Field types from template definitions."""
 
     STRING = "string"
@@ -104,7 +105,7 @@ class FieldType(str, Enum):
     ARRAY = "array"
 
 
-class SemanticType(str, Enum):
+class SemanticType(StrEnum):
     """Semantic types that provide meaning beyond base types."""
 
     EMAIL = "email"
@@ -164,7 +165,7 @@ class HealthResponse(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
-class BatchSyncStatus(str, Enum):
+class BatchSyncStatus(StrEnum):
     """Status of a batch sync job."""
 
     PENDING = "pending"
@@ -277,7 +278,7 @@ class MetricsResponse(BaseModel):
     errors_by_type: dict[str, int] = Field(default_factory=dict)
 
 
-class AlertSeverity(str, Enum):
+class AlertSeverity(StrEnum):
     """Alert severity levels."""
 
     INFO = "info"
@@ -285,7 +286,7 @@ class AlertSeverity(str, Enum):
     CRITICAL = "critical"
 
 
-class AlertType(str, Enum):
+class AlertType(StrEnum):
     """Types of alerts."""
 
     QUEUE_LAG = "queue_lag"

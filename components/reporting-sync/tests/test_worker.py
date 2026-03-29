@@ -6,14 +6,12 @@ tests can run without infrastructure.
 """
 
 import json
-from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from reporting_sync.models import SyncStatus
 from reporting_sync.worker import SyncWorker
-
 
 # =========================================================================
 # Fixtures
@@ -137,12 +135,13 @@ def _make_nats_message(event_data: dict) -> MagicMock:
 @pytest.fixture
 def worker(mock_nats, mock_jetstream, mock_pool, sync_status):
     """Create a SyncWorker with all mocked dependencies."""
-    pool, conn = mock_pool
+    pool, _conn = mock_pool
     w = SyncWorker(mock_nats, mock_jetstream, pool, sync_status)
     # Mock the schema_manager methods
     w.schema_manager.table_exists = AsyncMock(return_value=False)
     w.schema_manager.create_table = AsyncMock(return_value="CREATE TABLE ...")
     w.schema_manager.ensure_table_for_template = AsyncMock(return_value="doc_person")
+    w.schema_manager.ensure_templates_table = AsyncMock(return_value="templates")
     w.schema_manager.update_table_schema = AsyncMock(return_value=[])
     return w
 
@@ -158,7 +157,7 @@ class TestProcessDocumentCreate:
     @pytest.mark.asyncio
     async def test_create_event_fetches_template_and_inserts(self, worker, mock_pool):
         """A document.created event fetches the template, ensures the table, and inserts."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template()
         event = _make_document_event(event_type="document.created")
 
@@ -176,7 +175,7 @@ class TestProcessDocumentCreate:
     @pytest.mark.asyncio
     async def test_create_event_message_ack(self, worker, mock_pool):
         """Full message processing: success results in ack."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         template = _make_template()
         event = _make_document_event()
         msg = _make_nats_message(event)
@@ -199,7 +198,7 @@ class TestProcessDocumentUpdate:
     @pytest.mark.asyncio
     async def test_update_event_upserts_row(self, worker, mock_pool):
         """A document.updated event produces an UPSERT SQL statement."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template()
         event = _make_document_event(event_type="document.updated")
         event["document"]["version"] = 2
@@ -215,7 +214,7 @@ class TestProcessDocumentUpdate:
     @pytest.mark.asyncio
     async def test_update_uses_latest_only_strategy_by_default(self, worker, mock_pool):
         """Default strategy is latest_only, which produces ON CONFLICT (document_id) DO UPDATE."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template()
         event = _make_document_event(event_type="document.updated")
 
@@ -238,7 +237,7 @@ class TestProcessDocumentDelete:
     @pytest.mark.asyncio
     async def test_delete_event_updates_status(self, worker, mock_pool):
         """A document.deleted event UPDATEs the row's status to 'deleted'."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template()
         event = _make_document_event(event_type="document.deleted")
 
@@ -254,7 +253,7 @@ class TestProcessDocumentDelete:
     @pytest.mark.asyncio
     async def test_delete_passes_document_id_and_status(self, worker, mock_pool):
         """Delete SQL passes 'deleted' status and the document_id."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template()
         event = _make_document_event(
             event_type="document.deleted",
@@ -287,6 +286,41 @@ class TestProcessTemplateEvent:
         worker.schema_manager.ensure_table_for_template.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_template_event_syncs_metadata(self, worker, mock_pool):
+        """Template created/updated events upsert to templates metadata table."""
+        _, conn = mock_pool
+        event = _make_template_event(event_type="template.created")
+        result = await worker._process_template_event(event)
+        assert result is True
+        worker.schema_manager.ensure_templates_table.assert_awaited()
+        # Should INSERT/upsert (not UPDATE for delete)
+        sql = conn.execute.call_args[0][0]
+        assert "INSERT INTO" in sql
+
+    @pytest.mark.asyncio
+    async def test_template_deleted_sets_inactive(self, worker, mock_pool):
+        """template.deleted event sets status to inactive in metadata table."""
+        _, conn = mock_pool
+        event = _make_template_event(event_type="template.deleted")
+        result = await worker._process_template_event(event)
+        assert result is True
+        worker.schema_manager.ensure_templates_table.assert_awaited()
+        sql = conn.execute.call_args[0][0]
+        assert "UPDATE" in sql
+        assert "'inactive'" in sql
+
+    @pytest.mark.asyncio
+    async def test_template_activated_upserts_status(self, worker, mock_pool):
+        """template.activated event upserts with active status."""
+        _, conn = mock_pool
+        event = _make_template_event(event_type="template.activated")
+        event["template"]["status"] = "active"
+        result = await worker._process_template_event(event)
+        assert result is True
+        sql = conn.execute.call_args[0][0]
+        assert "INSERT INTO" in sql
+
+    @pytest.mark.asyncio
     async def test_template_event_invalidates_cache(self, worker):
         """Template events clear the matching entry from the template cache."""
         template = _make_template(template_id="TPL-000001", value="person")
@@ -305,15 +339,18 @@ class TestProcessTemplateEvent:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_template_event_sync_disabled_skips_table(self, worker):
-        """When sync is disabled for the template, ensure_table is still called
-        but should be skipped by the method because config says so."""
+    async def test_template_event_sync_disabled_still_syncs_metadata(self, worker, mock_pool):
+        """When sync is disabled, doc table is skipped but metadata still synced."""
+        _, conn = mock_pool
         event = _make_template_event()
         event["template"]["reporting"] = {"sync_enabled": False}
         result = await worker._process_template_event(event)
         assert result is True
         # ensure_table_for_template should NOT be called when sync is disabled
         worker.schema_manager.ensure_table_for_template.assert_not_awaited()
+        # But metadata should still be synced
+        worker.schema_manager.ensure_templates_table.assert_awaited()
+        conn.execute.assert_awaited()
 
 
 # =========================================================================
@@ -359,7 +396,7 @@ class TestTemplateCaching:
     @pytest.mark.asyncio
     async def test_second_fetch_uses_cache(self, worker, mock_pool):
         """After first fetch populates cache, second fetch uses it."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         template = _make_template()
 
         mock_response = MagicMock()
@@ -459,14 +496,13 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_db_insert_error_raises(self, worker, mock_pool):
         """Database error during insert propagates as exception."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         conn.execute = AsyncMock(side_effect=Exception("unique constraint violation"))
         template = _make_template()
         event = _make_document_event()
 
-        with patch.object(worker, "_fetch_template", AsyncMock(return_value=template)):
-            with pytest.raises(Exception, match="unique constraint violation"):
-                await worker._process_document_event(event)
+        with patch.object(worker, "_fetch_template", AsyncMock(return_value=template)), pytest.raises(Exception, match="unique constraint violation"):
+            await worker._process_document_event(event)
 
 
 # =========================================================================
@@ -480,7 +516,7 @@ class TestMessageAckNak:
     @pytest.mark.asyncio
     async def test_successful_event_acks_message(self, worker, mock_pool):
         """Successful event processing acks the NATS message."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         template = _make_template()
         event = _make_document_event()
         msg = _make_nats_message(event)
@@ -494,7 +530,7 @@ class TestMessageAckNak:
     @pytest.mark.asyncio
     async def test_failed_event_naks_message(self, worker, mock_pool):
         """Failed event processing naks the NATS message for retry."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         event = _make_document_event()
         msg = _make_nats_message(event)
 
@@ -523,7 +559,7 @@ class TestMessageAckNak:
     @pytest.mark.asyncio
     async def test_exception_during_processing_naks_message(self, worker, mock_pool):
         """Unhandled exception during processing naks the message."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         conn.execute = AsyncMock(side_effect=RuntimeError("db connection lost"))
         template = _make_template()
         event = _make_document_event()
@@ -558,7 +594,7 @@ class TestSyncDisabled:
     @pytest.mark.asyncio
     async def test_sync_disabled_skips_and_returns_true(self, worker, mock_pool):
         """When template has sync_enabled=False, event is skipped (not an error)."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         template = _make_template(reporting={"sync_enabled": False})
         event = _make_document_event()
 

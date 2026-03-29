@@ -18,8 +18,6 @@ from typing import Any
 import asyncpg
 import httpx
 
-from .transformer import _parse_datetime
-
 from .config import settings
 from .models import (
     BatchSyncJob,
@@ -27,7 +25,7 @@ from .models import (
     ReportingConfig,
 )
 from .schema_manager import SchemaManager
-from .transformer import DocumentTransformer
+from .transformer import DocumentTransformer, _parse_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -491,6 +489,97 @@ class BatchSyncService:
             logger.error(f"Batch terminology sync error: {e}", exc_info=True)
 
         logger.info(f"Terminology batch sync: {synced} synced, {failed} failed")
+        return {"synced": synced, "failed": failed, "total": synced + failed}
+
+    async def batch_sync_templates(
+        self,
+        namespace: str | None = None,
+        page_size: int = 100,
+    ) -> dict:
+        """
+        Batch sync all templates from Template-Store to PostgreSQL.
+
+        Returns:
+            Dict with sync results (synced, failed, total)
+        """
+        table_name = await self.schema_manager.ensure_templates_table()
+        synced = 0
+        failed = 0
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                page = 1
+
+                while True:
+                    params: dict = {"page": page, "page_size": page_size}
+                    if namespace:
+                        params["namespace"] = namespace
+                    resp = await client.get(
+                        f"{settings.template_store_url}/api/template-store/templates",
+                        params=params,
+                        headers={"X-API-Key": settings.api_key},
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"Failed to list templates: {resp.status_code}")
+                        break
+
+                    data = resp.json()
+                    items = data.get("items", [])
+
+                    if not items:
+                        break
+
+                    async with self.pool.acquire() as conn:
+                        for t in items:
+                            try:
+                                await conn.execute(
+                                    f"""
+                                    INSERT INTO "{table_name}" (
+                                        "template_id", "namespace", "value", "label",
+                                        "description", "version", "status", "extends",
+                                        "extends_version", "created_at", "created_by",
+                                        "updated_at", "updated_by"
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                    ON CONFLICT ("namespace", "template_id")
+                                    DO UPDATE SET
+                                        "value" = EXCLUDED."value",
+                                        "label" = EXCLUDED."label",
+                                        "description" = EXCLUDED."description",
+                                        "version" = EXCLUDED."version",
+                                        "status" = EXCLUDED."status",
+                                        "extends" = EXCLUDED."extends",
+                                        "extends_version" = EXCLUDED."extends_version",
+                                        "updated_at" = EXCLUDED."updated_at",
+                                        "updated_by" = EXCLUDED."updated_by"
+                                    """,
+                                    t["template_id"],
+                                    t.get("namespace", namespace or "wip"),
+                                    t["value"],
+                                    t.get("label"),
+                                    t.get("description"),
+                                    t.get("version", 1),
+                                    t.get("status", "active"),
+                                    t.get("extends"),
+                                    t.get("extends_version"),
+                                    _parse_datetime(t.get("created_at")),
+                                    t.get("created_by"),
+                                    _parse_datetime(t.get("updated_at")),
+                                    t.get("updated_by"),
+                                )
+                                synced += 1
+                            except Exception as e:
+                                logger.error(f"Error syncing template {t.get('value')}: {e}")
+                                failed += 1
+
+                    if page >= data.get("pages", 1):
+                        break
+                    page += 1
+                    await asyncio.sleep(0.05)
+
+        except Exception as e:
+            logger.error(f"Batch template sync error: {e}", exc_info=True)
+
+        logger.info(f"Template batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
     async def batch_sync_terms(

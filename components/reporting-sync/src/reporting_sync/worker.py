@@ -169,12 +169,16 @@ class SyncWorker:
 
     async def _process_template_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a template event (created, updated).
+        Process a template event (created, updated, activated, deleted/deactivated).
 
-        Creates or updates the PostgreSQL table schema.
+        Creates or updates the PostgreSQL table schema AND syncs template
+        metadata to the templates table (status tracking).
         """
+        start_time = time.perf_counter()
+        event_type = event_data.get("event_type")
         template = event_data.get("template", {})
         template_value = template.get("value")
+        template_id = template.get("template_id")
 
         if not template_value:
             logger.warning("Invalid template event: missing value")
@@ -189,11 +193,75 @@ class SyncWorker:
 
         if not config.sync_enabled:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
-            return True
+            # Still sync template metadata even if doc sync is disabled
+        else:
+            # Create or update document table
+            table_name = await self.schema_manager.ensure_table_for_template(template)
+            logger.info(f"Ensured table {table_name} for template {template_value}")
 
-        # Create or update table
-        table_name = await self.schema_manager.ensure_table_for_template(template)
-        logger.info(f"Ensured table {table_name} for template {template_value}")
+        # Sync template metadata to templates table
+        if template_id:
+            namespace = template.get("namespace", "wip")
+            meta_table = await self.schema_manager.ensure_templates_table()
+
+            try:
+                async with self.pool.acquire() as conn:
+                    if event_type == "template.deleted":
+                        await conn.execute(
+                            f"""
+                            UPDATE "{meta_table}"
+                            SET "status" = 'inactive',
+                                "updated_at" = NOW(),
+                                "updated_by" = $3
+                            WHERE "namespace" = $1
+                              AND "template_id" = $2
+                            """,
+                            namespace, template_id, event_data.get("changed_by"),
+                        )
+                    else:
+                        await conn.execute(
+                            f"""
+                            INSERT INTO "{meta_table}" (
+                                "template_id", "namespace", "value", "label",
+                                "description", "version", "status", "extends",
+                                "extends_version", "created_at", "created_by",
+                                "updated_at", "updated_by"
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                            ON CONFLICT ("namespace", "template_id")
+                            DO UPDATE SET
+                                "value" = EXCLUDED."value",
+                                "label" = EXCLUDED."label",
+                                "description" = EXCLUDED."description",
+                                "version" = EXCLUDED."version",
+                                "status" = EXCLUDED."status",
+                                "extends" = EXCLUDED."extends",
+                                "extends_version" = EXCLUDED."extends_version",
+                                "updated_at" = EXCLUDED."updated_at",
+                                "updated_by" = EXCLUDED."updated_by"
+                            """,
+                            template_id,
+                            namespace,
+                            template_value,
+                            template.get("label"),
+                            template.get("description"),
+                            template.get("version", 1),
+                            template.get("status", "active"),
+                            template.get("extends"),
+                            template.get("extends_version"),
+                            _parse_datetime(template.get("created_at")),
+                            template.get("created_by"),
+                            _parse_datetime(template.get("updated_at")),
+                            template.get("updated_by"),
+                        )
+
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                logger.info(
+                    f"Synced template {template_value} ({template_id}) "
+                    f"to {meta_table} ({latency_ms:.1f}ms)"
+                )
+            except Exception as e:
+                logger.error(f"Error syncing template metadata: {e}")
+                raise
 
         return True
 

@@ -8,7 +8,7 @@ Responsibilities:
 """
 
 import logging
-from typing import Any
+from typing import Any, ClassVar
 
 import asyncpg
 
@@ -151,7 +151,7 @@ class SchemaManager:
         return columns
 
     # System column names that cannot be used for data fields
-    SYSTEM_COLUMNS = {
+    SYSTEM_COLUMNS: ClassVar[set[str]] = {
         "document_id", "template_id", "template_version", "version",
         "status", "identity_hash", "created_at", "created_by",
         "updated_at", "updated_by", "data_json", "term_references_json",
@@ -401,6 +401,50 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
     "updated_at" TIMESTAMP WITH TIME ZONE,
     "updated_by" TEXT,
     PRIMARY KEY ("namespace", "terminology_id")
+);
+
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
+  ON "{table_name}"("namespace", "value");
+CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
+  ON "{table_name}"("namespace", "status");
+"""
+
+        async with self.pool.acquire() as conn:
+            await conn.execute(ddl)
+
+        logger.info(f"Created {table_name} table")
+        return table_name
+
+    async def ensure_templates_table(self) -> str:
+        """
+        Ensure the templates metadata table exists in PostgreSQL.
+
+        Fixed-schema table for syncing template status from the Template-Store.
+
+        Returns:
+            Table name ('templates')
+        """
+        table_name = "templates"
+
+        if await self.table_exists(table_name):
+            return table_name
+
+        ddl = f"""
+CREATE TABLE IF NOT EXISTS "{table_name}" (
+    "template_id" TEXT NOT NULL,
+    "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
+    "value" TEXT NOT NULL,
+    "label" TEXT,
+    "description" TEXT,
+    "version" INTEGER NOT NULL DEFAULT 1,
+    "status" VARCHAR(20) NOT NULL DEFAULT 'active',
+    "extends" TEXT,
+    "extends_version" INTEGER,
+    "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "created_by" TEXT,
+    "updated_at" TIMESTAMP WITH TIME ZONE,
+    "updated_by" TEXT,
+    PRIMARY KEY ("namespace", "template_id")
 );
 
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_value_idx"
