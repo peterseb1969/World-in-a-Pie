@@ -389,6 +389,20 @@ WorldInPie/
 └── testdata/                 # Test fixtures
 ```
 
+## Git & CI
+
+**Two remotes — always push to both:**
+\`\`\`bash
+git push gitea develop && git push github develop
+\`\`\`
+
+- **gitea** — `http://gitea.local:3000/peter/World-in-a-Pie.git` (primary, runs CI)
+- **github** — `git@github.com:peterseb1969/World-in-a-Pie.git` (mirror)
+
+**Branching:** Work on `develop`. `main` is the stable branch (tagged releases only). PRs go to `main` when ready.
+
+**CI:** Gitea Actions via act_runner on `wip-pi.local`. Workflow: `.gitea/workflows/test.yaml`. Runs all component tests. Use `/pre-commit` locally before pushing.
+
 ## Critical Gotchas
 
 - **OIDC three-value rule** — issuer URL must match in 3 places. See `docs/network-configuration.md`.
