@@ -198,12 +198,14 @@ PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type
 
 # Auto-build tarballs if missing or invalid
 # Fresh clones have no node_modules, so we must npm install before npm pack
+# NOTE: Only the final 'find' line goes to stdout (captured by caller).
+# All progress/error messages go to stderr so they display without polluting the return value.
 rebuild_tarball() {
     local lib_dir="$1"
     local lib_name="$2"
-    echo "   Building $lib_name tarball..."
-    if ! (cd "$lib_dir" && npm install --quiet 2>&1 | tail -1 && npm pack --quiet 2>&1 | tail -1); then
-        echo "   Warning: failed to build $lib_name tarball"
+    echo "   Building $lib_name tarball..." >&2
+    if ! (cd "$lib_dir" && npm install --quiet 2>&1 && npm pack --quiet 2>&1) >&2; then
+        echo "   Warning: failed to build $lib_name tarball" >&2
         return 1
     fi
     find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
