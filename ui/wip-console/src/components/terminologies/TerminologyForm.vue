@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Textarea from 'primevue/textarea'
+import Checkbox from 'primevue/checkbox'
 import Button from 'primevue/button'
 import { useTerminologyStore, useUiStore } from '@/stores'
 import type { Terminology, CreateTerminologyRequest, UpdateTerminologyRequest } from '@/types'
@@ -31,11 +32,15 @@ const form = ref({
   case_sensitive: false,
   allow_multiple: false,
   extensible: false,
+  mutable: false,
   source: '',
   source_url: '',
   version: '',
   language: 'en'
 })
+
+// mutable can only be changed when term_count is 0
+const canEditMutable = computed(() => !isEdit.value || (props.terminology?.term_count ?? 0) === 0)
 
 const loading = ref(false)
 const errors = ref<Record<string, string>>({})
@@ -52,6 +57,7 @@ watch(
           case_sensitive: props.terminology.case_sensitive,
           allow_multiple: props.terminology.allow_multiple,
           extensible: props.terminology.extensible,
+          mutable: props.terminology.mutable,
           source: props.terminology.metadata?.source || '',
           source_url: props.terminology.metadata?.source_url || '',
           version: props.terminology.metadata?.version || '',
@@ -73,6 +79,7 @@ function resetForm() {
     case_sensitive: false,
     allow_multiple: false,
     extensible: false,
+    mutable: false,
     source: '',
     source_url: '',
     version: '',
@@ -109,6 +116,7 @@ async function submit() {
         case_sensitive: form.value.case_sensitive,
         allow_multiple: form.value.allow_multiple,
         extensible: form.value.extensible,
+        mutable: canEditMutable.value ? form.value.mutable : undefined,
         metadata: {
           source: form.value.source || undefined,
           source_url: form.value.source_url || undefined,
@@ -127,6 +135,7 @@ async function submit() {
         case_sensitive: form.value.case_sensitive,
         allow_multiple: form.value.allow_multiple,
         extensible: form.value.extensible,
+        mutable: form.value.mutable,
         metadata: {
           source: form.value.source || undefined,
           source_url: form.value.source_url || undefined,
@@ -201,7 +210,23 @@ function cancel() {
         </div>
       </div>
 
-      <!-- case_sensitive, allow_multiple, extensible flags removed — not enforced by API -->
+      <div class="form-row">
+        <div class="checkboxes">
+          <div class="checkbox-item">
+            <Checkbox
+              id="mutable"
+              v-model="form.mutable"
+              binary
+              :disabled="!canEditMutable"
+            />
+            <label for="mutable">Mutable</label>
+          </div>
+        </div>
+        <small class="help-text">
+          Mutable terminologies allow terms to be permanently deleted instead of deprecated.
+          <template v-if="!canEditMutable"> Cannot be changed when terms exist.</template>
+        </small>
+      </div>
 
       <div class="form-section">
         <h4>Metadata</h4>
