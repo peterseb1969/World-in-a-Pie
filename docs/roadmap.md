@@ -113,6 +113,18 @@ Implemented (2026-03-27). Known issues remaining:
 
 - Design: `docs/design/ontology-browser.md`
 
+### Mutable Terminologies
+
+Add `mutable: true` flag on terminologies to support user-editable controlled vocabularies. Mutable terminologies allow real term deletion (with relationship cascade) while using the full terminology infrastructure — ontology relationships, reporting-sync, MCP tools, ontology browser.
+
+**Why:** Apps that need user-defined picklists, tags, or classifications currently must reinvent terminology semantics using documents. The ClinTrial app exposed this: users need to extend a curated therapeutic area hierarchy with custom classifications. Without mutable terminologies, every app builds a document-based overlay pattern — different template names, different merge logic, each slightly wrong.
+
+**Scope:** `mutable` defaults to `false` — zero impact on existing terminologies. Term delete becomes hard-delete + relationship cascade for mutable terms. Same API endpoints, same events, same reporting pipeline.
+
+- Design: `docs/design/mutable-terminologies.md`
+- Discovered: 2026-03-29 during ClinTrial app development
+- Status: Design complete, not started
+
 ### Namespace Authorization — UX Polish
 
 ~50 button guards in Console detail views. API already enforces — this is cosmetic.
@@ -346,6 +358,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
+| `mutable-terminologies.md` | Design complete, not started |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |
