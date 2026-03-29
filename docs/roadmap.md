@@ -78,24 +78,22 @@ Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL).
 
 - Status: Design discussion — see memory for details
 
-### Gateway & Portal — TOP PRIORITY
+### App Gateway & WIP Proxy — TOP PRIORITY
 
-Elevated from medium-term after DnD Compendium deployment exposed fundamental gaps. Every app on K8s currently requires hand-rolling an Express reverse proxy for auth injection, MinIO URL rewriting, and sub-path routing. This is the same pattern as the Dex situation — constant hassle, token-expensive debugging, one-off workarounds per app.
+Every browser-based WIP app needs auth injection (browser can't hold API keys) and MinIO URL rewriting (presigned URLs point to internal hostnames). On K8s, apps also need sub-path routing at `/apps/{name}/`. The DnD Compendium solved this with 70 lines of hand-rolled Express proxy. Every new app would copy-paste this.
 
-**Problems the Gateway must solve:**
-1. **Auth injection** — Browser apps can't hold API keys. Gateway injects credentials for WIP API calls.
-2. **MinIO URL rewriting** — Presigned URLs use internal hostnames (`wip-minio:9000`). Gateway must proxy file downloads via `/files/{id}/content`.
-3. **Sub-path routing** — Multiple apps at `/apps/{name}/` with proper base path handling.
-4. **App registration** — `app-manifest.json` pattern.
-5. **MCP transport** — Node.js SDK has content-length bug with streamable HTTP; SSE works but needs BaseHTTPMiddleware fix for auth. Gateway could provide a unified MCP proxy.
+**Two deliverables, separable:**
 
-**Current workaround (DnD):** Express proxy with `express.raw()` forwarding + API key injection, dedicated SSE-mode MCP server pod (no auth, internal only), `BASE_PATH`-relative URLs throughout frontend, `@wip/client` with `baseUrl` set to `BASE_PATH` for proxy routing.
+1. **`@wip/proxy` middleware** (all deployments) — Express middleware that any app drops in with one line. Handles API key injection and file content proxying. Works on localhost and K8s identically. Also adds `files.downloadContent()` to `@wip/client`.
 
-**Design questions:** Caddy-based vs nginx ingress annotations vs dedicated gateway service? Should `@wip/client` have a "proxied" mode? Cookie-based sessions vs API key injection? OIDC/Dex for user-facing apps vs API-key for service apps?
+2. **App Gateway** (K8s / multi-app) — Extends existing Caddy (Podman) or NGINX Ingress (K8s) with `/apps/{name}/*` routing, `app-manifest.json` registration, and a portal landing page. Not a new service — configuration added to existing proxy infrastructure.
 
-- Design: `docs/WIP_DevGuardrails.md` (Guide 1)
-- Status: **Top priority** — block app deployment guide until Gateway design is done
+**Phase 1** (`@wip/proxy`) unblocks all app development. **Phase 2-3** (gateway) is needed when deploying multiple apps on one hostname.
+
+- Design: `docs/design/app-gateway.md`
+- Also see: `docs/WIP_DevGuardrails.md` (Guide 1 — original gateway vision)
 - Discovered: 2026-03-28 during DnD K8s deployment
+- Status: Design complete, not started
 
 ### Console: Files Page Ignores Namespace
 
@@ -358,6 +356,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
+| `app-gateway.md` | Design complete, not started |
 | `mutable-terminologies.md` | Design complete, not started |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
 | `ontology-browser.md` | Implemented |
