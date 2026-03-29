@@ -92,7 +92,12 @@ class DocumentTransformer:
         self.config = config or ReportingConfig()
 
     def _safe_column_name(self, name: str) -> str:
-        """Return column name, prefixing with 'data_' if it conflicts with system columns."""
+        """Return safe PostgreSQL column name.
+
+        Dots become underscores (dots are table.column separators in SQL).
+        System column names get a 'data_' prefix to avoid conflicts.
+        """
+        name = name.replace(".", "_")
         if name in self.SYSTEM_COLUMNS:
             return f"data_{name}"
         return name
