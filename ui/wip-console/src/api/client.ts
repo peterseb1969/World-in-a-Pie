@@ -355,6 +355,7 @@ class DefStoreClient extends BaseApiClient {
   async listAllRelationships(params?: {
     namespace?: string
     relationship_type?: string
+    source_terminology_id?: string
     status?: string
     page?: number
     page_size?: number
