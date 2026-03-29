@@ -196,6 +196,7 @@ echo "5. Copying client libraries..."
 MISSING_LIBS=()
 CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
+PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 
 # Auto-build tarballs if missing or empty (npm pack triggers prepack → build automatically)
 rebuild_tarball() {
@@ -212,6 +213,9 @@ if command -v npm &>/dev/null; then
     fi
     if [ -z "$REACT_TARBALL" ] || ! validate_tarball "$REACT_TARBALL" "wip-react"; then
         REACT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-react" "@wip/react")
+    fi
+    if [ -z "$PROXY_TARBALL" ] || ! validate_tarball "$PROXY_TARBALL" "wip-proxy"; then
+        PROXY_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-proxy" "@wip/proxy")
     fi
 else
     echo "   npm not found — cannot auto-build tarballs"
@@ -244,6 +248,7 @@ copy_tarball() {
 
 copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
 copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
+copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
 
 # --- Copy wip-toolkit and dev-delete.py ---
 
@@ -340,13 +345,14 @@ WIP is accessed exclusively via MCP tools (69 tools, 4 resources). Before starti
 
 ## Client Libraries
 
-For Phase 4 (app building), use @wip/client and @wip/react:
+For Phase 4 (app building), use @wip/client, @wip/react, and @wip/proxy:
 - \`libs/wip-client-README.md\` — TypeScript client (6 services, error hierarchy, bulk abstraction)
 - \`libs/wip-react-README.md\` — React hooks (TanStack Query, 30+ hooks)
+- \`libs/wip-proxy-README.md\` — Express middleware for WIP API proxying with auth injection
 
 Install from tarballs in \`libs/\`:
 \`\`\`bash
-npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz
+npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz
 \`\`\`
 
 ## WIP Toolkit

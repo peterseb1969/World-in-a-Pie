@@ -1,6 +1,6 @@
 # Design: App Gateway & WIP Proxy
 
-**Status:** Design complete, not started
+**Status:** Phase 1 complete (2026-03-29), Phase 2-4 not started
 
 ## Motivation
 

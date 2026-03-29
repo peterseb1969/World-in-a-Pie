@@ -93,7 +93,7 @@ Every browser-based WIP app needs auth injection (browser can't hold API keys) a
 - Design: `docs/design/app-gateway.md`
 - Also see: `docs/WIP_DevGuardrails.md` (Guide 1 — original gateway vision)
 - Discovered: 2026-03-28 during DnD K8s deployment
-- Status: Design complete, not started
+- Status: **Phase 1 complete** (2026-03-29) — `@wip/proxy` middleware, DnD refactored, `create-app-project.sh` updated. Phase 2-3 not started.
 
 ### Console: Files Page Ignores Namespace
 
@@ -356,7 +356,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
-| `app-gateway.md` | Design complete, not started |
+| `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
 | `mutable-terminologies.md` | Design complete, not started |
 | `nl-query-scaffold.md` | Design complete, ready to implement |
 | `ontology-browser.md` | Implemented |
