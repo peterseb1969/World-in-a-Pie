@@ -500,7 +500,7 @@ def _create_documents(
                     elif r.get("error") and idx < len(batch_originals):
                         failed_docs.append(batch_originals[idx])
                         pass_failed += 1
-            except WIPClientError as e:
+            except WIPClientError:
                 # Entire batch failed — add all to retry
                 failed_docs.extend(batch_originals)
                 pass_failed += len(batch)

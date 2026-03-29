@@ -3,13 +3,12 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.import_.fresh import (
     _create_documents,
     _create_templates_multipass,
-    _create_terms,
     _create_terminologies,
+    _create_terms,
     _ensure_namespace,
     _register_synonyms,
     _remap_composite_key,
@@ -19,7 +18,6 @@ from wip_toolkit.import_.fresh import (
 )
 from wip_toolkit.import_.remap import IDRemapper
 from wip_toolkit.models import ImportStats
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -321,7 +319,7 @@ class TestCreateTerms:
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
 
-        args, kwargs = client.post.call_args
+        args, _kwargs = client.post.call_args
         assert args == ("def-store", "/terminologies/NEW-TID/terms")
 
     def test_create_terms_maps_ids(self):
