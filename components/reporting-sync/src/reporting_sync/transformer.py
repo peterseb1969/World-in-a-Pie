@@ -9,10 +9,11 @@ Responsibilities:
 - Preserve original JSON for complex queries
 """
 
+import contextlib
 import json
 import logging
 from datetime import date, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
 
@@ -81,7 +82,7 @@ class DocumentTransformer:
     """Transforms documents into flat row(s) for PostgreSQL."""
 
     # System column names that data fields should not conflict with
-    SYSTEM_COLUMNS = {
+    SYSTEM_COLUMNS: ClassVar[set[str]] = {
         "document_id", "namespace", "template_id",
         "template_version", "version", "status", "identity_hash",
         "created_at", "created_by", "updated_at", "updated_by",
@@ -312,10 +313,8 @@ class DocumentTransformer:
         if template:
             for field in template.get("fields", []):
                 if field.get("semantic_type"):
-                    try:
+                    with contextlib.suppress(ValueError):
                         semantic_types[field["name"]] = SemanticType(field["semantic_type"])
-                    except ValueError:
-                        pass  # Unknown semantic type, skip
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
