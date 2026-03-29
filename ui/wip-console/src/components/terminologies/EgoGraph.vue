@@ -10,6 +10,7 @@ import type { Relationship } from '@/types'
 
 const props = defineProps<{
   focusTermId: string
+  focusLabel?: string
   depth: number
   visibleTypes: string[]
   namespace?: string
@@ -88,7 +89,7 @@ async function fetchNeighbourhood(
   const allTypes = new Set<string>()
 
   // Seed the focus node — use the selected namespace as starting point
-  nodes.set(focusId, { id: focusId, value: focusId, depth: 0, isFocus: true, namespace: props.namespace })
+  nodes.set(focusId, { id: focusId, value: props.focusLabel || focusId, depth: 0, isFocus: true, namespace: props.namespace })
 
   // BFS layer by layer — each node tracks its own namespace
   let frontier = new Set([focusId])

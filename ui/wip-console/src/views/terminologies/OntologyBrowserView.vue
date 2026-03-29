@@ -430,6 +430,7 @@ watch(selectedTerminology, () => {
         <EgoGraph
           v-else
           :focus-term-id="focusTermId"
+          :focus-label="focusTerm?.label || focusTerm?.value"
           :depth="depth"
           :visible-types="visibleTypes"
           :namespace="namespaceStore.currentNamespaceParam"

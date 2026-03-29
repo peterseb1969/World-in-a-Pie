@@ -56,6 +56,7 @@ async function loadFiles() {
   loading.value = true
   try {
     const response: FileListResponse = await fileStoreClient.listFiles({
+      namespace: namespaceStore.currentNamespaceParam,
       status: statusFilter.value || undefined,
       content_type: contentTypeFilter.value || undefined,
       category: categoryFilter.value || undefined,
@@ -153,7 +154,7 @@ function formatDate(dateStr: string): string {
 }
 
 // Watch filters
-watch([statusFilter, contentTypeFilter, categoryFilter], () => {
+watch([statusFilter, contentTypeFilter, categoryFilter, () => namespaceStore.currentNamespaceParam], () => {
   currentPage.value = 1
   loadFiles()
 })
