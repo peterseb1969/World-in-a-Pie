@@ -107,6 +107,35 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     from def_store.services.ontology_service import OntologyService
     OntologyService.invalidate_relationship_type_cache()
 
+    # Bootstrap _ONTOLOGY_RELATIONSHIP_TYPES directly in MongoDB for tests
+    from def_store.services.system_terminologies import SYSTEM_TERMINOLOGIES
+    for sys_term in SYSTEM_TERMINOLOGIES:
+        terminology = Terminology(
+            terminology_id=f"SYS-{sys_term['value']}",
+            namespace="wip",
+            value=sys_term["value"],
+            label=sys_term["label"],
+            description=sys_term.get("description", ""),
+            case_sensitive=sys_term.get("case_sensitive", False),
+            metadata=sys_term.get("metadata", {}),
+            status="active",
+            term_count=len(sys_term.get("terms", [])),
+        )
+        await terminology.insert()
+        for j, t in enumerate(sys_term.get("terms", [])):
+            term = Term(
+                term_id=f"SYS-T-{sys_term['value']}-{j}",
+                namespace="wip",
+                terminology_id=terminology.terminology_id,
+                value=t["value"],
+                label=t.get("label", t["value"]),
+                description=t.get("description", ""),
+                status="active",
+                sort_order=t.get("sort_order", j),
+                metadata=t.get("metadata", {}),
+            )
+            await term.insert()
+
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
 

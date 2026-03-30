@@ -51,8 +51,7 @@ class OntologyService:
         })
         if not terminology:
             logger.warning("_ONTOLOGY_RELATIONSHIP_TYPES terminology not found")
-            cls._relationship_types = {}
-            return cls._relationship_types
+            return {}
 
         types: dict[str, str] = {}
         async for term in Term.find({
@@ -107,7 +106,16 @@ class OntologyService:
         for i, item in enumerate(items):
             try:
                 # Validate relationship type
-                if valid_types and item.relationship_type not in valid_types:
+                if not valid_types:
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        error="Cannot validate relationship type: "
+                              "_ONTOLOGY_RELATIONSHIP_TYPES terminology not found. "
+                              "Restart def-store to bootstrap system terminologies."
+                    ))
+                    continue
+                if item.relationship_type not in valid_types:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",

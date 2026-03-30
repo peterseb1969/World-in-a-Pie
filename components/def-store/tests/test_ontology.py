@@ -180,6 +180,18 @@ class TestCreateRelationships:
         assert "same" in data["results"][0]["error"].lower()
 
     @pytest.mark.asyncio
+    async def test_create_invalid_relationship_type_fails(self, client, auth_headers):
+        """Unknown relationship types are rejected."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+
+        data = await create_relationship(client, auth_headers, a, b, "banana")
+        assert data["failed"] == 1
+        assert "Unknown relationship type" in data["results"][0]["error"]
+        assert "banana" in data["results"][0]["error"]
+
+    @pytest.mark.asyncio
     async def test_create_cross_terminology_relationship(self, client, auth_headers):
         tid1 = await create_terminology(client, auth_headers, "ANATOMY", "Anatomy")
         tid2 = await create_terminology(client, auth_headers, "CONDITIONS", "Conditions")
