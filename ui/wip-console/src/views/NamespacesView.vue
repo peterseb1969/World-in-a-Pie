@@ -308,6 +308,7 @@ function getTotalEntities(stats: NamespaceStats): number {
         <p class="subtitle">Manage namespaces for data isolation and environment separation</p>
       </div>
       <Button
+        v-if="namespaceStore.isAdmin"
         label="Create Namespace"
         icon="pi pi-plus"
         @click="openCreateDialog"
@@ -370,6 +371,7 @@ function getTotalEntities(stats: NamespaceStats): number {
             <template #body="{ data }">
               <div class="action-buttons">
                 <Button
+                  v-if="namespaceStore.isAdmin"
                   icon="pi pi-pencil"
                   text
                   rounded
@@ -378,6 +380,7 @@ function getTotalEntities(stats: NamespaceStats): number {
                   @click="openEditDialog(data)"
                 />
                 <Button
+                  v-if="namespaceStore.isAdmin"
                   icon="pi pi-cog"
                   text
                   rounded
@@ -404,7 +407,7 @@ function getTotalEntities(stats: NamespaceStats): number {
                   @click="selectNamespace(data)"
                 />
                 <Button
-                  v-if="data.status === 'active' && data.prefix !== 'wip'"
+                  v-if="namespaceStore.isAdmin && data.status === 'active' && data.prefix !== 'wip'"
                   icon="pi pi-box"
                   text
                   rounded
@@ -414,7 +417,7 @@ function getTotalEntities(stats: NamespaceStats): number {
                   @click="archiveNamespace(data)"
                 />
                 <Button
-                  v-if="data.status === 'archived'"
+                  v-if="namespaceStore.isAdmin && data.status === 'archived'"
                   icon="pi pi-replay"
                   text
                   rounded

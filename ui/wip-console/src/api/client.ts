@@ -836,10 +836,10 @@ class FileStoreClient extends BaseApiClient {
   // STORAGE STATUS
   // ===========================================================================
 
-  async isStorageEnabled(): Promise<boolean> {
+  async isStorageEnabled(namespace?: string): Promise<boolean> {
     try {
       // Try listing files - if storage is disabled, this will return 503
-      await this.client.get('', { params: { page_size: 1 } })
+      await this.client.get('', { params: { page_size: 1, namespace: namespace ?? 'wip' } })
       return true
     } catch (error) {
       if (axios.isAxiosError(error)) {

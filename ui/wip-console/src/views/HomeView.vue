@@ -460,9 +460,9 @@ watch(() => namespaceStore.current, () => {
                   <code v-else class="doc-id">{{ data.document_id?.slice(0, 8) }}...</code>
                 </template>
               </Column>
-              <Column field="template_id" header="Template">
+              <Column header="Template">
                 <template #body="{ data }">
-                  {{ data.template_id }}
+                  {{ data.template_value || data.template_id?.slice(0, 8) }}
                 </template>
               </Column>
               <Column field="status" header="Status" style="width: 80px">

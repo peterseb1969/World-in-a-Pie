@@ -197,6 +197,20 @@ function navigateToIncomingRef(ref: IncomingReference) {
   })
 }
 
+function navigateToEntityDetail(type: string, id: string) {
+  const routes: Record<string, string> = {
+    terminology: '/terminologies/',
+    term: '/terms/',
+    template: '/templates/',
+    document: '/documents/',
+    file: '/files/',
+  }
+  const prefix = routes[type]
+  if (prefix) {
+    router.push(prefix + id)
+  }
+}
+
 function getRefTypeLabel(refType: string): string {
   switch (refType) {
     case 'uses_template': return 'uses'
@@ -325,7 +339,12 @@ watch(
                   {{ inspectedEntity.entity_type }}
                 </Tag>
                 <h3 class="entity-title">
-                  {{ inspectedEntity.entity_label || inspectedEntity.entity_value || inspectedEntity.entity_id }}
+                  <a
+                    class="entity-detail-link"
+                    @click.prevent="navigateToEntityDetail(inspectedEntity.entity_type, inspectedEntity.entity_id)"
+                  >
+                    {{ inspectedEntity.entity_label || inspectedEntity.entity_value || inspectedEntity.entity_id }}
+                  </a>
                 </h3>
                 <Tag
                   v-if="inspectedEntity.entity_status"
@@ -717,6 +736,16 @@ watch(
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
+}
+
+.entity-detail-link {
+  color: var(--p-primary-color);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.entity-detail-link:hover {
+  text-decoration: underline;
 }
 
 .entity-meta {
