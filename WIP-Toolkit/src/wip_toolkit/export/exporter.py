@@ -220,6 +220,17 @@ def run_export(
             writer.add_entity("files", entity)
         file_count = len(files)
 
+        # Warn if files exist but --include-files not set
+        if files and not include_files:
+            console.print(
+                f"\n  [yellow]Warning:[/yellow] {len(files)} file(s) found in namespace "
+                f"but --include-files not set.\n"
+                f"  Documents referencing these files may fail during import."
+            )
+            import click
+            if not click.confirm("  Continue without file blobs?", default=True):
+                raise SystemExit("Export cancelled by user")
+
         # Optionally download and include file blobs
         if include_files and files:
             console.print(f"  Downloading {len(files)} file(s)...")

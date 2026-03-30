@@ -913,10 +913,13 @@ class TemplateService:
                         # Validate target_templates for document references
                         if field.reference_type.value == "document":
                             if not field.target_templates:
-                                errors.append(ValidationError(
+                                # target_templates is optional — document-store
+                                # resolves references by identity lookup even
+                                # without it.  Warn but don't block activation.
+                                warnings.append(ValidationWarning(
                                     field=f"fields.{field.name}.target_templates",
-                                    code="required",
-                                    message="target_templates is required for document references"
+                                    code="recommended",
+                                    message="target_templates is recommended for document references"
                                 ))
                             elif check_templates:
                                 for tpl_ref in field.target_templates:
@@ -1332,10 +1335,11 @@ class TemplateService:
                     else:
                         if field.reference_type.value == "document":
                             if not field.target_templates:
-                                errors.append(ValidationError(
+                                # target_templates is optional — warn only
+                                warnings.append(ValidationWarning(
                                     field=f"{prefix}fields.{field.name}.target_templates",
-                                    code="required",
-                                    message="target_templates is required for document references"
+                                    code="recommended",
+                                    message="target_templates is recommended for document references"
                                 ))
                             else:
                                 for tpl_val in field.target_templates:

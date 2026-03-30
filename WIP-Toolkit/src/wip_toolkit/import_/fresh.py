@@ -474,12 +474,24 @@ def _create_templates_multipass(
         if not new_tid:
             continue
         try:
-            client.post(
+            result = client.post(
                 "template-store",
                 f"/templates/{new_tid}/activate",
                 params={"namespace": namespace},
             )
-            activated += 1
+            # Activation returns 200 with errors in body — must check
+            activation_errors = result.get("errors", [])
+            if activation_errors:
+                error_msgs = "; ".join(e.get("message", str(e)) for e in activation_errors)
+                msg = f"Failed to activate template {by_id[old_tid][0]['value']}: {error_msgs}"
+                stats.errors.append(msg)
+                console.print(f"  [red]Activation failed:[/red] {by_id[old_tid][0]['value']}: {error_msgs}")
+                if not continue_on_error:
+                    raise WIPClientError(msg)
+            elif result.get("total_activated", 0) > 0:
+                activated += 1
+            else:
+                already_active += 1
         except WIPClientError as e:
             if e.status_code == 400 and "not 'draft'" in str(e):
                 already_active += 1
@@ -562,7 +574,10 @@ def _create_documents(
                             remapper.add_document_mapping(old_doc_ids[idx], new_doc_id)
                         pass_created += 1
                     elif r.get("error") and idx < len(batch_originals):
-                        failed_docs.append(batch_originals[idx])
+                        # Store the actual error with the doc for diagnostics
+                        orig = batch_originals[idx]
+                        orig["_last_error"] = r["error"]
+                        failed_docs.append(orig)
                         pass_failed += 1
             except WIPClientError:
                 # Entire batch failed — add all to retry
@@ -581,10 +596,14 @@ def _create_documents(
         if pass_failed == len(pending):
             # No progress — stop retrying
             stats.failed.documents += pass_failed
+            # Summarize unique errors
+            error_counts: dict[str, int] = {}
             for d in failed_docs:
-                stats.errors.append(
-                    f"Document {d['document_id']}: unresolved reference after {pass_num} passes"
-                )
+                err = d.get("_last_error", "unknown error")
+                error_counts[err] = error_counts.get(err, 0) + 1
+            for err, count in sorted(error_counts.items(), key=lambda x: -x[1]):
+                stats.errors.append(f"{count} document(s): {err}")
+                console.print(f"  [red]{count} document(s):[/red] {err}")
             break
 
         pending = failed_docs

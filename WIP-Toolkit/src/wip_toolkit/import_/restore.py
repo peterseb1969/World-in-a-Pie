@@ -462,12 +462,24 @@ def _activate_templates(
     already_active = 0
     for tid in unique_ids:
         try:
-            client.post(
+            result = client.post(
                 "template-store",
                 f"/templates/{tid}/activate",
                 params={"namespace": namespace},
             )
-            activated += 1
+            # Activation returns 200 with errors in body — must check
+            activation_errors = result.get("errors", [])
+            if activation_errors:
+                error_msgs = "; ".join(e.get("message", str(e)) for e in activation_errors)
+                msg = f"Failed to activate template {tid}: {error_msgs}"
+                stats.errors.append(msg)
+                console.print(f"  [red]Activation failed:[/red] {tid}: {error_msgs}")
+                if not continue_on_error:
+                    raise WIPClientError(msg)
+            elif result.get("total_activated", 0) > 0:
+                activated += 1
+            else:
+                already_active += 1
         except WIPClientError as e:
             if e.status_code == 400 and "not 'draft'" in str(e):
                 # Already activated by cascading activation — benign
