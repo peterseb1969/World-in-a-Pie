@@ -8,10 +8,8 @@ Covers:
 """
 
 import pytest
-import pytest_asyncio
 
 from registry.models.namespace import Namespace
-
 
 # =========================================================================
 # Helpers

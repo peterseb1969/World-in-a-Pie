@@ -6,14 +6,12 @@ produce DELETE FROM statements instead of UPDATE status.
 Covers all entity types: documents, templates, terminologies, terms, relationships.
 """
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from reporting_sync.models import SyncStatus
 from reporting_sync.worker import SyncWorker
-
 
 # =========================================================================
 # Fixtures

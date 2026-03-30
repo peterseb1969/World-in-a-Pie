@@ -11,7 +11,6 @@ Covers:
 
 import pytest
 
-
 # =========================================================================
 # Helpers
 # =========================================================================
@@ -176,7 +175,6 @@ class TestHardDeleteTerminology:
     @pytest.mark.asyncio
     async def test_hard_delete_cascades_relationships(self, client, auth_headers):
         """Hard-deleting a terminology also removes all relationships involving its terms."""
-        from unittest.mock import AsyncMock, patch
 
         tid = await create_terminology(client, auth_headers, "HD_CASCADE", "Cascade Test", mutable=True)
         t1 = await create_term(client, auth_headers, tid, "PARENT", "Parent")
@@ -231,7 +229,6 @@ class TestHardDeleteTerm:
     @pytest.mark.asyncio
     async def test_hard_delete_term_cascades_relationships(self, client, auth_headers):
         """Hard-deleting a term removes relationships where it's source or target."""
-        from unittest.mock import AsyncMock, patch
 
         tid = await create_terminology(client, auth_headers, "HD_TERM_REL", "Term Rel HD", mutable=True)
         t1 = await create_term(client, auth_headers, tid, "A")
@@ -350,7 +347,7 @@ class TestSoftDeleteRegression:
     async def test_soft_delete_terminology_sets_inactive(self, client, auth_headers):
         """Default delete (hard_delete=False) soft-deletes terminology."""
         tid = await create_terminology(client, auth_headers, "SOFT_DEL_T", "Soft Del")
-        t1 = await create_term(client, auth_headers, tid, "SOFT_TERM")
+        await create_term(client, auth_headers, tid, "SOFT_TERM")
 
         data = await delete_terminology(client, auth_headers, tid)
         assert data["succeeded"] == 1
