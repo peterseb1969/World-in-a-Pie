@@ -80,14 +80,13 @@ async function loadDashboard() {
       // Document store may not be available
     }
 
-    // Fetch file count (file storage may not be enabled)
-    if (isFilesEnabled()) {
+    // Fetch file count (file storage may not be enabled; namespace is required)
+    if (isFilesEnabled() && namespaceStore.currentNamespaceParam) {
       try {
-        const fileParams: Record<string, unknown> = { page_size: 1 }
-        if (namespaceStore.currentNamespaceParam) {
-          fileParams.namespace = namespaceStore.currentNamespaceParam
-        }
-        const fileResponse = await fileStoreClient.listFiles(fileParams as any)
+        const fileResponse = await fileStoreClient.listFiles({
+          namespace: namespaceStore.currentNamespaceParam,
+          page_size: 1
+        } as any)
         entityCounts.value.files = fileResponse.total
       } catch {
         // File storage may not be available
@@ -379,7 +378,7 @@ watch(() => namespaceStore.current, () => {
               class="clickable-rows"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
-              <Column field="name" header="Name" />
+              <Column field="label" header="Name" />
               <Column field="term_count" header="Terms" style="width: 60px">
                 <template #body="{ data }">
                   <Tag severity="info">{{ data.term_count }}</Tag>
@@ -417,7 +416,7 @@ watch(() => namespaceStore.current, () => {
               class="clickable-rows"
               :pt="{ bodyRow: { style: 'cursor: pointer' } }"
             >
-              <Column field="name" header="Name" />
+              <Column field="label" header="Name" />
               <Column header="Fields" style="width: 60px">
                 <template #body="{ data }">
                   <Tag severity="info">{{ data.fields?.length || 0 }}</Tag>

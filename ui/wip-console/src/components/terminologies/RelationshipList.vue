@@ -74,7 +74,7 @@ async function loadRelationships() {
       // Per-term relationships
       const data = await defStoreClient.listRelationships({
         term_id: props.termId,
-        namespace: namespaceStore.currentNamespaceParam,
+        namespace: namespaceStore.currentNamespaceParam ?? 'wip',
         direction: directionFilter.value,
         relationship_type: typeFilter.value || undefined,
         page: currentPage.value + 1,
@@ -85,7 +85,7 @@ async function loadRelationships() {
     } else {
       // All relationships for this terminology
       const data = await defStoreClient.listAllRelationships({
-        namespace: namespaceStore.currentNamespaceParam,
+        namespace: namespaceStore.currentNamespaceParam ?? 'wip',
         source_terminology_id: props.terminologyId,
         page: currentPage.value + 1,
         page_size: rowsPerPage.value,

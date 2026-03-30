@@ -56,7 +56,7 @@ async function loadFiles() {
   loading.value = true
   try {
     const response: FileListResponse = await fileStoreClient.listFiles({
-      namespace: namespaceStore.currentNamespaceParam,
+      namespace: namespaceStore.currentNamespaceParam ?? 'wip',
       status: statusFilter.value || undefined,
       content_type: contentTypeFilter.value || undefined,
       category: categoryFilter.value || undefined,
