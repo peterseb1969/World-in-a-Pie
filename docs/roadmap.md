@@ -149,6 +149,27 @@ Add `mutable: true` flag on terminologies to support user-editable controlled vo
 - Discovered: 2026-03-29 during ClinTrial app development
 - Status: Implemented (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client). Console UI pending.
 
+### BUG: Document Hard Delete Not Supported
+
+There is no way to actually *remove* a document from WIP. Both `DELETE /documents` and `POST /documents/archive` are soft operations that change a status field (`inactive` or `archived`). The data remains in MongoDB forever. For namespaces holding imported/analytical data (e.g., clinical trials, financial transactions), users need true record deletion — not just status flags.
+
+**Current state:**
+- `DELETE /documents` → sets status to `inactive`, emits `document.deleted`
+- `POST /documents/archive` → sets status to `archived`, emits `document.archived`
+- Neither removes the document from MongoDB
+- Namespace `deletion_mode: "full"` only controls whether the *entire namespace* can be deleted — individual document deletion is unaffected
+
+**Needed:**
+1. Hard-delete endpoint for individual documents (removes from MongoDB, emits event for downstream cleanup)
+2. Consider tying to namespace policy — e.g., namespaces with `deletion_mode: "full"` allow hard deletes, `retain` namespaces only allow soft delete/archive
+3. Reporting-sync must handle hard-delete events (remove row from PostgreSQL, not just status update)
+4. Registry entry cleanup for hard-deleted documents
+
+**Related bug:** Reporting-sync doesn't handle `document.archived` events — archived docs remain `active` in PostgreSQL. Fix in progress (separate from hard delete).
+
+- Discovered: 2026-03-30 during ClinTrial import testing
+- Status: Not started
+
 ### Namespace Authorization — UX Polish
 
 ~50 button guards in Console detail views. API already enforces — this is cosmetic.
