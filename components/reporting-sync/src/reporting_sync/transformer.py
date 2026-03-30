@@ -156,8 +156,8 @@ class DocumentTransformer:
                         parsed_date = _parse_date(value)
                         if parsed_date:
                             value = parsed_date
-                    # Check for datetime format (longer string with T or space separator)
-                    elif len(value) > 10 and ('T' in value or (len(value) > 11 and value[10] == ' ')):
+                    # Check for ISO datetime format: must start with YYYY-MM-DDT or YYYY-MM-DD<space>
+                    elif len(value) >= 19 and value[4] == '-' and value[7] == '-' and value[10] in ('T', ' '):
                         parsed_dt = _parse_datetime(value)
                         if parsed_dt:
                             value = parsed_dt

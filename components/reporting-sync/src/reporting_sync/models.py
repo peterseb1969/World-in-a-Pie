@@ -21,6 +21,7 @@ class EventType(StrEnum):
     DOCUMENT_CREATED = "document.created"
     DOCUMENT_UPDATED = "document.updated"
     DOCUMENT_DELETED = "document.deleted"
+    DOCUMENT_ARCHIVED = "document.archived"
 
     # Template events
     TEMPLATE_CREATED = "template.created"

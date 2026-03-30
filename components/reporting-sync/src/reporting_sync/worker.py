@@ -125,17 +125,18 @@ class SyncWorker:
         # Determine sync strategy
         strategy = config.sync_strategy.value
 
-        # Handle delete events
-        if event_type == EventType.DOCUMENT_DELETED.value:
+        # Handle delete/archive events — both set the document as inactive in PG
+        if event_type in (EventType.DOCUMENT_DELETED.value, EventType.DOCUMENT_ARCHIVED.value):
+            new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
                 await conn.execute(
                     f'UPDATE "{table_name}" SET status = $1 WHERE document_id = $2',
-                    "deleted",
+                    new_status,
                     document_id,
                 )
             latency_ms = (time.perf_counter() - start_time) * 1000
             metrics.record_event_processed(template_value, table_name, latency_ms)
-            logger.info(f"Marked document {document_id} as deleted in {table_name}")
+            logger.info(f"Marked document {document_id} as {new_status} in {table_name}")
             return True
 
         # Insert/update rows

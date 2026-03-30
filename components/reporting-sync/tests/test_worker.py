@@ -271,6 +271,43 @@ class TestProcessDocumentDelete:
         assert call_args[0][2] == "DOC-999"
 
 
+class TestProcessDocumentArchive:
+    """Tests for document.archived event handling."""
+
+    @pytest.mark.asyncio
+    async def test_archive_event_updates_status(self, worker, mock_pool):
+        """A document.archived event UPDATEs the row's status to 'archived'."""
+        _pool, conn = mock_pool
+        template = _make_template()
+        event = _make_document_event(event_type="document.archived")
+
+        with patch.object(worker, "_fetch_template", AsyncMock(return_value=template)):
+            result = await worker._process_document_event(event)
+
+        assert result is True
+        sql_arg = conn.execute.call_args[0][0]
+        assert "UPDATE" in sql_arg
+        assert "status" in sql_arg
+
+    @pytest.mark.asyncio
+    async def test_archive_passes_document_id_and_status(self, worker, mock_pool):
+        """Archive SQL passes 'archived' status and the document_id."""
+        _pool, conn = mock_pool
+        template = _make_template()
+        event = _make_document_event(
+            event_type="document.archived",
+            document_id="DOC-ARCHIVE-1",
+        )
+
+        with patch.object(worker, "_fetch_template", AsyncMock(return_value=template)):
+            await worker._process_document_event(event)
+
+        call_args = conn.execute.call_args
+        # positional args: (sql, "archived", "DOC-ARCHIVE-1")
+        assert call_args[0][1] == "archived"
+        assert call_args[0][2] == "DOC-ARCHIVE-1"
+
+
 # =========================================================================
 # Process Template Event
 # =========================================================================
