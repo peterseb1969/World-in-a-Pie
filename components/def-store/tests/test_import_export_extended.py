@@ -12,7 +12,7 @@ API = "/api/def-store"
 
 async def create_terminology(client, auth_headers, value="EXT_TEST", label="Extended Test", **extra):
     """Create a terminology and return its ID."""
-    body = {"value": value, "label": label, **extra}
+    body = {"value": value, "label": label, "namespace": "wip", **extra}
     resp = await client.post(
         f"{API}/terminologies",
         json=[body],
@@ -38,7 +38,7 @@ async def create_term(client, auth_headers, terminology_id, value, **extra):
     return data["results"][0]["id"]
 
 
-async def create_relationship(client, auth_headers, source_id, target_id, rel_type="is_a"):
+async def create_relationship(client, auth_headers, source_id, target_id, rel_type="is_a", namespace="wip"):
     """Create a relationship and return the response."""
     resp = await client.post(
         f"{API}/ontology/relationships",
@@ -48,6 +48,7 @@ async def create_relationship(client, auth_headers, source_id, target_id, rel_ty
             "relationship_type": rel_type,
         }],
         headers=auth_headers,
+        params={"namespace": namespace},
     )
     assert resp.status_code == 200
     return resp.json()
@@ -116,6 +117,7 @@ class TestMutableFlagRoundTrip:
             "terminology": {
                 "value": "MUTABLE_IMPORT",
                 "label": "Mutable Import Test",
+                "namespace": "wip",
                 "mutable": True,
             },
             "terms": [
@@ -218,6 +220,7 @@ class TestRelationshipImport:
             "terminology": {
                 "value": "REL_IMPORT",
                 "label": "Relationship Import Test",
+                "namespace": "wip",
             },
             "terms": [
                 {"value": "Vehicle", "label": "Vehicle", "sort_order": 1},
@@ -313,6 +316,7 @@ class TestAliasesExportImport:
             "terminology": {
                 "value": "ALIAS_IMPORT",
                 "label": "Alias Import Test",
+                "namespace": "wip",
             },
             "terms": [
                 {
@@ -408,6 +412,7 @@ class TestImportEdgeCases:
             "terminology": {
                 "value": "UPDATE_EDGE",
                 "label": "Update Edge Case",
+                "namespace": "wip",
             },
             "terms": [
                 {"value": "alpha", "label": "Alpha", "sort_order": 1},
@@ -450,6 +455,7 @@ class TestImportEdgeCases:
             "terminology": {
                 "value": "EMPTY_IMPORT",
                 "label": "Empty Import Test",
+                "namespace": "wip",
                 "description": "A terminology with no terms",
             },
             "terms": [],
@@ -476,6 +482,7 @@ class TestImportEdgeCases:
             "terminology": {
                 "value": "DUP_TERMS",
                 "label": "Duplicate Terms Test",
+                "namespace": "wip",
             },
             "terms": [
                 {"value": "dup_val", "label": "First"},
@@ -498,6 +505,7 @@ class TestImportEdgeCases:
             "terminology": {
                 "value": "EXIST_NO_UPD",
                 "label": "Exists No Update",
+                "namespace": "wip",
             },
             "terms": [
                 {"value": "t1", "label": "Term 1"},

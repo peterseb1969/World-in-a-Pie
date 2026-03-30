@@ -43,7 +43,7 @@ class CreateTemplateRequest(StrictModel):
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
     )
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for the template"
     )
     extends: str | None = Field(

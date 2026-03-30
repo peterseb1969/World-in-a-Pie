@@ -46,7 +46,7 @@ async def import_documents(
     file: UploadFile = File(..., description="CSV or XLSX file to import"),
     template_id: str = Form(..., description="Template ID for the documents"),
     column_mapping: str = Form(..., description="JSON object mapping CSV columns to template fields, e.g. {\"Name\": \"name\", \"Email\": \"email\"}"),
-    namespace: str = Form("wip", description="Target namespace"),
+    namespace: str = Form(..., description="Target namespace"),
     skip_errors: bool = Form(False, description="Skip rows that fail validation instead of stopping"),
     _auth=Depends(require_api_key),
 ) -> dict[str, Any]:

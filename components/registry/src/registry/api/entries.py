@@ -1024,7 +1024,7 @@ async def resolve_synonyms(
                     {"primary_composite_key_hash": key_hash},
                     {"synonyms.composite_key_hash": key_hash},
                 ],
-                "status": "active",
+                "status": {"$in": item.include_statuses} if item.include_statuses else "active",
             })
 
             if entry:

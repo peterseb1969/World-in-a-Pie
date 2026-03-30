@@ -2,8 +2,11 @@
 
 import asyncio
 import os
+import re
 from typing import AsyncGenerator
 from unittest.mock import AsyncMock, patch
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 import pytest
 import pytest_asyncio
@@ -136,15 +139,35 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mock_registry = create_mock_registry_client()
     mock_def_store = create_mock_def_store_client()
 
+    # Mock resolve_entity_ids for template service normalization
+    # Maps known values to fake IDs — mirrors the mock def-store client
+    async def mock_resolve_entity_ids(raw_ids, entity_type, namespace, include_statuses=None):
+        result = {}
+        for raw_id in raw_ids:
+            if raw_id.startswith(("TPL-", "TERM-")) or _UUID_RE.match(raw_id):
+                result[raw_id] = raw_id
+            elif entity_type == "terminology" and raw_id in ["GENDER", "COUNTRY", "DOC_STATUS"]:
+                result[raw_id] = f"TERM-{raw_id}"
+            else:
+                from wip_auth.resolve import EntityNotFoundError
+                raise EntityNotFoundError(raw_id, entity_type)
+        return result
+
+    async def mock_resolve_entity_id(raw_id, entity_type, namespace, include_statuses=None):
+        ids = await mock_resolve_entity_ids([raw_id], entity_type, namespace, include_statuses)
+        return ids[raw_id]
+
     # Patch where the clients are actually used
     with patch('template_store.services.template_service.get_registry_client', return_value=mock_registry):
         with patch('template_store.services.template_service.get_def_store_client', return_value=mock_def_store):
-            with patch('template_store.main.get_registry_client', return_value=mock_registry):
-                with patch('template_store.main.get_def_store_client', return_value=mock_def_store):
-                    # Create test HTTP client
-                    transport = ASGITransport(app=app)
-                    async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                        yield ac
+            with patch('template_store.services.template_service.resolve_entity_ids', side_effect=mock_resolve_entity_ids):
+                with patch('template_store.services.template_service.resolve_entity_id', side_effect=mock_resolve_entity_id):
+                    with patch('template_store.main.get_registry_client', return_value=mock_registry):
+                        with patch('template_store.main.get_def_store_client', return_value=mock_def_store):
+                            # Create test HTTP client
+                            transport = ASGITransport(app=app)
+                            async with AsyncClient(transport=transport, base_url="http://test") as ac:
+                                yield ac
 
 
 @pytest.fixture

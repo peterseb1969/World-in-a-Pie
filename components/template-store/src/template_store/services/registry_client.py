@@ -49,8 +49,8 @@ class RegistryClient:
 
     async def register_template(
         self,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> str:
         """
@@ -103,8 +103,8 @@ class RegistryClient:
     async def register_templates_bulk(
         self,
         count: int,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple templates in the Registry.
@@ -152,7 +152,7 @@ class RegistryClient:
         self,
         target_id: str,
         new_value: str,
-        namespace: str = "wip",
+        namespace: str,
         additional_fields: dict[str, Any] | None = None
     ) -> bool:
         """
@@ -207,16 +207,19 @@ class RegistryClient:
         created_by: str | None = None,
     ) -> None:
         """
-        Register an auto-synonym for a template (best-effort).
+        Register an auto-synonym for a template.
 
         Auto-synonyms enable human-readable resolution (e.g., "PATIENT" → template ID).
-        Failure is logged but does not prevent template creation.
+        Failure raises and prevents template creation.
 
         Args:
             target_id: The template's canonical ID
             namespace: Template namespace
             composite_key: Auto-synonym composite key
             created_by: Creator identifier
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -232,17 +235,20 @@ class RegistryClient:
                     }]
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        "Failed to register auto-synonym for template %s: %s",
-                        target_id, response.text
+                    raise RegistryError(
+                        f"Failed to register auto-synonym for template {target_id}: {response.text}"
                     )
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning("Failed to register auto-synonym for template %s: %s", target_id, e)
+            raise RegistryError(
+                f"Failed to register auto-synonym for template {target_id}: {e}"
+            ) from e
 
     async def lookup_by_value(
         self,
         value: str,
-        namespace: str = "wip",
+        namespace: str,
         additional_fields: dict[str, Any] | None = None
     ) -> str | None:
         """

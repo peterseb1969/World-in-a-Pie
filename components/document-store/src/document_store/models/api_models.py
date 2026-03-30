@@ -38,7 +38,7 @@ class DocumentCreateRequest(StrictModel):
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)"
     )
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for the document"
     )
     data: dict[str, Any] = Field(
@@ -317,6 +317,10 @@ class ValidationRequest(StrictModel):
     template_id: str = Field(
         ...,
         description="Template ID to validate against"
+    )
+    namespace: str = Field(
+        ...,
+        description="Namespace for the document"
     )
     data: dict[str, Any] = Field(
         ...,

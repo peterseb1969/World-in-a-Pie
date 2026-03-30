@@ -714,7 +714,7 @@ async def get_terminology_by_value(value: str, namespace: str | None = None) -> 
 async def create_terminology(
     value: str,
     label: str,
-    namespace: str = "wip",
+    namespace: str | None = None,
     description: str | None = None,
     mutable: bool = False,
 ) -> str:
@@ -723,17 +723,19 @@ async def create_terminology(
     Args:
         value: Unique code (e.g., 'COUNTRY', 'GENDER'). Convention: UPPER_SNAKE_CASE.
         label: Human-readable name (e.g., 'Country', 'Gender').
-        namespace: Namespace to create in. Default: 'wip'.
+        namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
         mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
     """
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         kwargs = {}
         if description:
             kwargs["description"] = description
         if mutable:
             kwargs["mutable"] = True
-        data = await get_client().create_terminology(
+        data = await client.create_terminology(
             value=value, label=label, namespace=namespace, **kwargs
         )
         return json.dumps(data, indent=2, default=str)
@@ -750,10 +752,12 @@ async def create_terminologies_bulk(items: list[dict], namespace: str | None = N
         namespace: Namespace for all items. Omit to use per-item namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for item in items:
-                item.setdefault("namespace", namespace)
-        data = await get_client().create_terminologies(items)
+                item.setdefault("namespace", ns)
+        data = await client.create_terminologies(items)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1243,9 +1247,11 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
         })
     """
     try:
-        if namespace:
-            template.setdefault("namespace", namespace)
-        data = await get_client().create_template(template)
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            template.setdefault("namespace", ns)
+        data = await client.create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1262,10 +1268,12 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
         namespace: Namespace for all templates. Omit to use per-template namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for tpl in templates:
-                tpl.setdefault("namespace", namespace)
-        data = await get_client().create_templates(templates)
+                tpl.setdefault("namespace", ns)
+        data = await client.create_templates(templates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1465,9 +1473,11 @@ async def create_document(document: dict, namespace: str | None = None) -> str:
         })
     """
     try:
-        if namespace:
-            document.setdefault("namespace", namespace)
-        data = await get_client().create_document(document)
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            document.setdefault("namespace", ns)
+        data = await client.create_document(document)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1482,10 +1492,12 @@ async def create_documents_bulk(documents: list[dict], namespace: str | None = N
         namespace: Namespace for all documents. Omit to use per-document namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for doc in documents:
-                doc.setdefault("namespace", namespace)
-        data = await get_client().create_documents(documents)
+                doc.setdefault("namespace", ns)
+        data = await client.create_documents(documents)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1761,7 +1773,7 @@ async def get_file_metadata(file_id: str) -> str:
 @mcp.tool()
 async def upload_file(
     file_path: str,
-    namespace: str = "wip",
+    namespace: str | None = None,
     description: str | None = None,
     tags: str | None = None,
     category: str | None = None,
@@ -1770,7 +1782,7 @@ async def upload_file(
 
     Args:
         file_path: Absolute path to the file on the local machine.
-        namespace: Namespace to store the file in.
+        namespace: Namespace to store the file in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of the file.
         tags: Optional comma-separated tags (e.g., 'receipt,2024,tax').
         category: Optional category (e.g., 'receipt', 'manual', 'report').
@@ -1778,6 +1790,8 @@ async def upload_file(
     import mimetypes
 
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         p = Path(file_path)
         if not p.exists():
             return f"Error: File not found: {file_path}"
@@ -1788,7 +1802,7 @@ async def upload_file(
         content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
 
-        data = await get_client().upload_file(
+        data = await client.upload_file(
             file_content=content,
             filename=p.name,
             content_type=content_type,
@@ -2045,28 +2059,29 @@ async def import_documents_csv(
         template_value: Template value code (e.g., 'PATIENT').
         column_mapping: Optional {csv_column: template_field} mapping.
             If omitted, auto-maps columns whose names match field names.
-        namespace: Namespace (default: 'wip').
+        namespace: Namespace. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         skip_errors: Skip rows that fail validation (default: true).
     """
     try:
+        client = get_client()
+        ns = client._ns(namespace)
         p = Path(file_path)
         if not p.exists():
             return f"Error: File not found: {file_path}"
 
         content = p.read_bytes()
-        ns = namespace or "wip"
 
         # If no mapping provided, auto-map by getting template fields
         if column_mapping is None:
             # Preview to get headers
-            preview = await get_client().preview_import(content, p.name)
+            preview = await client.preview_import(content, p.name)
             if "error" in preview:
                 return f"Error: {preview['error']}"
 
             headers = preview.get("headers", [])
 
             # Get template fields
-            tmpl = await get_client().get_template_by_value(value=template_value)
+            tmpl = await client.get_template_by_value(value=template_value)
             fields = tmpl.get("fields", [])
             field_names = {f["name"].lower(): f["name"] for f in fields}
 
@@ -2086,10 +2101,10 @@ async def import_documents_csv(
                 )
 
         # Resolve template_id
-        tmpl = await get_client().get_template_by_value(value=template_value)
+        tmpl = await client.get_template_by_value(value=template_value)
         template_id = tmpl.get("template_id")
 
-        result = await get_client().import_documents(
+        result = await client.import_documents(
             file_content=content,
             filename=p.name,
             template_id=template_id,
@@ -2111,7 +2126,7 @@ async def import_documents_csv(
 async def start_replay(
     template_value: str | None = None,
     template_id: str | None = None,
-    namespace: str = "wip",
+    namespace: str | None = None,
     throttle_ms: int = 10,
     batch_size: int = 100,
 ) -> str:
@@ -2123,18 +2138,20 @@ async def start_replay(
     Args:
         template_value: Replay documents for this template (optional, replays all if omitted).
         template_id: Alternative to template_value — use the template ID directly.
-        namespace: Namespace to replay from.
+        namespace: Namespace to replay from. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         throttle_ms: Delay between events in ms (0-5000, default 10).
         batch_size: Documents per batch (10-1000, default 100).
     """
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         filter_config = {"namespace": namespace, "status": "active"}
         if template_value:
             filter_config["template_value"] = template_value
         if template_id:
             filter_config["template_id"] = template_id
 
-        data = await get_client().start_replay(
+        data = await client.start_replay(
             filter_config=filter_config,
             throttle_ms=throttle_ms,
             batch_size=batch_size,

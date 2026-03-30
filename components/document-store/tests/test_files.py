@@ -161,6 +161,7 @@ async def test_list_files_empty(file_client: AsyncClient, auth_headers: dict):
     response = await file_client.get(
         "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -178,6 +179,7 @@ async def test_list_files_with_data(file_client: AsyncClient, auth_headers: dict
     response = await file_client.get(
         "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -194,8 +196,9 @@ async def test_list_files_filter_by_status(file_client: AsyncClient, auth_header
 
     # Filter: orphan only
     response = await file_client.get(
-        "/api/document-store/files?status=orphan",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "status": "orphan"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -204,8 +207,9 @@ async def test_list_files_filter_by_status(file_client: AsyncClient, auth_header
 
     # Filter: active only
     response = await file_client.get(
-        "/api/document-store/files?status=active",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "status": "active"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 1
@@ -221,8 +225,9 @@ async def test_list_files_filter_by_content_type(file_client: AsyncClient, auth_
 
     # Wildcard: image/*
     response = await file_client.get(
-        "/api/document-store/files?content_type=image/*",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "content_type": "image/*"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -230,8 +235,9 @@ async def test_list_files_filter_by_content_type(file_client: AsyncClient, auth_
 
     # Exact: application/pdf
     response = await file_client.get(
-        "/api/document-store/files?content_type=application/pdf",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "content_type": "application/pdf"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 1
@@ -245,8 +251,9 @@ async def test_list_files_filter_by_category(file_client: AsyncClient, auth_head
     await _insert_file(file_id="FILE-3", category="invoices")
 
     response = await file_client.get(
-        "/api/document-store/files?category=invoices",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "category": "invoices"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 2
@@ -260,8 +267,9 @@ async def test_list_files_filter_by_tags(file_client: AsyncClient, auth_headers:
     await _insert_file(file_id="FILE-3", tags=["2024"])
 
     response = await file_client.get(
-        "/api/document-store/files?tags=urgent,2024",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "tags": "urgent,2024"},
     )
     assert response.status_code == 200
     # Only FILE-1 has BOTH tags
@@ -276,8 +284,9 @@ async def test_list_files_pagination(file_client: AsyncClient, auth_headers: dic
         await _insert_file(file_id=f"FILE-P{i:02d}")
 
     response = await file_client.get(
-        "/api/document-store/files?page=1&page_size=2",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "page": 1, "page_size": 2},
     )
     assert response.status_code == 200
     data = response.json()
@@ -392,6 +401,7 @@ async def test_upload_empty_file(file_client: AsyncClient, auth_headers: dict):
         "/api/document-store/files",
         headers=auth_headers,
         files={"file": ("empty.txt", b"", "text/plain")},
+        data={"namespace": "wip"},
     )
     assert response.status_code == 400
     assert "Empty file" in response.json()["detail"]
@@ -780,6 +790,7 @@ async def test_file_endpoints_503_when_storage_disabled(client: AsyncClient, aut
         response = await client.get(
             "/api/document-store/files",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert response.status_code == 503
         assert "not enabled" in response.json()["detail"].lower()

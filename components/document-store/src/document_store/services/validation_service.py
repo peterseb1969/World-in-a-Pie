@@ -163,8 +163,8 @@ class ValidationService:
         self,
         template_id: str,
         data: dict[str, Any],
+        namespace: str,
         template_version: int | None = None,
-        namespace: str = "wip",
         doc_ref_cache: dict | None = None
     ) -> ValidationResult:
         """
@@ -1195,7 +1195,7 @@ class ValidationService:
         data: dict[str, Any],
         template: dict[str, Any],
         result: ValidationResult,
-        namespace: str = "wip",
+        namespace: str,
         doc_ref_cache: dict | None = None
     ):
         """
@@ -1476,8 +1476,8 @@ class ValidationService:
         target_templates: list[str],
         result: ValidationResult,
         field_path: str,
+        namespace: str,
         version_strategy: str = "latest",
-        namespace: str = "wip",
         doc_ref_cache: dict | None = None
     ) -> dict[str, Any] | None:
         """Resolve a document reference by ID, hash, or business key.

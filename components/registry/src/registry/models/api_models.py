@@ -382,6 +382,7 @@ class ResolveItem(StrictModel):
     """Request model for resolving a synonym composite key to an entry ID."""
 
     composite_key: dict[str, Any] = Field(..., description="Synonym composite key to resolve")
+    include_statuses: list[str] | None = Field(None, description="Status filter. Default: active only.")
 
 
 class ResolveResponse(BaseModel):

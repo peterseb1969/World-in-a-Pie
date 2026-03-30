@@ -549,7 +549,7 @@ async def get_schema(template_value: str) -> dict[str, Any]:
 
 @router.post("/sync/batch/terminologies")
 async def trigger_terminology_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
@@ -576,7 +576,7 @@ async def trigger_terminology_sync(
 
 @router.post("/sync/batch/terms")
 async def trigger_term_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
@@ -605,7 +605,7 @@ async def trigger_term_sync(
 
 @router.post("/sync/batch/relationships")
 async def trigger_relationship_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """

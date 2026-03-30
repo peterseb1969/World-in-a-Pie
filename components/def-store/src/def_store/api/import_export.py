@@ -158,7 +158,7 @@ async def import_ontology(
     data: dict[str, Any] = Body(...),
     terminology_value: str | None = Query(None, description="WIP terminology value (e.g., HPO, GO). Auto-detected if not set."),
     terminology_label: str | None = Query(None, description="Display label. Auto-detected if not set."),
-    namespace: str = Query("wip", description="Target namespace"),
+    namespace: str = Query(..., description="Target namespace"),
     prefix_filter: str | None = Query(None, description="Only import nodes with this OBO prefix"),
     include_deprecated: bool = Query(False, description="Import deprecated/obsolete nodes"),
     max_synonyms: int = Query(10, description="Max aliases per term"),

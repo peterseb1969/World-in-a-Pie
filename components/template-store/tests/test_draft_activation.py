@@ -36,6 +36,7 @@ async def _create_one_id(client: AsyncClient, auth_headers: dict, payload: dict)
 async def test_create_draft_template(client: AsyncClient, auth_headers: dict):
     """Test creating a template with status='draft'."""
     data = await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRAFT_BASIC",
         "label": "Draft Basic Template",
         "status": "draft",
@@ -66,6 +67,7 @@ async def test_draft_template_skips_reference_validation(client: AsyncClient, au
     """
     # This would fail for an active template because extends target does not exist
     data = await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRAFT_BAD_EXTENDS",
         "label": "Draft Bad Extends",
         "status": "draft",
@@ -88,12 +90,14 @@ async def test_draft_templates_not_listed_as_active(client: AsyncClient, auth_he
     """Test that draft templates are visible when filtering by status=draft
     and excluded when filtering by status=active."""
     await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRAFT_FILTER",
         "label": "Draft Filter",
         "status": "draft",
         "fields": [],
     })
     await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVE_FILTER",
         "label": "Active Filter",
         "fields": [],
@@ -128,6 +132,7 @@ async def test_draft_templates_not_listed_as_active(client: AsyncClient, auth_he
 async def test_activate_single_draft_template(client: AsyncClient, auth_headers: dict):
     """Test activating a single draft template with valid references."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVATE_SINGLE",
         "label": "Activate Single",
         "status": "draft",
@@ -140,6 +145,7 @@ async def test_activate_single_draft_template(client: AsyncClient, auth_headers:
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -160,6 +166,7 @@ async def test_activate_single_draft_template(client: AsyncClient, auth_headers:
 async def test_activate_draft_with_valid_terminology_ref(client: AsyncClient, auth_headers: dict):
     """Test activating a draft template that has valid terminology references."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVATE_TERM_REF",
         "label": "Activate Term Ref",
         "status": "draft",
@@ -176,6 +183,7 @@ async def test_activate_draft_with_valid_terminology_ref(client: AsyncClient, au
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -196,6 +204,7 @@ async def test_activate_cascading_two_drafts(client: AsyncClient, auth_headers: 
     """
     # Create draft B first (referenced by A)
     draft_b_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_B",
         "label": "Cascade B",
         "status": "draft",
@@ -206,6 +215,7 @@ async def test_activate_cascading_two_drafts(client: AsyncClient, auth_headers: 
 
     # Create draft A that references draft B via template_ref
     draft_a_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_A",
         "label": "Cascade A",
         "status": "draft",
@@ -224,6 +234,7 @@ async def test_activate_cascading_two_drafts(client: AsyncClient, auth_headers: 
     resp = await client.post(
         f"/api/template-store/templates/{draft_a_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -247,6 +258,7 @@ async def test_activate_cascading_with_extends(client: AsyncClient, auth_headers
     """Test cascading activation through extends (inheritance) references."""
     # Create draft parent
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_PARENT",
         "label": "Cascade Parent",
         "status": "draft",
@@ -257,6 +269,7 @@ async def test_activate_cascading_with_extends(client: AsyncClient, auth_headers
 
     # Create draft child that extends draft parent (by value)
     child_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_CHILD",
         "label": "Cascade Child",
         "status": "draft",
@@ -270,6 +283,7 @@ async def test_activate_cascading_with_extends(client: AsyncClient, auth_headers
     resp = await client.post(
         f"/api/template-store/templates/{child_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -287,6 +301,7 @@ async def test_activate_cascading_does_not_reactivate_already_active(
     already active. Only drafts are collected in the activation set."""
     # Create an active template
     active_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ALREADY_ACTIVE",
         "label": "Already Active",
         "fields": [
@@ -296,6 +311,7 @@ async def test_activate_cascading_does_not_reactivate_already_active(
 
     # Create a draft that references the active template
     draft_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRAFT_REFS_ACTIVE",
         "label": "Draft Refs Active",
         "status": "draft",
@@ -313,6 +329,7 @@ async def test_activate_cascading_does_not_reactivate_already_active(
     resp = await client.post(
         f"/api/template-store/templates/{draft_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -329,6 +346,7 @@ async def test_activate_cascading_does_not_reactivate_already_active(
 async def test_activate_dry_run_preview(client: AsyncClient, auth_headers: dict):
     """Test dry_run=true returns a preview without making changes."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRY_RUN",
         "label": "Dry Run",
         "status": "draft",
@@ -339,8 +357,9 @@ async def test_activate_dry_run_preview(client: AsyncClient, auth_headers: dict)
 
     # Dry run
     resp = await client.post(
-        f"/api/template-store/templates/{template_id}/activate?dry_run=true",
+        f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip", "dry_run": "true"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -368,6 +387,7 @@ async def test_activate_dry_run_preview(client: AsyncClient, auth_headers: dict)
 async def test_activate_dry_run_cascading(client: AsyncClient, auth_headers: dict):
     """Test dry_run with cascading shows all templates that would be activated."""
     draft_b_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRYRUN_B",
         "label": "Dry Run B",
         "status": "draft",
@@ -377,6 +397,7 @@ async def test_activate_dry_run_cascading(client: AsyncClient, auth_headers: dic
     })
 
     draft_a_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DRYRUN_A",
         "label": "Dry Run A",
         "status": "draft",
@@ -392,8 +413,9 @@ async def test_activate_dry_run_cascading(client: AsyncClient, auth_headers: dic
 
     # Dry run on A
     resp = await client.post(
-        f"/api/template-store/templates/{draft_a_id}/activate?dry_run=true",
+        f"/api/template-store/templates/{draft_a_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip", "dry_run": "true"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -425,6 +447,7 @@ async def test_activate_dry_run_cascading(client: AsyncClient, auth_headers: dic
 async def test_activate_non_draft_fails(client: AsyncClient, auth_headers: dict):
     """Test that activating a template that is already active returns 400."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ALREADY_ACTIVE_FAIL",
         "label": "Already Active Fail",
         "fields": [
@@ -436,6 +459,7 @@ async def test_activate_non_draft_fails(client: AsyncClient, auth_headers: dict)
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 400
     detail = resp.json()["detail"]
@@ -448,6 +472,7 @@ async def test_activate_nonexistent_template_fails(client: AsyncClient, auth_hea
     resp = await client.post(
         "/api/template-store/templates/TPL-999999/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 400
     assert "not found" in resp.json()["detail"].lower()
@@ -463,6 +488,7 @@ async def test_activate_fails_with_invalid_terminology_ref(
 ):
     """Test that activation fails when a draft has an invalid terminology reference."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVATE_BAD_TERM",
         "label": "Activate Bad Term",
         "status": "draft",
@@ -479,6 +505,7 @@ async def test_activate_fails_with_invalid_terminology_ref(
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -502,6 +529,7 @@ async def test_activate_fails_with_invalid_template_ref(
 ):
     """Test that activation fails when a draft has an invalid template reference."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVATE_BAD_TPLREF",
         "label": "Activate Bad Template Ref",
         "status": "draft",
@@ -518,6 +546,7 @@ async def test_activate_fails_with_invalid_template_ref(
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -542,6 +571,7 @@ async def test_activate_all_or_nothing_on_cascading_failure(
     invalid references, NONE are activated."""
     # Create draft B with an invalid terminology ref
     draft_b_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "AON_B",
         "label": "AON B",
         "status": "draft",
@@ -557,6 +587,7 @@ async def test_activate_all_or_nothing_on_cascading_failure(
 
     # Create draft A that references draft B
     draft_a_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "AON_A",
         "label": "AON A",
         "status": "draft",
@@ -574,6 +605,7 @@ async def test_activate_all_or_nothing_on_cascading_failure(
     resp = await client.post(
         f"/api/template-store/templates/{draft_a_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -597,6 +629,7 @@ async def test_activate_fails_with_invalid_extends_reference(
     """Test that activation fails when a draft extends a non-existent template
     that is not another draft in the activation set."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ACTIVATE_BAD_EXTENDS",
         "label": "Activate Bad Extends",
         "status": "draft",
@@ -609,6 +642,7 @@ async def test_activate_fails_with_invalid_extends_reference(
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -622,6 +656,7 @@ async def test_activate_fails_with_invalid_extends_reference(
 async def test_activation_details_show_status(client: AsyncClient, auth_headers: dict):
     """Test that activation_details include correct status for each template."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DETAIL_STATUS",
         "label": "Detail Status",
         "status": "draft",
@@ -634,6 +669,7 @@ async def test_activation_details_show_status(client: AsyncClient, auth_headers:
     resp = await client.post(
         f"/api/template-store/templates/{template_id}/activate",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     data = resp.json()

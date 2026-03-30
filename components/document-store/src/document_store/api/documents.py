@@ -92,7 +92,7 @@ async def create_documents(
         result = BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
     else:
         # Bulk path — uses cache warmup and batch Registry calls
-        namespace = items[0].namespace if items else "wip"
+        namespace = items[0].namespace
         result = await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
 
     await asyncio.sleep(get_throttle_delay())
@@ -133,7 +133,7 @@ async def list_documents(
     if template_id:
         with contextlib.suppress(EntityNotFoundError):
             template_id = await resolve_entity_id(
-                template_id, "template", namespace or "wip"
+                template_id, "template", namespace
             )
 
     service = get_document_service()

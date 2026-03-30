@@ -462,7 +462,7 @@ class BatchSyncService:
                                         "updated_by" = EXCLUDED."updated_by"
                                     """,
                                     t["terminology_id"],
-                                    t.get("namespace", namespace or "wip"),
+                                    t.get("namespace", namespace),
                                     t["value"],
                                     t.get("label"),
                                     t.get("description"),
@@ -555,7 +555,7 @@ class BatchSyncService:
                                         "updated_by" = EXCLUDED."updated_by"
                                     """,
                                     t["template_id"],
-                                    t.get("namespace", namespace or "wip"),
+                                    t.get("namespace", namespace),
                                     t["value"],
                                     t.get("label"),
                                     t.get("description"),
@@ -675,7 +675,7 @@ class BatchSyncService:
                                             "updated_by" = EXCLUDED."updated_by"
                                         """,
                                         t["term_id"],
-                                        t.get("namespace", namespace or "wip"),
+                                        t.get("namespace", namespace),
                                         t.get("terminology_id"),
                                         t.get("terminology_value"),
                                         t["value"],
@@ -716,7 +716,7 @@ class BatchSyncService:
 
     async def batch_sync_relationships(
         self,
-        namespace: str = "wip",
+        namespace: str,
         page_size: int = 100,
     ) -> dict:
         """

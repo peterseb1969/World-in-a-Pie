@@ -352,7 +352,7 @@ class DocumentTransformer:
         # Base row with system columns
         base_row = {
             "document_id": document["document_id"],
-            "namespace": document.get("namespace", "wip"),
+            "namespace": document["namespace"],
             "template_id": document["template_id"],
             "template_version": document.get("template_version", 1),
             "version": document.get("version", 1),

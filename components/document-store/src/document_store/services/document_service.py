@@ -33,6 +33,8 @@ from .registry_client import RegistryError, get_registry_client
 from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
+logger = logging.getLogger(__name__)
+
 
 class DocumentService:
     """
@@ -97,7 +99,7 @@ class DocumentService:
     async def create_document(
         self,
         request: DocumentCreateRequest,
-        namespace: str = "wip",
+        namespace: str,
     ) -> tuple[DocumentCreateResponse, str | None]:
         """
         Create or update a document.
@@ -215,7 +217,7 @@ class DocumentService:
         request: DocumentCreateRequest,
         validation_result: Any,
         document_id: str,
-        namespace: str = "wip",
+        namespace: str,
         synonyms: list[dict] | None = None,
         version_override: int | None = None,
     ) -> tuple[DocumentCreateResponse, str | None]:
@@ -265,17 +267,26 @@ class DocumentService:
             now=now,
         )
 
-        # Register auto-synonym for migration portability (best-effort, version 1 only)
+        # Register auto-synonym for migration portability (version 1 only)
+        # On failure, roll back the MongoDB document and re-raise
         if version == 1 and not version_override:
-            registry = get_registry_client()
-            await registry.register_auto_synonym(
-                document_id=document_id,
-                namespace=namespace,
-                template_value=validation_result.template_value or "",
-                identity_hash=validation_result.identity_hash,
-                has_identity_fields=bool(validation_result.identity_hash),
-                created_by=actor,
-            )
+            try:
+                registry = get_registry_client()
+                await registry.register_auto_synonym(
+                    document_id=document_id,
+                    namespace=namespace,
+                    template_value=validation_result.template_value or "",
+                    identity_hash=validation_result.identity_hash,
+                    has_identity_fields=bool(validation_result.identity_hash),
+                    created_by=actor,
+                )
+            except RegistryError:
+                logger.error(
+                    "Auto-synonym registration failed for document %s — rolling back",
+                    document_id,
+                )
+                await document.delete()
+                raise
 
         # Publish document created event
         await publish_document_event(
@@ -428,7 +439,7 @@ class DocumentService:
         existing: Document,
         validation_result: Any,
         document_id: str,
-        namespace: str = "wip"
+        namespace: str
     ) -> tuple[DocumentCreateResponse, str | None]:
         """Create a new version of an existing document with stable document_id."""
         # Check if data has actually changed
@@ -513,7 +524,7 @@ class DocumentService:
     async def _find_active_by_identity(
         self,
         identity_hash: str,
-        namespace: str = "wip"
+        namespace: str
     ) -> Document | None:
         """Find the active document with the given identity hash within namespace."""
         return await Document.find_one({
@@ -908,7 +919,7 @@ class DocumentService:
     async def bulk_create(
         self,
         items: list[DocumentCreateRequest],
-        namespace: str = "wip",
+        namespace: str,
         continue_on_error: bool = True,
     ) -> BulkResponse:
         """
@@ -1326,12 +1337,13 @@ class DocumentService:
     async def validate_document(
         self,
         template_id: str,
-        data: dict[str, Any]
+        data: dict[str, Any],
+        namespace: str,
     ) -> ValidationResponse:
         """Validate document without saving."""
         from .identity_service import IdentityService
 
-        result = await self.validation_service.validate(template_id, data)
+        result = await self.validation_service.validate(template_id, data, namespace=namespace)
 
         # Dry-run: compute identity_hash locally (no Registry side effects)
         identity_hash = None

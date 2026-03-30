@@ -38,7 +38,7 @@ class CreateTerminologyRequest(StrictModel):
         description="Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for the terminology"
     )
     case_sensitive: bool = Field(

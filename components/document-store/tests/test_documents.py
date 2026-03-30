@@ -7,7 +7,7 @@ from httpx import AsyncClient
 # Helper to create a single document and extract the result from BulkResponse
 async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, data: dict, **extra):
     """Create a single document via the bulk-first API and return the result item."""
-    payload = {"template_id": template_id, "data": data, **extra}
+    payload = {"namespace": "wip", "template_id": template_id, "data": data, **extra}
     response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
@@ -75,6 +75,7 @@ async def test_list_documents(client: AsyncClient, auth_headers: dict, sample_pe
             "/api/document-store/documents",
             headers=auth_headers,
             json=[{
+                "namespace": "wip",
                 "template_id": "TPL-000001",
                 "data": data
             }]
@@ -100,6 +101,7 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
+            "namespace": "wip",
             "template_id": "TPL-000001",
             "data": sample_person_data.copy()
         }]
@@ -110,6 +112,7 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
+            "namespace": "wip",
             "template_id": "TPL-000002",
             "data": sample_employee_data
         }]
@@ -213,6 +216,7 @@ async def test_query_documents(client: AsyncClient, auth_headers: dict, sample_p
             "/api/document-store/documents",
             headers=auth_headers,
             json=[{
+                "namespace": "wip",
                 "template_id": "TPL-000001",
                 "data": data
             }]
@@ -243,6 +247,7 @@ async def test_bulk_create_documents(client: AsyncClient, auth_headers: dict, sa
         data = sample_person_data.copy()
         data["national_id"] = f"98765432{i}"
         items.append({
+            "namespace": "wip",
             "template_id": "TPL-000001",
             "data": data
         })
@@ -266,6 +271,7 @@ async def test_auth_required(client: AsyncClient, sample_person_data: dict):
     response = await client.post(
         "/api/document-store/documents",
         json=[{
+            "namespace": "wip",
             "template_id": "TPL-000001",
             "data": sample_person_data
         }]
@@ -327,6 +333,7 @@ async def test_invalid_api_key(client: AsyncClient, sample_person_data: dict):
         "/api/document-store/documents",
         headers={"X-API-Key": "invalid_key"},
         json=[{
+            "namespace": "wip",
             "template_id": "TPL-000001",
             "data": sample_person_data
         }]

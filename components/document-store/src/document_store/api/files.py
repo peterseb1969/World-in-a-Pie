@@ -80,7 +80,7 @@ Metadata can be provided as form fields:
 )
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
-    namespace: str = Form(default="wip", description="Namespace for the file"),
+    namespace: str = Form(..., description="Namespace for the file"),
     file_id: str | None = Form(None, description="Pre-assigned file ID (for restore/migration)"),
     description: str | None = Form(None, description="File description"),
     tags: str | None = Form(None, description="Comma-separated tags"),
@@ -147,7 +147,7 @@ async def upload_file(
     dependencies=[Depends(require_file_storage)]
 )
 async def list_files(
-    namespace: str = Query(default="wip", description="Namespace to query"),
+    namespace: str = Query(..., description="Namespace to query"),
     status: FileStatus | None = Query(None, description="Filter by status"),
     content_type: str | None = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
     category: str | None = Query(None, description="Filter by category"),

@@ -58,10 +58,10 @@ class RegistryClient:
     async def generate_document_id(
         self,
         template_id: str,
+        namespace: str,
         identity_values: dict[str, Any] | None = None,
         has_identity_fields: bool = True,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
         """
@@ -126,8 +126,8 @@ class RegistryClient:
     async def generate_document_ids_bulk(
         self,
         items: list[dict[str, Any]],
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Generate multiple document IDs from the Registry in a single call.
@@ -243,11 +243,11 @@ class RegistryClient:
         created_by: str | None = None,
     ) -> None:
         """
-        Register an auto-synonym for a document (best-effort).
+        Register an auto-synonym for a document.
 
         For documents with identity fields: composite key includes template + identity_hash.
         For documents without identity fields: composite key includes a portable UUID4.
-        Failure is logged but does not prevent document creation.
+        Failure raises and prevents document creation.
 
         Args:
             document_id: The document's canonical ID
@@ -256,6 +256,9 @@ class RegistryClient:
             identity_hash: Identity hash (for documents with identity fields)
             has_identity_fields: Whether the template has identity fields
             created_by: Creator identifier
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         if has_identity_fields and identity_hash:
             composite_key = {
@@ -285,14 +288,15 @@ class RegistryClient:
                     }]
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        "Failed to register auto-synonym for document %s: %s",
-                        document_id, response.text
+                    raise RegistryError(
+                        f"Failed to register auto-synonym for document {document_id}: {response.text}"
                     )
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning(
-                "Failed to register auto-synonym for document %s: %s", document_id, e
-            )
+            raise RegistryError(
+                f"Failed to register auto-synonym for document {document_id}: {e}"
+            ) from e
 
     async def resolve_identifier(
         self,

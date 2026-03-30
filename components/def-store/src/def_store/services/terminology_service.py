@@ -32,7 +32,7 @@ from .nats_client import (
     publish_term_events_bulk,
     publish_terminology_event,
 )
-from .registry_client import get_registry_client
+from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class TerminologyService:
     @staticmethod
     async def create_terminology(
         request: CreateTerminologyRequest,
-        namespace: str = "wip"
+        namespace: str
     ) -> TerminologyResponse:
         """
         Create a new terminology.
@@ -108,18 +108,27 @@ class TerminologyService:
                 f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
             ) from e
 
-        # Register auto-synonym for human-readable resolution (best-effort)
-        await client.register_auto_synonym(
-            target_id=terminology_id,
-            namespace=namespace,
-            entity_type="terminologies",
-            composite_key={
-                "ns": namespace,
-                "type": "terminology",
-                "value": request.value,
-            },
-            created_by=actor,
-        )
+        # Register auto-synonym for human-readable resolution
+        # On failure, roll back the MongoDB document and re-raise
+        try:
+            await client.register_auto_synonym(
+                target_id=terminology_id,
+                namespace=namespace,
+                entity_type="terminologies",
+                composite_key={
+                    "ns": namespace,
+                    "type": "terminology",
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
+        except RegistryError:
+            logger.error(
+                "Auto-synonym registration failed for terminology %s — rolling back",
+                terminology_id,
+            )
+            await terminology.delete()
+            raise
 
         # Create audit log entry for terminology creation
         await TerminologyService._create_audit_log(
@@ -567,20 +576,29 @@ class TerminologyService:
                 f"Term ID '{term_id}' already exists (collision across namespaces)"
             ) from e
 
-        # Register auto-synonym for human-readable resolution (best-effort)
+        # Register auto-synonym for human-readable resolution
         # Uses "TERMINOLOGY_VALUE:TERM_VALUE" colon notation for resolution
-        await client.register_auto_synonym(
-            target_id=term_id,
-            namespace=namespace,
-            entity_type="terms",
-            composite_key={
-                "ns": namespace,
-                "type": "term",
-                "terminology": terminology.value,
-                "value": request.value,
-            },
-            created_by=actor,
-        )
+        # On failure, roll back the MongoDB document and re-raise
+        try:
+            await client.register_auto_synonym(
+                target_id=term_id,
+                namespace=namespace,
+                entity_type="terms",
+                composite_key={
+                    "ns": namespace,
+                    "type": "term",
+                    "terminology": terminology.value,
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
+        except RegistryError:
+            logger.error(
+                "Auto-synonym registration failed for term %s — rolling back",
+                term_id,
+            )
+            await term.delete()
+            raise
 
         # Create audit log entry
         await TerminologyService._create_audit_log(
@@ -853,7 +871,7 @@ class TerminologyService:
                     changed_by=actor,
                 )
 
-            # Phase F3: Register auto-synonyms for created terms (best-effort)
+            # Phase F3: Register auto-synonyms for created terms
             synonym_items = [
                 {
                     "target_id": terms_to_insert[pos].term_id,
@@ -1376,12 +1394,12 @@ class TerminologyService:
         term_id: str,
         terminology_id: str,
         action: str,
+        namespace: str,
         changed_by: str | None = None,
         changed_fields: list[str] | None = None,
         previous_values: dict | None = None,
         new_values: dict | None = None,
         comment: str | None = None,
-        namespace: str = "wip"
     ):
         """Create an audit log entry for a term change."""
         audit_entry = TermAuditLog(

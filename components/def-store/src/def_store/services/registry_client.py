@@ -53,8 +53,8 @@ class RegistryClient:
         self,
         value: str,
         label: str,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> str:
         """
@@ -114,8 +114,8 @@ class RegistryClient:
         self,
         terminology_id: str,
         value: str,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> str:
         """
@@ -174,10 +174,10 @@ class RegistryClient:
         self,
         terminology_id: str,
         terms: list[dict[str, Any]],
+        namespace: str,
         created_by: str | None = None,
         timeout: float | None = None,
         registry_batch_size: int = 100,
-        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple terms in the Registry.
@@ -313,10 +313,10 @@ class RegistryClient:
         created_by: str | None = None,
     ) -> None:
         """
-        Register an auto-synonym for an entity (best-effort).
+        Register an auto-synonym for an entity.
 
         Auto-synonyms enable human-readable resolution (e.g., "STATUS" → terminology ID).
-        Failure is logged but does not prevent entity creation.
+        Failure raises and prevents entity creation.
 
         Args:
             target_id: The entity's canonical ID
@@ -324,6 +324,9 @@ class RegistryClient:
             entity_type: Registry entity type (e.g., 'terminologies', 'terms')
             composite_key: Auto-synonym composite key
             created_by: Creator identifier
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -339,12 +342,15 @@ class RegistryClient:
                     }]
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        "Failed to register auto-synonym for %s: %s",
-                        target_id, response.text
+                    raise RegistryError(
+                        f"Failed to register auto-synonym for {target_id}: {response.text}"
                     )
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning("Failed to register auto-synonym for %s: %s", target_id, e)
+            raise RegistryError(
+                f"Failed to register auto-synonym for {target_id}: {e}"
+            ) from e
 
     async def register_auto_synonyms_bulk(
         self,
@@ -352,13 +358,17 @@ class RegistryClient:
         batch_size: int = 100,
     ) -> None:
         """
-        Register auto-synonyms in bulk (best-effort).
+        Register auto-synonyms in bulk.
 
         Each item should have: target_id, namespace, entity_type, composite_key, created_by.
+        Failure raises and prevents entity creation.
 
         Args:
             items: List of synonym registration dicts
             batch_size: Number of synonyms per HTTP call
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         if not items:
             return
@@ -383,14 +393,18 @@ class RegistryClient:
                         json=payload,
                     )
                     if response.status_code != 200:
-                        logger.warning(
-                            "Failed to register auto-synonyms batch %d-%d: %s",
-                            batch_start, batch_start + len(batch), response.text
+                        raise RegistryError(
+                            f"Failed to register auto-synonyms batch {batch_start}-"
+                            f"{batch_start + len(batch)}: {response.text}"
                         )
                     if batch_start + batch_size < len(items):
                         await asyncio.sleep(0.05)
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning("Failed to register auto-synonyms bulk: %s", e)
+            raise RegistryError(
+                f"Failed to register auto-synonyms bulk: {e}"
+            ) from e
 
     async def lookup_by_value(
         self,

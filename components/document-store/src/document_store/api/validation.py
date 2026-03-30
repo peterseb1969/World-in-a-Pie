@@ -37,5 +37,6 @@ async def validate_document(
     service = get_document_service()
     return await service.validate_document(
         template_id=request.template_id,
-        data=request.data
+        data=request.data,
+        namespace=request.namespace,
     )

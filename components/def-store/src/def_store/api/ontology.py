@@ -31,7 +31,7 @@ router = APIRouter(prefix="/ontology", tags=["Ontology"])
 )
 async def create_relationships(
     items: list[CreateRelationshipRequest] = Body(...),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> BulkResponse:
     """
@@ -62,7 +62,7 @@ async def list_relationships(
     term_id: str = Query(..., description="Term ID to query relationships for"),
     direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
     relationship_type: str | None = Query(None, description="Filter by relationship type"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key),
@@ -95,7 +95,7 @@ async def list_relationships(
 )
 async def delete_relationships(
     items: list[DeleteRelationshipRequest] = Body(...),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> BulkResponse:
     """
@@ -120,7 +120,7 @@ async def delete_relationships(
     summary="List all relationships (for batch sync)"
 )
 async def list_all_relationships(
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     relationship_type: str | None = Query(None, description="Filter by type"),
     source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
@@ -167,7 +167,7 @@ async def list_all_relationships(
 async def get_ancestors(
     term_id: str,
     relationship_type: str = Query("is_a", description="Relationship type to traverse"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
     api_key: str = Depends(require_api_key),
 ) -> TraversalResponse:
@@ -196,7 +196,7 @@ async def get_ancestors(
 async def get_descendants(
     term_id: str,
     relationship_type: str = Query("is_a", description="Relationship type to traverse"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
     api_key: str = Depends(require_api_key),
 ) -> TraversalResponse:
@@ -223,7 +223,7 @@ async def get_descendants(
 )
 async def get_parents(
     term_id: str,
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> list[RelationshipResponse]:
     """
@@ -244,7 +244,7 @@ async def get_parents(
 )
 async def get_children(
     term_id: str,
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> list[RelationshipResponse]:
     """

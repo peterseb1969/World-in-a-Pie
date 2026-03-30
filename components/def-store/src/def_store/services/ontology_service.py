@@ -306,7 +306,7 @@ class OntologyService:
     @staticmethod
     async def list_relationships(
         term_id: str,
-        namespace: str = "wip",
+        namespace: str,
         direction: str = "outgoing",
         relationship_type: str | None = None,
         status: str = "active",
@@ -340,7 +340,7 @@ class OntologyService:
 
     @staticmethod
     async def list_all_relationships(
-        namespace: str = "wip",
+        namespace: str,
         relationship_type: str | None = None,
         source_terminology_id: str | None = None,
         status: str = "active",

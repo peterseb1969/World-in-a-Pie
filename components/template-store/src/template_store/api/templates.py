@@ -69,7 +69,7 @@ async def create_templates(
         try:
             results = await TemplateService.create_templates_bulk(
                 templates=items,
-                namespace=items[0].namespace if items else "wip",
+                namespace=items[0].namespace,
             )
         except RegistryError as e:
             raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
@@ -138,7 +138,7 @@ async def get_template(
     # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
     resolved_id = template_id
     with contextlib.suppress(EntityNotFoundError):
-        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+        resolved_id = await resolve_entity_id(template_id, "template", namespace)
 
     template = await TemplateService.get_template(template_id=resolved_id, version=version)
     if not template:
@@ -163,7 +163,7 @@ async def get_template_raw(
     fields from parent templates.
     """
     try:
-        resolved_id = await resolve_entity_id(template_id, "template", namespace or "wip")
+        resolved_id = await resolve_entity_id(template_id, "template", namespace)
     except EntityNotFoundError:
         resolved_id = template_id
 
@@ -375,7 +375,7 @@ async def validate_template(
 @router.post("/{template_id}/activate", response_model=ActivateTemplateResponse)
 async def activate_template(
     template_id: str,
-    namespace: str = Query(default="wip", description="Namespace for the template"),
+    namespace: str = Query(..., description="Namespace for the template"),
     dry_run: bool = Query(default=False, description="Preview activation without making changes")
 ):
     """

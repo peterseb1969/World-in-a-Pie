@@ -13,6 +13,7 @@ async def test_create_terminology(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "DOC_STATUS",
             "label": "Document Status",
+            "namespace": "wip",
             "description": "Status codes for documents",
             "case_sensitive": False,
             "allow_multiple": False,
@@ -50,7 +51,8 @@ async def test_create_terminology_duplicate_code(client: AsyncClient, auth_heade
         headers=auth_headers,
         json=[{
             "value": "PRIORITY",
-            "label": "Priority Levels"
+            "label": "Priority Levels",
+            "namespace": "wip"
         }]
     )
 
@@ -60,7 +62,8 @@ async def test_create_terminology_duplicate_code(client: AsyncClient, auth_heade
         headers=auth_headers,
         json=[{
             "value": "PRIORITY",
-            "label": "Different Name"
+            "label": "Different Name",
+            "namespace": "wip"
         }]
     )
 
@@ -79,7 +82,8 @@ async def test_get_terminology_by_id(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         json=[{
             "value": "COUNTRIES",
-            "label": "Country Codes"
+            "label": "Country Codes",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_response.json()["results"][0]["id"]
@@ -104,7 +108,8 @@ async def test_get_terminology_by_value(client: AsyncClient, auth_headers: dict)
         headers=auth_headers,
         json=[{
             "value": "LANGUAGES",
-            "label": "Language Codes"
+            "label": "Language Codes",
+            "namespace": "wip"
         }]
     )
 
@@ -128,7 +133,8 @@ async def test_list_terminologies(client: AsyncClient, auth_headers: dict):
             headers=auth_headers,
             json=[{
                 "value": f"TEST_{i}",
-                "label": f"Test Terminology {i}"
+                "label": f"Test Terminology {i}",
+                "namespace": "wip"
             }]
         )
 
@@ -153,7 +159,8 @@ async def test_update_terminology(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         json=[{
             "value": "OLD_VALUE",
-            "label": "Old Name"
+            "label": "Old Name",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_response.json()["results"][0]["id"]
@@ -192,7 +199,8 @@ async def test_delete_terminology(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         json=[{
             "value": "TO_DELETE",
-            "label": "Will Be Deleted"
+            "label": "Will Be Deleted",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_response.json()["results"][0]["id"]

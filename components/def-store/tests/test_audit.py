@@ -18,6 +18,7 @@ async def terminology_with_terms(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "AUDIT_TEST",
             "label": "Audit Test Terminology",
+            "namespace": "wip",
             "description": "Terminology for audit log testing"
         }]
     )
@@ -275,7 +276,8 @@ async def test_audit_log_pagination(
         headers=auth_headers,
         json=[{
             "value": "PAGINATION_TEST",
-            "label": "Pagination Test"
+            "label": "Pagination Test",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_resp.json()["results"][0]["id"]
@@ -341,7 +343,8 @@ async def test_audit_log_pagination_beyond_last_page(
         headers=auth_headers,
         json=[{
             "value": "BEYOND_PAGE",
-            "label": "Beyond Page Test"
+            "label": "Beyond Page Test",
+            "namespace": "wip"
         }]
     )
 
@@ -394,7 +397,8 @@ async def test_audit_entry_has_complete_structure(
         headers=auth_headers,
         json=[{
             "value": "STRUCTURE_TEST",
-            "label": "Structure Test"
+            "label": "Structure Test",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_resp.json()["results"][0]["id"]

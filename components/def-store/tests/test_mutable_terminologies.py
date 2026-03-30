@@ -25,6 +25,7 @@ async def create_terminology(
         json=[{
             "value": value,
             "label": label,
+            "namespace": "wip",
             "mutable": mutable,
             "extensible": extensible,
         }],
@@ -80,6 +81,7 @@ async def create_relationship(
             "relationship_type": rel_type,
         }],
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert resp.status_code == 200
     return resp.json()
@@ -145,6 +147,7 @@ class TestMutableTerminologyCreation:
             json=[{
                 "value": "MUT_EXT_OVERRIDE",
                 "label": "Override Test",
+                "namespace": "wip",
                 "mutable": True,
                 "extensible": False,
             }],
@@ -335,7 +338,7 @@ class TestHardDeleteTerms:
         # Verify relationship exists
         rel_resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": child, "direction": "outgoing"},
+            params={"term_id": child, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
         assert rel_resp.json()["total"] == 1
@@ -353,7 +356,7 @@ class TestHardDeleteTerms:
         # Verify relationship is gone too
         rel_resp2 = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": child, "direction": "outgoing"},
+            params={"term_id": child, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
         assert rel_resp2.json()["total"] == 0
@@ -494,7 +497,7 @@ class TestHardDeleteTerminology:
         for tid in [parent, child]:
             rel_resp = await client.get(
                 f"{API}/ontology/relationships",
-                params={"term_id": tid},
+                params={"term_id": tid, "namespace": "wip"},
                 headers=auth_headers,
             )
             assert rel_resp.json()["total"] == 0

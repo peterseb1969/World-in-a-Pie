@@ -67,8 +67,18 @@ class WipClient:
             "REPORTING_SYNC_URL", "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
+        self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+
+    def _ns(self, namespace: str | None) -> str:
+        """Resolve namespace: explicit > env default > error."""
+        resolved = namespace or self.default_namespace
+        if not resolved:
+            raise ValueError(
+                "namespace is required. Pass it explicitly or set WIP_MCP_DEFAULT_NAMESPACE."
+            )
+        return resolved
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -356,8 +366,9 @@ class WipClient:
         )
 
     async def create_terminology(
-        self, value: str, label: str, namespace: str = "wip", **kwargs
+        self, value: str, label: str, namespace: str | None = None, **kwargs
     ) -> dict:
+        namespace = self._ns(namespace)
         payload = {"value": value, "label": label, "namespace": namespace, **kwargs}
         resp = await self._post(
             self.def_store_url, "/api/def-store/terminologies", json=[payload]
@@ -837,12 +848,13 @@ class WipClient:
         file_content: bytes,
         filename: str,
         content_type: str,
-        namespace: str = "wip",
+        namespace: str | None = None,
         description: str | None = None,
         tags: list[str] | None = None,
         category: str | None = None,
     ) -> dict:
         """Upload a file via multipart form. Returns single FileResponse (not bulk)."""
+        namespace = self._ns(namespace)
         client = await self._get_client()
         files = {"file": (filename, file_content, content_type)}
         data: dict[str, str] = {"namespace": namespace}
@@ -915,10 +927,11 @@ class WipClient:
         filename: str,
         template_id: str,
         column_mapping: dict,
-        namespace: str = "wip",
+        namespace: str | None = None,
         skip_errors: bool = False,
     ) -> dict:
         """Import documents from CSV/XLSX."""
+        namespace = self._ns(namespace)
         import json as _json
         client = await self._get_client()
         files = {"file": (filename, file_content, "application/octet-stream")}

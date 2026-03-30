@@ -14,7 +14,7 @@ from httpx import AsyncClient
 
 async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, data: dict, **extra):
     """Create a single document via the bulk-first API and return the result item."""
-    payload = {"template_id": template_id, "data": data, **extra}
+    payload = {"namespace": "wip", "template_id": template_id, "data": data, **extra}
     response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,

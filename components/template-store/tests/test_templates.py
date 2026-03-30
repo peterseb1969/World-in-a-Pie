@@ -36,6 +36,7 @@ async def _create_one_id(client: AsyncClient, auth_headers: dict, payload: dict)
 async def test_create_template(client: AsyncClient, auth_headers: dict):
     """Test creating a new template."""
     data = await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "PERSON",
         "label": "Person Template",
         "description": "Template for person records",
@@ -85,7 +86,7 @@ async def test_create_template_without_auth(client: AsyncClient):
     """Test that creating a template without auth fails."""
     response = await client.post(
         "/api/template-store/templates",
-        json=[{"value": "TEST", "label": "Test"}],
+        json=[{"namespace": "wip", "value": "TEST", "label": "Test"}],
     )
     assert response.status_code == 401
 
@@ -94,13 +95,13 @@ async def test_create_template_without_auth(client: AsyncClient):
 async def test_create_template_duplicate_code(client: AsyncClient, auth_headers: dict):
     """Test that creating a template with duplicate code fails."""
     # Create first template
-    await _create_one(client, auth_headers, {"value": "UNIQUE", "label": "First Template"})
+    await _create_one(client, auth_headers, {"namespace": "wip", "value": "UNIQUE", "label": "First Template"})
 
     # Try to create second with same value
     response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"value": "UNIQUE", "label": "Second Template"}],
+        json=[{"namespace": "wip", "value": "UNIQUE", "label": "Second Template"}],
     )
     assert response.status_code == 200
     data = response.json()
@@ -113,7 +114,7 @@ async def test_create_template_duplicate_code(client: AsyncClient, auth_headers:
 async def test_get_template_by_id(client: AsyncClient, auth_headers: dict):
     """Test getting a template by ID."""
     template_id = await _create_one_id(
-        client, auth_headers, {"value": "GETBYID", "label": "Get By ID Template"}
+        client, auth_headers, {"namespace": "wip", "value": "GETBYID", "label": "Get By ID Template"}
     )
 
     # Get by ID
@@ -130,7 +131,7 @@ async def test_get_template_by_id(client: AsyncClient, auth_headers: dict):
 @pytest.mark.asyncio
 async def test_get_template_by_value(client: AsyncClient, auth_headers: dict):
     """Test getting a template by value."""
-    await _create_one(client, auth_headers, {"value": "GETBYVALUE", "label": "Get By Value Template"})
+    await _create_one(client, auth_headers, {"namespace": "wip", "value": "GETBYVALUE", "label": "Get By Value Template"})
 
     # Get by value
     response = await client.get(
@@ -157,7 +158,7 @@ async def test_list_templates(client: AsyncClient, auth_headers: dict):
     """Test listing templates."""
     # Create some templates
     for i in range(3):
-        await _create_one(client, auth_headers, {"value": f"LIST_{i}", "label": f"List Template {i}"})
+        await _create_one(client, auth_headers, {"namespace": "wip", "value": f"LIST_{i}", "label": f"List Template {i}"})
 
     # List all
     response = await client.get(
@@ -175,7 +176,7 @@ async def test_list_templates_with_pagination(client: AsyncClient, auth_headers:
     """Test listing templates with pagination."""
     # Create templates
     for i in range(5):
-        await _create_one(client, auth_headers, {"value": f"PAGE_{i}", "label": f"Page Template {i}"})
+        await _create_one(client, auth_headers, {"namespace": "wip", "value": f"PAGE_{i}", "label": f"Page Template {i}"})
 
     # Get first page
     response = await client.get(
@@ -194,7 +195,7 @@ async def test_list_templates_with_pagination(client: AsyncClient, auth_headers:
 async def test_update_template(client: AsyncClient, auth_headers: dict):
     """Test updating a template creates a new version with the same template_id."""
     template_id = await _create_one_id(
-        client, auth_headers, {"value": "UPDATE", "label": "Original Name"}
+        client, auth_headers, {"namespace": "wip", "value": "UPDATE", "label": "Original Name"}
     )
 
     # Update it via bulk PUT
@@ -228,6 +229,7 @@ async def test_update_template(client: AsyncClient, auth_headers: dict):
 async def test_update_template_add_fields(client: AsyncClient, auth_headers: dict):
     """Test updating a template to add fields creates a new version with same ID."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "ADDFIELDS",
         "label": "Add Fields Template",
         "fields": [
@@ -270,7 +272,7 @@ async def test_update_template_add_fields(client: AsyncClient, auth_headers: dic
 async def test_delete_template(client: AsyncClient, auth_headers: dict):
     """Test deleting a template."""
     template_id = await _create_one_id(
-        client, auth_headers, {"value": "DELETE", "label": "Delete Template"}
+        client, auth_headers, {"namespace": "wip", "value": "DELETE", "label": "Delete Template"}
     )
 
     # Delete it via bulk DELETE
@@ -316,9 +318,9 @@ async def test_bulk_create_templates(client: AsyncClient, auth_headers: dict):
         "/api/template-store/templates",
         headers=auth_headers,
         json=[
-            {"value": "BULK_1", "label": "Bulk Template 1", "created_by": "test"},
-            {"value": "BULK_2", "label": "Bulk Template 2", "created_by": "test"},
-            {"value": "BULK_3", "label": "Bulk Template 3", "created_by": "test"},
+            {"namespace": "wip", "value": "BULK_1", "label": "Bulk Template 1", "created_by": "test"},
+            {"namespace": "wip", "value": "BULK_2", "label": "Bulk Template 2", "created_by": "test"},
+            {"namespace": "wip", "value": "BULK_3", "label": "Bulk Template 3", "created_by": "test"},
         ],
     )
     assert response.status_code == 200
@@ -332,6 +334,7 @@ async def test_bulk_create_templates(client: AsyncClient, auth_headers: dict):
 async def test_template_with_field_types(client: AsyncClient, auth_headers: dict):
     """Test creating a template with various field types."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "FIELDTYPES",
         "label": "Field Types Template",
         "fields": [
@@ -369,6 +372,7 @@ async def test_template_with_field_types(client: AsyncClient, auth_headers: dict
 async def test_template_with_validation(client: AsyncClient, auth_headers: dict):
     """Test creating a template with field validation."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "VALIDATION",
         "label": "Validation Template",
         "fields": [
@@ -408,6 +412,7 @@ async def test_template_with_validation(client: AsyncClient, auth_headers: dict)
 async def test_template_with_rules(client: AsyncClient, auth_headers: dict):
     """Test creating a template with validation rules."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "RULES",
         "label": "Rules Template",
         "fields": [

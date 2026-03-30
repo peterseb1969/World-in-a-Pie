@@ -50,8 +50,8 @@ class FileService:
         content: bytes,
         filename: str,
         content_type: str,
+        namespace: str,
         metadata: FileUploadMetadata | None = None,
-        namespace: str = "wip",
         file_id: str | None = None,
     ) -> FileResponse:
         """
@@ -154,7 +154,7 @@ class FileService:
         registry,
         checksum: str,
         created_by: str | None,
-        namespace: str = "wip",
+        namespace: str,
         entry_id: str | None = None,
     ) -> str:
         """Generate a file ID from the Registry (empty composite key — always fresh,
@@ -405,6 +405,7 @@ class FileService:
 
     async def list_files(
         self,
+        namespace: str,
         status: FileStatus | None = None,
         content_type: str | None = None,
         category: str | None = None,
@@ -412,7 +413,6 @@ class FileService:
         uploaded_by: str | None = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str = "wip"
     ) -> FileListResponse:
         """
         List files with pagination and filters.

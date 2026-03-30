@@ -12,6 +12,7 @@ async def test_validate_valid_document(client: AsyncClient, auth_headers: dict, 
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": sample_person_data
         }
     )
@@ -32,6 +33,7 @@ async def test_validate_missing_required_field(client: AsyncClient, auth_headers
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": {
                 "national_id": "123456789",
                 # Missing first_name and last_name (required)
@@ -60,6 +62,7 @@ async def test_validate_invalid_type(client: AsyncClient, auth_headers: dict, sa
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -85,6 +88,7 @@ async def test_validate_pattern_mismatch(client: AsyncClient, auth_headers: dict
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -108,6 +112,7 @@ async def test_validate_invalid_term(client: AsyncClient, auth_headers: dict, sa
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -131,6 +136,7 @@ async def test_validate_number_out_of_range(client: AsyncClient, auth_headers: d
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -154,6 +160,7 @@ async def test_validate_invalid_date(client: AsyncClient, auth_headers: dict, sa
         headers=auth_headers,
         json={
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -174,6 +181,7 @@ async def test_validate_template_not_found(client: AsyncClient, auth_headers: di
         headers=auth_headers,
         json={
             "template_id": "TPL-NOTFOUND",
+            "namespace": "wip",
             "data": sample_person_data
         }
     )
@@ -194,6 +202,7 @@ async def test_validate_inactive_template(client: AsyncClient, auth_headers: dic
         headers=auth_headers,
         json={
             "template_id": "TPL-INACTIVE",
+            "namespace": "wip",
             "data": sample_person_data
         }
     )
@@ -217,6 +226,7 @@ async def test_validate_conditional_required_rule(client: AsyncClient, auth_head
         headers=auth_headers,
         json={
             "template_id": "TPL-000002",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -241,6 +251,7 @@ async def test_validate_conditional_required_passes(client: AsyncClient, auth_he
         headers=auth_headers,
         json={
             "template_id": "TPL-000002",
+            "namespace": "wip",
             "data": data
         }
     )
@@ -257,7 +268,9 @@ async def test_create_document_validation_error(client: AsyncClient, auth_header
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
+            "namespace": "wip",
             "template_id": "TPL-000001",
+            "namespace": "wip",
             "data": {
                 "national_id": "invalid"  # Missing required fields and invalid format
             }

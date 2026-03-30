@@ -70,28 +70,50 @@ def _build_composite_key(
 ) -> dict[str, Any]:
     """Build a composite key from a synonym string and context.
 
-    Term references use colon notation: "TERMINOLOGY:TERM_VALUE"
-    All other entity types use the plain value.
+    Resolution is deterministic:
+    - Bare values resolve in the caller's own namespace.
+    - Cross-namespace requires explicit prefix (e.g., ``wip:STATUS``).
+
+    Term references use colon notation with 2 or 3 parts:
+    - ``TERMINOLOGY:VALUE`` — own namespace
+    - ``NS:TERMINOLOGY:VALUE`` — cross-namespace
+
+    Other entity types:
+    - ``VALUE`` — own namespace
+    - ``NS:VALUE`` — cross-namespace
 
     Args:
         raw_id: The human-readable identifier
         entity_type: Singular entity type (terminology, term, template, document)
-        namespace: Current namespace
+        namespace: Caller's namespace (used for bare values)
     """
-    if entity_type == "term" and ":" in raw_id:
-        terminology, value = raw_id.split(":", 1)
-        return {
-            "ns": namespace,
-            "type": "term",
-            "terminology": terminology,
-            "value": value,
-        }
-
-    return {
-        "ns": namespace,
-        "type": entity_type,
-        "value": raw_id,
-    }
+    if entity_type == "term":
+        parts = raw_id.split(":", 2)
+        if len(parts) == 3:
+            # NS:TERMINOLOGY:VALUE — cross-namespace term
+            return {
+                "ns": parts[0],
+                "type": "term",
+                "terminology": parts[1],
+                "value": parts[2],
+            }
+        elif len(parts) == 2:
+            # TERMINOLOGY:VALUE — own namespace
+            return {
+                "ns": namespace,
+                "type": "term",
+                "terminology": parts[0],
+                "value": parts[1],
+            }
+        else:
+            return {"ns": namespace, "type": "term", "value": raw_id}
+    else:
+        if ":" in raw_id:
+            # NS:VALUE — cross-namespace
+            ns_prefix, value = raw_id.split(":", 1)
+            return {"ns": ns_prefix, "type": entity_type, "value": value}
+        # Bare value — own namespace
+        return {"ns": namespace, "type": entity_type, "value": raw_id}
 
 
 def _get_cached(cache_key: str) -> str | None:
@@ -129,6 +151,7 @@ async def resolve_entity_id(
     raw_id: str,
     entity_type: str,
     namespace: str,
+    include_statuses: list[str] | None = None,
 ) -> str:
     """Resolve a synonym or canonical ID to the canonical ID.
 
@@ -164,7 +187,10 @@ async def resolve_entity_id(
             response = await client.post(
                 f"{registry_url}/api/registry/entries/resolve",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json=[{"composite_key": composite_key}],
+                json=[{
+                    "composite_key": composite_key,
+                    **({"include_statuses": include_statuses} if include_statuses else {}),
+                }],
             )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for synonym resolution: %s", e)
@@ -191,6 +217,7 @@ async def resolve_entity_ids(
     raw_ids: list[str],
     entity_type: str,
     namespace: str,
+    include_statuses: list[str] | None = None,
 ) -> dict[str, str]:
     """Batch resolve multiple synonyms/canonical IDs.
 
@@ -241,7 +268,10 @@ async def resolve_entity_ids(
             response = await client.post(
                 f"{registry_url}/api/registry/entries/resolve",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json=[{"composite_key": ck} for ck in composite_keys],
+                json=[{
+                    "composite_key": ck,
+                    **({"include_statuses": include_statuses} if include_statuses else {}),
+                } for ck in composite_keys],
             )
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
         logger.debug("Registry unreachable for batch synonym resolution: %s", e)

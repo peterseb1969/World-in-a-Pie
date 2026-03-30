@@ -14,6 +14,7 @@ async def test_terminology(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "DOC_STATUS",
             "label": "Document Status",
+            "namespace": "wip",
             "case_sensitive": False
         }]
     )

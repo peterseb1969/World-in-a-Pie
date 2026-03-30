@@ -201,7 +201,7 @@ class SyncWorker:
 
         # Sync template metadata to templates table
         if template_id:
-            namespace = template.get("namespace", "wip")
+            namespace = template["namespace"]
             meta_table = await self.schema_manager.ensure_templates_table()
 
             try:
@@ -275,7 +275,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         term_data = event_data.get("terminology", {})
 
-        namespace = term_data.get("namespace", "wip")
+        namespace = term_data["namespace"]
         terminology_id = term_data.get("terminology_id")
 
         if not terminology_id:
@@ -367,7 +367,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         term_data = event_data.get("term", {})
 
-        namespace = term_data.get("namespace", "wip")
+        namespace = term_data["namespace"]
         term_id = term_data.get("term_id")
 
         if not term_id:
@@ -486,7 +486,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         rel = event_data.get("relationship", {})
 
-        namespace = rel.get("namespace", "wip")
+        namespace = rel["namespace"]
         source_term_id = rel.get("source_term_id")
         target_term_id = rel.get("target_term_id")
         relationship_type = rel.get("relationship_type")
