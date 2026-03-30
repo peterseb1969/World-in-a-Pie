@@ -1,15 +1,12 @@
 """Tests for reporting query and batch sync endpoints."""
 
-import json
-import re
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from reporting_sync.main import app, state
 from reporting_sync.batch_sync import BatchSyncService
-
+from reporting_sync.main import app, state
 
 # =========================================================================
 # Fixtures
@@ -54,7 +51,7 @@ def http_client():
 @pytest.mark.asyncio
 async def test_list_tables_summary(http_client: AsyncClient, mock_state):
     """List tables without table_name returns summary (name, row_count, column_count)."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
 
     # Mock information_schema.tables query
     conn.fetch = AsyncMock(side_effect=[
@@ -100,7 +97,7 @@ async def test_list_tables_summary(http_client: AsyncClient, mock_state):
 @pytest.mark.asyncio
 async def test_list_tables_detail(http_client: AsyncClient, mock_state):
     """List tables with table_name returns full column detail for that table."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
 
     conn.fetch = AsyncMock(side_effect=[
         # First call: list all tables
@@ -135,7 +132,7 @@ async def test_list_tables_detail(http_client: AsyncClient, mock_state):
 @pytest.mark.asyncio
 async def test_list_tables_detail_not_found(http_client: AsyncClient, mock_state):
     """List tables with unknown table_name returns 404."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
 
     conn.fetch = AsyncMock(side_effect=[
         [{"table_name": "doc_patient"}],
@@ -168,7 +165,7 @@ async def test_list_tables_no_postgres(http_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_query_simple_select(http_client: AsyncClient, mock_state):
     """Simple SELECT query returns results."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
 
     # Mock the query results
     mock_row = MagicMock()
@@ -251,7 +248,7 @@ async def test_query_rejects_truncate(http_client: AsyncClient, mock_state):
 @pytest.mark.asyncio
 async def test_query_allows_select_with_where(http_client: AsyncClient, mock_state):
     """SELECT with WHERE and params works."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
     conn.fetch = AsyncMock(return_value=[])
     conn.execute = AsyncMock()
 
@@ -272,7 +269,7 @@ async def test_query_allows_select_with_where(http_client: AsyncClient, mock_sta
 @pytest.mark.asyncio
 async def test_query_truncation(http_client: AsyncClient, mock_state):
     """Query with more rows than max_rows shows truncated=true."""
-    pool, conn = mock_state
+    _pool, conn = mock_state
 
     # Return max_rows + 1 rows to trigger truncation
     rows = [{"id": str(i)} for i in range(6)]

@@ -5,24 +5,25 @@ Follows the pattern from test_tools.py.
 """
 
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
-
-import pytest
 
 # Mock yaml before importing server (it may not be installed in test env)
 import sys
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 sys.modules.setdefault("yaml", MagicMock())
 
-from wip_mcp.server import (
+from wip_mcp.client import WipClient  # noqa: E402
+from wip_mcp.server import (  # noqa: E402
     create_terminology,
-    update_terminology,
-    get_terminology,
-    delete_terminology,
-    list_terms,
     create_terms,
+    delete_terminology,
+    get_terminology,
+    list_terms,
+    update_terminology,
     validate_term_value,
 )
-from wip_mcp.client import WipClient
 
 
 def _mock_client():

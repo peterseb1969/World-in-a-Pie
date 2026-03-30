@@ -10,14 +10,11 @@ Requires both POSTGRES_TEST_URI and NATS_TEST_URL env vars.
 
 import json
 
-import pytest
-
 from reporting_sync.main import init_postgres_schema
 from reporting_sync.models import SyncStatus
 from reporting_sync.worker import SyncWorker
 
 from .conftest import requires_e2e
-
 
 # =============================================================================
 # Helpers

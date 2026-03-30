@@ -3,10 +3,8 @@ Tests for the document transformer and schema manager.
 """
 
 import json
+from unittest.mock import MagicMock
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from reporting_sync.transformer import DocumentTransformer
 from reporting_sync.models import (
     FieldType,
     ReportingConfig,
@@ -14,6 +12,7 @@ from reporting_sync.models import (
     TemplateField,
 )
 from reporting_sync.schema_manager import SchemaManager
+from reporting_sync.transformer import DocumentTransformer
 
 
 class TestDocumentTransformer:

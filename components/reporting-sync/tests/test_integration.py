@@ -9,7 +9,7 @@ Requires POSTGRES_TEST_URI env var (default: postgresql://test:test@localhost:54
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import asyncpg
 import pytest
@@ -27,7 +27,6 @@ from reporting_sync.schema_manager import SchemaManager
 from reporting_sync.transformer import DocumentTransformer
 
 from .conftest import requires_postgres
-
 
 # =============================================================================
 # Helpers
@@ -352,7 +351,7 @@ class TestSchemaEvolution:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 "DOC-1", "test", "TPL-1", 1, 1, "active", "hash1", "Alice",
-                datetime.now(timezone.utc), "{}",
+                datetime.now(UTC), "{}",
             )
 
         # Add a column
@@ -778,7 +777,7 @@ class TestNamespaceDeletion:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
                     f"DOC-{ns}", ns, "TPL-1", 1, 1, "active", f"hash-{ns}", f"Name-{ns}",
-                    datetime.now(timezone.utc), "{}",
+                    datetime.now(UTC), "{}",
                 )
 
         # Delete one namespace
@@ -944,7 +943,7 @@ class TestIndexesAndConstraints:
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
                 "DOC-DUP", "test", "TPL-1", 1, 1, "active", "hash1",
-                datetime.now(timezone.utc), "{}",
+                datetime.now(UTC), "{}",
             )
             with pytest.raises(asyncpg.UniqueViolationError):
                 await conn.execute(
@@ -954,7 +953,7 @@ class TestIndexesAndConstraints:
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
                     "DOC-DUP", "test", "TPL-1", 1, 2, "active", "hash2",
-                    datetime.now(timezone.utc), "{}",
+                    datetime.now(UTC), "{}",
                 )
 
 

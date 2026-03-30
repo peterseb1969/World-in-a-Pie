@@ -14,7 +14,6 @@ import pytest
 from reporting_sync.models import SyncStatus
 from reporting_sync.worker import SyncWorker
 
-
 # =========================================================================
 # Fixtures
 # =========================================================================
@@ -40,7 +39,7 @@ def mock_pool():
 @pytest.fixture
 def worker(mock_pool):
     """SyncWorker with mocked dependencies."""
-    pool, conn = mock_pool
+    pool, _conn = mock_pool
     status = SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True)
     js = MagicMock()
     js.pull_subscribe = AsyncMock()
@@ -96,7 +95,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_create_event_upserts(self, worker, mock_pool):
         """terminology.created ensures table and inserts row."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.created")
 
         result = await worker._process_terminology_event(event)
@@ -111,7 +110,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_create_event_arg_types(self, worker, mock_pool):
         """Positional args to conn.execute have correct types for asyncpg."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.created")
 
         await worker._process_terminology_event(event)
@@ -131,7 +130,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_update_event_upserts(self, worker, mock_pool):
         """terminology.updated uses the same upsert path."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.updated")
 
         result = await worker._process_terminology_event(event)
@@ -144,7 +143,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_delete_event_sets_inactive(self, worker, mock_pool):
         """terminology.deleted updates status to inactive."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.deleted")
         event["changed_by"] = "admin"
 
@@ -158,7 +157,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_terminology_hard_delete(self, worker, mock_pool):
         """terminology.deleted with hard_delete=True removes row via DELETE."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.deleted", hard_delete=True)
 
         result = await worker._process_terminology_event(event)
@@ -171,7 +170,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_terminology_soft_delete_unchanged(self, worker, mock_pool):
         """terminology.deleted WITHOUT hard_delete preserves UPDATE behavior."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("terminology.deleted")
         event["changed_by"] = "admin"
 
@@ -193,7 +192,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_terminology_message_ack(self, worker, mock_pool):
         """Full message processing: terminology event acks the NATS message."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         event = self._make_event()
         msg = _make_nats_message(event)
 
@@ -205,7 +204,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_db_error_propagates(self, worker, mock_pool):
         """Database error during terminology sync raises."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         conn.execute = AsyncMock(side_effect=Exception("connection lost"))
         event = self._make_event()
 
@@ -247,7 +246,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_create_event_upserts(self, worker, mock_pool):
         """term.created ensures table and upserts row."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.created")
 
         result = await worker._process_term_event(event)
@@ -262,7 +261,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_create_event_arg_types(self, worker, mock_pool):
         """Positional args to conn.execute have correct types for asyncpg."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.created")
 
         await worker._process_term_event(event)
@@ -280,7 +279,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_update_event_upserts(self, worker, mock_pool):
         """term.updated uses the same upsert path."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.updated")
 
         result = await worker._process_term_event(event)
@@ -292,7 +291,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_delete_event_sets_inactive(self, worker, mock_pool):
         """term.deleted updates status to inactive."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.deleted")
         event["changed_by"] = "admin"
 
@@ -306,7 +305,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_deprecated_event_sets_deprecated(self, worker, mock_pool):
         """term.deprecated updates status and sets reason and replacement."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event(
             "term.deprecated",
             deprecated_reason="Replaced by ISO code",
@@ -324,7 +323,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_term_hard_delete(self, worker, mock_pool):
         """term.deleted with hard_delete=True removes row via DELETE."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.deleted", hard_delete=True)
 
         result = await worker._process_term_event(event)
@@ -340,7 +339,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_term_hard_delete_cascades_relationships(self, worker, mock_pool):
         """term.deleted with hard_delete=True also deletes from term_relationships."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.deleted", hard_delete=True)
 
         result = await worker._process_term_event(event)
@@ -358,7 +357,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_term_soft_delete_unchanged(self, worker, mock_pool):
         """term.deleted WITHOUT hard_delete preserves UPDATE behavior."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.deleted")
         event["changed_by"] = "admin"
 
@@ -381,7 +380,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_aliases_serialized_as_json(self, worker, mock_pool):
         """Aliases list is JSON-serialized before insert."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("term.created", aliases=["UK", "GB", "Britain"])
 
         await worker._process_term_event(event)
@@ -395,7 +394,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_term_message_routes_correctly(self, worker, mock_pool):
         """term.* events route to _process_term_event via _process_message."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         event = self._make_event()
         msg = _make_nats_message(event)
 
@@ -433,7 +432,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_create_event_upserts(self, worker, mock_pool):
         """relationship.created ensures table and upserts row."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("relationship.created")
 
         result = await worker._process_relationship_event(event)
@@ -448,7 +447,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_create_event_arg_types(self, worker, mock_pool):
         """Positional args to conn.execute have correct types for asyncpg."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("relationship.created")
 
         await worker._process_relationship_event(event)
@@ -462,7 +461,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_delete_event_sets_inactive(self, worker, mock_pool):
         """relationship.deleted updates status to inactive."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("relationship.deleted")
 
         result = await worker._process_relationship_event(event)
@@ -475,7 +474,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_relationship_hard_delete(self, worker, mock_pool):
         """relationship.deleted with hard_delete=True removes row via DELETE."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("relationship.deleted", hard_delete=True)
 
         result = await worker._process_relationship_event(event)
@@ -488,7 +487,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_relationship_soft_delete_unchanged(self, worker, mock_pool):
         """relationship.deleted WITHOUT hard_delete preserves UPDATE behavior."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event("relationship.deleted")
 
         result = await worker._process_relationship_event(event)
@@ -523,7 +522,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_metadata_serialized_as_json(self, worker, mock_pool):
         """Metadata dict is JSON-serialized before insert."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         meta = {"source_ontology": "SNOMED", "confidence": 0.99}
         event = self._make_event(metadata=meta)
 
@@ -536,7 +535,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_relationship_message_routes_correctly(self, worker, mock_pool):
         """relationship.* events route to _process_relationship_event."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
         event = self._make_event()
         msg = _make_nats_message(event)
 
@@ -548,7 +547,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_db_error_propagates(self, worker, mock_pool):
         """Database error during relationship sync raises."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         conn.execute = AsyncMock(side_effect=RuntimeError("db gone"))
         event = self._make_event()
 
@@ -558,7 +557,7 @@ class TestRelationshipEvents:
     @pytest.mark.asyncio
     async def test_create_passes_all_fields(self, worker, mock_pool):
         """Verify all relationship fields are passed to the INSERT."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
         event = self._make_event(
             source_term_id="S1",
             target_term_id="T1",

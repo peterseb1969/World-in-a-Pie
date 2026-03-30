@@ -6,6 +6,7 @@ is available, enabling integration and E2E tests.
 """
 
 import asyncio
+import contextlib
 import os
 
 import asyncpg
@@ -134,10 +135,8 @@ async def nats_client():
 
     # Create test stream (delete first if exists from previous run)
     stream_name = "WIP_EVENTS_TEST"
-    try:
+    with contextlib.suppress(nats.js.errors.NotFoundError):
         await js.delete_stream(stream_name)
-    except nats.js.errors.NotFoundError:
-        pass
 
     await js.add_stream(
         name=stream_name,
@@ -147,8 +146,6 @@ async def nats_client():
     yield nc, js, stream_name
 
     # Cleanup
-    try:
+    with contextlib.suppress(Exception):
         await js.delete_stream(stream_name)
-    except Exception:
-        pass
     await nc.close()

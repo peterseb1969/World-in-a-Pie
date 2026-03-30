@@ -38,7 +38,7 @@ def mock_pool():
 @pytest.fixture
 def service(mock_pool):
     """BatchSyncService with mocked pool and schema_manager."""
-    pool, conn = mock_pool
+    pool, _conn = mock_pool
     svc = BatchSyncService(pool)
     svc.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
     svc.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
@@ -83,7 +83,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_syncs_one_page(self, service, mock_pool):
         """Single page of terminologies is synced."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -101,7 +101,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_namespace_none_omits_param(self, service, mock_pool):
         """When namespace=None, the API request omits the namespace parameter."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -120,7 +120,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_namespace_explicit_includes_param(self, service, mock_pool):
         """When namespace is set, the API request includes the namespace parameter."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -138,7 +138,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_namespace_fallback_in_insert(self, service, mock_pool):
         """When item has no namespace, fallback to the namespace parameter."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         no_ns_terminology = {**SAMPLE_TERMINOLOGY}
         del no_ns_terminology["namespace"]
@@ -159,7 +159,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_multi_page_sync(self, service, mock_pool):
         """Multiple pages are fetched and all terminologies synced."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         page1 = _make_api_response([SAMPLE_TERMINOLOGY], page=1, pages=2)
         term2 = {**SAMPLE_TERMINOLOGY, "terminology_id": "TRM-002", "value": "CITIES"}
@@ -180,7 +180,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_datetime_fields_are_parsed(self, service, mock_pool):
         """created_at and updated_at are datetime objects, not strings."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -202,7 +202,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_boolean_fields_are_correct_type(self, service, mock_pool):
         """case_sensitive, allow_multiple, extensible are booleans."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -222,7 +222,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_term_count_is_int(self, service, mock_pool):
         """term_count is an integer."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -240,7 +240,7 @@ class TestBatchSyncTerminologies:
     @pytest.mark.asyncio
     async def test_none_datetime_handled(self, service, mock_pool):
         """None datetime values are passed as None, not causing errors."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         terminology = {**SAMPLE_TERMINOLOGY, "created_at": None, "updated_at": None}
 
@@ -304,7 +304,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_syncs_terms(self, service, mock_pool):
         """Terms are fetched per terminology and synced."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
         terms = [SAMPLE_TERM]
@@ -320,7 +320,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_namespace_none_omits_param(self, service, mock_pool):
         """When namespace=None, the terminology list request omits namespace."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
 
@@ -338,7 +338,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_namespace_explicit_includes_param(self, service, mock_pool):
         """When namespace is set, the terminology list request includes it."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
 
@@ -355,7 +355,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_namespace_fallback_in_term_insert(self, service, mock_pool):
         """When term has no namespace, fallback to the namespace parameter."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         no_ns_term = {**SAMPLE_TERM}
         del no_ns_term["namespace"]
@@ -373,7 +373,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_datetime_fields_are_parsed(self, service, mock_pool):
         """created_at and updated_at are datetime objects."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
 
@@ -392,7 +392,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_aliases_serialized_as_json(self, service, mock_pool):
         """aliases list is JSON-serialized."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
 
@@ -408,7 +408,7 @@ class TestBatchSyncTerms:
     @pytest.mark.asyncio
     async def test_sort_order_is_int(self, service, mock_pool):
         """sort_order is an integer."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         terminologies = [{"terminology_id": "TRM-001"}]
 
@@ -449,7 +449,7 @@ class TestBatchSyncRelationships:
     @pytest.mark.asyncio
     async def test_syncs_relationships(self, service, mock_pool):
         """Relationships are fetched and synced."""
-        pool, conn = mock_pool
+        _pool, _conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -466,7 +466,7 @@ class TestBatchSyncRelationships:
     @pytest.mark.asyncio
     async def test_created_at_is_parsed(self, service, mock_pool):
         """created_at is a datetime object, not a raw string."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -485,7 +485,7 @@ class TestBatchSyncRelationships:
     @pytest.mark.asyncio
     async def test_metadata_serialized_as_json(self, service, mock_pool):
         """metadata dict is JSON-serialized."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()
@@ -503,7 +503,7 @@ class TestBatchSyncRelationships:
     @pytest.mark.asyncio
     async def test_api_error_returns_zero(self, service, mock_pool):
         """Non-200 API response results in zero synced."""
-        pool, conn = mock_pool
+        _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client = AsyncMock()

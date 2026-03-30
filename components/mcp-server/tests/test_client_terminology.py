@@ -4,12 +4,11 @@ Tests the client methods directly by mocking the underlying httpx.AsyncClient.
 Follows the pattern from test_client.py.
 """
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from wip_mcp.client import WipClient, BulkError
+from wip_mcp.client import BulkError, WipClient
 
 
 def _make_client(**kwargs) -> WipClient:
@@ -356,8 +355,7 @@ async def test_create_terminology_bulk_error():
     mock_http = _mock_http(_mock_response(bulk_response))
 
     client = _make_client()
-    with patch.object(client, "_get_client", return_value=mock_http):
-        with pytest.raises(BulkError, match="Duplicate value"):
-            await client.create_terminology(
-                value="COUNTRY", label="Country", namespace="wip"
-            )
+    with patch.object(client, "_get_client", return_value=mock_http), pytest.raises(BulkError, match="Duplicate value"):
+        await client.create_terminology(
+            value="COUNTRY", label="Country", namespace="wip"
+        )

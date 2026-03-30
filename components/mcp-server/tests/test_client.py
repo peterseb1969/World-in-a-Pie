@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from wip_mcp.client import WipClient, BulkError
+from wip_mcp.client import BulkError, WipClient
 
 
 def _make_client(**kwargs) -> WipClient:

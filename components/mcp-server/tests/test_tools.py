@@ -5,27 +5,28 @@ Tests the tool functions directly by mocking the WipClient.
 
 import json
 import os
-import tempfile
-from unittest.mock import AsyncMock, patch, MagicMock
-
-import pytest
 
 # Mock yaml before importing server (it may not be installed in test env)
 import sys
+import tempfile
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 sys.modules.setdefault("yaml", MagicMock())
 
-from wip_mcp.server import (
-    upload_file,
-    get_template_fields,
-    query_by_template,
-    list_report_tables,
-    run_report_query,
-    import_documents_csv,
-    start_replay,
-    get_replay_status,
+from wip_mcp.client import WipClient  # noqa: E402
+from wip_mcp.server import (  # noqa: E402
     cancel_replay,
+    get_replay_status,
+    get_template_fields,
+    import_documents_csv,
+    list_report_tables,
+    query_by_template,
+    run_report_query,
+    start_replay,
+    upload_file,
 )
-from wip_mcp.client import WipClient
 
 
 def _mock_client():
@@ -105,9 +106,9 @@ async def test_get_template_fields():
     assert data["template_id"] == "TPL-001"
     assert len(data["fields"]) == 3
     # Check that optional keys are only present when needed
-    country_field = [f for f in data["fields"] if f["name"] == "country"][0]
+    country_field = next(f for f in data["fields"] if f["name"] == "country")
     assert "terminology_ref" in country_field
-    name_field = [f for f in data["fields"] if f["name"] == "name"][0]
+    name_field = next(f for f in data["fields"] if f["name"] == "name")
     assert "terminology_ref" not in name_field
 
 
@@ -119,7 +120,7 @@ async def test_query_by_template_auto_prefix():
     mock.query_documents.return_value = {"items": [], "total": 0}
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await query_by_template(
+        await query_by_template(
             template_value="PATIENT",
             field_filters=[{"field": "country", "operator": "eq", "value": "CH"}],
         )
