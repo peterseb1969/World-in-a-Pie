@@ -81,7 +81,7 @@ class SyncWorker:
 
     async def _process_document_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a document event (created, updated, deleted).
+        Process a document event (created, updated, deleted, archived).
 
         Returns True if successful, False otherwise.
         """
