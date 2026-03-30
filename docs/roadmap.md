@@ -12,7 +12,7 @@ Future plans, pending features, and design specifications.
 
 `WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Prerequisite for the NL Query Scaffold (below).
 
-- Status: Not started (small, ~1 hour)
+- Status: **Done** (2026-03-30) — `WIP_MCP_MODE=readonly` removes 31 write tools, 38 read tools remain. Instructions updated to reflect read-only mode. 4 tests.
 
 ### NL Query Scaffold
 

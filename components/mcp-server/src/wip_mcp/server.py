@@ -10,6 +10,7 @@ Run with:  python -m wip_mcp.server          (stdio, for Claude Code / Cursor)
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -2292,6 +2293,93 @@ def _patch_tool_schemas():
 _patch_tool_schemas()
 
 
+# ---------------------------------------------------------------------------
+# Read-only mode: WIP_MCP_MODE=readonly removes all write tools
+# ---------------------------------------------------------------------------
+
+WRITE_TOOLS = frozenset({
+    # Terminologies
+    "create_terminology",
+    "create_terminologies_bulk",
+    "update_terminology",
+    "delete_terminology",
+    "restore_terminology",
+    # Terms
+    "create_terms",
+    "update_term",
+    "delete_term",
+    "deprecate_term",
+    # Relationships
+    "create_relationships",
+    "delete_relationships",
+    # Templates
+    "create_template",
+    "create_templates_bulk",
+    "activate_template",
+    "deactivate_template",
+    # Documents
+    "create_document",
+    "create_documents_bulk",
+    "archive_document",
+    # Files
+    "upload_file",
+    "delete_file",
+    "hard_delete_file",
+    # Import
+    "import_terminology",
+    "import_documents_csv",
+    # Replay
+    "start_replay",
+    "cancel_replay",
+    "pause_replay",
+    "resume_replay",
+    # Registry write ops
+    "add_synonym",
+    "remove_synonym",
+    "merge_entries",
+    # Namespace
+    "delete_namespace",
+})
+
+
+def _apply_read_only_mode():
+    """Remove write tools when WIP_MCP_MODE=readonly."""
+    mode = os.getenv("WIP_MCP_MODE", "").lower()
+    if mode != "readonly":
+        return
+
+    removed = []
+    for tool_name in WRITE_TOOLS:
+        try:
+            mcp._tool_manager.remove_tool(tool_name)
+            removed.append(tool_name)
+        except (KeyError, ValueError):
+            pass  # Tool not registered (shouldn't happen, but safe)
+
+    # Update server instructions to reflect read-only mode
+    mcp._mcp_server.instructions = (
+        "World In a Pie (WIP) — a universal template-driven document storage "
+        "system. This server is running in READ-ONLY mode. You can discover "
+        "WIP's data model, query data, search, and run reports, but you "
+        "CANNOT create, modify, or delete any entities. "
+        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
+        "part_of, etc.) for hierarchical data modeling — use "
+        "get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
+        "aggregations, cross-template JOINs, and analytics via run_report_query. "
+        "Read the wip://conventions and wip://data-model resources to "
+        "understand WIP's data model before querying."
+    )
+
+    print(
+        f"MCP read-only mode: removed {len(removed)} write tools, "
+        f"{len(mcp._tool_manager.list_tools())} tools available",
+        file=sys.stderr,
+    )
+
+
+_apply_read_only_mode()
+
+
 # ===================================================================
 # Entry point
 # ===================================================================
@@ -2308,7 +2396,6 @@ def main():
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        import os
         import uvicorn
         from starlette.requests import Request
         from starlette.responses import JSONResponse
@@ -2332,10 +2419,10 @@ def main():
             ts.allowed_origins.append(f"https://{allowed_host}:*")
 
         # Create the transport-appropriate Starlette app
-        if transport == "streamable-http":
-            starlette_app = mcp.streamable_http_app()
-        else:
-            starlette_app = mcp.sse_app()
+        starlette_app = (
+            mcp.streamable_http_app() if transport == "streamable-http"
+            else mcp.sse_app()
+        )
 
         # API key auth middleware (M7)
         if api_key:

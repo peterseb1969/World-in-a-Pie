@@ -16,47 +16,221 @@ The MCP server serves two roles:
 
 ---
 
-## Running
+## Modes
+
+The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environment variable:
+
+### Normal Mode (default)
+
+All 69 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
-# stdio transport (for Claude Code, Cursor, etc.)
-python -m wip_mcp.server
-
-# SSE transport (for remote/web clients)
-python -m wip_mcp.server --sse
+python -m wip_mcp                  # stdio
+python -m wip_mcp --http           # HTTP streamable
 ```
 
-### Environment Variables
+### Read-Only Mode
+
+Set `WIP_MCP_MODE=readonly` to remove all 31 write tools. The server exposes only 38 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+
+```bash
+WIP_MCP_MODE=readonly python -m wip_mcp
+```
+
+This is a structural safety mechanism — write tools are removed from the MCP tool registry before the server starts. There is no code path to invoke them. The AI cannot even see the tools exist.
+
+**Use cases:**
+- **Query Claude / Analyst agent** — pairs with the `/analyst` slash command to create an AI that can explore and report on data but cannot modify it
+- **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
+- **Demo environments** — let users explore without risk of data modification
+
+**Write tools removed (31):**
+
+| Category | Tools removed |
+|----------|--------------|
+| Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
+| Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
+| Relationships | `create_relationships`, `delete_relationships` |
+| Templates | `create_template`, `create_templates_bulk`, `activate_template`, `deactivate_template` |
+| Documents | `create_document`, `create_documents_bulk`, `archive_document` |
+| Files | `upload_file`, `delete_file`, `hard_delete_file` |
+| Import | `import_terminology`, `import_documents_csv` |
+| Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
+| Registry | `add_synonym`, `remove_synonym`, `merge_entries` |
+| Namespace | `delete_namespace` |
+
+**Read-only tools available (38):**
+
+Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), sync status, file metadata, template fields, and document versions.
+
+---
+
+## Transports
+
+| Flag | Transport | Use case |
+|------|-----------|----------|
+| *(none)* | stdio | Local development — Claude Code, Cursor, any MCP-capable IDE |
+| `--http` | Streamable HTTP | K8s deployment, remote access |
+| `--sse` | SSE (deprecated) | Legacy clients that don't support streamable HTTP |
+
+**stdio** requires no network configuration — the IDE launches the server as a subprocess.
+
+**HTTP/SSE** transports expose a network endpoint and should always be configured with an API key.
+
+---
+
+## Environment Variables
+
+### Server Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WIP_MCP_MODE` | *(empty)* | Set to `readonly` to disable all write tools |
+| `MCP_PORT` | `8000` | Port for HTTP/SSE transports |
+| `MCP_HOST` | `0.0.0.0` | Bind address for HTTP/SSE transports |
+| `MCP_ALLOWED_HOST` | *(none)* | DNS rebinding protection — set to the hostname clients use (e.g. `wip-kubi.local`) |
+| `API_KEY` | *(none)* | API key required for HTTP/SSE clients (also accepts `WIP_AUTH_LEGACY_API_KEY`) |
+
+### WIP Service URLs
 
 The MCP server connects **directly** to each service (not via Caddy), because it runs on the same host as the WIP services. These defaults are correct for local development. Application code should use `@wip/client` through the Caddy proxy instead — see `libs/wip-client/README.md`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WIP_REGISTRY_URL` | `http://localhost:8001` | Registry service URL (direct) |
-| `WIP_DEF_STORE_URL` | `http://localhost:8002` | Def-Store service URL (direct) |
-| `WIP_TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service URL (direct) |
-| `WIP_DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service URL (direct) |
-| `WIP_REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service URL (direct) |
-| `WIP_API_KEY` | `dev_master_key_for_testing` | API key for authentication |
+| `REGISTRY_URL` | `http://localhost:8001` | Registry service |
+| `DEF_STORE_URL` | `http://localhost:8002` | Def-Store service |
+| `TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service |
+| `DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service |
+| `REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service |
 
-### Claude Code Configuration
+### API Key Resolution
+
+The server authenticates to WIP services using an API key, resolved in priority order:
+
+1. `WIP_API_KEY` — direct env var
+2. `WIP_API_KEY_FILE` — path to a file containing the key (supports key rotation without restarting)
+3. Fallback: `dev_master_key_for_testing` (local development only)
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WIP_MCP_DEFAULT_NAMESPACE` | *(none)* | Default namespace for tools that accept a namespace parameter |
+
+---
+
+## Configuration Examples
+
+### Claude Code — Normal Mode (stdio, local dev)
 
 ```bash
-claude mcp add wip-server -- python -m wip_mcp.server
+claude mcp add wip -- /path/to/World-in-a-Pie/.venv/bin/python -m wip_mcp
 ```
 
-Or in `.claude/mcp.json`:
+Or in your project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "wip-server": {
-      "command": "python",
-      "args": ["-m", "wip_mcp.server"],
-      "cwd": "/path/to/WorldInPie/components/mcp-server"
+    "wip": {
+      "command": "/path/to/World-in-a-Pie/.venv/bin/python",
+      "args": ["-m", "wip_mcp"],
+      "env": {
+        "WIP_API_KEY": "your_api_key"
+      }
     }
   }
 }
 ```
+
+### Claude Code — Read-Only Mode (analyst agent)
+
+```json
+{
+  "mcpServers": {
+    "wip": {
+      "command": "/path/to/World-in-a-Pie/.venv/bin/python",
+      "args": ["-m", "wip_mcp"],
+      "env": {
+        "WIP_API_KEY": "your_api_key",
+        "WIP_MCP_MODE": "readonly"
+      }
+    }
+  }
+}
+```
+
+### Running Both Modes Simultaneously
+
+You can configure two MCP servers in the same `.mcp.json` — one for building, one for querying:
+
+```json
+{
+  "mcpServers": {
+    "wip": {
+      "command": "/path/to/World-in-a-Pie/.venv/bin/python",
+      "args": ["-m", "wip_mcp"],
+      "env": { "WIP_API_KEY": "your_api_key" }
+    },
+    "wip-reader": {
+      "command": "/path/to/World-in-a-Pie/.venv/bin/python",
+      "args": ["-m", "wip_mcp"],
+      "env": {
+        "WIP_API_KEY": "your_api_key",
+        "WIP_MCP_MODE": "readonly"
+      }
+    }
+  }
+}
+```
+
+### Kubernetes (HTTP)
+
+The K8s deployment in `k8s/services/mcp-server.yaml` runs the server in HTTP mode on port 8007 with API key auth and DNS rebinding protection.
+
+To deploy a read-only instance alongside the normal one:
+
+```yaml
+env:
+  - name: WIP_MCP_MODE
+    value: "readonly"
+  - name: MCP_PORT
+    value: "8008"
+  - name: MCP_ALLOWED_HOST
+    value: "wip-kubi.local"
+  - name: API_KEY
+    valueFrom:
+      secretKeyRef:
+        name: wip-secrets
+        key: api-key
+```
+
+### Docker Compose
+
+```yaml
+wip-mcp-server:
+  build: components/mcp-server
+  environment:
+    - WIP_API_KEY_FILE=/run/secrets/wip_api_key
+    - MCP_PORT=8007
+  command: ["python", "-m", "wip_mcp", "--http"]
+
+wip-mcp-reader:
+  build: components/mcp-server
+  environment:
+    - WIP_MCP_MODE=readonly
+    - WIP_API_KEY_FILE=/run/secrets/wip_api_key
+    - MCP_PORT=8008
+  command: ["python", "-m", "wip_mcp", "--http"]
+```
+
+---
+
+## Security
+
+- **stdio transport** inherits the permissions of the parent process (the IDE). No additional auth needed.
+- **HTTP/SSE transports** should always set `API_KEY`. Without it, anyone with network access has full tool access. The server prints a warning to stderr if no API key is configured.
+- **Read-only mode** is structural, not a permission check — write tools are removed from the registry at startup. The AI cannot discover or invoke them.
+- **DNS rebinding protection** — set `MCP_ALLOWED_HOST` for HTTP/SSE transports.
 
 ---
 

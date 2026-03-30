@@ -1,14 +1,13 @@
 """Pytest configuration and fixtures for Def-Store tests."""
 
-import asyncio
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from beanie import init_beanie
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Use existing env vars if set, otherwise defaults for local testing
@@ -18,14 +17,13 @@ os.environ.setdefault("API_KEY", "test_api_key")
 os.environ.setdefault("REGISTRY_URL", "http://localhost:8001")
 os.environ.setdefault("REGISTRY_API_KEY", "test_registry_key")
 
-from def_store.main import app
-from def_store.models.terminology import Terminology
-from def_store.models.term import Term
-from def_store.models.audit_log import TermAuditLog
-from def_store.models.term_relationship import TermRelationship
 from def_store.api.auth import set_api_key
-from def_store.services.registry_client import configure_registry_client, RegistryClient
-
+from def_store.main import app
+from def_store.models.audit_log import TermAuditLog
+from def_store.models.term import Term
+from def_store.models.term_relationship import TermRelationship
+from def_store.models.terminology import Terminology
+from def_store.services.registry_client import RegistryClient
 
 # Counter for generating mock IDs
 _term_counter = 0
@@ -146,8 +144,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mock_registry = create_mock_registry_client()
 
     # Only patch where get_registry_client is actually imported
-    with patch('def_store.services.terminology_service.get_registry_client', return_value=mock_registry):
-        with patch('def_store.main.get_registry_client', return_value=mock_registry):
+    with (
+        patch('def_store.services.terminology_service.get_registry_client', return_value=mock_registry),
+        patch('def_store.main.get_registry_client', return_value=mock_registry),
+    ):
             # Create test HTTP client
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as ac:
