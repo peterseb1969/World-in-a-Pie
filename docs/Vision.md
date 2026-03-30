@@ -375,12 +375,11 @@ Documents store both the original submitted value AND the resolved reference. Th
 
 Backend selection, auth providers, and sync behavior are configured via environment variables and config files—not code changes.
 
-### 6. Pluggable Architecture
+### 6. Standard Infrastructure, Swappable Auth
 
-Every major component has an abstraction layer:
-- Storage: MongoDB now, SQLite later
-- Auth: Dex ships as default, any OIDC-compliant provider works
-- Reporting: PostgreSQL now, other SQL databases possible
+WIP's infrastructure choices are deliberate and permanent: MongoDB for document storage, PostgreSQL for reporting, NATS for events, MinIO for files. These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping storage engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
+
+The exception is authentication: Dex ships as the default OIDC provider, but any OIDC-compliant provider works. This is a genuine abstraction — WIP validates JWT tokens and doesn't care who issued them.
 
 ---
 
