@@ -143,7 +143,7 @@ export function useDeleteDocument(
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, updatedBy }) => client.documents.deleteDocument(id, updatedBy),
+    mutationFn: ({ id, updatedBy }) => client.documents.deleteDocument(id, { updatedBy }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
       options?.onSuccess?.(...args)

@@ -378,7 +378,7 @@ describe('Service classes via createWipClient', () => {
         failed: 0,
       })
 
-      await client.documents.deleteDocument('D-001', 'admin')
+      await client.documents.deleteDocument('D-001', { updatedBy: 'admin' })
 
       const [, options] = fetchMock.mock.calls[0]
       expect(options.method).toBe('DELETE')

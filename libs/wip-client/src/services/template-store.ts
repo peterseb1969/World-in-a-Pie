@@ -68,11 +68,13 @@ export class TemplateStoreService extends BaseService {
     updatedBy?: string
     version?: number
     force?: boolean
+    hardDelete?: boolean
   }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/templates', {
       id,
       version: options?.version,
       force: options?.force,
+      hard_delete: options?.hardDelete,
       updated_by: options?.updatedBy,
     }, 'DELETE')
   }

@@ -388,10 +388,14 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
-    async def delete_terminology(self, terminology_id: str, force: bool = False) -> dict:
+    async def delete_terminology(
+        self, terminology_id: str, force: bool = False, hard_delete: bool = False,
+    ) -> dict:
         item: dict[str, Any] = {"id": terminology_id}
         if force:
             item["force"] = True
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
             self.def_store_url, "/api/def-store/terminologies", json=[item]
         )
@@ -448,9 +452,12 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
-    async def delete_term(self, term_id: str) -> dict:
+    async def delete_term(self, term_id: str, hard_delete: bool = False) -> dict:
+        item: dict[str, Any] = {"id": term_id}
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
-            self.def_store_url, "/api/def-store/terms", json=[{"id": term_id}]
+            self.def_store_url, "/api/def-store/terms", json=[item]
         )
         return self._unwrap_single(resp)
 
@@ -534,11 +541,15 @@ class WipClient:
 
     async def delete_relationships(
         self, relationships: list[dict], namespace: str | None = None,
+        hard_delete: bool = False,
     ) -> dict:
+        items = relationships
+        if hard_delete:
+            items = [{**r, "hard_delete": True} for r in relationships]
         resp = await self._delete(
             self.def_store_url,
             "/api/def-store/ontology/relationships",
-            json=relationships,
+            json=items,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
@@ -669,13 +680,16 @@ class WipClient:
         )
 
     async def deactivate_template(
-        self, template_id: str, version: int | None = None, force: bool = False
+        self, template_id: str, version: int | None = None, force: bool = False,
+        hard_delete: bool = False,
     ) -> dict:
         item: dict[str, Any] = {"id": template_id}
         if version is not None:
             item["version"] = version
         if force:
             item["force"] = True
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
             self.template_store_url,
             "/api/template-store/templates",
@@ -773,6 +787,22 @@ class WipClient:
         resp = await self._post(
             self.document_store_url,
             "/api/document-store/documents/archive",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
+
+    async def delete_document(
+        self, document_id: str, hard_delete: bool = False,
+        version: int | None = None,
+    ) -> dict:
+        item: dict[str, Any] = {"id": document_id}
+        if hard_delete:
+            item["hard_delete"] = True
+        if version is not None:
+            item["version"] = version
+        resp = await self._delete(
+            self.document_store_url,
+            "/api/document-store/documents",
             json=[item],
         )
         return self._unwrap_single(resp)

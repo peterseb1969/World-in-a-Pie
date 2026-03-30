@@ -272,7 +272,7 @@ async def test_delete_terminology_without_force():
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("T-001", force=False)
+    mock.delete_terminology.assert_awaited_once_with("T-001", force=False, hard_delete=False)
 
 
 @pytest.mark.asyncio
@@ -289,7 +289,7 @@ async def test_delete_terminology_with_force():
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("T-001", force=True)
+    mock.delete_terminology.assert_awaited_once_with("T-001", force=True, hard_delete=False)
 
 
 # =========================================================================

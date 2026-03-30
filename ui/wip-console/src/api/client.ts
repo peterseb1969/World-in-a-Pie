@@ -217,8 +217,15 @@ class DefStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'put')
   }
 
-  async deleteTerminology(id: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terminologies', { id }, 'delete')
+  async deleteTerminology(id: string, options?: {
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', {
+      id,
+      force: options?.force,
+      hard_delete: options?.hardDelete,
+    }, 'delete')
   }
 
   // ===========================================================================
@@ -256,8 +263,11 @@ class DefStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
   }
 
-  async deleteTerm(termId: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms', { id: termId }, 'delete')
+  async deleteTerm(termId: string, options?: { hardDelete?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', {
+      id: termId,
+      hard_delete: options?.hardDelete,
+    }, 'delete')
   }
 
   async bulkCreateTerms(
@@ -495,12 +505,18 @@ class TemplateStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/templates', { ...data, template_id: id }, 'put')
   }
 
-  async deleteTemplate(id: string, options?: { updatedBy?: string; version?: number; force?: boolean }): Promise<BulkResultItem> {
+  async deleteTemplate(id: string, options?: {
+    updatedBy?: string
+    version?: number
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/templates', {
       id,
       version: options?.version,
       force: options?.force,
-      updated_by: options?.updatedBy
+      hard_delete: options?.hardDelete,
+      updated_by: options?.updatedBy,
     }, 'delete')
   }
 
@@ -587,8 +603,17 @@ class DocumentStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/documents', payload)
   }
 
-  async deleteDocument(id: string, updatedBy?: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/documents', { id, updated_by: updatedBy }, 'delete')
+  async deleteDocument(id: string, options?: {
+    updatedBy?: string
+    hardDelete?: boolean
+    version?: number
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents', {
+      id,
+      updated_by: options?.updatedBy,
+      hard_delete: options?.hardDelete,
+      version: options?.version,
+    }, 'delete')
   }
 
   async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {

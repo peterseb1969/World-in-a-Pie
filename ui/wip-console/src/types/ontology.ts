@@ -40,6 +40,7 @@ export interface DeleteRelationshipRequest {
   source_term_id: string
   target_term_id: string
   relationship_type: string
+  hard_delete?: boolean
 }
 
 export interface TraversalNode {

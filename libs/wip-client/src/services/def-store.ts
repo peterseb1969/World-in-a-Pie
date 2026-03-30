@@ -58,8 +58,15 @@ export class DefStoreService extends BaseService {
     return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'PUT')
   }
 
-  async deleteTerminology(id: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terminologies', { id }, 'DELETE')
+  async deleteTerminology(id: string, options?: {
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', {
+      id,
+      force: options?.force,
+      hard_delete: options?.hardDelete,
+    }, 'DELETE')
   }
 
   // ---- Terms ----
@@ -98,8 +105,11 @@ export class DefStoreService extends BaseService {
     return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
   }
 
-  async deleteTerm(termId: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms', { id: termId }, 'DELETE')
+  async deleteTerm(termId: string, options?: { hardDelete?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', {
+      id: termId,
+      hard_delete: options?.hardDelete,
+    }, 'DELETE')
   }
 
   // ---- Import/Export ----

@@ -796,17 +796,23 @@ async def update_terminology(
 
 
 @mcp.tool()
-async def delete_terminology(terminology_id: str, force: bool = False) -> str:
-    """Delete a terminology. Mutable terminologies are hard-deleted; immutable ones are soft-deleted (deactivated).
+async def delete_terminology(
+    terminology_id: str, force: bool = False, hard_delete: bool = False,
+) -> str:
+    """Delete a terminology. Mutable terminologies are always hard-deleted.
+    Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
 
     Blocked if terms depend on it unless force=true.
 
     Args:
         terminology_id: ID of the terminology to delete.
         force: Force deletion even if terms exist.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_terminology(terminology_id, force=force)
+        data = await get_client().delete_terminology(
+            terminology_id, force=force, hard_delete=hard_delete,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -951,14 +957,18 @@ async def update_term(
 
 
 @mcp.tool()
-async def delete_term(term_id: str) -> str:
-    """Deactivate (soft-delete) a term. Sets status to inactive.
+async def delete_term(term_id: str, hard_delete: bool = False) -> str:
+    """Delete a term. Soft-delete (deactivate) by default.
+    Terms in mutable terminologies are always hard-deleted.
+    Set hard_delete=true to permanently remove from immutable terminologies
+    (requires namespace deletion_mode='full').
 
     Args:
-        term_id: ID of the term to deactivate.
+        term_id: ID of the term to delete.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_term(term_id)
+        data = await get_client().delete_term(term_id, hard_delete=hard_delete)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1100,12 +1110,14 @@ async def list_relationships(
 async def delete_relationships(
     relationships: list[dict],
     namespace: str | None = None,
+    hard_delete: bool = False,
 ) -> str:
     """Delete ontology relationships between terms.
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
         namespace: Namespace to delete from. Omit to use server default.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
 
     Example:
         delete_relationships([{
@@ -1115,7 +1127,9 @@ async def delete_relationships(
         }])
     """
     try:
-        data = await get_client().delete_relationships(relationships, namespace=namespace)
+        data = await get_client().delete_relationships(
+            relationships, namespace=namespace, hard_delete=hard_delete,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1307,20 +1321,24 @@ async def deactivate_template(
     template_id: str,
     version: int | None = None,
     force: bool = False,
+    hard_delete: bool = False,
 ) -> str:
-    """Deactivate (soft-delete) a template version.
+    """Delete a template version. Soft-delete (deactivate) by default.
+    Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
 
-    Sets the template status to 'inactive'. Blocked if other templates extend it.
-    If documents reference it, use force=true to deactivate anyway.
+    Blocked if other templates extend it.
+    If documents reference it, use force=true to delete anyway.
 
     Args:
-        template_id: Template to deactivate.
-        version: Specific version to deactivate (default: latest).
-        force: Force deactivation even if documents exist.
+        template_id: Template to delete.
+        version: Specific version (default: latest for soft-delete, all for hard-delete).
+        force: Force deletion even if documents exist.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
         data = await get_client().deactivate_template(
-            template_id=template_id, version=version, force=force
+            template_id=template_id, version=version, force=force,
+            hard_delete=hard_delete,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1551,6 +1569,29 @@ async def archive_document(document_id: str) -> str:
     """
     try:
         data = await get_client().archive_document(document_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_document(
+    document_id: str,
+    hard_delete: bool = False,
+    version: int | None = None,
+) -> str:
+    """Delete a document. Soft-delete (deactivate) by default.
+    Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
+
+    Args:
+        document_id: Document ID to delete.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
+        version: Specific version to hard-delete (default: all versions). Ignored for soft-delete.
+    """
+    try:
+        data = await get_client().delete_document(
+            document_id, hard_delete=hard_delete, version=version,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2321,6 +2362,7 @@ WRITE_TOOLS = frozenset({
     "create_document",
     "create_documents_bulk",
     "archive_document",
+    "delete_document",
     # Files
     "upload_file",
     "delete_file",

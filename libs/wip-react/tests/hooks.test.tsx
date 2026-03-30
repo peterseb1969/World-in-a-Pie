@@ -467,7 +467,7 @@ describe('Mutation hooks', () => {
 
       await act(() => result.current.mutateAsync({ id: 'doc1', updatedBy: 'user1' }))
 
-      expect(mockClient.documents.deleteDocument).toHaveBeenCalledWith('doc1', 'user1')
+      expect(mockClient.documents.deleteDocument).toHaveBeenCalledWith('doc1', { updatedBy: 'user1' })
     })
 
     it('invalidates documents cache on success', async () => {

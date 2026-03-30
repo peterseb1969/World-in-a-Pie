@@ -36,8 +36,17 @@ export class DocumentStoreService extends BaseService {
     return this.bulkWrite('/documents', data)
   }
 
-  async deleteDocument(id: string, updatedBy?: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/documents', { id, updated_by: updatedBy }, 'DELETE')
+  async deleteDocument(id: string, options?: {
+    updatedBy?: string
+    hardDelete?: boolean
+    version?: number
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents', {
+      id,
+      updated_by: options?.updatedBy,
+      hard_delete: options?.hardDelete,
+      version: options?.version,
+    }, 'DELETE')
   }
 
   async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {
