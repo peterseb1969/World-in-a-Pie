@@ -13,6 +13,7 @@ Memory usage: O(page_size) regardless of dataset size.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -229,7 +230,7 @@ def run_export(
                 f"but --include-files not set.\n"
                 f"  Documents referencing these files may fail during import."
             )
-            if not click.confirm("  Continue without file blobs?", default=True):
+            if sys.stdin.isatty() and not click.confirm("  Continue without file blobs?", default=True):
                 raise SystemExit("Export cancelled by user")
 
         # Optionally download and include file blobs
