@@ -887,7 +887,7 @@ class DocumentService:
     async def _hard_delete_orphaned_files(self, file_references: list[dict[str, Any]], file_service) -> None:
         """Hard-delete files that have reached reference_count=0 and are inactive."""
         from ..models.file import File, FileStatus
-        from ..services.file_storage import is_file_storage_enabled
+        from ..services.file_storage_client import is_file_storage_enabled
 
         if not file_references or not is_file_storage_enabled():
             return
