@@ -359,16 +359,19 @@ class TerminologyService:
     @staticmethod
     async def delete_terminology(
         terminology_id: str,
-        updated_by: str | None = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
     ) -> bool:
         """
-        Delete a terminology. Hard-deletes if mutable, soft-deletes otherwise.
+        Delete a terminology. Hard-deletes if mutable OR if hard_delete=True
+        and namespace deletion_mode is 'full'. Soft-deletes otherwise.
 
         Also deletes/deactivates all terms and relationships in the terminology.
 
         Args:
             terminology_id: Terminology to delete
             updated_by: Deprecated - uses authenticated identity
+            hard_delete: Force hard-delete (requires namespace deletion_mode='full')
 
         Returns:
             True if deleted, False if not found
@@ -380,7 +383,19 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        if terminology.mutable:
+        # Determine if we should hard-delete
+        should_hard_delete = terminology.mutable
+        if hard_delete and not should_hard_delete:
+            # Check namespace deletion_mode
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(terminology.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+            should_hard_delete = True
+
+        if should_hard_delete:
             # HARD DELETE: remove terminology, all terms, and all relationships
 
             # 1. Get all term IDs in this terminology
@@ -407,6 +422,15 @@ class TerminologyService:
 
             # 5. Hard-delete the terminology document
             await terminology.delete()
+
+            # 6. Hard-delete Registry entries for terminology and its terms
+            client = get_registry_client()
+            try:
+                await client.hard_delete_entry(terminology_id, updated_by=actor)
+                for tid in term_ids:
+                    await client.hard_delete_entry(tid, updated_by=actor)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete Registry entries for terminology {terminology_id}: {e}")
         else:
             # SOFT DELETE: deactivate terminology and all terms (existing behavior)
             terminology.status = "inactive"
@@ -1143,9 +1167,11 @@ class TerminologyService:
     @staticmethod
     async def delete_term(
         term_id: str,
-        updated_by: str | None = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
     ) -> bool:
-        """Delete a term. Hard-deletes if terminology is mutable, soft-deletes otherwise."""
+        """Delete a term. Hard-deletes if terminology is mutable OR if hard_delete=True
+        and namespace deletion_mode is 'full'. Soft-deletes otherwise."""
         term = await Term.find_one({"term_id": term_id})
         if not term:
             return False
@@ -1155,9 +1181,19 @@ class TerminologyService:
 
         # Check if parent terminology is mutable
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
-        is_mutable = terminology and terminology.mutable
+        should_hard_delete = bool(terminology and terminology.mutable)
 
-        if is_mutable:
+        if hard_delete and not should_hard_delete:
+            # Check namespace deletion_mode
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(term.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+            should_hard_delete = True
+
+        if should_hard_delete:
             # HARD DELETE: remove term and cascade relationships
 
             # 1. Find and delete relationships involving this term
@@ -1197,6 +1233,13 @@ class TerminologyService:
 
             # 3. Hard-delete the term document
             await term.delete()
+
+            # 4. Hard-delete Registry entry
+            client = get_registry_client()
+            try:
+                await client.hard_delete_entry(term_id, updated_by=actor)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete Registry entry for term {term_id}: {e}")
         else:
             # SOFT DELETE: set status to inactive (existing behavior)
             term.status = "inactive"

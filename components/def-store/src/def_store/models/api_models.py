@@ -316,6 +316,7 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if dependencies exist")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(None, description="User performing deletion")
 
 
@@ -499,6 +500,7 @@ class DeleteRelationshipRequest(StrictModel):
     source_term_id: str = Field(..., description="The subject term ID")
     target_term_id: str = Field(..., description="The object term ID")
     relationship_type: str = Field(..., description="Relationship type value")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
 
 
 class RelationshipResponse(BaseModel):

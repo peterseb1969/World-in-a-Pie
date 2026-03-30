@@ -338,7 +338,10 @@ async def delete_templates(
                 ))
                 continue
 
-            deleted = await TemplateService.delete_template(item.id, item.updated_by, version=item.version)
+            deleted = await TemplateService.delete_template(
+                item.id, item.updated_by, version=item.version,
+                hard_delete=item.hard_delete,
+            )
             if not deleted:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Template not found"))
             else:

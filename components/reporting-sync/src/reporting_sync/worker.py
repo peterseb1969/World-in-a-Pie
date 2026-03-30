@@ -127,6 +127,25 @@ class SyncWorker:
 
         # Handle delete/archive events — both set the document as inactive in PG
         if event_type in (EventType.DOCUMENT_DELETED.value, EventType.DOCUMENT_ARCHIVED.value):
+            if event_type == EventType.DOCUMENT_DELETED.value and document.get("hard_delete"):
+                # Hard-delete: remove rows from PostgreSQL
+                async with self.pool.acquire() as conn:
+                    target_version = document.get("version")
+                    if target_version is not None:
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE document_id = $1 AND version = $2',
+                            document_id, target_version,
+                        )
+                    else:
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE document_id = $1',
+                            document_id,
+                        )
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                metrics.record_event_processed(template_value, table_name, latency_ms)
+                logger.info(f"Hard-deleted document {document_id} from {table_name}")
+                return True
+
             new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
                 await conn.execute(
@@ -208,17 +227,31 @@ class SyncWorker:
             try:
                 async with self.pool.acquire() as conn:
                     if event_type == "template.deleted":
-                        await conn.execute(
-                            f"""
-                            UPDATE "{meta_table}"
-                            SET "status" = 'inactive',
-                                "updated_at" = NOW(),
-                                "updated_by" = $3
-                            WHERE "namespace" = $1
-                              AND "template_id" = $2
-                            """,
-                            namespace, template_id, event_data.get("changed_by"),
-                        )
+                        if template.get("hard_delete"):
+                            # Hard-delete: remove from templates table
+                            target_version = template.get("version")
+                            if target_version is not None:
+                                await conn.execute(
+                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
+                                    namespace, template_id, target_version,
+                                )
+                            else:
+                                await conn.execute(
+                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2',
+                                    namespace, template_id,
+                                )
+                        else:
+                            await conn.execute(
+                                f"""
+                                UPDATE "{meta_table}"
+                                SET "status" = 'inactive',
+                                    "updated_at" = NOW(),
+                                    "updated_by" = $3
+                                WHERE "namespace" = $1
+                                  AND "template_id" = $2
+                                """,
+                                namespace, template_id, event_data.get("changed_by"),
+                            )
                     else:
                         await conn.execute(
                             f"""

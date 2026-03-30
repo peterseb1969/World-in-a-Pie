@@ -950,13 +950,17 @@ async def update_entries(
 @router.delete(
     "",
     response_model=BulkDeleteResponse,
-    summary="Delete entries (bulk, soft delete)"
+    summary="Delete entries (bulk, soft or hard delete)"
 )
 async def delete_entries(
     items: list[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkDeleteResponse:
-    """Deactivate one or more registry entries (soft delete)."""
+    """Deactivate or hard-delete one or more registry entries.
+
+    Hard-delete (hard_delete=True) permanently removes the entry from MongoDB.
+    Requires the entry's namespace to have deletion_mode='full'.
+    """
     results = []
 
     for i, item in enumerate(items):
@@ -969,14 +973,32 @@ async def delete_entries(
                 ))
                 continue
 
-            entry.status = "inactive"
-            entry.updated_at = datetime.now(UTC)
-            entry.updated_by = item.updated_by
-            await entry.save()
+            if item.hard_delete:
+                # Verify namespace allows hard-delete
+                namespace = await Namespace.find_one({"prefix": entry.namespace})
+                if not namespace or namespace.deletion_mode != "full":
+                    mode = namespace.deletion_mode if namespace else "unknown"
+                    results.append(DeleteResponse(
+                        input_index=i, status="error", registry_id=item.entry_id,
+                        error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
+                    ))
+                    continue
 
-            results.append(DeleteResponse(
-                input_index=i, status="deactivated", registry_id=item.entry_id,
-            ))
+                # Permanently remove from MongoDB
+                await entry.delete()
+                results.append(DeleteResponse(
+                    input_index=i, status="deleted", registry_id=item.entry_id,
+                ))
+            else:
+                # Soft-delete: set status to inactive
+                entry.status = "inactive"
+                entry.updated_at = datetime.now(UTC)
+                entry.updated_by = item.updated_by
+                await entry.save()
+
+                results.append(DeleteResponse(
+                    input_index=i, status="deactivated", registry_id=item.entry_id,
+                ))
 
         except Exception as e:
             results.append(DeleteResponse(
@@ -985,7 +1007,7 @@ async def delete_entries(
 
     return BulkDeleteResponse(
         results=results, total=len(items),
-        succeeded=sum(1 for r in results if r.status == "deactivated"),
+        succeeded=sum(1 for r in results if r.status in ("deactivated", "deleted")),
         failed=sum(1 for r in results if r.status in ("not_found", "error")),
     )
 

@@ -496,9 +496,10 @@ class UpdateEntryResponse(BaseModel):
 # =============================================================================
 
 class DeleteItem(StrictModel):
-    """Request model for deleting (deactivating) an entry."""
+    """Request model for deleting (deactivating) or hard-deleting an entry."""
 
     entry_id: str
+    hard_delete: bool = Field(default=False, description="Permanently remove entry (requires namespace deletion_mode='full')")
     updated_by: str | None = None
 
 
@@ -506,7 +507,7 @@ class DeleteResponse(BaseModel):
     """Response model for a delete operation."""
 
     input_index: int
-    status: str  # deactivated, not_found, error
+    status: str  # deactivated, deleted, not_found, error
     registry_id: str | None = None
     error: str | None = None
 

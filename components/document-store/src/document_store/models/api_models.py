@@ -275,7 +275,9 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
+    version: int | None = Field(None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
     force: bool = Field(default=False, description="Force deletion even if referenced")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(None, description="User performing deletion")
 
 

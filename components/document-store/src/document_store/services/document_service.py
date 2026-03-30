@@ -772,10 +772,89 @@ class DocumentService:
     async def delete_document(
         self,
         document_id: str,
-        deleted_by: str | None = None  # Deprecated: uses authenticated identity
+        deleted_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
+        version: int | None = None,
     ) -> bool:
-        """Soft-delete a document (set latest active version to inactive)."""
-        # Find latest active version
+        """Delete a document. Soft-delete by default, hard-delete if requested
+        and namespace deletion_mode is 'full'.
+
+        Args:
+            document_id: Document to delete
+            deleted_by: Deprecated - uses authenticated identity
+            hard_delete: Permanently remove (requires namespace deletion_mode='full')
+            version: Specific version to hard-delete (None = all). Ignored for soft-delete.
+        """
+        # Use authenticated identity (not client-provided)
+        actor = get_identity_string()
+
+        if hard_delete:
+            # Find any version to get namespace
+            any_doc = await Document.find_one({"document_id": document_id})
+            if not any_doc:
+                return False
+
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(any_doc.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+
+            from .file_service import get_file_service
+            file_service = get_file_service()
+
+            if version is not None:
+                # Version-specific hard-delete
+                target = await Document.find_one({"document_id": document_id, "version": version})
+                if not target:
+                    return False
+
+                event_payload = self._document_to_event_payload(target)
+                event_payload["hard_delete"] = True
+                event_payload["version"] = version
+
+                # Decrement file ref counts and cleanup orphans
+                await self._update_file_reference_counts(target.file_references, delta=-1)
+                await self._hard_delete_orphaned_files(target.file_references, file_service)
+
+                await target.delete()
+
+                # Check if any versions remain
+                remaining = await Document.find({"document_id": document_id}).count()
+                if remaining == 0:
+                    try:
+                        await client.hard_delete_entry(document_id, updated_by=actor)
+                    except Exception as e:
+                        logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+            else:
+                # All versions hard-delete
+                all_versions = await Document.find({"document_id": document_id}).to_list()
+
+                event_payload = self._document_to_event_payload(any_doc)
+                event_payload["hard_delete"] = True
+
+                # Collect all file references across all versions
+                for doc in all_versions:
+                    await self._update_file_reference_counts(doc.file_references, delta=-1)
+                    await self._hard_delete_orphaned_files(doc.file_references, file_service)
+
+                await Document.find({"document_id": document_id}).delete()
+
+                try:
+                    await client.hard_delete_entry(document_id, updated_by=actor)
+                except Exception as e:
+                    logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+
+            # Publish document deleted event
+            await publish_document_event(
+                EventType.DOCUMENT_DELETED,
+                event_payload,
+                changed_by=actor,
+            )
+            return True
+
+        # SOFT DELETE path (existing behavior)
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
         ).sort([("version", -1)]).limit(1).to_list()
@@ -785,9 +864,6 @@ class DocumentService:
 
         if document.status == DocumentStatus.INACTIVE:
             return True  # Already inactive
-
-        # Use authenticated identity (not client-provided)
-        actor = get_identity_string()
 
         document.status = DocumentStatus.INACTIVE
         document.updated_at = datetime.now(UTC)
@@ -807,6 +883,29 @@ class DocumentService:
         )
 
         return True
+
+    async def _hard_delete_orphaned_files(self, file_references: list[dict[str, Any]], file_service) -> None:
+        """Hard-delete files that have reached reference_count=0 and are inactive."""
+        from ..models.file import File, FileStatus
+        from ..services.file_storage import is_file_storage_enabled
+
+        if not file_references or not is_file_storage_enabled():
+            return
+
+        for ref in file_references:
+            file_id = ref.get("file_id")
+            if not file_id:
+                continue
+            try:
+                file_doc = await File.find_one({"file_id": file_id})
+                if file_doc and file_doc.reference_count <= 0:
+                    # Set to inactive first if needed (hard_delete_file requires inactive)
+                    if file_doc.status != FileStatus.INACTIVE:
+                        file_doc.status = FileStatus.INACTIVE
+                        await file_doc.save()
+                    await file_service.hard_delete_file(file_id)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
 
     async def archive_document(
         self,

@@ -240,22 +240,29 @@ async def get_latest_document(
 @router.delete(
     "",
     response_model=BulkResponse,
-    summary="Soft-delete documents",
-    description="Soft-delete one or more documents by setting their status to inactive."
+    summary="Delete documents",
+    description="Delete one or more documents. Soft-delete by default. Set hard_delete=true to permanently remove (requires namespace deletion_mode='full')."
 )
 async def delete_documents(
     items: list[DeleteItem] = Body(...),
     _: str = Depends(require_api_key)
 ):
-    """Soft-delete one or more documents."""
+    """Delete one or more documents."""
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
-        success = await service.delete_document(item.id, item.updated_by)
-        if not success:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
-        else:
-            results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        try:
+            success = await service.delete_document(
+                item.id, item.updated_by,
+                hard_delete=item.hard_delete,
+                version=item.version,
+            )
+            if not success:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),

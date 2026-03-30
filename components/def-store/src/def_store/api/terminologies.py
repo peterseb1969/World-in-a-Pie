@@ -228,7 +228,8 @@ async def delete_terminologies(
                     continue
 
             success = await TerminologyService.delete_terminology(
-                terminology_id=item.id, updated_by=item.updated_by
+                terminology_id=item.id, updated_by=item.updated_by,
+                hard_delete=item.hard_delete,
             )
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Terminology not found"))

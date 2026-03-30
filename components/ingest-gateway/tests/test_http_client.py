@@ -12,7 +12,7 @@ import httpx
 from ingest_gateway.http_client import IngestHTTPClient, ACTION_ENDPOINTS
 from ingest_gateway.models import IngestAction, IngestResultStatus
 
-from conftest import make_mock_response, make_bulk_response
+from tests.conftest import make_mock_response, make_bulk_response
 
 
 # ---- Payload wrapping: single-entity actions ----

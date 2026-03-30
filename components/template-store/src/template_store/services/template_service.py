@@ -595,20 +595,86 @@ class TemplateService:
     async def delete_template(
         template_id: str,
         updated_by: str | None = None,  # Deprecated: uses authenticated identity
-        version: int | None = None
+        version: int | None = None,
+        hard_delete: bool = False,
     ) -> bool:
         """
-        Soft-delete a template version (set status to inactive).
+        Delete a template version. Soft-delete by default, hard-delete if requested
+        and namespace deletion_mode is 'full'.
 
         Args:
             template_id: Template to delete
             updated_by: Deprecated - uses authenticated identity
-            version: Specific version to deactivate (None = latest)
+            version: Specific version to delete (None = latest for soft, all for hard)
+            hard_delete: Permanently remove (requires namespace deletion_mode='full')
 
         Returns:
             True if deleted, False if not found
         """
-        # Find the specific version or latest
+        # Check if any templates extend this one (blocks both soft and hard delete)
+        children = await InheritanceService.get_children(template_id)
+        if children:
+            raise ValueError(
+                f"Cannot delete template: {len(children)} template(s) extend it"
+            )
+
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
+        if hard_delete:
+            # Validate namespace deletion_mode
+            # Need any version to get the namespace
+            any_version = await Template.find_one({"template_id": template_id})
+            if not any_version:
+                return False
+
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(any_version.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+
+            if version is not None:
+                # Version-specific hard-delete
+                target = await Template.find_one({"template_id": template_id, "version": version})
+                if not target:
+                    return False
+
+                event_payload = TemplateService._template_to_event_payload(target)
+                event_payload["hard_delete"] = True
+                event_payload["version"] = version
+
+                await target.delete()
+
+                # Check if any versions remain
+                remaining = await Template.find({"template_id": template_id}).count()
+                if remaining == 0:
+                    try:
+                        await client.hard_delete_entry(template_id, updated_by=actor)
+                    except Exception as e:
+                        logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
+            else:
+                # All versions hard-delete
+                event_payload = TemplateService._template_to_event_payload(any_version)
+                event_payload["hard_delete"] = True
+
+                await Template.find({"template_id": template_id}).delete()
+
+                try:
+                    await client.hard_delete_entry(template_id, updated_by=actor)
+                except Exception as e:
+                    logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
+
+            # Publish template deleted event
+            await publish_template_event(
+                EventType.TEMPLATE_DELETED,
+                event_payload,
+                changed_by=actor,
+            )
+            return True
+
+        # SOFT DELETE path (existing behavior)
         if version is not None:
             template = await Template.find_one({"template_id": template_id, "version": version})
         else:
@@ -619,16 +685,6 @@ class TemplateService:
 
         if template.status == "inactive":
             return True  # Already inactive
-
-        # Check if any templates extend this one
-        children = await InheritanceService.get_children(template_id)
-        if children:
-            raise ValueError(
-                f"Cannot delete template: {len(children)} template(s) extend it"
-            )
-
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
 
         # Deactivate template
         template.status = "inactive"

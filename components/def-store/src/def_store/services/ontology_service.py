@@ -19,6 +19,7 @@ from ..models.term import Term
 from ..models.term_relationship import TermRelationship
 from .nats_client import EventType as NatsEventType
 from .nats_client import publish_relationship_event
+from .registry_client import get_registry_client
 
 logger = logging.getLogger(__name__)
 
@@ -250,11 +251,25 @@ class OntologyService:
         namespace: str,
         items: list[DeleteRelationshipRequest],
     ) -> list[BulkResultItem]:
-        """Bulk soft-delete relationships (set status=inactive)."""
+        """Bulk delete relationships. Hard-deletes if requested and namespace allows it."""
         results: list[BulkResultItem] = []
+
+        # Pre-check deletion_mode if any items request hard-delete
+        deletion_mode = None
+        if any(item.hard_delete for item in items):
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(namespace)
 
         for i, item in enumerate(items):
             try:
+                if item.hard_delete and deletion_mode != "full":
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        error=f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')",
+                    ))
+                    continue
+
                 rel = await TermRelationship.find_one({
                     "namespace": namespace,
                     "source_term_id": item.source_term_id,
@@ -270,35 +285,49 @@ class OntologyService:
                     ))
                     continue
 
-                if rel.status == "inactive":
+                event_data = {
+                    "namespace": namespace,
+                    "source_term_id": item.source_term_id,
+                    "target_term_id": item.target_term_id,
+                    "relationship_type": item.relationship_type,
+                    "source_terminology_id": rel.source_terminology_id,
+                    "target_terminology_id": rel.target_terminology_id,
+                }
+
+                if item.hard_delete:
+                    # HARD DELETE: permanently remove from MongoDB
+                    await rel.delete()
+                    event_data["hard_delete"] = True
+
                     results.append(BulkResultItem(
                         index=i,
-                        status="skipped",
-                        value="Already inactive"
+                        status="deleted",
+                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
                     ))
-                    continue
+                else:
+                    # SOFT DELETE: set status to inactive
+                    if rel.status == "inactive":
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="skipped",
+                            value="Already inactive"
+                        ))
+                        continue
 
-                rel.status = "inactive"
-                await rel.save()
+                    rel.status = "inactive"
+                    await rel.save()
+                    event_data["status"] = "inactive"
 
-                results.append(BulkResultItem(
-                    index=i,
-                    status="deleted",
-                    value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
-                ))
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="deleted",
+                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                    ))
 
                 # Publish delete event to NATS
                 await publish_relationship_event(
                     NatsEventType.RELATIONSHIP_DELETED,
-                    {
-                        "namespace": namespace,
-                        "source_term_id": item.source_term_id,
-                        "target_term_id": item.target_term_id,
-                        "relationship_type": item.relationship_type,
-                        "source_terminology_id": rel.source_terminology_id,
-                        "target_terminology_id": rel.target_terminology_id,
-                        "status": "inactive",
-                    },
+                    event_data,
                 )
 
             except Exception as e:

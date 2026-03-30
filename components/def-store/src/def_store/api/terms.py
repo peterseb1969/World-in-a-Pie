@@ -269,7 +269,8 @@ async def delete_terms(
     for i, item in enumerate(items):
         try:
             success = await TerminologyService.delete_term(
-                term_id=item.id, updated_by=item.updated_by
+                term_id=item.id, updated_by=item.updated_by,
+                hard_delete=item.hard_delete,
             )
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Term not found"))

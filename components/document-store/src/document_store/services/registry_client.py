@@ -341,6 +341,38 @@ class RegistryClient:
 
             return None
 
+    async def hard_delete_entry(self, entry_id: str, updated_by: str | None = None) -> bool:
+        """Hard-delete a Registry entry. Returns True if deleted."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.request(
+                "DELETE",
+                f"{self.base_url}/api/registry/entries",
+                headers=self._get_headers(),
+                json=[{
+                    "entry_id": entry_id,
+                    "hard_delete": True,
+                    "updated_by": updated_by,
+                }],
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to hard-delete entry {entry_id}: {response.status_code} - {response.text}"
+                )
+            data = response.json()
+            return data.get("succeeded", 0) > 0
+
+    async def get_namespace_deletion_mode(self, namespace: str) -> str:
+        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}",
+                headers=self._get_headers(),
+            )
+            if response.status_code != 200:
+                logger.warning(f"Failed to fetch namespace {namespace}: {response.status_code}")
+                return "retain"
+            return response.json().get("deletion_mode", "retain")
+
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:
