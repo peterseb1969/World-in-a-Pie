@@ -331,7 +331,7 @@ async def test_batch_terminologies_route(http_client: AsyncClient, mock_batch_se
     )
 
     async with http_client:
-        resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies")
+        resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies?namespace=wip")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -349,7 +349,7 @@ async def test_batch_terms_route(http_client: AsyncClient, mock_batch_service):
     )
 
     async with http_client:
-        resp = await http_client.post("/api/reporting-sync/sync/batch/terms")
+        resp = await http_client.post("/api/reporting-sync/sync/batch/terms?namespace=wip")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -366,7 +366,7 @@ async def test_batch_relationships_route(http_client: AsyncClient, mock_batch_se
     )
 
     async with http_client:
-        resp = await http_client.post("/api/reporting-sync/sync/batch/relationships")
+        resp = await http_client.post("/api/reporting-sync/sync/batch/relationships?namespace=wip")
 
     assert resp.status_code == 200
     data = resp.json()
@@ -405,7 +405,7 @@ async def test_batch_no_service_returns_503(http_client: AsyncClient):
     state.batch_sync_service = None
     try:
         async with http_client:
-            resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies")
+            resp = await http_client.post("/api/reporting-sync/sync/batch/terminologies?namespace=wip")
         assert resp.status_code == 503
     finally:
         state.batch_sync_service = original

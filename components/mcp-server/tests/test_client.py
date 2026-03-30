@@ -109,6 +109,7 @@ async def test_upload_file_uses_api_key_header():
             file_content=b"x",
             filename="x.bin",
             content_type="application/octet-stream",
+            namespace="wip",
         )
 
     headers = mock_http.post.call_args.kwargs["headers"]
@@ -194,6 +195,7 @@ async def test_import_documents_default_options():
             filename="f.csv",
             template_id="TPL-002",
             column_mapping={},
+            namespace="wip",
         )
 
     data = mock_http.post.call_args.kwargs["data"]

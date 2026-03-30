@@ -30,6 +30,7 @@ class TestDocumentTransformer:
             "version": 1,
             "status": "active",
             "identity_hash": "abc123",
+            "namespace": "wip",
             "created_at": "2024-01-30T10:00:00Z",
             "created_by": "test-user",
             "data": {
@@ -60,6 +61,7 @@ class TestDocumentTransformer:
             "version": 1,
             "status": "active",
             "identity_hash": "abc123",
+            "namespace": "wip",
             "created_at": "2024-01-30T10:00:00Z",
             "created_by": "test-user",
             "data": {
@@ -95,6 +97,7 @@ class TestDocumentTransformer:
             "version": 1,
             "status": "active",
             "identity_hash": "abc123",
+            "namespace": "wip",
             "created_at": "2024-01-30T10:00:00Z",
             "created_by": "test-user",
             "data": {
@@ -133,6 +136,7 @@ class TestDocumentTransformer:
             "version": 1,
             "status": "active",
             "identity_hash": "abc123",
+            "namespace": "wip",
             "created_at": "2024-01-30T10:00:00Z",
             "created_by": "test-user",
             "data": {
@@ -166,6 +170,7 @@ class TestDocumentTransformer:
             "version": 1,
             "status": "active",
             "identity_hash": "abc123",
+            "namespace": "wip",
             "created_at": "2024-01-30T10:00:00Z",
             "created_by": "test-user",
             "data": {

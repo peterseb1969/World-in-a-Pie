@@ -66,12 +66,14 @@ def _make_template(
     version=1,
     fields=None,
     reporting=None,
+    namespace="wip",
 ):
     """Build a minimal template dict for tests."""
     return {
         "template_id": template_id,
         "value": value,
         "version": version,
+        "namespace": namespace,
         "fields": fields or [
             {"name": "first_name", "type": "string"},
             {"name": "last_name", "type": "string"},

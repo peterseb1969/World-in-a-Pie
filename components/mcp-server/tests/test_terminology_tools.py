@@ -27,7 +27,9 @@ from wip_mcp.client import WipClient
 
 def _mock_client():
     """Create a mock WipClient."""
-    return AsyncMock(spec=WipClient)
+    mock = AsyncMock(spec=WipClient)
+    mock._ns = lambda ns: ns or "wip"
+    return mock
 
 
 # =========================================================================

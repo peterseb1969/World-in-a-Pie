@@ -186,7 +186,7 @@ class TestTerminologyEvents:
     @pytest.mark.asyncio
     async def test_missing_terminology_id_returns_false(self, worker):
         """Event without terminology_id returns False."""
-        event = {"event_type": "terminology.created", "terminology": {"value": "X"}}
+        event = {"event_type": "terminology.created", "terminology": {"value": "X", "namespace": "wip"}}
         result = await worker._process_terminology_event(event)
         assert result is False
 
@@ -374,7 +374,7 @@ class TestTermEvents:
     @pytest.mark.asyncio
     async def test_missing_term_id_returns_false(self, worker):
         """Event without term_id returns False."""
-        event = {"event_type": "term.created", "term": {"value": "X"}}
+        event = {"event_type": "term.created", "term": {"value": "X", "namespace": "wip"}}
         result = await worker._process_term_event(event)
         assert result is False
 

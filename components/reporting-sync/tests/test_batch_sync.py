@@ -137,7 +137,7 @@ class TestBatchSyncTerminologies:
 
     @pytest.mark.asyncio
     async def test_namespace_fallback_in_insert(self, service, mock_pool):
-        """When namespace is None and item has no namespace, fallback to 'wip'."""
+        """When item has no namespace, fallback to the namespace parameter."""
         pool, conn = mock_pool
 
         no_ns_terminology = {**SAMPLE_TERMINOLOGY}
@@ -150,7 +150,7 @@ class TestBatchSyncTerminologies:
             mock_client.get = AsyncMock(return_value=_make_api_response([no_ns_terminology]))
             mock_client_cls.return_value = mock_client
 
-            await service.batch_sync_terminologies(namespace=None)
+            await service.batch_sync_terminologies(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $2 = namespace (index 2)
@@ -354,7 +354,7 @@ class TestBatchSyncTerms:
 
     @pytest.mark.asyncio
     async def test_namespace_fallback_in_term_insert(self, service, mock_pool):
-        """When namespace=None and term has no namespace, fallback to 'wip'."""
+        """When term has no namespace, fallback to the namespace parameter."""
         pool, conn = mock_pool
 
         no_ns_term = {**SAMPLE_TERM}
@@ -364,7 +364,7 @@ class TestBatchSyncTerms:
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
             mock_client_cls.return_value = self._mock_client(terminologies, [[no_ns_term]])
 
-            await service.batch_sync_terms(namespace=None)
+            await service.batch_sync_terms(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $2 = namespace (index 2)
@@ -458,7 +458,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            result = await service.batch_sync_relationships()
+            result = await service.batch_sync_relationships(namespace="wip")
 
         assert result["synced"] == 1
         assert result["failed"] == 0
@@ -475,7 +475,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            await service.batch_sync_relationships()
+            await service.batch_sync_relationships(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $11 = created_at (index 11)
@@ -494,7 +494,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            await service.batch_sync_relationships()
+            await service.batch_sync_relationships(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $9 = metadata (index 9)
@@ -512,7 +512,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([], status_code=500))
             mock_client_cls.return_value = mock_client
 
-            result = await service.batch_sync_relationships()
+            result = await service.batch_sync_relationships(namespace="wip")
 
         assert result["synced"] == 0
         conn.execute.assert_not_awaited()
