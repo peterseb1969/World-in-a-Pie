@@ -344,6 +344,13 @@ See `docs/architecture.md` for full details.
 - **Synonym resolution:** APIs accept human-readable synonyms wherever IDs are expected. UUIDs pass through. See `docs/design/universal-synonym-resolution.md`.
 - **Stable IDs:** `entity_id` stays the same across versions; `(entity_id, version)` is the unique key. See `docs/uniqueness-and-identity.md`.
 
+## Design Principles (Must Follow)
+
+- **The Registry is the identity authority.** The Registry is not just an ID generator — it is the single source of truth for identity. All identity resolution (by canonical ID, synonym, or human-readable value) must go through the Registry via the shared resolution layer (`wip_auth/resolve.py`). Do not implement service-local identity resolution as a substitute (e.g., direct MongoDB value lookups, hardcoded namespace defaults). See `docs/design/synonym-resolution-gaps.md`.
+- **Prefer deactivation over deletion.** Soft-delete (`status: inactive`) is the default. Hard deletion is allowed only for: mutable terminology terms, namespace deletion, and binary file cleanup. Do not add new hard-delete paths without explicit design review.
+- **References must resolve.** Every entity reference must point to an existing entity. Any valid synonym should work identically to the canonical ID. This is not yet fully implemented — see `docs/design/synonym-resolution-gaps.md` for the current gaps and remediation plan.
+- **WIP is guardrails for AI.** WIP's structural constraints (schema validation, controlled vocabularies, referential integrity, versioning) discipline coding agents building applications on top. These constraints must be internally consistent — if a guardrail works sometimes but not always, it's worse than not having it. See `docs/Vision.md` and `docs/WIP_TwoTheses.md`.
+
 ## Commands
 
 | Command | Purpose |

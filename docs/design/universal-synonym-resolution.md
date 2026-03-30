@@ -1,6 +1,6 @@
 # Universal Synonym Resolution
 
-**Status:** All phases implemented (2026-03-27). Phases 1-3: auto-synonym registration, resolve layer, API integration. Phase 4: import namespace rewriting in WIP-Toolkit. Phase 5: `backfill-synonyms` CLI command.
+**Status:** Partially implemented (2026-03-27). Phase 1 (auto-synonym registration): implemented in services. Phase 2 (resolve layer): `wip_auth/resolve.py` implemented. Phase 3 (service API integration): partial — API boundary resolution works, but **internal service resolution bypasses Registry** (see `synonym-resolution-gaps.md`). Phase 4 (import namespace rewriting): not implemented. Phase 5 (`backfill-synonyms` CLI): implemented.
 **Dependency for:** Cross-instance restore (v1.1), dev→prod namespace workflow, MCP ergonomics
 
 ---
