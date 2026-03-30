@@ -192,6 +192,7 @@ export interface TableViewResponse {
 
 export interface TableViewParams {
   status?: DocumentStatus
+  namespace?: string
   page?: number
   page_size?: number
   max_cross_product?: number

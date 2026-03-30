@@ -278,7 +278,7 @@ def _create_relationships(
 ) -> None:
     """Create relationships via Def-Store ontology API."""
     from .fresh import _ensure_relationship_types
-    _ensure_relationship_types(client, relationships, stats)
+    _ensure_relationship_types(client, namespace, relationships, stats)
     created = 0
     failed = 0
     skipped = 0

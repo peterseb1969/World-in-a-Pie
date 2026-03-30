@@ -142,7 +142,7 @@ export interface CreateTemplateRequest {
   value: string
   label: string
   description?: string
-  namespace?: string
+  namespace: string
   extends?: string
   extends_version?: number
   identity_fields?: string[]

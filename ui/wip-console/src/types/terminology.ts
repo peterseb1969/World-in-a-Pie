@@ -175,6 +175,7 @@ export interface ValidateValueRequest {
   terminology_id?: string
   terminology_value?: string
   value: string
+  namespace?: string
 }
 
 export interface ValidateValueResponse {

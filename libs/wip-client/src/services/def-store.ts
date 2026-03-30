@@ -192,12 +192,12 @@ export class DefStoreService extends BaseService {
     return this.get('/ontology/relationships/all', params)
   }
 
-  async createRelationships(items: CreateRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
-    return this.post('/ontology/relationships', items, namespace ? { namespace } : undefined)
+  async createRelationships(items: CreateRelationshipRequest[], namespace: string): Promise<BulkResponse> {
+    return this.post('/ontology/relationships', items, { namespace })
   }
 
-  async deleteRelationships(items: DeleteRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
-    return this.del('/ontology/relationships', items, namespace ? { namespace } : undefined)
+  async deleteRelationships(items: DeleteRelationshipRequest[], namespace: string): Promise<BulkResponse> {
+    return this.del('/ontology/relationships', items, { namespace })
   }
 
   async getAncestors(termId: string, params?: {
@@ -216,11 +216,11 @@ export class DefStoreService extends BaseService {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, namespace?: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/parents`, namespace ? { namespace } : undefined)
+  async getParents(termId: string, namespace: string): Promise<Relationship[]> {
+    return this.get(`/ontology/terms/${termId}/parents`, { namespace })
   }
 
-  async getChildren(termId: string, namespace?: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/children`, namespace ? { namespace } : undefined)
+  async getChildren(termId: string, namespace: string): Promise<Relationship[]> {
+    return this.get(`/ontology/terms/${termId}/children`, { namespace })
   }
 }

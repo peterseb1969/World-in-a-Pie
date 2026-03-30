@@ -12,7 +12,7 @@ import FileField from './FileField.vue'
 import Dialog from 'primevue/dialog'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
-import { useDocumentStore, useTemplateStore } from '@/stores'
+import { useDocumentStore, useTemplateStore, useNamespaceStore } from '@/stores'
 import { templateStoreClient, documentStoreClient } from '@/api/client'
 import { getDocumentTitle } from '@/utils/document'
 import type { FieldDefinition, Term, Template } from '@/types'
@@ -30,6 +30,7 @@ const emit = defineEmits<{
 }>()
 
 const documentStore = useDocumentStore()
+const namespaceStore = useNamespaceStore()
 
 // For term fields
 const terms = ref<Term[]>([])
@@ -227,7 +228,10 @@ async function openRefSearch() {
 async function searchDocuments() {
   refSearchLoading.value = true
   try {
-    const params: Record<string, unknown> = { page_size: 50 }
+    const params: Record<string, unknown> = {
+      page_size: 50,
+      namespace: namespaceStore.currentNamespaceParam
+    }
     if (refTemplateFilter.value) {
       params.template_id = refTemplateFilter.value
     }

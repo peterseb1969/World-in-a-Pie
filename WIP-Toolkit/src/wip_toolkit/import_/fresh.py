@@ -242,6 +242,7 @@ def _create_terms(
 
 def _ensure_relationship_types(
     client: WIPClient,
+    namespace: str,
     relationships: list[dict],
     stats: ImportStats,
 ) -> None:
@@ -263,7 +264,7 @@ def _ensure_relationship_types(
                 "relationship_type": "__probe__",
                 "metadata": {},
             }],
-            params={"namespace": "wip"},
+            params={"namespace": namespace},
         )
         # Parse valid types from error message
         err = result.get("results", [{}])[0].get("error", "")
@@ -283,7 +284,7 @@ def _ensure_relationship_types(
     try:
         terminologies = client.fetch_all_paginated(
             "def-store", "/terminologies",
-            params={"namespace": "wip"},
+            params={"namespace": namespace},
         )
         ort_id = None
         for t in terminologies:
@@ -299,7 +300,7 @@ def _ensure_relationship_types(
 
         # Add missing types
         payloads = [{"value": rt, "label": rt.replace("_", " ").title(), "created_by": "wip-toolkit"} for rt in missing]
-        result = client.post(f"def-store", f"/terminologies/{ort_id}/terms", json=payloads)
+        result = client.post("def-store", f"/terminologies/{ort_id}/terms", json=payloads, params={"namespace": namespace})
         added = result.get("succeeded", 0)
         console.print(f"  Registered {added} relationship type(s): {', '.join(sorted(missing))}")
     except WIPClientError as e:
@@ -316,7 +317,7 @@ def _create_relationships(
     continue_on_error: bool,
 ) -> None:
     """Create relationships with remapped term IDs."""
-    _ensure_relationship_types(client, relationships, stats)
+    _ensure_relationship_types(client, namespace, relationships, stats)
     created = 0
     failed = 0
     skipped = 0

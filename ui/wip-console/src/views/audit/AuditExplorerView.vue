@@ -9,7 +9,7 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import ProgressSpinner from 'primevue/progressspinner'
 import Message from 'primevue/message'
-import { useAuthStore, useUiStore } from '@/stores'
+import { useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import {
   reportingSyncClient,
   type SearchResult,
@@ -22,6 +22,7 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // Search state
 const searchQuery = ref((route.query.q as string) || '')
@@ -59,6 +60,7 @@ async function performSearch() {
   try {
     const response = await reportingSyncClient.search({
       query: searchQuery.value.trim(),
+      namespace: namespaceStore.currentNamespaceParam,
       limit: 50
     })
     searchResults.value = response.results

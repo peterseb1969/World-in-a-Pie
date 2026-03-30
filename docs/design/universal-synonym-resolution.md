@@ -1,6 +1,6 @@
 # Universal Synonym Resolution
 
-**Status:** Partially implemented (2026-03-27). Phase 1 (auto-synonym registration): implemented in services. Phase 2 (resolve layer): `wip_auth/resolve.py` implemented. Phase 3 (service API integration): partial — API boundary resolution works, but **internal service resolution bypasses Registry** (see `synonym-resolution-gaps.md`). Phase 4 (import namespace rewriting): not implemented. Phase 5 (`backfill-synonyms` CLI): implemented.
+**Status:** Partially implemented (2026-03-27, updated 2026-03-30). Phase 1 (auto-synonym registration): implemented in services. Phase 2 (resolve layer): `wip_auth/resolve.py` implemented. Phase 3 (service API integration): partial — API boundary resolution works, but **internal service resolution bypasses Registry** (see `synonym-resolution-gaps.md`). Phase 4 (import namespace rewriting): not implemented. Phase 5 (`backfill-synonyms` CLI): implemented. **Namespace-required propagation (2026-03-30):** namespace is now required across the full stack (backend services, `@wip/client`, WIP-Toolkit, Console UI, scripts) — no more `="wip"` defaults.
 **Dependency for:** Cross-instance restore (v1.1), dev→prod namespace workflow, MCP ergonomics
 
 ---

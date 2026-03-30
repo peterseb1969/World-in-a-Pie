@@ -1,6 +1,6 @@
 # Synonym Resolution: Gap Analysis and Side Effects
 
-**Status:** Analysis (2026-03-30). Companion to `universal-synonym-resolution.md`.
+**Status:** Analysis (2026-03-30, updated 2026-03-30). Companion to `universal-synonym-resolution.md`.
 **Context:** The universal synonym resolution design is sound but incompletely implemented. This document audits the current state, identifies gaps, and analyzes the side effects of closing them.
 
 ---
@@ -44,7 +44,7 @@ The corollary: **querying with any valid synonym should behave identically to qu
 | Code path | What it does instead | Impact |
 |-----------|---------------------|--------|
 | **template-store** `_resolve_to_template_id()` | Queries MongoDB directly by `template_id`, falls back to `{namespace, value, status: active}` | Cross-namespace templates not found unless in specified namespace |
-| **template-store** `_resolve_to_terminology_id()` | Calls def-store API by ID, falls back to by-value — defaults to `namespace="wip"` | Hardcoded namespace; terminologies in other namespaces invisible |
+| **template-store** `_resolve_to_terminology_id()` | Calls def-store API by ID, falls back to by-value — ~~defaults to `namespace="wip"`~~ **Addressed (2026-03-30):** namespace is now required across the full stack; no more hardcoded "wip" default | ~~Hardcoded namespace; terminologies in other namespaces invisible~~ Namespace must be explicitly provided |
 | **template-store** `_normalize_field_references()` | Calls the above two methods for every field reference | All template field references (terminology_ref, template_ref, target_templates, target_terminologies, extends) bypass Registry |
 | **template-store** query param `?extends=` | Passed raw to MongoDB query | Cannot filter by synonym |
 | **def-store** internal service methods | Direct MongoDB queries on canonical IDs only | After API-boundary resolution, all internal lookups assume canonical |
@@ -116,11 +116,11 @@ c) **Register auto-synonyms as active at draft creation time.** Currently, auto-
 
 ### 3. Namespace resolution semantics change (fundamental)
 
-**Current:** `_resolve_to_terminology_id(ref, namespace="wip")` tries a single, explicit namespace. The caller controls which namespace to search. Default is "wip" — a pragmatic choice that handles the 95% case (shared terminologies).
+**Current (pre-2026-03-30):** `_resolve_to_terminology_id(ref, namespace="wip")` tried a single, explicit namespace. The caller controlled which namespace to search. Default was "wip" — a pragmatic choice that handled the 95% case (shared terminologies). **Update (2026-03-30):** The hardcoded `namespace="wip"` default has been removed across the full stack (backend, @wip/client, WIP-Toolkit, Console UI, scripts). Namespace is now always explicitly provided by the caller. This eliminates the silent "wip" fallback but does not yet solve the general cross-namespace resolution problem described below.
 
 **After fix with `resolve_entity_id()`:** The resolver builds a composite key using a single namespace: `{ns: namespace, type: "terminology", value: ref}`. If the terminology lives in a different namespace, it's not found.
 
-**The problem isn't new — it's just moved.** The current code hardcodes `namespace="wip"`. The resolver would use the caller's namespace. Neither handles the general case: "find this entity regardless of which namespace it's in."
+**The remaining problem:** ~~The current code hardcodes `namespace="wip"`.~~ The resolver would use the caller's namespace. ~~Neither~~ This does not handle the general case: "find this entity regardless of which namespace it's in."
 
 **Why this matters for WIP consistency (not just import):** Consider an app namespace "clintrial" whose templates reference terminologies in the "wip" namespace AND in a "shared-medical" namespace. Today, `_resolve_to_terminology_id()` hardcodes "wip", so "shared-medical" references silently fail. With `resolve_entity_id()` using the caller's namespace "clintrial", both "wip" and "shared-medical" references fail unless the terminology also exists in "clintrial".
 
@@ -234,7 +234,7 @@ Once these are in place, the swap is straightforward. The remaining side effects
    - Update `_normalize_field_references()` to batch-resolve where possible
 
 5. **Replace `_resolve_to_terminology_id()` in template-store**
-   - Remove hardcoded `namespace="wip"` default
+   - ~~Remove hardcoded `namespace="wip"` default~~ Done (2026-03-30) — namespace is now required across all layers
    - Pass template's own namespace; let resolution layer handle cross-namespace search
 
 6. **Verify auto-synonym registration is synchronous**

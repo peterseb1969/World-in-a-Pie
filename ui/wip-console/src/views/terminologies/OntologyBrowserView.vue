@@ -180,6 +180,7 @@ async function loadTermDocuments(termId: string) {
   try {
     const data = await documentStoreClient.queryDocuments({
       filters: [{ field: 'term_references.term_id', operator: 'eq', value: termId }],
+      namespace: namespaceStore.currentNamespaceParam,
       page_size: 10,
       sort_by: 'updated_at',
       sort_order: 'desc',

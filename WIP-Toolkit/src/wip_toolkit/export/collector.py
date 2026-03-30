@@ -107,7 +107,7 @@ class EntityCollector:
         return self.client.get(
             "template-store",
             f"/templates/{template_id}/raw",
-            params={"version": version},
+            params={"version": version, "namespace": self.namespace},
         )
 
     # --- Document-Store ---

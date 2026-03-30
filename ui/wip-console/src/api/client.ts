@@ -605,6 +605,7 @@ class DocumentStoreClient extends BaseApiClient {
     filters?: { field: string; operator: string; value: unknown }[]
     template_id?: string
     status?: string
+    namespace?: string
     page?: number
     page_size?: number
     sort_by?: string
@@ -648,7 +649,7 @@ class DocumentStoreClient extends BaseApiClient {
 
   async exportTableCsv(
     templateId: string,
-    params?: { status?: string; include_metadata?: boolean; max_cross_product?: number }
+    params?: { status?: string; namespace?: string; include_metadata?: boolean; max_cross_product?: number }
   ): Promise<Blob> {
     const response = await this.client.get(`/table/${templateId}/csv`, {
       params,
@@ -680,7 +681,7 @@ class DocumentStoreClient extends BaseApiClient {
     file: File,
     templateId: string,
     columnMapping: Record<string, string>,
-    namespace: string = 'wip',
+    namespace: string,
     skipErrors: boolean = false
   ): Promise<{
     total_rows: number
@@ -1027,6 +1028,7 @@ class ReportingSyncClient extends BaseApiClient {
     query: string
     types?: string[]
     status?: string
+    namespace?: string
     limit?: number
   }): Promise<SearchResponse> {
     const response = await this.client.post<SearchResponse>('/search', params)
@@ -1035,6 +1037,7 @@ class ReportingSyncClient extends BaseApiClient {
 
   async getRecentActivity(params?: {
     types?: string
+    namespace?: string
     limit?: number
   }): Promise<ActivityResponse> {
     const response = await this.client.get<ActivityResponse>('/activity/recent', { params })

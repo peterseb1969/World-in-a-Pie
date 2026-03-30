@@ -154,6 +154,12 @@ async function startImport() {
   if (!uploadedFile.value || !selectedTemplate.value) return
   error.value = ''
 
+  const ns = nsStore.currentNamespaceParam
+  if (!ns) {
+    error.value = 'Namespace is required for import. Please select a namespace (not "all").'
+    return
+  }
+
   // Filter out empty mappings
   const mapping: Record<string, string> = {}
   for (const [col, field] of Object.entries(columnMapping.value)) {
@@ -173,7 +179,7 @@ async function startImport() {
       uploadedFile.value,
       selectedTemplate.value.template_id,
       mapping,
-      nsStore.currentNamespaceParam || 'wip',
+      ns,
       skipErrors.value
     )
 

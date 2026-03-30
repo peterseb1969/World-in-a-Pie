@@ -8,7 +8,7 @@ import Button from 'primevue/button'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import Skeleton from 'primevue/skeleton'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import { defStoreClient } from '@/api/client'
 import type { Term, Relationship } from '@/types'
 import TruncatedId from '@/components/common/TruncatedId.vue'
@@ -22,6 +22,7 @@ const props = defineProps<{
 
 const router = useRouter()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const term = ref<Term | null>(null)
 const loading = ref(false)
@@ -68,8 +69,8 @@ async function loadFamily() {
   loadingFamily.value = true
   try {
     const [p, c] = await Promise.all([
-      defStoreClient.getParents(props.id),
-      defStoreClient.getChildren(props.id),
+      defStoreClient.getParents(props.id, namespaceStore.currentNamespaceParam),
+      defStoreClient.getChildren(props.id, namespaceStore.currentNamespaceParam),
     ])
     parents.value = p
     children.value = c

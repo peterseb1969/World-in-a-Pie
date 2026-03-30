@@ -129,7 +129,7 @@ export class ReportingSyncService extends BaseService {
   async search(params: {
     query: string
     types?: string[]
-    namespace?: string
+    namespace: string
     status?: string
     limit?: number
   }): Promise<SearchResponse> {

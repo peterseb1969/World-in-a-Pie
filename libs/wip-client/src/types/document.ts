@@ -56,7 +56,7 @@ export interface Document {
 export interface CreateDocumentRequest {
   template_id: string
   template_version?: number
-  namespace?: string
+  namespace: string
   data: Record<string, unknown>
   created_by?: string
   metadata?: {

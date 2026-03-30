@@ -4,7 +4,7 @@ import Dialog from 'primevue/dialog'
 import InputText from 'primevue/inputtext'
 import Select from 'primevue/select'
 import Button from 'primevue/button'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import { defStoreClient } from '@/api/client'
 
 const props = defineProps<{
@@ -18,6 +18,7 @@ const emit = defineEmits<{
 }>()
 
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 const submitting = ref(false)
 
 const form = ref({
@@ -58,7 +59,7 @@ async function submit() {
       source_term_id: form.value.source_term_id,
       target_term_id: form.value.target_term_id,
       relationship_type: form.value.relationship_type,
-    }])
+    }], namespaceStore.currentNamespaceParam)
 
     if (result.failed > 0) {
       const error = result.results[0]?.error || 'Unknown error'

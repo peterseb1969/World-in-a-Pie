@@ -31,7 +31,7 @@ export interface CreateTerminologyRequest {
   value: string
   label: string
   description?: string
-  namespace?: string
+  namespace: string
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean

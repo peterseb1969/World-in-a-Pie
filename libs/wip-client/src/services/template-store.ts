@@ -95,7 +95,7 @@ export class TemplateStoreService extends BaseService {
 
   async activateTemplate(
     id: string,
-    options?: { namespace?: string; dry_run?: boolean },
+    options: { namespace: string; dry_run?: boolean },
   ): Promise<{ activated: string[] }> {
     return this.post(`/templates/${id}/activate`, null, options)
   }

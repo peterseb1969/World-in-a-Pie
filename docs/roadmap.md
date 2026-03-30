@@ -459,7 +459,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `template-draft-mode.md` | Implemented |
 | `template-reference-pinning.md` | Implemented |
 | `event-replay.md` | Implemented (API + MCP tools) |
-| `namespace-scoped-data.md` | Phase 1-2 complete, Phase 3-5 pending |
+| `namespace-scoped-data.md` | Phase 1-2 complete, namespace-required propagated to full stack (2026-03-30), Phase 3-5 pending |
 | `namespace-authorization.md` | Core complete, UX polish remaining |
 | `namespace-deletion.md` | Implemented |
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
@@ -499,4 +499,5 @@ These were previously on the roadmap and are now fully implemented:
 - Security hardening — CORS, rate limiting, bcrypt keys, upload limits, security headers
 - Information package for app-building AI — slash commands, reference docs, MCP resources
 - Universal synonym resolution — auto-synonym registration, resolve layer at API boundary, WIP-Toolkit backfill + namespace rewriting
+- Namespace-required propagation — removed all `namespace="wip"` defaults across full stack: backend services, `@wip/client`, WIP-Toolkit, Console UI, scripts (2026-03-30)
 - Backend developer agent setup — `setup-backend-agent.sh`, role-specific CLAUDE.md, 8 backend slash commands, MCP transport selection (local/SSH/HTTP)

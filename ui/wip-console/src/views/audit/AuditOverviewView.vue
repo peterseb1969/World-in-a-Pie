@@ -11,7 +11,7 @@ import Message from 'primevue/message'
 import ProgressSpinner from 'primevue/progressspinner'
 import Checkbox from 'primevue/checkbox'
 import Select from 'primevue/select'
-import { useAuthStore, useUiStore, useIntegrityStore } from '@/stores'
+import { useAuthStore, useUiStore, useIntegrityStore, useNamespaceStore } from '@/stores'
 import { isReportingEnabled } from '@/config/modules'
 import {
   reportingSyncClient,
@@ -23,6 +23,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
 const integrityStore = useIntegrityStore()
+const namespaceStore = useNamespaceStore()
 
 // Check if reporting module is enabled
 const reportingEnabled = isReportingEnabled()
@@ -93,6 +94,7 @@ async function loadActivity() {
   loading.value = true
   try {
     const response = await reportingSyncClient.getRecentActivity({
+      namespace: namespaceStore.currentNamespaceParam,
       limit: activityLimit.value
     })
     activities.value = response.activities

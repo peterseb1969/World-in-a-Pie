@@ -9,7 +9,7 @@ import Tag from 'primevue/tag'
 import Card from 'primevue/card'
 import ProgressSpinner from 'primevue/progressspinner'
 import Message from 'primevue/message'
-import { useTemplateStore, useAuthStore, useUiStore } from '@/stores'
+import { useTemplateStore, useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import { documentStoreClient } from '@/api/client'
 import TruncatedId from '@/components/common/TruncatedId.vue'
 import type { TableViewResponse, TableColumn, DocumentStatus } from '@/types'
@@ -19,6 +19,7 @@ const route = useRoute()
 const templateStore = useTemplateStore()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // State
 const loading = ref(false)
@@ -124,6 +125,7 @@ async function loadTableData() {
   try {
     tableData.value = await documentStoreClient.getTableView(selectedTemplateId.value, {
       status: statusFilter.value,
+      namespace: namespaceStore.currentNamespaceParam,
       page: currentPage.value,
       page_size: pageSize.value
     })
@@ -142,6 +144,7 @@ async function exportCsv() {
   try {
     const blob = await documentStoreClient.exportTableCsv(selectedTemplateId.value, {
       status: statusFilter.value,
+      namespace: namespaceStore.currentNamespaceParam,
       include_metadata: true
     })
 

@@ -136,7 +136,11 @@ export const useTemplateStore = defineStore('template', () => {
     loading.value = true
     error.value = null
     try {
-      const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
+      const ns = data.namespace ?? namespaceStore.currentNamespaceParam
+      if (!ns) {
+        throw new Error('Namespace is required to create a template. Please select a namespace (not "all").')
+      }
+      const payload = { ...data, namespace: ns }
       const result = await templateStoreClient.createTemplate(payload)
       const created = await templateStoreClient.getTemplate(result.id!)
       templates.value.unshift(created)
