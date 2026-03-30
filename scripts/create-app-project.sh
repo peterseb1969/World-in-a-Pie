@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ./scripts/create-app-project.sh /path/to/my-new-app [--name "My App"]
+#   ./scripts/create-app-project.sh --refresh /path/to/cloned-app
 #
 # This script:
 #   1. Creates the directory structure
@@ -16,6 +17,11 @@
 #   7. Generates a starter CLAUDE.md
 #   8. Initialises a git repo
 #
+# --refresh mode (for cloned/existing apps):
+#   Only regenerates .mcp.json and refreshes libs/tools. Does NOT touch
+#   CLAUDE.md, slash commands, docs, or git. Use after cloning an app repo
+#   on a new machine where the WIP installation path differs.
+#
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
 
@@ -27,6 +33,7 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APP_DIR=""
 APP_NAME=""
+REFRESH_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,14 +41,20 @@ while [[ $# -gt 0 ]]; do
             APP_NAME="$2"
             shift 2
             ;;
+        --refresh)
+            REFRESH_MODE=true
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 <app-directory> [--name \"App Name\"]"
+            echo "       $0 --refresh <existing-app-directory>"
             echo ""
             echo "Creates a new WIP app project with all required files."
             echo ""
             echo "Options:"
-            echo "  --name    Display name for the app (default: derived from directory name)"
-            echo "  -h        Show this help"
+            echo "  --name      Display name for the app (default: derived from directory name)"
+            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
+            echo "  -h          Show this help"
             exit 0
             ;;
         *)
@@ -65,7 +78,11 @@ if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
 
-echo "Creating WIP app project:"
+if $REFRESH_MODE; then
+    echo "Refreshing WIP app environment:"
+else
+    echo "Creating WIP app project:"
+fi
 echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
 echo "  WIP root:  $WIP_ROOT"
@@ -73,54 +90,72 @@ echo ""
 
 # --- Check prerequisites ---
 
-if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-    echo "Error: $APP_DIR already exists and is not empty."
-    echo "Choose a new directory or remove the existing one."
-    exit 1
+if $REFRESH_MODE; then
+    if [ ! -d "$APP_DIR" ]; then
+        echo "Error: $APP_DIR does not exist. Use --refresh on an existing app directory."
+        exit 1
+    fi
+    if [ ! -f "$APP_DIR/CLAUDE.md" ]; then
+        echo "Warning: $APP_DIR/CLAUDE.md not found — this may not be a WIP app project."
+    fi
+else
+    if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+        echo "Error: $APP_DIR already exists and is not empty."
+        echo "Choose a new directory or remove the existing one."
+        exit 1
+    fi
+
+    if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
+        echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
+        echo "Run this script from the WIP project root."
+        exit 1
+    fi
 fi
 
-if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
-    echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
-    echo "Run this script from the WIP project root."
-    exit 1
+# --- Create directory structure (new projects only) ---
+
+if ! $REFRESH_MODE; then
+    echo "1. Creating directory structure..."
+    mkdir -p "$APP_DIR/.claude/commands"
+    mkdir -p "$APP_DIR/docs"
 fi
-
-# --- Create directory structure ---
-
-echo "1. Creating directory structure..."
-mkdir -p "$APP_DIR/.claude/commands"
-mkdir -p "$APP_DIR/docs"
 mkdir -p "$APP_DIR/libs"
 mkdir -p "$APP_DIR/tools"
 
-# --- Copy slash commands ---
+# --- Copy slash commands (new projects only) ---
 
-echo "2. Copying slash commands (12 files)..."
-cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
-echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
+if ! $REFRESH_MODE; then
+    echo "2. Copying slash commands (12 files)..."
+    cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
+    echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-# --- Copy reference docs ---
+    # --- Copy reference docs (new projects only) ---
 
-echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
-    if [ -f "$WIP_ROOT/docs/$doc" ]; then
-        cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
-        echo "   Copied: docs/$doc"
+    echo "3. Copying reference documentation..."
+    for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
+        if [ -f "$WIP_ROOT/docs/$doc" ]; then
+            cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
+            echo "   Copied: docs/$doc"
+        else
+            echo "   Warning: docs/$doc not found, skipping"
+        fi
+    done
+    # Design docs live in a subdirectory
+    if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
+        cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
+        echo "   Copied: docs/design/ontology-support.md"
     else
-        echo "   Warning: docs/$doc not found, skipping"
+        echo "   Warning: docs/design/ontology-support.md not found, skipping"
     fi
-done
-# Design docs live in a subdirectory
-if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
-    cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
-    echo "   Copied: docs/design/ontology-support.md"
-else
-    echo "   Warning: docs/design/ontology-support.md not found, skipping"
 fi
 
 # --- Generate .mcp.json ---
 
-echo "4. Generating .mcp.json..."
+if $REFRESH_MODE; then
+    echo "1. Regenerating .mcp.json..."
+else
+    echo "4. Generating .mcp.json..."
+fi
 
 # Determine API key from .env (source of truth for running containers)
 ACTIVE_KEY=""
@@ -190,7 +225,11 @@ validate_tarball() {
     return 0
 }
 
-echo "5. Copying client libraries..."
+if $REFRESH_MODE; then
+    echo "2. Refreshing client libraries..."
+else
+    echo "5. Copying client libraries..."
+fi
 MISSING_LIBS=()
 CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
@@ -256,17 +295,21 @@ copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
 
 # --- Copy wip-toolkit and dev-delete.py ---
 
-echo "6. Copying wip-toolkit and dev-delete.py..."
+if $REFRESH_MODE; then
+    echo "3. Refreshing wip-toolkit and dev-delete.py..."
+else
+    echo "6. Copying wip-toolkit and dev-delete.py..."
+fi
 
 # wip-toolkit wheel
-TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
+TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
 if [ -z "$TOOLKIT_WHEEL" ]; then
     # Try to build it
     if command -v python3 &>/dev/null || command -v python &>/dev/null; then
         PYTHON_CMD="$(command -v python3 2>/dev/null || command -v python)"
         echo "   Building wip-toolkit wheel..."
         (cd "$WIP_ROOT/WIP-Toolkit" && "$PYTHON_CMD" -m build . --wheel -q 2>/dev/null) || true
-        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
+        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
     fi
 fi
 
@@ -286,8 +329,9 @@ else
     echo "   Warning: scripts/dev-delete.py not found"
 fi
 
-# --- Generate CLAUDE.md ---
+# --- Generate CLAUDE.md (new projects only) ---
 
+if ! $REFRESH_MODE; then
 echo "7. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
@@ -404,11 +448,16 @@ echo "8. Initialising git repository..."
 Generated by WIP create-app-project.sh from:
   $WIP_ROOT")
 echo "   Git repo initialised with initial commit"
+fi  # end of ! $REFRESH_MODE block (CLAUDE.md + git init)
 
 # --- Done ---
 
 echo ""
-echo "Done! Your app project is ready at: $APP_DIR"
+if $REFRESH_MODE; then
+    echo "Done! Environment refreshed at: $APP_DIR"
+else
+    echo "Done! Your app project is ready at: $APP_DIR"
+fi
 echo ""
 
 # --- Prominent warning if client libraries are missing ---
@@ -433,10 +482,23 @@ if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
     echo ""
 fi
 
-echo "Next steps:"
-echo "  cd $APP_DIR"
-echo "  claude          # Launch Claude Code"
-echo "  /explore        # Start Phase 1"
-echo ""
-echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+if $REFRESH_MODE; then
+    echo "Next steps:"
+    echo "  cd $APP_DIR"
+    echo "  claude          # Launch Claude Code"
+    echo "  /resume         # Recover context from existing code and docs"
+    echo ""
+    echo "Verify MCP connection:"
+    echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+    echo ""
+    echo "Note: .mcp.json has been regenerated with paths for this machine."
+    echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
+else
+    echo "Next steps:"
+    echo "  cd $APP_DIR"
+    echo "  claude          # Launch Claude Code"
+    echo "  /explore        # Start Phase 1"
+    echo ""
+    echo "Verify MCP connection:"
+    echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+fi
