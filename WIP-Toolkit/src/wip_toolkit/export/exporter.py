@@ -12,13 +12,15 @@ Memory usage: O(page_size) regardless of dataset size.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
 
+import click
 from rich.console import Console
 
-from ..archive import ArchiveWriter
+from ..archive import ENTITY_FILES, ArchiveWriter
 from ..client import WIPClient
 from ..models import ClosureInfo, EntityCounts, ExportStats, Manifest, NamespaceConfig
 from .closure import compute_closure
@@ -227,7 +229,6 @@ def run_export(
                 f"but --include-files not set.\n"
                 f"  Documents referencing these files may fail during import."
             )
-            import click
             if not click.confirm("  Continue without file blobs?", default=True):
                 raise SystemExit("Export cancelled by user")
 
@@ -332,9 +333,6 @@ def _fetch_synonyms(
     Reads document/file entity IDs from the writer's temp files to avoid
     holding them all in memory. Returns a list of synonym dicts.
     """
-    import json
-    from ..archive import ENTITY_FILES
-
     # Collect all entity IDs from small entities (in memory)
     id_fields = {
         "terminologies": ("terminology_id", terminologies),
@@ -352,11 +350,10 @@ def _fetch_synonyms(
                 unique_ids.append(eid)
 
     # Read document/file IDs from temp files (O(scan) not O(memory))
-    from pathlib import Path
     for entity_type, id_field in [("documents", "document_id"), ("files", "file_id")]:
         tmp_path = Path(writer._tmp_dir) / ENTITY_FILES[entity_type]
         if tmp_path.exists():
-            with open(tmp_path, "r", encoding="utf-8") as f:
+            with open(tmp_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line:

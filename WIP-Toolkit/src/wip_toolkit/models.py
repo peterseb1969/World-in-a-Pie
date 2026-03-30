@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -42,7 +42,7 @@ class Manifest(BaseModel):
     """Archive manifest describing the export."""
     format_version: str = "1.1"
     tool_version: str = "0.2.1"
-    exported_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
     namespace: str = ""
     namespace_config: NamespaceConfig | None = None

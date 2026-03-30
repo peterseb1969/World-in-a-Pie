@@ -4,10 +4,6 @@ import contextlib
 import logging
 from datetime import UTC, datetime
 
-logger = logging.getLogger(__name__)
-
-# Import identity helper from wip-auth
-# This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
 from ..models.api_models import (
     BulkResultItem,
@@ -27,6 +23,8 @@ from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
 from .registry_client import get_registry_client
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateService:
