@@ -240,6 +240,72 @@ def _create_terms(
     )
 
 
+def _ensure_relationship_types(
+    client: WIPClient,
+    relationships: list[dict],
+    stats: ImportStats,
+) -> None:
+    """Ensure all relationship types used in the data exist in _ONTOLOGY_RELATIONSHIP_TYPES.
+
+    Custom types (e.g. 'targets') may exist on the source instance but not
+    on a fresh target.  This adds any missing types before creating relationships.
+    """
+    needed = {r["relationship_type"] for r in relationships}
+
+    # Fetch currently valid types
+    try:
+        # Try creating a dummy to get the error listing valid types
+        result = client.post(
+            "def-store", "/ontology/relationships",
+            json=[{
+                "source_term_id": "00000000-0000-0000-0000-000000000000",
+                "target_term_id": "00000000-0000-0000-0000-000000000001",
+                "relationship_type": "__probe__",
+                "metadata": {},
+            }],
+            params={"namespace": "wip"},
+        )
+        # Parse valid types from error message
+        err = result.get("results", [{}])[0].get("error", "")
+        if "Valid types:" in err:
+            valid_str = err.split("Valid types:")[1].strip()
+            existing = {t.strip() for t in valid_str.split(",")}
+        else:
+            existing = set()
+    except WIPClientError:
+        existing = set()
+
+    missing = needed - existing
+    if not missing:
+        return
+
+    # Find the _ONTOLOGY_RELATIONSHIP_TYPES terminology
+    try:
+        terminologies = client.fetch_all_paginated(
+            "def-store", "/terminologies",
+            params={"namespace": "wip"},
+        )
+        ort_id = None
+        for t in terminologies:
+            if t.get("value") == "_ONTOLOGY_RELATIONSHIP_TYPES":
+                ort_id = t["terminology_id"]
+                break
+        if not ort_id:
+            stats.warnings.append(
+                f"Cannot register relationship types {missing}: "
+                f"_ONTOLOGY_RELATIONSHIP_TYPES terminology not found"
+            )
+            return
+
+        # Add missing types
+        payloads = [{"value": rt, "label": rt.replace("_", " ").title(), "created_by": "wip-toolkit"} for rt in missing]
+        result = client.post(f"def-store", f"/terminologies/{ort_id}/terms", json=payloads)
+        added = result.get("succeeded", 0)
+        console.print(f"  Registered {added} relationship type(s): {', '.join(sorted(missing))}")
+    except WIPClientError as e:
+        stats.warnings.append(f"Failed to register relationship types {missing}: {e}")
+
+
 def _create_relationships(
     client: WIPClient,
     namespace: str,
@@ -250,6 +316,7 @@ def _create_relationships(
     continue_on_error: bool,
 ) -> None:
     """Create relationships with remapped term IDs."""
+    _ensure_relationship_types(client, relationships, stats)
     created = 0
     failed = 0
     skipped = 0

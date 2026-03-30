@@ -428,7 +428,7 @@ def drop_pg_doc_table(pg_conn, template_value, force):
             print(f"  Dropped table {table_name}")
             # Also remove migration tracking
             cur.execute(
-                'DELETE FROM "_wip_schema_migrations" WHERE template_code = %s',
+                'DELETE FROM "_wip_schema_migrations" WHERE template_value = %s',
                 (template_value,),
             )
         cur.close()

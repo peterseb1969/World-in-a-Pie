@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from importlib.metadata import version
 
 import click
 from rich.console import Console
@@ -18,7 +19,15 @@ from .import_.importer import run_import
 console = Console(stderr=True)
 
 
+def _get_version() -> str:
+    try:
+        return version("wip-toolkit")
+    except Exception:
+        return "unknown"
+
+
 @click.group()
+@click.version_option(_get_version(), prog_name="wip-toolkit")
 @click.option("--host", default="localhost", help="WIP host (default: localhost)")
 @click.option("--proxy", is_flag=True, help="Route through Caddy/Ingress reverse proxy")
 @click.option("--port", default=None, type=int, help="Proxy port (default: 8443 for Caddy, 443 for K8s Ingress)")

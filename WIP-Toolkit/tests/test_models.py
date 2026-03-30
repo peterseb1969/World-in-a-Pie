@@ -1,6 +1,6 @@
 """Tests for Pydantic data models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from wip_toolkit.models import (
     ClosureInfo,
@@ -55,7 +55,7 @@ class TestManifest:
 
     def test_default_tool_version(self):
         m = Manifest()
-        assert m.tool_version == "0.2.1"
+        assert m.tool_version == "0.2.2"
 
     def test_default_namespace_empty(self):
         m = Manifest()
@@ -84,9 +84,9 @@ class TestManifest:
         assert m.closure.iterations == 0
 
     def test_exported_at_is_set_automatically(self):
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         m = Manifest()
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         assert before <= m.exported_at <= after
 
     def test_namespace_config_default_none(self):
