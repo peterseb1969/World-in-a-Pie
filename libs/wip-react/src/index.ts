@@ -12,7 +12,7 @@ export { useTemplates, useTemplate, useTemplateByValue } from './hooks/use-templ
 export { useDocuments, useDocument, useQueryDocuments, useDocumentVersions } from './hooks/use-documents.js'
 export { useFiles, useFile, useDownloadUrl } from './hooks/use-files.js'
 export { useNamespaces, useRegistrySearch } from './hooks/use-registry.js'
-export { useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
+export { useReportQuery, useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
 
 // Write hooks
 export {
