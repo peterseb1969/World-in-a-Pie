@@ -29,7 +29,7 @@ No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extr
 - Design: `docs/design/nl-query-scaffold.md`
 - Depends on: MCP Read-Only Mode
 - Validated by: WIP-DnD Compendium
-- Status: Design complete
+- Status: **Implemented** (2026-03-31) — `describe_data_model` tool (paginated, all fields inline), `wip://query-assistant-prompt` dynamic resource, `--preset query` scaffold with Express/Claude/React, 11 tests. Architecture guide deferred.
 
 ---
 

@@ -4,6 +4,7 @@
 #
 # Usage:
 #   ./scripts/create-app-project.sh /path/to/my-new-app [--name "My App"]
+#   ./scripts/create-app-project.sh /path/to/my-new-app --preset query [--name "My App"]
 #   ./scripts/create-app-project.sh --refresh /path/to/cloned-app
 #
 # This script:
@@ -33,6 +34,7 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APP_DIR=""
 APP_NAME=""
+PRESET="standard"
 REFRESH_MODE=false
 
 while [[ $# -gt 0 ]]; do
@@ -41,18 +43,23 @@ while [[ $# -gt 0 ]]; do
             APP_NAME="$2"
             shift 2
             ;;
+        --preset)
+            PRESET="$2"
+            shift 2
+            ;;
         --refresh)
             REFRESH_MODE=true
             shift
             ;;
         -h|--help)
-            echo "Usage: $0 <app-directory> [--name \"App Name\"]"
+            echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
             echo "       $0 --refresh <existing-app-directory>"
             echo ""
             echo "Creates a new WIP app project with all required files."
             echo ""
             echo "Options:"
             echo "  --name      Display name for the app (default: derived from directory name)"
+            echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
             echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
             echo "  -h          Show this help"
             exit 0
@@ -66,7 +73,12 @@ done
 
 if [ -z "$APP_DIR" ]; then
     echo "Error: App directory path is required."
-    echo "Usage: $0 <app-directory> [--name \"App Name\"]"
+    echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
+    exit 1
+fi
+
+if [[ "$PRESET" != "standard" && "$PRESET" != "query" ]]; then
+    echo "Error: Unknown preset '$PRESET'. Use 'standard' or 'query'."
     exit 1
 fi
 
@@ -85,6 +97,7 @@ else
 fi
 echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
+echo "  Preset:    $PRESET"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
 
@@ -329,10 +342,62 @@ else
     echo "   Warning: scripts/dev-delete.py not found"
 fi
 
+# --- Copy query scaffold files (--preset query only, new projects only) ---
+
+if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
+    SCAFFOLD_DIR="$WIP_ROOT/scripts/scaffold-query"
+    if [ ! -d "$SCAFFOLD_DIR" ]; then
+        echo "Error: Scaffold template directory not found: $SCAFFOLD_DIR"
+        exit 1
+    fi
+
+    echo "7. Copying NL query scaffold..."
+
+    # Derive slug from app name (lowercase, hyphens)
+    APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
+
+    # Copy scaffold structure
+    cp -r "$SCAFFOLD_DIR/server" "$APP_DIR/"
+    cp -r "$SCAFFOLD_DIR/src" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/package.json" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/tsconfig.json" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/vite.config.ts" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/tailwind.config.js" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/postcss.config.js" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/index.html" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/.env.example" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
+
+    # Merge .gitignore (scaffold additions)
+    if [ -f "$APP_DIR/.gitignore" ]; then
+        cat "$APP_DIR/.gitignore.scaffold" >> "$APP_DIR/.gitignore"
+    else
+        mv "$APP_DIR/.gitignore.scaffold" "$APP_DIR/.gitignore"
+    fi
+    rm -f "$APP_DIR/.gitignore.scaffold"
+
+    # Replace placeholders
+    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/package.json"
+    sed -i '' "s/SCAFFOLD_APP_NAME/$APP_NAME/g" "$APP_DIR/index.html"
+
+    # Update .env.example with actual paths
+    sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
+
+    echo "   Copied: server/ (agent.ts, index.ts, prompts/)"
+    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx)"
+    echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
+    echo "   App slug: $APP_SLUG"
+
+    STEP_OFFSET=1
+else
+    STEP_OFFSET=0
+fi
+
 # --- Generate CLAUDE.md (new projects only) ---
 
 if ! $REFRESH_MODE; then
-echo "7. Generating CLAUDE.md..."
+STEP_NUM=$((7 + STEP_OFFSET))
+echo "$STEP_NUM. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
 
@@ -385,12 +450,13 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (69 tools, 4 resources). Before starting:
+WIP is accessed exclusively via MCP tools (70 tools, 5 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
 - Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
 - Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
 
 \`wip://development-guide\` provides the full 4-phase workflow reference if needed.
+\`wip://query-assistant-prompt\` provides a complete system prompt for NL query agents (used by --preset query apps).
 
 ## Client Libraries
 
@@ -544,7 +610,8 @@ echo "   Written: CLAUDE.md"
 
 # --- Initialise git ---
 
-echo "8. Initialising git repository..."
+STEP_NUM=$((8 + STEP_OFFSET))
+echo "$STEP_NUM. Initialising git repository..."
 (cd "$APP_DIR" && git init -q && git add -A && git commit -q -m "Initial project setup for $APP_NAME
 
 Generated by WIP create-app-project.sh from:
@@ -591,7 +658,7 @@ if $REFRESH_MODE; then
     echo "  /resume         # Recover context from existing code and docs"
     echo ""
     echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+    echo "  In Claude Code, run /mcp — you should see 70 tools and 5 resources."
     echo ""
     echo "Note: .mcp.json has been regenerated with paths for this machine."
     echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
@@ -602,5 +669,5 @@ else
     echo "  /explore        # Start Phase 1"
     echo ""
     echo "Verify MCP connection:"
-    echo "  In Claude Code, run /mcp — you should see 69 tools and 4 resources."
+    echo "  In Claude Code, run /mcp — you should see 70 tools and 5 resources."
 fi

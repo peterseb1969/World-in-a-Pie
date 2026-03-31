@@ -329,7 +329,7 @@ WIP is a universal template-driven document storage system. It runs on anything 
 | Document-Store | 8004 | Document CRUD, versioning, term validation, file storage, CSV/XLSX import |
 | Reporting-Sync | 8005 | MongoDB → PostgreSQL sync via NATS events |
 | Ingest Gateway | 8006 | Async bulk ingestion via NATS JetStream |
-| MCP Server | stdio/SSE | 69 tools, 4 resources for AI-assisted development |
+| MCP Server | stdio/SSE | 70 tools, 5 resources for AI-assisted development |
 | WIP Console | 8443 | Vue 3 + PrimeVue UI (served via Caddy reverse proxy) |
 
 **Infrastructure:** MongoDB (primary store), PostgreSQL (reporting), NATS JetStream (events), MinIO (files), Caddy (proxy/TLS), Dex (OIDC)
@@ -388,7 +388,7 @@ WorldInPie/
 │   ├── document-store/       # Document storage, files, import, replay
 │   ├── reporting-sync/       # PostgreSQL sync
 │   ├── ingest-gateway/       # Async ingestion via NATS
-│   ├── mcp-server/           # MCP server (69 tools, 4 resources)
+│   ├── mcp-server/           # MCP server (70 tools, 5 resources)
 │   └── seed_data/            # Test data generation
 ├── docker-compose/           # Modular compose: base.yml + modules/
 ├── k8s/                      # Kubernetes manifests

@@ -476,6 +476,76 @@ If any of these feel natural, re-read this resource.
 """
 
 
+@mcp.resource("wip://query-assistant-prompt")
+async def get_query_assistant_prompt() -> str:
+    """Complete system prompt for a WIP query assistant.
+
+    Dynamic resource: calls describe_data_model() at read time to embed a
+    live data model catalog. Use this as the system prompt for any agent
+    that answers natural-language questions against WIP data.
+    """
+    # Build the live data model section
+    try:
+        data_model = await _build_data_model_markdown(namespace=None)
+    except Exception:
+        data_model = (
+            "**Data model unavailable.** Call the `describe_data_model` tool "
+            "at the start of your session to discover available templates and fields."
+        )
+
+    return f"""You are a WIP query assistant. You help users find and explore data stored in a WIP (World In a Pie) document store through natural language.
+
+## Your Capabilities
+
+You have access to **read-only** MCP tools connected to a WIP instance. You can:
+- Search across all documents (free text and structured queries)
+- List, filter, and retrieve documents by template
+- Look up terminologies and their terms
+- Run SQL queries against the reporting database for aggregations and analytics
+- Describe the data model to understand what's available
+
+You **cannot** create, modify, or delete anything. All tools are read-only.
+
+## How to Answer Questions
+
+1. **Always use tools.** Never guess or fabricate data — query WIP for accurate answers.
+2. **Call `describe_data_model` first** if you don't know what templates and fields are available.
+3. **Be concise.** Give the answer, not an essay.
+4. **Format nicely.** Use markdown: tables for comparisons, bold for key stats, headers for sections.
+5. **Cite specifics.** Include exact values from the data.
+
+## Query Strategy
+
+- Use `search` for broad text searches across all entity types.
+- Use `query_by_template` to list/filter documents of a specific template type.
+- Term field values are UPPERCASE (e.g., "BEAST", "EVOCATION").
+- Reference fields store entity IDs — use `get_document` to resolve them to full details.
+- For aggregations, cross-template JOINs, or analytics, use `run_report_query` with SQL.
+  - Table names: `doc_{{template_value}}` in lowercase (e.g., `doc_patient`, `doc_bank_transaction`).
+  - Use `list_report_tables` to discover available tables and columns.
+- Only return latest versions of documents unless the user asks about version history.
+
+## Available Data Model
+
+{data_model}
+
+## Response Style
+
+- For a single entity lookup: show its full details.
+- For comparisons: use a table.
+- For "what can do X" questions: list matching entities with key details.
+- For counts or statistics: use `run_report_query` with SQL.
+- Keep answers under 500 words unless the user asks for detailed analysis.
+
+## What NOT to Do
+
+- Don't guess. If the data isn't there, say so.
+- Don't invent entities, fields, or values that don't exist in the data model.
+- Don't attempt to modify data — you are read-only.
+- Don't expose internal IDs (template_id, document_id) unless the user asks for them.
+"""
+
+
 # ===================================================================
 # Tools — Discovery
 # ===================================================================
@@ -497,6 +567,121 @@ async def get_wip_status() -> str:
                 lines.append(f"    error: {info['error']}")
         lines.insert(1, f"  overall: {'all healthy' if all_healthy else 'DEGRADED'}")
         return "\n".join(lines)
+    except Exception as e:
+        return _error(e)
+
+
+async def _build_data_model_markdown(namespace: str | None = None) -> str:
+    """Build a markdown description of the data model. Raises on error."""
+    client = get_client()
+
+    # Fetch all active templates (fields are returned inline)
+    all_templates: list[dict] = []
+    page = 1
+    while True:
+        data = await client.list_templates(
+            namespace=namespace, status="active", latest_only=True,
+            page=page, page_size=100,
+        )
+        all_templates.extend(data.get("items", []))
+        if page >= data.get("pages", 1):
+            break
+        page += 1
+
+    # Fetch all active terminologies
+    all_terminologies: list[dict] = []
+    page = 1
+    while True:
+        data = await client.list_terminologies(
+            namespace=namespace, page=page, page_size=100,
+        )
+        items = data.get("items", [])
+        # Filter to active only (list_terminologies doesn't have status param)
+        all_terminologies.extend(t for t in items if t.get("status") == "active")
+        if page >= data.get("pages", 1):
+            break
+        page += 1
+
+    # Build markdown output
+    lines: list[str] = ["# WIP Data Model"]
+
+    if namespace:
+        lines.append(f"\nNamespace: **{namespace}**")
+
+    # --- Templates overview ---
+    lines.append(f"\n## Templates ({len(all_templates)})\n")
+    if all_templates:
+        lines.append("| Template | Label | Fields | Identity Fields | Namespace |")
+        lines.append("|----------|-------|--------|-----------------|-----------|")
+        for t in sorted(all_templates, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            label = t.get("label", "")
+            fields = t.get("fields", [])
+            identity = ", ".join(t.get("identity_fields", []))
+            ns = t.get("namespace", "")
+            lines.append(f"| {value} | {label} | {len(fields)} | {identity or '—'} | {ns} |")
+
+        # --- Fields per template ---
+        lines.append("\n## Fields by Template\n")
+        for t in sorted(all_templates, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            fields = t.get("fields", [])
+            if not fields:
+                continue
+            lines.append(f"### {value}\n")
+            lines.append("| Field | Type | Mandatory | Term Terminology | Description |")
+            lines.append("|-------|------|-----------|------------------|-------------|")
+            for f in fields:
+                name = f.get("name", "?")
+                ftype = f.get("field_type", "text")
+                mandatory = "yes" if f.get("mandatory") else ""
+                term_ref = f.get("term_terminology_id") or f.get("term_terminology_value") or ""
+                desc = (f.get("description") or "")[:60]
+                lines.append(f"| {name} | {ftype} | {mandatory} | {term_ref} | {desc} |")
+            lines.append("")
+    else:
+        lines.append("No active templates found.")
+
+    # --- Terminologies ---
+    lines.append(f"\n## Terminologies ({len(all_terminologies)})\n")
+    if all_terminologies:
+        lines.append("| Terminology | Label | Terms | Mutable | Namespace |")
+        lines.append("|-------------|-------|-------|---------|-----------|")
+        for t in sorted(all_terminologies, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            label = t.get("label", "")
+            term_count = t.get("term_count", t.get("active_term_count", "?"))
+            mutable = "yes" if t.get("mutable") else ""
+            ns = t.get("namespace", "")
+            lines.append(f"| {value} | {label} | {term_count} | {mutable} | {ns} |")
+    else:
+        lines.append("No active terminologies found.")
+
+    # --- Query conventions ---
+    lines.append("\n## Query Conventions\n")
+    lines.append("- Use `query_by_template` to list/filter documents of a specific template.")
+    lines.append("- Use `search` for cross-template free-text search.")
+    lines.append("- Term field values are UPPERCASE (e.g., creature_type: \"BEAST\").")
+    lines.append("- Reference fields store entity IDs — use `get_document` to resolve.")
+    lines.append("- Use `run_report_query` for SQL aggregations, JOINs, and analytics.")
+    lines.append("- Table names in PostgreSQL: `doc_{template_value}` (lowercase).")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def describe_data_model(namespace: str | None = None) -> str:
+    """Describe the full data model: all active templates with fields, and terminologies.
+
+    Returns a markdown summary suitable for system prompt injection. Use this to
+    understand what data is available before querying. Covers templates (with all
+    fields, types, and constraints), terminologies, and query conventions.
+
+    Args:
+        namespace: Filter to a specific namespace. None = all namespaces.
+    """
+    try:
+        return await _build_data_model_markdown(namespace)
     except Exception as e:
         return _error(e)
 
