@@ -1,7 +1,7 @@
 # Design: Authentication & Authorization
 
-**Status:** Draft
-**Priority:** Phase 1 is critical — apps currently serve sensitive data to anyone on the network
+**Status:** Phase 1 implemented (2026-03-31), Phases 2-4 designed
+**Priority:** Phase 1 was critical — apps previously served sensitive data to anyone on the network
 
 ## Problem
 
@@ -14,152 +14,150 @@ This is the single most important gap. Everything else — per-namespace permiss
 | Layer | Status | Notes |
 |-------|--------|-------|
 | Service auth (API keys) | Working | All services validate `X-API-Key` |
-| Console auth (OIDC) | Working | Caddy + Dex, JWT tokens, login page |
-| App auth | **Missing** | `@wip/proxy` injects API key; no user identity |
+| Console auth (OIDC) | Working | Client-side via `oidc-client-ts` + Dex, sends JWT to WIP services |
+| App auth | **Phase 1 done** | App-side OIDC via `openid-client` + `express-session`, opt-in via `OIDC_ISSUER` |
 | Namespace permissions | Designed, not enforced | `namespace-authorization.md` — grants exist, `check_namespace_permission()` exists, routes don't call it |
 | User management | Static Dex config | No self-service, no dynamic user creation |
-| Per-user audit trail | Missing for apps | All app requests look like "api-key-123", not "Alice" |
+| Per-user audit trail | Plumbed, not verified | `TrustedHeaderProvider` sets `identity_string` to user email |
 | Constellation / multi-app isolation | Not designed | Apps share one user pool, one Dex |
 
-### What works today
+### How authentication works today
 
 ```
-Console user  ──OIDC──►  Caddy  ──JWT──►  WIP Services     ✅ authenticated
-App user      ──HTTP──►  App    ──API key──►  WIP Services  ❌ no user identity
-Script/CLI    ──API key──────────────────►  WIP Services     ✅ authenticated (service identity)
+Console user  ──oidc-client-ts──►  Dex  ──JWT──►  WIP Services     ✅ user identity
+App user      ──browser──►  App (openid-client)  ──session──►  @wip/proxy  ──X-WIP-User + API key──►  WIP Services  ✅ user identity (Phase 1)
+App user (no OIDC)  ──browser──►  App  ──API key only──►  WIP Services  ⚠️ service identity only
+Script/CLI    ──API key──────────────────────────────────►  WIP Services  ✅ service identity
 ```
 
-The gap is clear: app users are invisible to WIP.
+**Key finding (2026-03-31):** The original design assumed Caddy had a `caddy-security` OIDC plugin. It does not. The Console handles OIDC entirely client-side (`oidc-client-ts` in Vue, talks to Dex directly, sends Bearer JWT to WIP). Caddy is stock `caddy:2-alpine` — a plain reverse proxy with no auth plugins. Phase 1 was redesigned to use app-side OIDC instead.
 
 ## Design Principles
 
 1. **Phase 1 blocks everything.** No fine-grained permissions, no audit trails, no multi-tenant — until apps know who the user is.
 2. **Reuse what exists.** Dex is already running. OIDC is already integrated. The Console login flow works. Extend, don't replace.
-3. **Zero per-app auth code.** Apps should not implement login pages, token management, or session handling. The infrastructure handles it.
-4. **Backwards compatible.** Single-user Podman deployments work unchanged. Auth is opt-in per deployment.
+3. **No custom infrastructure.** Stock Caddy, no plugins, no sidecars. Auth lives in the app's Express server using a shared middleware pattern.
+4. **Backwards compatible.** Single-user Podman deployments work unchanged. Auth is opt-in: set `OIDC_ISSUER` to enable, omit it for no auth.
 5. **Progressive disclosure.** Phase 1 is a gate (authenticated or not). Phase 2 adds "what can you do?". Phase 3 adds "who did what?". Phase 4 adds multi-app isolation.
 
 ---
 
-## Phase 1: Gateway Authentication — No Anonymous Access to Apps
+## Phase 1: App-Side OIDC — No Anonymous Access (Implemented)
 
 **Goal:** Every app request comes from an identified user. No anonymous access.
 
 ### How It Works
 
 ```
-User  ──HTTP──►  Caddy  ──session cookie?──►  No  ──►  Redirect to Dex login
-                                               Yes ──►  Inject identity headers ──► App
+User  ──browser──►  App (Express)
+                      │
+                      ├── Has session cookie? ──► No  ──► Redirect to Dex login (PKCE flow)
+                      │                           Yes ──► Inject X-WIP-User, X-WIP-Groups into request
+                      │
+                      ├── @wip/proxy (forwardIdentity: true)
+                      │     Copies identity headers + API key to upstream
+                      │
+                      └──► WIP Service
+                             TrustedHeaderProvider validates X-WIP-User + X-API-Key
+                             Returns UserIdentity with auth_method="gateway_oidc"
 ```
 
-Caddy already does OIDC for the Console via the `caddy-security` plugin. Extend the same pattern to app routes.
+Auth is handled by the app's own Express server using `openid-client` (server-side OIDC with PKCE). No Caddy plugin, no sidecar. The app creates a session after Dex callback, then injects identity headers on every authenticated request.
 
-### Caddy Configuration
+### Components
 
-```caddyfile
-# Existing: Console OIDC (already works)
-@console path /console/*
-handle @console {
-    # ... existing OIDC config ...
-}
+**1. App auth middleware (`server/auth.ts` in scaffold)**
 
-# New: App OIDC — same Dex, same flow, same session
-@apps path /apps/*
-handle @apps {
-    authenticate with dex_oidc {
-        # Same OIDC config as Console
-    }
+Express middleware using `openid-client` for server-side OIDC:
+- Redirects unauthenticated users to Dex login (authorization code flow with PKCE)
+- Handles `/auth/callback` — exchanges code for tokens, creates Express session
+- Handles `/auth/logout` — destroys session
+- Sets `X-WIP-User`, `X-WIP-Groups`, `X-WIP-Auth-Method` on authenticated requests
+- Opt-in: only active when `OIDC_ISSUER` env var is set
 
-    # Inject user identity into upstream requests
-    header_up X-WIP-User {http.auth.user.email}
-    header_up X-WIP-Groups {http.auth.user.groups}
-    header_up X-WIP-Auth-Method oidc
-
-    reverse_proxy {upstream}
-}
-```
-
-After authentication, Caddy injects three headers:
-
-| Header | Value | Example |
-|--------|-------|---------|
-| `X-WIP-User` | User's email from OIDC | `peter@wip.local` |
-| `X-WIP-Groups` | Comma-separated groups from JWT | `wip-admins,wip-editors` |
-| `X-WIP-Auth-Method` | Always `oidc` at gateway level | `oidc` |
-
-### App-Side: `@wip/proxy` Changes
-
-`@wip/proxy` currently injects a static API key into all WIP requests. After Phase 1, it gains a second mode: **forward user identity** from gateway headers.
+**2. `@wip/proxy` identity forwarding (`forwardIdentity: true`)**
 
 ```typescript
-// Before (current): static API key
 app.use('/wip', wipProxy({
   baseUrl: WIP_BASE_URL,
-  apiKey: WIP_API_KEY,           // Service account key
-}))
-
-// After: forward user identity + API key for service auth
-app.use('/wip', wipProxy({
-  baseUrl: WIP_BASE_URL,
-  apiKey: WIP_API_KEY,           // Still needed: service-to-service auth
+  apiKey: WIP_API_KEY,           // Service-to-service auth
   forwardIdentity: true,         // Forward X-WIP-User and X-WIP-Groups
 }))
 ```
 
-When `forwardIdentity: true`, the proxy:
-1. Reads `X-WIP-User` and `X-WIP-Groups` from the incoming request (set by Caddy)
-2. Forwards them to WIP services alongside the API key
-3. WIP services see both: the API key (for service auth) and the user identity (for audit + authorization)
+When `forwardIdentity: true`, the proxy copies three headers from the incoming request to upstream WIP services:
+- `X-WIP-User` — user email (e.g., `admin@wip.local`)
+- `X-WIP-Groups` — comma-separated groups (e.g., `wip-admins,wip-editors`)
+- `X-WIP-Auth-Method` — always `gateway_oidc`
 
-### wip-auth: Accept Forwarded Identity
-
-wip-auth already validates API keys and JWTs. Add a third path: **trusted header identity**.
+**3. `TrustedHeaderProvider` in wip-auth**
 
 ```python
-# New provider: TrustedHeaderProvider
-# Only active when WIP_AUTH_TRUST_PROXY_HEADERS=true (opt-in, not default)
-
 class TrustedHeaderProvider:
-    """Accept user identity from trusted gateway headers."""
+    """Accept user identity from trusted gateway/proxy headers.
 
-    async def authenticate(self, request: Request) -> AuthResult | None:
-        user = request.headers.get("X-WIP-User")
-        groups = request.headers.get("X-WIP-Groups")
+    Requires BOTH X-WIP-User AND a valid X-API-Key.
+    The API key proves the request came through a trusted proxy.
+    """
 
+    async def authenticate(self, request: Request) -> UserIdentity | None:
+        user = request.headers.get("x-wip-user")
         if not user:
             return None  # Fall through to next provider
 
-        # API key must also be present (service auth)
-        # This prevents anyone from spoofing headers without the key
-        api_key = request.headers.get("X-API-Key")
-        if not api_key:
-            return None
+        # Validate API key — prevents header spoofing
+        api_key = request.headers.get(self.header_name.lower())
+        if not api_key or not self._validate_api_key(api_key):
+            return None  # X-WIP-User without valid API key = untrusted
 
-        return AuthResult(
-            identity=UserIdentity(
-                user_id=user,
-                username=user.split("@")[0],
-                email=user,
-                groups=groups.split(",") if groups else [],
-                auth_method="gateway_oidc",
-                provider="caddy",
-            ),
-            method="trusted_header",
+        groups = parse_groups(request.headers.get("x-wip-groups", ""))
+
+        return UserIdentity(
+            user_id=user,
+            username=user.split("@")[0],
+            email=user,
+            groups=groups or self.default_groups,
+            auth_method="gateway_oidc",
+            provider="trusted_header",
         )
 ```
 
-**Security:** The trusted header provider requires both:
-- Valid `X-WIP-User` header (from gateway)
-- Valid `X-API-Key` header (from `@wip/proxy`)
+Enabled via `WIP_AUTH_TRUST_PROXY_HEADERS=true`. When enabled, prepended to the provider chain (before JWT and API key providers).
 
-This prevents header spoofing — you can't just set `X-WIP-User` without also having a valid API key. The API key proves the request came through a trusted app proxy.
+**4. Dex client registration**
+
+```yaml
+# config/dex/config.yaml
+staticClients:
+  - id: wip-apps
+    name: WIP Apps
+    secret: wip-apps-secret
+    redirectURIs:
+    - http://localhost:3001/auth/callback
+    - http://localhost:3002/auth/callback
+    - http://localhost:3003/auth/callback
+    - http://localhost:3004/auth/callback
+    - http://localhost:3005/auth/callback
+```
+
+Separate client from `wip-console` — apps use server-side OIDC with a shared secret, Console uses client-side OIDC.
+
+### Security Model
+
+The trusted header provider requires **both** `X-WIP-User` and a valid `X-API-Key`. This prevents spoofing:
+
+| Scenario | X-WIP-User | X-API-Key | Result |
+|----------|-----------|-----------|--------|
+| Normal app request (authenticated) | `admin@wip.local` | Valid | `UserIdentity(auth_method="gateway_oidc")` |
+| Normal app request (no OIDC) | absent | Valid | Falls through to `APIKeyProvider` |
+| Spoofing attempt | `admin@wip.local` | absent | `None` (ignored, warning logged) |
+| Spoofing attempt | `admin@wip.local` | invalid | `None` (ignored, warning logged) |
 
 ### K8s Deployment
 
-On K8s with NGINX Ingress, use `oauth2-proxy` as a sidecar or Ingress-level annotation:
+On K8s, the same app-side pattern works unchanged. Alternatively, `oauth2-proxy` as an Ingress sidecar can handle OIDC and inject the same headers:
 
 ```yaml
-# Ingress annotation approach
 metadata:
   annotations:
     nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.wip.svc/oauth2/auth"
@@ -167,36 +165,41 @@ metadata:
     nginx.ingress.kubernetes.io/auth-response-headers: "X-WIP-User,X-WIP-Groups"
 ```
 
-Same result: by the time the request reaches the app, identity headers are present.
+Both approaches produce the same headers — `TrustedHeaderProvider` doesn't care who set them, only that a valid API key accompanies them.
 
 ### What This Gives Us
 
-- No anonymous access to any app behind the gateway
-- User identity visible to apps (for display: "Logged in as Peter")
-- User identity forwarded to WIP (for future audit + authorization)
-- Same login page for Console and all apps (consistent UX)
+- No anonymous access to any app with `OIDC_ISSUER` set
+- User identity visible to apps (`/api/me` endpoint, session data)
+- User identity forwarded to WIP (`created_by`/`updated_by` show actual user email)
+- Same Dex users/groups for Console and all apps
 - Existing API key auth unchanged for scripts, CLI tools, direct API access
+- Local dev without auth continues to work (no `OIDC_ISSUER` = no auth)
+- No custom Caddy build needed — stock `caddy:2-alpine` throughout
 
 ### What This Does NOT Give Us
 
-- No per-namespace permission checks (Phase 2)
-- No per-user audit trail in WIP events (Phase 3)
-- No app-specific user pools (Phase 4)
-- Apps that run outside the gateway (standalone) still need their own auth (Phase 4)
+- Caddy-level auth enforcement (apps must use the middleware — an app that skips it is unprotected)
+- Single sign-out across apps (each app has its own Express session)
+- Per-namespace permission checks (Phase 2)
+- Per-user audit trail verification (Phase 3)
 
-### Implementation
+### Implementation (complete)
 
-| Step | File(s) | Change |
-|------|---------|--------|
-| 1 | `config/caddy/Caddyfile` | Add OIDC + header injection for `/apps/*` routes |
-| 2 | `libs/wip-proxy/src/api-proxy.ts` | Add `forwardIdentity` option, forward `X-WIP-User` + `X-WIP-Groups` |
-| 3 | `libs/wip-auth/src/wip_auth/providers/trusted_header.py` | New provider: accept forwarded identity |
-| 4 | `libs/wip-auth/src/wip_auth/config.py` | Add `WIP_AUTH_TRUST_PROXY_HEADERS` setting |
-| 5 | `libs/wip-auth/src/wip_auth/middleware.py` | Register TrustedHeaderProvider when enabled |
-| 6 | `scripts/setup.sh` | Generate Caddyfile with app OIDC config |
-| 7 | Tests | Verify header forwarding, verify spoofing is blocked without API key |
+| Component | File(s) | Change |
+|-----------|---------|--------|
+| wip-auth | `providers/trusted_header.py` | New provider: accept forwarded identity + validate API key |
+| wip-auth | `config.py` | `trust_proxy_headers: bool` setting |
+| wip-auth | `__init__.py`, `providers/__init__.py` | Register provider in factory, exports |
+| wip-auth | `models.py` | Add `gateway_oidc` to `auth_method` Literal |
+| wip-auth | `tests/test_trusted_header.py` | 14 tests: valid/invalid combos, groups parsing, config integration |
+| @wip/proxy | `api-proxy.ts`, `file-proxy.ts`, `index.ts` | `forwardIdentity` option, forward 3 headers |
+| Dex | `config/dex/config.yaml` | `wip-apps` static client |
+| Scaffold | `server/auth.ts` | OIDC middleware (openid-client, PKCE, express-session) |
+| Scaffold | `server/index.ts` | Wire auth middleware, `/auth/*` routes, `/api/me` |
+| Scaffold | `package.json`, `.env.example` | Dependencies, OIDC env vars |
 
-**Estimated scope:** ~150 lines of new code across 5 files. Most complexity is in Caddyfile configuration.
+Versions: wip-auth 0.4.0, @wip/proxy 0.2.0
 
 ---
 
@@ -220,24 +223,22 @@ User  ──has──►  NamespaceGrant  ──on──►  Namespace
 - `write` — create, update, delete
 - `admin` — manage templates, terminologies, grants
 
-### Key Changes from Existing Design
+### Enforcement
 
-The namespace-authorization design assumes services validate permissions themselves via Registry calls. With Phase 1's gateway headers, we can add a **faster enforcement point**:
+Permission checks happen in wip-auth (service-side), not at the gateway. The gateway only handles authentication. This keeps the architecture clean — neither Caddy nor the app needs to know about namespaces.
 
 ```
-Gateway (Caddy)                    App (@wip/proxy)                 WIP Service
-       │                                    │                             │
-  OIDC login ✅                              │                             │
-  Inject X-WIP-User                          │                             │
-       ├──────────────────────────────────►  │                             │
-       │                           Forward identity + API key              │
-       │                                    ├────────────────────────────► │
-       │                                    │              check_namespace_permission()
-       │                                    │              (wip-auth, cached)
-       │                                    │                     ✅ or 403│
+App (Express)                      @wip/proxy                       WIP Service
+      │                                 │                                │
+ OIDC login ✅                           │                                │
+ Inject X-WIP-User                       │                                │
+      ├─────────────────────────────►    │                                │
+      │                        Forward identity + API key                 │
+      │                                 ├──────────────────────────────► │
+      │                                 │              check_namespace_permission()
+      │                                 │              (wip-auth, cached)
+      │                                 │                        ✅ or 403│
 ```
-
-Permission checks happen in wip-auth (service-side), not at the gateway. The gateway only handles authentication. This keeps the architecture clean — Caddy doesn't need to know about namespaces.
 
 ### Enforcement Rollout
 
@@ -257,30 +258,26 @@ The `wip-admins` superadmin bypass ensures single-user deployments are unaffecte
 
 ### Current State
 
-WIP already tracks `created_by` and `updated_by` on documents, templates, and terminologies. But for app-originated requests, these fields contain the API key name (e.g., `apikey:clintrial-app`), not the actual user.
+WIP already tracks `created_by` and `updated_by` on documents, templates, and terminologies. With Phase 1 complete, `TrustedHeaderProvider` sets `identity_string` to the user's email (e.g., `admin@wip.local`) instead of the API key name (e.g., `apikey:legacy`). This is already plumbed — Phase 3 is verification and Console UI updates.
 
-### Change
-
-With Phase 1's forwarded identity headers, wip-auth resolves the user identity. The `identity_string` used for audit becomes `user:peter@wip.local` instead of `apikey:clintrial-app`.
-
-This is mostly free once Phase 1 is done. The remaining work:
+### Remaining Work
 
 | Step | Change |
 |------|--------|
-| 1 | Verify `identity_string` uses forwarded user when available |
-| 2 | NATS events include `changed_by` with user identity (already plumbed) |
-| 3 | Reporting-sync preserves `changed_by` in PostgreSQL (already does this) |
+| 1 | Verify `identity_string` shows user email end-to-end (app → proxy → service → MongoDB) |
+| 2 | Verify NATS events carry user identity in `changed_by` |
+| 3 | Verify reporting-sync preserves user identity in PostgreSQL |
 | 4 | Console: show actual user in audit columns, not API key name |
 
 ### Audit in Events
 
-NATS events already carry `changed_by`. Once the user identity flows through, events become:
+NATS events already carry `changed_by`. With Phase 1's identity flowing through:
 
 ```json
 {
     "event_type": "document.updated",
-    "changed_by": "user:peter@wip.local",
-    "document": { ... }
+    "changed_by": "admin@wip.local",
+    "document": { "..." }
 }
 ```
 
@@ -289,8 +286,8 @@ Instead of:
 ```json
 {
     "event_type": "document.updated",
-    "changed_by": "apikey:clintrial-app",
-    "document": { ... }
+    "changed_by": "apikey:legacy",
+    "document": { "..." }
 }
 ```
 
@@ -316,26 +313,15 @@ Today, all apps share one Dex instance with one set of users. ClinTrial users se
 
 **Recommendation:** Option C for most cases. Option A when external IdP integration is needed (e.g., hospital LDAP for a clinical app). Option B only for air-gapped deployments.
 
-### 4B: Stand-Alone App Auth
+### 4B: Gateway-Level Auth (Caddy or NGINX)
 
-Apps deployed outside the WIP gateway (e.g., a public-facing web app, a mobile app) can't rely on Caddy's OIDC. They need to authenticate users themselves.
+If a future deployment needs auth enforcement at the reverse proxy level (e.g., protecting apps that don't use the scaffold middleware), two options:
 
-**Approach:** The app implements its own OIDC flow against the same Dex instance (or any OIDC provider). The app's backend validates the JWT and forwards identity headers to WIP via `@wip/proxy`.
+**Option A: Custom Caddy build** — Build Caddy with the `caddy-security` plugin for server-side OIDC. Requires maintaining a custom Docker image.
 
-```typescript
-// Stand-alone mode: app validates JWT itself
-app.use('/wip', wipProxy({
-  baseUrl: WIP_BASE_URL,
-  apiKey: WIP_API_KEY,
-  // App sets X-WIP-User from its own auth middleware
-  identityFromRequest: (req) => ({
-    user: req.auth.email,       // From app's own JWT validation
-    groups: req.auth.groups,
-  }),
-}))
-```
+**Option B: `oauth2-proxy` sidecar** — Deploy `oauth2-proxy` alongside Caddy or NGINX Ingress. Handles OIDC, injects the same `X-WIP-User`/`X-WIP-Groups` headers. No custom builds, but an extra container.
 
-This works because WIP's trusted header provider doesn't care whether Caddy or the app set the headers — it only requires a valid API key alongside them.
+Neither is needed while apps use the scaffold auth middleware. These are fallback options for apps that can't or don't want to handle auth themselves.
 
 ### 4C: WIP as Auth Provider
 
@@ -352,19 +338,19 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 
 ## Phase Summary
 
-| Phase | Goal | Prerequisite | Scope |
-|-------|------|-------------|-------|
-| **1** | **No anonymous app access** | App Gateway (Phase 2 in `app-gateway.md`) | ~150 lines, 5 files |
-| **2** | Per-namespace permissions | Phase 1 | Already designed (`namespace-authorization.md`), ~200 lines |
-| **3** | Per-user audit trail | Phase 1 | Mostly free — verify identity flows through |
-| **4A** | Per-app user isolation | Phase 2 | Design needed — Dex connectors or app-scoped grants |
-| **4B** | Stand-alone app auth | Phase 1 | ~50 lines in `@wip/proxy` |
-| **4C** | WIP as auth provider | All | Major effort — deferred |
+| Phase | Goal | Prerequisite | Status |
+|-------|------|-------------|--------|
+| **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
+| **2** | Per-namespace permissions | Phase 1 | Designed (`namespace-authorization.md`), not started |
+| **3** | Per-user audit trail | Phase 1 | Plumbed by Phase 1, needs verification |
+| **4A** | Per-app user isolation | Phase 2 | Design needed |
+| **4B** | Gateway-level auth | Phase 1 | Fallback option, not needed while apps use scaffold |
+| **4C** | WIP as auth provider | All | Deferred |
 
 ## Dependency Graph
 
 ```
-Phase 1: Gateway Auth
+Phase 1: App-Side OIDC  ✅
     │
     ├──────────────────┐
     ▼                  ▼
@@ -378,21 +364,19 @@ Constellation
 
 ## Open Questions
 
-1. **Session management.** Caddy's OIDC plugin handles sessions via cookies. What's the session lifetime? Should it match Dex token expiry (15 min) or be longer with silent refresh? Console currently uses 15-min tokens with automatic refresh — apps should match.
+1. **Session lifetime.** App sessions default to 24 hours. Dex ID tokens expire in 15 minutes. Should apps refresh tokens silently, or is a long session acceptable since the API key provides the service-level trust boundary?
 
-2. **Logout.** If a user logs out of one app, do they log out of all apps? With shared Caddy sessions, probably yes (single sign-out). Is this desired?
+2. **Single sign-out.** Each app has its own Express session — logging out of one app doesn't log out of others. Is this acceptable, or should we implement back-channel logout via Dex?
 
-3. **API key + user identity coexistence.** In Phase 1, requests carry both an API key (service auth) and user identity (from headers). Should the API key's permissions constrain the user's? E.g., if the API key is restricted to namespace `dnd`, should a `wip-admins` user be limited to `dnd` through that app? **Probably yes** — the API key represents the app's scope, and the user's permissions are intersected with it.
+3. **API key + user identity intersection.** Requests carry both an API key (service auth) and user identity (from headers). Should the API key's namespace restrictions constrain the user's permissions? **Probably yes** — the API key represents the app's scope, and the user's permissions are intersected with it.
 
-4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But what if an attacker compromises an API key? They can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (it already is — see `docs/security/key-rotation.md`).
-
-5. **Mobile / native apps.** These can't use cookie-based sessions. They need token-based auth (OIDC authorization code flow with PKCE). This is a Phase 4B concern, but worth noting that the architecture supports it — `@wip/proxy` already forwards tokens.
+4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But if an attacker compromises an API key, they can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (see `docs/security/key-rotation.md`).
 
 ## Relationship to Existing Designs
 
 | Document | Relationship |
 |----------|-------------|
-| `app-gateway.md` | Phase 1 here = Phase 4 there. Gateway routing (Phases 2-3 there) is a prerequisite. |
+| `app-gateway.md` | Phase 1 here is independent of gateway routing. Gateway (Phases 2-3 there) is needed for multi-app sub-path routing, not for auth. |
 | `namespace-authorization.md` | Phase 2 here = that entire document. Already designed in detail. |
 | `authentication.md` | Reference doc for current auth. Needs updating after each phase. |
 | `security/key-rotation.md` | API key management. Relevant to Phase 1 (app API keys) and Phase 4 (header trust). |
