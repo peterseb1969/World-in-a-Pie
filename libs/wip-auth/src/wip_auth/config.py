@@ -103,6 +103,12 @@ class AuthConfig(BaseSettings):
         description="Salt used when hashing API keys"
     )
 
+    # Trusted proxy headers
+    trust_proxy_headers: bool = Field(
+        default=False,
+        description="Trust X-WIP-User/X-WIP-Groups headers from proxies (requires valid API key)"
+    )
+
     # Groups
     default_groups: list[str] = Field(
         default_factory=lambda: ["wip-users"],

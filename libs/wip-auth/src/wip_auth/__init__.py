@@ -62,6 +62,7 @@ from .providers import (
     AuthProvider,
     NoAuthProvider,
     OIDCProvider,
+    TrustedHeaderProvider,
     hash_api_key,
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
@@ -75,7 +76,7 @@ from .resolve import (
 )
 from .security import check_production_security
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "APIKeyProvider",
@@ -91,6 +92,7 @@ __all__ = [
     "NoAuthProvider",
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
+    "TrustedHeaderProvider",
     # Models
     "UserIdentity",
     # Permissions
@@ -161,6 +163,16 @@ def create_providers_from_config(
     elif config.mode == "api_key_only":
         # API key only - load keys and create provider
         keys = config.load_api_keys()
+
+        # Trusted header provider runs first (checks X-WIP-User + API key)
+        if config.trust_proxy_headers and keys:
+            providers.append(TrustedHeaderProvider(
+                keys=keys,
+                header_name=config.api_key_header,
+                hash_salt=config.api_key_hash_salt,
+                default_groups=config.default_groups,
+            ))
+
         providers.append(APIKeyProvider(
             keys=keys,
             header_name=config.api_key_header,
@@ -186,8 +198,19 @@ def create_providers_from_config(
         ))
 
     elif config.mode == "dual":
-        # Dual mode - try JWT first, then API key
-        # JWT is checked first because Bearer token is more explicit
+        # Dual mode - try trusted headers first, then JWT, then API key
+        keys = config.load_api_keys()
+
+        # Trusted header provider runs first (checks X-WIP-User + API key)
+        if config.trust_proxy_headers and keys:
+            providers.append(TrustedHeaderProvider(
+                keys=keys,
+                header_name=config.api_key_header,
+                hash_salt=config.api_key_hash_salt,
+                default_groups=config.default_groups,
+            ))
+
+        # JWT is checked next because Bearer token is more explicit
         if config.jwt_issuer_url or config.jwt_jwks_uri:
             providers.append(OIDCProvider(
                 issuer_url=config.jwt_issuer_url,
@@ -200,7 +223,6 @@ def create_providers_from_config(
                 leeway=config.jwt_leeway_seconds,
             ))
 
-        keys = config.load_api_keys()
         if keys:
             providers.append(APIKeyProvider(
                 keys=keys,
