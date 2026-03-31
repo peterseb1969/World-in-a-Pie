@@ -11,6 +11,8 @@ export interface WipProxyOptions {
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
+  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  forwardIdentity?: boolean
 }
 
 /**
@@ -41,11 +43,13 @@ export function wipProxy(options: WipProxyOptions): Router {
     apiKey: options.apiKey,
     bodyLimit,
     extraHeaders: options.extraHeaders,
+    forwardIdentity: options.forwardIdentity,
   }
 
   const fileOptions: FileProxyOptions = {
     baseUrl: options.baseUrl,
     apiKey: options.apiKey,
+    forwardIdentity: options.forwardIdentity,
   }
 
   // File content proxy — must be before the catch-all API routes

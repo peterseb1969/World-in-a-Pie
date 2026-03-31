@@ -1,10 +1,15 @@
 import { type Request, type Response } from 'express'
 
+/** Identity headers forwarded from gateway auth to WIP services */
+const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups', 'x-wip-auth-method'] as const
+
 export interface FileProxyOptions {
   /** WIP instance base URL (e.g., 'https://localhost:8443') */
   baseUrl: string
   /** API key for upstream requests */
   apiKey: string
+  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  forwardIdentity?: boolean
 }
 
 /**
@@ -31,9 +36,21 @@ export async function handleFileContent(
   const url = `${options.baseUrl}/api/document-store/files/${fileId}/content`
 
   try {
+    const headers: Record<string, string> = { 'X-API-Key': options.apiKey }
+
+    // Forward gateway identity headers to WIP services
+    if (options.forwardIdentity) {
+      for (const h of IDENTITY_HEADERS) {
+        const value = req.headers[h]
+        if (typeof value === 'string') {
+          headers[h] = value
+        }
+      }
+    }
+
     const upstream = await fetch(url, {
       method: 'GET',
-      headers: { 'X-API-Key': options.apiKey },
+      headers,
       redirect: 'follow',
     })
 

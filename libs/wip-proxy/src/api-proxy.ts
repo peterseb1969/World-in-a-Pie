@@ -1,5 +1,8 @@
 import { type Request, type Response } from 'express'
 
+/** Identity headers forwarded from gateway auth to WIP services */
+const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups', 'x-wip-auth-method'] as const
+
 export interface ApiProxyOptions {
   /** WIP instance base URL (e.g., 'https://localhost:8443') */
   baseUrl: string
@@ -9,6 +12,8 @@ export interface ApiProxyOptions {
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
+  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  forwardIdentity?: boolean
 }
 
 /** WIP service path prefixes that get proxied */
@@ -44,6 +49,16 @@ export async function handleApiProxy(
     const headers: Record<string, string> = {
       'X-API-Key': options.apiKey,
       ...options.extraHeaders,
+    }
+
+    // Forward gateway identity headers to WIP services
+    if (options.forwardIdentity) {
+      for (const h of IDENTITY_HEADERS) {
+        const value = req.headers[h]
+        if (typeof value === 'string') {
+          headers[h] = value
+        }
+      }
     }
 
     if (req.headers['content-type']) {
