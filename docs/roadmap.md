@@ -144,7 +144,7 @@ Add `mutable: true` flag on terminologies to support user-editable controlled vo
 
 - Design: `docs/design/mutable-terminologies.md`
 - Discovered: 2026-03-29 during ClinTrial app development
-- Status: Implemented (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client). Console UI pending.
+- Status: **Implemented** (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client, Console UI)
 
 ### Hard Delete for All Entity Types
 
@@ -442,8 +442,9 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
+| `authentication-authorization.md` | Phase 1 complete (app-side OIDC, not Caddy plugin), Phase 2-3 pending |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
-| `mutable-terminologies.md` | Implemented (Console UI pending) |
+| `mutable-terminologies.md` | Implemented |
 | `nl-query-scaffold.md` | Implemented |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |
