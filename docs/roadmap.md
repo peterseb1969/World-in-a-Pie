@@ -29,7 +29,7 @@ No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extr
 - Design: `docs/design/nl-query-scaffold.md`
 - Depends on: MCP Read-Only Mode
 - Validated by: WIP-DnD Compendium
-- Status: **Implemented** (2026-03-31) — `describe_data_model` tool (paginated, all fields inline), `wip://query-assistant-prompt` dynamic resource, `--preset query` scaffold with Express/Claude/React, 11 tests. Architecture guide deferred.
+- Status: **Complete** (2026-03-31) — all 4 deliverables. `describe_data_model` tool (paginated, all fields inline), `wip://query-assistant-prompt` dynamic resource, `--preset query` scaffold with Express/Claude/React, 11 tests. Architecture guide: `docs/nl-interface-guide.md`.
 
 ---
 
@@ -315,18 +315,17 @@ Must cover:
 
 ### MCP Server Transport Regression Tests
 
-Automated test coverage for the `--http`/`--sse` transport entry points added 2026-03-28. 32 existing tests cover client + tool wrappers; the transport layer has none.
+Automated test coverage for all three MCP transports (stdio, HTTP streamable, SSE). Uses real MCP client connections — no mocking of transports.
 
-Tests needed:
-1. `--http` flag → `mcp.streamable_http_app()` is called (not `sse_app()`)
-2. `--sse` flag → `mcp.sse_app()` still works (backward compat)
-3. `MCP_ALLOWED_HOST` env var → appended to transport security allowed hosts/origins
-4. `MCP_PORT` / `MCP_HOST` env vars → override FastMCP defaults (8000/127.0.0.1)
-5. `API_KEY` middleware → rejects missing/wrong key, accepts correct key (both transports)
+14 tests covering:
+- stdio: tool listing, resource listing, readonly mode
+- HTTP: tool listing, resource listing, API key accept/reject, custom port, no-key warning
+- SSE: tool listing, resource listing, API key reject
+- Cross-transport consistency: identical tool sets, identical resource sets across all three
 
-Target file: `components/mcp-server/tests/test_server.py` (new). Can mock uvicorn/anyio.
+Target file: `components/mcp-server/tests/test_transports.py`
 
-- Status: Not started
+- Status: **Done** (2026-03-31) — 14 tests, all passing
 
 ### PostgreSQL Reporting Integration Tests
 
@@ -460,7 +459,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
 | `mutable-terminologies.md` | Implemented (Console UI pending) |
-| `nl-query-scaffold.md` | Design complete, ready to implement |
+| `nl-query-scaffold.md` | Implemented |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |
 | `wip-nano.md` | Concept only |
@@ -481,7 +480,7 @@ These were previously on the roadmap and are now fully implemented:
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
 - Ontology support — OBO Graph JSON import, typed relationships, traversal
 - Template draft mode — draft status, cascading activation
-- MCP server — 69 tools, 4 resources, stdio + SSE + HTTP streamable transport, K8s deployment validated
+- MCP server — 71 tools, 5 resources, stdio + SSE + HTTP streamable transport, K8s deployment validated, 14 transport regression tests
 - @wip/client + @wip/react — TypeScript client and React hooks
 - CSV/XLSX import — preview + import endpoints in Document-Store
 - Event replay — start, pause, resume, cancel via API and MCP tools
