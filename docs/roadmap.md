@@ -45,6 +45,26 @@ Extend Caddy (Podman) or NGINX Ingress (K8s) with `/apps/{name}/*` routing, `app
 
 - Design: `docs/design/app-gateway.md`
 
+### App Scaffold: Zero-Friction Dev Setup
+
+App-builder agents waste significant time on infrastructure that should be solved at scaffold time. Observed in AuthorAssist build: port conflicts, TLS rejection, stale Vite proxy, data not showing. All knowable at project creation.
+
+**`create-app-project.sh` fixes:**
+- Auto-detect next free port (scan 3001–3010) and set it in `.env`, `vite.config.ts`, `server/index.ts`
+- Always set `NODE_TLS_REJECT_UNAUTHORIZED=0` in dev scripts (self-signed cert on localhost:8443)
+- Generate `.env` with actual values from the running WIP instance, not `/path/to/WorldInPie` placeholders
+
+**MCP resource `wip://app-dev-checklist`:**
+- Live: WIP instance URL, TLS status, available namespaces, templates per namespace
+- Live: port availability check
+- Static: common gotchas (Vite proxy restart, `@wip/react` WipProvider setup, namespace param required)
+
+**Scaffold server hardening:**
+- Health endpoint verifies WIP connectivity on startup, logs clear error if proxy fails
+- Boot message: "WIP proxy: connected to https://localhost:8443, namespace=X, Y templates found"
+
+- Discovered: 2026-03-31 during AuthorAssist app build (app-builder agent session)
+
 ### Ontology Browser — UX Refinements
 
 - Document list in detail panel needs rethinking
