@@ -1,75 +1,34 @@
 # WIP Roadmap
 
-Future plans, pending features, and design specifications.
-
----
-
-## v1.1
-
-**Focus:** MCP Read-Only Mode + Natural Language Query Scaffold (flagship feature).
-
-### MCP Read-Only Mode
-
-`WIP_MCP_MODE=readonly` env var that prevents registration of `create_*`, `import_*`, `archive_*`, `deactivate_*` tools. Same server, same code — the MCP protocol already handles tool visibility. Pairs with the `/analyst` slash command (already implemented) to create a Query Claude that physically cannot modify the data model. Prerequisite for the NL Query Scaffold (below).
-
-- Status: **Done** (2026-03-30) — `WIP_MCP_MODE=readonly` removes 31 write tools, 38 read tools remain. Instructions updated to reflect read-only mode. 4 tests.
-
-### NL Query Scaffold
-
-Turn the natural language interface pattern (validated in WIP-DnD Compendium with 1,384 entities) into reusable WIP infrastructure + app scaffolding. Every new WIP app should be NL-ready out of the box via `create-app-project.sh --preset query`.
-
-Four deliverables:
-1. **`describe_data_model` MCP tool** — returns all active templates with fields, formatted for system prompt injection. Replaces hardcoded template catalogs.
-2. **`wip://query-assistant-prompt` MCP resource** — complete system prompt combining generic query instructions + live template catalog. Apps read this at startup.
-3. **`--preset query` scaffold** — `create-app-project.sh` generates a working NL app: Express backend with Claude agentic loop, React chat widget, Vite proxy, all wired up.
-4. **Architecture guide** (`docs/nl-interface-guide.md`) — rationale behind key decisions (Haiku for cost, server-side sessions for security, dynamic prompts for compaction resilience).
-
-No `@wip/agent` library yet — the agent loop is scaffolded as owned code. Extract into a package after 3+ apps stabilize the pattern.
-
-- Design: `docs/design/nl-query-scaffold.md`
-- Depends on: MCP Read-Only Mode
-- Validated by: WIP-DnD Compendium
-- Status: **Complete** (2026-03-31) — all 4 deliverables. `describe_data_model` tool (paginated, all fields inline), `wip://query-assistant-prompt` dynamic resource, `--preset query` scaffold with Express/Claude/React, 11 tests. Architecture guide: `docs/nl-interface-guide.md`.
+Current priorities and planned features. For completed work, see `docs/completed-features.md`.
 
 ---
 
 ## Near-Term
 
-### BUG: Reporting-Sync — Template Deactivation Not Synced
+### Auth Phase 2: Namespace Permissions
 
-Template status changes (deactivated/deleted) are NOT propagated to PostgreSQL. `_process_template_event()` handles all template events identically (create/update schema) and never checks for `template.deleted`. No `_wip_templates` metadata table exists in PostgreSQL (unlike `terminologies` and `terms` which DO have status tracking).
+Activate the existing `check_namespace_permission()` calls in route handlers. The function exists, grants exist — routes just don't call it yet. ~50 Console button guards needed too (cosmetic).
 
-**Impact:** DnD Compendium agent read from PostgreSQL, couldn't detect deactivated templates, ran in circles creating workarounds. Resolved by switching to API reads.
+- Depends on: Auth Phase 1 (done)
+- Design: `docs/design/namespace-authorization.md`
 
-**Fix:**
-1. Add `_wip_templates` metadata table (like `terminologies`)
-2. Update `_process_template_event()` to check event type and upsert template status
-3. For `template.deleted`: set status to `inactive` in PG
+### Auth Phase 3: Audit Trail Verification
 
-- Discovered: 2026-03-28 during DnD K8s deployment
-- Status: **Fixed** (2026-03-29) — `_wip_templates` metadata table, event-driven + batch sync, tests
+Verify `identity_string` shows user email end-to-end (app → proxy → service → MongoDB → NATS → PostgreSQL). Phase 1 plumbed everything — Phase 3 is verification + Console UI showing actual user in audit columns.
 
-### `@wip/client` Completion — Mandatory Interface for App Agents
+- Depends on: Auth Phase 1 (done)
+- Design: `docs/design/authentication-authorization.md`
 
-`@wip/client` is the ONLY supported path for AI-assisted app development. Every app and agent that bypasses the client hits the same WIP conventions (bulk-first 200 OK, identity dedup, synonym resolution, pagination) and wastes significant time working around them.
+### BUG: Reporting-Sync — `document.archived` Events Not Handled
 
-**Already complete:**
-- `files.uploadFile()`, `files.downloadFileContent()` — file operations
-- `reporting.runQuery()`, `reporting.listTables()`, `reporting.getTableSchema()`, `reporting.getSyncStatus()` — SQL query execution and table introspection
-- `templates.createTemplates()` — bulk template creation
-- Server-side auth handled by `@wip/proxy` (no client change needed)
-- All bulk methods exposed alongside single-item convenience methods
+Archived docs remain `active` in PostgreSQL. Reporting-sync doesn't handle `document.archived` events.
 
-**Remaining:**
-- Sync-aware read guidance documentation (API for state, PG for analytics)
-
-**App agent system prompt directive:** "Use @wip/client for ALL WIP interactions. Do not make direct API calls."
-
-- Status: **Complete** (2026-03-29) — all methods implemented including `awaitSync()`. Documentation remaining.
+- Related to: Template deactivation bug (fixed)
 
 ### Sync-Aware Helpers for Reporting Reads
 
-Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL). PostgreSQL is eventually consistent — sync delay + template deactivation bug (above) cause stale state.
+Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL). PostgreSQL is eventually consistent.
 
 **Guidance to formalize:**
 - **State management** (current truth, status checks): Read from API (MongoDB)
@@ -80,282 +39,59 @@ Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL).
 1. Explicit wait — `{ waitForSync: true, timeout: 5000 }` parameter on `run_report_query`
 2. Versioned reads — `sync_version` column from NATS sequence, `WHERE sync_version >= X`
 
-- Status: Design discussion — see memory for details
+### App Gateway Phase 2-3: Multi-App Routing
 
-### App Gateway & WIP Proxy — TOP PRIORITY
-
-Every browser-based WIP app needs auth injection (browser can't hold API keys) and MinIO URL rewriting (presigned URLs point to internal hostnames). On K8s, apps also need sub-path routing at `/apps/{name}/`. The DnD Compendium solved this with 70 lines of hand-rolled Express proxy. Every new app would copy-paste this.
-
-**Two deliverables, separable:**
-
-1. **`@wip/proxy` middleware** (all deployments) — Express middleware that any app drops in with one line. Handles API key injection and file content proxying. Works on localhost and K8s identically. Also adds `files.downloadContent()` to `@wip/client`.
-
-2. **App Gateway** (K8s / multi-app) — Extends existing Caddy (Podman) or NGINX Ingress (K8s) with `/apps/{name}/*` routing, `app-manifest.json` registration, and a portal landing page. Not a new service — configuration added to existing proxy infrastructure.
-
-**Phase 1** (`@wip/proxy`) unblocks all app development. **Phase 2-3** (gateway) is needed when deploying multiple apps on one hostname.
+Extend Caddy (Podman) or NGINX Ingress (K8s) with `/apps/{name}/*` routing, `app-manifest.json` registration, and a portal landing page. Not a new service — configuration added to existing proxy infrastructure. Needed when deploying multiple apps on one hostname.
 
 - Design: `docs/design/app-gateway.md`
-- Also see: `docs/WIP_DevGuardrails.md` (Guide 1 — original gateway vision)
-- Discovered: 2026-03-28 during DnD K8s deployment
-- Status: **Phase 1 complete** (2026-03-29) — `@wip/proxy` middleware, DnD refactored, `create-app-project.sh` updated. Phase 2-3 not started.
-
-### App User Authentication — REQUIRED
-
-`@wip/proxy` handles the app-to-WIP leg (API key injection), but there is **no user authentication** for the apps themselves. Anyone who can reach the URL can use the app. Even on a home network, WiFi access must not equal app access — guest WiFi credentials should not expose salary payslips or medical data.
-
-**Solution:** App-side OIDC via `@wip/proxy` + Dex (no custom Caddy build needed):
-
-1. App auth middleware (`openid-client`) redirects unauthenticated users to Dex login
-2. User authenticates (same users/groups as Console: admin, editor, viewer)
-3. Dex issues token → middleware validates callback, creates Express session
-4. Middleware injects `X-WIP-User`, `X-WIP-Groups` into request headers
-5. `@wip/proxy` forwards identity headers to WIP services (`forwardIdentity: true`)
-6. wip-auth `TrustedHeaderProvider` extracts user identity (requires valid API key)
-
-**Opt-in:** Set `OIDC_ISSUER` env var to enable. No auth = local dev mode.
-
-- Design: `docs/design/authentication-authorization.md` (Phase 1), also Phase 4 in `docs/design/app-gateway.md`
-- Related: `docs/design/namespace-authorization.md` (Phase 2 — per-namespace permissions)
-- Status: **Phase 1 complete** (2026-03-31) — `TrustedHeaderProvider` in wip-auth 0.4.0, `forwardIdentity` in @wip/proxy 0.2.0, `wip-apps` Dex client, query scaffold auth middleware. Phase 2 (namespace permissions) and Phase 3 (audit trails) not started.
-
-### Console: Files Page Ignores Namespace
-
-The files page (`/files`) always queries `namespace=wip` regardless of the selected namespace. Root cause: `list_files` API defaults to `namespace="wip"` and the Console doesn't pass the active namespace. Files uploaded to other namespaces (e.g., `dnd`) are invisible in the UI.
-
-- Fix: Pass active namespace from Console's namespace selector to the files API call
-- Discovered: 2026-03-28 during DnD data migration to K8s
-- Status: **Fixed** (2026-03-29)
 
 ### Ontology Browser — UX Refinements
 
-Implemented (2026-03-27). Known issues remaining:
-- ~~Some nodes show UUID7 instead of human-readable labels~~ Fixed (2026-03-29)
 - Document list in detail panel needs rethinking
-
 - Design: `docs/design/ontology-browser.md`
-
-### Mutable Terminologies
-
-Add `mutable: true` flag on terminologies to support user-editable controlled vocabularies. Mutable terminologies allow real term deletion (with relationship cascade) while using the full terminology infrastructure — ontology relationships, reporting-sync, MCP tools, ontology browser.
-
-**Why:** Apps that need user-defined picklists, tags, or classifications currently must reinvent terminology semantics using documents. The ClinTrial app exposed this: users need to extend a curated therapeutic area hierarchy with custom classifications. Without mutable terminologies, every app builds a document-based overlay pattern — different template names, different merge logic, each slightly wrong.
-
-**Scope:** `mutable` defaults to `false` — zero impact on existing terminologies. Term delete becomes hard-delete + relationship cascade for mutable terms. Same API endpoints, same events, same reporting pipeline.
-
-- Design: `docs/design/mutable-terminologies.md`
-- Discovered: 2026-03-29 during ClinTrial app development
-- Status: **Implemented** (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client, Console UI)
-
-### Hard Delete for All Entity Types
-
-When a namespace has `deletion_mode: "full"`, any entity type can be hard-deleted via `hard_delete: bool` on DeleteItem. Covers documents, templates, terminologies, terms, and relationships. Version-specific hard-delete supported for documents and templates. Registry entries cleaned up when last version is removed. Reporting-sync handles hard-delete events with `DELETE FROM` instead of `UPDATE status`.
-
-- Design: Plan in `docs/design/` (implementation plan was in-session)
-- Discovered: 2026-03-30 during ClinTrial import testing
-- Status: **Implemented** (2026-03-30) — all services, MCP tools, @wip/client, Console. 43 tests.
-
-**Related bug (open):** Reporting-sync doesn't handle `document.archived` events — archived docs remain `active` in PostgreSQL.
-
-### Namespace Authorization — UX Polish
-
-~50 button guards in Console detail views. API already enforces — this is cosmetic.
-
-- Design: `docs/design/namespace-authorization.md`
-
-### Registry Entry Reactivation
-
-`POST /entries/{id}/reactivate` for reversible merges. Not yet implemented.
-
-### WIP-Toolkit: `delete-namespace` Command
-
-Wrap the two-step Registry API call into a single CLI command with `--dry-run` and `--force`. Low priority — `curl` and `dev-delete.py` already work.
 
 ### App Development & Deployment Framework
 
-Robust framework for local app development and containerized deployment alongside WIP. Goal: develop locally with live reload, then package and deploy next to a WIP instance — as a local container, on a remote Pi, or on K8s.
-
-**Current state:** `create-app-project.sh` scaffolds a working app with `@wip/proxy`, but there's no standardized way to containerize an app, push it to a registry, and deploy it next to WIP. Each app hand-rolls its own Dockerfile, compose fragment, and deployment steps.
+Standardized way to containerize apps, push to a registry, and deploy next to WIP. Each app currently hand-rolls its own Dockerfile and deployment steps.
 
 **Deliverables:**
-
-1. **Standardized Dockerfile template** — generated by `create-app-project.sh`. Multi-stage build (deps → build → runtime), works for Express+React apps out of the box. Produces a minimal production image.
-2. **Compose integration** — `docker-compose/modules/apps.yml` that mounts app containers into the WIP network. Apps automatically get access to WIP services via internal DNS. `@wip/proxy` handles auth injection.
-3. **`wip-toolkit deploy-app`** — CLI command that builds the container image, pushes to a registry (local or remote), and deploys alongside WIP. Supports Podman Compose (local/Pi) and K8s (kubectl apply).
-4. **K8s manifest template** — Deployment + Service + Ingress rule, generated from `app-manifest.json`. Integrates with existing NGINX Ingress at `/apps/{name}/`.
-5. **Dev mode** — `npm run dev` with hot reload, proxying to WIP services. Already works via `@wip/proxy`; formalize as the standard dev workflow.
-
-**Key principle:** Same app code runs in dev (local Node.js) and prod (container). Only the deployment wrapper changes.
+1. **Standardized Dockerfile template** — generated by `create-app-project.sh`. Multi-stage build, minimal production image.
+2. **Compose integration** — `docker-compose/modules/apps.yml` for WIP network access.
+3. **`wip-toolkit deploy-app`** — CLI command: build, push, deploy. Supports Podman Compose and K8s.
+4. **K8s manifest template** — Deployment + Service + Ingress rule from `app-manifest.json`.
+5. **Dev mode** — `npm run dev` with hot reload. Already works via `@wip/proxy`; formalize as standard.
 
 - Depends on: `@wip/proxy` (done), App Gateway Phase 2-3 (for multi-app K8s routing)
 - Related: `docs/design/distributable-app-format.md`
-- Status: Not started
 
 ### Dev-Namespace Workflow for Slash Commands
 
-Update slash commands to use disposable dev namespaces during data modeling, with transfer to prod on completion. Mostly `create-app-project.sh` updates + minor slash command prompt changes. Depends on namespace deletion (done) and ID pass-through (done).
-
-- Status: Not started, not a blocker
+Update slash commands to use disposable dev namespaces during data modeling, with transfer to prod on completion. Mostly `create-app-project.sh` updates + minor slash command prompt changes.
 
 ### Container Runtime Support
 
-Test and document `setup.sh` with standard Docker and rootful Podman. Part of broader test/deployment review.
+Test and document `setup.sh` with standard Docker and rootful Podman.
 
-### Kubernetes Deployment — Validated on MicroK8s (2026-03-28)
+### K8s Remaining Work
 
-Deployed and validated on a 3-node MicroK8s cluster (Raspberry Pi 5, aarch64, Rook-Ceph storage). All 13 pods running, full end-to-end including Console login, OIDC, seeding, and remote MCP access.
-
-**What's done:**
-- All K8s manifests validated: 5 infrastructure StatefulSets/Deployments, 7 service Deployments, NGINX Ingress with 9 routes
-- Rook-Ceph block storage for all PVCs (38Gi+ allocated)
-- K8s Secrets for credentials, ConfigMaps for service config + Dex OIDC
-- Self-signed TLS via Ingress, Dex OIDC with group claims
-- MCP server with HTTP streamable transport, accessible from Claude Code over HTTPS
-- Remote seeding from Mac via `--host --via-proxy --port 443`
-- Full installation log: `k8s-installation_log.md` (~1200 lines, 19 lessons learned)
-
-**Remaining:**
 - Helm chart or Kustomize packaging for configurable deployment
-- Network Policies (Phase 6 of the installation plan)
-- Production hardening (resource limits tuning, pod disruption budgets, horizontal scaling)
+- Network Policies
+- Production hardening (resource limits, pod disruption budgets, horizontal scaling)
 - Testing on other K8s distributions (k3s, cloud)
 
-- Status: **Validated on MicroK8s** — see `k8s-installation_log.md` for full guide
+### Guides (not started)
 
-### Detailed Installation Guide
-
-Comprehensive, step-by-step installation instructions for every supported platform. Must cover:
-
-- **Raspberry Pi 5 (aarch64):** OS preparation (Raspberry Pi OS 64-bit), rootless Podman setup, storage considerations (SD card vs SSD), memory tuning for 8GB
-- **Raspberry Pi 4 (armv8.0):** Differences from Pi 5, performance expectations, recommended preset (`core` or `headless`)
-- **Linux x86_64 (Debian/Ubuntu):** Package prerequisites, Podman or Docker installation, firewall/port configuration
-- **Linux x86_64 (Fedora/RHEL):** SELinux considerations, Podman (default), cgroup v2 setup
-- **macOS (Apple Silicon):** Podman Machine setup, resource allocation, volume mount performance
-- **Each platform section includes:** Prerequisites, step-by-step install, preset selection guidance, TLS configuration (self-signed vs ACME), verification steps, common troubleshooting
-- **Production vs development:** Clear separation of dev setup (self-signed, default keys) from production hardening (random secrets, ACME TLS, `--prod` flag)
-
-Current state: `setup.sh` handles most of this automatically, but users need guidance on platform-specific prerequisites and post-install verification. The existing docs (`docs/production-deployment.md`, `docs/network-configuration.md`) cover pieces but there is no single end-to-end guide per platform.
-
-- Status: Not started
-
-### Data Migration Guide
-
-Detailed instructions for migrating data between WIP instances, versions, and deployment types. Must cover:
-
-- **Instance-to-instance migration:** Full namespace export via WIP-Toolkit, transfer, and restore on target instance (including ID pass-through requirements)
-- **Version upgrades:** Procedure for upgrading WIP (pull new images, run migrations if any, verify data integrity)
-- **Deployment type changes:** Moving from Podman Compose to Kubernetes, or from single-node to distributed deployment
-- **Partial migration:** Exporting and importing individual namespaces, terminologies, or template sets
-- **Rollback procedures:** How to revert a failed migration using backups and event replay
-- **Backup strategy:** MongoDB dump/restore, MinIO bucket sync, PostgreSQL pg_dump, coordinated backup across all stores
-- **Pre-migration checklist:** Verify source health, check disk space on target, confirm ID pass-through support, test with dry-run
-- **Post-migration verification:** Entity count comparison, referential integrity checks, file accessibility, reporting-sync re-trigger
-
-Depends on: Complete ID Pass-Through for Restore (v1.1) for fully reliable cross-instance migration.
-
-- Status: Not started
-
-### App Migration Guide
-
-Detailed instructions for migrating applications built on WIP when the underlying WIP instance changes. Must cover:
-
-- **App project relocation:** Moving an app project created by `create-app-project.sh` to point at a different WIP instance (updating MCP config, API base URLs, OIDC authority)
-- **Data model evolution:** How to update an app when its WIP templates or terminologies change (field additions, type changes, terminology expansions) — impact on queries, UI bindings, and seed files
-- **Namespace migration for apps:** Moving an app's namespace from one WIP instance to another, preserving all documents, files, and references
-- **Client library upgrades:** Updating `@wip/client` and `@wip/react` to new versions, handling breaking changes in the typed API
-- **Multi-app coordination:** When multiple apps share terminologies or reference each other's documents, migrating them together to maintain cross-app references
-- **OIDC reconfiguration:** Updating the app's auth configuration when the WIP instance changes its OIDC provider or hostname
-- **Seed file regeneration:** Using `/export-model` to regenerate seed files after data model changes, and `/bootstrap` to apply them to a new instance
-
-Depends on: Data Migration Guide (above) for the underlying WIP migration procedures.
-
-- Status: Not started
-
-### App Deployment & Distribution Guide
-
-Document the full lifecycle of deploying a WIP app to a different machine or handing it to another user. Two phases:
-
-**Phase 1 — Manual deployment docs (near-term):**
-- Step-by-step: clone app repo, install deps, configure MCP/API endpoints, run `/bootstrap` to seed data model, start the server
-- Document what `create-app-project.sh` produces and how each piece maps to a deployment target
-- Cover: Mac→Pi, Mac→VPS, dev→prod on same host
-- Include the data pipeline: `/export-model` → transfer → `wip-toolkit import` or `/bootstrap`
-
-**Phase 2 — One-click app distribution (medium-term):**
-- Container image contract (app + data model seed in one image)
-- `app-manifest.json` — metadata, WIP version requirements, namespace config
-- Install tooling: `wip-toolkit install-app <image>` or similar
-- Design doc exists: `docs/design/distributable-app-format.md` (specification only)
-
-Phase 1 unblocks early adopters. Phase 2 depends on the NL query scaffold proving the app-building pattern at scale.
-
-- Status: Not started
-
-### MCP Server Configuration Guide & Transport Testing
-
-Detailed instructions for configuring the WIP MCP server across different AI clients and transports. The MCP server supports three transports: stdio, SSE (deprecated in MCP spec), and HTTP streamable (current MCP spec).
-
-Must cover:
-
-- **Client configuration:** Step-by-step MCP config for Claude Code (`.mcp.json`), Claude Desktop (`claude_desktop_config.json`), Cursor, Windsurf, and other MCP-compatible clients
-- **stdio transport:** Configuration examples, environment variable pass-through, working directory considerations
-- **HTTP streamable transport:** Validated (2026-03-28) on K8s. Single `/mcp` endpoint, standard HTTP. Configured via `"type": "http"` in `.mcp.json`. Requires `NODE_EXTRA_CA_CERTS` for self-signed TLS (Node.js ignores macOS keychain).
-- **SSE transport:** Legacy, deprecated in MCP spec. Still functional but prefer HTTP streamable.
-- **Network scenarios:** Local (same host), LAN (e.g., app dev machine connecting to MCP server on a Pi), and remote (K8s Ingress, SSH tunnel, reverse proxy)
-- **SSH stdio proxy:** Validated (2026-03-28) — SSH pipes the MCP server's stdio from a remote host to the local Claude Code client. Tested Mac→Pi with all 69 tools functional. Config: `"command": "ssh", "args": ["user@host", "cd /path && ... python -m wip_mcp"]` in `.mcp.json`. Requires service URLs overridden to `localhost` (container-internal hostnames don't resolve outside the container network).
-- **K8s HTTP deployment:** Validated (2026-03-28) — MCP server as K8s Deployment with HTTP streamable transport, exposed via NGINX Ingress at `/mcp`. Key gotchas: DNS rebinding protection (`MCP_ALLOWED_HOST`), dual API keys (`API_KEY` for inbound, `WIP_API_KEY` for outbound), Node.js TLS trust (`NODE_EXTRA_CA_CERTS`).
-- **Authentication:** How the MCP server forwards API keys to WIP services, configuring keys per client, OIDC token pass-through considerations
-- **Tool filtering:** Documenting the planned `WIP_MCP_MODE=readonly` option (see MCP Read-Only Mode above) and how it affects tool registration per client
-- **Troubleshooting:** Common failure modes (port conflicts, TLS cert trust, DNS rebinding 421 errors, dual API key misconfiguration, session loss on pod restart)
-
-- Status: stdio + SSH proxy + HTTP streamable all validated. SSE functional but untested end-to-end.
-
-### MCP Server Transport Regression Tests
-
-Automated test coverage for all three MCP transports (stdio, HTTP streamable, SSE). Uses real MCP client connections — no mocking of transports.
-
-14 tests covering:
-- stdio: tool listing, resource listing, readonly mode
-- HTTP: tool listing, resource listing, API key accept/reject, custom port, no-key warning
-- SSE: tool listing, resource listing, API key reject
-- Cross-transport consistency: identical tool sets, identical resource sets across all three
-
-Target file: `components/mcp-server/tests/test_transports.py`
-
-- Status: **Done** (2026-03-31) — 14 tests, all passing
-
-### PostgreSQL Reporting Integration Tests
-
-Real PostgreSQL integration tests for reporting-sync. 90+ tests across 3 files using `POSTGRES_TEST_URI` (default `postgresql://test:test@localhost:5433/wip_test`) with graceful skip markers when DB unavailable.
-
-**Coverage:**
-- `test_integration.py` — 60+ tests: schema creation (10+ field types, semantic types), data type mapping, schema evolution, sync strategies (LATEST_ONLY/ALL_VERSIONS), metadata tables, namespace deletion, indexes/constraints, edge cases (NULLs, unicode, special chars)
-- `test_e2e.py` — 20+ tests: full NATS→SyncWorker→PostgreSQL pipeline for documents, templates, terminologies, terms, relationships (including hard-delete)
-- `test_entity_lifecycle.py` — 10+ tests: complete create→update→archive→delete lifecycle for all entity types
-
-- Status: **Done** (2026-03-30) — 90+ real-DB tests, 308 total test methods across all reporting-sync test files
+- **Detailed Installation Guide** — per-platform (Pi 5, Pi 4, Linux x86, macOS) step-by-step instructions
+- **Data Migration Guide** — instance-to-instance, version upgrades, backup strategy, rollback
+- **App Migration Guide** — app relocation, data model evolution, OIDC reconfiguration
+- **App Deployment & Distribution Guide** — Phase 1: manual deployment docs. Phase 2: one-click via container images.
+- **MCP Server Configuration Guide** — per-client setup (Claude Code, Claude Desktop, Cursor, Windsurf), all 3 transports, network scenarios, SSH proxy, K8s deployment, troubleshooting
 
 ### End-to-End UI Testing with Claude Desktop
 
-The WIP Console (`ui/wip-console/`) has zero test coverage — no test framework, no test scripts in `package.json`, no test files. Traditional browser automation (Selenium, Playwright) would require ongoing maintenance of a test suite that duplicates UI knowledge.
+Claude Desktop can drive browser interactions, making E2E testing feasible without Selenium/Playwright. 10 workflows to verify (login, namespace CRUD, template lifecycle, document versioning, file upload, ontology browser, CSV import, reporting).
 
-Claude Desktop can now drive browser interactions, making E2E testing feasible without a traditional automation framework. Claude Desktop acts as both the test driver and the assertion layer, validating visual and functional correctness in a single pass.
-
-**Workflows to verify:**
-
-1. Login via OIDC (Dex) and session management
-2. Namespace creation, selection, and switching
-3. Terminology CRUD and ontology relationship management
-4. Template creation, field definitions, draft→active lifecycle
-5. Document creation, editing, versioning, and search
-6. File upload, download, and reference display
-7. Ontology browser navigation and graph interaction
-8. CSV/XLSX import preview and execution
-9. Files page namespace filtering
-10. Reporting page query execution
-
-**Open questions:** How to integrate with Gitea CI (Claude Desktop is interactive, not headless). May be a manual pre-release gate rather than automated CI. Investigate whether test scripts can be codified as reproducible Claude Desktop prompts.
-
-- Status: Not started
+**Open question:** How to integrate with Gitea CI — may be a manual pre-release gate.
 
 ---
 
@@ -363,39 +99,29 @@ Claude Desktop can now drive browser interactions, making E2E testing feasible w
 
 ### Distributed Deployment
 
-Make services independently deployable across multiple hosts. 80% ready — all service URLs are env vars. Main gaps:
-- OIDC issuer URL is a build-time decision (baked into Dex config + frontend)
-- Console nginx.conf uses docker-compose DNS names
-- `setup.sh` assumes single-host deployment
+Make services independently deployable across multiple hosts. 80% ready — all service URLs are env vars. Main gaps: OIDC issuer URL is build-time, Console nginx.conf uses compose DNS, `setup.sh` assumes single-host.
 
 - Design: `docs/design/distributed-deployment.md`
-- Status: Phase 1-2 complete (console optional, reporting separable), Phase 3 pending
+- Status: Phase 1-2 complete, Phase 3 pending
 
 ### Natural Language Interface — Standalone Deployment
 
-Conversational data query UI as a standalone deployable service (beyond the per-app scaffold in Near-Term). BYOK (bring your own key) model, optional deployment. Would serve as a generic query frontend for any WIP instance without building a custom app.
-
-The Near-Term NL Query Scaffold provides the per-app pattern. This item covers a shared, instance-wide NL service that works across all namespaces and templates.
+Conversational data query UI as a standalone deployable service (beyond the per-app scaffold). BYOK model, instance-wide NL service across all namespaces and templates.
 
 - Design: `docs/design/natural-language-interface.md`
-- Depends on: NL Query Scaffold (near-term)
-- Status: Planning (scaffold-first approach adopted)
+- Depends on: NL Query Scaffold (done)
 
 ### `/init-nl-interface` Command — Data Model Snapshot
 
-A forced refresh command that reads all templates, field names, terminology values, and document counts before answering any question. `/wip-status` on steroids. Motivation: the D&D Claude lost template awareness across compaction (missed 5 templates, gave wrong answers on Q6 and Q11). This command would build the Claude's working memory of the data model at the start of every query session, ensuring complete and accurate answers regardless of prior context.
-
-The `describe_data_model` MCP tool (Near-Term, NL Query Scaffold) provides the underlying data. This slash command would call that tool and inject the result into the conversation context.
+Forced refresh command that reads all templates, field names, terminology values, and document counts. Builds the Claude's working memory of the data model, ensuring complete answers regardless of prior context.
 
 ### Deterministic SQL Dashboard App
 
-NL queries are impressive but non-reproducible. A dashboard with saved SQL queries against the PostgreSQL reporting backend provides: reproducibility (same query, same results), performance (no LLM context overhead), shareability (bookmarkable queries), and debuggability (visible, editable SQL). The AI's role shifts from "answer questions" to "help me write queries" — build once, run forever. Could be a standalone WIP app or a Metabase extension.
+Saved SQL queries against the PostgreSQL reporting backend. Reproducibility, performance, shareability, debuggability. The AI's role shifts from "answer questions" to "help me write queries."
 
 ### Query Claude — Read-Only Family Member
 
-A Claude instance with a restricted MCP tool set: no `create_*` tools, no app scaffolding skills. Only `query_by_template`, `run_report_query`, `search`, `list_*`, `get_*`, and `/init-nl-interface`. The analyst who queries the data warehouse but doesn't build the ETL pipeline. Different skills, different permissions, different risk profile. Safe to hand to any user because it can't modify the data model. Implementation: a separate MCP server config (or tool filter) plus a dedicated slash command set.
-
-**These three ideas are complementary:** `/init-nl-interface` makes any Claude query-ready, Query Claude is a family member built around that command, and the SQL dashboard is the production-grade deterministic alternative.
+Claude instance with restricted MCP tool set: no `create_*` tools. Only query, search, list, get tools + `/init-nl-interface`. Safe to hand to any user.
 
 ---
 
@@ -403,23 +129,27 @@ A Claude instance with a restricted MCP tool set: no `create_*` tools, no app sc
 
 ### Distributable App Format
 
-Standard packaging for apps built on WIP. Container image contract, `app-manifest.json`, bootstrap flow. Would enable community app distribution and one-click install.
+Standard packaging for apps. Container image contract, `app-manifest.json`, bootstrap flow. One-click install.
 
 - Design: `docs/design/distributable-app-format.md`
 
 ### WIP Nano
 
-Ultra-lightweight variant for Pi Zero and embedded systems. Minimal footprint, subset of features. Design only — future consideration.
+Ultra-lightweight variant for Pi Zero and embedded systems. Concept only.
 
 - Design: `docs/design/wip-nano.md`
 
 ### Domain-Specific Ontology Relationships
 
-Consider enabling namespace-scoped relationship type terminologies, so domains can define their own ontology relationship types rather than everything living in the global `_ONTOLOGY_RELATIONSHIP_TYPES` terminology. For example, a biomedical namespace might define `inhibits`, `activates`, `binds_to` without polluting the shared vocabulary. Likely overkill for most use cases — the extensible global terminology works fine — but worth considering if WIP is used across very different domains on the same instance.
+Namespace-scoped relationship type terminologies. Likely overkill — the extensible global terminology works fine — but worth considering for multi-domain instances.
 
 ### Metabase Pre-Built Dashboards
 
-Metabase deployment works (`deploy/optional/metabase/`), but no pre-built dashboards yet. Would provide out-of-the-box analytics for common WIP data patterns.
+Out-of-the-box analytics dashboards for common WIP data patterns.
+
+### Auth Phase 4: Constellation
+
+Per-app user pools, gateway-level auth (Caddy plugin or oauth2-proxy), WIP as auth provider. See `docs/design/authentication-authorization.md`.
 
 ---
 
@@ -432,8 +162,8 @@ All feature designs live in `docs/design/`. Status of each:
 | `ontology-support.md` | Implemented |
 | `template-draft-mode.md` | Implemented |
 | `template-reference-pinning.md` | Implemented |
-| `event-replay.md` | Implemented (API + MCP tools) |
-| `namespace-scoped-data.md` | Phase 1-2 complete, namespace-required propagated to full stack (2026-03-30), Phase 3-5 pending |
+| `event-replay.md` | Implemented |
+| `namespace-scoped-data.md` | Phase 1-2 complete, Phase 3-5 pending |
 | `namespace-authorization.md` | Core complete, UX polish remaining |
 | `namespace-deletion.md` | Implemented |
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
@@ -442,37 +172,10 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
-| `authentication-authorization.md` | Phase 1 complete (app-side OIDC, not Caddy plugin), Phase 2-3 pending |
+| `authentication-authorization.md` | Phase 1 complete, Phase 2-3 pending |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
 | `mutable-terminologies.md` | Implemented |
 | `nl-query-scaffold.md` | Implemented |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |
 | `wip-nano.md` | Concept only |
-
----
-
-## Completed (for reference)
-
-These were previously on the roadmap and are now fully implemented:
-
-- DnD Compendium K8s deployment — first WIP app on Pi cluster. Express reverse proxy for auth injection, SSE-mode MCP, sub-path hosting at `/apps/dnd/`, all features working (data, images, AI chat). Exposed Gateway design as top priority (2026-03-28)
-- Complete ID pass-through for restore — all entity types (terminologies, terms, templates, documents, files) preserve original IDs. 527/527 verified (2026-03-28)
-- Namespace deletion — persistent journal, crash-safe, dry-run, inbound reference checking, MCP tool (2026-03-27)
-- Ontology browser — ego-graph with Cytoscape.js, click-to-navigate, cross-namespace traversal (2026-03-27)
-- Reporting-sync terminology/term population — startup batch sync + event-driven sync (2026-03-27)
-- Windows/WSL platform support — auto-detection, named volume overlays for MongoDB/PostgreSQL/MinIO, NATS_URL fix
-- Binary file storage (MinIO) — full CRUD, UI, reference tracking, orphan detection
-- Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
-- Ontology support — OBO Graph JSON import, typed relationships, traversal
-- Template draft mode — draft status, cascading activation
-- MCP server — 71 tools, 5 resources, stdio + SSE + HTTP streamable transport, K8s deployment validated, 14 transport regression tests
-- @wip/client + @wip/react — TypeScript client and React hooks
-- CSV/XLSX import — preview + import endpoints in Document-Store
-- Event replay — start, pause, resume, cancel via API and MCP tools
-- Bulk-first API convention — all write endpoints accept arrays
-- Security hardening — CORS, rate limiting, bcrypt keys, upload limits, security headers
-- Information package for app-building AI — slash commands, reference docs, MCP resources
-- Universal synonym resolution — auto-synonym registration, resolve layer at API boundary, WIP-Toolkit backfill + namespace rewriting
-- Namespace-required propagation — removed all `namespace="wip"` defaults across full stack: backend services, `@wip/client`, WIP-Toolkit, Console UI, scripts (2026-03-30)
-- Backend developer agent setup — `setup-backend-agent.sh`, role-specific CLAUDE.md, 8 backend slash commands, MCP transport selection (local/SSH/HTTP)
