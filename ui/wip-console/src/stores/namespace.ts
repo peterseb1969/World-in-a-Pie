@@ -73,6 +73,12 @@ export const useNamespaceStore = defineStore('namespace', () => {
   // Is the user admin on the current namespace?
   const isAdmin = computed(() => currentPermission.value === 'admin')
 
+  // Can the user create namespaces? True if admin on any namespace.
+  // Namespace creation is a global action, not scoped to the current namespace.
+  const canCreateNamespace = computed(() =>
+    accessibleNamespaces.value.some(ns => ns.permission === 'admin')
+  )
+
   // Actions
   async function loadNamespaces() {
     loading.value = true
@@ -233,6 +239,7 @@ export const useNamespaceStore = defineStore('namespace', () => {
     currentPermission,
     canWrite,
     isAdmin,
+    canCreateNamespace,
     // Actions
     loadNamespaces,
     loadAllNamespaces,

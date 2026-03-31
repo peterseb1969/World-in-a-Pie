@@ -308,7 +308,7 @@ function getTotalEntities(stats: NamespaceStats): number {
         <p class="subtitle">Manage namespaces for data isolation and environment separation</p>
       </div>
       <Button
-        v-if="namespaceStore.isAdmin"
+        v-if="namespaceStore.canCreateNamespace"
         label="Create Namespace"
         icon="pi pi-plus"
         @click="openCreateDialog"
