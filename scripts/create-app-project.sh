@@ -317,11 +317,22 @@ fi
 # wip-toolkit wheel
 TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
 if [ -z "$TOOLKIT_WHEEL" ]; then
-    # Try to build it
-    if command -v python3 &>/dev/null || command -v python &>/dev/null; then
-        PYTHON_CMD="$(command -v python3 2>/dev/null || command -v python)"
-        echo "   Building wip-toolkit wheel..."
-        (cd "$WIP_ROOT/WIP-Toolkit" && "$PYTHON_CMD" -m build . --wheel -q 2>/dev/null) || true
+    # Try to build it — prefer WIP's venv (has `build` installed)
+    if [ -f "$WIP_ROOT/.venv/bin/python" ]; then
+        TOOLKIT_PYTHON="$WIP_ROOT/.venv/bin/python"
+    elif command -v python3 &>/dev/null; then
+        TOOLKIT_PYTHON="$(command -v python3)"
+    elif command -v python &>/dev/null; then
+        TOOLKIT_PYTHON="$(command -v python)"
+    else
+        TOOLKIT_PYTHON=""
+    fi
+    if [ -n "$TOOLKIT_PYTHON" ]; then
+        echo "   Building wip-toolkit wheel (using $TOOLKIT_PYTHON)..."
+        if ! (cd "$WIP_ROOT/WIP-Toolkit" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
+            echo "   Warning: wheel build failed — ensure 'build' is installed:"
+            echo "            $TOOLKIT_PYTHON -m pip install build"
+        fi
         TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
     fi
 fi
@@ -331,7 +342,7 @@ if [ -n "$TOOLKIT_WHEEL" ]; then
     echo "   Copied: $(basename "$TOOLKIT_WHEEL")"
 else
     echo "   Warning: wip-toolkit wheel not found. Build it with:"
-    echo "            cd $WIP_ROOT/WIP-Toolkit && python -m build . --wheel"
+    echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
 # dev-delete.py
