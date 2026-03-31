@@ -44,6 +44,15 @@ Template status changes (deactivated/deleted) were NOT propagated to PostgreSQL.
 
 - Discovered: 2026-03-28 during DnD K8s deployment
 
+### Reporting-Sync: `document.archived` Events Not Synced (2026-03-30)
+
+Archived documents remained `active` in PostgreSQL because `_process_document_event()` fell through to the upsert path for `document.archived` events.
+
+**Fix:** Handle `document.archived` alongside `document.deleted` — both now update the PostgreSQL status column (`"archived"` or `"deleted"` respectively). Unit + E2E lifecycle tests.
+
+- Discovered: 2026-03-29 during reporting integration testing
+- Related to: Template deactivation bug (below)
+
 ### Console: Files Page Ignores Namespace (2026-03-29)
 
 The files page (`/files`) always queried `namespace=wip` regardless of the selected namespace. Files uploaded to other namespaces (e.g., `dnd`) were invisible in the UI.

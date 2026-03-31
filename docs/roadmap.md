@@ -20,12 +20,6 @@ Verify `identity_string` shows user email end-to-end (app → proxy → service 
 - Depends on: Auth Phase 1 (done)
 - Design: `docs/design/authentication-authorization.md`
 
-### BUG: Reporting-Sync — `document.archived` Events Not Handled
-
-Archived docs remain `active` in PostgreSQL. Reporting-sync doesn't handle `document.archived` events.
-
-- Related to: Template deactivation bug (fixed)
-
 ### Sync-Aware Helpers for Reporting Reads
 
 Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL). PostgreSQL is eventually consistent.
