@@ -24,6 +24,11 @@ const OIDC_ISSUER = process.env.OIDC_ISSUER
 const OIDC_CLIENT_ID = process.env.OIDC_CLIENT_ID || 'wip-apps'
 const OIDC_CLIENT_SECRET = process.env.OIDC_CLIENT_SECRET || 'wip-apps-secret'
 
+/** Comma-separated list of Dex groups allowed to access this app. Empty = all authenticated users. */
+const ALLOWED_GROUPS = process.env.ALLOWED_GROUPS
+  ? process.env.ALLOWED_GROUPS.split(',').map(g => g.trim()).filter(Boolean)
+  : []
+
 /** Public paths that skip authentication */
 const PUBLIC_PATHS = ['/api/health', '/auth/callback', '/auth/logout']
 
@@ -39,7 +44,10 @@ export async function initAuth(): Promise<boolean> {
 
   const issuer = new URL(OIDC_ISSUER)
   oidcConfig = await client.discovery(issuer, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET)
-  console.log(`[auth] OIDC configured: issuer=${OIDC_ISSUER}, client=${OIDC_CLIENT_ID}`)
+  const groupInfo = ALLOWED_GROUPS.length > 0
+    ? `allowed_groups=[${ALLOWED_GROUPS.join(', ')}]`
+    : 'allowed_groups=* (all authenticated users)'
+  console.log(`[auth] OIDC configured: issuer=${OIDC_ISSUER}, client=${OIDC_CLIENT_ID}, ${groupInfo}`)
   return true
 }
 
@@ -70,8 +78,15 @@ export function requireAuth(): RequestHandler {
       return
     }
 
-    // Already authenticated — inject identity headers
+    // Already authenticated — check app-level access, then inject identity headers
     if (req.session.user) {
+      if (ALLOWED_GROUPS.length > 0 && !req.session.user.groups.some(g => ALLOWED_GROUPS.includes(g))) {
+        res.status(403).json({
+          error: 'Access denied',
+          message: `You don't have access to this app. Required group: ${ALLOWED_GROUPS.join(' or ')}`,
+        })
+        return
+      }
       req.headers['x-wip-user'] = req.session.user.email
       req.headers['x-wip-groups'] = req.session.user.groups.join(',')
       req.headers['x-wip-auth-method'] = 'gateway_oidc'

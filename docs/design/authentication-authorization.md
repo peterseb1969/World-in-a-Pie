@@ -203,6 +203,50 @@ Versions: wip-auth 0.4.0, @wip/proxy 0.2.0
 
 ---
 
+## Phase 1.5: App-Level Access Control — Can You Use This App?
+
+**Goal:** Only authorized users can access a given app. Unauthorized users are blocked at the door, not inside the room.
+
+**Prerequisite:** Phase 1 (user must be authenticated first)
+
+### Problem
+
+Phase 1 gates on "are you logged in?" but any Dex user can open any app. Without app-level access control, namespace permissions (Phase 2) become the first gate — but that gives a frustrating UX: users see the UI, click around, and get cryptic 403s on API calls.
+
+### Implementation
+
+One env var in the scaffold:
+
+```bash
+# Only these Dex groups can access this app
+ALLOWED_GROUPS=wip-admins,clintrial-users
+```
+
+The auth middleware checks group membership immediately after session validation, before serving any content or API response:
+
+```typescript
+if (ALLOWED_GROUPS.length > 0 && !user.groups.some(g => ALLOWED_GROUPS.includes(g))) {
+  res.status(403).json({
+    error: 'Access denied',
+    message: "You don't have access to this app. Required group: ..."
+  })
+  return
+}
+```
+
+- Empty `ALLOWED_GROUPS` = all authenticated users allowed (backward compatible)
+- Check runs on every request, not just page loads (API calls are gated too)
+- Logged at startup: `[auth] OIDC configured: ... allowed_groups=[wip-admins, clintrial-users]`
+
+### What This Gives Us
+
+- App access is denied at the door — no misleading UI
+- One env var per app — no service-side changes, no database, no new APIs
+- Works on every scaffold-based app immediately
+- Namespace auth (Phase 2) becomes defense-in-depth, not the primary UX gate
+
+---
+
 ## Phase 2: Namespace Authorization — What Can You Do?
 
 **Goal:** Users can only access namespaces they've been granted access to.
@@ -341,6 +385,7 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 | Phase | Goal | Prerequisite | Status |
 |-------|------|-------------|--------|
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
+| **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
 | **2** | Per-namespace permissions | Phase 1 | Designed (`namespace-authorization.md`), not started |
 | **3** | Per-user audit trail | Phase 1 | Plumbed by Phase 1, needs verification |
 | **4A** | Per-app user isolation | Phase 2 | Design needed |
@@ -351,6 +396,9 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 
 ```
 Phase 1: App-Side OIDC  ✅
+    │
+    ▼
+Phase 1.5: App Access Control  ✅
     │
     ├──────────────────┐
     ▼                  ▼
