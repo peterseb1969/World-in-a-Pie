@@ -461,6 +461,13 @@ ls -d /Users/peter/Development/FR-YAC/reports/BE-YAC-* 2>/dev/null | tail -1
 
 If a previous session exists, read its `session.md` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
 
+If you are continuing work from that session (e.g., after context compaction), add this to your
+`session.md` frontmatter:
+
+```
+continues: BE-YAC-YYYYMMDD-HHMM
+```
+
 ### Session Start
 
 Create `session.md` immediately when starting work:
