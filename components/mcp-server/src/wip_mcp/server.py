@@ -697,6 +697,33 @@ async def list_namespaces(include_archived: bool = False) -> str:
 
 
 @mcp.tool()
+async def create_namespace(
+    prefix: str,
+    description: str = "",
+    isolation_mode: str = "open",
+    deletion_mode: str = "retain",
+) -> str:
+    """Create a new namespace. Namespaces scope all entities (terminologies, templates, documents).
+
+    Args:
+        prefix: Unique namespace prefix (e.g., 'finance', 'clintrial', 'dnd'). Lowercase, no spaces.
+        description: Human-readable description of the namespace's purpose.
+        isolation_mode: 'open' (default) allows cross-namespace term refs; 'strict' restricts to same namespace only.
+        deletion_mode: 'retain' (default, soft-delete only) or 'full' (allows hard-delete and namespace deletion).
+    """
+    try:
+        data = await get_client().create_namespace(
+            prefix=prefix,
+            description=description,
+            isolation_mode=isolation_mode,
+            deletion_mode=deletion_mode,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_namespace_stats(prefix: str) -> str:
     """Get statistics for a namespace — entity counts by type."""
     try:
@@ -2565,6 +2592,7 @@ WRITE_TOOLS = frozenset({
     "remove_synonym",
     "merge_entries",
     # Namespace
+    "create_namespace",
     "delete_namespace",
 })
 

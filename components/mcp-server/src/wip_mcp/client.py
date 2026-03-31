@@ -169,6 +169,14 @@ class WipClient:
         # Registry returns a list directly
         return data if isinstance(data, list) else data.get("items", data)
 
+    async def create_namespace(
+        self, prefix: str, description: str = "", **kwargs
+    ) -> dict:
+        payload = {"prefix": prefix, "description": description, **kwargs}
+        return await self._post(
+            self.registry_url, "/api/registry/namespaces", json=payload
+        )
+
     async def get_namespace(self, prefix: str) -> dict:
         return await self._get(
             self.registry_url, f"/api/registry/namespaces/{prefix}"
