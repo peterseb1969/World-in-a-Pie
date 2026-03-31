@@ -117,9 +117,10 @@ Every browser-based WIP app needs auth injection (browser can't hold API keys) a
 
 **`@wip/proxy` change:** Accept forwarded user identity from gateway headers instead of (or in addition to) a hardcoded API key. Per-user API keys or a gateway service account key are both viable.
 
-- Design: Phase 4 in `docs/design/app-gateway.md`
+- Design: `docs/design/authentication-authorization.md` (Phase 1), also Phase 4 in `docs/design/app-gateway.md`
 - Depends on: App Gateway (Phase 2-3) for multi-app routing, but can be implemented for single-app Caddy deployments independently
-- Status: Not started — required before any app serves sensitive data
+- Related: `docs/design/namespace-authorization.md` (Phase 2 — per-namespace permissions)
+- Status: Not started — design doc drafted (2026-03-30), required before any app serves sensitive data
 
 ### Console: Files Page Ignores Namespace
 
@@ -149,26 +150,15 @@ Add `mutable: true` flag on terminologies to support user-editable controlled vo
 - Discovered: 2026-03-29 during ClinTrial app development
 - Status: Implemented (Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client). Console UI pending.
 
-### BUG: Document Hard Delete Not Supported
+### Hard Delete for All Entity Types
 
-There is no way to actually *remove* a document from WIP. Both `DELETE /documents` and `POST /documents/archive` are soft operations that change a status field (`inactive` or `archived`). The data remains in MongoDB forever. For namespaces holding imported/analytical data (e.g., clinical trials, financial transactions), users need true record deletion — not just status flags.
+When a namespace has `deletion_mode: "full"`, any entity type can be hard-deleted via `hard_delete: bool` on DeleteItem. Covers documents, templates, terminologies, terms, and relationships. Version-specific hard-delete supported for documents and templates. Registry entries cleaned up when last version is removed. Reporting-sync handles hard-delete events with `DELETE FROM` instead of `UPDATE status`.
 
-**Current state:**
-- `DELETE /documents` → sets status to `inactive`, emits `document.deleted`
-- `POST /documents/archive` → sets status to `archived`, emits `document.archived`
-- Neither removes the document from MongoDB
-- Namespace `deletion_mode: "full"` only controls whether the *entire namespace* can be deleted — individual document deletion is unaffected
-
-**Needed:**
-1. Hard-delete endpoint for individual documents (removes from MongoDB, emits event for downstream cleanup)
-2. Consider tying to namespace policy — e.g., namespaces with `deletion_mode: "full"` allow hard deletes, `retain` namespaces only allow soft delete/archive
-3. Reporting-sync must handle hard-delete events (remove row from PostgreSQL, not just status update)
-4. Registry entry cleanup for hard-deleted documents
-
-**Related bug:** Reporting-sync doesn't handle `document.archived` events — archived docs remain `active` in PostgreSQL. Fix in progress (separate from hard delete).
-
+- Design: Plan in `docs/design/` (implementation plan was in-session)
 - Discovered: 2026-03-30 during ClinTrial import testing
-- Status: Not started
+- Status: **Implemented** (2026-03-30) — all services, MCP tools, @wip/client, Console. 43 tests.
+
+**Related bug (open):** Reporting-sync doesn't handle `document.archived` events — archived docs remain `active` in PostgreSQL.
 
 ### Namespace Authorization — UX Polish
 

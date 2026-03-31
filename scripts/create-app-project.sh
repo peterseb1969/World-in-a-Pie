@@ -370,6 +370,7 @@ Follow the 4-phase development process. Start with:
 - \`/bootstrap\` — Recreate data model from seed files
 - \`/add-app\` — Add a second app that cross-references the first
 - \`/resume\` — Recover context after compaction or at start of a new session
+- \`/report\` — Capture fireside chat or trigger session summary
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
@@ -437,6 +438,107 @@ python tools/dev-delete.py --mongo-uri mongodb://remote-host:27017/ --namespace 
 \`\`\`
 
 Requires \`pymongo\`. For file/reporting cleanup also install \`boto3\` and \`psycopg2-binary\`.
+
+## YAC Reporting
+
+You are a YAC (Yet Another Claude). You report your work to the Field Reporter by writing files to a shared directory. This reporting is also useful for the *next* YAC — your session reports are input for future agents resuming your work.
+
+**Getting the current time:** Always use \`date '+%Y-%m-%d %H:%M'\` for timestamps. Do not guess.
+
+**Off the record:** If Peter says "off the record" or "don't report this," skip reporting for that segment. Resume when told.
+
+### Session Identity
+
+At the start of every session, run \`date '+%Y%m%d-%H%M'\` and assign yourself a session ID using your app prefix:
+
+| App | Prefix |
+|-----|--------|
+| Statement Manager | \`APP-SM\` |
+| Receipt Scanner | \`APP-RS\` |
+| D&D Compendium | \`APP-DND\` |
+| ClinTrial Explorer | \`APP-CT\` |
+| New apps | \`APP-<SHORT>\` (pick a 2-4 letter code, tell the user) |
+
+Format: \`<PREFIX>-YYYYMMDD-HHMM\`. Example: \`APP-CT-20260331-2015\`.
+
+### Report Directory
+
+Create your report directory at the start of every session:
+
+\`\`\`bash
+mkdir -p /Users/peter/Development/FR-YAC/reports/<PREFIX>-YYYYMMDD-HHMM/
+\`\`\`
+
+### Resuming — Check Previous Sessions
+
+At session start (and when running \`/resume\`), check for recent sessions with your prefix:
+
+\`\`\`bash
+ls -d /Users/peter/Development/FR-YAC/reports/<PREFIX>-* 2>/dev/null | tail -1
+\`\`\`
+
+If a previous session exists, read its \`session.md\` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
+
+### Session Start
+
+Create \`session.md\` immediately when starting work:
+
+\`\`\`markdown
+---
+session: <PREFIX>-YYYYMMDD-HHMM
+type: app
+app: <app name>
+repo: <repo directory name>
+started: YYYY-MM-DD HH:MM
+phase: <explore | design-model | implement | build-app | improve | other>
+tasks:
+  - <initial task from user>
+---
+\`\`\`
+
+### After Every Commit
+
+Before appending, read \`commits.md\` first. If the commit hash is already listed, skip it (prevents duplicates after context compaction).
+
+Append to \`commits.md\` in your report directory:
+
+\`\`\`markdown
+## <short-hash> — <commit message>
+**Time:** <run \`date '+%H:%M'\`>
+**Files:** <count> changed, +<added>/-<removed>
+**Tests:** <X passed, Y failed — or "not run">
+**What:** <1-2 sentences — what changed>
+**Why:** <1-2 sentences — what motivated this change>
+**PoNIF:** <if you encountered a PoNIF — which one and whether it caused issues. Omit if none.>
+**Discovered:** <anything surprising, bugs found, or gaps identified — omit if nothing>
+\`\`\`
+
+If you encountered a PoNIF and handled it correctly, note which one. If you hit a PoNIF and it caused a bug, definitely note it — the Field Reporter tracks these patterns.
+
+### Session Summary
+
+Write the session summary to \`session.md\` when:
+- Peter runs \`/report session-end\`
+- You detect context is running low (~70-80%)
+- The session is naturally ending
+
+Update (overwrite) the summary section — don't append multiple summaries.
+
+\`\`\`markdown
+## Session Summary
+**Duration:** <start time> – <run \`date '+%H:%M'\`>
+**Commits:** <count>
+**Lines:** +<added>/-<removed>
+**Phase:** <which phase(s) you worked in>
+**What happened:** <3-5 sentences covering the session's arc — not a commit list, but the narrative>
+**WIP interactions:** <any platform bugs, missing MCP tools, or upstream issues discovered — omit if none>
+**Unfinished:** <what's left, if anything>
+**For the next YAC:** <context the next agent needs to pick up where you left off>
+\`\`\`
+
+### Fireside Chats
+
+When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
 EOF
 echo "   Written: CLAUDE.md"
 

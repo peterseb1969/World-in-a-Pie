@@ -364,6 +364,7 @@ See `docs/architecture.md` for full details.
 | `/review-changes` | Analyze uncommitted work |
 | `/pre-commit` | CI-equivalent checks |
 | `/roadmap` | Show project priorities |
+| `/report` | Capture fireside chat or trigger session summary |
 
 ## File Structure
 
@@ -423,6 +424,100 @@ git push gitea develop && git push github develop
 - **Caddy: `handle` not `handle_path`** — services expect the full path. See `docs/network-configuration.md`.
 - **Always activate venv** — `source .venv/bin/activate` before running Python.
 - **Container recreate vs restart** — after `.env` changes, `podman-compose down && up -d`, not `restart`.
+
+## YAC Reporting
+
+You are a YAC (Yet Another Claude). You report your work to the Field Reporter by writing files to a shared directory. This reporting is also useful for the *next* YAC — your session reports are input for future agents resuming your work.
+
+**Getting the current time:** Always use `date '+%Y-%m-%d %H:%M'` for timestamps. Do not guess.
+
+**Off the record:** If Peter says "off the record" or "don't report this," skip reporting for that segment. Resume when told.
+
+### Session Identity
+
+At the start of every session, run `date '+%Y%m%d-%H%M'` and assign yourself a session ID:
+
+```
+BE-YAC-YYYYMMDD-HHMM
+```
+
+Example: `BE-YAC-20260331-1345`.
+
+### Report Directory
+
+Create your report directory at the start of every session:
+
+```bash
+mkdir -p /Users/peter/Development/FR-YAC/reports/BE-YAC-YYYYMMDD-HHMM/
+```
+
+### Resuming — Check Previous Sessions
+
+At session start (and when running `/resume`), check for recent sessions with your prefix:
+
+```bash
+ls -d /Users/peter/Development/FR-YAC/reports/BE-YAC-* 2>/dev/null | tail -1
+```
+
+If a previous session exists, read its `session.md` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
+
+### Session Start
+
+Create `session.md` immediately when starting work:
+
+```markdown
+---
+session: BE-YAC-YYYYMMDD-HHMM
+type: backend
+repo: WorldInPie
+started: YYYY-MM-DD HH:MM
+phase: <implement | bugfix | design | test | refactor | docs | other>
+tasks:
+  - <initial task from user>
+---
+```
+
+### After Every Commit
+
+Before appending, read `commits.md` first. If the commit hash is already listed, skip it (prevents duplicates after context compaction).
+
+Append to `commits.md` in your report directory:
+
+```markdown
+## <short-hash> — <commit message>
+**Time:** <run `date '+%H:%M'`>
+**Files:** <count> changed, +<added>/-<removed>
+**Tests:** <X passed, Y failed — or "not run">
+**What:** <1-2 sentences — what changed>
+**Why:** <1-2 sentences — what motivated this change>
+**PoNIF:** <if you encountered a PoNIF — which one and whether it caused issues. Omit if none.>
+**Discovered:** <anything surprising, bugs found, or gaps identified — omit if nothing>
+```
+
+### Session Summary
+
+Write the session summary to `session.md` when:
+- Peter runs `/report session-end`
+- You detect context is running low (~70-80%)
+- The session is naturally ending
+
+Update (overwrite) the summary section — don't append multiple summaries.
+
+```markdown
+## Session Summary
+**Duration:** <start time> – <run `date '+%H:%M'`>
+**Commits:** <count>
+**Lines:** +<added>/-<removed>
+**Phase:** <which phase(s) you worked in>
+**What happened:** <3-5 sentences covering the session's arc — not a commit list, but the narrative>
+**Downstream impact:** <changes that may affect apps, MCP tools, client libs, or Console — omit if none>
+**Unfinished:** <what's left, if anything>
+**For the next YAC:** <context the next agent needs to pick up where you left off>
+```
+
+### Fireside Chats
+
+When Peter initiates a design discussion, architecture debate, or scope conversation, use the `/report` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
 CLAUDEEOF
 echo "   Written: CLAUDE.md"
 
