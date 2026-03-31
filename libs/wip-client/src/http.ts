@@ -36,15 +36,22 @@ export class FetchTransport {
   private cachedAuthHeaders: Record<string, string> | null = null
 
   constructor(config: FetchTransportConfig) {
-    // Resolve empty baseUrl: use window.location.origin in browsers, error in Node
+    // Resolve empty or relative baseUrl to absolute URL
     let baseUrl = config.baseUrl
-    if (!baseUrl) {
+    if (!baseUrl || baseUrl.startsWith('/')) {
       if (typeof window !== 'undefined' && window.location?.origin) {
-        baseUrl = window.location.origin
-      } else {
+        baseUrl = baseUrl
+          ? window.location.origin + baseUrl  // '/wip' → 'http://localhost:5173/wip'
+          : window.location.origin             // '' → 'http://localhost:5173'
+      } else if (!baseUrl) {
         throw new Error(
           'WipClient: baseUrl is required in non-browser environments. ' +
           'Pass an explicit baseUrl (e.g. "http://localhost:8001").'
+        )
+      } else {
+        throw new Error(
+          `WipClient: relative baseUrl "${baseUrl}" requires a browser environment. ` +
+          'Pass an absolute URL (e.g. "http://localhost:8001") in Node.js.'
         )
       }
     }
