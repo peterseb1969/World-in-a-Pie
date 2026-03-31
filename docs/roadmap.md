@@ -103,24 +103,20 @@ Every browser-based WIP app needs auth injection (browser can't hold API keys) a
 
 `@wip/proxy` handles the app-to-WIP leg (API key injection), but there is **no user authentication** for the apps themselves. Anyone who can reach the URL can use the app. Even on a home network, WiFi access must not equal app access — guest WiFi credentials should not expose salary payslips or medical data.
 
-**Solution:** OIDC session auth at the gateway level, extending the Caddy + Dex pattern already used for the Console:
+**Solution:** App-side OIDC via `@wip/proxy` + Dex (no custom Caddy build needed):
 
-1. User opens an app → gateway sees no session cookie → redirects to Dex login
+1. App auth middleware (`openid-client`) redirects unauthenticated users to Dex login
 2. User authenticates (same users/groups as Console: admin, editor, viewer)
-3. Dex issues token → gateway establishes session cookie
-4. Gateway injects user identity (`X-WIP-User`, `X-WIP-Groups`) into upstream requests
-5. App receives authenticated context — zero per-app auth code
+3. Dex issues token → middleware validates callback, creates Express session
+4. Middleware injects `X-WIP-User`, `X-WIP-Groups` into request headers
+5. `@wip/proxy` forwards identity headers to WIP services (`forwardIdentity: true`)
+6. wip-auth `TrustedHeaderProvider` extracts user identity (requires valid API key)
 
-**Podman (Caddy):** Caddy already does this for the Console via `caddy-security` plugin. Extend the same config to `/apps/*` routes.
-
-**K8s (NGINX Ingress):** `oauth2-proxy` sidecar or Ingress-level OIDC annotation, same Dex backend.
-
-**`@wip/proxy` change:** Accept forwarded user identity from gateway headers instead of (or in addition to) a hardcoded API key. Per-user API keys or a gateway service account key are both viable.
+**Opt-in:** Set `OIDC_ISSUER` env var to enable. No auth = local dev mode.
 
 - Design: `docs/design/authentication-authorization.md` (Phase 1), also Phase 4 in `docs/design/app-gateway.md`
-- Depends on: App Gateway (Phase 2-3) for multi-app routing, but can be implemented for single-app Caddy deployments independently
 - Related: `docs/design/namespace-authorization.md` (Phase 2 — per-namespace permissions)
-- Status: Not started — design doc drafted (2026-03-30), required before any app serves sensitive data
+- Status: **Phase 1 complete** (2026-03-31) — `TrustedHeaderProvider` in wip-auth 0.4.0, `forwardIdentity` in @wip/proxy 0.2.0, `wip-apps` Dex client, query scaffold auth middleware. Phase 2 (namespace permissions) and Phase 3 (audit trails) not started.
 
 ### Console: Files Page Ignores Namespace
 
@@ -329,25 +325,14 @@ Target file: `components/mcp-server/tests/test_transports.py`
 
 ### PostgreSQL Reporting Integration Tests
 
-Reporting-sync tests currently mock PostgreSQL entirely (`components/reporting-sync/tests/` uses mocked connections). The bash integration suite (`scripts/tests/suites/05-reporting.sh`) tests against real PostgreSQL but only via API calls — it cannot verify schema correctness, type mapping, or edge cases at the database level. This is how the template deactivation bug (`_wip_templates` not synced) went undetected.
+Real PostgreSQL integration tests for reporting-sync. 90+ tests across 3 files using `POSTGRES_TEST_URI` (default `postgresql://test:test@localhost:5433/wip_test`) with graceful skip markers when DB unavailable.
 
-The new `DELETE /namespace/{prefix}` endpoint (namespace cleanup) is another example: raw SQL with dynamic table names, `asyncpg` result string parsing, and silently swallowed `UndefinedTableError` — none of which is meaningfully testable with mocks.
+**Coverage:**
+- `test_integration.py` — 60+ tests: schema creation (10+ field types, semantic types), data type mapping, schema evolution, sync strategies (LATEST_ONLY/ALL_VERSIONS), metadata tables, namespace deletion, indexes/constraints, edge cases (NULLs, unicode, special chars)
+- `test_e2e.py` — 20+ tests: full NATS→SyncWorker→PostgreSQL pipeline for documents, templates, terminologies, terms, relationships (including hard-delete)
+- `test_entity_lifecycle.py` — 10+ tests: complete create→update→archive→delete lifecycle for all entity types
 
-**Need:** pytest integration tests that run against a real PostgreSQL instance:
-
-1. Schema creation and migration for all template types
-2. Data type mapping (MongoDB → PostgreSQL) for all field types including semantic types
-3. Terminology and template metadata sync (`_wip_terminologies`, `_wip_terms`, `_wip_templates`)
-4. Event-driven sync: create, update, and delete events produce correct PostgreSQL state
-5. Batch sync on startup matches event-driven sync results
-6. Namespace deletion: verify `DELETE /namespace/{prefix}` removes all rows from doc_* and metadata tables
-7. Edge cases: large documents, special characters, null handling, concurrent syncs
-
-**CI integration:** Gitea runs on the K8s cluster; CI jobs execute on `wip-pi.local` via act_runner (host execution, not containerised). A persistent `test-mongo` container already runs on the Pi for integration tests — `test-services` uses it directly. The same pattern works for PostgreSQL: add a persistent `test-postgres` container on the Pi and wire `test-reporting-sync` to use it.
-
-Target: `components/reporting-sync/tests/` with a `conftest.py` fixture that connects to a real PostgreSQL instance (CI container on the Pi, configurable via `POSTGRES_URI` env var).
-
-- Status: Not started
+- Status: **Done** (2026-03-30) — 90+ real-DB tests, 308 total test methods across all reporting-sync test files
 
 ### End-to-End UI Testing with Claude Desktop
 
