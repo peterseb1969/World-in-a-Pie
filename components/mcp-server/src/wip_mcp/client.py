@@ -677,6 +677,15 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
+    async def update_template(self, template_id: str, updates: dict) -> dict:
+        item = {"template_id": template_id, **updates}
+        resp = await self._put(
+            self.template_store_url,
+            "/api/template-store/templates",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
+
     async def activate_template(
         self, template_id: str, namespace: str | None = None, dry_run: bool = False
     ) -> dict:

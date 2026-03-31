@@ -1481,6 +1481,9 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
         data = await client.create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
+        err = str(e)
+        if "already exists" in err:
+            return f"WIP error: {err}\n\nTo add or modify fields on an existing template, use update_template(template_id, {{\"fields\": [...]}}) instead. This creates a new version."
         return _error(e)
 
 
@@ -1501,6 +1504,41 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
             for tpl in templates:
                 tpl.setdefault("namespace", ns)
         data = await client.create_templates(templates)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def update_template(template_id: str, updates: dict) -> str:
+    """Update a template by creating a new version. Use this to add/remove/modify fields.
+
+    The template_id stays the same across versions — only the version number increments.
+    Existing documents are unaffected (they reference the version they were created with).
+    New documents will validate against the latest version by default.
+
+    Args:
+        template_id: Template to update (ID or synonym/value).
+        updates: Fields to change. Only include fields you want to modify:
+            - label: New display label
+            - description: New description
+            - fields: Complete field list (replaces all fields — include unchanged ones too)
+            - identity_fields: Updated identity fields
+            - extends: New parent template
+            - rules: Updated validation rules
+            - metadata: Updated metadata
+            - reporting: Updated reporting config
+
+    Example — add a field to an existing template:
+        1. get_template(template_id) to see current fields
+        2. update_template(template_id, {
+               "fields": [... existing fields ..., {"name": "new_field", "label": "New", "type": "string"}]
+           })
+
+    Returns version info: template_id, value, version (new), is_new_version, previous_version.
+    """
+    try:
+        data = await get_client().update_template(template_id, updates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2568,6 +2606,7 @@ WRITE_TOOLS = frozenset({
     # Templates
     "create_template",
     "create_templates_bulk",
+    "update_template",
     "activate_template",
     "deactivate_template",
     # Documents
