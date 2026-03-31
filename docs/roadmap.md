@@ -105,6 +105,13 @@ Test and document `setup.sh` with standard Docker and rootful Podman.
 
 Claude Desktop can drive browser interactions, making E2E testing feasible without Selenium/Playwright. 10 workflows to verify (login, namespace CRUD, template lifecycle, document versioning, file upload, ontology browser, CSV import, reporting).
 
+**Auth smoke tests** (require live Dex + app deployment):
+- OIDC login flow — redirect to Dex, callback, session created
+- `ALLOWED_GROUPS` — user in group gets 200, user not in group gets 403
+- `ALLOWED_GROUPS` empty — all authenticated users allowed
+- Identity headers — `X-WIP-User`/`X-WIP-Groups` forwarded to WIP services
+- `/api/me` — returns session user info
+
 **Open question:** How to integrate with Gitea CI — may be a manual pre-release gate.
 
 ---
