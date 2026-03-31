@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
-    "dev:server": "tsx watch server/index.ts",
+    "dev:server": "NODE_TLS_REJECT_UNAUTHORIZED=0 tsx watch server/index.ts",
     "build": "vite build",
     "start": "tsx server/index.ts"
   },
