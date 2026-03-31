@@ -481,6 +481,14 @@ Install from tarballs in \`libs/\`:
 npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz
 \`\`\`
 
+## Dev Setup Gotchas
+
+**TLS:** WIP uses a self-signed cert on \`https://localhost:8443\`. Node.js \`fetch()\` rejects self-signed certs. Add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). Production with proper certs needs no workaround.
+
+**@wip/client baseUrl:** In browser apps behind a Vite proxy, use \`baseUrl: '/wip'\` (resolved to \`window.location.origin + '/wip'\`). Do NOT use a bare relative path without the client resolving it — \`new URL('/wip/...')\` throws without a protocol.
+
+**@wip/react providers:** Hooks require BOTH \`QueryClientProvider\` (from \`@tanstack/react-query\`) AND \`WipProvider\` (from \`@wip/react\`). Missing either causes silent failure — hooks mount but never fetch, no errors.
+
 ## WIP Toolkit
 
 \`wip-toolkit\` is a CLI for backup, export, import, and data migration. Install from the wheel in \`libs/\`:

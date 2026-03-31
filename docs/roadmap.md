@@ -45,8 +45,10 @@ App-builder agents waste significant time on infrastructure that should be solve
 
 **`create-app-project.sh` fixes:**
 - Auto-detect next free port (scan 3001–3010) and set it in `.env`, `vite.config.ts`, `server/index.ts`
-- Always set `NODE_TLS_REJECT_UNAUTHORIZED=0` in dev scripts (self-signed cert on localhost:8443)
+- ~~Always set `NODE_TLS_REJECT_UNAUTHORIZED=0` in dev scripts~~ ✅ done in scaffold (be971bd)
 - Generate `.env` with actual values from the running WIP instance, not `/path/to/WorldInPie` placeholders
+
+**Already fixed:** `@wip/client` relative baseUrl (0.5.0, 870af84) — `baseUrl: '/wip'` now works in browsers.
 
 **MCP resource `wip://app-dev-checklist`:**
 - Live: WIP instance URL, TLS status, available namespaces, templates per namespace
@@ -140,10 +142,6 @@ Forced refresh command that reads all templates, field names, terminology values
 
 Saved SQL queries against the PostgreSQL reporting backend. Reproducibility, performance, shareability, debuggability. The AI's role shifts from "answer questions" to "help me write queries."
 
-### Query Claude — Read-Only Family Member
-
-Claude instance with restricted MCP tool set: no `create_*` tools. Only query, search, list, get tools + `/init-nl-interface`. Safe to hand to any user.
-
 ---
 
 ## Longer-Term / Ideas
@@ -193,7 +191,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
-| `authentication-authorization.md` | Phase 1 complete, Phase 2-3 pending |
+| `authentication-authorization.md` | Phase 1 + 1.5 complete, Phase 2-3 pending |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
 | `mutable-terminologies.md` | Implemented |
 | `nl-query-scaffold.md` | Implemented |

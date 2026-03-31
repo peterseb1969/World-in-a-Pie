@@ -30,7 +30,7 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 # Guide 1: Gateway & Portal
 
-> **Status: Partially implemented.** The **API reverse proxy already exists** — Caddy routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. Apps should always use Caddy for WIP API access (e.g., `baseUrl: ''` in browser, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports. What is **not yet implemented** is the app gateway and portal described below: app manifest registration, automatic routing of `/apps/*` paths to app containers, and the portal landing page.
+> **Status: Partially implemented.** The **API reverse proxy already exists** — Caddy routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. Apps should always use Caddy for WIP API access (e.g., `baseUrl: '/wip'` in browser behind Vite proxy, `baseUrl: ''` for direct Caddy access, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports. What is **not yet implemented** is the app gateway and portal described below: app manifest registration, automatic routing of `/apps/*` paths to app containers, and the portal landing page.
 
 > **Priority: Critical — deploy before the second app**
 > On a Raspberry Pi with a single IP address, every containerised app needs its own port. Without a gateway, users must remember that the Statement Manager is on port 8081, the Receipt Scanner is on 8082, WIP Console is on 8443, and so on. This is unworkable beyond two apps. The gateway solves port management, TLS termination, and app discovery in a single container.
@@ -240,6 +240,23 @@ app-name/
 │ └── unit/ \# Unit tests
 
 └── README.md \# App-specific documentation
+
+## TLS in development
+
+WIP uses a self-signed TLS certificate on `https://localhost:8443`. Node.js `fetch()` rejects self-signed certs by default, causing silent proxy failures.
+
+**In dev scripts only**, set `NODE_TLS_REJECT_UNAUTHORIZED=0`:
+
+```json
+{
+  "scripts": {
+    "dev:server": "NODE_TLS_REJECT_UNAUTHORIZED=0 tsx watch server/index.ts",
+    "start": "tsx server/index.ts"
+  }
+}
+```
+
+Do NOT set this in `start` (production). Production deployments should use proper CA-signed certificates — Caddy handles this automatically with real domains.
 
 ## Environment variables
 
