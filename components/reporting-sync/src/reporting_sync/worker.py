@@ -48,9 +48,14 @@ class SyncWorker:
         self.schema_manager = SchemaManager(postgres_pool)
         self._running = False
         self._template_cache: dict[str, dict[str, Any]] = {}
+        self._managed_tables: set[str] = set()
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
-        """Fetch template definition from Template Store."""
+        """Fetch template definition from Template Store.
+
+        Returns template dict on success, None if template definitively doesn't exist.
+        Raises on transient errors (connection, timeout) so the event gets retried.
+        """
         if template_id in self._template_cache:
             return self._template_cache[template_id]
 
@@ -65,14 +70,18 @@ class SyncWorker:
                     template = response.json()
                     self._template_cache[template_id] = template
                     return template
-                else:
-                    logger.error(
-                        f"Failed to fetch template {template_id}: {response.status_code}"
-                    )
+                elif response.status_code == 404:
+                    logger.warning(f"Template {template_id} not found (404)")
                     return None
-        except Exception as e:
-            logger.error(f"Error fetching template {template_id}: {e}")
-            return None
+                else:
+                    # 5xx, 401, etc. — transient, should retry
+                    raise RuntimeError(
+                        f"Template Store returned {response.status_code} for {template_id}"
+                    )
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"Cannot connect to Template Store: {e}") from e
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"Template Store timeout for {template_id}: {e}") from e
 
     def _get_reporting_config(self, template: dict[str, Any]) -> ReportingConfig:
         """Extract reporting config from template."""
@@ -101,7 +110,7 @@ class SyncWorker:
         if not template:
             logger.warning(f"Template {template_id} not found, skipping document {document_id}")
             metrics.record_event_failed(None, None, "template_not_found", f"Template {template_id} not found")
-            return False
+            return True  # ACK — retrying won't help if template doesn't exist
 
         template_value = template.get("value", "unknown")
         config = self._get_reporting_config(template)
@@ -117,6 +126,10 @@ class SyncWorker:
         if not table_name:
             metrics.record_event_skipped(template_value, "table_creation_skipped")
             return True  # Sync disabled
+
+        if table_name not in self._managed_tables:
+            self._managed_tables.add(table_name)
+            self.status.tables_managed = len(self._managed_tables)
 
         # Transform document to rows (pass template for semantic type processing)
         transformer = DocumentTransformer(config)
@@ -217,6 +230,9 @@ class SyncWorker:
         else:
             # Create or update document table
             table_name = await self.schema_manager.ensure_table_for_template(template)
+            if table_name and table_name not in self._managed_tables:
+                self._managed_tables.add(table_name)
+                self.status.tables_managed = len(self._managed_tables)
             logger.info(f"Ensured table {table_name} for template {template_value}")
 
         # Sync template metadata to templates table

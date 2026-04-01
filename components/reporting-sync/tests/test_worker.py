@@ -8,6 +8,7 @@ tests can run without infrastructure.
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from reporting_sync.models import SyncStatus
@@ -493,14 +494,14 @@ class TestErrorHandling:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_missing_template_returns_false(self, worker):
-        """When template cannot be fetched, returns False."""
+    async def test_missing_template_acks_event(self, worker):
+        """When template doesn't exist (404), ACK the event — retrying won't help."""
         event = _make_document_event()
 
         with patch.object(worker, "_fetch_template", AsyncMock(return_value=None)):
             result = await worker._process_document_event(event)
 
-        assert result is False
+        assert result is True  # ACK, not NAK
 
     @pytest.mark.asyncio
     async def test_template_fetch_404(self, worker):
@@ -520,17 +521,43 @@ class TestErrorHandling:
         assert "TPL-NOTFOUND" not in worker._template_cache
 
     @pytest.mark.asyncio
-    async def test_template_fetch_network_error(self, worker):
-        """Network error during template fetch returns None."""
+    async def test_template_fetch_connection_error_raises(self, worker):
+        """Connection error during template fetch raises so event gets retried."""
         mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=Exception("Connection refused"))
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("Connection refused"))
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client):
-            result = await worker._fetch_template("TPL-000001")
+        with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
+             pytest.raises(RuntimeError, match="Cannot connect to Template Store"):
+            await worker._fetch_template("TPL-000001")
 
-        assert result is None
+    @pytest.mark.asyncio
+    async def test_template_fetch_timeout_raises(self, worker):
+        """Timeout during template fetch raises so event gets retried."""
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timed out"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
+             pytest.raises(RuntimeError, match="Template Store timeout"):
+            await worker._fetch_template("TPL-000001")
+
+    @pytest.mark.asyncio
+    async def test_template_fetch_server_error_raises(self, worker):
+        """5xx from Template Store raises so event gets retried."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
+             pytest.raises(RuntimeError, match="Template Store returned 500"):
+            await worker._fetch_template("TPL-000001")
 
     @pytest.mark.asyncio
     async def test_db_insert_error_raises(self, worker, mock_pool):
@@ -567,14 +594,26 @@ class TestMessageAckNak:
         msg.nak.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_failed_event_naks_message(self, worker, mock_pool):
-        """Failed event processing naks the NATS message for retry."""
+    async def test_missing_template_acks_message(self, worker, mock_pool):
+        """Template not found (404) ACKs the message — retrying won't help."""
         _pool, _conn = mock_pool
         event = _make_document_event()
         msg = _make_nats_message(event)
 
-        # Template not found = returns False = nak
         with patch.object(worker, "_fetch_template", AsyncMock(return_value=None)):
+            await worker._process_message(msg)
+
+        msg.ack.assert_awaited_once()
+        msg.nak.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_transient_error_naks_message(self, worker, mock_pool):
+        """Transient errors (connection, timeout) NAK for retry."""
+        _pool, _conn = mock_pool
+        event = _make_document_event()
+        msg = _make_nats_message(event)
+
+        with patch.object(worker, "_fetch_template", AsyncMock(side_effect=RuntimeError("Cannot connect"))):
             await worker._process_message(msg)
 
         msg.nak.assert_awaited_once()
