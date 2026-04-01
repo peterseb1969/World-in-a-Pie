@@ -944,10 +944,13 @@ class DocumentService:
 
     async def query_documents(
         self,
-        request: DocumentQueryRequest
+        request: DocumentQueryRequest,
+        allowed_namespaces: list[str] | None = None,
     ) -> DocumentQueryResponse:
         """Query documents with complex filters."""
         query = self._build_query(request)
+        if allowed_namespaces is not None:
+            query["namespace"] = {"$in": allowed_namespaces}
 
         # Count total
         total = await Document.find(query).count()

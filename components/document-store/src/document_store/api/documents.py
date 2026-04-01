@@ -168,6 +168,9 @@ async def get_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
+
     return document
 
 
@@ -187,6 +190,12 @@ async def get_document_versions(
 
     if not versions:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Check namespace — fetch the document to get its namespace
+    doc = await service.get_document(document_id)
+    if doc:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, doc.namespace, "read")
 
     return versions
 
@@ -208,6 +217,9 @@ async def get_document_version(
 
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document
 
@@ -234,6 +246,9 @@ async def get_latest_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
+
     return document
 
 
@@ -248,10 +263,16 @@ async def delete_documents(
     _: str = Depends(require_api_key)
 ):
     """Delete one or more documents."""
+    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
         try:
+            doc = await service.get_document(item.id)
+            if not doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+                continue
+            await check_namespace_permission(identity, doc.namespace, "write")
             success = await service.delete_document(
                 item.id, item.updated_by,
                 hard_delete=item.hard_delete,
@@ -282,9 +303,15 @@ async def archive_documents(
     _: str = Depends(require_api_key)
 ):
     """Archive one or more documents."""
+    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
+        doc = await service.get_document(item.id)
+        if not doc:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            continue
+        await check_namespace_permission(identity, doc.namespace, "write")
         success = await service.archive_document(item.id, item.archived_by)
         if not success:
             results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
@@ -317,8 +344,11 @@ async def query_documents(
     _: str = Depends(require_api_key)
 ):
     """Query documents with filters."""
+    identity = get_current_identity()
+    allowed_namespaces = await resolve_accessible_namespaces(identity)
+
     service = get_document_service()
-    return await service.query_documents(request)
+    return await service.query_documents(request, allowed_namespaces=allowed_namespaces)
 
 
 @router.get(
@@ -338,5 +368,8 @@ async def get_document_by_identity(
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document

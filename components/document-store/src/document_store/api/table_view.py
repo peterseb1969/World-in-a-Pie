@@ -16,6 +16,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
+from wip_auth import check_namespace_permission, get_current_identity
+
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
 from .auth import require_api_key
@@ -282,6 +284,11 @@ async def get_table_view(
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    # Check namespace permission
+    ns = template.get("namespace", "wip")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, ns, "read")
+
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
@@ -385,6 +392,11 @@ async def export_table_csv(
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    # Check namespace permission
+    ns = template.get("namespace", "wip")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, ns, "read")
 
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)

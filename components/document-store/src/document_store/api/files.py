@@ -189,11 +189,19 @@ async def get_file(
     _: str = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
+    from ..models.file import File as FileModel
+
     service = get_file_service()
     file_response = await service.get_file(file_id)
 
     if not file_response:
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Check namespace permission (File model has namespace, FileResponse doesn't)
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if file_doc:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, file_doc.namespace, "read")
 
     return file_response
 
@@ -217,6 +225,14 @@ async def get_download_url(
 ):
     """Get a pre-signed download URL for a file."""
     service = get_file_service()
+
+    # Check namespace permission before generating presigned URL
+    from ..models.file import File as FileModel
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -249,6 +265,10 @@ async def download_file_content(
     if file_doc.status == FileStatus.INACTIVE:
         raise HTTPException(status_code=400, detail="File has been deleted")
 
+    # Check namespace permission
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
+
     # Stream chunks directly from MinIO → browser (no full buffering)
     storage = get_file_storage_client()
     return StreamingResponse(
@@ -273,10 +293,17 @@ async def update_files_metadata(
     _: str = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
+    from ..models.file import File as FileModel
+    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
         try:
+            file_doc = await FileModel.find_one({"file_id": item.file_id})
+            if not file_doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
+                continue
+            await check_namespace_permission(identity, file_doc.namespace, "write")
             response = await service.update_metadata(item.file_id, item)
             if not response:
                 results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
@@ -305,10 +332,17 @@ async def delete_files(
     _: str = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
+    from ..models.file import File as FileModel
+    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
         try:
+            file_doc = await FileModel.find_one({"file_id": item.id})
+            if not file_doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
+                continue
+            await check_namespace_permission(identity, file_doc.namespace, "write")
             success = await service.delete_file(item.id, force=item.force)
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
@@ -343,12 +377,15 @@ async def get_file_documents(
 ):
     """List documents that reference this file."""
     from ..models.document import Document as DocumentModel
+    from ..models.file import File as FileModel
 
-    # Verify file exists
-    service = get_file_service()
-    file_response = await service.get_file(file_id)
-    if not file_response:
+    # Verify file exists and check namespace permission
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
 
     # Query documents with this file_id in file_references
     query = {
@@ -404,6 +441,14 @@ async def hard_delete_file(
 ):
     """Permanently delete a file."""
     service = get_file_service()
+
+    # Check namespace permission — hard delete requires admin
+    from ..models.file import File as FileModel
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "admin")
 
     try:
         success = await service.hard_delete_file(file_id)

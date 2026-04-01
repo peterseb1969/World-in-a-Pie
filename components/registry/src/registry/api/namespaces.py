@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
+from wip_auth import get_current_identity
+
 from ..models.api_models import (
     ExportResponse,
     ImportResponse,
@@ -23,6 +25,7 @@ from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES
 from ..models.namespace import Namespace
 from ..services.auth import require_admin_key, require_api_key
+from .grants import _resolve_permission
 
 router = APIRouter()
 
@@ -59,14 +62,22 @@ async def list_namespaces(
     include_archived: bool = Query(False, description="Include archived namespaces"),
     api_key: str = Depends(require_api_key)
 ) -> list[NamespaceResponse]:
-    """List all namespaces."""
+    """List namespaces the caller can access."""
     if include_archived:
         query = {"status": {"$ne": "deleted"}}
     else:
         query = {"status": "active"}
 
     namespaces = await Namespace.find(query).to_list()
-    return [namespace_to_response(ns) for ns in namespaces]
+
+    # Filter to accessible namespaces
+    identity = get_current_identity()
+    accessible = []
+    for ns in namespaces:
+        perm = await _resolve_permission(identity, ns.prefix)
+        if perm != "none":
+            accessible.append(namespace_to_response(ns))
+    return accessible
 
 
 @router.get(
@@ -82,6 +93,12 @@ async def get_namespace(
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+
+    identity = get_current_identity()
+    perm = await _resolve_permission(identity, prefix)
+    if perm == "none":
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+
     return namespace_to_response(ns)
 
 
@@ -97,6 +114,11 @@ async def get_namespace_stats(
     """Get entity counts for each entity type in the namespace."""
     ns = await Namespace.find_one({"prefix": prefix})
     if not ns:
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+
+    identity = get_current_identity()
+    perm = await _resolve_permission(identity, prefix)
+    if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
     entity_counts = {}
@@ -129,6 +151,11 @@ async def get_namespace_id_config(
     """Get ID algorithm configuration for a namespace. Services cache this at startup."""
     ns = await Namespace.find_one({"prefix": prefix, "status": "active"})
     if not ns:
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+
+    identity = get_current_identity()
+    perm = await _resolve_permission(identity, prefix)
+    if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
     config = {}
