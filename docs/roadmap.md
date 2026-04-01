@@ -93,6 +93,28 @@ Standardized way to containerize apps, push to a registry, and deploy next to WI
 - Depends on: `@wip/proxy` (done), App Gateway Phase 2-3 (for multi-app K8s routing)
 - Related: `docs/design/distributable-app-format.md`
 
+### Image-Based Distribution
+
+All WIP services and apps as Docker images on a registry, pullable to any machine or cluster. Config entirely via env files, YAML, or K8s secrets. New WIP instance = `docker compose pull && docker compose up`.
+
+**What this enables:**
+- No git clone needed to run WIP — just a compose file + `.env`
+- App distribution via images, not repos — build on Mac, deploy to Pi
+- Version pinning: `wip-registry:1.4.2` instead of "whatever's on develop"
+- `wip-toolkit deploy-app`: build image → push → pull on target → done
+
+**Key challenge:** Multi-arch builds (arm64 for Pi, amd64 for cloud). Buildx + QEMU is slow; native CI on both architectures is cleaner but needs runners on both.
+
+**Subsumes or partially replaces:**
+- **Item 8 (App Dev & Deployment Framework)** — Dockerfile template, compose integration, deploy CLI, K8s manifests all fall under this
+- **Item 10 (Container Runtime Support)** — if images are the distribution unit, Docker/Podman compatibility is tested by definition
+- **Item 11 (K8s Remaining)** — Helm chart / Kustomize packaging is the K8s flavour of image-based deployment
+- **Part of item 12 (Guides)** — installation guide becomes "pull and run"; deployment guide becomes image-centric
+
+**Status:** High-level design written. Needs a fireside talk to finalize phases and open questions.
+
+- Design: `docs/design/image-based-distribution.md`
+
 ### Dev-Namespace Workflow for Slash Commands
 
 Update slash commands to use disposable dev namespaces during data modeling, with transfer to prod on completion. Mostly `create-app-project.sh` updates + minor slash command prompt changes.
@@ -119,6 +141,8 @@ Test and document `setup.sh` with standard Docker and rootful Podman.
 ### End-to-End UI Testing with Claude Desktop
 
 Claude Desktop can drive browser interactions, making E2E testing feasible without Selenium/Playwright. 10 workflows to verify (login, namespace CRUD, template lifecycle, document versioning, file upload, ontology browser, CSV import, reporting).
+
+**Roles:** BE-YAC generates test scripts (YAML) by reading Console source code — selectors, click sequences, expected outcomes. Peter + Claude Desktop executes them.
 
 **Auth smoke tests** (require live Dex + app deployment):
 - OIDC login flow — redirect to Dex, callback, session created
@@ -210,4 +234,5 @@ All feature designs live in `docs/design/`. Status of each:
 | `nl-query-scaffold.md` | Implemented |
 | `ontology-browser.md` | Implemented |
 | `universal-synonym-resolution.md` | Implemented |
+| `image-based-distribution.md` | High-level design |
 | `wip-nano.md` | Concept only |
