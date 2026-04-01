@@ -1,3 +1,4 @@
+import 'dotenv/config'  // Must be first — loads .env before any other module reads process.env
 import express from 'express'
 import cors from 'cors'
 import session from 'express-session'

@@ -15,16 +15,19 @@ let mcpClient: Client | null = null
 let mcpTools: Anthropic.Tool[] = []
 let systemPrompt = ''
 
-const MCP_URL = process.env.MCP_URL || ''
-const MCP_TRANSPORT = process.env.MCP_TRANSPORT || ''  // 'sse' | 'http' | '' (auto-detect or stdio)
-const MCP_PYTHON = process.env.MCP_PYTHON || ''
-const MCP_CWD = process.env.MCP_CWD || ''
-const MCP_MODULE = process.env.MCP_MODULE || 'wip_mcp'
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || ''
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001'
-const WIP_NAMESPACE = process.env.WIP_NAMESPACE || ''
-const MAX_TURNS = parseInt(process.env.MAX_TURNS || '15')
-const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000
+// Read env vars lazily — module-level reads race with dotenv in ESM
+const env = () => ({
+  MCP_URL: process.env.MCP_URL || '',
+  MCP_TRANSPORT: process.env.MCP_TRANSPORT || '',
+  MCP_PYTHON: process.env.MCP_PYTHON || '',
+  MCP_CWD: process.env.MCP_CWD || '',
+  MCP_MODULE: process.env.MCP_MODULE || 'wip_mcp',
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001',
+  WIP_NAMESPACE: process.env.WIP_NAMESPACE || '',
+  MAX_TURNS: parseInt(process.env.MAX_TURNS || '15'),
+  SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
+})
 
 // Only expose read/query tools — no create, delete, or admin tools
 const ALLOWED_TOOLS = new Set([
@@ -67,7 +70,7 @@ const sessions = new Map<string, Session>()
 setInterval(() => {
   const now = Date.now()
   for (const [id, session] of sessions) {
-    if (now - session.lastAccess > SESSION_TTL_MS) {
+    if (now - session.lastAccess > env().SESSION_TTL_MS) {
       sessions.delete(id)
     }
   }
@@ -76,9 +79,10 @@ setInterval(() => {
 // ---------- MCP connection ----------
 
 function createTransport() {
-  if (MCP_URL) {
-    const url = new URL(MCP_URL)
-    if (MCP_TRANSPORT === 'sse' || MCP_URL.endsWith('/sse')) {
+  const e = env()
+  if (e.MCP_URL) {
+    const url = new URL(e.MCP_URL)
+    if (e.MCP_TRANSPORT === 'sse' || e.MCP_URL.endsWith('/sse')) {
       return new SSEClientTransport(url)
     }
     // Default to Streamable HTTP for remote URLs
@@ -86,11 +90,11 @@ function createTransport() {
   }
 
   // Stdio: spawn local MCP server process
-  const pythonPath = MCP_PYTHON || 'python'
-  const cwd = MCP_CWD || process.cwd()
+  const pythonPath = e.MCP_PYTHON || 'python'
+  const cwd = e.MCP_CWD || process.cwd()
   return new StdioClientTransport({
     command: pythonPath,
-    args: ['-m', MCP_MODULE],
+    args: ['-m', e.MCP_MODULE],
     cwd,
     env: {
       ...process.env as Record<string, string>,
@@ -102,7 +106,7 @@ function createTransport() {
 }
 
 export async function initAgent() {
-  if (!ANTHROPIC_API_KEY) {
+  if (!env().ANTHROPIC_API_KEY) {
     console.warn('⚠ ANTHROPIC_API_KEY not set — /api/ask will be unavailable')
     return
   }
@@ -165,12 +169,13 @@ export async function ask(
   // Add user message
   session.messages.push({ role: 'user', content: question })
 
-  const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY })
+  const e = env()
+  const anthropic = new Anthropic({ apiKey: e.ANTHROPIC_API_KEY })
   let totalToolCalls = 0
 
-  for (let turn = 0; turn < MAX_TURNS; turn++) {
+  for (let turn = 0; turn < e.MAX_TURNS; turn++) {
     const response = await anthropic.messages.create({
-      model: CLAUDE_MODEL,
+      model: e.CLAUDE_MODEL,
       max_tokens: 4096,
       system: systemPrompt,
       tools: mcpTools,
@@ -198,14 +203,14 @@ export async function ask(
       const args = block.input as Record<string, unknown>
 
       // Inject namespace if configured and the tool accepts it
-      if (WIP_NAMESPACE && 'namespace' in (args || {})) {
-        args.namespace = WIP_NAMESPACE
-      } else if (WIP_NAMESPACE && args && !('namespace' in args)) {
+      if (e.WIP_NAMESPACE && 'namespace' in (args || {})) {
+        args.namespace = e.WIP_NAMESPACE
+      } else if (e.WIP_NAMESPACE && args && !('namespace' in args)) {
         // Only inject if the tool likely accepts namespace
         const toolDef = mcpTools.find(t => t.name === block.name)
         const props = (toolDef?.input_schema as any)?.properties || {}
         if ('namespace' in props) {
-          args.namespace = WIP_NAMESPACE
+          args.namespace = e.WIP_NAMESPACE
         }
       }
 
