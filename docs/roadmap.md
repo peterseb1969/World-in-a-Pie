@@ -46,6 +46,7 @@ App-builder agents waste significant time on infrastructure that should be solve
 **`create-app-project.sh` fixes:**
 - Auto-detect next free port (scan 3001–3010) and set it in `.env`, `vite.config.ts`, `server/index.ts`
 - ~~Always set `NODE_TLS_REJECT_UNAUTHORIZED=0` in dev scripts~~ ✅ done in scaffold (be971bd)
+- ~~Create dev namespace and guide APP-YAC to use it~~ ✅ done (dev-{slug} namespace, CLAUDE.md workflow)
 - Generate `.env` with actual values from the running WIP instance, not `/path/to/WorldInPie` placeholders
 
 **Already fixed:** `@wip/client` relative baseUrl (0.5.0, 870af84) — `baseUrl: '/wip'` now works in browsers.
@@ -61,9 +62,21 @@ App-builder agents waste significant time on infrastructure that should be solve
 
 - Discovered: 2026-03-31 during AuthorAssist app build (app-builder agent session)
 
-### Ontology Browser — UX Refinements
+### Ontology Graph Explorer
 
-- Document list in detail panel needs rethinking
+Replace the current tree view with an interactive graph exploration UI. The ontology tree (lung-cancer is_a cancer) is correct but borderline useless on its own. The real value is walking across entities: terms → documents → cross-terminology co-occurrence.
+
+**Three edge types:**
+- **Ontology relationships** — is_a, part_of, has_subtype (already in WIP)
+- **Document-term** — which documents reference which terms (reporting SQL)
+- **Cross-terminology co-occurrence** — terms linked through shared documents (e.g., AE + indication in the same trial)
+
+**Example:** "All AEs affecting the liver that showed up in immunology trials" — two terminologies, connected through document co-occurrence, walkable visually.
+
+**Data layer:** Ready. Hierarchy traversal, reporting SQL, `useReportQuery` hook all exist. The gap is entirely UI/visualization (Cytoscape.js, D3, or similar).
+
+**Status:** Needs a dedicated fireside talk to flesh out — technology choice, progressive expansion strategy, Console-native vs standalone app, performance limits.
+
 - Design: `docs/design/ontology-browser.md`
 
 ### App Development & Deployment Framework

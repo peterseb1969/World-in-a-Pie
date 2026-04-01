@@ -90,6 +90,10 @@ if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
 
+# Derive slug from app name (lowercase, hyphens) — used for namespace and package name
+APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
+DEV_NAMESPACE="dev-${APP_SLUG}"
+
 if $REFRESH_MODE; then
     echo "Refreshing WIP app environment:"
 else
@@ -97,6 +101,8 @@ else
 fi
 echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
+echo "  Slug:      $APP_SLUG"
+echo "  Dev ns:    $DEV_NAMESPACE"
 echo "  Preset:    $PRESET"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
@@ -364,9 +370,6 @@ if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
 
     echo "7. Copying NL query scaffold..."
 
-    # Derive slug from app name (lowercase, hyphens)
-    APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
-
     # Copy scaffold structure
     cp -r "$SCAFFOLD_DIR/server" "$APP_DIR/"
     cp -r "$SCAFFOLD_DIR/src" "$APP_DIR/"
@@ -404,6 +407,36 @@ else
     STEP_OFFSET=0
 fi
 
+# --- Create dev namespace (new projects only) ---
+
+if ! $REFRESH_MODE; then
+    STEP_NUM=$((7 + STEP_OFFSET))
+    echo "$STEP_NUM. Creating dev namespace '$DEV_NAMESPACE'..."
+    STEP_OFFSET=$((STEP_OFFSET + 1))
+
+    # Best-effort — WIP may not be running. Non-fatal.
+    NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
+        -X POST "https://localhost:8443/api/registry/namespaces" \
+        -H "X-API-Key: $ACTIVE_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"prefix\": \"$DEV_NAMESPACE\", \"description\": \"$APP_NAME (dev)\"}" \
+        2>/dev/null || echo "000")
+
+    if [ "$NS_RESPONSE" = "200" ]; then
+        echo "   Created namespace: $DEV_NAMESPACE"
+    elif [ "$NS_RESPONSE" = "000" ]; then
+        echo "   WIP not reachable — APP-YAC will create the namespace on first run"
+    else
+        echo "   HTTP $NS_RESPONSE — namespace may already exist (ok)"
+    fi
+
+    # Set WIP_NAMESPACE in .env.example if query preset
+    if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
+        sed -i '' "s|# WIP_NAMESPACE=myapp|WIP_NAMESPACE=$DEV_NAMESPACE|" "$APP_DIR/.env.example"
+        echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
+    fi
+fi
+
 # --- Generate CLAUDE.md (new projects only) ---
 
 if ! $REFRESH_MODE; then
@@ -421,6 +454,24 @@ cat > "$APP_DIR/CLAUDE.md" << EOF
 > **Never modify WIP. Build on top of it.**
 
 WIP is the backend. This app is a frontend that maps a domain onto WIP's primitives (terminologies, templates, documents) and presents them to users.
+
+## Dev Namespace
+
+Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling during development.
+
+**Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
+
+**Workflow:**
+1. Use \`$DEV_NAMESPACE\` for all \`/design-model\` and \`/implement\` work
+2. Create terminologies, templates, and test documents in this namespace
+3. Iterate until the data model is stable
+4. When ready for production, create a new namespace (e.g., \`${APP_SLUG}\`) and recreate the finalized model there
+5. Clean up the dev namespace with \`dev-delete.py\`:
+   \`\`\`bash
+   python tools/dev-delete.py --namespace $DEV_NAMESPACE --force
+   \`\`\`
+
+**Important:** All MCP tool calls that accept a \`namespace\` parameter should use \`$DEV_NAMESPACE\` during development.
 
 ## Process
 
