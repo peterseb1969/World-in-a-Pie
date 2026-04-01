@@ -15,6 +15,7 @@ from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
 from .import_.importer import run_import
+from .seed import run_seed
 
 console = Console(stderr=True)
 
@@ -339,6 +340,41 @@ def backfill_synonyms_cmd(
             console.print(f"  {entity_type}: {added} new, {existing} existing, {failed} failed")
 
         console.print(f"\n  Total: {total_added} new synonyms registered, {total_existing} already existed")
+
+
+@main.command()
+@click.argument("data_model_dir")
+@click.argument("namespace")
+@click.option("--skip-templates", is_flag=True, help="Only seed terminologies and terms")
+@click.option("--dry-run", is_flag=True, help="Preview without making changes")
+@click.option("--continue-on-error", is_flag=True, help="Don't stop on individual failures")
+@click.pass_context
+def seed(
+    ctx: click.Context,
+    data_model_dir: str,
+    namespace: str,
+    skip_templates: bool,
+    dry_run: bool,
+    continue_on_error: bool,
+) -> None:
+    """Seed a namespace from /export-model seed files.
+
+    DATA_MODEL_DIR is the path to the data-model/ directory containing
+    terminologies/ and templates/ subdirectories with JSON seed files.
+
+    NAMESPACE is the target WIP namespace (e.g., "dnd").
+    """
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        stats = run_seed(
+            client, data_model_dir, namespace,
+            skip_templates=skip_templates,
+            dry_run=dry_run,
+            continue_on_error=continue_on_error,
+        )
+
+        if stats.errors:
+            sys.exit(1)
 
 
 def _show_references(reader: ArchiveReader) -> None:
