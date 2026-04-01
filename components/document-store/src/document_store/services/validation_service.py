@@ -344,11 +344,13 @@ class ValidationService:
                 value, field, full_path, template, result
             )
 
-        # Check for unknown fields
+        # Reject unknown fields — if it's not in the template, it doesn't belong
         for field_name in data:
             if field_name not in field_map:
-                result.add_warning(
-                    f"Unknown field '{prefix}{field_name}' will be stored but not validated"
+                result.add_error(
+                    code="unknown_field",
+                    message=f"Unknown field '{prefix}{field_name}' is not declared in the template",
+                    field=f"{prefix}{field_name}"
                 )
 
     async def _validate_field_value(

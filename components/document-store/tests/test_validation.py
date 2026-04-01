@@ -283,3 +283,54 @@ async def test_create_document_validation_error(client: AsyncClient, auth_header
     assert bulk["succeeded"] == 0
     assert bulk["results"][0]["status"] == "error"
     assert bulk["results"][0]["error"] is not None
+
+
+@pytest.mark.asyncio
+async def test_validate_rejects_unknown_fields(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
+    """Unknown fields must be rejected — WIP validates the full schema, not just declared fields."""
+    data = sample_person_data.copy()
+    data["bogus_field"] = "should not be accepted"
+    data["another_fake"] = 42
+
+    response = await client.post(
+        "/api/document-store/validation/validate",
+        headers=auth_headers,
+        json={
+            "template_id": "TPL-000001",
+            "namespace": "wip",
+            "data": data
+        }
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["valid"] is False
+
+    unknown_errors = [e for e in result["errors"] if e["code"] == "unknown_field"]
+    assert len(unknown_errors) == 2
+    unknown_fields = {e["field"] for e in unknown_errors}
+    assert "bogus_field" in unknown_fields
+    assert "another_fake" in unknown_fields
+
+
+@pytest.mark.asyncio
+async def test_create_document_rejects_unknown_fields(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
+    """Documents with undeclared fields must be rejected, not silently stored."""
+    data = sample_person_data.copy()
+    data["sneaky_extra"] = "this should fail"
+
+    response = await client.post(
+        "/api/document-store/documents",
+        headers=auth_headers,
+        json=[{
+            "template_id": "TPL-000001",
+            "namespace": "wip",
+            "data": data
+        }]
+    )
+
+    assert response.status_code == 200
+    bulk = response.json()
+    assert bulk["failed"] == 1
+    assert bulk["succeeded"] == 0
+    assert "unknown field" in bulk["results"][0]["error"].lower()
