@@ -6,18 +6,17 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Near-Term
 
-### Auth Phase 2: Namespace Permissions
+### Auth Phase 2: Namespace Permissions — Console UX Polish
 
-Activate the existing `check_namespace_permission()` calls in route handlers. The function exists, grants exist — routes just don't call it yet. ~50 Console button guards needed too (cosmetic).
+Backend done (0e548f3) — all user-facing endpoints enforce `check_namespace_permission()`. Registry entries deliberately excluded (internal service-to-service). Remaining: ~50 Console button guards (cosmetic — hide/disable actions the user can't perform).
 
-- Depends on: Auth Phase 1 (done)
+- Depends on: Auth Phase 1 (done), Auth Phase 2 backend (done)
 - Design: `docs/design/namespace-authorization.md`
 
-### Auth Phase 3: Audit Trail Verification
+### Auth Phase 3: Audit Trail Verification ✅
 
-Verify `identity_string` shows user email end-to-end (app → proxy → service → MongoDB → NATS → PostgreSQL). Phase 1 plumbed everything — Phase 3 is verification + Console UI showing actual user in audit columns.
+Verified by code review (2026-04-01). Full chain confirmed: `identity_string` → `created_by`/`updated_by` in MongoDB → `changed_by` in NATS → `created_by`/`updated_by` in PostgreSQL. Console already displays these fields. With gateway_oidc, values show user email (e.g., `admin@wip.local`) instead of `apikey:legacy`.
 
-- Depends on: Auth Phase 1 (done)
 - Design: `docs/design/authentication-authorization.md`
 
 ### Sync-Aware Helpers for Reporting Reads
@@ -220,7 +219,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `template-reference-pinning.md` | Implemented |
 | `event-replay.md` | Implemented |
 | `namespace-scoped-data.md` | Phase 1-2 complete, Phase 3-5 pending |
-| `namespace-authorization.md` | Core complete, UX polish remaining |
+| `namespace-authorization.md` | Backend complete (0e548f3), Console UX polish remaining |
 | `namespace-deletion.md` | Implemented |
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
 | `distributed-deployment.md` | Phase 1-2 complete, Phase 3 pending |
@@ -228,7 +227,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `natural-language-interface.md` | Planning |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
-| `authentication-authorization.md` | Phase 1 + 1.5 complete, Phase 2-3 pending |
+| `authentication-authorization.md` | Phase 1 + 1.5 + 2 backend + 3 complete. Phase 2 Console UX remaining. |
 | `app-gateway.md` | Phase 1 complete, Phase 2-4 pending |
 | `mutable-terminologies.md` | Implemented |
 | `nl-query-scaffold.md` | Implemented |

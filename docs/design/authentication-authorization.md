@@ -304,14 +304,17 @@ The `wip-admins` superadmin bypass ensures single-user deployments are unaffecte
 
 WIP already tracks `created_by` and `updated_by` on documents, templates, and terminologies. With Phase 1 complete, `TrustedHeaderProvider` sets `identity_string` to the user's email (e.g., `admin@wip.local`) instead of the API key name (e.g., `apikey:legacy`). This is already plumbed — Phase 3 is verification and Console UI updates.
 
-### Remaining Work
+### Verification (2026-04-01)
 
-| Step | Change |
+Code review confirmed the full chain works correctly:
+
+| Step | Status |
 |------|--------|
-| 1 | Verify `identity_string` shows user email end-to-end (app → proxy → service → MongoDB) |
-| 2 | Verify NATS events carry user identity in `changed_by` |
-| 3 | Verify reporting-sync preserves user identity in PostgreSQL |
-| 4 | Console: show actual user in audit columns, not API key name |
+| `identity_string` shows user email for `gateway_oidc` | **Verified** — `models.py:40`, test in `test_trusted_header.py:164` |
+| All services use `get_identity_string()` for `created_by`/`updated_by` | **Verified** — document-store, template-store, def-store all consistent |
+| NATS events carry user identity in `changed_by` | **Verified** — all 3 service NATS clients pass `changed_by=actor` |
+| reporting-sync preserves identity in PostgreSQL | **Verified** — transformer extracts `created_by`/`updated_by`, worker maps `changed_by` |
+| Console shows actual user in audit columns | **Already works** — `VersionHistory.vue` displays `created_by` as-is; with gateway_oidc this shows email |
 
 ### Audit in Events
 
@@ -386,8 +389,8 @@ This replaces Dex entirely. WIP's Registry (which already manages namespaces and
 |-------|------|-------------|--------|
 | **1** | **No anonymous app access** | None | **Done** (2026-03-31) — app-side OIDC, wip-auth 0.4.0, @wip/proxy 0.2.0 |
 | **1.5** | **App-level access control** | Phase 1 | **Done** (2026-04-01) — `ALLOWED_GROUPS` env var in scaffold middleware |
-| **2** | Per-namespace permissions | Phase 1 | Designed (`namespace-authorization.md`), not started |
-| **3** | Per-user audit trail | Phase 1 | Plumbed by Phase 1, needs verification |
+| **2** | Per-namespace permissions | Phase 1 | **Backend done** (0e548f3), Console UX polish remaining |
+| **3** | Per-user audit trail | Phase 1 | **Verified** — code review confirmed full chain |
 | **4A** | Per-app user isolation | Phase 2 | Design needed |
 | **4B** | Gateway-level auth | Phase 1 | Fallback option, not needed while apps use scaffold |
 | **4C** | WIP as auth provider | All | Deferred |
