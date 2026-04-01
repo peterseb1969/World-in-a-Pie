@@ -268,7 +268,6 @@ async def test_create_document_validation_error(client: AsyncClient, auth_header
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
-            "namespace": "wip",
             "template_id": "TPL-000001",
             "namespace": "wip",
             "data": {
