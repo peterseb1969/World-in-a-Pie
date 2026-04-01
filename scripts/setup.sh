@@ -131,8 +131,8 @@ get_preset_desc() {
     case "$1" in
         headless)  echo "API only - no Console, no OIDC, lowest footprint" ;;
         core)      echo "Minimal deployment - API keys only, no OIDC" ;;
-        standard)  echo "Recommended - OIDC authentication for multi-user access" ;;
-        analytics) echo "Standard + SQL reporting for BI dashboards" ;;
+        standard)  echo "Recommended - OIDC, SQL reporting, file storage" ;;
+        analytics) echo "OIDC + SQL reporting, no file storage" ;;
         full)      echo "All features enabled - complete deployment" ;;
         *)         echo "" ;;
     esac
@@ -309,8 +309,8 @@ WIP Unified Setup Script - Modular Deployment System
 PRESETS (sensible defaults):
   headless   API only - no Console, no OIDC, lowest footprint
   core       Minimal deployment, API-key auth only
-  standard   OIDC authentication (recommended for most users)
-  analytics  Standard + PostgreSQL reporting
+  standard   OIDC + reporting + files (recommended for most users)
+  analytics  OIDC + reporting (no file storage)
   full       All features enabled
 
 MODULES (composable):
