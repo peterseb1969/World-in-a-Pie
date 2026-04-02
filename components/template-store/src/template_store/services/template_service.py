@@ -1608,6 +1608,7 @@ class TemplateService:
         """Convert Template document to event payload for NATS publishing."""
         return {
             "template_id": t.template_id,
+            "namespace": t.namespace,
             "value": t.value,
             "label": t.label,
             "description": t.description,

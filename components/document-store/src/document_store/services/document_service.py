@@ -545,6 +545,7 @@ class DocumentService:
         """Convert Document to event payload for NATS publishing."""
         return {
             "document_id": document.document_id,
+            "namespace": document.namespace,
             "template_id": document.template_id,
             "template_version": document.template_version,
             "template_value": document.template_value,
