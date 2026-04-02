@@ -76,7 +76,7 @@ async def create_terms(
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     with contextlib.suppress(EntityNotFoundError):
         terminology_id = await resolve_entity_id(
-            terminology_id, "terminology", namespace or "wip"
+            terminology_id, "terminology", namespace
         )
 
     # Look up terminology to get namespace for permission check
@@ -144,7 +144,7 @@ async def list_terms(
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     with contextlib.suppress(EntityNotFoundError):
         terminology_id = await resolve_entity_id(
-            terminology_id, "terminology", namespace or "wip"
+            terminology_id, "terminology", namespace
         )
 
     # Get terminology info
@@ -192,7 +192,7 @@ async def get_term(
     """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
     # Resolve synonym — supports colon notation for terms
     with contextlib.suppress(EntityNotFoundError):
-        term_id = await resolve_entity_id(term_id, "term", namespace or "wip")
+        term_id = await resolve_entity_id(term_id, "term", namespace)
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:

@@ -95,6 +95,56 @@ requires_e2e = pytest.mark.skipif(
 )
 
 
+# Service URLs for pipeline tests
+_SERVICE_URLS = {
+    "registry": os.environ.get("REGISTRY_URL", "http://localhost:8001"),
+    "def-store": os.environ.get("DEF_STORE_URL", "http://localhost:8002"),
+    "template-store": os.environ.get("TEMPLATE_STORE_URL", "http://localhost:8003"),
+    "document-store": os.environ.get("DOCUMENT_STORE_URL", "http://localhost:8004"),
+    "reporting-sync": os.environ.get("REPORTING_SYNC_URL", "http://localhost:8005"),
+}
+
+_pipeline_available = None
+
+
+def _check_pipeline_available():
+    """Check all 5 WIP services + PostgreSQL are reachable."""
+    global _pipeline_available
+    if _pipeline_available is not None:
+        return _pipeline_available
+
+    import httpx
+
+    async def _try_all():
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                for name, url in _SERVICE_URLS.items():
+                    resp = await client.get(f"{url}/health")
+                    if resp.status_code != 200:
+                        return False
+            # Also check production PostgreSQL (not test PG)
+            pg_uri = os.environ.get(
+                "PIPELINE_POSTGRES_URI",
+                "postgresql://wip:wip_dev_password@localhost:5432/wip_reporting",
+            )
+            conn = await asyncpg.connect(pg_uri, timeout=3)
+            await conn.close()
+            return True
+        except Exception:
+            return False
+
+    _pipeline_available = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        _try_all()
+    )
+    return _pipeline_available
+
+
+requires_pipeline = pytest.mark.skipif(
+    not _check_pipeline_available(),
+    reason="Pipeline test requires all 5 WIP services + PostgreSQL to be running",
+)
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================

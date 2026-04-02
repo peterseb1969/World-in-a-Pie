@@ -67,6 +67,7 @@ from .providers import (
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
+from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
 from .resolve import (
     EntityNotFoundError,
     clear_resolution_cache,
@@ -125,8 +126,10 @@ __all__ = [
     "reset_auth_config",
     "resolve_accessible_namespaces",
     # Synonym resolution
+    "resolve_bulk_ids",
     "resolve_entity_id",
     "resolve_entity_ids",
+    "resolve_or_404",
     "resolve_permission",
     "set_auth_config",
     "set_current_identity",
