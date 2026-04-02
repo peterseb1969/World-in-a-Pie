@@ -25,7 +25,7 @@ claude          # Launch Claude Code
 /explore        # Start Phase 1
 ```
 
-**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 69 tools and 4 resources.
+**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 70+ tools and 5 resources.
 
 ---
 
@@ -282,4 +282,4 @@ That's it. The script creates the directory, copies all files, generates `.mcp.j
 
 ---
 
-*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (69 MCP tools, 4 resources, 12 slash commands, rewritten reference docs).*
+*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (70+ MCP tools, 5 resources, 12 slash commands, rewritten reference docs).*

@@ -356,13 +356,13 @@ Only the Registry `entry_id` and namespace `prefix`. These are the cross-cutting
 
 When a uniqueness constraint is violated:
 
-| Scenario | HTTP Response | Detail |
-|----------|--------------|--------|
-| Duplicate composite key in Registry | `200` — returns existing entry_id | This is upsert, not an error |
-| Duplicate `(namespace, value)` for terminology | `409 Conflict` | "Terminology 'X' already exists" |
-| Duplicate `(namespace, term_id)` | `409 Conflict` | "Term ID 'X' already exists" |
-| Duplicate `(namespace, terminology_id, value)` for term | `409 Conflict` | "Term value 'X' already exists" |
-| Duplicate `(namespace, template_id, version)` | `409 Conflict` | Prevented by service layer |
-| Duplicate `(namespace, document_id, version)` | `409 Conflict` | Prevented by service layer |
+| Scenario | HTTP Response | Per-item status | Detail |
+|----------|--------------|-----------------|--------|
+| Duplicate composite key in Registry | `200` | `already_exists` | Returns existing entry_id — this is upsert, not an error |
+| Duplicate `(namespace, value)` for terminology | `200` | `already_exists` | "Terminology 'X' already exists" |
+| Duplicate `(namespace, term_id)` | `200` | `already_exists` | "Term ID 'X' already exists" |
+| Duplicate `(namespace, terminology_id, value)` for term | `200` | `already_exists` | "Term value 'X' already exists" |
+| Duplicate `(namespace, template_id, version)` | `200` | `error` | Prevented by service layer |
+| Duplicate `(namespace, document_id, version)` | `200` | `error` | Prevented by service layer |
 
-The Registry returning an existing ID is **not an error** — it's the upsert mechanism working as designed. A `409` means you tried to create an entity that already exists at the domain level (bypassing the Registry's dedup, or using a different composite key that happens to produce the same namespace-scoped entity_id).
+All write endpoints return HTTP 200 with a BulkResponse. Duplicates are reported per-item via the `status` field — check each item's status rather than the HTTP status code. See `docs/api-conventions.md`.

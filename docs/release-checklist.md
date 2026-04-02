@@ -91,7 +91,7 @@ done
 
 - [ ] `podman-compose` used everywhere (not `docker-compose`) — exception: design docs for future features
 - [ ] API field names match current code (`value`/`label`, not old `code`/`name`)
-- [ ] Tool count matches reality (currently 68 `@mcp.tool` decorators)
+- [ ] Tool count matches reality (70+ `@mcp.tool` decorators — verify with grep count)
 - [ ] Service count and port assignments consistent across all docs
 
 ### 5d. Client library READMEs

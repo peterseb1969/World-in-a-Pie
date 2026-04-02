@@ -106,7 +106,7 @@ NATS JetStream powers event-driven sync from MongoDB to PostgreSQL. All document
 |-----------|--------|----------|
 | WIP internal | Implemented | MongoDB → PostgreSQL reporting sync via NATS JetStream |
 | WIP → External | Available via NATS subscription | React to document changes |
-| External → WIP | Planned (streaming ingest) | High-volume data ingestion |
+| External → WIP | Ingest Gateway (async bulk ingestion via NATS JetStream, port 8006) | High-volume data ingestion |
 
 ### Business Logic
 

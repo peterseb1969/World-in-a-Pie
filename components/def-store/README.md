@@ -13,6 +13,7 @@ Terminology and ontology management service for the World In a Pie ecosystem.
 - **Multi-language**: Translation support for internationalization
 - **Hierarchical Terms**: Support for parent-child relationships
 - **Registry Integration**: Automatic ID generation via WIP Registry
+- **Ontology Relationships**: Create typed relationships between terms (`is_a`, `part_of`, `has_part`, `maps_to`, `related_to`, custom). Traverse hierarchies (ancestors, descendants, parents, children) with configurable depth. Cross-terminology relationships supported.
 
 ## Quick Start
 
@@ -75,18 +76,18 @@ This is configured in `podman-compose.yml` via the `API_KEY` environment variabl
 | GET | `/api/def-store/terminologies/{id}` | Get terminology by ID |
 | GET | `/api/def-store/terminologies/by-value/{value}` | Get terminology by value |
 | PUT | `/api/def-store/terminologies/{id}` | Update terminology |
-| DELETE | `/api/def-store/terminologies/{id}` | Delete terminology |
+| DELETE | `/api/def-store/terminologies/{id}` | Delete terminology (soft-delete) |
 
 ### Terms
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/def-store/terms/{terminology_id}` | List terms in terminology |
-| POST | `/api/def-store/terms/{terminology_id}` | Create a term |
-| GET | `/api/def-store/terms/{terminology_id}/{term_id}` | Get term by ID |
-| GET | `/api/def-store/terms/{terminology_id}/by-value/{value}` | Get term by value |
-| PUT | `/api/def-store/terms/{terminology_id}/{term_id}` | Update term |
-| DELETE | `/api/def-store/terms/{terminology_id}/{term_id}` | Delete term |
+| GET | `/api/def-store/terminologies/{terminology_id}/terms` | List terms in terminology |
+| POST | `/api/def-store/terminologies/{terminology_id}/terms` | Create a term |
+| GET | `/api/def-store/terminologies/{terminology_id}/terms/{term_id}` | Get term by ID |
+| GET | `/api/def-store/terminologies/{terminology_id}/terms/by-value/{value}` | Get term by value |
+| PUT | `/api/def-store/terminologies/{terminology_id}/terms/{term_id}` | Update term |
+| DELETE | `/api/def-store/terminologies/{terminology_id}/terms/{term_id}` | Delete term (hard-delete, mutable terminologies only) |
 | POST | `/api/def-store/terms/{terminology_id}/validate` | Validate a value |
 | POST | `/api/def-store/terms/{terminology_id}/bulk` | Create terms in bulk |
 
@@ -98,6 +99,16 @@ This is configured in `podman-compose.yml` via the `API_KEY` environment variabl
 | GET | `/api/def-store/import-export/export` | Export all terminologies |
 | POST | `/api/def-store/import-export/import` | Import terminology |
 | POST | `/api/def-store/import-export/import/url` | Import from URL |
+
+### Ontology
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/def-store/ontology/relationships` | Create term relationships (bulk) |
+| GET | `/api/def-store/ontology/relationships` | List relationships for a term |
+| DELETE | `/api/def-store/ontology/relationships` | Delete relationships (bulk) |
+| GET | `/api/def-store/ontology/terms/{id}/ancestors` | Traverse ancestors |
+| GET | `/api/def-store/ontology/terms/{id}/descendants` | Traverse descendants |
 
 ## Example Usage
 

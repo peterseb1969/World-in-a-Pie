@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 69 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 70+ tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -236,7 +236,7 @@ wip-mcp-reader:
 
 ## Resources (Static Context)
 
-Four resources provide baseline context to the AI without tool calls:
+Five resources provide baseline context to the AI without tool calls:
 
 | Resource URI | Description |
 |---|---|
@@ -244,6 +244,7 @@ Four resources provide baseline context to the AI without tool calls:
 | `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relationships |
 | `wip://development-guide` | The 4-phase development process with guidance per phase |
 | `wip://ponifs` | Powerful, Non-Intuitive Features — 6 WIP behaviours that violate conventional expectations, plus the Compactheimer's Warning for AI assistants |
+| `wip://query-assistant-prompt` | Query assistant prompt for SQL reporting |
 
 ---
 

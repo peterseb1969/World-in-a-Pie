@@ -64,7 +64,7 @@ WIP is built on three principles:
 | **Consistency** | Templates enforce data quality at ingestion |
 | **Portability** | Runs on a Raspberry Pi or scales to the cloud |
 | **Federation** | Registry enables cross-instance identity resolution |
-| **Auditability** | Full version history; nothing is ever deleted |
+| **Auditability** | Full version history; data is soft-deleted by default — configurable per namespace |
 | **Extensibility** | Pluggable storage backends and reporting layers |
 
 ---
@@ -124,6 +124,8 @@ WIP is built on three principles:
 ## Quick Start
 
 ### Development Setup (Mac/Linux)
+
+**Prerequisites:** Python 3.11+, Podman (or Docker), and Git.
 
 ```bash
 # Clone the repository
@@ -279,7 +281,7 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 }
 ```
 
-69 tools covering all CRUD operations, plus 4 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
+70+ tools covering all CRUD operations, plus 5 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**

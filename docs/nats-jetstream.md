@@ -278,9 +278,9 @@ All events follow this structure:
       "email": "john.doe@example.com",
       "country": "Germany"
     },
-    "term_references": {
-      "country": "T-000042"
-    },
+    "term_references": [
+      {"field_path": "country", "term_id": "T-000042"}
+    ],
     "created_at": "2026-02-03T10:30:00.000Z",
     "created_by": "user:admin@wip.local"
   }

@@ -144,14 +144,14 @@ Custom namespaces get modified ID prefixes to avoid collisions:
 
 | Namespace | Entity Type | ID Format |
 |-----------|-------------|-----------|
-| `wip` | terminologies | `TERM-000001` |
-| `wip` | terms | `T-000001` |
-| `wip` | templates | `TPL-000001` |
-| `seed` | terminologies | `SEED-TERM-000001` |
-| `seed` | terms | `SEED-T-000001` |
-| `seed` | templates | `SEED-TPL-000001` |
+| `wip` | terminologies | UUID7 (default) |
+| `wip` | terms | UUID7 (default) |
+| `wip` | templates | UUID7 (default) |
+| `wip` | documents | UUID7 (default) |
+| `wip` | files | UUID7 (default) |
+| custom | (any) | Configurable via `id_config` — UUID7, prefixed (e.g., `SEED-TERM-000001`), nanoid, pattern |
 
-Documents use UUID7 regardless of namespace (time-ordered, globally unique).
+The `wip` namespace uses UUID7 for all entity types. Custom namespaces can configure per-entity-type ID algorithms including prefixed IDs with custom prefixes and padding.
 
 ### Auto-Creation of Namespaces
 
@@ -246,8 +246,8 @@ Namespace provides basic data isolation today. The following features from the [
 |---------|--------|
 | Namespace group management API | Not started |
 | Namespace export/import | Not started |
-| Namespace archive/delete | Not started |
-| Per-namespace access control | Not started |
+| Namespace archive/delete | Implemented (see `docs/design/namespace-deletion.md`) |
+| Per-namespace access control | Implemented (Auth Phase 2, commit `0e548f3`) |
 | Cross-namespace reference validation | Not started |
 | CLI commands (`wip namespace list`, etc.) | Not started |
 | PostgreSQL reporting namespace column | Not started |

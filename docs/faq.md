@@ -1,5 +1,7 @@
 # WIP Frequently Asked Questions
 
+> **See also:** [Project FAQ](../faq.md) for high-level questions about WIP's philosophy, architecture, and use cases.
+
 Common issues and solutions for World In a Pie deployments.
 
 ---

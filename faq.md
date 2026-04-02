@@ -1,5 +1,9 @@
 # World In a Pie — Frequently Asked Questions
 
+*This FAQ was produced from a structured challenge-and-defence session. The questions are deliberately skeptical.*
+
+> **See also:** [Operational FAQ](docs/faq.md) for setup, networking, authentication, and troubleshooting questions.
+
 ## General
 
 ### What is World In a Pie, really?
@@ -52,7 +56,7 @@ MongoDB's write performance on an SD card is a serious bottleneck. NATS JetStrea
 
 ### The stack looks heavy — MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy, six microservices. Will this actually fit?
 
-WIP is composable. Different presets let you run only the services relevant to your use case. If you do not need reporting sync, you do not run the reporting-sync service or PostgreSQL. If you do not need file storage, you do not run MinIO. A minimal deployment is significantly lighter than the full stack.
+WIP is composable. Five presets let you run only the services relevant to your use case: `headless` (API only, no UI), `core` (console, API keys), `analytics` (adds OIDC + SQL reporting), `standard` (adds file storage — recommended), and `full` (adds async ingestion). If you do not need reporting sync, you do not run the reporting-sync service or PostgreSQL. If you do not need file storage, you do not run MinIO. A minimal deployment is significantly lighter than the full stack.
 
 If you look at the stack and think "MongoDB isn't for a Pi," WIP is probably not the right tool for you — and that is fine. WIP is for people who want a full-featured data foundation, not a lightweight embedded store.
 
@@ -190,4 +194,4 @@ This means your application code never needs to know which ID universe it is ope
 
 ---
 
-*This document was produced from a structured challenge-and-defence session examining WIP's architecture, target audience, and design tradeoffs. Last updated March 2026.*
+*Last updated March 2026.*

@@ -34,6 +34,29 @@ The Document Store service manages documents that conform to templates defined i
 | POST | `/validation/validate` | Validate without saving |
 | GET | `/documents/by-identity/{hash}` | Get by identity hash |
 
+### File Storage
+
+Document Store manages binary files via MinIO (when the `files` module is enabled).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/files` | Upload a file |
+| GET | `/files` | List files |
+| GET | `/files/{id}` | Get file metadata |
+| GET | `/files/{id}/download` | Download file |
+| DELETE | `/files/{id}` | Soft-delete file |
+
+Files can be linked to documents via template field references. Orphan detection tracks files not referenced by any document.
+
+### CSV/XLSX Import
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/import/preview` | Preview file structure and headers |
+| POST | `/import` | Import documents from CSV/XLSX |
+
+Import supports column-to-field mapping, automatic term value resolution (human-readable values resolved to term IDs), and `skip_errors` mode for partial imports.
+
 ## Quick Start
 
 ### Development
@@ -75,11 +98,12 @@ Once running, access the OpenAPI documentation at:
 ### Create a Document
 
 ```bash
-curl -X POST http://localhost:8004/api/document-store/documents \
-  -H "X-API-Key: dev_master_key_for_testing" \
+curl -X POST https://localhost:8443/api/document-store/documents \
+  -H "X-API-Key: ${API_KEY}" \
   -H "Content-Type: application/json" \
-  -d '{
+  -d '[{
     "template_id": "TPL-000001",
+    "namespace": "wip",
     "data": {
       "national_id": "123456789",
       "first_name": "John",
@@ -87,7 +111,7 @@ curl -X POST http://localhost:8004/api/document-store/documents \
       "birth_date": "1990-01-15"
     },
     "created_by": "admin"
-  }'
+  }]'
 ```
 
 ### Validate a Document

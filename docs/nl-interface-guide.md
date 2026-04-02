@@ -54,9 +54,9 @@ The agent filters MCP tools to a read-only subset (23 tools), defined in the `AL
 | Status/discovery | `get_wip_status`, `describe_data_model`, `search`, `list_namespaces` |
 | Terminologies | `list_terminologies`, `get_terminology`, `list_terms`, `get_term`, `validate_term`, `get_term_hierarchy` |
 | Templates | `list_templates`, `get_template`, `get_template_fields` |
-| Documents | `list_documents`, `get_document`, `query_documents`, `query_by_template`, `get_document_version_history` |
+| Documents | `list_documents`, `get_document`, `query_documents`, `query_by_template`, `get_document_versions` |
 | Reporting | `list_report_tables`, `run_report_query` |
-| Files | `get_file` |
+| Files | `get_file_metadata` |
 
 ## Namespace Injection
 

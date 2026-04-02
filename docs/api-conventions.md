@@ -1,6 +1,6 @@
 # API Conventions
 
-All WIP services follow a consistent set of API conventions. This document is the single source of truth for patterns used across Registry, Def-Store, Template-Store, and Document-Store.
+All WIP services follow a consistent set of API conventions. This document is the single source of truth for patterns used across Registry, Def-Store, Template-Store, and Document-Store. Reporting-Sync and Ingest Gateway have additional patterns (SQL queries, async job submission) not covered here.
 
 ---
 
@@ -135,6 +135,8 @@ for r in result["results"]:
     if r["status"] == "error":
         print(f"Failed to delete item {r['index']}: {r['error']}")
 ```
+
+> **Why POST for deletes?** HTTP DELETE with a JSON body is non-standard. The bulk-first pattern uses POST for all write operations — creates, updates, and deletes — so they all accept arrays and return BulkResponse.
 
 ### TypeScript (WIP Console UI)
 

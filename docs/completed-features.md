@@ -136,7 +136,7 @@ Deployed and validated on a 3-node MicroK8s cluster (Raspberry Pi 5, aarch64, Ro
 - Self-signed TLS via Ingress, Dex OIDC with group claims
 - MCP server with HTTP streamable transport, accessible from Claude Code over HTTPS
 - Remote seeding from Mac via `--host --via-proxy --port 443`
-- Full installation log: `k8s-installation_log.md` (~1200 lines, 19 lessons learned)
+
 
 Note: Helm chart packaging, Network Policies, and production hardening tracked separately in roadmap.
 
@@ -176,7 +176,7 @@ Coverage: tool listing, resource listing, readonly mode, API key accept/reject, 
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
 - Ontology support — OBO Graph JSON import, typed relationships, traversal
 - Template draft mode — draft status, cascading activation
-- MCP server — 71 tools, 5 resources, stdio + SSE + HTTP streamable transport
+- MCP server — 70+ tools, 5 resources, stdio + SSE + HTTP streamable transport
 - @wip/client + @wip/react — TypeScript client and React hooks
 - CSV/XLSX import — preview + import endpoints in Document-Store
 - Event replay — start, pause, resume, cancel via API and MCP tools

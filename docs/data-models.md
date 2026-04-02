@@ -1098,6 +1098,10 @@ hash = compute_identity_hash(data, identity_fields)
 # → "a1b2c3d4e5f6..."
 ```
 
+> **Note:** Two hash modes exist:
+> - **Strict** (default): Values are serialized as-is via `str(value)`. Used for standard identity hashing.
+> - **Normalized**: Values are stripped and lowercased before hashing. Used for case-insensitive matching. Must be explicitly requested.
+
 **Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 
 ---
@@ -1114,7 +1118,8 @@ class PaginatedResponse(BaseModel, Generic[T]):
     total: int
     page: int
     page_size: int
-    has_more: bool
+    pages: int  # ceil(total / page_size)
+    next_cursor: str | None = None  # optional cursor-based pagination
 ```
 
 ### Validation Result

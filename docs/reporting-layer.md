@@ -129,7 +129,7 @@ Subject: wip.documents.deleted
   "document": {
     "document_id": "0192abc...",
     "template_id": "TPL-000001",
-    "template_code": "PERSON",
+    "template_value": "PERSON",
     "version": 1,
     "status": "active",
     "identity_hash": "a1b2c3...",
@@ -180,8 +180,8 @@ Templates gain a new `reporting` configuration section:
 
 ```json
 {
-  "code": "PERSON",
-  "name": "Person",
+  "value": "PERSON",
+  "label": "Person",
   "identity_fields": ["email"],
   "fields": [...],
   "rules": [...],
@@ -281,17 +281,19 @@ When template fields change:
 **Migration tracking table:**
 ```sql
 CREATE TABLE _wip_schema_migrations (
-    template_code TEXT NOT NULL,
+    template_value TEXT NOT NULL,
     template_version INTEGER NOT NULL,
     migration_sql TEXT NOT NULL,
     applied_at TIMESTAMP DEFAULT NOW(),
-    PRIMARY KEY (template_code, template_version)
+    PRIMARY KEY (template_value, template_version)
 );
 ```
 
 ## API Endpoints
 
 **Base URL:** http://localhost:8005
+
+> Paths below are relative to the service root. Through Caddy: `/api/reporting-sync/<path>`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
@@ -302,8 +304,8 @@ CREATE TABLE _wip_schema_migrations (
 | GET | `/alerts` | Active alerts and configuration |
 | PUT | `/alerts/config` | Update alert thresholds and webhook |
 | POST | `/alerts/test` | Manually trigger alert check |
-| GET | `/schema/{template_code}` | View generated schema for template |
-| POST | `/sync/batch/{template_code}` | Trigger batch sync for one template |
+| GET | `/schema/{template_value}` | View generated schema for template |
+| POST | `/sync/batch/{template_value}` | Trigger batch sync for one template |
 | POST | `/sync/batch` | Trigger batch sync for all templates |
 | GET | `/sync/batch/jobs` | List all batch sync jobs |
 | GET | `/sync/batch/jobs/{job_id}` | Get specific job status |
