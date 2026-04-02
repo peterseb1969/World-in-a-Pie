@@ -525,6 +525,38 @@ Update (overwrite) the summary section — don't append multiple summaries.
 ### Fireside Chats
 
 When Peter initiates a design discussion, architecture debate, or scope conversation, use the `/report` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
+
+## Cross-Agent Cases
+
+When you encounter a bug, missing feature, or platform gap that another YAC needs to handle, use the `/case` slash command to file a structured case.
+
+**Shared directory:** `yac-discussions/` (relative to your project root). This is a symlink to the shared case store. If the directory doesn't exist, cross-agent cases are not enabled for this project — tell Peter.
+
+The `/case` command is in `.claude/commands/case.md`. Peter symlinks both the directory and the command into participating projects.
+
+### Quick Reference
+
+- `/case file [optional Peter comment]` — file a new case
+- `/case list` — list all open/responded cases (one-line each)
+- `/case read <case-id>` — read a specific case in full
+- `/case respond <case-id>` — append a response to an existing case
+- `/case comment <case-id> [text]` — add a follow-up comment (clarifications, Peter's input, questions)
+- `/case close <case-id>` — mark a case as resolved
+- `/doc-review` — review all open doc-review cases filed by a DOC-YAC (verify accuracy, propose patches)
+- `/doc-review <case-id>` — review a single doc-review case
+
+### When to File
+
+- Bug in a platform component (document-store, registry, MCP server, client libs)
+- Missing feature you need (MCP tool, React hook, scaffold capability)
+- Platform behavior that contradicts docs or conventions
+- Peter tells you to file a case
+
+### When NOT to File
+
+- Bugs in your own app code
+- Questions answerable from docs or MCP resources
+- Peter said "off the record"
 CLAUDEEOF
 echo "   Written: CLAUDE.md"
 
