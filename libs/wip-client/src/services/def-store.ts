@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipBulkItemError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Terminology,
@@ -85,14 +86,31 @@ export class DefStoreService extends BaseService {
     return this.get(`/terms/${termId}`)
   }
 
-  async createTerm(terminologyId: string, data: CreateTermRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne(`/terminologies/${terminologyId}/terms`, data)
+  async createTerm(
+    terminologyId: string,
+    data: CreateTermRequest,
+    options?: { namespace?: string },
+  ): Promise<BulkResultItem> {
+    const resp = await this.post<BulkResponse>(
+      `/terminologies/${terminologyId}/terms`,
+      [data],
+      options?.namespace ? { namespace: options.namespace } : undefined,
+    )
+    const result = resp.results[0]
+    if (result.status === 'error') {
+      throw new WipBulkItemError(
+        result.error || 'Operation failed',
+        result.index,
+        result.status,
+      )
+    }
+    return result
   }
 
   async createTerms(
     terminologyId: string,
     terms: CreateTermRequest[],
-    options?: { batch_size?: number; registry_batch_size?: number },
+    options?: { batch_size?: number; registry_batch_size?: number; namespace?: string },
   ): Promise<BulkResponse> {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options)
   }

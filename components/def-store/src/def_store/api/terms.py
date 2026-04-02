@@ -47,6 +47,10 @@ router = APIRouter(tags=["Terms"])
 async def create_terms(
     terminology_id: str,
     items: list[CreateTermRequest] = Body(...),
+    namespace: str | None = Query(
+        default=None,
+        description="Namespace for synonym resolution (inferred from terminology if omitted)"
+    ),
     batch_size: int = Query(
         1000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -71,7 +75,9 @@ async def create_terms(
     """
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     with contextlib.suppress(EntityNotFoundError):
-        terminology_id = await resolve_entity_id(terminology_id, "terminology", "wip")
+        terminology_id = await resolve_entity_id(
+            terminology_id, "terminology", namespace or "wip"
+        )
 
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
