@@ -1,16 +1,15 @@
 """Template API endpoints."""
 
-import contextlib
 import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
-    EntityNotFoundError,
     check_namespace_permission,
     get_current_identity,
     resolve_accessible_namespaces,
-    resolve_entity_id,
+    resolve_bulk_ids,
+    resolve_or_404,
 )
 
 from ..models.api_models import (
@@ -102,6 +101,10 @@ async def list_templates(
     else:
         allowed_namespaces = await resolve_accessible_namespaces(identity)
 
+    # Resolve extends synonym if provided
+    if extends:
+        extends = await resolve_or_404(extends, "template", namespace, param_name="extends")
+
     templates, total = await TemplateService.list_templates(
         status=status,
         extends=extends,
@@ -136,9 +139,7 @@ async def get_template(
     (all fields from parent templates merged).
     """
     # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
-    resolved_id = template_id
-    with contextlib.suppress(EntityNotFoundError):
-        resolved_id = await resolve_entity_id(template_id, "template", namespace)
+    resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
     template = await TemplateService.get_template(template_id=resolved_id, version=version)
     if not template:
@@ -162,10 +163,7 @@ async def get_template_raw(
     Returns the template as stored in the database, without merging
     fields from parent templates.
     """
-    try:
-        resolved_id = await resolve_entity_id(template_id, "template", namespace)
-    except EntityNotFoundError:
-        resolved_id = template_id
+    resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
     template = await TemplateService.get_template(
         template_id=resolved_id, version=version, resolve_inheritance=False
@@ -265,6 +263,8 @@ async def update_templates(
     The template_id is stable across versions — updates create a new version
     document with the same template_id but incremented version number.
     """
+    await resolve_bulk_ids(items, "template_id", "template", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -299,6 +299,8 @@ async def get_template_dependencies(template_id: str):
 
     Use this to check before deactivating a template.
     """
+    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+
     try:
         return await DependencyService.check_template_dependencies(template_id)
     except ValueError as e:
@@ -316,6 +318,8 @@ async def delete_templates(
     have other templates extending them.
     Set force=true per item to delete even if documents exist.
     """
+    await resolve_bulk_ids(items, "id", "template", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -368,6 +372,8 @@ async def validate_template(
     - template_ref fields point to existing templates
     - extends points to an existing template
     """
+    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+
     return await TemplateService.validate_template(
         template_id=template_id,
         check_terminologies=request.check_terminologies,
@@ -394,6 +400,8 @@ async def activate_template(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+
     try:
         return await TemplateService.activate_template(
             template_id=template_id,
@@ -415,6 +423,8 @@ async def cascade_template(template_id: str):
 
     Only the `extends` pointer is updated — child-specific fields are preserved.
     """
+    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+
     try:
         return await TemplateService.cascade_to_children(template_id)
     except ValueError as e:
@@ -428,6 +438,7 @@ async def get_template_children(template_id: str):
     """
     Get templates that directly extend this template.
     """
+    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
     children = await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
@@ -443,6 +454,7 @@ async def get_template_descendants(template_id: str):
     """
     Get all templates that extend this template (directly or indirectly).
     """
+    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
     descendants = await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(
