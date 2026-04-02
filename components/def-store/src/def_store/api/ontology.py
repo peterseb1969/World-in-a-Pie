@@ -4,7 +4,7 @@ import math
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
     BulkResponse,
@@ -43,6 +43,10 @@ async def create_relationships(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
+    # Resolve term synonyms in bulk
+    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
+    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+
     results = await OntologyService.create_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status == "created")
     return BulkResponse(
@@ -70,6 +74,9 @@ async def list_relationships(
     """List relationships for a term, with optional direction and type filtering."""
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    # Resolve term_id synonym
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     items, total = await OntologyService.list_relationships(
         term_id=term_id,
@@ -104,6 +111,10 @@ async def delete_relationships(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
 
+    # Resolve term IDs in delete items
+    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
+    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
+
     results = await OntologyService.delete_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
     return BulkResponse(
@@ -137,6 +148,12 @@ async def list_all_relationships(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    # Resolve source_terminology_id synonym if provided
+    if source_terminology_id:
+        source_terminology_id = await resolve_or_404(
+            source_terminology_id, "terminology", namespace, param_name="source_terminology_id"
+        )
 
     items, total = await OntologyService.list_all_relationships(
         namespace=namespace,
@@ -180,6 +197,8 @@ async def get_ancestors(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+
     return await OntologyService.get_ancestors(
         term_id=term_id,
         namespace=namespace,
@@ -208,6 +227,8 @@ async def get_descendants(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+
     return await OntologyService.get_descendants(
         term_id=term_id,
         namespace=namespace,
@@ -234,6 +255,8 @@ async def get_parents(
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
 
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+
     return await OntologyService.get_parents(term_id, namespace)
 
 
@@ -254,5 +277,7 @@ async def get_children(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_children(term_id, namespace)

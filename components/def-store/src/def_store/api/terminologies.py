@@ -4,7 +4,13 @@ import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_bulk_ids,
+    resolve_or_404,
+)
 
 from ..models.api_models import (
     BulkResponse,
@@ -118,6 +124,11 @@ async def get_terminology(
     The ID can be either the Registry ID or the value (DOC_STATUS).
     When falling back to value lookup, namespace is used for scoping.
     """
+    # Resolve synonym (e.g., "STATUS" → UUID)
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace, param_name="terminology_id"
+    )
+
     # Try as ID first, then as value
     result = await TerminologyService.get_terminology(terminology_id=terminology_id)
     if not result:
@@ -140,6 +151,8 @@ async def update_terminologies(
     If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
+    await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -176,6 +189,10 @@ async def get_terminology_dependencies(
 
     Use this to check before deactivating a terminology.
     """
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+    )
+
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
@@ -194,6 +211,10 @@ async def restore_terminology(
     By default also reactivates all terms that were deactivated with it.
     Set restore_terms=false to restore only the terminology itself.
     """
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+    )
+
     result = await TerminologyService.restore_terminology(
         terminology_id=terminology_id,
         restore_terms=restore_terms
@@ -214,6 +235,8 @@ async def delete_terminologies(
     All terms in each terminology will also be deactivated.
     Set force=true per item to delete even if templates reference it.
     """
+    await resolve_bulk_ids(items, "id", "terminology", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:

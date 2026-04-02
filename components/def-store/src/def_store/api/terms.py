@@ -1,16 +1,14 @@
 """API endpoints for term management."""
 
-import contextlib
 import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
-    EntityNotFoundError,
     check_namespace_permission,
     get_current_identity,
     resolve_accessible_namespaces,
-    resolve_entity_id,
+    resolve_or_404,
 )
 
 from ..models.api_models import (
@@ -74,10 +72,9 @@ async def create_terms(
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
-    with contextlib.suppress(EntityNotFoundError):
-        terminology_id = await resolve_entity_id(
-            terminology_id, "terminology", namespace
-        )
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace, param_name="terminology_id"
+    )
 
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
@@ -142,10 +139,9 @@ async def list_terms(
         allowed_namespaces = await resolve_accessible_namespaces(identity)
 
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
-    with contextlib.suppress(EntityNotFoundError):
-        terminology_id = await resolve_entity_id(
-            terminology_id, "terminology", namespace
-        )
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace, param_name="terminology_id"
+    )
 
     # Get terminology info
     terminology = await Terminology.find_one({"terminology_id": terminology_id})
@@ -191,8 +187,7 @@ async def get_term(
 ) -> TermResponse:
     """Get a term by its ID or synonym (e.g., "STATUS:approved")."""
     # Resolve synonym — supports colon notation for terms
-    with contextlib.suppress(EntityNotFoundError):
-        term_id = await resolve_entity_id(term_id, "term", namespace)
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
@@ -210,6 +205,9 @@ async def update_terms(
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """Update one or more terms."""
+    from wip_auth import resolve_bulk_ids
+    await resolve_bulk_ids(items, "term_id", "term", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -244,6 +242,9 @@ async def deprecate_terms(
     Deprecated terms are kept for historical data but marked as deprecated.
     Optionally specify a replacement term per item.
     """
+    from wip_auth import resolve_bulk_ids
+    await resolve_bulk_ids(items, "term_id", "term", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -271,6 +272,9 @@ async def delete_terms(
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """Soft-delete one or more terms (set status to inactive)."""
+    from wip_auth import resolve_bulk_ids
+    await resolve_bulk_ids(items, "id", "term", namespace=None)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -314,6 +318,12 @@ async def validate_value(
         raise HTTPException(
             status_code=400,
             detail="Must provide terminology_id or terminology_value"
+        )
+
+    # Resolve terminology_id synonym if provided
+    if request.terminology_id:
+        request.terminology_id = await resolve_or_404(
+            request.terminology_id, "terminology", namespace=None, param_name="terminology_id"
         )
 
     # Get terminology for response
@@ -362,6 +372,12 @@ async def validate_values_bulk(
     invalid_count = 0
 
     for item in request.items:
+        # Resolve terminology_id synonym
+        if item.terminology_id:
+            item.terminology_id = await resolve_or_404(
+                item.terminology_id, "terminology", namespace=None, param_name="terminology_id"
+            )
+
         # Get terminology
         if item.terminology_id:
             terminology = await Terminology.find_one({"terminology_id": item.terminology_id})
