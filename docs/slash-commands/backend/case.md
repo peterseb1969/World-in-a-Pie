@@ -4,10 +4,11 @@ Cross-agent case management. File bugs, questions, or requests for other YACs. R
 
 - `/case file [optional Peter comment]` — file a new case about a bug, question, or platform gap
 - `/case list` — list all open/responded cases (one-line summary each)
-- `/case read <case-id>` — read a specific case in full, including all comments and responses
-- `/case respond <case-id>` — append a response to an existing case
-- `/case comment <case-id> [text]` — add a comment (anyone: filer, responder, or Peter via a YAC)
-- `/case close <case-id>` — mark a case as resolved
+- `/case read <number>` — read a specific case in full, including all comments and responses
+- `/case respond <number>` — append a response to an existing case
+- `/case comment <number> [text]` — add a comment (anyone: filer, responder, or Peter via a YAC)
+- `/case close <number>` — close without implementation (won't-fix, not-an-issue, deferred, handled manually)
+- `/case implement <number>` — apply the proposed patch, then close as implemented
 
 ### Prerequisites
 
@@ -25,7 +26,31 @@ test -d yac-discussions && echo "ok" || echo "missing"
 
 If `yac-discussions/` does not exist, tell Peter: "Cross-agent cases are not enabled for this project. To enable, symlink `yac-discussions/` to the shared case store." Then stop.
 
-Each case is a single markdown file named `CASE-YYYYMMDD-HHMM-<slug>.md`.
+### Filename Convention
+
+Case files are named: `CASE-<NN>-<status>-<slug>.md`
+
+- `<NN>` — a short number (zero-padded to 2 digits), unique within the directory. Assigned at filing time as the next available number.
+- `<status>` — one of: `open`, `responded`, `closed`, `implemented`
+- `<slug>` — 2-4 word kebab-case topic
+
+Examples:
+```
+CASE-01-open-unknown-fields.md
+CASE-02-responded-doc-arch.md
+CASE-03-closed-relative-baseurl.md
+CASE-04-implemented-doc-faq.md
+```
+
+**Status changes require renaming the file.** When updating status in the frontmatter, also rename the file to match.
+
+### Finding Cases by Number
+
+When a command takes `<number>`, match it against the `CASE-<NN>-` prefix in the filename. For example, `/case read 3` finds the file starting with `CASE-03-`. The number is stable — it never changes, even when the file is renamed for status updates.
+
+```bash
+ls yac-discussions/CASE-03-*.md 2>/dev/null
+```
 
 ---
 
@@ -45,17 +70,27 @@ If missing, report and stop (see above).
 date '+%Y%m%d-%H%M'
 ```
 
-#### 3. Create a slug
+#### 3. Assign a case number
+
+Find the highest existing case number and add 1:
+
+```bash
+ls yac-discussions/CASE-*.md 2>/dev/null | sed 's/.*CASE-\([0-9]*\)-.*/\1/' | sort -n | tail -1
+```
+
+If no cases exist, start at 01. Zero-pad to 2 digits (01–99). If you somehow reach 100+, use 3 digits.
+
+#### 4. Create a slug
 
 Infer a short slug from context: `unknown-fields`, `relative-baseurl`, `template-update-missing`. 2-4 words, kebab-case.
 
-#### 4. Write the case file
+#### 5. Write the case file
 
-Create `yac-discussions/CASE-YYYYMMDD-HHMM-<slug>.md`:
+Create `yac-discussions/CASE-<NN>-open-<slug>.md`:
 
 ```markdown
 ---
-case: CASE-YYYYMMDD-HHMM-<slug>
+case: <NN>
 filed_by: <your session ID>
 app: <your app name, or "backend">
 type: <bug | question | request | platform-gap>
@@ -83,9 +118,9 @@ Be specific enough that a BE-YAC with no knowledge of your app can understand.>
 <If Peter provided a comment with `/case file`, put it here verbatim. If no comment, omit this section entirely.>
 ```
 
-#### 5. Confirm
+#### 6. Confirm
 
-Tell Peter the case was filed, its ID, and the file path.
+Tell Peter the case number, slug, and file path.
 
 ---
 
@@ -109,21 +144,26 @@ If no files, say "No cases filed" and stop.
 
 #### 3. Read frontmatter of each case
 
-For each file, read just the YAML frontmatter (case ID, status, type, severity, filed_by, component).
+For each file, read just the YAML frontmatter (case number, status, type, severity, filed_by, component).
 
 #### 4. Present a summary
 
-Show non-closed cases first, then recently closed (last 7 days). One line each:
+Show non-closed cases first, then recently closed/implemented (last 7 days). One line each:
 
 ```markdown
 ## Open Cases
 
-- **CASE-20260401-2205-unknown-fields** (bug, blocks-me, document-store) — filed by APP-AA-20260401-2139. [open]
-- **CASE-20260401-2210-no-update-template** (request, annoying, mcp-server) — filed by APP-AA-20260401-2139. [responded]
+| # | Status | Severity | Type | Component | Filed by | Slug |
+|---|--------|----------|------|-----------|----------|------|
+| 01 | open | blocks-me | bug | document-store | APP-AA-20260401-2139 | unknown-fields |
+| 02 | responded | annoying | request | mcp-server | APP-AA-20260401-2139 | no-update-template |
 
-## Recently Closed
+## Recently Closed/Implemented
 
-- **CASE-20260401-2150-relative-baseurl** (bug, blocks-me, wip-client) — filed by APP-AA-20260401-1754. [closed]
+| # | Status | Type | Slug |
+|---|--------|------|------|
+| 03 | implemented | bug | relative-baseurl |
+| 04 | closed | request | wont-fix-example |
 ```
 
 Filter by relevance:
@@ -132,7 +172,7 @@ Filter by relevance:
 
 ---
 
-### Handling `/case read <case-id>`
+### Handling `/case read <number>`
 
 #### 1. Check directory exists
 
@@ -140,7 +180,11 @@ If `yac-discussions/` missing, report and stop.
 
 #### 2. Find the case
 
-Read `yac-discussions/<case-id>.md`. If it doesn't exist, tell Peter and stop.
+```bash
+ls yac-discussions/CASE-<NN>-*.md 2>/dev/null
+```
+
+Read the matching file. If it doesn't exist, tell Peter and stop.
 
 #### 3. Present the full case
 
@@ -148,7 +192,7 @@ Show the complete file — frontmatter, problem, expected, workaround, Peter's t
 
 ---
 
-### Handling `/case respond <case-id>`
+### Handling `/case respond <number>`
 
 #### 1. Check directory exists
 
@@ -156,7 +200,7 @@ If `yac-discussions/` missing, report and stop.
 
 #### 2. Find and read the case
 
-Read `yac-discussions/<case-id>.md`. If it doesn't exist, tell Peter and stop.
+Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 
 #### 3. Append a response section
 
@@ -169,17 +213,23 @@ Append to the case file:
 Reference specific commits if you fixed something.>
 ```
 
-#### 4. Update the status
+#### 4. Update the status and rename
 
 Change `status: open` to `status: responded` in the frontmatter.
 
+Rename the file: `CASE-<NN>-open-<slug>.md` → `CASE-<NN>-responded-<slug>.md`
+
+```bash
+mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-<slug>.md
+```
+
 #### 5. Confirm
 
-Tell Peter what you responded and the case ID.
+Tell Peter what you responded and the case number.
 
 ---
 
-### Handling `/case comment <case-id>`
+### Handling `/case comment <number>`
 
 Add a follow-up comment to an existing case. Use this for clarifications, additional context, Peter's input, or questions between filer and responder.
 
@@ -189,7 +239,7 @@ If `yac-discussions/` missing, report and stop.
 
 #### 2. Find and read the case
 
-Read `yac-discussions/<case-id>.md`. If it doesn't exist, tell Peter and stop.
+Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 
 #### 3. Get the current time
 
@@ -207,7 +257,7 @@ Append to the case file:
 <The comment. If Peter dictated this, attribute it: "Peter: <his words>">
 ```
 
-If the user provided text with the command (e.g., `/case comment CASE-xxx This is urgent`), use that as the comment body. Otherwise, infer from the current conversation context.
+If the user provided text with the command (e.g., `/case comment 3 This is urgent`), use that as the comment body. Otherwise, infer from the current conversation context.
 
 #### 5. Confirm
 
@@ -215,7 +265,9 @@ Tell Peter the comment was added.
 
 ---
 
-### Handling `/case close <case-id>`
+### Handling `/case close <number>`
+
+Close a case without implementing anything. Use for: won't-fix, not-an-issue, deferred, or Peter handled it manually.
 
 #### 1. Check directory exists
 
@@ -223,23 +275,81 @@ If `yac-discussions/` missing, report and stop.
 
 #### 2. Find and read the case
 
-Read `yac-discussions/<case-id>.md`. Verify it has a response or that you're closing it for another reason.
+Find `yac-discussions/CASE-<NN>-*.md`. If it doesn't exist, tell Peter and stop.
 
 #### 3. Append a resolution
 
 ```markdown
 ## Resolution — <your session ID> (<YYYY-MM-DD HH:MM>)
 
-<Confirmed fixed / Not an issue / Won't fix — brief explanation.>
+<Won't fix / Not an issue / Deferred / Handled manually — brief explanation.>
 ```
 
-#### 4. Update the status
+#### 4. Update the status and rename
 
 Change `status:` to `status: closed` in the frontmatter.
 
+Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-closed-<slug>.md`
+
 #### 5. Confirm
 
-Tell Peter the case is closed.
+Tell Peter the case is closed and why.
+
+---
+
+### Handling `/case implement <number>`
+
+Apply the proposed patch from a responded case, then close it as implemented. This is the "do the work" command.
+
+#### 1. Check directory exists
+
+If `yac-discussions/` missing, report and stop.
+
+#### 2. Find and read the case
+
+Find `yac-discussions/CASE-<NN>-*.md`. Read the full case, including all responses.
+
+If the case has no `## Response` section with a proposed patch, tell Peter: "Case <NN> has no proposed patch to implement. Use `/case respond` first." Then stop.
+
+#### 3. Extract the proposed changes
+
+Find the most recent `## Response` section. Look for the `### Proposed Changes` or `### Proposed Patch` subsection. These contain the concrete text changes to apply.
+
+#### 4. Apply each change
+
+For each proposed change:
+- Find the target file (referenced in the case or response)
+- Locate the "Current text" quoted in the patch
+- Replace with the "Proposed text"
+- If the current text doesn't match (file has changed since the review), flag it and skip that change — don't force it
+
+#### 5. Show what changed
+
+```bash
+git diff
+```
+
+Tell Peter what was applied and what was skipped (if any). Let Peter review the diff before committing.
+
+#### 6. Update the status and rename
+
+After Peter confirms (or immediately if the changes are clean):
+
+Change `status:` to `status: implemented` in the frontmatter.
+
+Append:
+
+```markdown
+## Implementation — <your session ID> (<YYYY-MM-DD HH:MM>)
+
+Applied N of M proposed changes. <Note any skipped changes and why.>
+```
+
+Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-implemented-<slug>.md`
+
+#### 7. Confirm
+
+Tell Peter the case is implemented. Do NOT commit — Peter decides when to commit.
 
 ---
 

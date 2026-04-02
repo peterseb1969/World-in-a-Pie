@@ -538,12 +538,13 @@ The `/case` command is in `.claude/commands/case.md`. Peter symlinks both the di
 
 - `/case file [optional Peter comment]` — file a new case
 - `/case list` — list all open/responded cases (one-line each)
-- `/case read <case-id>` — read a specific case in full
-- `/case respond <case-id>` — append a response to an existing case
-- `/case comment <case-id> [text]` — add a follow-up comment (clarifications, Peter's input, questions)
-- `/case close <case-id>` — mark a case as resolved
+- `/case read <number>` — read a specific case in full
+- `/case respond <number>` — append a response to an existing case
+- `/case comment <number> [text]` — add a follow-up comment (clarifications, Peter's input, questions)
+- `/case close <number>` — close without implementation (won't-fix, deferred, handled manually)
+- `/case implement <number>` — apply the proposed patch, then close as implemented
 - `/doc-review` — review all open doc-review cases filed by a DOC-YAC (verify accuracy, propose patches)
-- `/doc-review <case-id>` — review a single doc-review case
+- `/doc-review <number>` — review a single doc-review case
 
 ### When to File
 

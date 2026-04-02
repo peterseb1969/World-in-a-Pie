@@ -3,7 +3,7 @@ Review open documentation audit cases filed by a DOC-YAC. For each case, verify 
 ### Usage
 
 - `/doc-review` — review all open doc-review cases
-- `/doc-review <case-id>` — review a single case
+- `/doc-review <number>` — review a single case (e.g., `/doc-review 3`)
 
 ### Prerequisites
 
@@ -63,11 +63,11 @@ Reviewed 3/12 — 2 patches proposed, 1 no-action-needed.
 
 ---
 
-### Handling `/doc-review <case-id>`
+### Handling `/doc-review <number>`
 
 #### 1. Read the case
 
-Read `yac-discussions/<case-id>.md`. If it doesn't exist, tell Peter and stop.
+Find `yac-discussions/CASE-<NN>-*.md` (e.g., `CASE-03-*`). Read the matching file. If it doesn't exist, tell Peter and stop.
 
 #### 2. Read the document under review
 
@@ -202,4 +202,4 @@ After Peter reviews your response, he will either:
 - Refine → edit the patch and implement
 - Discard → close the case as no-action
 
-Peter closes the case via `/case close <case-id>`.
+Peter closes the case via `/case close <number>` or `/case implement <number>`.
