@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from wip_auth import check_namespace_permission, get_current_identity, require_api_key
+from wip_auth import check_namespace_permission, get_current_identity, require_api_key, resolve_or_404
 
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
@@ -63,6 +63,9 @@ async def import_documents(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
+
+    # Resolve template_id synonym
+    template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
     content = await file.read()
     if not content:

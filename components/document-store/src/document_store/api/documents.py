@@ -1,16 +1,15 @@
 """Document API endpoints."""
 
 import asyncio
-import contextlib
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
-    EntityNotFoundError,
     check_namespace_permission,
     get_current_identity,
     resolve_accessible_namespaces,
-    resolve_entity_id,
+    resolve_bulk_ids,
+    resolve_or_404,
 )
 
 from ..models.api_models import (
@@ -61,11 +60,7 @@ async def create_documents(
         await check_namespace_permission(identity, ns, "write")
 
     # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID)
-    for item in items:
-        with contextlib.suppress(EntityNotFoundError):
-            item.template_id = await resolve_entity_id(
-                item.template_id, "template", item.namespace
-            )
+    await resolve_bulk_ids(items, "template_id", "template", namespace=None)
 
     service = get_document_service()
 
@@ -131,10 +126,9 @@ async def list_documents(
 
     # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
     if template_id:
-        with contextlib.suppress(EntityNotFoundError):
-            template_id = await resolve_entity_id(
-                template_id, "template", namespace
-            )
+        template_id = await resolve_or_404(
+            template_id, "template", namespace, param_name="template_id"
+        )
 
     service = get_document_service()
     return await service.list_documents(
@@ -162,6 +156,8 @@ async def get_document(
     _: str = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""
+    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_document(document_id, version=version)
 
@@ -185,6 +181,8 @@ async def get_document_versions(
     _: str = Depends(require_api_key)
 ):
     """Get all versions of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+
     service = get_document_service()
     versions = await service.get_document_versions(document_id)
 
@@ -212,6 +210,8 @@ async def get_document_version(
     _: str = Depends(require_api_key)
 ):
     """Get a specific version of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_document_version(document_id, version)
 
@@ -240,6 +240,8 @@ async def get_latest_document(
     _: str = Depends(require_api_key)
 ):
     """Get the latest version of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_latest_document(document_id)
 
@@ -263,6 +265,8 @@ async def delete_documents(
     _: str = Depends(require_api_key)
 ):
     """Delete one or more documents."""
+    await resolve_bulk_ids(items, "id", "document", namespace=None)
+
     identity = get_current_identity()
     service = get_document_service()
     results = []
@@ -303,6 +307,8 @@ async def archive_documents(
     _: str = Depends(require_api_key)
 ):
     """Archive one or more documents."""
+    await resolve_bulk_ids(items, "id", "document", namespace=None)
+
     identity = get_current_identity()
     service = get_document_service()
     results = []

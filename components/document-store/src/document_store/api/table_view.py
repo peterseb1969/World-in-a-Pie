@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -277,12 +277,15 @@ async def get_table_view(
 ):
     """Get flattened table view for a template."""
 
-    # Fetch template
+    # Fetch template (resolve synonym first)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(template_id)
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    # Use canonical template_id from resolved template
+    canonical_template_id = template.get("template_id", template_id)
 
     # Check namespace permission
     ns = template.get("namespace", "wip")
@@ -293,8 +296,8 @@ async def get_table_view(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter
-    query_filter = {"template_id": template_id}
+    # Build query filter using canonical ID
+    query_filter = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
 
@@ -303,7 +306,7 @@ async def get_table_view(
 
     if total_documents == 0:
         return TableViewResponse(
-            template_id=template_id,
+            template_id=canonical_template_id,
             template_value=template.get("value", ""),
             template_label=template.get("label", ""),
             columns=columns,
@@ -341,7 +344,7 @@ async def get_table_view(
     pages = (total_documents + page_size - 1) // page_size
 
     return TableViewResponse(
-        template_id=template_id,
+        template_id=canonical_template_id,
         template_value=template.get("value", ""),
         template_label=template.get("label", ""),
         columns=columns,
@@ -386,12 +389,14 @@ async def export_table_csv(
     import csv
     import io
 
-    # Fetch template
+    # Fetch template (resolve synonym via template-store client)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(template_id)
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
+
+    canonical_template_id = template.get("template_id", template_id)
 
     # Check namespace permission
     ns = template.get("namespace", "wip")
@@ -402,8 +407,8 @@ async def export_table_csv(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter
-    query_filter = {"template_id": template_id}
+    # Build query filter using canonical ID
+    query_filter = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
 
