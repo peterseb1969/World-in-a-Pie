@@ -71,7 +71,6 @@ from .ratelimit import setup_rate_limiting
 from .resolve import (
     EntityNotFoundError,
     clear_resolution_cache,
-    is_canonical_format,
     resolve_entity_id,
     resolve_entity_ids,
 )
@@ -112,7 +111,6 @@ __all__ = [
     "get_identity_owner",
     "get_identity_string",
     "hash_api_key",
-    "is_canonical_format",
     "optional_identity",
     "permission_sufficient",
     "require_admin",

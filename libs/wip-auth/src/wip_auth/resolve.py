@@ -66,10 +66,6 @@ def _looks_like_uuid(raw_id: str) -> bool:
     return bool(_UUID_PATTERN.match(raw_id))
 
 
-# Keep is_canonical_format as an alias for backwards compatibility in imports,
-# but it no longer gates any resolution bypass.
-is_canonical_format = _looks_like_uuid
-
 
 def _build_composite_key(
     raw_id: str,

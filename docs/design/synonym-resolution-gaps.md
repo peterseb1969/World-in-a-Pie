@@ -88,11 +88,7 @@ Below is an analysis of every side effect, from minor to critical.
 
 **Current:** `_resolve_to_template_id("some-uuid")` queries MongoDB: `Template.find({"template_id": ref})`. If the template doesn't exist, it falls through to value lookup, then raises `ValueError`. The canonical ID is verified to exist.
 
-**After fix:** `resolve_entity_id()` checks `is_canonical_format()`. If the input looks like a UUID, it returns it as-is without verifying anything exists. A reference to a non-existent template passes resolution silently.
-
-**Severity:** Low. The existence check still happens downstream — when the template is actually used (activation, document creation), the service will fail with a clear error. The error just surfaces at a different point. Also, in normal operation, references point to entities that exist; dangling references are an edge case, not a normal flow.
-
-**Mitigation:** None needed. Existence is validated when the reference is used, not when it's resolved. Resolution and validation are separate concerns.
+**After fix (2026-04-03):** `is_canonical_format` has been removed entirely. `resolve_entity_id()` sends every ID to Registry — UUIDs go as `entry_id` for verification, synonyms as `composite_key` for resolution. A reference to a non-existent entity (UUID or otherwise) is rejected by Registry and raises `EntityNotFoundError`. This gap is closed.
 
 ### 2. Activation-set resolution breaks (critical)
 

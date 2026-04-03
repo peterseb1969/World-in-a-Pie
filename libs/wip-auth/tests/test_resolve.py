@@ -13,7 +13,6 @@ from wip_auth.resolve import (
     _build_composite_key,
     _looks_like_uuid,
     clear_resolution_cache,
-    is_canonical_format,
     resolve_entity_id,
     resolve_entity_ids,
 )
@@ -61,10 +60,6 @@ class TestLooksLikeUuid:
 
     def test_partial_uuid(self):
         assert _looks_like_uuid("550e8400-e29b-41d4-a716") is False
-
-    def test_is_canonical_format_is_alias(self):
-        """is_canonical_format is kept as a backwards-compat alias."""
-        assert is_canonical_format is _looks_like_uuid
 
 
 # ===========================================================================

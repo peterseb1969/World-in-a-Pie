@@ -210,14 +210,10 @@ async def resolve_entity_id(
 ) -> str:
     """Resolve a synonym or canonical ID to the canonical ID.
 
-    Returns raw_id unchanged if it's already canonical.
-    Raises EntityNotFound if synonym lookup fails.
+    Every ID goes through Registry — UUIDs as entry_id verification,
+    synonyms as composite_key resolution. No format-based bypass.
+    Raises EntityNotFound if lookup fails.
     """
-    if is_canonical_format(raw_id):
-        return raw_id
-
-    # Build the composite key for this entity type
-    composite_key = _build_composite_key(raw_id, entity_type, namespace)
     cache_key = f"{namespace}:{entity_type}:{raw_id}"
 
     # Check cache first
@@ -225,8 +221,11 @@ async def resolve_entity_id(
     if cached:
         return cached
 
-    # Registry lookup
-    canonical = await registry_client.resolve_synonym(composite_key)
+    # _looks_like_uuid determines routing only (entry_id vs composite_key)
+    payload = _build_resolve_payload(raw_id, entity_type, namespace)
+
+    # Registry lookup — both UUIDs and synonyms go through /resolve
+    canonical = await registry_client.resolve(payload)
     if not canonical:
         raise EntityNotFound(f"No entity found for identifier: {raw_id}")
 
@@ -265,18 +264,13 @@ async def resolve_entity_ids(
     namespace: str,
 ) -> dict[str, str]:
     """Batch resolve. Returns {raw_id: canonical_id} for all inputs."""
-    to_resolve = [rid for rid in raw_ids if not is_canonical_format(rid)]
-    if not to_resolve:
-        return {rid: rid for rid in raw_ids}
-
-    composite_keys = [
-        _build_composite_key(rid, entity_type, namespace)
-        for rid in to_resolve
+    # All IDs go through Registry — no format-based bypass
+    payloads = [
+        _build_resolve_payload(rid, entity_type, namespace)
+        for rid in raw_ids
     ]
-    resolved = await registry_client.batch_resolve_synonyms(composite_keys)
-    result = {rid: rid for rid in raw_ids}  # canonical IDs pass through
-    result.update(resolved)
-    return result
+    results = await registry_client.batch_resolve(payloads)
+    return dict(zip(raw_ids, results))
 ```
 
 ### Registry API additions

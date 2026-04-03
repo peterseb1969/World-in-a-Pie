@@ -6,30 +6,18 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Near-Term
 
-### HIGH PRIORITY: Audit `is_canonical_format` UUID Bypass
+### Test Suites Must Cover Non-UUID ID Formats
 
-`wip_auth/resolve.py:is_canonical_format()` checks for UUID format only. Any UUID-shaped string bypasses Registry resolution entirely and goes straight to MongoDB — no referential integrity check, no validation that the ID exists. Meanwhile, legitimate canonical IDs in non-UUID formats (e.g., configured `TPL-XXXX` patterns) are incorrectly sent to the Registry for resolution.
-
-This is a referential integrity hole: the function checks *format*, not *canonicality*. Only the Registry knows what's canonical. Needs a full audit of every call site and a decision on whether to remove the shortcut entirely (always resolve via Registry) or make it namespace-aware.
-
-- Discovered: 2026-04-03 during synonym resolution test verification
-- Affects: `resolve_or_404`, `resolve_bulk_ids`, `resolve_entity_id`, `resolve_entity_ids`
-- File: `libs/wip-auth/src/wip_auth/resolve.py`
-
-### HIGH PRIORITY: Test Suites Must Cover Non-UUID ID Formats
-
-All three component test suites (def-store, template-store, document-store) use mock registries that generate non-UUID IDs (`TERM-000001`, `TPL-000001`, `T-000001`). These happen to exercise one code path, but the test conftest mocks bypass real resolution entirely — `resolve_entity_id` is mocked as a pass-through. No test currently validates behaviour with configurable canonical ID formats (short IDs, prefixed IDs, custom patterns) against real resolution logic.
+All three component test suites (def-store, template-store, document-store) mock `resolve_entity_id` as a pass-through. No test validates that non-UUID canonical IDs (short IDs, prefixed IDs, custom patterns) flow correctly through real resolution logic.
 
 **What's needed:**
-- Tests that exercise resolution with non-UUID canonical formats configured per namespace
-- Tests that verify `is_canonical_format` (or its replacement) correctly identifies canonical IDs regardless of format
 - Integration tests where mock Registry returns non-UUID canonical IDs and resolution actually runs (not pass-through)
 - Verify that non-UUID canonical IDs flow correctly through to MongoDB queries
 
-Without this, any namespace using a configured ID format other than UUID is untested territory.
+The `is_canonical_format` bypass was removed entirely on 2026-04-03 (commit 93fe7d0 + follow-up). Every ID now goes through Registry — `_looks_like_uuid` is a routing helper only. The `wip-auth/tests/test_resolve.py` suite covers the resolution layer with both UUID and non-UUID IDs, but component-level tests still use pass-through mocks.
 
-- Discovered: 2026-04-03 — existing test mocks masked the `is_canonical_format` UUID-only assumption
-- Related: `is_canonical_format` audit (above)
+- Discovered: 2026-04-03
+- Partial fix: 2026-04-03 — `is_canonical_format` deleted, resolution tests added in wip-auth
 
 ### Auth Phase 2: Namespace Permissions — Console UX Polish
 
