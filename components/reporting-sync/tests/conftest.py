@@ -125,7 +125,9 @@ def _check_pipeline_available():
             # Also check production PostgreSQL (not test PG)
             pg_uri = os.environ.get(
                 "PIPELINE_POSTGRES_URI",
-                "postgresql://wip:wip_dev_password@localhost:5432/wip_reporting",
+                "postgresql://wip:{pg_pass}@localhost:5432/wip_reporting".format(
+                    pg_pass=os.environ.get("WIP_POSTGRES_PASSWORD", "wip_dev_password")
+                ),
             )
             conn = await asyncpg.connect(pg_uri, timeout=3)
             await conn.close()
