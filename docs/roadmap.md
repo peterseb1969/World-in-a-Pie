@@ -6,6 +6,16 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Near-Term
 
+### HIGH PRIORITY: React Console — Replace Vue Console
+
+Start a new Console based on React (using `@wip/react` hooks and `@wip/client`). Before building the React console, implement the missing features in the existing Vue console first — this ensures the API surface is complete and the React version can launch with full feature parity from day one.
+
+- Step 1: Audit current Vue console gaps (missing pages, incomplete CRUD, missing features)
+- Step 2: Implement gaps in the existing Vue console (validates API completeness)
+- Step 3: Scaffold React console with the same feature set
+- UI: `ui/wip-console/` (Vue, existing) → `ui/wip-console-react/` (React, new)
+- Libraries: `libs/wip-react/`, `libs/wip-client/`
+
 ### Test Suites Must Cover Non-UUID ID Formats
 
 All three component test suites (def-store, template-store, document-store) mock `resolve_entity_id` as a pass-through. No test validates that non-UUID canonical IDs (short IDs, prefixed IDs, custom patterns) flow correctly through real resolution logic.
