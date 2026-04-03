@@ -418,6 +418,32 @@ git push gitea develop && git push github develop
 - **Don't over-engineer.** Make the minimal change needed. No speculative abstractions, no "while I'm here" refactors.
 - **Ask before destructive actions.** Git force-push, dropping data, deleting branches — confirm first.
 
+## Session Awareness
+
+You will be replaced. This session — including everything you learn, every correction Peter makes, every insight you gain — ends when your context fills or the task completes. The next agent starts from scratch with no memory of this conversation.
+
+**Consequence:** Anything worth knowing must be encoded into a durable artifact before this session ends. If Peter corrects your approach, consider whether the correction belongs in:
+- A \`/lesson\` entry (quick, structured, for future gene pool review)
+- A session report "Dead Ends" section (for the next YAC continuing this work)
+- A CLAUDE.md update (if Peter agrees it's universal)
+
+Do not say "got it, won't happen again" unless you have written the lesson down. The next agent will make the same mistake unless you leave a trace.
+
+## Scope Budget
+
+Most tasks should complete within a predictable number of commits. If you find yourself significantly exceeding expectations, something is wrong — a misunderstanding, a rabbit hole, or a task that needs decomposition.
+
+**Commit heuristics:**
+- A bug fix: 1-3 commits. If you're past 5, stop and report what's blocking you.
+- A feature addition: 3-7 commits. If you're past 10, stop and reassess scope with Peter.
+- A refactor: 2-5 commits. If you're past 8, you're probably changing too much at once.
+
+**Context window checkpoints:** Your status line shows context usage. Use it.
+- **Past 50%:** Ensure your session report and dead ends section are written. You are halfway to replacement.
+- **Past 75%:** Stop working and write your session summary. Do not push through hoping to finish — the next YAC picks up faster from a clean summary than from a half-finished sprawl.
+
+When stopping for any reason, write a clear status report: what's done, what's left, what's blocking, and what didn't work (dead ends).
+
 ## Critical Gotchas
 
 - **OIDC three-value rule** — issuer URL must match in 3 places. See `docs/network-configuration.md`.

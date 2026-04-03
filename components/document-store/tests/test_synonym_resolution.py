@@ -5,11 +5,11 @@ accepts human-readable synonyms, and that unresolvable synonyms return
 404 (not 500, which was the CASE-02 bug).
 """
 
-import pytest
 from unittest.mock import patch
 
-from wip_auth.resolve import EntityNotFoundError
+import pytest
 
+from wip_auth.resolve import EntityNotFoundError
 
 SYNONYM_MAP = {
     ("template", "PERSON", "test-ns"): "TPL-000001",
