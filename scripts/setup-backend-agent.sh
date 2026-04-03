@@ -453,7 +453,9 @@ When stopping for any reason, write a clear status report: what's done, what's l
 
 - **OIDC three-value rule** — issuer URL must match in 3 places. See `docs/network-configuration.md`.
 - **Caddy: `handle` not `handle_path`** — services expect the full path. See `docs/network-configuration.md`.
-- **Always activate venv** — `source .venv/bin/activate` before running Python.
+- **Use `./scripts/wip-test.sh <component>` to run tests.** Do not activate venv manually or hand-roll `cd && PYTHONPATH=src pytest` — the wrapper handles venv, paths, and exit codes reliably.
+- **Beanie is pinned to `<2.0`.** Do not upgrade without testing `init_beanie()` compatibility. Beanie 2.0+ changes the `init_beanie()` signature and breaks MongoDB initialization.
+- **Always activate venv** — `source .venv/bin/activate` before running Python (non-test commands).
 - **Container recreate vs restart** — after `.env` changes, `podman-compose down && up -d`, not `restart`.
 
 ## YAC Reporting
