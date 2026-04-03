@@ -47,13 +47,30 @@ Two changes to how API keys and namespaces interact:
 **3. Exhaustive doc update.** This behavior affects how APP-YACs design applications going forward. Every doc that touches namespaces, API keys, synonym resolution, or app setup must be updated to describe the implicit namespace derivation from single-namespace keys. Includes: `api-conventions.md`, `uniqueness-and-identity.md`, `universal-synonym-resolution.md`, `app-setup-guide.md`, `synonym-resolution-gaps.md`, CLAUDE.md gene pool, MCP resource `wip://conventions`, `create-app-project.sh` scaffold output.
 
 **Implementation:**
-- `libs/wip-auth/` — reject `namespaces: null` keys (or treat as empty → no access)
-- `wip_auth/fastapi_helpers.py` — `resolve_or_404()` derives namespace from `UserIdentity.raw_claims.namespaces` when caller omits it
+- ✅ `wip_auth/fastapi_helpers.py` — `resolve_or_404()` derives namespace from `UserIdentity.raw_claims.namespaces` when caller omits it (f3a990e)
+- Kill unscoped keys: the enforcement point is **Registry's `_resolve_permission()` in `components/registry/src/registry/api/grants.py`**, not `check_namespace_access()` in wip-auth (which is never called in production — the design doc confirms this). Changes needed in `_resolve_permission()` to reject `namespaces: None` instead of falling through to group grants.
+- `config/api-keys.dev.json` — add explicit `namespaces` to all keys
+- `create-app-project.sh` — scaffold should generate a namespace-scoped key per app
 - All component API endpoints that default `namespace=None` — use the derived namespace
 - CASE-03 (filed by AuthorAssist APP-YAC) is the concrete bug report that exposed this gap
 
 - Related: CASE-03, CASE-01, CASE-02
 - Depends on: Auth Phase 2 backend (done)
+
+### Gap: No Runtime API Key Management
+
+API keys are config-file-only. There is no REST endpoint to create, revoke, rotate, or list keys. Current workflow: run `scripts/security/generate-api-key.sh`, manually edit `config/api-keys.dev.json`, restart all services.
+
+**Why this matters:** `create-app-project.sh` needs to generate a namespace-scoped key per app. Currently it reuses the dev master key (unscoped, admin-group). For the "kill unscoped keys" item above to work, apps need their own keys — and creating them must not require manual config editing and full service restarts.
+
+**Minimum viable:**
+- `POST /api/registry/api-keys` — create a namespace-scoped key (returns plaintext once, stores bcrypt hash). Requires admin permission.
+- `DELETE /api/registry/api-keys/{name}` — revoke a key. Requires admin permission.
+- `GET /api/registry/api-keys` — list keys (names + metadata, never hashes or plaintext). Requires admin permission.
+- Keys stored in MongoDB (Registry), loaded at startup + cached with invalidation on create/revoke.
+- `create-app-project.sh` calls the endpoint to provision a scoped key automatically.
+
+**Design decision needed:** Should keys live in Registry's MongoDB alongside grants, or stay file-based with a sidecar reload mechanism? MongoDB is simpler (single source of truth, no restart). File-based is more ops-friendly (GitOps, auditable diffs).
 
 ### Auth Phase 3: Audit Trail Verification ✅
 
