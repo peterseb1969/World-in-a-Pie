@@ -36,6 +36,25 @@ Backend done (0e548f3) — all user-facing endpoints enforce `check_namespace_pe
 - Depends on: Auth Phase 1 (done), Auth Phase 2 backend (done)
 - Design: `docs/design/namespace-authorization.md`
 
+### HIGH PRIORITY: Namespace-Scoped API Keys & Implicit Namespace Resolution
+
+Two changes to how API keys and namespaces interact:
+
+**1. Kill unscoped API keys.** API keys with `namespaces: null` currently get access to all namespaces (backwards compat). This must die — every API key must declare its namespace scope explicitly. Unscoped keys are a security hole.
+
+**2. Single-namespace key convenience.** When an API key is scoped to exactly one namespace and the caller omits the `namespace` query parameter, the server should derive it from the key's scope. This enables synonym resolution without requiring the caller to pass `namespace` on every request. Multi-namespace keys must still provide `namespace` explicitly (ambiguous otherwise → 400).
+
+**3. Exhaustive doc update.** This behavior affects how APP-YACs design applications going forward. Every doc that touches namespaces, API keys, synonym resolution, or app setup must be updated to describe the implicit namespace derivation from single-namespace keys. Includes: `api-conventions.md`, `uniqueness-and-identity.md`, `universal-synonym-resolution.md`, `app-setup-guide.md`, `synonym-resolution-gaps.md`, CLAUDE.md gene pool, MCP resource `wip://conventions`, `create-app-project.sh` scaffold output.
+
+**Implementation:**
+- `libs/wip-auth/` — reject `namespaces: null` keys (or treat as empty → no access)
+- `wip_auth/fastapi_helpers.py` — `resolve_or_404()` derives namespace from `UserIdentity.raw_claims.namespaces` when caller omits it
+- All component API endpoints that default `namespace=None` — use the derived namespace
+- CASE-03 (filed by AuthorAssist APP-YAC) is the concrete bug report that exposed this gap
+
+- Related: CASE-03, CASE-01, CASE-02
+- Depends on: Auth Phase 2 backend (done)
+
 ### Auth Phase 3: Audit Trail Verification ✅
 
 Verified by code review (2026-04-01). Full chain confirmed: `identity_string` → `created_by`/`updated_by` in MongoDB → `changed_by` in NATS → `created_by`/`updated_by` in PostgreSQL. Console already displays these fields. With gateway_oidc, values show user email (e.g., `admin@wip.local`) instead of `apikey:legacy`.
