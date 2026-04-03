@@ -130,7 +130,7 @@ Test on at least one real device (Pi or VM), not just localhost.
 - [ ] CI passes on `develop` (check Gitea Actions)
 - [ ] Merge `develop` → `main`
 - [ ] Tag with `vX.Y.Z` on `main`
-- [ ] Push to both remotes: `git push gitea main --tags && git push github main --tags`
+- [ ] Push to both remotes: `git push origin main --tags && git push github main --tags`
 
 ## 8. Post-Release
 
