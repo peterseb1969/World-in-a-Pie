@@ -196,7 +196,7 @@ async def get_terminology_dependencies(
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 @router.post("/{terminology_id}/restore", response_model=TerminologyResponse, summary="Restore a terminology")

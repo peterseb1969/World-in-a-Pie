@@ -118,7 +118,7 @@ def _check_pipeline_available():
     async def _try_all():
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
-                for name, url in _SERVICE_URLS.items():
+                for _name, url in _SERVICE_URLS.items():
                     resp = await client.get(f"{url}/health")
                     if resp.status_code != 200:
                         return False

@@ -1,15 +1,14 @@
 """Pytest configuration and fixtures for Document Store tests."""
 
-import asyncio
 import os
 import uuid
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
 from beanie import init_beanie
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Use existing env vars if set, otherwise defaults for local testing
@@ -23,13 +22,12 @@ os.environ.setdefault("TEMPLATE_STORE_API_KEY", "test_template_store_key")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 
+from document_store.api.auth import set_api_key
 from document_store.main import app
 from document_store.models.document import Document
-from document_store.api.auth import set_api_key
+from document_store.services.def_store_client import DefStoreClient
 from document_store.services.registry_client import RegistryClient
 from document_store.services.template_store_client import TemplateStoreClient
-from document_store.services.def_store_client import DefStoreClient
-
 
 # Counter for generating mock IDs
 _document_counter = 0

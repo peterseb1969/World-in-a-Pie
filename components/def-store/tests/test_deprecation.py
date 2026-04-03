@@ -1,8 +1,9 @@
 """Tests for term deprecation, term/terminology restore, and dependency checking."""
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 import pytest_asyncio
-from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient
 
 
@@ -501,7 +502,6 @@ async def test_get_terminology_dependencies_with_deps(
 ):
     """Test checking dependencies when templates reference this terminology."""
     terminology_id = test_terminology["terminology_id"]
-    terminology_value = test_terminology["value"]
 
     # Simulate _get_referencing_templates returning one matching template
     mock_referencing = [

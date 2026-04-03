@@ -4,6 +4,13 @@ import contextlib
 import logging
 from datetime import UTC, datetime
 
+from wip_auth.resolve import (
+    EntityNotFoundError,
+    is_canonical_format,
+    resolve_entity_id,
+    resolve_entity_ids,
+)
+
 from ..api.auth import get_identity_string
 from ..models.api_models import (
     BulkResultItem,
@@ -23,12 +30,6 @@ from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
 from .registry_client import RegistryError, get_registry_client
-from wip_auth.resolve import (
-    EntityNotFoundError,
-    is_canonical_format,
-    resolve_entity_id,
-    resolve_entity_ids,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -1707,12 +1708,10 @@ class TemplateService:
             for ref in (field.target_templates or []):
                 if not is_canonical_format(ref) and not (known_templates and ref in known_templates):
                     template_refs.add(ref)
-            if field.template_ref and not is_canonical_format(field.template_ref):
-                if not (known_templates and field.template_ref in known_templates):
-                    template_refs.add(field.template_ref)
-            if field.array_template_ref and not is_canonical_format(field.array_template_ref):
-                if not (known_templates and field.array_template_ref in known_templates):
-                    template_refs.add(field.array_template_ref)
+            if field.template_ref and not is_canonical_format(field.template_ref) and not (known_templates and field.template_ref in known_templates):
+                template_refs.add(field.template_ref)
+            if field.array_template_ref and not is_canonical_format(field.array_template_ref) and not (known_templates and field.array_template_ref in known_templates):
+                template_refs.add(field.array_template_ref)
 
             if field.terminology_ref and not is_canonical_format(field.terminology_ref):
                 terminology_refs.add(field.terminology_ref)

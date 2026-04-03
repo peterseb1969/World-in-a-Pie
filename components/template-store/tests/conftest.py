@@ -1,17 +1,14 @@
 """Pytest configuration and fixtures for Template Store tests."""
 
-import asyncio
 import os
 import re
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, patch
-
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 import pytest
 import pytest_asyncio
 from beanie import init_beanie
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # Use existing env vars if set, otherwise defaults for local testing
@@ -23,12 +20,13 @@ os.environ.setdefault("REGISTRY_API_KEY", "test_registry_key")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 
+from template_store.api.auth import set_api_key
 from template_store.main import app
 from template_store.models.template import Template
-from template_store.api.auth import set_api_key
-from template_store.services.registry_client import configure_registry_client, RegistryClient
-from template_store.services.def_store_client import configure_def_store_client, DefStoreClient
+from template_store.services.def_store_client import DefStoreClient
+from template_store.services.registry_client import RegistryClient
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 # Counter for generating mock IDs
 _template_counter = 0
@@ -90,9 +88,7 @@ def create_mock_def_store_client():
         # Return True for any terminology ref starting with "TERM-" or known codes
         if terminology_ref.startswith("TERM-"):
             return True
-        if terminology_ref in ["GENDER", "COUNTRY", "DOC_STATUS"]:
-            return True
-        return False
+        return terminology_ref in ["GENDER", "COUNTRY", "DOC_STATUS"]
 
     async def mock_get_terminology(terminology_id=None, terminology_value=None, namespace=None):
         if terminology_id and terminology_id.startswith("TERM-"):

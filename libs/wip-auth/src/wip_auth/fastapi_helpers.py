@@ -61,7 +61,7 @@ async def resolve_or_404(
         raise HTTPException(
             status_code=404,
             detail=f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'",
-        )
+        ) from None
 
 
 async def resolve_bulk_ids(

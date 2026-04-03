@@ -5,11 +5,11 @@ human-readable synonyms, resolving them via the shared resolution layer.
 Verifies that unresolvable synonyms return 404, not 500.
 """
 
+from unittest.mock import patch
+
 import pytest
-from unittest.mock import AsyncMock, patch
 
 from wip_auth.resolve import EntityNotFoundError
-
 
 # Known synonym mappings for tests
 SYNONYM_MAP = {

@@ -67,7 +67,7 @@ async def _create_namespace(client: httpx.AsyncClient, ns: str):
         json=[{
             "value": ns,
             "label": f"Pipeline test {ns}",
-            "description": f"Auto-created by test_pipeline.py",
+            "description": "Auto-created by test_pipeline.py",
         }],
     )
     if resp.status_code != 200:
@@ -245,7 +245,7 @@ async def _wait_for_sync(pg_pool: asyncpg.Pool, ns: str, manifest: dict[str, lis
 
     while time.monotonic() - start < SYNC_TIMEOUT:
         total_found = 0
-        for template_value, doc_ids in manifest.items():
+        for template_value in manifest:
             table_name = f"doc_{template_value.lower()}"
             try:
                 row = await pg_pool.fetchrow(
@@ -369,7 +369,7 @@ class TestPipeline:
     @pytest.mark.asyncio
     async def test_namespace_isolation(self, pipeline_data):
         """Documents from NS_A must NOT appear in NS_B's rows and vice versa."""
-        ns_a, ns_b, manifest_a, manifest_b, pg_pool = pipeline_data
+        _ns_a, ns_b, _manifest_a, manifest_b, pg_pool = pipeline_data
 
         for template_value in TEMPLATE_DOC_COUNTS:
             table_name = f"doc_{template_value.lower()}"

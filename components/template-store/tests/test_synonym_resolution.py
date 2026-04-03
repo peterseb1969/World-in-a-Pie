@@ -4,11 +4,11 @@ Verifies that every endpoint that accepts template IDs also accepts
 human-readable synonyms, and that unresolvable synonyms return 404.
 """
 
-import pytest
 from unittest.mock import patch
 
-from wip_auth.resolve import EntityNotFoundError
+import pytest
 
+from wip_auth.resolve import EntityNotFoundError
 
 SYNONYM_MAP = {
     ("template", "PERSON", "test-ns"): "TPL-000001",

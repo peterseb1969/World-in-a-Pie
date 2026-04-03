@@ -9,14 +9,14 @@ Use cases:
 - Reporting and data analysis
 """
 
-from enum import Enum
+from enum import StrEnum
 from itertools import product
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
+from wip_auth import check_namespace_permission, get_current_identity
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/table", tags=["Table View"])
 # Models
 # ============================================================================
 
-class TableFormat(str, Enum):
+class TableFormat(StrEnum):
     """Output format for table view."""
     JSON = "json"
     CSV = "csv"
@@ -437,10 +437,7 @@ async def export_table_csv(
     metadata_cols = ["_document_id", "_version", "_identity_hash", "_status", "_created_at", "_updated_at"]
     data_cols = [col.name for col in columns]
 
-    if include_metadata:
-        csv_columns = metadata_cols + data_cols
-    else:
-        csv_columns = data_cols
+    csv_columns = metadata_cols + data_cols if include_metadata else data_cols
 
     writer = csv.DictWriter(output, fieldnames=csv_columns, extrasaction='ignore')
     writer.writeheader()

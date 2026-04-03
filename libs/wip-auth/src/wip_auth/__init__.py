@@ -40,6 +40,7 @@ from .dependencies import (
     require_namespace_read,
     require_namespace_write,
 )
+from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
 from .identity import (
     clear_current_identity,
     get_actor_info,
@@ -67,7 +68,6 @@ from .providers import (
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
-from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
 from .resolve import (
     EntityNotFoundError,
     clear_resolution_cache,
