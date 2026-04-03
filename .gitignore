@@ -80,3 +80,6 @@ start-wip-mcp.sh
 
 # MongoDB data (local dev)
 data/
+
+# Cross-agent case discussions (symlink to shared store)
+yac-discussions

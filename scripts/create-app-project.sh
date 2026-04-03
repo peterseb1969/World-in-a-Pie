@@ -595,7 +595,12 @@ Most tasks should complete within a predictable number of commits. If you find y
 - A feature addition: 3-7 commits. If you're past 10, stop and reassess scope with Peter.
 - A refactor: 2-5 commits. If you're past 8, you're probably changing too much at once.
 
-**Context window checkpoints:** Your status line shows context usage. Use it.
+**Context window awareness:** You can check your own context usage:
+\`\`\`bash
+dir_hash=\$(echo -n "\$PWD" | md5 -q 2>/dev/null || echo -n "\$PWD" | md5sum | cut -d' ' -f1)
+cat "/tmp/.claude-context-pct-\${dir_hash}"
+\`\`\`
+This file is updated regularly by the status line, keyed by working directory so concurrent YACs don't collide. Check it periodically — especially before starting a new subtask.
 - **Past 50%:** Ensure your session report and dead ends section are written. You are halfway to replacement.
 - **Past 75%:** Stop working and write your session summary. Do not push through hoping to finish — the next YAC picks up faster from a clean summary than from a half-finished sprawl.
 
