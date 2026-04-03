@@ -270,7 +270,7 @@ async def test_restore_deleted_terminology(
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": true}}]'
+        json=[{"id": terminology_id, "force": True}]
     )
     assert delete_resp.json()["succeeded"] == 1
 
@@ -307,7 +307,7 @@ async def test_restore_terminology_also_restores_terms(
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": true}}]'
+        json=[{"id": terminology_id, "force": True}]
     )
 
     # Verify terms are inactive
@@ -348,7 +348,7 @@ async def test_restore_terminology_without_restoring_terms(
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": true}}]'
+        json=[{"id": terminology_id, "force": True}]
     )
 
     # Restore with restore_terms=false
@@ -424,7 +424,7 @@ async def test_restore_deleted_term_via_terminology_restore(
         "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
-        content=f'[{{"id": "{term1_id}"}}]'
+        json=[{"id": term1_id}]
     )
 
     # Verify term is inactive
@@ -439,7 +439,7 @@ async def test_restore_deleted_term_via_terminology_restore(
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": true}}]'
+        json=[{"id": terminology_id, "force": True}]
     )
 
     # Restore the terminology with restore_terms=true
@@ -576,7 +576,7 @@ async def test_delete_terminology_blocked_by_dependencies(
             "DELETE",
             "/api/def-store/terminologies",
             headers=auth_headers,
-            content=f'[{{"id": "{terminology_id}"}}]'
+            json=[{"id": terminology_id}]
         )
 
     assert response.status_code == 200
@@ -598,7 +598,7 @@ async def test_delete_terminology_with_force_bypasses_dependencies(
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": true}}]'
+        json=[{"id": terminology_id, "force": True}]
     )
 
     assert response.status_code == 200

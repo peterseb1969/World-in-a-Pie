@@ -93,7 +93,7 @@ async def delete_term(client: AsyncClient, auth_headers: dict, term_id: str) -> 
         "DELETE",
         f"{API}/terms",
         headers=auth_headers,
-        content=f'[{{"id": "{term_id}"}}]',
+        json=[{"id": term_id}],
     )
     assert resp.status_code == 200
     return resp.json()
@@ -110,7 +110,7 @@ async def delete_terminology(
         "DELETE",
         f"{API}/terminologies",
         headers=auth_headers,
-        content=f'[{{"id": "{terminology_id}", "force": {"true" if force else "false"}}}]',
+        json=[{"id": terminology_id, "force": force}],
     )
     assert resp.status_code == 200
     return resp.json()

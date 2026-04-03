@@ -158,16 +158,17 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
         return ids[raw_id]
 
     # Patch where the clients are actually used
-    with patch('template_store.services.template_service.get_registry_client', return_value=mock_registry):
-        with patch('template_store.services.template_service.get_def_store_client', return_value=mock_def_store):
-            with patch('template_store.services.template_service.resolve_entity_ids', side_effect=mock_resolve_entity_ids):
-                with patch('template_store.services.template_service.resolve_entity_id', side_effect=mock_resolve_entity_id):
-                    with patch('template_store.main.get_registry_client', return_value=mock_registry):
-                        with patch('template_store.main.get_def_store_client', return_value=mock_def_store):
-                            # Create test HTTP client
-                            transport = ASGITransport(app=app)
-                            async with AsyncClient(transport=transport, base_url="http://test") as ac:
-                                yield ac
+    with patch('template_store.services.template_service.get_registry_client', return_value=mock_registry), \
+         patch('template_store.services.template_service.get_def_store_client', return_value=mock_def_store), \
+         patch('template_store.services.template_service.resolve_entity_ids', side_effect=mock_resolve_entity_ids), \
+         patch('template_store.services.template_service.resolve_entity_id', side_effect=mock_resolve_entity_id), \
+         patch('template_store.main.get_registry_client', return_value=mock_registry), \
+         patch('template_store.main.get_def_store_client', return_value=mock_def_store), \
+         patch('wip_auth.fastapi_helpers.resolve_entity_id', side_effect=mock_resolve_entity_id):
+        # Create test HTTP client
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            yield ac
 
 
 @pytest.fixture

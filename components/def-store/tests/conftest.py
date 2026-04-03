@@ -143,10 +143,16 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Create mock registry client and patch the getter
     mock_registry = create_mock_registry_client()
 
+    # Pass-through mock for resolve_or_404 / resolve_bulk_ids at API layer.
+    # Existing tests only pass IDs from the mock registry — no real resolution needed.
+    async def mock_resolve_entity_id(raw_id, entity_type, namespace, **kwargs):
+        return raw_id
+
     # Only patch where get_registry_client is actually imported
     with (
         patch('def_store.services.terminology_service.get_registry_client', return_value=mock_registry),
         patch('def_store.main.get_registry_client', return_value=mock_registry),
+        patch('wip_auth.fastapi_helpers.resolve_entity_id', side_effect=mock_resolve_entity_id),
     ):
             # Create test HTTP client
             transport = ASGITransport(app=app)

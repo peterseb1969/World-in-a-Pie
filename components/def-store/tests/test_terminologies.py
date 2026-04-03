@@ -210,7 +210,7 @@ async def test_delete_terminology(client: AsyncClient, auth_headers: dict):
         "DELETE",
         "/api/def-store/terminologies",
         headers=auth_headers,
-        content='[{"id": "' + terminology_id + '"}]'
+        json=[{"id": terminology_id}]
     )
 
     assert response.status_code == 200

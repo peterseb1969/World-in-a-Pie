@@ -6,6 +6,16 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Near-Term
 
+### HIGH PRIORITY: Audit `is_canonical_format` UUID Bypass
+
+`wip_auth/resolve.py:is_canonical_format()` checks for UUID format only. Any UUID-shaped string bypasses Registry resolution entirely and goes straight to MongoDB — no referential integrity check, no validation that the ID exists. Meanwhile, legitimate canonical IDs in non-UUID formats (e.g., configured `TPL-XXXX` patterns) are incorrectly sent to the Registry for resolution.
+
+This is a referential integrity hole: the function checks *format*, not *canonicality*. Only the Registry knows what's canonical. Needs a full audit of every call site and a decision on whether to remove the shortcut entirely (always resolve via Registry) or make it namespace-aware.
+
+- Discovered: 2026-04-03 during synonym resolution test verification
+- Affects: `resolve_or_404`, `resolve_bulk_ids`, `resolve_entity_id`, `resolve_entity_ids`
+- File: `libs/wip-auth/src/wip_auth/resolve.py`
+
 ### Auth Phase 2: Namespace Permissions — Console UX Polish
 
 Backend done (0e548f3) — all user-facing endpoints enforce `check_namespace_permission()`. Registry entries deliberately excluded (internal service-to-service). Remaining: ~50 Console button guards (cosmetic — hide/disable actions the user can't perform).

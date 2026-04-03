@@ -67,7 +67,7 @@ async def terminology_with_terms(client: AsyncClient, auth_headers: dict):
         "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
-        content=f'[{{"id": "{term2_id}"}}]'
+        json=[{"id": term2_id}]
     )
 
     return {

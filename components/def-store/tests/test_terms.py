@@ -329,7 +329,7 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
         "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
-        content='[{"id": "' + term_id + '"}]'
+        json=[{"id": term_id}]
     )
 
     assert response.status_code == 200
