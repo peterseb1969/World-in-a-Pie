@@ -280,9 +280,12 @@ class TestListRelationships:
 
     @pytest.mark.asyncio
     async def test_list_empty(self, client, auth_headers):
+        """List relationships for a valid term that has none → empty list."""
+        tid = await create_terminology(client, auth_headers)
+        term_id = await create_term(client, auth_headers, tid, "Lonely")
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": "NONEXISTENT", "namespace": "wip"},
+            params={"term_id": term_id, "namespace": "wip"},
             headers=auth_headers,
         )
         assert resp.status_code == 200
