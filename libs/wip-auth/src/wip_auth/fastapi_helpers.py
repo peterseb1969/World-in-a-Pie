@@ -1,7 +1,7 @@
 """FastAPI helper functions for synonym resolution at API boundaries.
 
-Replaces the `contextlib.suppress(EntityNotFoundError)` anti-pattern with
-explicit resolution that raises HTTP 404 on failure.
+Every ID — canonical or synonym — is verified against Registry.
+There is no format-based bypass.
 
 Usage:
     from wip_auth.fastapi_helpers import resolve_or_404, resolve_bulk_ids
@@ -17,7 +17,7 @@ import logging
 
 from fastapi import HTTPException
 
-from .resolve import EntityNotFoundError, is_canonical_format, resolve_entity_id
+from .resolve import EntityNotFoundError, resolve_entity_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,27 +29,24 @@ async def resolve_or_404(
     *,
     param_name: str | None = None,
 ) -> str:
-    """Resolve a synonym to a canonical ID, raising HTTP 404 on failure.
+    """Resolve any identifier to a canonical ID, raising HTTP 404 on failure.
 
-    If ``raw_id`` is already canonical (UUID), returns it unchanged.
+    Both canonical IDs and synonyms are verified against Registry.
     If ``namespace`` is None, skips resolution and returns raw_id as-is
     (caller must handle value-based fallback).
 
     Args:
-        raw_id: The identifier to resolve (UUID or human-readable synonym).
+        raw_id: The identifier to resolve (canonical ID or human-readable synonym).
         entity_type: Entity type for resolution (terminology, term, template, document).
         namespace: Namespace for resolution context. If None, resolution is skipped.
         param_name: Optional parameter name for error messages.
 
     Returns:
-        Canonical entity ID (UUID).
+        Canonical entity ID.
 
     Raises:
-        HTTPException(404): When the synonym cannot be resolved.
+        HTTPException(404): When the identifier cannot be resolved.
     """
-    if is_canonical_format(raw_id):
-        return raw_id
-
     if namespace is None:
         # Without namespace, cannot resolve — return raw for value-based fallback
         return raw_id
@@ -72,8 +69,8 @@ async def resolve_bulk_ids(
 ) -> None:
     """Batch-resolve IDs on bulk request items, mutating in place.
 
-    For each item, resolves ``getattr(item, id_field)`` from synonym to
-    canonical ID. Items with canonical IDs are left untouched.
+    For each item, resolves ``getattr(item, id_field)`` from any identifier
+    to its canonical ID. All IDs are verified against Registry.
 
     Resolution failures are logged but do not raise — the downstream
     service will handle the unresolved ID (typically returning per-item errors
@@ -95,7 +92,7 @@ async def resolve_bulk_ids(
             raw_id = getattr(item, id_field, None)
             item_ns = namespace or getattr(item, "namespace", None)
 
-        if not raw_id or is_canonical_format(raw_id):
+        if not raw_id:
             continue
 
         if not item_ns:

@@ -143,8 +143,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Create mock registry client and patch the getter
     mock_registry = create_mock_registry_client()
 
-    # Pass-through mock for resolve_or_404 / resolve_bulk_ids at API layer.
-    # Existing tests only pass IDs from the mock registry — no real resolution needed.
+    # Mock Registry resolution: simulates Registry confirming any ID it receives.
+    # In tests, all IDs come from the mock registry above, so they are always valid.
     async def mock_resolve_entity_id(raw_id, entity_type, namespace, **kwargs):
         return raw_id
 

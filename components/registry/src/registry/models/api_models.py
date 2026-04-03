@@ -379,9 +379,14 @@ class LookupBulkResponse(BaseModel):
 # =============================================================================
 
 class ResolveItem(StrictModel):
-    """Request model for resolving a synonym composite key to an entry ID."""
+    """Request model for resolving a synonym or canonical ID to an entry ID.
 
-    composite_key: dict[str, Any] = Field(..., description="Synonym composite key to resolve")
+    Provide either ``composite_key`` (synonym resolution) or ``entry_id``
+    (canonical ID verification). If both are given, ``entry_id`` is tried first.
+    """
+
+    composite_key: dict[str, Any] | None = Field(None, description="Synonym composite key to resolve")
+    entry_id: str | None = Field(None, description="Canonical entry ID to verify")
     include_statuses: list[str] | None = Field(None, description="Status filter. Default: active only.")
 
 

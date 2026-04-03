@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 
 from wip_auth.resolve import (
     EntityNotFoundError,
-    is_canonical_format,
     resolve_entity_id,
     resolve_entity_ids,
 )
@@ -1555,10 +1554,10 @@ class TemplateService:
                     known_templates=known_templates,
                     include_statuses=activation_statuses,
                 )
-                # Also normalize extends if it's a value (not already an ID)
+                # Also resolve extends (known_templates checked first, then Registry)
                 if t.extends and t.extends in known_templates:
                     t.extends = known_templates[t.extends]
-                elif t.extends and not is_canonical_format(t.extends):
+                elif t.extends:
                     t.extends = await resolve_entity_id(
                         t.extends, "template", namespace,
                         include_statuses=activation_statuses,
@@ -1700,28 +1699,28 @@ class TemplateService:
             include_statuses: Status filter for resolution (e.g. ["active", "reserved"]
                 during activation). Default: active only.
         """
-        # Phase 1: Collect all refs (skip UUIDs and known_templates hits)
+        # Phase 1: Collect all refs (skip known_templates hits — those are
+        # resolved within the activation set without a Registry call)
         template_refs: set[str] = set()
         terminology_refs: set[str] = set()
 
         for field in fields:
             for ref in (field.target_templates or []):
-                if not is_canonical_format(ref) and not (known_templates and ref in known_templates):
+                if not (known_templates and ref in known_templates):
                     template_refs.add(ref)
-            if field.template_ref and not is_canonical_format(field.template_ref) and not (known_templates and field.template_ref in known_templates):
+            if field.template_ref and not (known_templates and field.template_ref in known_templates):
                 template_refs.add(field.template_ref)
-            if field.array_template_ref and not is_canonical_format(field.array_template_ref) and not (known_templates and field.array_template_ref in known_templates):
+            if field.array_template_ref and not (known_templates and field.array_template_ref in known_templates):
                 template_refs.add(field.array_template_ref)
 
-            if field.terminology_ref and not is_canonical_format(field.terminology_ref):
+            if field.terminology_ref:
                 terminology_refs.add(field.terminology_ref)
-            if field.array_terminology_ref and not is_canonical_format(field.array_terminology_ref):
+            if field.array_terminology_ref:
                 terminology_refs.add(field.array_terminology_ref)
             for ref in (field.target_terminologies or []):
-                if not is_canonical_format(ref):
-                    terminology_refs.add(ref)
+                terminology_refs.add(ref)
 
-        # Phase 2: Batch resolve via Registry
+        # Phase 2: Batch resolve via Registry (all IDs verified, no format bypass)
         resolved_templates: dict[str, str] = {}
         resolved_terminologies: dict[str, str] = {}
 
@@ -1741,13 +1740,9 @@ class TemplateService:
             resolved_templates.update(known_templates)
 
         def _resolve_tpl(ref: str) -> str:
-            if is_canonical_format(ref):
-                return ref
             return resolved_templates[ref]
 
         def _resolve_term(ref: str) -> str:
-            if is_canonical_format(ref):
-                return ref
             return resolved_terminologies[ref]
 
         # Phase 3: Apply resolved IDs back to fields
@@ -1791,23 +1786,23 @@ class TemplateService:
 
             if field_type == 'term':
                 term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
-                if term_ref and not is_canonical_format(term_ref):
+                if term_ref:
                     terminology_refs.setdefault(term_ref, []).append(field_name)
 
             if field_type == 'object':
                 tpl_ref = field.template_ref if hasattr(field, 'template_ref') else field.get('template_ref')
-                if tpl_ref and not is_canonical_format(tpl_ref):
+                if tpl_ref:
                     template_refs.setdefault(tpl_ref, []).append(field_name)
 
             if field_type == 'array':
                 array_item_type = field.array_item_type if hasattr(field, 'array_item_type') else field.get('array_item_type')
                 if array_item_type == 'term':
                     array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
-                    if array_term_ref and not is_canonical_format(array_term_ref):
+                    if array_term_ref:
                         terminology_refs.setdefault(array_term_ref, []).append(f"{field_name}[]")
                 if array_item_type == 'object':
                     array_tpl_ref = field.array_template_ref if hasattr(field, 'array_template_ref') else field.get('array_template_ref')
-                    if array_tpl_ref and not is_canonical_format(array_tpl_ref):
+                    if array_tpl_ref:
                         template_refs.setdefault(array_tpl_ref, []).append(f"{field_name}[]")
 
         # Batch resolve templates

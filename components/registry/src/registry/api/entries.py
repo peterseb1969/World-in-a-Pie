@@ -1022,11 +1022,11 @@ async def resolve_synonyms(
     api_key: str = Depends(require_api_key)
 ) -> BulkResolveResponse:
     """
-    Resolve synonym composite keys to canonical entry IDs.
+    Resolve synonyms or verify canonical IDs.
 
-    This is a read-only batch endpoint optimised for synonym resolution.
-    For each composite key, computes its hash and looks up the entry
-    that has a matching synonym (or primary key).
+    Each item may provide ``entry_id`` (canonical ID verification),
+    ``composite_key`` (synonym resolution), or both.  When both are
+    given, ``entry_id`` is tried first.
 
     Returns entry_id for each found item, "not_found" otherwise.
     """
@@ -1037,17 +1037,38 @@ async def resolve_synonyms(
 
     for i, item in enumerate(items):
         try:
-            key_hash = HashService.compute_composite_key_hash(item.composite_key)
+            if not item.entry_id and not item.composite_key:
+                results.append(ResolveResponse(
+                    input_index=i, status="error",
+                    error="Provide either entry_id or composite_key",
+                ))
+                error_count += 1
+                continue
 
-            # Search both primary key and synonyms — no namespace/entity_type filter
-            # because the composite key itself contains ns and type for uniqueness
-            entry = await RegistryEntry.find_one({
-                "$or": [
-                    {"primary_composite_key_hash": key_hash},
-                    {"synonyms.composite_key_hash": key_hash},
-                ],
-                "status": {"$in": item.include_statuses} if item.include_statuses else "active",
-            })
+            status_filter = (
+                {"$in": item.include_statuses}
+                if item.include_statuses
+                else "active"
+            )
+            entry = None
+
+            # Path 1: Canonical ID verification
+            if item.entry_id:
+                entry = await RegistryEntry.find_one({
+                    "entry_id": item.entry_id,
+                    "status": status_filter,
+                })
+
+            # Path 2: Composite key resolution (synonym or primary key)
+            if not entry and item.composite_key:
+                key_hash = HashService.compute_composite_key_hash(item.composite_key)
+                entry = await RegistryEntry.find_one({
+                    "$or": [
+                        {"primary_composite_key_hash": key_hash},
+                        {"synonyms.composite_key_hash": key_hash},
+                    ],
+                    "status": status_filter,
+                })
 
             if entry:
                 results.append(ResolveResponse(
@@ -1062,6 +1083,7 @@ async def resolve_synonyms(
                     input_index=i,
                     status="not_found",
                     composite_key=item.composite_key,
+                    entry_id=item.entry_id,
                 ))
                 not_found_count += 1
 
