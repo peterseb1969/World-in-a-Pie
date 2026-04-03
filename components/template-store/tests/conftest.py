@@ -1,8 +1,17 @@
-"""Pytest configuration and fixtures for Template Store tests."""
+"""Pytest configuration and fixtures for Template Store tests.
+
+Uses transport injection to mount the real Registry in-process.
+No mock registry, no mock resolution — all ID generation and synonym
+resolution goes through the real Registry code via ASGITransport.
+
+Def-Store client is still mocked (template-store validates terminology
+references via Def-Store, which is a separate service).
+"""
 
 import os
-import re
+import sys
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,89 +20,65 @@ from beanie import init_beanie
 from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# Add registry src to path for in-process mounting
+_registry_src = str(Path(__file__).resolve().parents[2] / "registry" / "src")
+if _registry_src not in sys.path:
+    sys.path.insert(0, _registry_src)
+
 # Use existing env vars if set, otherwise defaults for local testing
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
 os.environ.setdefault("DATABASE_NAME", "wip_template_store_test")
 os.environ.setdefault("API_KEY", "test_api_key")
-os.environ.setdefault("REGISTRY_URL", "http://localhost:8001")
-os.environ.setdefault("REGISTRY_API_KEY", "test_registry_key")
+os.environ.setdefault("REGISTRY_URL", "http://registry")
+os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
+os.environ.setdefault("MASTER_API_KEY", "test_api_key")
+os.environ.setdefault("AUTH_ENABLED", "true")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 
+# Template-store models and app
 from template_store.api.auth import set_api_key
 from template_store.main import app
 from template_store.models.template import Template
 from template_store.services.def_store_client import DefStoreClient
 from template_store.services.registry_client import RegistryClient
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+# Registry models and app (mounted in-process via transport injection)
+from registry.main import app as registry_app
+from registry.models.deletion_journal import DeletionJournal
+from registry.models.entry import RegistryEntry
+from registry.models.grant import NamespaceGrant
+from registry.models.id_counter import IdCounter
+from registry.models.namespace import Namespace
+from registry.services.auth import AuthService
 
-# Counter for generating mock IDs
-_template_counter = 0
+# Resolution transport injection
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
 
-
-def _reset_counters():
-    """Reset ID counters for a new test."""
-    global _template_counter
-    _template_counter = 0
-
-
-def create_mock_registry_client():
-    """Create a mock registry client for testing."""
-    global _template_counter
-
-    mock_client = AsyncMock(spec=RegistryClient)
-
-    async def mock_register_template(created_by=None, namespace="wip", entry_id=None):
-        global _template_counter
-        if entry_id:
-            return entry_id
-        _template_counter += 1
-        return f"TPL-{_template_counter:06d}"
-
-    async def mock_register_templates_bulk(count: int, created_by=None, namespace="wip"):
-        global _template_counter
-        results = []
-        for _ in range(count):
-            _template_counter += 1
-            results.append({
-                "status": "registered",
-                "registry_id": f"TPL-{_template_counter:06d}",
-            })
-        return results
-
-    async def mock_add_synonym(*args, **kwargs):
-        return True
-
-    async def mock_lookup_by_value(*args, **kwargs):
-        return None
-
-    async def mock_health_check():
-        return True
-
-    mock_client.register_template = mock_register_template
-    mock_client.register_templates_bulk = mock_register_templates_bulk
-    mock_client.add_synonym = mock_add_synonym
-    mock_client.lookup_by_value = mock_lookup_by_value
-    mock_client.health_check = mock_health_check
-
-    return mock_client
+# Test terminologies that template fields reference
+_TEST_TERMINOLOGIES = ("GENDER", "COUNTRY", "DOC_STATUS")
 
 
-def create_mock_def_store_client():
-    """Create a mock Def-Store client for testing."""
+def _create_mock_def_store_client():
+    """Create a mock Def-Store client for testing.
+
+    Template-store validates terminology references via Def-Store.
+    We mock this because Def-Store is a separate service not mounted
+    in-process. The Registry handles ID generation and resolution;
+    Def-Store handles terminology existence/validation.
+    """
     mock_client = AsyncMock(spec=DefStoreClient)
 
     async def mock_terminology_exists(terminology_ref: str, namespace=None):
-        # Return True for any terminology ref starting with "TERM-" or known codes
-        if terminology_ref.startswith("TERM-"):
+        # Accept any UUID-shaped ID (from real Registry) or known test names
+        if len(terminology_ref) > 8 and "-" in terminology_ref:
             return True
-        return terminology_ref in ["GENDER", "COUNTRY", "DOC_STATUS"]
+        return terminology_ref in _TEST_TERMINOLOGIES
 
     async def mock_get_terminology(terminology_id=None, terminology_value=None, namespace=None):
-        if terminology_id and terminology_id.startswith("TERM-"):
+        if terminology_id:
             return {"terminology_id": terminology_id, "status": "active"}
-        if terminology_value in ["GENDER", "COUNTRY", "DOC_STATUS"]:
+        if terminology_value in _TEST_TERMINOLOGIES:
             return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
@@ -111,60 +96,112 @@ def create_mock_def_store_client():
     return mock_client
 
 
+async def _register_test_terminologies(registry_transport):
+    """Register test terminologies in Registry so resolution can find them.
+
+    Mimics what def-store does: register entry + auto-synonym.
+    """
+    api_key = os.environ["MASTER_API_KEY"]
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+
+    async with AsyncClient(transport=registry_transport, base_url="http://registry") as client:
+        for value in _TEST_TERMINOLOGIES:
+            # Register entry
+            resp = await client.post(
+                "/api/registry/entries/register",
+                headers=headers,
+                json=[{
+                    "namespace": "wip",
+                    "entity_type": "terminologies",
+                    "composite_key": {"value": value, "label": value},
+                }],
+            )
+            entry_id = resp.json()["results"][0]["registry_id"]
+
+            # Register auto-synonym for resolution
+            await client.post(
+                "/api/registry/synonyms/add",
+                headers=headers,
+                json=[{
+                    "target_id": entry_id,
+                    "synonym_namespace": "wip",
+                    "synonym_entity_type": "terminologies",
+                    "synonym_composite_key": {
+                        "ns": "wip",
+                        "type": "terminology",
+                        "value": value,
+                    },
+                }],
+            )
+
+
 @pytest_asyncio.fixture(scope="function")
 async def client() -> AsyncGenerator[AsyncClient, None]:
-    """Create an async HTTP client for testing the API."""
-    _reset_counters()
-
+    """Create test client with real Registry mounted in-process."""
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+
+    # --- Initialize Registry ---
+    await init_beanie(
+        database=mongo_client["wip_registry_test"],
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+    )
+    await RegistryEntry.delete_all()
+    await Namespace.delete_all()
+    await IdCounter.delete_all()
+    await NamespaceGrant.delete_all()
+    await DeletionJournal.delete_all()
+
+    registry_app.state.mongodb_client = mongo_client
+    AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
+
+    # Create test namespaces
+    for prefix in ("wip", "test-ns"):
+        await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
+
+    # Mount Registry in-process
+    registry_transport = ASGITransport(app=registry_app)
+
+    # Register test terminologies so resolution works for template fields
+    await _register_test_terminologies(registry_transport)
+
+    # --- Initialize Template-Store ---
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Template]
+        document_models=[Template],
     )
-
-    # Clean up data from previous test
     await Template.delete_all()
 
-    # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
-
-    # Set API key
     set_api_key(os.environ["API_KEY"])
 
-    # Create mock clients and patch the getters
-    mock_registry = create_mock_registry_client()
-    mock_def_store = create_mock_def_store_client()
+    # Wire real RegistryClient with transport injection
+    real_registry = RegistryClient(
+        base_url="http://registry",
+        api_key=os.environ["MASTER_API_KEY"],
+        transport=registry_transport,
+    )
 
-    # Mock resolve_entity_ids for template service normalization
-    # Maps known values to fake IDs — mirrors the mock def-store client
-    async def mock_resolve_entity_ids(raw_ids, entity_type, namespace, include_statuses=None):
-        result = {}
-        for raw_id in raw_ids:
-            if raw_id.startswith(("TPL-", "TERM-")) or _UUID_RE.match(raw_id):
-                result[raw_id] = raw_id
-            elif entity_type == "terminology" and raw_id in ["GENDER", "COUNTRY", "DOC_STATUS"]:
-                result[raw_id] = f"TERM-{raw_id}"
-            else:
-                from wip_auth.resolve import EntityNotFoundError
-                raise EntityNotFoundError(raw_id, entity_type)
-        return result
+    # Wire real resolution with transport injection
+    set_resolve_transport(registry_transport)
+    clear_resolution_cache()
 
-    async def mock_resolve_entity_id(raw_id, entity_type, namespace, include_statuses=None):
-        ids = await mock_resolve_entity_ids([raw_id], entity_type, namespace, include_statuses)
-        return ids[raw_id]
+    # Mock Def-Store client (separate service, not mounted in-process)
+    mock_def_store = _create_mock_def_store_client()
 
-    # Patch where the clients are actually used
-    with patch('template_store.services.template_service.get_registry_client', return_value=mock_registry), \
-         patch('template_store.services.template_service.get_def_store_client', return_value=mock_def_store), \
-         patch('template_store.services.template_service.resolve_entity_ids', side_effect=mock_resolve_entity_ids), \
-         patch('template_store.services.template_service.resolve_entity_id', side_effect=mock_resolve_entity_id), \
-         patch('template_store.main.get_registry_client', return_value=mock_registry), \
-         patch('template_store.main.get_def_store_client', return_value=mock_def_store), \
-         patch('wip_auth.fastapi_helpers.resolve_entity_id', side_effect=mock_resolve_entity_id):
-        # Create test HTTP client
+    # Patch singleton getters
+    with (
+        patch('template_store.services.template_service.get_registry_client', return_value=real_registry),
+        patch('template_store.services.template_service.get_def_store_client', return_value=mock_def_store),
+        patch('template_store.main.get_registry_client', return_value=real_registry),
+        patch('template_store.main.get_def_store_client', return_value=mock_def_store),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
+
+    # Cleanup
+    set_resolve_transport(None)
+    clear_resolution_cache()
 
 
 @pytest.fixture
