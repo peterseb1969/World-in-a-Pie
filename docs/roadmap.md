@@ -16,6 +16,21 @@ This is a referential integrity hole: the function checks *format*, not *canonic
 - Affects: `resolve_or_404`, `resolve_bulk_ids`, `resolve_entity_id`, `resolve_entity_ids`
 - File: `libs/wip-auth/src/wip_auth/resolve.py`
 
+### HIGH PRIORITY: Test Suites Must Cover Non-UUID ID Formats
+
+All three component test suites (def-store, template-store, document-store) use mock registries that generate non-UUID IDs (`TERM-000001`, `TPL-000001`, `T-000001`). These happen to exercise one code path, but the test conftest mocks bypass real resolution entirely — `resolve_entity_id` is mocked as a pass-through. No test currently validates behaviour with configurable canonical ID formats (short IDs, prefixed IDs, custom patterns) against real resolution logic.
+
+**What's needed:**
+- Tests that exercise resolution with non-UUID canonical formats configured per namespace
+- Tests that verify `is_canonical_format` (or its replacement) correctly identifies canonical IDs regardless of format
+- Integration tests where mock Registry returns non-UUID canonical IDs and resolution actually runs (not pass-through)
+- Verify that non-UUID canonical IDs flow correctly through to MongoDB queries
+
+Without this, any namespace using a configured ID format other than UUID is untested territory.
+
+- Discovered: 2026-04-03 — existing test mocks masked the `is_canonical_format` UUID-only assumption
+- Related: `is_canonical_format` audit (above)
+
 ### Auth Phase 2: Namespace Permissions — Console UX Polish
 
 Backend done (0e548f3) — all user-facing endpoints enforce `check_namespace_permission()`. Registry entries deliberately excluded (internal service-to-service). Remaining: ~50 Console button guards (cosmetic — hide/disable actions the user can't perform).
