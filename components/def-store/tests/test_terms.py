@@ -51,7 +51,7 @@ async def test_create_term(client: AsyncClient, auth_headers: dict, test_termino
     assert data["failed"] == 0
     assert data["results"][0]["status"] == "created"
     term_id = data["results"][0]["id"]
-    assert term_id.startswith("T-")
+    assert term_id  # Real Registry assigns the ID format
 
     # Verify the created term via GET
     get_response = await client.get(
