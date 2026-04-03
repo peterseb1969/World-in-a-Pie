@@ -38,6 +38,16 @@ _UUID_PATTERN = re.compile(
 _resolution_cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL = 300  # 5 minutes
 
+# Transport injection for in-process testing.
+# When set, httpx.AsyncClient uses this transport instead of real HTTP.
+_resolve_transport: Any | None = None
+
+
+def set_resolve_transport(transport: Any | None) -> None:
+    """Set the httpx transport for resolve calls (for in-process testing)."""
+    global _resolve_transport
+    _resolve_transport = transport
+
 
 def _get_registry_url() -> str:
     """Get Registry URL from environment."""
@@ -205,7 +215,11 @@ async def resolve_entity_id(
     api_key = _get_api_key()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        client_kwargs: dict[str, Any] = {"timeout": 10.0}
+        if _resolve_transport is not None:
+            client_kwargs["transport"] = _resolve_transport
+            client_kwargs["base_url"] = registry_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.post(
                 f"{registry_url}/api/registry/entries/resolve",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
@@ -278,7 +292,11 @@ async def resolve_entity_ids(
     api_key = _get_api_key()
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        client_kwargs: dict[str, Any] = {"timeout": 10.0}
+        if _resolve_transport is not None:
+            client_kwargs["transport"] = _resolve_transport
+            client_kwargs["base_url"] = registry_url
+        async with httpx.AsyncClient(**client_kwargs) as client:
             response = await client.post(
                 f"{registry_url}/api/registry/entries/resolve",
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
