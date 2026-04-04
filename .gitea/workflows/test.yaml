@@ -102,13 +102,15 @@ jobs:
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
+          # Transport injection: component tests import registry.main in-process
+          pip install -r ../registry/requirements.txt
           pip install pytest pytest-asyncio httpx
 
       - name: Run tests
         working-directory: components/${{ matrix.component }}
         env:
           MONGO_URI: mongodb://localhost:27017/
-          PYTHONPATH: src
+          PYTHONPATH: src:../registry/src
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
