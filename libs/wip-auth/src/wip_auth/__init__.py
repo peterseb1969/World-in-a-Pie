@@ -47,6 +47,7 @@ from .identity import (
     get_current_identity,
     get_identity_owner,
     get_identity_string,
+    reset_current_identity,
     set_current_identity,
 )
 from .middleware import AuthMiddleware, create_auth_middleware
@@ -122,6 +123,7 @@ __all__ = [
     "require_namespace_read",
     "require_namespace_write",
     "reset_auth_config",
+    "reset_current_identity",
     "resolve_accessible_namespaces",
     # Synonym resolution
     "resolve_bulk_ids",
