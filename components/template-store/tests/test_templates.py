@@ -1,7 +1,7 @@
 """Tests for Template CRUD operations."""
 
-import pytest
 from httpx import AsyncClient
+import pytest
 
 
 # ---------------------------------------------------------------------------

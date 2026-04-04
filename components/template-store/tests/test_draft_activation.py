@@ -1,7 +1,7 @@
 """Tests for template draft mode and activation flow."""
 
-import pytest
 from httpx import AsyncClient
+import pytest
 
 
 # ---------------------------------------------------------------------------

@@ -36,24 +36,24 @@ os.environ.setdefault("AUTH_ENABLED", "true")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 
-# Template-store models and app
-from template_store.api.auth import set_api_key
-from template_store.main import app
-from template_store.models.template import Template
-from template_store.services.def_store_client import DefStoreClient
-from template_store.services.registry_client import RegistryClient
+# Template-store models and app (must be after env var setup)
+from template_store.api.auth import set_api_key  # noqa: E402
+from template_store.main import app  # noqa: E402
+from template_store.models.template import Template  # noqa: E402
+from template_store.services.def_store_client import DefStoreClient  # noqa: E402
+from template_store.services.registry_client import RegistryClient  # noqa: E402
 
 # Registry models and app (mounted in-process via transport injection)
-from registry.main import app as registry_app
-from registry.models.deletion_journal import DeletionJournal
-from registry.models.entry import RegistryEntry
-from registry.models.grant import NamespaceGrant
-from registry.models.id_counter import IdCounter
-from registry.models.namespace import Namespace
-from registry.services.auth import AuthService
+from registry.main import app as registry_app  # noqa: E402
+from registry.models.deletion_journal import DeletionJournal  # noqa: E402
+from registry.models.entry import RegistryEntry  # noqa: E402
+from registry.models.grant import NamespaceGrant  # noqa: E402
+from registry.models.id_counter import IdCounter  # noqa: E402
+from registry.models.namespace import Namespace  # noqa: E402
+from registry.services.auth import AuthService  # noqa: E402
 
 # Resolution transport injection
-from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # noqa: E402
 
 # Test terminologies that template fields reference
 _TEST_TERMINOLOGIES = ("GENDER", "COUNTRY", "DOC_STATUS")

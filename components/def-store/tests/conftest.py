@@ -31,26 +31,26 @@ os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 os.environ.setdefault("MASTER_API_KEY", "test_api_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
-# Def-store models and app
-from def_store.api.auth import set_api_key
-from def_store.main import app
-from def_store.models.audit_log import TermAuditLog
-from def_store.models.term import Term
-from def_store.models.term_relationship import TermRelationship
-from def_store.models.terminology import Terminology
-from def_store.services.registry_client import RegistryClient
+# Def-store models and app (must be after env var setup)
+from def_store.api.auth import set_api_key  # noqa: E402
+from def_store.main import app  # noqa: E402
+from def_store.models.audit_log import TermAuditLog  # noqa: E402
+from def_store.models.term import Term  # noqa: E402
+from def_store.models.term_relationship import TermRelationship  # noqa: E402
+from def_store.models.terminology import Terminology  # noqa: E402
+from def_store.services.registry_client import RegistryClient  # noqa: E402
 
 # Registry models and app (mounted in-process via transport injection)
-from registry.main import app as registry_app
-from registry.models.deletion_journal import DeletionJournal
-from registry.models.entry import RegistryEntry
-from registry.models.grant import NamespaceGrant
-from registry.models.id_counter import IdCounter
-from registry.models.namespace import Namespace
-from registry.services.auth import AuthService
+from registry.main import app as registry_app  # noqa: E402
+from registry.models.deletion_journal import DeletionJournal  # noqa: E402
+from registry.models.entry import RegistryEntry  # noqa: E402
+from registry.models.grant import NamespaceGrant  # noqa: E402
+from registry.models.id_counter import IdCounter  # noqa: E402
+from registry.models.namespace import Namespace  # noqa: E402
+from registry.services.auth import AuthService  # noqa: E402
 
 # Resolution transport injection
-from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # noqa: E402
 
 
 @pytest_asyncio.fixture(scope="function")
