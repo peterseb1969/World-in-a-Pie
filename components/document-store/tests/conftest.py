@@ -394,8 +394,6 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     in test_files.py. Returns (real_registry, registry_transport) so callers
     can wire them into their patch context.
     """
-    global SAMPLE_TEMPLATES, _TEMPLATE_ID_MAP
-
     if document_models is None:
         document_models = [Document]
 
@@ -421,8 +419,10 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     registry_transport = ASGITransport(app=registry_app)
 
     # Register template entries in Registry and get UUID7 IDs
-    _TEMPLATE_ID_MAP = await _register_templates_in_registry(registry_transport)
-    SAMPLE_TEMPLATES = _build_sample_templates(_TEMPLATE_ID_MAP)
+    _TEMPLATE_ID_MAP.clear()
+    _TEMPLATE_ID_MAP.update(await _register_templates_in_registry(registry_transport))
+    SAMPLE_TEMPLATES.clear()
+    SAMPLE_TEMPLATES.update(_build_sample_templates(_TEMPLATE_ID_MAP))
 
     # --- Initialize Document-Store ---
     await init_beanie(

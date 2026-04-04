@@ -350,6 +350,11 @@ async def query_documents(
     _: str = Depends(require_api_key)
 ):
     """Query documents with filters."""
+    if request.template_id:
+        request.template_id = await resolve_or_404(
+            request.template_id, "template", namespace=None, param_name="template_id"
+        )
+
     identity = get_current_identity()
     allowed_namespaces = await resolve_accessible_namespaces(identity)
 

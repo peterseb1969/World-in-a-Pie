@@ -154,7 +154,9 @@ class DocumentService:
 
         # Every document goes through Registry — no exceptions.
         # For restore: entry_id=request.document_id tells Registry to use that exact ID.
+        # For upsert (document_id but no version): rely on composite_key dedup.
         # For normal: entry_id=None lets Registry generate one.
+        restore_entry_id = request.document_id if version_override is not None else None
         start = time.perf_counter()
         try:
             registry = get_registry_client()
@@ -164,7 +166,7 @@ class DocumentService:
                 has_identity_fields=has_identity_fields,
                 created_by=get_identity_string(),
                 namespace=namespace,
-                entry_id=request.document_id,
+                entry_id=restore_entry_id,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
