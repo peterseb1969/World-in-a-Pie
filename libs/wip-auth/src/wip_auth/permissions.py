@@ -5,14 +5,21 @@ Permissions are resolved by calling the Registry's /my/namespaces/{prefix}/permi
 endpoint, with results cached in-process for 30 seconds.
 
 Usage:
-    from wip_auth.permissions import check_namespace_permission
+    from wip_auth.permissions import check_namespace_permission, resolve_namespace_filter
 
     async def create_document(identity, namespace, ...):
         await check_namespace_permission(identity, namespace, "write")
         # ... proceed with creation
+
+    async def list_items(identity, namespace=None, ...):
+        ns_filter = await resolve_namespace_filter(identity, namespace)
+        query = {"status": "active"}
+        query.update(ns_filter.query)
+        # ... use query for MongoDB
 """
 
 import os
+from dataclasses import dataclass, field
 from typing import Literal
 
 from cachetools import TTLCache
@@ -138,6 +145,60 @@ async def check_namespace_permission(
             403,
             f"Requires {required} access to namespace '{namespace}'",
         )
+
+
+@dataclass
+class NamespaceFilter:
+    """MongoDB namespace filter resolved from identity and optional namespace param.
+
+    Merge `query` into your MongoDB query dict. Two shapes only:
+    - {} — superadmin, no namespace restriction
+    - {"namespace": {"$in": [...]}} — scoped to specific namespaces
+
+    Single-namespace is {"$in": ["ns1"]} — MongoDB optimizes this identically
+    to {"namespace": "ns1"}, so callers never need to special-case it.
+    """
+
+    query: dict = field(default_factory=dict)
+    namespaces: list[str] | None = None  # None = superadmin (all)
+
+
+async def resolve_namespace_filter(
+    identity: UserIdentity,
+    namespace: str | None,
+    required: Literal["read", "write", "admin"] = "read",
+) -> NamespaceFilter:
+    """Resolve namespace into a MongoDB query filter.
+
+    If namespace is provided: check permission, return single-namespace filter.
+    If namespace is None: resolve accessible namespaces, return multi-namespace filter.
+
+    Returns a NamespaceFilter with:
+      - query: dict to merge into MongoDB query
+      - namespaces: the resolved list (for logging/debugging), or None for superadmin
+
+    Raises:
+      HTTPException 404: if explicit namespace is invisible (permission == none)
+      HTTPException 403: if explicit namespace has insufficient permission,
+                         or if identity has no accessible namespaces
+    """
+    if namespace:
+        await check_namespace_permission(identity, namespace, required)
+        return NamespaceFilter(
+            query={"namespace": {"$in": [namespace]}},
+            namespaces=[namespace],
+        )
+
+    accessible = await resolve_accessible_namespaces(identity)
+    if accessible is None:
+        # Superadmin: no filter
+        return NamespaceFilter(query={}, namespaces=None)
+    if not accessible:
+        raise HTTPException(403, "No accessible namespaces")
+    return NamespaceFilter(
+        query={"namespace": {"$in": accessible}},
+        namespaces=accessible,
+    )
 
 
 async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:

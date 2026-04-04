@@ -53,10 +53,12 @@ from .identity import (
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .permissions import (
+    NamespaceFilter,
     check_namespace_permission,
     clear_permission_cache,
     permission_sufficient,
     resolve_accessible_namespaces,
+    resolve_namespace_filter,
     resolve_permission,
 )
 from .providers import (
@@ -94,6 +96,7 @@ __all__ = [
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
     "TrustedHeaderProvider",
+    "NamespaceFilter",
     # Models
     "UserIdentity",
     # Permissions
@@ -125,6 +128,7 @@ __all__ = [
     "reset_auth_config",
     "reset_current_identity",
     "resolve_accessible_namespaces",
+    "resolve_namespace_filter",
     # Synonym resolution
     "resolve_bulk_ids",
     "resolve_entity_id",
