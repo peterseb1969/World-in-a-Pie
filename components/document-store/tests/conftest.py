@@ -39,6 +39,21 @@ os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
+# Configure namespace-scoped API key for the middleware created at import time.
+# This must happen BEFORE importing document_store.main (which calls setup_auth).
+# The legacy key (from API_KEY env var) has namespaces=None, which breaks
+# namespace derivation in resolve_or_404. Using api_keys_json with an explicit
+# namespace ensures resolution works for list/GET endpoints.
+os.environ["WIP_AUTH_LEGACY_API_KEY"] = ""  # Suppress legacy key (namespaces=None)
+os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
+    "name": "test",
+    "key": os.environ["API_KEY"],
+    "owner": "test",
+    "groups": ["wip-admins"],
+    "namespaces": ["wip"],
+}]))
+
+
 # Document-store models and app
 from document_store.main import app
 from document_store.models.document import Document
