@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
     BulkResponse,
@@ -189,6 +190,8 @@ async def get_file(
     _: str = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
+    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+
     from ..models.file import File as FileModel
 
     service = get_file_service()
@@ -224,6 +227,8 @@ async def get_download_url(
     _: str = Depends(require_api_key)
 ):
     """Get a pre-signed download URL for a file."""
+    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+
     service = get_file_service()
 
     # Check namespace permission before generating presigned URL
@@ -254,6 +259,8 @@ async def download_file_content(
     _: str = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
+    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+
     from ..models.file import File as FileModel
     from ..models.file import FileStatus
 
@@ -293,6 +300,8 @@ async def update_files_metadata(
     _: str = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
+    await resolve_bulk_ids(items, "file_id", "file", namespace=None)
+
     from ..models.file import File as FileModel
     identity = get_current_identity()
     service = get_file_service()
@@ -332,6 +341,8 @@ async def delete_files(
     _: str = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
+    await resolve_bulk_ids(items, "id", "file", namespace=None)
+
     from ..models.file import File as FileModel
     identity = get_current_identity()
     service = get_file_service()
@@ -376,6 +387,8 @@ async def get_file_documents(
     _: str = Depends(require_api_key)
 ):
     """List documents that reference this file."""
+    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+
     from ..models.document import Document as DocumentModel
     from ..models.file import File as FileModel
 
@@ -440,6 +453,8 @@ async def hard_delete_file(
     _: str = Depends(require_api_key)
 ):
     """Permanently delete a file."""
+    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+
     service = get_file_service()
 
     # Check namespace permission — hard delete requires admin
