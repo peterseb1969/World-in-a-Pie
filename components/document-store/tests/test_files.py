@@ -7,25 +7,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from beanie import init_beanie
 from httpx import AsyncClient, ASGITransport
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from document_store.main import app
 from document_store.models.document import Document
 from document_store.models.file import File, FileStatus, FileMetadata
-from document_store.api.auth import set_api_key
 from document_store.services.file_service import FileService, FileServiceError, get_file_service
-from document_store.services.registry_client import RegistryClient
 
-# Re-use conftest helpers (use package-qualified import so it works
-# both when pytest auto-loads conftest and as a regular import)
+# Re-use conftest helpers — real Registry, no mock registry
 from tests.conftest import (
-    create_mock_registry_client,
     create_mock_template_store_client,
     create_mock_def_store_client,
+    setup_registry_and_app,
     SAMPLE_TEMPLATES,
 )
+
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
 
 
 # ---------------------------------------------------------------------------
@@ -79,29 +77,20 @@ async def _insert_file(
 
 
 # ---------------------------------------------------------------------------
-# Fixture: async HTTP client with file storage enabled + mocked services
+# Fixture: async HTTP client with file storage enabled + real Registry
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="function")
 async def file_client():
-    """Create an async HTTP client with file storage enabled and mocked dependencies."""
+    """Create an async HTTP client with file storage enabled and real Registry."""
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    await init_beanie(
-        database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Document, File],
+    real_registry, _transport = await setup_registry_and_app(
+        mongo_client, document_models=[Document, File]
     )
 
-    # Clean up data from previous test
-    await Document.delete_all()
+    # Also clean File collection (setup_registry_and_app cleans Document)
     await File.delete_all()
 
-    # Store client in app state (needed by health check)
-    app.state.mongodb_client = mongo_client
-
-    # Set API key
-    set_api_key(os.environ["API_KEY"])
-
-    # Create mock clients
-    mock_registry = create_mock_registry_client()
+    # Mock Template-Store and Def-Store (separate services)
     mock_template_store = create_mock_template_store_client()
     mock_def_store = create_mock_def_store_client()
 
@@ -119,20 +108,22 @@ async def file_client():
     # Mock NATS so publish calls don't fail
     mock_nats_publish = AsyncMock()
 
-    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry), \
-         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.main.get_registry_client', return_value=mock_registry), \
-         patch('document_store.main.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.main.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.api.files.is_file_storage_enabled', return_value=True), \
-         patch('document_store.services.file_service.is_file_storage_enabled', return_value=True), \
-         patch('document_store.services.file_service.get_file_storage_client', return_value=mock_storage), \
-         patch('document_store.api.files.get_file_storage_client', return_value=mock_storage), \
-         patch('document_store.services.file_service.publish_file_event', mock_nats_publish):
-
+    with (
+        patch('document_store.services.document_service.get_registry_client', return_value=real_registry),
+        patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.main.get_registry_client', return_value=real_registry),
+        patch('document_store.main.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.main.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.api.files.is_file_storage_enabled', return_value=True),
+        patch('document_store.services.file_service.is_file_storage_enabled', return_value=True),
+        patch('document_store.services.file_service.get_file_storage_client', return_value=mock_storage),
+        patch('document_store.api.files.get_file_storage_client', return_value=mock_storage),
+        patch('document_store.services.file_service.publish_file_event', mock_nats_publish),
+    ):
         # Reset singleton so we get a fresh instance each test
         import document_store.services.file_service as fs_mod
         fs_mod._service = None
@@ -143,6 +134,10 @@ async def file_client():
 
         # Clean up singleton
         fs_mod._service = None
+
+    # Cleanup
+    set_resolve_transport(None)
+    clear_resolution_cache()
 
 
 @pytest.fixture

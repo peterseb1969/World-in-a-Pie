@@ -28,7 +28,8 @@ class RegistryClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        transport: Any | None = None,
     ):
         """
         Initialize the Registry client.
@@ -37,6 +38,7 @@ class RegistryClient:
             base_url: Registry API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
+            transport: Optional httpx transport (for in-process testing)
         """
         self.base_url = base_url or os.getenv(
             "REGISTRY_URL",
@@ -47,6 +49,7 @@ class RegistryClient:
             "dev_master_key_for_testing"
         )
         self.timeout = timeout
+        self._transport = transport
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -54,6 +57,14 @@ class RegistryClient:
             "X-API-Key": self.api_key,
             "Content-Type": "application/json"
         }
+
+    def _make_client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        """Create an httpx client, injecting transport when set."""
+        kwargs: dict[str, Any] = {"timeout": timeout or self.timeout}
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+            kwargs["base_url"] = self.base_url
+        return httpx.AsyncClient(**kwargs)
 
     async def generate_document_id(
         self,
@@ -101,7 +112,7 @@ class RegistryClient:
         if entry_id:
             item["entry_id"] = entry_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -172,7 +183,7 @@ class RegistryClient:
                 entry["entry_id"] = item["entry_id"]
             registry_items.append(entry)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -219,7 +230,7 @@ class RegistryClient:
             for syn in synonyms
         ]
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
@@ -275,7 +286,7 @@ class RegistryClient:
             }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._make_client() as client:
                 response = await client.post(
                     f"{self.base_url}/api/registry/synonyms/add",
                     headers=self._get_headers(),
@@ -324,7 +335,7 @@ class RegistryClient:
         if entity_type:
             lookup_item["entity_type"] = entity_type
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/lookup/by-id",
                 headers=self._get_headers(),
@@ -343,7 +354,7 @@ class RegistryClient:
 
     async def hard_delete_entry(self, entry_id: str, updated_by: str | None = None) -> bool:
         """Hard-delete a Registry entry. Returns True if deleted."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.request(
                 "DELETE",
                 f"{self.base_url}/api/registry/entries",
@@ -363,7 +374,7 @@ class RegistryClient:
 
     async def get_namespace_deletion_mode(self, namespace: str) -> str:
         """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.get(
                 f"{self.base_url}/api/registry/namespaces/{namespace}",
                 headers=self._get_headers(),
@@ -376,7 +387,7 @@ class RegistryClient:
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with self._make_client(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}/health")
                 return response.status_code == 200
         except Exception:
@@ -402,9 +413,10 @@ def get_registry_client() -> RegistryClient:
 
 def configure_registry_client(
     base_url: str | None = None,
-    api_key: str | None = None
+    api_key: str | None = None,
+    transport: Any | None = None,
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client
-    _client = RegistryClient(base_url=base_url, api_key=api_key)
+    _client = RegistryClient(base_url=base_url, api_key=api_key, transport=transport)
     return _client

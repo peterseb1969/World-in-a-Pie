@@ -1,8 +1,18 @@
-"""Pytest configuration and fixtures for Document Store tests."""
+"""Pytest configuration and fixtures for Document Store tests.
 
+Uses transport injection to mount the real Registry in-process.
+No mock registry, no mock resolution — all ID generation and synonym
+resolution goes through the real Registry code via ASGITransport.
+
+Template-Store and Def-Store clients are still mocked (separate services
+not mounted in-process).
+"""
+
+import json
 import os
-import uuid
+import sys
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,38 +21,55 @@ from beanie import init_beanie
 from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# Add registry src to path for in-process mounting
+_registry_src = str(Path(__file__).resolve().parents[2] / "registry" / "src")
+if _registry_src not in sys.path:
+    sys.path.insert(0, _registry_src)
+
 # Use existing env vars if set, otherwise defaults for local testing
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017/")
 os.environ.setdefault("DATABASE_NAME", "wip_document_store_test")
 os.environ.setdefault("API_KEY", "test_api_key")
-os.environ.setdefault("REGISTRY_URL", "http://localhost:8001")
-os.environ.setdefault("REGISTRY_API_KEY", "test_registry_key")
+os.environ.setdefault("REGISTRY_URL", "http://registry")
+os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
+os.environ.setdefault("MASTER_API_KEY", "test_api_key")
 os.environ.setdefault("TEMPLATE_STORE_URL", "http://localhost:8003")
 os.environ.setdefault("TEMPLATE_STORE_API_KEY", "test_template_store_key")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
+os.environ.setdefault("AUTH_ENABLED", "true")
 
-from document_store.api.auth import set_api_key
+# Document-store models and app
 from document_store.main import app
 from document_store.models.document import Document
 from document_store.services.def_store_client import DefStoreClient
 from document_store.services.registry_client import RegistryClient
 from document_store.services.template_store_client import TemplateStoreClient
 
-# Counter for generating mock IDs
-_document_counter = 0
+# Registry models and app (mounted in-process via transport injection)
+from registry.main import app as registry_app
+from registry.models.deletion_journal import DeletionJournal
+from registry.models.entry import RegistryEntry
+from registry.models.grant import NamespaceGrant
+from registry.models.id_counter import IdCounter
+from registry.models.namespace import Namespace
+from registry.services.auth import AuthService
+
+# Auth configuration (namespace-scoped key for consistent resolution)
+from wip_auth import AuthConfig, set_auth_config
+
+# Resolution transport injection
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
 
 
-def _reset_counters():
-    """Reset ID counters for a new test."""
-    global _document_counter
-    _document_counter = 0
+# ---------------------------------------------------------------------------
+# Template definitions (the template DATA — keys are assigned dynamically
+# after registering in the real Registry)
+# ---------------------------------------------------------------------------
 
-
-# Sample templates for testing
-SAMPLE_TEMPLATES = {
-    "TPL-000001": {
-        "template_id": "TPL-000001",
+_TEMPLATE_DEFS = [
+    {
+        "legacy_key": "TPL-000001",
         "value": "PERSON",
         "label": "Person Template",
         "version": 1,
@@ -54,232 +81,218 @@ SAMPLE_TEMPLATES = {
                 "label": "National ID",
                 "type": "string",
                 "mandatory": True,
-                "validation": {"pattern": r"^\d{9}$"}
+                "validation": {"pattern": r"^\d{9}$"},
             },
             {
                 "name": "first_name",
                 "label": "First Name",
                 "type": "string",
                 "mandatory": True,
-                "validation": {"min_length": 1, "max_length": 100}
+                "validation": {"min_length": 1, "max_length": 100},
             },
             {
                 "name": "last_name",
                 "label": "Last Name",
                 "type": "string",
-                "mandatory": True
+                "mandatory": True,
             },
             {
                 "name": "birth_date",
                 "label": "Birth Date",
                 "type": "date",
-                "mandatory": False
+                "mandatory": False,
             },
             {
                 "name": "gender",
                 "label": "Gender",
                 "type": "term",
                 "terminology_ref": "GENDER",
-                "mandatory": False
+                "mandatory": False,
             },
             {
                 "name": "age",
                 "label": "Age",
                 "type": "integer",
                 "mandatory": False,
-                "validation": {"minimum": 0, "maximum": 150}
+                "validation": {"minimum": 0, "maximum": 150},
             },
             {
                 "name": "email",
                 "label": "Email",
                 "type": "string",
                 "mandatory": False,
-                "validation": {"pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"}
-            }
+                "validation": {"pattern": r"^[\w\.-]+@[\w\.-]+\.\w+$"},
+            },
         ],
-        "rules": []
+        "rules": [],
     },
-    "TPL-000002": {
-        "template_id": "TPL-000002",
+    {
+        "legacy_key": "TPL-000002",
         "value": "EMPLOYEE",
         "label": "Employee Template",
         "version": 1,
         "status": "active",
         "identity_fields": ["employee_id", "company_id"],
         "fields": [
-            {
-                "name": "employee_id",
-                "label": "Employee ID",
-                "type": "string",
-                "mandatory": True
-            },
-            {
-                "name": "company_id",
-                "label": "Company ID",
-                "type": "string",
-                "mandatory": True
-            },
-            {
-                "name": "name",
-                "label": "Name",
-                "type": "string",
-                "mandatory": True
-            },
-            {
-                "name": "department",
-                "label": "Department",
-                "type": "string",
-                "mandatory": False
-            },
-            {
-                "name": "manager_id",
-                "label": "Manager ID",
-                "type": "string",
-                "mandatory": False
-            }
+            {"name": "employee_id", "label": "Employee ID", "type": "string", "mandatory": True},
+            {"name": "company_id", "label": "Company ID", "type": "string", "mandatory": True},
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "department", "label": "Department", "type": "string", "mandatory": False},
+            {"name": "manager_id", "label": "Manager ID", "type": "string", "mandatory": False},
         ],
         "rules": [
             {
                 "type": "conditional_required",
-                "conditions": [
-                    {"field": "department", "operator": "exists", "value": True}
-                ],
+                "conditions": [{"field": "department", "operator": "exists", "value": True}],
                 "target_field": "manager_id",
                 "required": True,
-                "error_message": "Manager ID is required when department is specified"
+                "error_message": "Manager ID is required when department is specified",
             }
-        ]
+        ],
     },
-    "TPL-INACTIVE": {
-        "template_id": "TPL-INACTIVE",
+    {
+        "legacy_key": "TPL-INACTIVE",
         "value": "INACTIVE",
         "label": "Inactive Template",
         "version": 1,
         "status": "inactive",
         "identity_fields": [],
         "fields": [],
-        "rules": []
+        "rules": [],
     },
-    "TPL-NO-IDENTITY": {
-        "template_id": "TPL-NO-IDENTITY",
+    {
+        "legacy_key": "TPL-NO-IDENTITY",
         "value": "NO_IDENTITY",
         "label": "Template Without Identity Fields",
         "version": 1,
         "status": "active",
         "identity_fields": [],
         "fields": [
-            {
-                "name": "title",
-                "label": "Title",
-                "type": "string",
-                "mandatory": True
-            },
-            {
-                "name": "notes",
-                "label": "Notes",
-                "type": "string",
-                "mandatory": False
-            }
+            {"name": "title", "label": "Title", "type": "string", "mandatory": True},
+            {"name": "notes", "label": "Notes", "type": "string", "mandatory": False},
         ],
-        "rules": []
-    }
-}
+        "rules": [],
+    },
+]
+
+# Populated per-test by the client fixture after registering in real Registry.
+# Keyed by BOTH UUID7 (canonical) and legacy key (TPL-000001 etc.) for
+# backward compatibility with mock template_store_client lookups.
+SAMPLE_TEMPLATES: dict[str, dict] = {}
+
+# Maps legacy key → real UUID7 template_id (populated per-test)
+_TEMPLATE_ID_MAP: dict[str, str] = {}
 
 
-def create_mock_registry_client():
-    """Create a mock registry client for testing.
+async def _register_templates_in_registry(registry_transport):
+    """Register template entries in Registry and return legacy→UUID7 mapping.
 
-    Simulates stable document IDs with centralized identity hashing:
-    - With identity fields: sends identity_values to Registry, which computes
-      identity_hash, uses it for dedup, and returns it
-    - Without identity fields: always generates a fresh ID (is_new=True)
+    Also registers synonyms so that both the legacy key (TPL-000001) and
+    the value name (PERSON) resolve to the canonical UUID7 ID.
     """
-    mock_client = AsyncMock(spec=RegistryClient)
+    api_key = os.environ["MASTER_API_KEY"]
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    mapping: dict[str, str] = {}
 
-    # Track registered composite keys → (document_id, identity_hash) for stable ID simulation
-    _registry: dict[str, tuple[str, str]] = {}
+    async with AsyncClient(transport=registry_transport, base_url="http://registry") as client:
+        for tdef in _TEMPLATE_DEFS:
+            # Register entry
+            resp = await client.post(
+                "/api/registry/entries/register",
+                headers=headers,
+                json=[{
+                    "namespace": "wip",
+                    "entity_type": "templates",
+                    "composite_key": {"value": tdef["value"], "label": tdef["label"]},
+                }],
+            )
+            assert resp.status_code == 200, f"Register template failed: {resp.text}"
+            entry_id = resp.json()["results"][0]["registry_id"]
+            mapping[tdef["legacy_key"]] = entry_id
 
-    def _compute_mock_identity_hash(identity_values):
-        """Compute a simple mock hash from identity values."""
-        import hashlib
-        import json
-        canonical = json.dumps(identity_values, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(canonical.encode()).hexdigest()
+            # Register synonyms so resolution works:
+            # 1. Value-based: {"ns": "wip", "type": "template", "value": "PERSON"}
+            # 2. Legacy key: {"ns": "wip", "type": "template", "value": "TPL-000001"}
+            synonyms = [
+                {
+                    "target_id": entry_id,
+                    "synonym_namespace": "wip",
+                    "synonym_entity_type": "templates",
+                    "synonym_composite_key": {
+                        "ns": "wip",
+                        "type": "template",
+                        "value": tdef["value"],
+                    },
+                },
+                {
+                    "target_id": entry_id,
+                    "synonym_namespace": "wip",
+                    "synonym_entity_type": "templates",
+                    "synonym_composite_key": {
+                        "ns": "wip",
+                        "type": "template",
+                        "value": tdef["legacy_key"],
+                    },
+                },
+            ]
+            await client.post(
+                "/api/registry/synonyms/add",
+                headers=headers,
+                json=synonyms,
+            )
 
-    async def mock_generate_document_id(
-        template_id, identity_values=None, has_identity_fields=True,
-        created_by=None, namespace="wip", entry_id=None
-    ):
-        if entry_id:
-            id_hash = _compute_mock_identity_hash(identity_values) if identity_values else None
-            return entry_id, False, id_hash
-        if has_identity_fields and identity_values:
-            id_hash = _compute_mock_identity_hash(identity_values)
-            composite_key = f"{id_hash}:{template_id}"
-            if composite_key in _registry:
-                doc_id, _ = _registry[composite_key]
-                return doc_id, False, id_hash  # existing
-            doc_id = str(uuid.uuid4())
-            _registry[composite_key] = (doc_id, id_hash)
-            return doc_id, True, id_hash  # new
-        else:
-            return str(uuid.uuid4()), True, None  # always new, no identity
+    return mapping
 
-    async def mock_generate_document_ids_bulk(items, created_by=None, namespace="wip"):
-        results = []
-        for item in items:
-            has_identity = item.get("has_identity_fields", True)
-            identity_values = item.get("identity_values")
-            if has_identity and identity_values:
-                id_hash = _compute_mock_identity_hash(identity_values)
-                composite_key = f"{id_hash}:{item['template_id']}"
-                if composite_key in _registry:
-                    doc_id, _ = _registry[composite_key]
-                    results.append({
-                        "status": "already_exists",
-                        "registry_id": doc_id,
-                        "identity_hash": id_hash,
-                    })
-                else:
-                    doc_id = str(uuid.uuid4())
-                    _registry[composite_key] = (doc_id, id_hash)
-                    results.append({
-                        "status": "created",
-                        "registry_id": doc_id,
-                        "identity_hash": id_hash,
-                    })
-            else:
-                results.append({
-                    "status": "created",
-                    "registry_id": str(uuid.uuid4()),
-                    "identity_hash": None,
-                })
-        return results
 
-    async def mock_health_check():
-        return True
+def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
+    """Build SAMPLE_TEMPLATES dict keyed by both UUID7 and legacy keys."""
+    templates: dict[str, dict] = {}
 
-    mock_client.generate_document_id = mock_generate_document_id
-    mock_client.generate_document_ids_bulk = mock_generate_document_ids_bulk
-    mock_client.health_check = mock_health_check
+    for tdef in _TEMPLATE_DEFS:
+        real_id = id_map[tdef["legacy_key"]]
+        template_data = {
+            "template_id": real_id,
+            "value": tdef["value"],
+            "label": tdef["label"],
+            "version": tdef["version"],
+            "status": tdef["status"],
+            "namespace": "wip",
+            "identity_fields": tdef["identity_fields"],
+            "fields": tdef["fields"],
+            "rules": tdef["rules"],
+        }
+        # Key by canonical UUID7 (for lookups after resolution)
+        templates[real_id] = template_data
+        # Key by legacy key (for backward compat with test code)
+        templates[tdef["legacy_key"]] = template_data
 
-    return mock_client
+    return templates
 
 
 def create_mock_template_store_client():
-    """Create a mock Template Store client for testing."""
+    """Create a mock Template Store client for testing.
+
+    Looks up templates in SAMPLE_TEMPLATES (keyed by both UUID7 and legacy).
+    """
     mock_client = AsyncMock(spec=TemplateStoreClient)
 
     async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True):
         if template_id and template_id in SAMPLE_TEMPLATES:
             return SAMPLE_TEMPLATES[template_id]
+        # Also try looking up by value
+        if template_value:
+            for t in SAMPLE_TEMPLATES.values():
+                if t["value"] == template_value:
+                    return t
         return None
 
     async def mock_get_template_resolved(template_id, version=None):
         return await mock_get_template(template_id=template_id)
 
     async def mock_template_exists(template_ref):
-        return template_ref in SAMPLE_TEMPLATES and SAMPLE_TEMPLATES[template_ref]["status"] == "active"
+        if template_ref in SAMPLE_TEMPLATES:
+            return SAMPLE_TEMPLATES[template_ref]["status"] == "active"
+        return False
 
     async def mock_health_check():
         return True
@@ -293,29 +306,40 @@ def create_mock_template_store_client():
 
 
 def create_mock_def_store_client():
-    """Create a mock Def-Store client for testing."""
+    """Create a mock Def-Store client for testing.
+
+    Template-store validates terminology references via Def-Store.
+    We mock this because Def-Store is a separate service not mounted
+    in-process.
+    """
     mock_client = AsyncMock(spec=DefStoreClient)
 
-    # Valid term values for testing
     VALID_TERMS = {
         "GENDER": ["M", "F", "O"],
         "COUNTRY": ["USA", "UK", "CA"],
     }
 
     async def mock_terminology_exists(terminology_ref):
-        if terminology_ref.startswith("TERM-"):
+        # Accept any UUID-shaped ID (from real Registry) or known test names
+        if len(terminology_ref) > 8 and "-" in terminology_ref:
             return True
         return terminology_ref in VALID_TERMS
 
     async def mock_get_terminology(terminology_id=None, terminology_value=None):
-        if terminology_id and terminology_id.startswith("TERM-"):
-            return {"terminology_id": terminology_id, "status": "active"}
+        if terminology_id:
+            if terminology_id in VALID_TERMS or (len(terminology_id) > 8 and "-" in terminology_id):
+                return {"terminology_id": terminology_id, "status": "active"}
         if terminology_value in VALID_TERMS:
             return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
         return None
 
     async def mock_validate_value(terminology_ref, value):
-        code = terminology_ref.replace("TERM-", "") if terminology_ref.startswith("TERM-") else terminology_ref
+        # Strip prefix for lookup
+        code = terminology_ref
+        for prefix in ("TERM-",):
+            if terminology_ref.startswith(prefix):
+                code = terminology_ref[len(prefix):]
+                break
         if code in VALID_TERMS and value in VALID_TERMS[code]:
             return {"valid": True, "matched_term": {"term_id": "T-001", "value": value}}
         return {"valid": False, "suggestion": None}
@@ -325,7 +349,11 @@ def create_mock_def_store_client():
         for item in items:
             terminology_ref = item["terminology_ref"]
             value = item["value"]
-            code = terminology_ref.replace("TERM-", "") if terminology_ref.startswith("TERM-") else terminology_ref
+            code = terminology_ref
+            for prefix in ("TERM-",):
+                if terminology_ref.startswith(prefix):
+                    code = terminology_ref[len(prefix):]
+                    break
             if code in VALID_TERMS and value in VALID_TERMS[code]:
                 results.append({"valid": True, "matched_term": {"term_id": "T-001", "value": value}})
             else:
@@ -344,51 +372,110 @@ def create_mock_def_store_client():
     return mock_client
 
 
-@pytest_asyncio.fixture(scope="function")
-async def client() -> AsyncGenerator[AsyncClient, None]:
-    """Create an async HTTP client for testing the API."""
-    _reset_counters()
+async def setup_registry_and_app(mongo_client, document_models=None):
+    """Common setup: init real Registry, register templates, configure auth.
 
-    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    Used by both the main `client` fixture and the `file_client` fixture
+    in test_files.py. Returns (real_registry, registry_transport) so callers
+    can wire them into their patch context.
+    """
+    global SAMPLE_TEMPLATES, _TEMPLATE_ID_MAP
+
+    if document_models is None:
+        document_models = [Document]
+
+    # --- Initialize Registry ---
+    await init_beanie(
+        database=mongo_client["wip_registry_test"],
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+    )
+    await RegistryEntry.delete_all()
+    await Namespace.delete_all()
+    await IdCounter.delete_all()
+    await NamespaceGrant.delete_all()
+    await DeletionJournal.delete_all()
+
+    registry_app.state.mongodb_client = mongo_client
+    AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
+
+    # Create test namespaces
+    for prefix in ("wip", "test-ns"):
+        await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
+
+    # Mount Registry in-process
+    registry_transport = ASGITransport(app=registry_app)
+
+    # Register template entries in Registry and get UUID7 IDs
+    _TEMPLATE_ID_MAP = await _register_templates_in_registry(registry_transport)
+    SAMPLE_TEMPLATES = _build_sample_templates(_TEMPLATE_ID_MAP)
+
+    # --- Initialize Document-Store ---
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Document]
+        document_models=document_models,
     )
+    for model in document_models:
+        await model.delete_all()
 
-    # Clean up data from previous test
-    await Document.delete_all()
-
-    # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
 
-    # Set API key
-    set_api_key(os.environ["API_KEY"])
+    # Configure API key with namespace scope so resolution can derive
+    # namespace from identity (needed for list/GET where namespace is optional)
+    config = AuthConfig(
+        mode="api_key_only",
+        api_keys_json=json.dumps([{
+            "name": "test",
+            "key": os.environ["API_KEY"],
+            "owner": "test",
+            "groups": ["wip-admins"],
+            "namespaces": ["wip"],
+        }]),
+    )
+    set_auth_config(config)
 
-    # Create mock clients
-    mock_registry = create_mock_registry_client()
+    # Wire real RegistryClient with transport injection
+    real_registry = RegistryClient(
+        base_url="http://registry",
+        api_key=os.environ["MASTER_API_KEY"],
+        transport=registry_transport,
+    )
+
+    # Wire real resolution with transport injection
+    set_resolve_transport(registry_transport)
+    clear_resolution_cache()
+
+    return real_registry, registry_transport
+
+
+@pytest_asyncio.fixture(scope="function")
+async def client() -> AsyncGenerator[AsyncClient, None]:
+    """Create test client with real Registry mounted in-process."""
+    mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    real_registry, _transport = await setup_registry_and_app(mongo_client)
+
+    # Mock Template-Store and Def-Store clients (separate services)
     mock_template_store = create_mock_template_store_client()
     mock_def_store = create_mock_def_store_client()
 
-    # Mock Registry resolution: simulates Registry confirming any ID it receives.
-    # In tests, all IDs come from the mock registry above, so they are always valid.
-    async def mock_resolve_entity_id(raw_id, entity_type, namespace, **kwargs):
-        return raw_id
-
-    # Patch where the clients are actually used
-    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry), \
-         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.main.get_registry_client', return_value=mock_registry), \
-         patch('document_store.main.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.main.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store), \
-         patch('wip_auth.fastapi_helpers.resolve_entity_id', side_effect=mock_resolve_entity_id):
-        # Create test HTTP client
+    # Patch singleton getters — NO resolve_entity_id mock
+    with (
+        patch('document_store.services.document_service.get_registry_client', return_value=real_registry),
+        patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.main.get_registry_client', return_value=real_registry),
+        patch('document_store.main.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.main.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
+    ):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
             yield ac
+
+    # Cleanup
+    set_resolve_transport(None)
+    clear_resolution_cache()
 
 
 @pytest.fixture
@@ -412,7 +499,7 @@ def sample_person_data() -> dict:
         "last_name": "Doe",
         "birth_date": "1990-01-15",
         "gender": "M",
-        "age": 34
+        "age": 34,
     }
 
 
@@ -424,5 +511,5 @@ def sample_employee_data() -> dict:
         "company_id": "COMP001",
         "name": "Jane Smith",
         "department": "Engineering",
-        "manager_id": "MGR001"
+        "manager_id": "MGR001",
     }
