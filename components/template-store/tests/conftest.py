@@ -139,17 +139,26 @@ async def _register_test_terminologies(registry_transport):
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create test client with real Registry mounted in-process."""
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    test_db = mongo_client[os.environ["DATABASE_NAME"]]
 
-    # --- Initialize Registry ---
+    # Single init_beanie for all models — avoids database binding drift
     await init_beanie(
-        database=mongo_client["wip_registry_test"],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+        database=test_db,
+        document_models=[
+            # Registry models
+            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            # Template-Store models
+            Template,
+        ],
     )
+
+    # Clean all collections
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await Template.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
@@ -163,13 +172,6 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Register test terminologies so resolution works for template fields
     await _register_test_terminologies(registry_transport)
-
-    # --- Initialize Template-Store ---
-    await init_beanie(
-        database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Template],
-    )
-    await Template.delete_all()
 
     app.state.mongodb_client = mongo_client
     set_api_key(os.environ["API_KEY"])

@@ -397,16 +397,29 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     if document_models is None:
         document_models = [Document]
 
-    # --- Initialize Registry ---
+    test_db = mongo_client[os.environ["DATABASE_NAME"]]
+
+    # Single init_beanie for all models — avoids database binding drift
+    # that causes "Namespace not found" errors in CI when beanie rebinds
+    # Registry models to the wrong database after a second init_beanie call.
     await init_beanie(
-        database=mongo_client["wip_registry_test"],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+        database=test_db,
+        document_models=[
+            # Registry models
+            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            # Document-Store models
+            *document_models,
+        ],
     )
+
+    # Clean all collections
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    for model in document_models:
+        await model.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
@@ -423,14 +436,6 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     _TEMPLATE_ID_MAP.update(await _register_templates_in_registry(registry_transport))
     SAMPLE_TEMPLATES.clear()
     SAMPLE_TEMPLATES.update(_build_sample_templates(_TEMPLATE_ID_MAP))
-
-    # --- Initialize Document-Store ---
-    await init_beanie(
-        database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=document_models,
-    )
-    for model in document_models:
-        await model.delete_all()
 
     app.state.mongodb_client = mongo_client
 

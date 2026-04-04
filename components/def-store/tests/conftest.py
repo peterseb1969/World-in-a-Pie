@@ -57,23 +57,34 @@ from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # no
 async def client() -> AsyncGenerator[AsyncClient, None]:
     """Create test client with real Registry mounted in-process.
 
-    Both Registry and Def-Store share a MongoDB connection but use
-    separate databases. The Registry is mounted via ASGITransport —
-    all RegistryClient HTTP calls and resolve_entity_id calls route
-    to the real Registry app without leaving the process.
+    All models (Registry + Def-Store) share a single database to avoid
+    beanie binding issues with multiple init_beanie calls. Collection
+    names are distinct so there's no conflict.
     """
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
+    test_db = mongo_client[os.environ["DATABASE_NAME"]]
 
-    # --- Initialize Registry ---
+    # Single init_beanie for all models — avoids database binding drift
     await init_beanie(
-        database=mongo_client["wip_registry_test"],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal],
+        database=test_db,
+        document_models=[
+            # Registry models
+            Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
+            # Def-Store models
+            Terminology, Term, TermAuditLog, TermRelationship,
+        ],
     )
+
+    # Clean all collections
     await RegistryEntry.delete_all()
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await NamespaceGrant.delete_all()
     await DeletionJournal.delete_all()
+    await Term.delete_all()
+    await Terminology.delete_all()
+    await TermAuditLog.delete_all()
+    await TermRelationship.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
@@ -84,16 +95,6 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Mount Registry in-process
     registry_transport = ASGITransport(app=registry_app)
-
-    # --- Initialize Def-Store ---
-    await init_beanie(
-        database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Terminology, Term, TermAuditLog, TermRelationship],
-    )
-    await Term.delete_all()
-    await Terminology.delete_all()
-    await TermAuditLog.delete_all()
-    await TermRelationship.delete_all()
 
     # Invalidate OntologyService cache so each test starts fresh
     from def_store.services.ontology_service import OntologyService
