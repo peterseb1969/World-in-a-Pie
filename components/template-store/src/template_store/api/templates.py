@@ -142,8 +142,8 @@ async def get_template(
     resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
     template = await TemplateService.get_template(template_id=resolved_id, version=version)
-    if not template:
-        # Fallback: try as value
+    if not template and namespace:
+        # Fallback: try as value (requires namespace)
         template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -168,7 +168,7 @@ async def get_template_raw(
     template = await TemplateService.get_template(
         template_id=resolved_id, version=version, resolve_inheritance=False
     )
-    if not template:
+    if not template and namespace:
         template = await TemplateService.get_template(
             value=template_id, version=version, resolve_inheritance=False, namespace=namespace
         )
@@ -200,11 +200,14 @@ async def get_template_by_value(
 
 
 @router.get("/by-value/{value}/raw", response_model=TemplateResponse)
-async def get_template_by_value_raw(value: str):
+async def get_template_by_value_raw(
+    value: str,
+    namespace: str = Query(..., description="Namespace to search in"),
+):
     """
     Get the latest version of a template by value without inheritance resolution.
     """
-    template = await TemplateService.get_template_raw(value=value)
+    template = await TemplateService.get_template_raw(value=value, namespace=namespace)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template

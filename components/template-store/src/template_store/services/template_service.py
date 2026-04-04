@@ -222,9 +222,10 @@ class TemplateService:
                 results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
                 template = results[0] if results else None
         elif value:
-            # Value lookups require namespace (defaults to wip)
-            ns = namespace or "wip"
-            query = {"namespace": ns, "value": value}
+            # Value lookups require namespace — no silent fallback to "wip"
+            if not namespace:
+                raise ValueError("Namespace is required for value-based template lookup")
+            query = {"namespace": namespace, "value": value}
             if version is not None:
                 query["version"] = version
                 template = await Template.find_one(query)
@@ -246,7 +247,8 @@ class TemplateService:
     @staticmethod
     async def get_template_raw(
         template_id: str | None = None,
-        value: str | None = None
+        value: str | None = None,
+        namespace: str | None = None,
     ) -> TemplateResponse | None:
         """
         Get a template by ID or value without inheritance resolution.
@@ -254,6 +256,7 @@ class TemplateService:
         Args:
             template_id: Template ID
             value: Template value
+            namespace: Namespace (required for value-based lookups)
 
         Returns:
             Template as stored, without inheritance resolution
@@ -261,7 +264,8 @@ class TemplateService:
         return await TemplateService.get_template(
             template_id=template_id,
             value=value,
-            resolve_inheritance=False
+            resolve_inheritance=False,
+            namespace=namespace,
         )
 
     @staticmethod
@@ -553,6 +557,14 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
+        # Normalize field references to canonical IDs (same as create_template)
+        new_fields = request.fields if request.fields is not None else original.fields
+        if request.fields is not None:
+            try:
+                await TemplateService._normalize_field_references(new_fields, original.namespace)
+            except EntityNotFoundError as e:
+                raise ValueError(str(e)) from e
+
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version
         new_template = Template(
@@ -564,7 +576,7 @@ class TemplateService:
             extends=extends_value if extends_value else None,
             extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
-            fields=request.fields if request.fields is not None else original.fields,
+            fields=new_fields,
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
             reporting=request.reporting if request.reporting is not None else original.reporting,

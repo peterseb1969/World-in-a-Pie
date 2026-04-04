@@ -244,6 +244,7 @@ async def deprecate_terms(
     """
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "term_id", "term", namespace=None)
+    await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=None)
 
     results = []
     for i, item in enumerate(items):

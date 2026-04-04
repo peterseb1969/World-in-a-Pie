@@ -482,8 +482,8 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async getTemplateByValueRaw(value: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/by-value/${value}/raw`)
+  async getTemplateByValueRaw(value: string, namespace: string): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-value/${value}/raw`, { params: { namespace } })
     return response.data
   }
 

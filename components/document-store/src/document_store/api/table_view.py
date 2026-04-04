@@ -288,7 +288,9 @@ async def get_table_view(
     canonical_template_id = template.get("template_id", template_id)
 
     # Check namespace permission
-    ns = template.get("namespace", "wip")
+    ns = template.get("namespace")
+    if not ns:
+        raise HTTPException(status_code=500, detail="Template response missing namespace")
     identity = get_current_identity()
     await check_namespace_permission(identity, ns, "read")
 
@@ -399,7 +401,9 @@ async def export_table_csv(
     canonical_template_id = template.get("template_id", template_id)
 
     # Check namespace permission
-    ns = template.get("namespace", "wip")
+    ns = template.get("namespace")
+    if not ns:
+        raise HTTPException(status_code=500, detail="Template response missing namespace")
     identity = get_current_identity()
     await check_namespace_permission(identity, ns, "read")
 

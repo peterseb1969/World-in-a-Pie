@@ -17,6 +17,11 @@ SYNONYM_MAP = {
     ("terminology", "GENDER", "test-ns"): "TERM-000002",
     ("term", "STATUS:approved", "test-ns"): "T-000001",
     ("term", "STATUS:rejected", "test-ns"): "T-000002",
+    # Also support namespace=None for endpoints without namespace param
+    ("terminology", "STATUS", None): "TERM-000001",
+    ("terminology", "GENDER", None): "TERM-000002",
+    ("term", "STATUS:approved", None): "T-000001",
+    ("term", "STATUS:rejected", None): "T-000002",
 }
 
 
@@ -86,6 +91,22 @@ class TestTermsSynonymResolution:
             )
         assert resp.status_code == 404
 
+    async def test_deprecate_resolves_replaced_by_term_id(self, client, auth_headers):
+        """POST /terms/deprecate should resolve replaced_by_term_id synonym."""
+        # Note: deprecate endpoint has no namespace query param — resolve uses None
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.post(
+                "/api/def-store/terms/deprecate",
+                headers=auth_headers,
+                json=[{
+                    "term_id": "T-000001",
+                    "reason": "Replaced by rejected",
+                    "replaced_by_term_id": "STATUS:rejected",
+                }],
+            )
+        # 200 with per-item result (term may not exist in test DB)
+        assert resp.status_code == 200, f"Unexpected: {resp.status_code}"
+
 
 @pytest.mark.asyncio
 class TestTerminologySynonymResolution:
@@ -105,6 +126,65 @@ class TestTerminologySynonymResolution:
         with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
             resp = await client.get(
                 "/api/def-store/terminologies/NOPE?namespace=test-ns",
+                headers=auth_headers,
+            )
+        assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+class TestAuditSynonymResolution:
+    """Test synonym resolution on audit endpoints."""
+
+    async def test_term_audit_resolves_synonym(self, client, auth_headers):
+        """GET /audit/terms/{synonym} should resolve via Registry."""
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.get(
+                "/api/def-store/audit/terms/STATUS:approved",
+                headers=auth_headers,
+            )
+        assert resp.status_code in (200, 404), f"Unexpected: {resp.status_code}"
+
+    async def test_term_audit_unresolvable_returns_empty(self, client, auth_headers):
+        """GET /audit/terms/{bad} returns empty results (no namespace = passthrough)."""
+        # Without namespace context, resolve_or_404 passes raw ID through.
+        # MongoDB finds nothing, so we get 200 with empty items.
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.get(
+                "/api/def-store/audit/terms/DOESNOTEXIST",
+                headers=auth_headers,
+            )
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+
+    async def test_terminology_audit_resolves_synonym(self, client, auth_headers):
+        """GET /audit/terminologies/{synonym} should resolve via Registry."""
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.get(
+                "/api/def-store/audit/terminologies/STATUS",
+                headers=auth_headers,
+            )
+        assert resp.status_code in (200, 404), f"Unexpected: {resp.status_code}"
+
+
+@pytest.mark.asyncio
+class TestExportSynonymResolution:
+    """Test synonym resolution on export endpoint."""
+
+    async def test_export_resolves_terminology_synonym(self, client, auth_headers):
+        """GET /import-export/export/{synonym} should resolve via Registry."""
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.get(
+                "/api/def-store/import-export/export/STATUS",
+                headers=auth_headers,
+            )
+        # 404 is acceptable (no data in test DB), 500 is not
+        assert resp.status_code in (200, 404), f"Unexpected: {resp.status_code}"
+
+    async def test_export_unresolvable_returns_404(self, client, auth_headers):
+        """GET /import-export/export/{bad} should return 404."""
+        with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
+            resp = await client.get(
+                "/api/def-store/import-export/export/NONEXISTENT",
                 headers=auth_headers,
             )
         assert resp.status_code == 404

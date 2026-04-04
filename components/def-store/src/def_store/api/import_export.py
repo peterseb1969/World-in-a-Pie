@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
 
 from ..services.import_export import ImportExportService
 from .auth import require_api_key
@@ -32,6 +32,8 @@ async def export_terminology(
     Supports JSON and CSV formats. Use include_relationships=true to include
     ontology relationships (is_a, part_of, etc.) in JSON exports.
     """
+    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=None, param_name="terminology_id")
+
     try:
         language_list = languages.split(",") if languages else None
 

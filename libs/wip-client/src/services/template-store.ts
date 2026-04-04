@@ -40,8 +40,8 @@ export class TemplateStoreService extends BaseService {
     return this.get(`/templates/by-value/${value}`)
   }
 
-  async getTemplateByValueRaw(value: string): Promise<Template> {
-    return this.get(`/templates/by-value/${value}/raw`)
+  async getTemplateByValueRaw(value: string, namespace: string): Promise<Template> {
+    return this.get(`/templates/by-value/${value}/raw?namespace=${encodeURIComponent(namespace)}`)
   }
 
   async getTemplateVersions(value: string): Promise<TemplateListResponse> {

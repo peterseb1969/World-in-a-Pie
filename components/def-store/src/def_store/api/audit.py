@@ -3,6 +3,8 @@
 
 from fastapi import APIRouter, Depends, Query
 
+from wip_auth import resolve_or_404
+
 from ..models.api_models import AuditLogEntry, AuditLogResponse
 from ..models.audit_log import TermAuditLog
 from .auth import require_api_key
@@ -38,6 +40,7 @@ async def get_term_audit_log(
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
+    term_id = await resolve_or_404(term_id, "term", namespace=None, param_name="term_id")
     query = {"term_id": term_id}
 
     total = await TermAuditLog.find(query).count()
@@ -71,6 +74,7 @@ async def get_terminology_audit_log(
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
+    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=None, param_name="terminology_id")
     query = {"terminology_id": terminology_id}
     if action:
         query["action"] = action
