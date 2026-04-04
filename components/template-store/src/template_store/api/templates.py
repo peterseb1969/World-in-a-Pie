@@ -7,8 +7,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     check_namespace_permission,
     get_current_identity,
-    resolve_accessible_namespaces,
     resolve_bulk_ids,
+    resolve_namespace_filter,
     resolve_or_404,
 )
 
@@ -95,11 +95,7 @@ async def list_templates(
     Use latest_only=true to only show the most recent version of each template.
     """
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve extends synonym if provided
     if extends:
@@ -112,8 +108,7 @@ async def list_templates(
         latest_only=latest_only,
         page=page,
         page_size=page_size,
-        namespace=namespace,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
     return TemplateListResponse(
         items=templates,

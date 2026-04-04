@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     check_namespace_permission,
     get_current_identity,
-    resolve_accessible_namespaces,
+    resolve_namespace_filter,
     resolve_or_404,
 )
 
@@ -132,11 +132,7 @@ async def list_terms(
 ) -> TermListResponse:
     """List terms in a terminology with pagination."""
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
     terminology_id = await resolve_or_404(
@@ -160,8 +156,7 @@ async def list_terms(
         page=page,
         page_size=page_size,
         search=search,
-        namespace=namespace,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
 
     return TermListResponse(

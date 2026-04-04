@@ -7,8 +7,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     check_namespace_permission,
     get_current_identity,
-    resolve_accessible_namespaces,
     resolve_bulk_ids,
+    resolve_namespace_filter,
     resolve_or_404,
 )
 
@@ -118,11 +118,7 @@ async def list_documents(
     When cursor is provided, page parameter is ignored and total is -1.
     """
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
     if template_id:
@@ -137,10 +133,9 @@ async def list_documents(
         status=status,
         page=page,
         page_size=page_size,
-        namespace=namespace,
         latest_only=latest_only,
         cursor=cursor,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
 
 
@@ -356,10 +351,10 @@ async def query_documents(
         )
 
     identity = get_current_identity()
-    allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace=None)
 
     service = get_document_service()
-    return await service.query_documents(request, allowed_namespaces=allowed_namespaces)
+    return await service.query_documents(request, ns_filter=ns_filter.query)
 
 
 @router.get(

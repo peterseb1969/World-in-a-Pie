@@ -276,8 +276,7 @@ class TemplateService:
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -289,16 +288,14 @@ class TemplateService:
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (None returns all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (templates, total_count)
         """
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
         if extends:

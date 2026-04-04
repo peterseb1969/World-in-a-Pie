@@ -607,10 +607,9 @@ class DocumentService:
         status: DocumentStatus | None = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str | None = None,
         latest_only: bool = False,
         cursor: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -624,10 +623,8 @@ class DocumentService:
         from bson import ObjectId
 
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if template_id:
             query["template_id"] = template_id
         if template_value:
@@ -948,12 +945,12 @@ class DocumentService:
     async def query_documents(
         self,
         request: DocumentQueryRequest,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> DocumentQueryResponse:
         """Query documents with complex filters."""
         query = self._build_query(request)
-        if allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
 
         # Count total
         total = await Document.find(query).count()

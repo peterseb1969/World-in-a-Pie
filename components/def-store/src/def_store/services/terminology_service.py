@@ -194,8 +194,7 @@ class TerminologyService:
         value: str | None = None,
         page: int = 1,
         page_size: int = 50,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -205,16 +204,14 @@ class TerminologyService:
             value: Filter by exact value match
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (None returns all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (terminologies, total_count)
         """
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
         if value:
@@ -970,8 +967,7 @@ class TerminologyService:
         page: int = 1,
         page_size: int = 50,
         search: str | None = None,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -982,16 +978,14 @@ class TerminologyService:
             page: Page number (1-based)
             page_size: Number of items per page
             search: Search string for value or aliases
-            namespace: Namespace to query (None = all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (list of terms, total count)
         """
         query: dict = {"terminology_id": terminology_id}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
 

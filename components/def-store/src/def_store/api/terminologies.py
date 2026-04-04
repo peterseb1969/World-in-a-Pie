@@ -7,8 +7,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     check_namespace_permission,
     get_current_identity,
-    resolve_accessible_namespaces,
     resolve_bulk_ids,
+    resolve_namespace_filter,
     resolve_or_404,
 )
 
@@ -72,19 +72,14 @@ async def list_terminologies(
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
         value=value,
         page=page,
         page_size=page_size,
-        namespace=namespace,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
     return TerminologyListResponse(
         items=terminologies,
