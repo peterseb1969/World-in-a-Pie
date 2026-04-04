@@ -5,28 +5,30 @@
       "key": "change_this_admin_key_in_production",
       "owner": "admin@wip.local",
       "groups": ["wip-admins"],
-      "description": "Admin console API key"
+      "description": "Admin console API key (privileged — no namespace scope needed)"
     },
     {
       "name": "reporting-sync",
       "key": "change_this_reporting_key_in_production",
       "owner": "system:reporting-sync",
       "groups": ["wip-services"],
-      "description": "Reporting sync service API key"
+      "description": "Reporting sync service API key (privileged — no namespace scope needed)"
     },
     {
       "name": "external-etl",
       "key": "change_this_etl_key_in_production",
       "owner": "etl-pipeline",
-      "groups": ["wip-writers"],
-      "description": "External ETL pipeline API key"
+      "groups": [],
+      "namespaces": ["production"],
+      "description": "External ETL pipeline — scoped to production namespace"
     },
     {
       "name": "read-only-dashboard",
       "key": "change_this_dashboard_key_in_production",
       "owner": "dashboard-service",
-      "groups": ["wip-readers"],
-      "description": "Read-only dashboard API key"
+      "groups": [],
+      "namespaces": ["production"],
+      "description": "Read-only dashboard — scoped to production namespace"
     }
   ]
 }

@@ -5,14 +5,22 @@
       "key": "dev_master_key_for_testing",
       "owner": "dev@wip.local",
       "groups": ["wip-admins"],
-      "description": "Development admin API key"
+      "description": "Development admin API key (privileged — no namespace scope needed)"
     },
     {
       "name": "reporting-sync",
       "key": "dev_reporting_sync_key",
       "owner": "system:reporting-sync",
       "groups": ["wip-services"],
-      "description": "Reporting sync service API key"
+      "description": "Reporting sync service API key (privileged — no namespace scope needed)"
+    },
+    {
+      "name": "example-app",
+      "key": "dev_example_app_key",
+      "owner": "dev@wip.local",
+      "groups": [],
+      "namespaces": ["wip"],
+      "description": "Example namespace-scoped app key — non-privileged keys MUST have namespaces"
     }
   ]
 }
