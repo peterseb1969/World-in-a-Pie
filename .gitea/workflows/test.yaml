@@ -241,7 +241,9 @@ jobs:
           . .venv/bin/activate
           pip install -e "libs/wip-auth[dev]"
           # Transport injection: test_fastapi_helpers imports registry.main in-process
-          pip install -r components/registry/requirements.txt
+          # Install registry deps but skip the editable wip-auth line (already installed above;
+          # the relative path in requirements.txt is for components/registry/ working dir)
+          grep -v '^\-e' components/registry/requirements.txt | pip install -r /dev/stdin
 
       - name: Run tests
         env:
