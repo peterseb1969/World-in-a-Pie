@@ -67,6 +67,19 @@ Every list/read endpoint requires `namespace` as mandatory. The Console's "All n
 - Related: CASE-07 (immediate symptom), CASE-08 (full design)
 - Depends on: Namespace-Scoped API Keys (above)
 
+### Document Update Endpoint (`PATCH /documents/{id}`)
+
+Documents are immutable (create with same identity = new version), but users and AI agents think "update." A `PATCH` endpoint would accept partial `data` changes, read-merge-create internally, and return the new version. Caller sends only changed fields.
+
+**Design questions (needs fireside chat):**
+- Mutable namespaces: should `PATCH` do true in-place update (no new version) vs read-merge-create?
+- Should the caller know/control which mode?
+- Validation: full re-validation of merged document against template?
+- Deep vs shallow merge of nested `data` fields?
+- Can identity fields be changed via `PATCH`? (Probably no — breaks version chain.)
+
+**Blocks:** `useUpdateDocument` React hook, full CRUD in React Console.
+
 ### Gap: No Runtime API Key Management
 
 API keys are config-file-only. There is no REST endpoint to create, revoke, rotate, or list keys. Current workflow: run `scripts/security/generate-api-key.sh`, manually edit `config/api-keys.dev.json`, restart all services.

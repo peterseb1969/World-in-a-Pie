@@ -16,15 +16,45 @@ export { useReportQuery, useIntegrityCheck, useActivity } from './hooks/use-repo
 
 // Write hooks
 export {
+  // Terminologies
   useCreateTerminology,
-  useCreateTerm,
+  useUpdateTerminology,
   useDeleteTerminology,
+  // Terms
+  useCreateTerm,
+  useUpdateTerm,
+  useDeprecateTerm,
   useDeleteTerm,
+  // Templates
   useCreateTemplate,
+  useUpdateTemplate,
+  useDeleteTemplate,
+  useActivateTemplate,
+  // Documents
   useCreateDocument,
   useCreateDocuments,
-  useUploadFile,
   useDeleteDocument,
+  useArchiveDocument,
+  // Files
+  useUploadFile,
+  useUpdateFileMetadata,
+  useDeleteFile,
+  useDeleteFiles,
+  useHardDeleteFile,
+  // Ontology / Relationships
+  useCreateRelationships,
+  useDeleteRelationships,
+  // Namespaces
+  useCreateNamespace,
+  useUpdateNamespace,
+  useArchiveNamespace,
+  useRestoreNamespace,
+  useDeleteNamespace,
+  // Registry entries
+  useAddSynonym,
+  useRemoveSynonym,
+  useMergeEntries,
+  useDeactivateEntry,
 } from './hooks/use-mutations.js'
 
 // Specialized hooks
