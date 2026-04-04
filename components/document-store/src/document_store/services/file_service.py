@@ -95,7 +95,7 @@ class FileService:
                 registry, checksum, actor, namespace=namespace, entry_id=file_id,
             )
         except RegistryError as e:
-            raise FileServiceError(f"Failed to generate file ID: {e}")
+            raise FileServiceError(f"Failed to generate file ID: {e}") from e
 
         # Upload to MinIO (storage_key = file_id)
         try:
@@ -111,7 +111,7 @@ class FileService:
                 }
             )
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to upload file to storage: {e}")
+            raise FileServiceError(f"Failed to upload file to storage: {e}") from e
 
         # Create File document in MongoDB
         now = datetime.now(UTC)
@@ -237,7 +237,7 @@ class FileService:
                 filename=file_doc.filename,
             )
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to generate download URL: {e}")
+            raise FileServiceError(f"Failed to generate download URL: {e}") from e
 
         return FileDownloadResponse(
             file_id=file_doc.file_id,
@@ -273,7 +273,7 @@ class FileService:
             content = await storage.download(file_doc.storage_key)
             return content, file_doc
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to download file: {e}")
+            raise FileServiceError(f"Failed to download file: {e}") from e
 
     async def delete_file(
         self,
@@ -567,10 +567,10 @@ class FileService:
             return False, f"File type '{file_doc.content_type}' not allowed. Allowed: {allowed_types}", None
 
         # Check template restriction (from file's allowed_templates)
-        if file_doc.allowed_templates is not None and allowed_templates:
-            # File has restrictions - check if any of the allowed_templates are in file's list
-            if not any(t in file_doc.allowed_templates for t in allowed_templates):
-                return False, f"File not allowed for templates: {allowed_templates}", None
+        if file_doc.allowed_templates is not None and allowed_templates and not any(
+            t in file_doc.allowed_templates for t in allowed_templates
+        ):
+            return False, f"File not allowed for templates: {allowed_templates}", None
 
         # Create file reference
         file_ref = FileReference(
