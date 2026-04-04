@@ -178,15 +178,18 @@ fi
 echo "2. Generating .mcp.json..."
 
 # Determine API key
+# The backend agent's MCP server needs a privileged key (wip-admins or wip-services)
+# because it operates across namespaces. Non-privileged keys without explicit namespace
+# scoping will get no access. See docs/migration-unscoped-api-keys.md.
 API_KEY=""
 if [[ "$TARGET" == "local" ]]; then
     if [ -f "$WIP_ROOT/.env" ]; then
         API_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
     fi
     API_KEY="${API_KEY:-dev_master_key_for_testing}"
-    echo "   API key: sourced from .env (${#API_KEY} chars)"
+    echo "   API key: sourced from .env (${#API_KEY} chars, must be privileged)"
 else
-    echo -n "   Enter API key for $HOST: "
+    echo -n "   Enter API key for $HOST (must be wip-admins or wip-services): "
     read -r API_KEY
     if [[ -z "$API_KEY" ]]; then
         echo "   Error: API key is required for remote targets."
@@ -343,6 +346,7 @@ See `docs/architecture.md` for full details.
 - **Bulk-first API:** Every write endpoint accepts `List[ItemRequest]`, returns `BulkResponse`. Always HTTP 200 — errors are per-item. See `docs/api-conventions.md`.
 - **Synonym resolution:** APIs accept human-readable synonyms wherever IDs are expected. UUIDs pass through. See `docs/design/universal-synonym-resolution.md`.
 - **Stable IDs:** `entity_id` stays the same across versions; `(entity_id, version)` is the unique key. See `docs/uniqueness-and-identity.md`.
+- **API key scoping:** Non-privileged API keys MUST have an explicit `namespaces` list. Keys without namespace scoping and not in `wip-admins`/`wip-services` get no access. See `docs/migration-unscoped-api-keys.md`.
 
 ## Design Principles (Must Follow)
 

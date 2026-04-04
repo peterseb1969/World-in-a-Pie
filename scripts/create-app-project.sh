@@ -177,6 +177,9 @@ else
 fi
 
 # Determine API key from .env (source of truth for running containers)
+# NOTE: The MCP server needs a privileged key (wip-admins or wip-services) because
+# it operates across namespaces. App code should use a namespace-scoped key instead.
+# See docs/migration-unscoped-api-keys.md for details.
 ACTIVE_KEY=""
 if [ -f "$WIP_ROOT/.env" ]; then
     ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
@@ -190,7 +193,7 @@ if [ "$ACTIVE_KEY" = "dev_master_key_for_testing" ]; then
         "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
 ENVEOF
 )
-    echo "   API key: dev_master_key_for_testing (dev mode)"
+    echo "   API key: dev_master_key_for_testing (dev mode, privileged)"
 else
     # Production — embed the actual key from .env
     MCP_ENV=$(cat <<ENVEOF
@@ -472,6 +475,30 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
    \`\`\`
 
 **Important:** All MCP tool calls that accept a \`namespace\` parameter should use \`$DEV_NAMESPACE\` during development.
+
+## API Key
+
+The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine for data modeling via MCP tools.
+
+**For your app's runtime API calls**, you should use a namespace-scoped key instead of the admin key. Non-privileged API keys MUST have an explicit \`namespaces\` field — keys without namespace scoping get no access.
+
+\`\`\`json
+{
+  "name": "${APP_SLUG}",
+  "key": "generate_a_real_key",
+  "owner": "dev@wip.local",
+  "groups": [],
+  "namespaces": ["$DEV_NAMESPACE"],
+  "description": "${APP_NAME} — scoped to dev namespace"
+}
+\`\`\`
+
+Add this to WIP's \`config/api-keys.dev.json\` and use the key value in your app's \`.env\`:
+\`\`\`bash
+WIP_API_KEY=generate_a_real_key
+\`\`\`
+
+See WIP's \`docs/migration-unscoped-api-keys.md\` for details on privileged vs scoped keys.
 
 ## Process
 
