@@ -431,6 +431,7 @@ class FileResponse(BaseModel):
     """Response containing a file entity."""
 
     file_id: str
+    namespace: str
     filename: str
     content_type: str
     size_bytes: int

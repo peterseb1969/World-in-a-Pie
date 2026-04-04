@@ -722,6 +722,7 @@ class FileService:
         """Convert File document to FileResponse."""
         return FileResponse(
             file_id=file_doc.file_id,
+            namespace=file_doc.namespace,
             filename=file_doc.filename,
             content_type=file_doc.content_type,
             size_bytes=file_doc.size_bytes,
