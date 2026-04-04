@@ -6,20 +6,43 @@ Covers:
 - File orphan cleanup after hard-delete
 - Hard-delete rejected in 'retain' namespace
 - Soft-delete regression (unchanged when hard_delete=False)
+
+Uses real Registry via transport injection — no mock registry.
+Deletion mode is set directly on the Namespace model (the API
+protects the 'wip' namespace from mode changes, but tests are
+allowed to set up state that the API wouldn't permit).
 """
 
 import pytest
+import pytest_asyncio
+
+from registry.models.entry import RegistryEntry
+from registry.models.namespace import Namespace
+
+
+# =========================================================================
+# Fixtures
+# =========================================================================
+
+
+@pytest_asyncio.fixture
+async def enable_hard_delete():
+    """Set 'wip' namespace to full deletion mode for hard-delete tests."""
+    ns = await Namespace.find_one({"prefix": "wip"})
+    ns.deletion_mode = "full"
+    await ns.save()
+
 
 # =========================================================================
 # Helpers
 # =========================================================================
 
 
-async def create_doc(client, auth_headers, data=None, template_id="TPL-000001"):
+async def create_doc(client, auth_headers, data=None):
     """Create a document and return (document_id, version)."""
     payload = {
         "namespace": "wip",
-        "template_id": template_id,
+        "template_id": "TPL-000001",
         "data": data or {
             "national_id": "123456789",
             "first_name": "John",
@@ -87,20 +110,11 @@ class TestHardDeleteAllVersions:
     """Tests for hard-deleting all versions of a document."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_removes_document(self, client, auth_headers):
+    async def test_hard_delete_removes_document(self, client, auth_headers, enable_hard_delete):
         """hard_delete=True removes document completely."""
-        from unittest.mock import AsyncMock, patch
-
         doc_id, _ = await create_doc(client, auth_headers)
 
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
-
+        data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
         assert data["succeeded"] == 1
 
         # Document completely gone
@@ -108,21 +122,16 @@ class TestHardDeleteAllVersions:
         assert resp.status_code == 404
 
         # Registry entry cleaned up
-        mock_rc.hard_delete_entry.assert_awaited_once()
+        entry = await RegistryEntry.find_one({"entry_id": doc_id})
+        assert entry is None
 
     @pytest.mark.asyncio
     async def test_hard_delete_rejected_in_retain_namespace(self, client, auth_headers):
         """hard_delete=True fails when namespace deletion_mode='retain'."""
-        from unittest.mock import AsyncMock, patch
-
+        # 'wip' namespace defaults to 'retain' — no fixture override
         doc_id, _ = await create_doc(client, auth_headers)
 
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="retain")
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
+        data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
 
         assert data["failed"] == 1
         assert "deletion_mode" in data["results"][0]["error"]
@@ -132,17 +141,9 @@ class TestHardDeleteAllVersions:
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_hard_delete_nonexistent_document(self, client, auth_headers):
+    async def test_hard_delete_nonexistent_document(self, client, auth_headers, enable_hard_delete):
         """hard_delete on nonexistent document returns failure."""
-        from unittest.mock import AsyncMock, patch
-
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, "DOC-NONEXISTENT", hard_delete=True)
-
+        data = await delete_doc(client, auth_headers, "DOC-NONEXISTENT", hard_delete=True)
         assert data["failed"] == 1
 
 
@@ -155,24 +156,17 @@ class TestHardDeleteSpecificVersion:
     """Tests for version-specific hard-delete."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_one_version_keeps_others(self, client, auth_headers, sample_person_data):
+    async def test_hard_delete_one_version_keeps_others(
+        self, client, auth_headers, sample_person_data, enable_hard_delete
+    ):
         """Hard-deleting v1 keeps v2 intact."""
-        from unittest.mock import AsyncMock, patch
-
         doc_id, _ = await create_doc(client, auth_headers, sample_person_data)
 
         # Create v2 by updating
         updated_data = {**sample_person_data, "first_name": "Jane"}
         await update_doc(client, auth_headers, doc_id, updated_data)
 
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, doc_id, hard_delete=True, version=1)
-
+        data = await delete_doc(client, auth_headers, doc_id, hard_delete=True, version=1)
         assert data["succeeded"] == 1
 
         # Document still exists (v2)
@@ -180,23 +174,17 @@ class TestHardDeleteSpecificVersion:
         assert resp.status_code == 200
 
         # Registry entry NOT cleaned up (versions remain)
-        mock_rc.hard_delete_entry.assert_not_awaited()
+        entry = await RegistryEntry.find_one({"entry_id": doc_id})
+        assert entry is not None
 
     @pytest.mark.asyncio
-    async def test_hard_delete_last_version_cleans_registry(self, client, auth_headers):
+    async def test_hard_delete_last_version_cleans_registry(
+        self, client, auth_headers, enable_hard_delete
+    ):
         """Hard-deleting the only version also removes Registry entry."""
-        from unittest.mock import AsyncMock, patch
-
         doc_id, _ = await create_doc(client, auth_headers)
 
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, doc_id, hard_delete=True, version=1)
-
+        data = await delete_doc(client, auth_headers, doc_id, hard_delete=True, version=1)
         assert data["succeeded"] == 1
 
         # Document gone
@@ -204,7 +192,8 @@ class TestHardDeleteSpecificVersion:
         assert resp.status_code == 404
 
         # Registry cleaned up
-        mock_rc.hard_delete_entry.assert_awaited_once()
+        entry = await RegistryEntry.find_one({"entry_id": doc_id})
+        assert entry is None
 
 
 # =========================================================================
@@ -216,19 +205,13 @@ class TestFileOrphanCleanup:
     """Tests for file reference cleanup during hard-delete."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_calls_orphan_cleanup(self, client, auth_headers):
+    async def test_hard_delete_calls_orphan_cleanup(
+        self, client, auth_headers, enable_hard_delete
+    ):
         """Hard-delete triggers _hard_delete_orphaned_files (no-op with no file refs)."""
-        from unittest.mock import AsyncMock, patch
-
         doc_id, _ = await create_doc(client, auth_headers)
 
-        with patch('document_store.services.document_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
+        data = await delete_doc(client, auth_headers, doc_id, hard_delete=True)
 
         assert data["succeeded"] == 1
         # Document has no file_references in this test, so orphan cleanup is a no-op
