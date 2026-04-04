@@ -227,12 +227,26 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
+      - name: Start MongoDB
+        run: |
+          docker start test-mongo 2>/dev/null || \
+            docker run -d --name test-mongo -p 27017:27017 mongo:7
+          for i in $(seq 1 10); do
+            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
+            sleep 1
+          done
+
       - name: Install dependencies
         run: |
           . .venv/bin/activate
           pip install -e "libs/wip-auth[dev]"
+          # Transport injection: test_fastapi_helpers imports registry.main in-process
+          pip install -r components/registry/requirements.txt
 
       - name: Run tests
+        env:
+          MONGO_URI: mongodb://localhost:27017/
+          PYTHONPATH: components/registry/src
         run: |
           . .venv/bin/activate
           pytest libs/wip-auth/tests/ -v --tb=short

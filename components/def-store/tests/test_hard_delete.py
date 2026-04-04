@@ -10,6 +10,27 @@ Covers:
 """
 
 import pytest
+import pytest_asyncio
+
+from registry.models.namespace import Namespace
+
+
+# =========================================================================
+# Fixtures
+# =========================================================================
+
+
+@pytest_asyncio.fixture
+async def full_deletion_namespace():
+    """Set 'wip' namespace to full deletion mode for hard-delete tests."""
+    ns = await Namespace.find_one({"prefix": "wip"})
+    original_mode = getattr(ns, "deletion_mode", "retain")
+    ns.deletion_mode = "full"
+    await ns.save()
+    yield
+    ns.deletion_mode = original_mode
+    await ns.save()
+
 
 # =========================================================================
 # Helpers
@@ -115,21 +136,14 @@ class TestHardDeleteTerminology:
     """Tests for hard-deleting terminologies in 'full' deletion_mode namespaces."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_immutable_terminology_in_full_namespace(self, client, auth_headers):
+    async def test_hard_delete_immutable_terminology_in_full_namespace(
+        self, client, auth_headers, full_deletion_namespace
+    ):
         """Immutable terminology can be hard-deleted when namespace has deletion_mode='full'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_IMMUT", "Hard Delete Immutable")
         t1 = await create_term(client, auth_headers, tid, "VAL1", "Value 1")
 
-        # Mock registry to allow hard-delete (deletion_mode='full')
-        with patch('def_store.services.terminology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_terminology(client, auth_headers, tid, hard_delete=True)
+        data = await delete_terminology(client, auth_headers, tid, hard_delete=True)
 
         assert data["succeeded"] == 1
 
@@ -150,16 +164,10 @@ class TestHardDeleteTerminology:
     @pytest.mark.asyncio
     async def test_hard_delete_rejected_in_retain_namespace(self, client, auth_headers):
         """Hard-delete fails for immutable terminology when namespace is 'retain'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_RETAIN", "Retain Test")
 
-        with patch('def_store.services.terminology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="retain")
-            mock_get.return_value = mock_rc
-
-            data = await delete_terminology(client, auth_headers, tid, hard_delete=True)
+        # Default namespace deletion_mode is 'retain' — no fixture needed
+        data = await delete_terminology(client, auth_headers, tid, hard_delete=True)
 
         assert data["failed"] == 1
         assert "deletion_mode" in data["results"][0]["error"]
@@ -200,21 +208,15 @@ class TestHardDeleteTerm:
     """Tests for hard-deleting individual terms."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_term_in_full_namespace(self, client, auth_headers):
+    async def test_hard_delete_term_in_full_namespace(
+        self, client, auth_headers, full_deletion_namespace
+    ):
         """Term can be hard-deleted when namespace has deletion_mode='full'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_TERM_NS", "Term HD NS")
         t1 = await create_term(client, auth_headers, tid, "REMOVE_ME", "Remove Me")
         t2 = await create_term(client, auth_headers, tid, "KEEP_ME", "Keep Me")
 
-        with patch('def_store.services.terminology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_rc.hard_delete_entry = AsyncMock(return_value=True)
-            mock_get.return_value = mock_rc
-
-            data = await delete_term_bulk(client, auth_headers, t1, hard_delete=True)
+        data = await delete_term_bulk(client, auth_headers, t1, hard_delete=True)
 
         assert data["succeeded"] == 1
 
@@ -251,17 +253,11 @@ class TestHardDeleteTerm:
     @pytest.mark.asyncio
     async def test_hard_delete_term_rejected_in_retain_namespace(self, client, auth_headers):
         """Hard-delete fails for immutable term when namespace is 'retain'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_TERM_RETAIN", "Term Retain")
         t1 = await create_term(client, auth_headers, tid, "RETAINED")
 
-        with patch('def_store.services.terminology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="retain")
-            mock_get.return_value = mock_rc
-
-            data = await delete_term_bulk(client, auth_headers, t1, hard_delete=True)
+        # Default namespace deletion_mode is 'retain' — no fixture needed
+        data = await delete_term_bulk(client, auth_headers, t1, hard_delete=True)
 
         assert data["failed"] == 1
         assert "deletion_mode" in data["results"][0]["error"]
@@ -276,26 +272,21 @@ class TestHardDeleteRelationship:
     """Tests for hard-deleting relationships."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_relationship_in_full_namespace(self, client, auth_headers):
+    async def test_hard_delete_relationship_in_full_namespace(
+        self, client, auth_headers, full_deletion_namespace
+    ):
         """Relationship can be hard-deleted when namespace has deletion_mode='full'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_REL_NS", "Rel HD NS")
         t1 = await create_term(client, auth_headers, tid, "SRC")
         t2 = await create_term(client, auth_headers, tid, "TGT")
         await create_relationship(client, auth_headers, t1, t2, "is_a")
 
-        with patch('def_store.services.ontology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="full")
-            mock_get.return_value = mock_rc
-
-            data = await delete_relationships(client, auth_headers, "wip", [{
-                "source_term_id": t1,
-                "target_term_id": t2,
-                "relationship_type": "is_a",
-                "hard_delete": True,
-            }])
+        data = await delete_relationships(client, auth_headers, "wip", [{
+            "source_term_id": t1,
+            "target_term_id": t2,
+            "relationship_type": "is_a",
+            "hard_delete": True,
+        }])
 
         assert data["succeeded"] == 1
 
@@ -312,24 +303,18 @@ class TestHardDeleteRelationship:
     @pytest.mark.asyncio
     async def test_hard_delete_relationship_rejected_in_retain(self, client, auth_headers):
         """Hard-delete relationship fails when namespace is 'retain'."""
-        from unittest.mock import AsyncMock, patch
-
         tid = await create_terminology(client, auth_headers, "HD_REL_RETAIN", "Rel Retain")
         t1 = await create_term(client, auth_headers, tid, "SRC_R")
         t2 = await create_term(client, auth_headers, tid, "TGT_R")
         await create_relationship(client, auth_headers, t1, t2, "is_a")
 
-        with patch('def_store.services.ontology_service.get_registry_client') as mock_get:
-            mock_rc = AsyncMock()
-            mock_rc.get_namespace_deletion_mode = AsyncMock(return_value="retain")
-            mock_get.return_value = mock_rc
-
-            data = await delete_relationships(client, auth_headers, "wip", [{
-                "source_term_id": t1,
-                "target_term_id": t2,
-                "relationship_type": "is_a",
-                "hard_delete": True,
-            }])
+        # Default namespace deletion_mode is 'retain' — no fixture needed
+        data = await delete_relationships(client, auth_headers, "wip", [{
+            "source_term_id": t1,
+            "target_term_id": t2,
+            "relationship_type": "is_a",
+            "hard_delete": True,
+        }])
 
         assert data["failed"] == 1
         assert "deletion_mode" in data["results"][0]["error"]

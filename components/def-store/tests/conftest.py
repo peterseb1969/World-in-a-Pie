@@ -148,6 +148,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Patch singleton getter to return transport-injected client
     with (
         patch('def_store.services.terminology_service.get_registry_client', return_value=real_registry),
+        patch('def_store.services.ontology_service.get_registry_client', return_value=real_registry),
         patch('def_store.main.get_registry_client', return_value=real_registry),
     ):
         transport = ASGITransport(app=app)
