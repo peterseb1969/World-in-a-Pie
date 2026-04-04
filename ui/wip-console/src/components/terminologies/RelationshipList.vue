@@ -15,6 +15,7 @@ import RelationshipForm from './RelationshipForm.vue'
 const props = defineProps<{
   terminologyId: string
   termId?: string
+  namespace?: string
 }>()
 
 const emit = defineEmits<{
@@ -68,13 +69,14 @@ watch([directionFilter, typeFilter], () => {
 })
 
 async function loadRelationships() {
+  const ns = props.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip'
   loading.value = true
   try {
     if (props.termId) {
       // Per-term relationships
       const data = await defStoreClient.listRelationships({
         term_id: props.termId,
-        namespace: namespaceStore.currentNamespaceParam ?? 'wip',
+        namespace: ns,
         direction: directionFilter.value,
         relationship_type: typeFilter.value || undefined,
         page: currentPage.value + 1,
@@ -85,7 +87,7 @@ async function loadRelationships() {
     } else {
       // All relationships for this terminology
       const data = await defStoreClient.listAllRelationships({
-        namespace: namespaceStore.currentNamespaceParam ?? 'wip',
+        namespace: ns,
         source_terminology_id: props.terminologyId,
         page: currentPage.value + 1,
         page_size: rowsPerPage.value,

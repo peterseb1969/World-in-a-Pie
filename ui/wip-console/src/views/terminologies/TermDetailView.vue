@@ -68,9 +68,10 @@ async function loadFamily() {
   if (!term.value) return
   loadingFamily.value = true
   try {
+    const ns = term.value?.namespace ?? namespaceStore.currentNamespaceParam
     const [p, c] = await Promise.all([
-      defStoreClient.getParents(props.id, namespaceStore.currentNamespaceParam),
-      defStoreClient.getChildren(props.id, namespaceStore.currentNamespaceParam),
+      defStoreClient.getParents(props.id, ns),
+      defStoreClient.getChildren(props.id, ns),
     ])
     parents.value = p
     children.value = c
@@ -260,6 +261,7 @@ function formatDate(dateStr: string) {
           <RelationshipList
             :terminology-id="term.terminology_id"
             :term-id="term.term_id"
+            :namespace="term.namespace"
             @navigate-to-term="navigateToTerm"
           />
         </TabPanel>
@@ -268,6 +270,7 @@ function formatDate(dateStr: string) {
           <HierarchyTree
             :term-id="term.term_id"
             :term-value="term.label || term.value"
+            :namespace="term.namespace"
             @navigate-to-term="navigateToTerm"
           />
         </TabPanel>
