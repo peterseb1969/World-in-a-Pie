@@ -304,6 +304,147 @@ async def test_query_no_postgres(http_client: AsyncClient):
 
 
 # =========================================================================
+# CSV Export
+# =========================================================================
+
+
+def _mock_prepared_stmt(columns, rows):
+    """Create a mock asyncpg PreparedStatement with given columns and rows.
+
+    Uses MagicMock (not AsyncMock) so sync methods like get_attributes() work.
+    """
+    attrs = []
+    for col in columns:
+        attr = MagicMock()
+        attr.name = col
+        attrs.append(attr)
+
+    stmt = MagicMock()
+    stmt.get_attributes.return_value = attrs
+
+    async def cursor(*args):
+        for row in rows:
+            yield row
+
+    stmt.cursor = cursor
+    return stmt
+
+
+def _setup_csv_mocks(conn, columns, rows):
+    """Wire up conn mocks for CSV export tests."""
+    stmt = _mock_prepared_stmt(columns, rows)
+    conn.prepare = AsyncMock(return_value=stmt)
+    conn.execute = AsyncMock()
+    # asyncpg's transaction() is a sync method returning an async context manager
+    txn = MagicMock()
+    txn.__aenter__ = AsyncMock()
+    txn.__aexit__ = AsyncMock(return_value=False)
+    conn.transaction = MagicMock(return_value=txn)
+
+
+@pytest.mark.asyncio
+async def test_export_table_csv(http_client: AsyncClient, mock_state):
+    """GET /export/csv?table=doc_patient streams CSV."""
+    _pool, conn = mock_state
+    _setup_csv_mocks(conn, ["id", "name"], [
+        {"id": "1", "name": "Alice"},
+        {"id": "2", "name": "Bob"},
+    ])
+
+    async with http_client:
+        response = await http_client.get("/api/reporting-sync/export/csv?table=doc_patient")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "doc_patient.csv" in response.headers["content-disposition"]
+    lines = [line.strip() for line in response.text.strip().split("\n")]
+    assert lines[0] == "id,name"
+    assert lines[1] == "1,Alice"
+    assert lines[2] == "2,Bob"
+
+
+@pytest.mark.asyncio
+async def test_export_table_csv_rejects_disallowed_table(http_client: AsyncClient, mock_state):
+    """GET /export/csv with a non-allowed table returns 400."""
+    async with http_client:
+        response = await http_client.get("/api/reporting-sync/export/csv?table=_wip_secret")
+    assert response.status_code == 400
+    assert "not available" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_table_csv_allows_metadata_tables(http_client: AsyncClient, mock_state):
+    """GET /export/csv allows terminologies, terms, term_relationships."""
+    _pool, conn = mock_state
+    _setup_csv_mocks(conn, ["id"], [{"id": "t1"}])
+
+    async with http_client:
+        response = await http_client.get("/api/reporting-sync/export/csv?table=terminologies")
+
+    assert response.status_code == 200
+    assert "terminologies.csv" in response.headers["content-disposition"]
+
+
+@pytest.mark.asyncio
+async def test_export_query_csv(http_client: AsyncClient, mock_state):
+    """POST /export/csv streams CSV from a SQL query."""
+    _pool, conn = mock_state
+    _setup_csv_mocks(conn, ["count"], [{"count": 42}])
+
+    async with http_client:
+        response = await http_client.post(
+            "/api/reporting-sync/export/csv",
+            json={"sql": "SELECT COUNT(*) as count FROM doc_patient"},
+        )
+
+    assert response.status_code == 200
+    lines = [line.strip() for line in response.text.strip().split("\n")]
+    assert lines[0] == "count"
+    assert lines[1] == "42"
+
+
+@pytest.mark.asyncio
+async def test_export_query_csv_rejects_write(http_client: AsyncClient, mock_state):
+    """POST /export/csv rejects write SQL."""
+    async with http_client:
+        response = await http_client.post(
+            "/api/reporting-sync/export/csv",
+            json={"sql": "DELETE FROM doc_patient"},
+        )
+    assert response.status_code == 400
+    assert "read-only" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_export_csv_no_postgres(http_client: AsyncClient):
+    """Export returns 503 when PostgreSQL not connected."""
+    original = state.postgres_pool
+    state.postgres_pool = None
+    try:
+        async with http_client:
+            response = await http_client.get("/api/reporting-sync/export/csv?table=doc_patient")
+        assert response.status_code == 503
+    finally:
+        state.postgres_pool = original
+
+
+@pytest.mark.asyncio
+async def test_export_query_csv_custom_filename(http_client: AsyncClient, mock_state):
+    """POST /export/csv respects custom filename."""
+    _pool, conn = mock_state
+    _setup_csv_mocks(conn, ["x"], [])
+
+    async with http_client:
+        response = await http_client.post(
+            "/api/reporting-sync/export/csv",
+            json={"sql": "SELECT 1 as x", "filename": "my-report.csv"},
+        )
+
+    assert response.status_code == 200
+    assert "my-report.csv" in response.headers["content-disposition"]
+
+
+# =========================================================================
 # Batch Sync Endpoint Routing
 # =========================================================================
 # These tests verify that literal routes (/sync/batch/terminologies, etc.)

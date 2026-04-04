@@ -1082,6 +1082,34 @@ class WipClient:
             self.reporting_sync_url, "/api/reporting-sync/query", json=body
         )
 
+    async def export_report_csv(
+        self,
+        table: str | None = None,
+        sql: str | None = None,
+        params: list | None = None,
+        timeout_seconds: int = 120,
+    ) -> str:
+        """Export reporting data as CSV. Either table or sql must be provided."""
+        client = await self._get_client()
+        if table:
+            resp = await client.get(
+                f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
+                params={"table": table, "timeout_seconds": timeout_seconds},
+            )
+        elif sql:
+            resp = await client.post(
+                f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
+                json={
+                    "sql": sql,
+                    "params": params or [],
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+        else:
+            raise ValueError("Either table or sql must be provided")
+        resp.raise_for_status()
+        return resp.text
+
     async def unified_search(
         self,
         query: str,

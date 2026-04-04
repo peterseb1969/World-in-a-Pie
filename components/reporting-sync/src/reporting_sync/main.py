@@ -7,6 +7,8 @@ The actual sync work is done by the worker module.
 
 import asyncio
 import contextlib
+import csv
+import io
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -17,6 +19,7 @@ import asyncpg
 import httpx
 import nats
 from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
 
@@ -1260,6 +1263,110 @@ async def execute_query(body: ReportQuery):
         raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}") from e
     except asyncpg.PostgresError as e:
         raise HTTPException(status_code=400, detail=f"Query error: {e}") from e
+
+
+# =============================================================================
+# CSV EXPORT
+# =============================================================================
+
+# Allowed tables for CSV export (same whitelist as /tables)
+_EXPORT_ALLOWED_PREFIXES = ("doc_",)
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relationships"}
+
+
+def _is_allowed_table(name: str) -> bool:
+    return name.startswith(_EXPORT_ALLOWED_PREFIXES) or name in _EXPORT_ALLOWED_EXACT
+
+
+class CsvExportQuery(BaseModel):
+    """Request model for query-based CSV export."""
+
+    sql: str
+    params: list[Any] = []
+    timeout_seconds: int = Field(default=120, ge=1, le=600)
+    filename: str = Field(default="export.csv", pattern=r"^[\w\-. ]+\.csv$")
+
+
+async def _stream_csv(conn: asyncpg.Connection, sql: str, params: list[Any]):
+    """Yield CSV rows from a PostgreSQL query using a cursor."""
+    stmt = await conn.prepare(sql)
+    columns = [attr.name for attr in stmt.get_attributes()]
+
+    # Header row
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(columns)
+    yield buf.getvalue()
+
+    # Data rows — fetch in batches to limit memory
+    async with conn.transaction():
+        async for record in stmt.cursor(*params):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([record[col] for col in columns])
+            yield buf.getvalue()
+
+
+@router.get("/export/csv")
+async def export_table_csv(
+    table: str = Query(description="Table name to export (e.g. doc_patient)"),
+    timeout_seconds: int = Query(default=120, ge=1, le=600),
+    filename: str | None = Query(default=None, description="Download filename"),
+):
+    """Export a full reporting table as streaming CSV."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if not _is_allowed_table(table):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Table '{table}' is not available for export. "
+            "Only doc_* tables and metadata tables (terminologies, terms, term_relationships) are allowed.",
+        )
+
+    download_name = filename or f"{table}.csv"
+
+    async def generate():
+        async with state.postgres_pool.acquire() as conn:
+            await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            await conn.execute("SET default_transaction_read_only = on")
+            async for chunk in _stream_csv(conn, f'SELECT * FROM "{table}"', []):
+                yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
+
+
+@router.post("/export/csv")
+async def export_query_csv(body: CsvExportQuery):
+    """Export a SQL query result as streaming CSV."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if _DANGEROUS_SQL_RE.search(body.sql):
+        raise HTTPException(
+            status_code=400,
+            detail="Only read-only queries are allowed. "
+            "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
+        )
+
+    async def generate():
+        async with state.postgres_pool.acquire() as conn:
+            await conn.execute(
+                f"SET statement_timeout = {body.timeout_seconds * 1000}"
+            )
+            await conn.execute("SET default_transaction_read_only = on")
+            async for chunk in _stream_csv(conn, body.sql, body.params):
+                yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{body.filename}"'},
+    )
 
 
 # =============================================================================

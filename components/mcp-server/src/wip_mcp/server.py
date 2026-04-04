@@ -2327,6 +2327,46 @@ async def run_report_query(
         return _error(e)
 
 
+@mcp.tool()
+async def export_report_csv(
+    table: str | None = None,
+    sql: str | None = None,
+    params: list | None = None,
+) -> str:
+    """Export reporting data as CSV (streaming from PostgreSQL).
+
+    Two modes:
+    - Table mode: export an entire reporting table as CSV.
+    - Query mode: export a SQL query result as CSV.
+
+    Provide either `table` or `sql`, not both.
+
+    Args:
+        table: Table name to export (e.g., 'doc_patient', 'terminologies').
+            Only doc_* tables and metadata tables are allowed.
+        sql: SQL SELECT query. Must be read-only. Use for filtered/joined exports.
+        params: Optional parameter values for $1, $2, etc. in the SQL query.
+
+    Example:
+        export_report_csv(table="doc_patient")
+        export_report_csv(sql="SELECT name FROM doc_patient WHERE country = $1", params=["CH"])
+    """
+    if not table and not sql:
+        return "Error: provide either 'table' or 'sql'"
+    if table and sql:
+        return "Error: provide either 'table' or 'sql', not both"
+    try:
+        csv_content = await get_client().export_report_csv(
+            table=table, sql=sql, params=params
+        )
+        lines = csv_content.split("\n")
+        if len(lines) > 102:
+            return "\n".join(lines[:102]) + f"\n\n... truncated ({len(lines)} total lines)"
+        return csv_content
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Import (CSV/XLSX)
 # ===================================================================
