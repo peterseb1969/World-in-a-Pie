@@ -4,7 +4,13 @@ import math
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_bulk_ids, resolve_or_404
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_bulk_ids,
+    resolve_namespace_filter,
+    resolve_or_404,
+)
 
 from ..models.api_models import (
     BulkResponse,
@@ -66,21 +72,21 @@ async def list_relationships(
     term_id: str = Query(..., description="Term ID to query relationships for"),
     direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
     relationship_type: str | None = Query(None, description="Filter by relationship type"),
-    namespace: str = Query(..., description="Namespace"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=100, description="Page size"),
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """List relationships for a term, with optional direction and type filtering."""
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve term_id synonym
     term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     items, total = await OntologyService.list_relationships(
         term_id=term_id,
-        namespace=namespace,
+        ns_filter=ns_filter.query,
         direction=direction,
         relationship_type=relationship_type,
         page=page,
@@ -131,7 +137,7 @@ async def delete_relationships(
     summary="List all relationships (for batch sync)"
 )
 async def list_all_relationships(
-    namespace: str = Query(..., description="Namespace"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     relationship_type: str | None = Query(None, description="Filter by type"),
     source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
@@ -140,14 +146,14 @@ async def list_all_relationships(
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """
-    List all relationships in a namespace (paginated).
+    List all relationships (paginated).
 
     Unlike the per-term list endpoint, this returns ALL relationships,
     useful for batch sync and export operations. Use source_terminology_id
-    to filter to a specific terminology.
+    to filter to a specific terminology. Omit namespace for cross-namespace results.
     """
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve source_terminology_id synonym if provided
     if source_terminology_id:
@@ -156,7 +162,7 @@ async def list_all_relationships(
         )
 
     items, total = await OntologyService.list_all_relationships(
-        namespace=namespace,
+        ns_filter=ns_filter.query,
         relationship_type=relationship_type,
         source_terminology_id=source_terminology_id,
         status=status,

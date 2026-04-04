@@ -343,7 +343,7 @@ class OntologyService:
     @staticmethod
     async def list_relationships(
         term_id: str,
-        namespace: str,
+        ns_filter: dict | None = None,
         direction: str = "outgoing",
         relationship_type: str | None = None,
         status: str = "active",
@@ -351,7 +351,9 @@ class OntologyService:
         page_size: int = 50,
     ) -> tuple[list[RelationshipResponse], int]:
         """List relationships for a term with pagination."""
-        query: dict = {"namespace": namespace, "status": status}
+        query: dict = {"status": status}
+        if ns_filter:
+            query.update(ns_filter)
 
         if direction == "outgoing":
             query["source_term_id"] = term_id
@@ -377,15 +379,17 @@ class OntologyService:
 
     @staticmethod
     async def list_all_relationships(
-        namespace: str,
+        ns_filter: dict | None = None,
         relationship_type: str | None = None,
         source_terminology_id: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
     ) -> tuple[list[RelationshipResponse], int]:
-        """List all relationships in a namespace with pagination."""
-        query: dict = {"namespace": namespace, "status": status}
+        """List all relationships with pagination (cross-namespace when filter allows)."""
+        query: dict = {"status": status}
+        if ns_filter:
+            query.update(ns_filter)
 
         if source_terminology_id:
             query["source_terminology_id"] = source_terminology_id
