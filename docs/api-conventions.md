@@ -320,6 +320,8 @@ All endpoints (except `/health`) require authentication:
 - **JWT:** `Authorization: Bearer <token>` header
 - **Dual mode:** Either method accepted (configured via `WIP_AUTH_MODE`)
 
+**Namespace scoping:** API keys for non-privileged accounts must include a `namespaces` field listing accessible namespace prefixes. Keys without namespace scoping that are not in `wip-admins` or `wip-services` groups will receive 403 on all namespace-scoped operations. See `docs/authentication.md` for details.
+
 ---
 
 ## Soft Deletion

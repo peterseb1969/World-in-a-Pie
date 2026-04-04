@@ -1,6 +1,8 @@
 # Synonym Resolution: Gap Analysis and Side Effects
 
-**Status:** Analysis (2026-03-30, updated 2026-03-30). Companion to `universal-synonym-resolution.md`.
+**Status:** Analysis (2026-03-30, updated 2026-04-04). Companion to `universal-synonym-resolution.md`.
+
+> **2026-04-04 Update:** All 7 API-boundary gaps identified in the plan (`jolly-coalescing-narwhal.md`) have been resolved in commit `3dece58`. See "Resolved Gaps" section below. The deeper internal resolution gaps (template-store `_resolve_to_*` methods, cross-namespace resolution, reserved/draft entity resolution) remain open and are documented in this file.
 **Context:** The universal synonym resolution design is sound but incompletely implemented. This document audits the current state, identifies gaps, and analyzes the side effects of closing them.
 
 ---
@@ -58,6 +60,24 @@ The design calls for auto-synonym registration at entity creation time. Current 
 - document-store: registers auto-synonyms for documents
 
 These registrations are best-effort (non-blocking, fire-and-forget). If the Registry is unavailable at creation time, the auto-synonym silently doesn't get created. The `backfill-synonyms` toolkit command exists as a safety net.
+
+---
+
+## Resolved Gaps (2026-04-04, commit 3dece58)
+
+Seven API-boundary gaps were closed in a single pass. These were the "stragglers" — endpoints that accepted IDs without passing them through `resolve_or_404` or `resolve_bulk_ids`.
+
+| # | Gap | Component | Fix |
+|---|-----|-----------|-----|
+| 1 | Template update skipped field reference normalization | template-store | Added `_normalize_field_references()` call in `update_template()` |
+| 2 | `replaced_by_term_id` not resolved in deprecate endpoint | def-store | Added `resolve_bulk_ids` for `replaced_by_term_id` field |
+| 3 | Audit endpoints had zero resolution | def-store | Added `resolve_or_404` to `GET /audit/terms/{id}` and `GET /audit/terminologies/{id}` |
+| 4 | Export endpoint didn't resolve `terminology_id` | def-store | Added `resolve_or_404` to `GET /export/{terminology_id}` |
+| 5 | Legacy validation endpoints retired | def-store | Removed `/validation/validate` and `/validation/validate-bulk` router (file deleted 2026-04-04). Consumers should use `POST /terms/validate` and `POST /terms/validate/bulk` instead. See `docs/migration-legacy-validation-api.md`. |
+| 6 | Template value lookup defaulted namespace to "wip" | template-store | Made namespace required for value-based lookups — raises `ValueError` if omitted |
+| 7 | Table view namespace fallback to "wip" | document-store | Replaced `.get("namespace", "wip")` with explicit check; raises 500 if namespace missing |
+
+**What remains:** The deeper gaps documented below — template-store internal `_resolve_to_*` methods that bypass Registry entirely, cross-namespace resolution search order, and reserved/draft entity resolution during batch activation.
 
 ---
 

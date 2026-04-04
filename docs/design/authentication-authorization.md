@@ -419,7 +419,7 @@ Constellation
 
 2. **Single sign-out.** Each app has its own Express session — logging out of one app doesn't log out of others. Is this acceptable, or should we implement back-channel logout via Dex?
 
-3. **API key + user identity intersection.** Requests carry both an API key (service auth) and user identity (from headers). Should the API key's namespace restrictions constrain the user's permissions? **Probably yes** — the API key represents the app's scope, and the user's permissions are intersected with it.
+3. **API key + user identity intersection.** Requests carry both an API key (service auth) and user identity (from headers). Should the API key's namespace restrictions constrain the user's permissions? **Yes — implemented** (2026-04-04). Non-privileged API keys must have explicit `namespaces`; unscoped keys get no access. The API key's namespace scope acts as a ceiling on what the user can access through that app.
 
 4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But if an attacker compromises an API key, they can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (see `docs/security/key-rotation.md`).
 

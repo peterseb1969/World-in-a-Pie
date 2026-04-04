@@ -85,7 +85,7 @@ When checking permissions for a user on a namespace:
 1. **Superadmin check** — users in `wip-admins` group have `admin` on all namespaces (preserves current behavior)
 2. **Direct user grant** — explicit grant for this user on this namespace
 3. **Group grant** — grant for any of the user's groups on this namespace
-4. **API key namespace list** — existing `APIKeyRecord.namespaces` field (read-only by default, configurable)
+4. **API key namespace list** — `APIKeyRecord.namespaces` field. **Enforced (2026-04-04):** non-privileged keys without `namespaces` get `none` permission. Only `wip-admins` and `wip-services` can omit this field.
 5. **Default** — `none` (namespace invisible)
 
 If multiple grants match, the highest permission wins.
@@ -350,6 +350,6 @@ curl -X POST http://localhost:8001/api/registry/namespaces/dnd-campaign/grants \
 
 1. **Cross-namespace references.** If user has `read` on namespace A and namespace B, and a document in A references a document in B — should the reference resolve? Proposal: yes, if both namespaces are accessible. References to inaccessible namespaces return "reference not found" (same as nonexistent).
 
-2. **Service-to-service auth.** Internal service calls (e.g., document-store calling template-store) use the master API key and should bypass namespace checks. The `wip-services` group handles this — treat it like superadmin.
+2. **Service-to-service auth.** Internal service calls (e.g., document-store calling template-store) use the master API key and should bypass namespace checks. The `wip-services` group handles this — treated as privileged alongside `wip-admins`. **Implemented** (2026-04-04, commit 1e3f508).
 
 3. **Namespace creation.** Who can create namespaces? Proposal: only `wip-admins`. Namespace creators automatically get `admin` on the new namespace.
