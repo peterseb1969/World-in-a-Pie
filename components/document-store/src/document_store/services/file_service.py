@@ -405,7 +405,6 @@ class FileService:
 
     async def list_files(
         self,
-        namespace: str,
         status: FileStatus | None = None,
         content_type: str | None = None,
         category: str | None = None,
@@ -413,6 +412,7 @@ class FileService:
         uploaded_by: str | None = None,
         page: int = 1,
         page_size: int = 20,
+        ns_filter: dict | None = None,
     ) -> FileListResponse:
         """
         List files with pagination and filters.
@@ -425,12 +425,14 @@ class FileService:
             uploaded_by: Filter by uploader
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (default: wip)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             FileListResponse with paginated results
         """
-        query = {"namespace": namespace}
+        query: dict = {}
+        if ns_filter:
+            query.update(ns_filter)
 
         if status:
             query["status"] = status.value

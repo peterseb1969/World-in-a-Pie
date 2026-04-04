@@ -7,7 +7,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_namespace_filter
 from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
@@ -148,7 +148,7 @@ async def upload_file(
     dependencies=[Depends(require_file_storage)]
 )
 async def list_files(
-    namespace: str = Query(..., description="Namespace to query"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     status: FileStatus | None = Query(None, description="Filter by status"),
     content_type: str | None = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
     category: str | None = Query(None, description="Filter by category"),
@@ -160,7 +160,7 @@ async def list_files(
 ):
     """List files with pagination."""
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     service = get_file_service()
 
@@ -174,7 +174,7 @@ async def list_files(
         uploaded_by=uploaded_by,
         page=page,
         page_size=page_size,
-        namespace=namespace,
+        ns_filter=ns_filter.query,
     )
 
 
