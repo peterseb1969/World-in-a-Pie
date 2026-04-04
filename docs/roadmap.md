@@ -39,14 +39,33 @@ Two changes to how API keys and namespaces interact:
 
 **Implementation:**
 - ✅ `wip_auth/fastapi_helpers.py` — `resolve_or_404()` derives namespace from `UserIdentity.raw_claims.namespaces` when caller omits it (f3a990e)
-- Kill unscoped keys: the enforcement point is **Registry's `_resolve_permission()` in `components/registry/src/registry/api/grants.py`**, not `check_namespace_access()` in wip-auth (which is never called in production — the design doc confirms this). Changes needed in `_resolve_permission()` to reject `namespaces: None` instead of falling through to group grants.
-- `config/api-keys.dev.json` — add explicit `namespaces` to all keys
-- `create-app-project.sh` — scaffold should generate a namespace-scoped key per app
-- All component API endpoints that default `namespace=None` — use the derived namespace
-- CASE-03 (filed by AuthorAssist APP-YAC) is the concrete bug report that exposed this gap
+- ✅ Kill unscoped keys: `_resolve_permission()` in `grants.py` now returns "none" for non-privileged keys with `namespaces=None` (1e3f508). Privileged groups (`wip-admins`, `wip-services`) bypass this. `wip-services` also added to privileged group check on internal service-to-service endpoints.
+- ✅ `config/api-keys.dev.json` — updated with namespace-scoped example key (e4eacc8)
+- ✅ Startup warning: `wip_auth/config.py` logs warning for misconfigured keys (31841c2)
+- ✅ Migration guide: `docs/migration-unscoped-api-keys.md`
+- `create-app-project.sh` — scaffold should generate a namespace-scoped key per app (needs runtime API key management)
+- Exhaustive doc update (item 3 above) — still pending
 
 - Related: CASE-03, CASE-01, CASE-02
 - Depends on: Auth Phase 2 backend (done)
+
+### Cross-Namespace Read Mode ("All Namespaces")
+
+Every list/read endpoint requires `namespace` as mandatory. The Console's "All namespaces" mode has no server-side support — admin UIs cannot query across namespaces.
+
+**The rule:** "All" is not a special namespace — it's a permission check. If the identity has access, all accessible namespaces can be queried.
+
+**Three cases:**
+1. **Admin / all-namespace access** — omit namespace filter entirely
+2. **Key scoped to N of M namespaces** — filter to accessible subset (`$in` query)
+3. **Single-namespace key** — current behavior, unchanged
+
+**Implementation:** A `get_accessible_namespaces(identity) -> list[str] | None` helper in `wip_auth` (where `None` = admin/all). Each endpoint uses this to conditionally build its MongoDB namespace filter. Affects all services: def-store, template-store, document-store, ontology.
+
+**Design question:** Efficiency for case 2 — MongoDB `$in` on namespace list is simplest and index-friendly for reasonable N. Cross-namespace pagination works naturally with `$in` + compound sort. Parallel-merge and post-filter are alternatives but add complexity.
+
+- Related: CASE-07 (immediate symptom), CASE-08 (full design)
+- Depends on: Namespace-Scoped API Keys (above)
 
 ### Gap: No Runtime API Key Management
 
