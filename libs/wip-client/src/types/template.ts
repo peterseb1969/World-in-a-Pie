@@ -188,3 +188,45 @@ export interface ValidateTemplateResponse {
   warnings: Array<{ field: string; code: string; message: string }>
   will_also_activate?: string[]
 }
+
+export interface TemplateUpdateResponse {
+  template_id: string
+  value: string
+  version: number
+  is_new_version: boolean
+  previous_version?: number
+}
+
+export interface ActivationDetail {
+  template_id: string
+  value: string
+  status: string
+}
+
+export interface ActivateTemplateResponse {
+  activated: string[]
+  activation_details: ActivationDetail[]
+  total_activated: number
+  errors: Array<{ field: string; code: string; message: string }>
+  warnings: Array<{ field: string; code: string; message: string }>
+}
+
+export interface CascadeResult {
+  value: string
+  old_template_id: string
+  new_template_id?: string
+  new_version?: number
+  status: string
+  error?: string
+}
+
+export interface CascadeResponse {
+  parent_template_id: string
+  parent_value: string
+  parent_version: number
+  total: number
+  updated: number
+  unchanged: number
+  failed: number
+  results: CascadeResult[]
+}

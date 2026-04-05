@@ -1,6 +1,6 @@
 {
   "name": "@wip/client",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "TypeScript client library for WIP (World In a Pie) services",
   "type": "module",

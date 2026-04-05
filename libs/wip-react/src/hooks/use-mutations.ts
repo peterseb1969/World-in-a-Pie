@@ -10,6 +10,7 @@ import type {
   DeprecateTermRequest,
   CreateTemplateRequest,
   UpdateTemplateRequest,
+  ActivateTemplateResponse,
   CreateDocumentRequest,
   FileUploadMetadata,
   FileEntity,
@@ -198,7 +199,7 @@ export function useDeleteTemplate(
 }
 
 export function useActivateTemplate(
-  options?: Omit<UseMutationOptions<{ activated: string[] }, Error, { id: string; namespace: string; dry_run?: boolean }>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<ActivateTemplateResponse, Error, { id: string; namespace: string; dry_run?: boolean }>, 'mutationFn'>,
 ) {
   const client = useWipClient()
   const queryClient = useQueryClient()

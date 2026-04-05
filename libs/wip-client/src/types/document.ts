@@ -67,6 +67,18 @@ export interface CreateDocumentRequest {
   synonyms?: Array<Record<string, unknown>>
 }
 
+export interface DocumentCreateResponse {
+  document_id: string
+  namespace: string
+  template_id: string
+  template_value?: string
+  identity_hash: string
+  version: number
+  is_new: boolean
+  previous_version?: number
+  warnings: string[]
+}
+
 export interface DocumentQueryParams {
   page?: number
   page_size?: number

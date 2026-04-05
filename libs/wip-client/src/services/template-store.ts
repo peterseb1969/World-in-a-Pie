@@ -7,6 +7,8 @@ import type {
   UpdateTemplateRequest,
   ValidateTemplateRequest,
   ValidateTemplateResponse,
+  TemplateUpdateResponse,
+  ActivateTemplateResponse,
 } from '../types/template.js'
 
 export class TemplateStoreService extends BaseService {
@@ -98,7 +100,7 @@ export class TemplateStoreService extends BaseService {
   async activateTemplate(
     id: string,
     options: { namespace: string; dry_run?: boolean },
-  ): Promise<{ activated: string[] }> {
+  ): Promise<ActivateTemplateResponse> {
     return this.post(`/templates/${id}/activate`, null, options)
   }
 }
