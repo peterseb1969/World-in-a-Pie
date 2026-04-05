@@ -6,23 +6,17 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Near-Term
 
-### HIGH PRIORITY: React Console — Replace Vue Console
+### React Console — Polishing & Improvement
 
-Build a new Console in React (using `@wip/react` hooks and `@wip/client`) with full feature parity to the Vue console plus gaps the Vue version never implemented. The Vue console is deprecated — no further investment in it.
+React Console is live and in polishing/improvement phase. Built with `@wip/react` hooks and `@wip/client`. Includes an integrated Natural Language interface for conversational data queries. The Vue console (`ui/wip-console/`) is deprecated.
 
-**Prerequisites (all done):**
-- ✅ `@wip/react` — 31 mutation hooks covering every `@wip/client` write method (d52ffda)
-- ✅ `@wip/client` — complete API coverage
-- ✅ Cross-namespace read mode — "All namespaces" works server-side (CASE-08, 606c524)
-- ✅ Namespace-scoped API keys enforced
+**Repo:** `../WIP-ReactConsole/` (separate repo, not inside World-in-a-Pie). Vendors `@wip/client`, `@wip/react`, and `@wip/proxy` as tarballs in `libs/`.
 
-**Approach:**
-- Audit Vue console to identify what it does and what's missing
-- Build React console with the complete feature set (Vue parity + gaps)
-- UI: `ui/wip-console/` (Vue, deprecated) → `ui/wip-console-react/` (React, new)
-- Libraries: `libs/wip-react/`, `libs/wip-client/`
-
-**One API gap remaining:** Document update endpoint (`PATCH /documents/{id}`) — see below. Not blocking console start; documents can be created/viewed/archived without it.
+**Remaining polish:**
+- Document update endpoint (`PATCH /documents/{id}`) — see below. Documents can be created/viewed/archived without it.
+- Permission-aware UI (Auth Phase 2 Console UX)
+- Ongoing UX improvements driven by usage
+- **Lib update needed:** `@wip/react` tarball must be rebuilt — `useCreateTerm` now requires `namespace` as second argument (CASE-18)
 
 ### ~~Test Suites Must Cover Non-UUID ID Formats~~ ✅
 
@@ -51,7 +45,6 @@ Two changes to how API keys and namespaces interact:
 - ✅ Startup warning: `wip_auth/config.py` logs warning for misconfigured keys (31841c2)
 - ✅ Migration guide: `docs/migration-unscoped-api-keys.md`
 - `create-app-project.sh` — scaffold should generate a namespace-scoped key per app (needs runtime API key management)
-- Exhaustive doc update (item 3 above) — still pending
 
 - Related: CASE-03, CASE-01, CASE-02
 - Depends on: Auth Phase 2 backend (done)
@@ -243,16 +236,11 @@ Make services independently deployable across multiple hosts. 80% ready — all 
 - Design: `docs/design/distributed-deployment.md`
 - Status: Phase 1-2 complete, Phase 3 pending
 
-### Natural Language Interface — Standalone Deployment
+### ~~Natural Language Interface~~ ✅
 
-Conversational data query UI as a standalone deployable service (beyond the per-app scaffold). BYOK model, instance-wide NL service across all namespaces and templates.
+**Complete.** Integrated into the React Console as a built-in conversational data query interface. The standalone deployment option is no longer needed.
 
 - Design: `docs/design/natural-language-interface.md`
-- Depends on: NL Query Scaffold (done)
-
-### `/init-nl-interface` Command — Data Model Snapshot
-
-Forced refresh command that reads all templates, field names, terminology values, and document counts. Builds the Claude's working memory of the data model, ensuring complete answers regardless of prior context.
 
 ### Deterministic SQL Dashboard App
 
@@ -304,7 +292,7 @@ All feature designs live in `docs/design/`. Status of each:
 | `reference-fields.md` | Phase 1-2 complete, doc-to-doc references pending |
 | `distributed-deployment.md` | Phase 1-2 complete, Phase 3 pending |
 | `wip-tools-cli.md` | Partially implemented (`WIP-Toolkit/`) |
-| `natural-language-interface.md` | Planning |
+| `natural-language-interface.md` | Implemented (integrated into React Console) |
 | `distributable-app-format.md` | Specification only |
 | `namespace-strategy.md` | Guide (no implementation needed) |
 | `authentication-authorization.md` | Phase 1 + 1.5 + 2 backend + 3 complete. Phase 2 Console UX remaining. |
