@@ -120,8 +120,8 @@ class BrowseEntriesResponse(BaseModel):
 class RegisterKeyItem(StrictModel):
     """Request model for registering a composite key (reserve + activate in one step)."""
 
-    namespace: str = Field(default="wip", description="Namespace")
-    entity_type: str = Field(default="terms", description="Entity type")
+    namespace: str = Field(..., description="Namespace")
+    entity_type: str = Field(..., description="Entity type")
     entry_id: str | None = Field(None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
     identity_values: dict[str, Any] | None = Field(
@@ -330,8 +330,8 @@ class LookupByIdItem(StrictModel):
 class LookupByKeyItem(StrictModel):
     """Request model for looking up by composite key."""
 
-    namespace: str = Field(default="wip", description="Namespace to search in")
-    entity_type: str = Field(default="terms", description="Entity type to search in")
+    namespace: str = Field(..., description="Namespace to search in")
+    entity_type: str = Field(..., description="Entity type to search in")
     composite_key: dict[str, Any] = Field(..., description="Composite key to look up")
     search_synonyms: bool = Field(default=True, description="Also search in synonyms")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
@@ -387,6 +387,8 @@ class ResolveItem(StrictModel):
 
     composite_key: dict[str, Any] | None = Field(None, description="Synonym composite key to resolve")
     entry_id: str | None = Field(None, description="Canonical entry ID to verify")
+    namespace: str | None = Field(None, description="Namespace filter for composite key resolution")
+    entity_type: str | None = Field(None, description="Entity type filter for composite key resolution")
     include_statuses: list[str] | None = Field(None, description="Status filter. Default: active only.")
 
 

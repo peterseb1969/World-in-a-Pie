@@ -410,10 +410,14 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists by composite key hash (dedup)
+            # Check if exists by composite key hash (dedup) — scoped to namespace+entity_type
             if key_hash:
                 existing = existing_by_hash.get(key_hash)
-                if existing:
+                if (
+                    existing
+                    and existing.namespace == item.namespace
+                    and existing.entity_type == item.entity_type
+                ):
                     results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="already_exists",
@@ -1062,13 +1066,18 @@ async def resolve_synonyms(
             # Path 2: Composite key resolution (synonym or primary key)
             if not entry and item.composite_key:
                 key_hash = HashService.compute_composite_key_hash(item.composite_key)
-                entry = await RegistryEntry.find_one({
+                query = {
                     "$or": [
                         {"primary_composite_key_hash": key_hash},
                         {"synonyms.composite_key_hash": key_hash},
                     ],
                     "status": status_filter,
-                })
+                }
+                if item.namespace:
+                    query["namespace"] = item.namespace
+                if item.entity_type:
+                    query["entity_type"] = item.entity_type
+                entry = await RegistryEntry.find_one(query)
 
             if entry:
                 results.append(ResolveResponse(
