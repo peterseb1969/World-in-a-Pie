@@ -42,7 +42,7 @@ Two changes to how API keys and namespaces interact:
 
 **2. Single-namespace key convenience.** When an API key is scoped to exactly one namespace and the caller omits the `namespace` query parameter, the server should derive it from the key's scope. This enables synonym resolution without requiring the caller to pass `namespace` on every request. Multi-namespace keys must still provide `namespace` explicitly (ambiguous otherwise → 400).
 
-**3. Exhaustive doc update.** This behavior affects how APP-YACs design applications going forward. Every doc that touches namespaces, API keys, synonym resolution, or app setup must be updated to describe the implicit namespace derivation from single-namespace keys. Includes: `api-conventions.md`, `uniqueness-and-identity.md`, `universal-synonym-resolution.md`, `app-setup-guide.md`, `synonym-resolution-gaps.md`, CLAUDE.md gene pool, MCP resource `wip://conventions`, `create-app-project.sh` scaffold output.
+**3. ~~Exhaustive doc update.~~** ✅ Complete (2026-04-05). All 8 documents updated: `api-conventions.md`, `uniqueness-and-identity.md`, `universal-synonym-resolution.md`, `WIP_AppSetup_Guide.md`, `synonym-resolution-gaps.md`, CLAUDE.md gene pool, MCP resource `wip://conventions`, `create-app-project.sh` scaffold output.
 
 **Implementation:**
 - ✅ `wip_auth/fastapi_helpers.py` — `resolve_or_404()` derives namespace from `UserIdentity.raw_claims.namespaces` when caller omits it (f3a990e)

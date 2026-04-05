@@ -164,6 +164,8 @@ When using a synonym in an API call, the developer provides a string that the re
 
 Documents and files are not typically referenced by synonym string in API calls — they use canonical IDs or are found by search. Their synonyms exist for migration portability.
 
+**Where `<current>` namespace comes from:** The namespace for composite key construction is determined in order: (1) explicitly from the `namespace` query parameter, (2) implicitly from single-namespace API keys (when `namespace` is omitted, the server derives it from the key's sole namespace scope), (3) if neither source is available, resolution is skipped and the raw value passes through to downstream validation.
+
 ### Documents without identity fields
 
 Most documents don't have identity fields — they're one-off records that received a unique canonical ID from Registry at creation. These have no natural human-readable key. For migration portability, a random UUID7 is assigned as the `portable_id` component. This UUID is meaningless to humans but stable across export/import: it survives namespace rewriting (only the `ns` component changes) and maps to whatever new canonical ID the target Registry assigns.
@@ -188,8 +190,9 @@ Client sends request with ID "X"
   → Is "X" in canonical format? (matches entity prefix pattern, e.g., TPL-*, DOC-*, TERM-*)
     → Yes: proceed as today (zero overhead)
     → No: parse synonym string
+      → Determine namespace: from `namespace` parameter, or from single-namespace API key, or skip resolution (pass raw value through)
       → Contains ":"? → split into parent:child (term notation)
-      → Build composite key from endpoint context (entity type) + current namespace
+      → Build composite key from endpoint context (entity type) + determined namespace
       → Check resolution cache (TTL 5 min)
       → Cache miss: Registry lookup by composite_key_hash
         → Found: cache result, substitute canonical ID, proceed

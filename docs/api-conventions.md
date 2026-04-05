@@ -275,7 +275,7 @@ COUNTRY:Germany    → resolves to the term "Germany" in terminology "COUNTRY"
 
 ### Best-Effort Semantics
 
-Resolution is **best-effort** at the API boundary. If the Registry is unreachable or the synonym is not found, the raw value passes through unchanged. This means:
+Resolution is **best-effort** at the API boundary. If the Registry is unreachable, the synonym is not found, or no namespace context can be determined (multi-namespace key with `namespace` omitted), the raw value passes through unchanged. Namespace context comes from the `namespace` parameter, or implicitly from single-namespace API keys. This means:
 
 - Existing code using canonical UUIDs continues to work unchanged
 - Services degrade gracefully when the Registry is down
@@ -320,7 +320,9 @@ All endpoints (except `/health`) require authentication:
 - **JWT:** `Authorization: Bearer <token>` header
 - **Dual mode:** Either method accepted (configured via `WIP_AUTH_MODE`)
 
-**Namespace scoping:** API keys for non-privileged accounts must include a `namespaces` field listing accessible namespace prefixes. Keys without namespace scoping that are not in `wip-admins` or `wip-services` groups will receive 403 on all namespace-scoped operations. See `docs/authentication.md` for details.
+**Namespace scoping:** API keys for non-privileged accounts must include a `namespaces` field listing accessible namespace prefixes. Keys without namespace scoping that are not in `wip-admins` or `wip-services` groups have no access — all namespaces appear as 404 (the namespace's existence is not leaked). See `docs/authentication.md` for details.
+
+**Implicit namespace derivation:** When an API key is scoped to exactly one namespace and the caller omits the `namespace` query parameter, the server derives namespace from the key's scope automatically. This enables synonym resolution without requiring `namespace` on every request. Multi-namespace keys must still provide `namespace` explicitly; omitting it means synonym resolution cannot determine context and raw values pass through unresolved.
 
 ---
 

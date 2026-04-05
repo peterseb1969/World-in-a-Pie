@@ -36,7 +36,9 @@ claude          # Launch Claude Code
 - [ ] WIP running (standard or full preset) on the target machine
 - [ ] Existing data model bootstrapped (if building an app that integrates with existing apps)
 - [ ] Some existing data present (the new app may need to reference it)
-- [ ] API key available (default dev key: `dev_master_key_for_testing`)
+- [ ] API key available — two keys serve different purposes:
+  - **MCP/admin key:** `dev_master_key_for_testing` (privileged, wip-admins group, used by MCP server for cross-namespace operations)
+  - **App runtime key:** namespace-scoped key for your app (see "API Key" section in the generated CLAUDE.md). Single-namespace keys enable automatic namespace derivation — no `namespace` parameter needed in app API calls.
 - [ ] All services healthy: `curl -k https://localhost:8443/api/registry/namespaces` (also check `/api/def-store/terminologies`, `/api/template-store/templates`, `/api/document-store/documents`)
 
 ### 2. Directory Structure

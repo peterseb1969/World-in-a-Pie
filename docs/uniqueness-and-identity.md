@@ -290,7 +290,7 @@ While the synonym infrastructure (above) enables any composite key to resolve to
 Every WIP service endpoint that accepts an entity ID will resolve it automatically:
 
 1. **UUID format?** → pass through unchanged (no Registry call)
-2. **Non-UUID string?** → build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
+2. **Non-UUID string?** → determine namespace (from `namespace` parameter, or implicitly from single-namespace API keys), build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
 3. **Resolution fails?** → pass the raw value through unchanged (best-effort); downstream validation catches invalid IDs
 
 This is implemented in `wip-auth`'s `resolve_entity_id()` function, called at the API boundary before business logic runs.
@@ -315,6 +315,8 @@ This registration is fire-and-forget — it runs asynchronously and failures don
 
 ```bash
 # These are equivalent — both resolve to the same template
+# (requires namespace context: either pass namespace explicitly,
+# or use a single-namespace API key for automatic derivation)
 POST /api/document-store/documents
 {"template_id": "019abc12-def3-7abc-...", "data": {...}}
 

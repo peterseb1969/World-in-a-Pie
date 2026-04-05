@@ -148,6 +148,22 @@ list or modify a namespace's data, but not to reference its terms.
 
 Reference validation runs at document creation, not template creation.
 
+### API Key Namespace Scoping
+Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
+namespace scoping that are not in `wip-admins` or `wip-services` get no access
+(all namespaces appear as 404).
+
+**Single-namespace keys** get automatic namespace derivation: when the caller
+omits the `namespace` parameter, WIP derives it from the key's single namespace.
+This means synonym resolution works without passing `namespace` on every request.
+
+**Multi-namespace keys** must provide `namespace` explicitly on every call.
+Omitting it means WIP cannot determine context for synonym resolution, and raw
+values pass through unresolved.
+
+This matters for apps: use a single-namespace key scoped to your dev namespace,
+and you can skip the `namespace` parameter on all API and MCP tool calls.
+
 ## Ontology Relationships
 Terms can be connected via typed relationships to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,

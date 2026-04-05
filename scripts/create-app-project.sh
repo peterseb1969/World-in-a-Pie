@@ -474,7 +474,7 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
    python tools/dev-delete.py --namespace $DEV_NAMESPACE --force
    \`\`\`
 
-**Important:** All MCP tool calls that accept a \`namespace\` parameter should use \`$DEV_NAMESPACE\` during development.
+**Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly. Your app's runtime key (scoped to one namespace) gets automatic namespace derivation — no \`namespace\` parameter needed in app code.
 
 ## API Key
 
@@ -497,6 +497,8 @@ Add this to WIP's \`config/api-keys.dev.json\` and use the key value in your app
 \`\`\`bash
 WIP_API_KEY=generate_a_real_key
 \`\`\`
+
+When your app uses a key scoped to a single namespace (like the one above), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call. If your key covers multiple namespaces, you must provide \`namespace\` explicitly.
 
 See WIP's \`docs/migration-unscoped-api-keys.md\` for details on privileged vs scoped keys.
 

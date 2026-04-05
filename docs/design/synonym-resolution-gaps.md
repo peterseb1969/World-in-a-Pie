@@ -61,6 +61,12 @@ The design calls for auto-synonym registration at entity creation time. Current 
 
 These registrations are best-effort (non-blocking, fire-and-forget). If the Registry is unavailable at creation time, the auto-synonym silently doesn't get created. The `backfill-synonyms` toolkit command exists as a safety net.
 
+### Implicit namespace derivation (2026-04-04)
+
+API-boundary resolution now benefits from implicit namespace derivation: when the caller omits the `namespace` parameter and the API key is scoped to exactly one namespace, the namespace is derived automatically from the key's scope. This closes the usability gap where synonym resolution required explicit `namespace` even when the key's scope made it unambiguous. Multi-namespace keys must still provide `namespace` explicitly.
+
+**Important:** This derivation is API-boundary only. It does NOT propagate to template-store internal `_resolve_to_*` methods documented below — those still require explicit namespace from the template's own metadata.
+
 ---
 
 ## Resolved Gaps (2026-04-04, commit 3dece58)
