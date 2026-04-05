@@ -89,12 +89,12 @@ export class DefStoreService extends BaseService {
   async createTerm(
     terminologyId: string,
     data: CreateTermRequest,
-    options?: { namespace?: string },
+    options: { namespace: string },
   ): Promise<BulkResultItem> {
     const resp = await this.post<BulkResponse>(
       `/terminologies/${terminologyId}/terms`,
       [data],
-      options?.namespace ? { namespace: options.namespace } : undefined,
+      { namespace: options.namespace },
     )
     const result = resp.results[0]
     if (result.status === 'error') {
@@ -110,7 +110,7 @@ export class DefStoreService extends BaseService {
   async createTerms(
     terminologyId: string,
     terms: CreateTermRequest[],
-    options?: { batch_size?: number; registry_batch_size?: number; namespace?: string },
+    options: { namespace: string; batch_size?: number; registry_batch_size?: number },
   ): Promise<BulkResponse> {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options)
   }
@@ -161,10 +161,10 @@ export class DefStoreService extends BaseService {
 
   async importOntology(
     data: Record<string, unknown>,
-    options?: {
+    options: {
+      namespace: string
       terminology_value?: string
       terminology_label?: string
-      namespace?: string
       prefix_filter?: string
       include_deprecated?: boolean
       max_synonyms?: number
