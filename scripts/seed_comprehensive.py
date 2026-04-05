@@ -188,19 +188,19 @@ class ServiceClient:
         resp.raise_for_status()
         return resp.json()
 
-    def post(self, path: str, data: dict | list) -> dict:
+    def post(self, path: str, data: dict | list, params: dict | None = None) -> dict:
         """HTTP POST request."""
         start = time.perf_counter()
-        resp = self.session.post(f"{self.base_url}{path}", json=data, timeout=60)
+        resp = self.session.post(f"{self.base_url}{path}", json=data, params=params, timeout=60)
         elapsed = (time.perf_counter() - start) * 1000
         self._record_call("POST", path, elapsed, resp.status_code)
         resp.raise_for_status()
         return resp.json()
 
-    def put(self, path: str, data: dict | list) -> dict:
+    def put(self, path: str, data: dict | list, params: dict | None = None) -> dict:
         """HTTP PUT request."""
         start = time.perf_counter()
-        resp = self.session.put(f"{self.base_url}{path}", json=data, timeout=30)
+        resp = self.session.put(f"{self.base_url}{path}", json=data, params=params, timeout=30)
         elapsed = (time.perf_counter() - start) * 1000
         self._record_call("PUT", path, elapsed, resp.status_code)
         resp.raise_for_status()
@@ -444,6 +444,7 @@ class WIPSeeder:
                         bulk_result = self.def_store.post(
                             f"/api/def-store/terminologies/{terminology_id}/terms",
                             bulk_terms,
+                            params={"namespace": self.namespace},
                         )
 
                         for r in bulk_result.get("results", []):
@@ -475,6 +476,7 @@ class WIPSeeder:
                             result = self.def_store.post(
                                 f"/api/def-store/terminologies/{terminology_id}/terms",
                                 [term_data],
+                                params={"namespace": self.namespace},
                             )
                             self.created_term_ids[value][t["value"]] = result["results"][0]["id"]
                             stats["terms"] += 1

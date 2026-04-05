@@ -86,6 +86,7 @@ export function useDeleteTerminology(
 
 export function useCreateTerm(
   terminologyId: string,
+  namespace: string,
   options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateTermRequest>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
@@ -93,7 +94,7 @@ export function useCreateTerm(
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: (data: CreateTermRequest) => client.defStore.createTerm(terminologyId, data),
+    mutationFn: (data: CreateTermRequest) => client.defStore.createTerm(terminologyId, data, { namespace }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
