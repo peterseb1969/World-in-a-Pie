@@ -315,8 +315,15 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
-    # Phase 0: Batch-validate that all referenced namespaces exist
+    # Phase 0a: Reject mixed namespaces — all items in a batch must share the same namespace
     unique_namespaces = {item.namespace for item in items}
+    if len(unique_namespaces) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"All items in a register batch must share the same namespace. Got: {sorted(unique_namespaces)}"
+        )
+
+    # Phase 0b: Batch-validate that all referenced namespaces exist
     existing_ns_docs = await Namespace.find(
         {"prefix": {"$in": list(unique_namespaces)}, "status": "active"}
     ).to_list()
@@ -372,6 +379,7 @@ async def register_keys(
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
+    seen_in_batch: dict[str, tuple[int, str]] = {}  # key_hash → (first_index, entry_id)
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -429,6 +437,20 @@ async def register_keys(
                     exists_count += 1
                     continue
 
+                # Intra-batch dedup: second item with same hash gets already_exists
+                if key_hash in seen_in_batch:
+                    first_entry_id = seen_in_batch[key_hash]
+                    results[i] = RegisterKeyResponse(
+                        input_index=i,
+                        status="already_exists",
+                        registry_id=first_entry_id,
+                        namespace=item.namespace,
+                        entity_type=item.entity_type,
+                        identity_hash=id_hash,
+                    )
+                    exists_count += 1
+                    continue
+
             # Generate or use provided ID
             if item.entry_id:
                 entry_id = item.entry_id
@@ -461,6 +483,8 @@ async def register_keys(
             entry.rebuild_search_values()
             entries_to_insert.append(entry)
             insert_indices.append(i)
+            if key_hash:
+                seen_in_batch[key_hash] = entry_id
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
