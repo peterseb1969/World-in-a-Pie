@@ -565,6 +565,7 @@ class TemplateService:
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version
         new_template = Template(
+            namespace=original.namespace,
             template_id=original.template_id,
             value=new_value,
             label=request.label if request.label is not None else original.label,
@@ -1143,6 +1144,7 @@ class TemplateService:
                 # Stable ID: reuse child's template_id (no Registry call)
                 # Create new child version with updated extends pointer
                 new_child = Template(
+                    namespace=child.namespace,
                     template_id=child.template_id,
                     value=child.value,
                     label=child.label,

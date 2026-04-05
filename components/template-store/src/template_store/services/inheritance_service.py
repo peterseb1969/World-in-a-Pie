@@ -59,6 +59,7 @@ class InheritanceService:
         # Create resolved template (copy of original with resolved data)
         return Template(
             id=template.id,
+            namespace=template.namespace,
             template_id=template.template_id,
             value=template.value,
             label=template.label,
