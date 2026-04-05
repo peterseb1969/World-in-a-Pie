@@ -110,8 +110,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                        'namespace': {'type': 'string',
                                                                      'description': 'Namespace for '
                                                                                     'the '
-                                                                                    'terminology',
-                                                                     'default': 'wip'},
+                                                                                    'terminology'},
                                                        'case_sensitive': {'type': 'boolean',
                                                                           'description': 'Whether '
                                                                                          'term '
@@ -220,8 +219,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                          'namespace': {'type': 'string',
                                                                        'description': 'Namespace '
                                                                                       'for the '
-                                                                                      'document',
-                                                                       'default': 'wip'},
+                                                                                      'document'},
                                                          'data': {'additionalProperties': True,
                                                                   'type': 'object',
                                                                   'description': 'Document '
@@ -287,8 +285,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                          'namespace': {'type': 'string',
                                                                        'description': 'Namespace '
                                                                                       'for the '
-                                                                                      'template',
-                                                                       'default': 'wip'},
+                                                                                      'template'},
                                                          'extends': {'type': 'string',
                                                                      'description': 'Parent '
                                                                                     'template ID '
@@ -1231,6 +1228,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
 
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
+    'cancel_replay': """Cancel a replay session and delete its NATS stream.""",
     'create_document': """Create a document (an instance of a template).
 
 Term fields: submit the human-readable value (e.g., "United Kingdom").
@@ -1244,7 +1242,7 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string, default: "wip"): Namespace for the document
+namespace (string): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
@@ -1258,7 +1256,7 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string, default: "wip"): Namespace for the document
+namespace (string): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
@@ -1290,7 +1288,7 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string, default: "wip"): Namespace for the template
+namespace (string): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
@@ -1389,7 +1387,7 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string, default: "wip"): Namespace for the template
+namespace (string): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
@@ -1485,7 +1483,7 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string, default: "wip"): Namespace for the terminology
+namespace (string): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
@@ -1505,7 +1503,7 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string, default: "wip"): Namespace for the terminology
+namespace (string): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
@@ -1536,10 +1534,50 @@ translations (array of object): Translations
     description (string): Translated description
 metadata (object): Custom metadata
 created_by (string): User or system creating this term""",
+    'get_replay_status': """Get the status of a replay session.""",
+    'get_template_fields': """Get a clean summary of a template's fields for querying or document creation.
+
+Returns template_id, field names, types, mandatory flags, and references.
+Use this to understand what data a template holds before querying.""",
+    'import_documents_csv': """Import documents from a CSV/XLSX file into a template.
+
+Reads a local CSV/XLSX file, maps columns to template fields,
+and creates documents in bulk. Auto-maps columns if mapping is omitted.
+Term fields: use human-readable values in the CSV.""",
     'import_terminology': """Import a terminology with terms from JSON data.
 
 The import format matches the export format from export_terminology.""",
-    'query_documents': """Query documents with complex filters.
+    'list_report_tables': """List available PostgreSQL reporting tables and their schemas.
 
-Consult the template's fields to know what's filterable.""",
+Returns doc_* tables (one per template) plus terminologies, terms, term_relationships.
+Use this before run_report_query to understand available tables and columns.""",
+    'query_by_template': """Query documents by template value with easy field filtering.
+
+Resolves template_value → template_id automatically.
+Field names auto-prefixed with "data." — write "country" not "data.country".
+field_filters: [{"field": "country", "operator": "eq", "value": "CH"}]
+Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.""",
+    'query_documents': """Query documents with complex filters (low-level). Prefer query_by_template.
+
+filters.filters: [{field: "data.country", operator: "eq", value: "CH"}]
+Operators: eq, ne, gt, gte, lt, lte, in, nin, exists, regex.
+Field names MUST include "data." prefix for document data fields.
+Use query_by_template for easier querying (auto-prefixes fields).""",
+    'run_report_query': """Execute a read-only SQL query against the PostgreSQL reporting database.
+
+For cross-template JOINs, aggregations, and analytics.
+Tables: doc_{template_value} (e.g., doc_patient).
+Term fields: {field} (value) + {field}_term_id columns.
+Use $1, $2 for parameter binding. Read-only: no INSERT/UPDATE/DELETE.
+Timeout: 30s default. Max rows: 1000 default.""",
+    'start_replay': """Start replaying stored documents as NATS events.
+
+For onboarding new consumers or backfilling data.
+Events go to a separate NATS stream with metadata.replay=true.
+Use get_replay_status to track progress, cancel_replay to stop.""",
+    'upload_file': """Upload a file to WIP from a local path.
+
+Reads a file from disk and uploads it to WIP's MinIO-backed file storage.
+Supports any file type. Returns file_id for use in document file fields.
+Tags are comma-separated (e.g., "receipt,2024,tax").""",
 }
