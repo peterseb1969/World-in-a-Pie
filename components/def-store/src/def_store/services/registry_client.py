@@ -88,6 +88,7 @@ class RegistryClient:
             "namespace": namespace,
             "entity_type": "terminologies",
             "composite_key": {
+                "ns": namespace,
                 "value": value,
                 "label": label
             },
@@ -149,6 +150,7 @@ class RegistryClient:
             "namespace": namespace,
             "entity_type": "terms",
             "composite_key": {
+                "ns": namespace,
                 "terminology_id": terminology_id,
                 "value": value
             },
@@ -230,6 +232,7 @@ class RegistryClient:
                         "namespace": namespace,
                         "entity_type": "terms",
                         "composite_key": {
+                            "ns": namespace,
                             "terminology_id": terminology_id,
                             "value": term["value"]
                         },
@@ -288,7 +291,7 @@ class RegistryClient:
         Raises:
             RegistryError: If operation fails
         """
-        composite_key = {"value": new_value}
+        composite_key = {"ns": namespace, "value": new_value}
         if additional_fields:
             composite_key.update(additional_fields)
 
@@ -436,7 +439,7 @@ class RegistryClient:
         Returns:
             Registry ID if found, None otherwise
         """
-        composite_key = {"value": value}
+        composite_key = {"ns": namespace, "value": value}
         if additional_fields:
             composite_key.update(additional_fields)
 
