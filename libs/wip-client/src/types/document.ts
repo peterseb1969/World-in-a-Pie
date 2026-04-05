@@ -58,13 +58,13 @@ export interface Document {
 export interface CreateDocumentRequest {
   template_id: string
   template_version?: number
+  document_id?: string
+  version?: number
   namespace: string
   data: Record<string, unknown>
   created_by?: string
-  metadata?: {
-    source_system?: string
-    custom?: Record<string, unknown>
-  }
+  metadata?: Record<string, unknown>
+  synonyms?: Array<Record<string, unknown>>
 }
 
 export interface DocumentQueryParams {
@@ -78,7 +78,9 @@ export interface DocumentQueryParams {
   namespace?: string
 }
 
-export type DocumentListResponse = PaginatedResponse<Document>
+export interface DocumentListResponse extends PaginatedResponse<Document> {
+  next_cursor?: string
+}
 
 export type QueryFilterOperator = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'exists' | 'regex'
 
@@ -124,6 +126,7 @@ export interface DocumentValidationResponse {
 
 export interface ValidateDocumentRequest {
   template_id: string
+  namespace: string
   data: Record<string, unknown>
 }
 

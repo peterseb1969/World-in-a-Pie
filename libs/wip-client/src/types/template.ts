@@ -145,6 +145,8 @@ export interface CreateTemplateRequest {
   value: string
   label: string
   description?: string
+  template_id?: string
+  version?: number
   namespace: string
   extends?: string
   extends_version?: number
@@ -154,6 +156,8 @@ export interface CreateTemplateRequest {
   metadata?: Partial<TemplateMetadata>
   reporting?: Partial<ReportingConfig>
   created_by?: string
+  validate_references?: boolean
+  status?: string
 }
 
 export interface UpdateTemplateRequest {
