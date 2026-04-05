@@ -18,6 +18,7 @@ export interface NamespaceStats {
   prefix: string
   description: string
   isolation_mode: string
+  deletion_mode: string
   status: string
   entity_counts: Record<string, number>
 }

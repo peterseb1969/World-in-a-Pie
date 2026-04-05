@@ -60,6 +60,9 @@ export interface FieldDefinition {
   array_file_config?: FileFieldConfig
   validation?: FieldValidation
   semantic_type?: SemanticType
+  include_subtypes?: boolean
+  inherited?: boolean
+  inherited_from?: string
   metadata: Record<string, unknown>
 }
 
@@ -179,4 +182,5 @@ export interface ValidateTemplateResponse {
   template_id: string
   errors: Array<{ field: string; code: string; message: string }>
   warnings: Array<{ field: string; code: string; message: string }>
+  will_also_activate?: string[]
 }

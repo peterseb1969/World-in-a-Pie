@@ -151,6 +151,7 @@ export interface ValidateValueResponse {
   terminology_value: string
   value: string
   matched_term?: Term
+  matched_via?: 'value' | 'alias'
   suggestion?: Term
   error?: string
 }

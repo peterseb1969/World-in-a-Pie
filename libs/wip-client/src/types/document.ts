@@ -37,12 +37,14 @@ export interface Document {
   document_id: string
   namespace: string
   template_id: string
+  template_value?: string
   template_version: number
   identity_hash: string
   version: number
   data: Record<string, unknown>
   term_references: TermReference[]
   references: Reference[]
+  file_references: Array<Record<string, unknown>>
   status: DocumentStatus
   created_at: string
   created_by: string | null
@@ -115,6 +117,9 @@ export interface DocumentValidationResponse {
   warnings: string[]
   identity_hash: string | null
   template_version: number | null
+  term_references?: Array<Record<string, unknown>>
+  references?: Array<Record<string, unknown>>
+  file_references?: Array<Record<string, unknown>>
 }
 
 export interface ValidateDocumentRequest {
