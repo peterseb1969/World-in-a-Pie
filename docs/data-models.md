@@ -58,7 +58,7 @@ class Terminology(BaseModel):
     """A controlled vocabulary containing related terms."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     terminology_id: str = Field(
@@ -145,7 +145,7 @@ class Term(BaseModel):
     """An individual concept within a terminology."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     term_id: str = Field(
@@ -330,7 +330,7 @@ class Template(BaseModel):
     """A schema definition that documents must conform to."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     template_id: str = Field(
@@ -687,7 +687,7 @@ class Document(BaseModel):
     """A validated document conforming to a template."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     document_id: str = Field(
