@@ -4,6 +4,7 @@ export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
+  deletion_mode: 'retain' | 'full'
   allowed_external_refs: string[]
   id_config: Record<string, unknown>
   status: 'active' | 'archived' | 'deleted'
@@ -32,9 +33,19 @@ export interface CreateNamespaceRequest {
   prefix: string
   description?: string
   isolation_mode?: 'open' | 'strict'
+  deletion_mode?: 'retain' | 'full'
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>
   created_by?: string
+}
+
+export interface UpdateNamespaceRequest {
+  description?: string
+  isolation_mode?: 'open' | 'strict'
+  deletion_mode?: 'retain' | 'full'
+  allowed_external_refs?: string[]
+  id_config?: Record<string, IdAlgorithmConfig>
+  updated_by?: string
 }
 
 export interface RegistryEntry {

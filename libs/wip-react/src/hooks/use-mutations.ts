@@ -17,8 +17,8 @@ import type {
   CreateRelationshipRequest,
   DeleteRelationshipRequest,
   CreateNamespaceRequest,
+  UpdateNamespaceRequest,
   Namespace,
-  IdAlgorithmConfig,
   AddSynonymRequest,
   RemoveSynonymRequest,
   MergeRequest,
@@ -413,12 +413,12 @@ export function useCreateNamespace(
 }
 
 export function useUpdateNamespace(
-  options?: Omit<UseMutationOptions<Namespace, Error, { prefix: string; data: { description?: string; isolation_mode?: 'open' | 'strict'; id_config?: Record<string, IdAlgorithmConfig>; updated_by?: string } }>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<Namespace, Error, { prefix: string; data: UpdateNamespaceRequest }>, 'mutationFn'>,
 ) {
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ prefix, data }: { prefix: string; data: { description?: string; isolation_mode?: 'open' | 'strict'; id_config?: Record<string, IdAlgorithmConfig>; updated_by?: string } }) =>
+    mutationFn: ({ prefix, data }: { prefix: string; data: UpdateNamespaceRequest }) =>
       client.registry.updateNamespace(prefix, data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })

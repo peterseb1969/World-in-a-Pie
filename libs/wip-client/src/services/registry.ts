@@ -3,7 +3,7 @@ import type {
   Namespace,
   NamespaceStats,
   CreateNamespaceRequest,
-  IdAlgorithmConfig,
+  UpdateNamespaceRequest,
   RegistryEntryListResponse,
   RegistryLookupResponse,
   RegistryEntryFull,
@@ -40,12 +40,7 @@ export class RegistryService extends BaseService {
 
   async updateNamespace(
     prefix: string,
-    data: {
-      description?: string
-      isolation_mode?: 'open' | 'strict'
-      id_config?: Record<string, IdAlgorithmConfig>
-      updated_by?: string
-    },
+    data: UpdateNamespaceRequest,
   ): Promise<Namespace> {
     return this.put(`/namespaces/${prefix}`, data)
   }
