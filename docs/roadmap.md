@@ -6,13 +6,15 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ## Highest Priority
 
-### Default Seed Missing System Terminologies
+### ~~Default Seed Missing System Terminologies~~ ✅
 
-WIP requires two system terminologies that are not created by the seed scripts: `_ONTOLOGY_RELATIONSHIP_TYPES` and `_TIME_UNITS`. APP-YACs hit errors when creating ontology relationships or time-based fields because these terminologies don't exist. The seed scripts must create them as part of the default seed data.
+**Complete** (2026-04-06). System terminologies (`_ONTOLOGY_RELATIONSHIP_TYPES`, `_TIME_UNITS`) bootstrap in `ensure_system_terminologies()` was missing `namespace="wip"` on four calls after CASE-18, causing silent failure on fresh databases. Fixed in 9840401.
 
-### Audit: Remove Stale ID Format References (TPL-, TERM-, T-)
+### ~~Audit: Remove Stale ID Format References (TPL-, TERM-, T-)~~ ✅ (Phase 1)
 
-The codebase still contains references to old ID format prefixes (`TPL-`, `TERM-`, `T-`) in docstrings, comments, examples, and documentation. These are from before the Registry-generated ID format and mislead APP-YACs into thinking these are valid ID patterns. Need a comprehensive audit across ALL files — MCP server docstrings, design docs, README files, code comments — to replace with realistic examples (UUIDs or value codes).
+**Phase 1 complete** (2026-04-06). All user-facing references fixed: MCP server docstrings, `@wip/client` README, `@wip/react` README, Vue console placeholders, 14 docs/design docs, 7 source code comment files. API examples now use value codes; configurable-prefix docs use varied prefixes (PROD-0001, LOV-000042). Commit 94334c8.
+
+**Phase 2 remaining:** ~250 references in test files across WIP-Toolkit/tests/, reporting-sync/tests/, mcp-server/tests/, def-store/tests/, document-store/tests/, ingest-gateway/tests/, wip-client/tests/. These are functional test fixtures — not user-facing but inconsistent. Mechanical change, low priority.
 
 ---
 
