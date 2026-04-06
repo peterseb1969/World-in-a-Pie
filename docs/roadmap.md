@@ -4,6 +4,18 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 ---
 
+## Highest Priority
+
+### Default Seed Missing System Terminologies
+
+WIP requires two system terminologies that are not created by the seed scripts: `_ONTOLOGY_RELATIONSHIP_TYPES` and `_TIME_UNITS`. APP-YACs hit errors when creating ontology relationships or time-based fields because these terminologies don't exist. The seed scripts must create them as part of the default seed data.
+
+### Audit: Remove Stale ID Format References (TPL-, TERM-, T-)
+
+The codebase still contains references to old ID format prefixes (`TPL-`, `TERM-`, `T-`) in docstrings, comments, examples, and documentation. These are from before the Registry-generated ID format and mislead APP-YACs into thinking these are valid ID patterns. Need a comprehensive audit across ALL files — MCP server docstrings, design docs, README files, code comments — to replace with realistic examples (UUIDs or value codes).
+
+---
+
 ## Near-Term
 
 ### React Console — Polishing & Improvement
