@@ -1737,6 +1737,32 @@ async def get_document(document_id: str, version: int | None = None) -> str:
 
 
 @mcp.tool()
+async def validate_document(
+    template_id: str, data: dict, namespace: str | None = None
+) -> str:
+    """Validate document data against a template without saving.
+
+    Use this for pre-validation before submission, testing data against templates,
+    or computing an identity hash without creating a document.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        data: The field values to validate (a dict matching the template's fields).
+        namespace: Namespace scope.
+
+    Returns validation result with: valid (bool), errors (list), warnings (list),
+    identity_hash (if valid), and template_version used.
+    """
+    try:
+        data = await get_client().validate_document(
+            template_id=template_id, data=data, namespace=namespace
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def create_document(document: dict, namespace: str | None = None) -> str:
     """Create a document (an instance of a template).
 

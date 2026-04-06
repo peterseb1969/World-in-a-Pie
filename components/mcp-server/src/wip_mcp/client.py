@@ -948,6 +948,20 @@ class WipClient:
             page_size=page_size,
         )
 
+    async def validate_document(
+        self,
+        template_id: str,
+        data: dict,
+        namespace: str | None = None,
+    ) -> dict:
+        """Validate document data against a template without saving."""
+        namespace = self._ns(namespace)
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate",
+            json={"template_id": template_id, "namespace": namespace, "data": data},
+        )
+
     # ========================================================
     # Document-Store: Import
     # ========================================================
