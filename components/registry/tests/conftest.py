@@ -15,7 +15,9 @@ os.environ.setdefault("DATABASE_NAME", "wip_registry_test")
 os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
+from registry.api.api_keys import configure_api_key_management
 from registry.main import app
+from registry.models.api_key import StoredAPIKey
 from registry.models.deletion_journal import DeletionJournal
 from registry.models.entry import RegistryEntry
 from registry.models.grant import NamespaceGrant
@@ -30,7 +32,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey]
     )
 
     # Clean up data from previous test
@@ -38,12 +40,23 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await DeletionJournal.delete_all()
+    await StoredAPIKey.delete_all()
 
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client
 
     # Initialize auth service
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
+
+    # Configure API key management for tests
+    from wip_auth import APIKeyProvider, create_providers_from_config, get_auth_config
+    config = get_auth_config()
+    test_providers = create_providers_from_config(config)
+    for p in test_providers:
+        if isinstance(p, APIKeyProvider):
+            config_key_names = {k.name for k in p._keys}
+            configure_api_key_management(p, config_key_names)
+            break
 
     # Create test namespaces
     await _create_test_namespaces()
