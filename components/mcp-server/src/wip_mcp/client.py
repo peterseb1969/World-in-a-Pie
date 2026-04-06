@@ -128,6 +128,15 @@ class WipClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def _patch(
+        self, base_url: str, path: str, json: Any = None
+    ) -> dict[str, Any]:
+        """PATCH request, return parsed JSON."""
+        client = await self._get_client()
+        resp = await client.patch(f"{base_url}{path}", json=json)
+        resp.raise_for_status()
+        return resp.json()
+
     async def _delete(
         self, base_url: str, path: str, json: Any = None, **params
     ) -> dict[str, Any]:
@@ -1138,6 +1147,51 @@ class WipClient:
             body["namespace"] = namespace
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/search", json=body
+        )
+
+    # ========================================================
+    # API Keys (Registry)
+    # ========================================================
+
+    async def create_api_key(
+        self,
+        name: str,
+        owner: str = "system",
+        groups: list[str] | None = None,
+        namespaces: list[str] | None = None,
+        description: str | None = None,
+        expires_at: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"name": name, "owner": owner}
+        if groups is not None:
+            payload["groups"] = groups
+        if namespaces is not None:
+            payload["namespaces"] = namespaces
+        if description is not None:
+            payload["description"] = description
+        if expires_at is not None:
+            payload["expires_at"] = expires_at
+        return await self._post(
+            self.registry_url, "/api/registry/api-keys", json=payload
+        )
+
+    async def list_api_keys(self) -> list[dict]:
+        data = await self._get(self.registry_url, "/api/registry/api-keys")
+        return data if isinstance(data, list) else data.get("items", data)
+
+    async def get_api_key(self, name: str) -> dict:
+        return await self._get(
+            self.registry_url, f"/api/registry/api-keys/{name}"
+        )
+
+    async def update_api_key(self, name: str, **kwargs) -> dict:
+        return await self._patch(
+            self.registry_url, f"/api/registry/api-keys/{name}", json=kwargs
+        )
+
+    async def revoke_api_key(self, name: str) -> dict:
+        return await self._delete(
+            self.registry_url, f"/api/registry/api-keys/{name}"
         )
 
     # ========================================================

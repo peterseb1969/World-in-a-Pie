@@ -773,6 +773,68 @@ async def delete_namespace(
 
 
 # ===================================================================
+# Tools — API Key Management
+# ===================================================================
+
+
+@mcp.tool()
+async def create_api_key(
+    name: str,
+    owner: str = "system",
+    groups: list[str] | None = None,
+    namespaces: list[str] | None = None,
+    description: str | None = None,
+    expires_at: str | None = None,
+) -> str:
+    """Create a runtime API key. Returns the plaintext key (shown once, never stored).
+
+    Args:
+        name: Unique name for the key (e.g., 'my-app')
+        owner: Owner identifier (default 'system')
+        groups: Authorization groups (e.g., ['wip-users']). Empty = no special privileges.
+        namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.
+        description: Human-readable description
+        expires_at: ISO 8601 expiry datetime (None = never expires)
+    """
+    try:
+        data = await get_client().create_api_key(
+            name=name,
+            owner=owner,
+            groups=groups or [],
+            namespaces=namespaces,
+            description=description,
+            expires_at=expires_at,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def list_api_keys() -> str:
+    """List all API keys (config-file + runtime). No hashes or plaintext exposed."""
+    try:
+        data = await get_client().list_api_keys()
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def revoke_api_key(name: str) -> str:
+    """Revoke (hard-delete) a runtime API key. Config-file keys cannot be revoked.
+
+    Args:
+        name: Name of the runtime key to revoke
+    """
+    try:
+        data = await get_client().revoke_api_key(name)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
 # Tools — Registry Entries & Synonyms
 # ===================================================================
 
