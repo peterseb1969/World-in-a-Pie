@@ -75,6 +75,21 @@ def make_document(
     }
 
 
+def make_template(*specs: tuple) -> dict:
+    """Build a minimal template dict for transform().
+
+    Each spec is (name, type_str) or (name, type_str, extras_dict).
+    """
+    fields = []
+    for spec in specs:
+        name, ftype_str = spec[0], spec[1]
+        extras = spec[2] if len(spec) > 2 else {}
+        field = {"name": name, "type": ftype_str, "label": name}
+        field.update(extras)
+        fields.append(field)
+    return {"fields": fields}
+
+
 # =============================================================================
 # Schema creation — basic field types
 # =============================================================================
@@ -405,15 +420,16 @@ class TestSyncStrategies:
         transformer = DocumentTransformer(config)
 
         # Insert v1
+        tpl = make_template(("name", "string"))
         doc_v1 = make_document(data={"name": "Original"}, version=1)
-        rows = transformer.transform(doc_v1)
+        rows = transformer.transform(doc_v1, tpl)
         sql, values = transformer.generate_upsert_sql("doc_item", rows[0], "latest_only")
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
 
         # Insert v2 — should update
         doc_v2 = make_document(data={"name": "Updated"}, version=2)
-        rows = transformer.transform(doc_v2)
+        rows = transformer.transform(doc_v2, tpl)
         sql, values = transformer.generate_upsert_sql("doc_item", rows[0], "latest_only")
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
@@ -426,7 +442,7 @@ class TestSyncStrategies:
         # Insert v1 again — should be ignored (older version)
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *transformer.generate_upsert_sql(
-                "doc_item", transformer.transform(doc_v1)[0], "latest_only"
+                "doc_item", transformer.transform(doc_v1, tpl)[0], "latest_only"
             )[1])
 
         async with pg_pool.acquire() as conn:
@@ -445,7 +461,7 @@ class TestSyncStrategies:
 
         for v in [1, 2, 3]:
             doc = make_document(data={"name": f"v{v}"}, version=v)
-            rows = transformer.transform(doc)
+            rows = transformer.transform(doc, make_template(("name", "string")))
             sql, values = transformer.generate_upsert_sql("doc_versioneditem", rows[0], "all_versions")
             async with pg_pool.acquire() as conn:
                 await conn.execute(sql, *values)
@@ -464,7 +480,7 @@ class TestSyncStrategies:
 
         transformer = DocumentTransformer(config)
         doc = make_document(data={"name": "Same"}, version=1)
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("name", "string")))
         sql, values = transformer.generate_upsert_sql("doc_dupcheck", rows[0], "all_versions")
 
         async with pg_pool.acquire() as conn:
@@ -498,7 +514,7 @@ class TestTransformAndInsert:
             data={"name": "Alice", "gender": "Female"},
             term_references=[{"field_path": "gender", "term_id": "TERM-F-001"}],
         )
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("name", "string"), ("gender", "term")))
         sql, values = transformer.generate_upsert_sql("doc_termtest", rows[0])
 
         async with pg_pool.acquire() as conn:
@@ -526,7 +542,7 @@ class TestTransformAndInsert:
                 "content_type": "image/jpeg",
             }],
         )
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("photo", "file")))
         sql, values = transformer.generate_upsert_sql("doc_filetest", rows[0])
 
         async with pg_pool.acquire() as conn:
@@ -553,7 +569,7 @@ class TestTransformAndInsert:
             "birth_date": "1990-05-15",
             "registered_at": "2026-01-15T14:30:00Z",
         })
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("birth_date", "date"), ("registered_at", "datetime")))
         sql, values = transformer.generate_upsert_sql("doc_datetest", rows[0])
 
         async with pg_pool.acquire() as conn:
@@ -571,7 +587,7 @@ class TestTransformAndInsert:
 
         transformer = DocumentTransformer()
         doc = make_document(data={"address": {"street": "Main St", "city": "NYC"}})
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("address", "object")))
         sql, values = transformer.generate_upsert_sql("doc_objtest", rows[0])
 
         async with pg_pool.acquire() as conn:
@@ -624,7 +640,7 @@ class TestTransformAndInsert:
 
         transformer = DocumentTransformer()
         doc = make_document(data={"name": "Alice"})  # email and score missing
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("name", "string"), ("email", "string"), ("score", "number")))
         sql, values = transformer.generate_upsert_sql("doc_nulltest", rows[0])
 
         async with pg_pool.acquire() as conn:
@@ -646,7 +662,7 @@ class TestTransformAndInsert:
             "name": "O'Brien — née Müller",
             "notes": 'Contains "quotes", backslashes\\, and emoji 🎉',
         })
-        rows = transformer.transform(doc)
+        rows = transformer.transform(doc, make_template(("name", "string"), ("notes", "string")))
         sql, values = transformer.generate_upsert_sql("doc_specialchars", rows[0])
 
         async with pg_pool.acquire() as conn:

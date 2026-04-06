@@ -15,12 +15,28 @@ from reporting_sync.schema_manager import SchemaManager
 from reporting_sync.transformer import DocumentTransformer
 
 
+def _make_template(*field_defs: tuple[str, str]) -> dict:
+    """Build a minimal template dict for tests.
+
+    Each positional arg is (name, type), e.g. ("email", "string").
+    """
+    return {
+        "fields": [
+            {"name": name, "type": ftype, "label": name}
+            for name, ftype in field_defs
+        ],
+    }
+
+
 class TestDocumentTransformer:
     """Tests for DocumentTransformer."""
 
     def test_simple_document(self):
         """Test transforming a simple document."""
         transformer = DocumentTransformer()
+        template = _make_template(
+            ("first_name", "string"), ("last_name", "string"), ("email", "string"),
+        )
 
         document = {
             "document_id": "doc-123",
@@ -40,7 +56,7 @@ class TestDocumentTransformer:
             "term_references": {},
         }
 
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         assert len(rows) == 1
         row = rows[0]
@@ -52,6 +68,7 @@ class TestDocumentTransformer:
     def test_nested_object(self):
         """Test transforming a document with nested objects."""
         transformer = DocumentTransformer()
+        template = _make_template(("name", "string"), ("address", "object"))
 
         document = {
             "document_id": "doc-123",
@@ -74,7 +91,7 @@ class TestDocumentTransformer:
             "term_references": {},
         }
 
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         assert len(rows) == 1
         row = rows[0]
@@ -88,6 +105,9 @@ class TestDocumentTransformer:
     def test_term_references(self):
         """Test transforming a document with term references."""
         transformer = DocumentTransformer()
+        template = _make_template(
+            ("name", "string"), ("gender", "term"), ("country", "term"),
+        )
 
         document = {
             "document_id": "doc-123",
@@ -110,7 +130,7 @@ class TestDocumentTransformer:
             ],
         }
 
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         assert len(rows) == 1
         row = rows[0]
@@ -127,6 +147,7 @@ class TestDocumentTransformer:
         """
         config = ReportingConfig(flatten_arrays=True)
         transformer = DocumentTransformer(config)
+        template = _make_template(("name", "string"), ("languages", "array"))
 
         document = {
             "document_id": "doc-123",
@@ -149,7 +170,7 @@ class TestDocumentTransformer:
             ],
         }
 
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         # Array expansion is disabled — single row with JSON arrays
         assert len(rows) == 1
@@ -161,6 +182,7 @@ class TestDocumentTransformer:
         """Test that arrays are stored as JSON when flatten_arrays is False."""
         config = ReportingConfig(flatten_arrays=False)
         transformer = DocumentTransformer(config)
+        template = _make_template(("name", "string"), ("languages", "array"))
 
         document = {
             "document_id": "doc-123",
@@ -179,10 +201,107 @@ class TestDocumentTransformer:
             "term_references": {},
         }
 
-        rows = transformer.transform(document)
+        rows = transformer.transform(document, template)
 
         assert len(rows) == 1
         assert rows[0]["languages"] == '["English", "Spanish"]'
+
+    def test_string_field_with_datetime_value_stays_string(self):
+        """CASE-22: A string-typed field containing an ISO datetime must not be
+        converted to a Python datetime — it must remain a str so asyncpg can
+        bind it to the TEXT column the schema_manager created."""
+        transformer = DocumentTransformer()
+        template = _make_template(
+            ("sync_key", "string"), ("last_sync", "string"),
+        )
+
+        document = {
+            "document_id": "doc-sync",
+            "template_id": "TPL-SYNC",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "clintrial",
+            "created_at": "2026-04-06T15:00:00Z",
+            "created_by": "import",
+            "data": {
+                "sync_key": "clintrial-import",
+                "last_sync": "2026-04-06T15:38:38.749Z",
+            },
+            "term_references": [],
+        }
+
+        rows = transformer.transform(document, template)
+        row = rows[0]
+
+        # last_sync must be a plain string, NOT a datetime object
+        assert isinstance(row["last_sync"], str)
+        assert row["last_sync"] == "2026-04-06T15:38:38.749Z"
+
+    def test_datetime_field_converted_to_python_datetime(self):
+        """A datetime-typed field should be converted to a Python datetime."""
+        from datetime import datetime
+
+        transformer = DocumentTransformer()
+        template = _make_template(
+            ("name", "string"), ("birth_date", "datetime"),
+        )
+
+        document = {
+            "document_id": "doc-dt",
+            "template_id": "TPL-DT",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "created_at": "2024-01-30T10:00:00Z",
+            "created_by": "test",
+            "data": {
+                "name": "Alice",
+                "birth_date": "1990-05-15T08:30:00Z",
+            },
+            "term_references": [],
+        }
+
+        rows = transformer.transform(document, template)
+        row = rows[0]
+
+        assert isinstance(row["birth_date"], datetime)
+        assert row["name"] == "Alice"
+
+    def test_date_field_converted_to_python_date(self):
+        """A date-typed field should be converted to a Python date."""
+        from datetime import date
+
+        transformer = DocumentTransformer()
+        template = _make_template(
+            ("name", "string"), ("hire_date", "date"),
+        )
+
+        document = {
+            "document_id": "doc-d",
+            "template_id": "TPL-D",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc",
+            "namespace": "wip",
+            "created_at": "2024-01-30T10:00:00Z",
+            "created_by": "test",
+            "data": {
+                "name": "Bob",
+                "hire_date": "2024-03-01",
+            },
+            "term_references": [],
+        }
+
+        rows = transformer.transform(document, template)
+        row = rows[0]
+
+        assert isinstance(row["hire_date"], date)
+        assert row["name"] == "Bob"
 
     def test_upsert_sql_generation_latest_only(self):
         """Test UPSERT SQL generation for latest_only strategy."""
