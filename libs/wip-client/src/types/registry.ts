@@ -178,3 +178,74 @@ export interface MergeRequest {
   deprecated_id: string
   updated_by?: string
 }
+
+// ---- Namespace Export/Import ----
+
+export interface ExportResponse {
+  export_id: string
+  prefix: string
+  download_url: string
+  stats: Record<string, number>
+}
+
+export interface ImportResponse {
+  prefix: string
+  mode: 'create' | 'merge' | 'replace'
+  stats: Record<string, number>
+  source_prefix: string | null
+}
+
+// ---- Grants ----
+
+export type GrantSubjectType = 'user' | 'api_key' | 'group'
+export type GrantPermission = 'read' | 'write' | 'admin'
+
+export interface Grant {
+  namespace: string
+  subject: string
+  subject_type: GrantSubjectType
+  permission: GrantPermission
+  granted_by: string
+  granted_at: string
+  expires_at: string | null
+}
+
+export interface CreateGrantRequest {
+  subject: string
+  subject_type?: GrantSubjectType
+  permission?: GrantPermission
+  expires_at?: string
+}
+
+export interface RevokeGrantRequest {
+  subject: string
+  subject_type?: GrantSubjectType
+}
+
+export interface GrantBulkResult {
+  index: number
+  status: 'created' | 'updated' | 'error'
+  subject: string
+  permission: string | null
+  error: string | null
+}
+
+export interface GrantBulkResponse {
+  results: GrantBulkResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
+export interface GrantRevokeResult {
+  index: number
+  status: 'revoked' | 'not_found'
+  subject: string
+}
+
+export interface GrantRevokeBulkResponse {
+  results: GrantRevokeResult[]
+  total: number
+  succeeded: number
+  failed: number
+}

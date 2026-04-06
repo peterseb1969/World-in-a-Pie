@@ -166,3 +166,24 @@ export interface BulkValidateResponse {
   valid_count: number
   invalid_count: number
 }
+
+// ---- Audit Log ----
+
+export interface AuditLogEntry {
+  term_id: string
+  terminology_id: string
+  action: 'created' | 'updated' | 'deprecated' | 'deleted'
+  changed_at: string
+  changed_by: string | null
+  changed_fields: string[]
+  previous_values: Record<string, unknown>
+  new_values: Record<string, unknown>
+  comment: string | null
+}
+
+export interface AuditLogResponse {
+  items: AuditLogEntry[]
+  total: number
+  page: number
+  page_size: number
+}

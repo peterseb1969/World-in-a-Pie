@@ -13,6 +13,13 @@ import type {
   AddSynonymRequest,
   RemoveSynonymRequest,
   MergeRequest,
+  ExportResponse,
+  ImportResponse,
+  Grant,
+  CreateGrantRequest,
+  RevokeGrantRequest,
+  GrantBulkResponse,
+  GrantRevokeBulkResponse,
 } from '../types/registry.js'
 
 export class RegistryService extends BaseService {
@@ -132,5 +139,41 @@ export class RegistryService extends BaseService {
       [{ entry_id: entryId, updated_by: updatedBy }],
     )
     return resp.results[0]
+  }
+
+  // ---- Namespace Export/Import ----
+
+  async exportNamespace(prefix: string, options?: {
+    include_files?: boolean
+  }): Promise<ExportResponse> {
+    return this.post(`/namespaces/${prefix}/export`, null, options)
+  }
+
+  async downloadExport(exportId: string): Promise<Blob> {
+    return this.getBlob(`/namespaces/exports/${exportId}`)
+  }
+
+  async importNamespace(file: Blob, options?: {
+    target_prefix?: string
+    mode?: 'create' | 'merge' | 'replace'
+    imported_by?: string
+  }): Promise<ImportResponse> {
+    const form = new FormData()
+    form.append('file', file)
+    return this.postFormData('/namespaces/import', form, options)
+  }
+
+  // ---- Grants ----
+
+  async listGrants(prefix: string): Promise<Grant[]> {
+    return this.get(`/namespaces/${prefix}/grants`)
+  }
+
+  async createGrants(prefix: string, grants: CreateGrantRequest[]): Promise<GrantBulkResponse> {
+    return this.post(`/namespaces/${prefix}/grants`, grants)
+  }
+
+  async revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse> {
+    return this.del(`/namespaces/${prefix}/grants`, grants)
   }
 }

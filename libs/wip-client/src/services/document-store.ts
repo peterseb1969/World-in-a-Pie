@@ -11,6 +11,11 @@ import type {
   DocumentVersionResponse,
   TableViewResponse,
   TableViewParams,
+  ImportPreviewResponse,
+  ImportDocumentsResponse,
+  ImportDocumentsOptions,
+  ReplayRequest,
+  ReplaySessionResponse,
 } from '../types/document.js'
 
 export class DocumentStoreService extends BaseService {
@@ -99,5 +104,51 @@ export class DocumentStoreService extends BaseService {
 
   async queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse> {
     return this.post('/documents/query', body)
+  }
+
+  // ---- Import ----
+
+  async previewImport(file: Blob, filename: string): Promise<ImportPreviewResponse> {
+    const form = new FormData()
+    form.append('file', file, filename)
+    return this.postFormData('/import/preview', form)
+  }
+
+  async importDocuments(
+    file: Blob,
+    filename: string,
+    options: ImportDocumentsOptions,
+  ): Promise<ImportDocumentsResponse> {
+    const form = new FormData()
+    form.append('file', file, filename)
+    form.append('template_id', options.template_id)
+    form.append('column_mapping', JSON.stringify(options.column_mapping))
+    form.append('namespace', options.namespace)
+    if (options.skip_errors) {
+      form.append('skip_errors', 'true')
+    }
+    return this.postFormData('/import', form)
+  }
+
+  // ---- Replay ----
+
+  async startReplay(request: ReplayRequest = {}): Promise<ReplaySessionResponse> {
+    return this.post('/replay/start', request)
+  }
+
+  async getReplayStatus(sessionId: string): Promise<ReplaySessionResponse> {
+    return this.get(`/replay/${sessionId}`)
+  }
+
+  async pauseReplay(sessionId: string): Promise<ReplaySessionResponse> {
+    return this.post(`/replay/${sessionId}/pause`)
+  }
+
+  async resumeReplay(sessionId: string): Promise<ReplaySessionResponse> {
+    return this.post(`/replay/${sessionId}/resume`)
+  }
+
+  async cancelReplay(sessionId: string): Promise<ReplaySessionResponse> {
+    return this.del(`/replay/${sessionId}`)
   }
 }

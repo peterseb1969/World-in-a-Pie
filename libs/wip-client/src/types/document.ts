@@ -184,3 +184,67 @@ export interface TableViewParams {
   page_size?: number
   max_cross_product?: number
 }
+
+// ---- Import ----
+
+export interface ImportPreviewResponse {
+  headers: string[]
+  rows: Record<string, unknown>[]
+  format: string
+  error?: string
+}
+
+export interface ImportDocumentsOptions {
+  template_id: string
+  column_mapping: Record<string, string>
+  namespace: string
+  skip_errors?: boolean
+}
+
+export interface ImportDocumentResult {
+  row: number
+  document_id: string
+  version: number
+  is_new: boolean
+}
+
+export interface ImportDocumentError {
+  row: number
+  error: string
+  data: Record<string, string>
+}
+
+export interface ImportDocumentsResponse {
+  total_rows: number
+  succeeded: number
+  failed: number
+  skipped: number
+  results: ImportDocumentResult[]
+  errors: ImportDocumentError[]
+}
+
+// ---- Replay ----
+
+export type ReplayStatus = 'pending' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
+
+export interface ReplayFilter {
+  template_id?: string
+  template_value?: string
+  namespace?: string
+  status?: string
+}
+
+export interface ReplayRequest {
+  filter?: ReplayFilter
+  throttle_ms?: number
+  batch_size?: number
+}
+
+export interface ReplaySessionResponse {
+  session_id: string
+  status: ReplayStatus
+  total_count: number
+  published: number
+  throttle_ms: number
+  message: string
+}

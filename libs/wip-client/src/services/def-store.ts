@@ -17,6 +17,7 @@ import type {
   ValidateValueResponse,
   BulkValidateRequest,
   BulkValidateResponse,
+  AuditLogResponse,
 } from '../types/terminology.js'
 import type {
   Relationship,
@@ -250,5 +251,31 @@ export class DefStoreService extends BaseService {
 
   async getChildren(termId: string, namespace: string): Promise<Relationship[]> {
     return this.get(`/ontology/terms/${termId}/children`, { namespace })
+  }
+
+  // ---- Audit Log ----
+
+  async getTerminologyAuditLog(terminologyId: string, params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get(`/audit/terminologies/${terminologyId}`, params)
+  }
+
+  async getTermAuditLog(termId: string, params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get(`/audit/terms/${termId}`, params)
+  }
+
+  async getRecentAuditLog(params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get('/audit/', params)
   }
 }

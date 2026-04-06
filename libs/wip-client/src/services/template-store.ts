@@ -9,6 +9,7 @@ import type {
   ValidateTemplateResponse,
   TemplateUpdateResponse,
   ActivateTemplateResponse,
+  CascadeResponse,
 } from '../types/template.js'
 
 export class TemplateStoreService extends BaseService {
@@ -102,5 +103,11 @@ export class TemplateStoreService extends BaseService {
     options: { namespace: string; dry_run?: boolean },
   ): Promise<ActivateTemplateResponse> {
     return this.post(`/templates/${id}/activate`, null, options)
+  }
+
+  // ---- Cascade ----
+
+  async cascadeTemplate(id: string): Promise<CascadeResponse> {
+    return this.post(`/templates/${id}/cascade`)
   }
 }
