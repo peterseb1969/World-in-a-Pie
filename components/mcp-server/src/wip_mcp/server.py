@@ -1287,14 +1287,16 @@ async def create_relationships(
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
+            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
+            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
             relationship_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
         create_relationships([{
-            "source_term_id": "T-001",
+            "source_term_id": "ALZHEIMERS_DISEASE",
             "relationship_type": "is_a",
-            "target_term_id": "T-002"
+            "target_term_id": "NEUROLOGY"
         }])
     """
     try:
@@ -1344,13 +1346,16 @@ async def delete_relationships(
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
+            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
+            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
+            relationship_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
 
     Example:
         delete_relationships([{
-            "source_term_id": "T-001",
-            "target_term_id": "T-002",
+            "source_term_id": "ALZHEIMERS_DISEASE",
+            "target_term_id": "NEUROLOGY",
             "relationship_type": "is_a"
         }])
     """
