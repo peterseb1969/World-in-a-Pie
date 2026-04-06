@@ -6,7 +6,7 @@ export interface Namespace {
   isolation_mode: 'open' | 'strict'
   deletion_mode: 'retain' | 'full'
   allowed_external_refs: string[]
-  id_config: Record<string, unknown>
+  id_config: Record<string, IdAlgorithmConfig>
   status: 'active' | 'archived' | 'deleted'
   created_at: string
   created_by: string | null
@@ -24,10 +24,11 @@ export interface NamespaceStats {
 }
 
 export interface IdAlgorithmConfig {
-  algorithm: 'uuid7' | 'prefixed' | 'nanoid'
+  algorithm: 'uuid7' | 'uuid4' | 'prefixed' | 'nanoid' | 'pattern' | 'any'
   prefix?: string
   pad?: number
   length?: number
+  pattern?: string
 }
 
 export interface CreateNamespaceRequest {
