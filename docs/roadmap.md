@@ -14,7 +14,7 @@ Current priorities and planned features. For completed work, see `docs/completed
 
 **Phase 1 complete** (2026-04-06). All user-facing references fixed: MCP server docstrings, `@wip/client` README, `@wip/react` README, Vue console placeholders, 14 docs/design docs, 7 source code comment files. API examples now use value codes; configurable-prefix docs use varied prefixes (PROD-0001, LOV-000042). Commit 94334c8.
 
-**Phase 2 remaining:** ~250 references in test files across WIP-Toolkit/tests/, reporting-sync/tests/, mcp-server/tests/, def-store/tests/, document-store/tests/, ingest-gateway/tests/, wip-client/tests/. These are functional test fixtures — not user-facing but inconsistent. Mechanical change, low priority.
+**Phase 2 complete** (2026-04-06). ~720 lines across 49 test files replaced with realistic UUID7 IDs (unit tests) or value codes (integration tests). All test suites pass: def-store (169), mcp-server (93), document-store (220), reporting-sync (258), registry (246), template-store (100), wip-auth (196), ingest-gateway (141), WIP-Toolkit (359), wip-client (114).
 
 ---
 

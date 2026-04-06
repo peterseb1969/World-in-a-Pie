@@ -334,7 +334,7 @@ async def test_create_with_invalid_extends(client: AsyncClient, auth_headers: di
             "namespace": "wip",
             "value": "INVALID_EXTENDS",
             "label": "Invalid Extends",
-            "extends": "TPL-999999"
+            "extends": "0190c000-0000-7000-0000-000999999999"
         }]
     )
     assert response.status_code == 200

@@ -24,7 +24,7 @@ class TestDocumentTransformer:
 
         document = {
             "document_id": "doc-123",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "template_version": 1,
             "version": 1,
             "status": "active",
@@ -55,7 +55,7 @@ class TestDocumentTransformer:
 
         document = {
             "document_id": "doc-123",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "template_version": 1,
             "version": 1,
             "status": "active",
@@ -91,7 +91,7 @@ class TestDocumentTransformer:
 
         document = {
             "document_id": "doc-123",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "template_version": 1,
             "version": 1,
             "status": "active",
@@ -105,8 +105,8 @@ class TestDocumentTransformer:
                 "country": "USA",
             },
             "term_references": [
-                {"field_path": "gender", "term_id": "T-000001"},
-                {"field_path": "country", "term_id": "T-000042"},
+                {"field_path": "gender", "term_id": "0190b000-0000-7000-0000-000000000001"},
+                {"field_path": "country", "term_id": "0190b000-0000-7000-0000-000000000042"},
             ],
         }
 
@@ -115,9 +115,9 @@ class TestDocumentTransformer:
         assert len(rows) == 1
         row = rows[0]
         assert row["gender"] == "Male"
-        assert row["gender_term_id"] == "T-000001"
+        assert row["gender_term_id"] == "0190b000-0000-7000-0000-000000000001"
         assert row["country"] == "USA"
-        assert row["country_term_id"] == "T-000042"
+        assert row["country_term_id"] == "0190b000-0000-7000-0000-000000000042"
 
     def test_array_flattening(self):
         """Test that arrays with term references are stored as JSON.
@@ -130,7 +130,7 @@ class TestDocumentTransformer:
 
         document = {
             "document_id": "doc-123",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "template_version": 1,
             "version": 1,
             "status": "active",
@@ -143,9 +143,9 @@ class TestDocumentTransformer:
                 "languages": ["English", "Spanish", "French"],
             },
             "term_references": [
-                {"field_path": "languages[0]", "term_id": "T-001"},
-                {"field_path": "languages[1]", "term_id": "T-002"},
-                {"field_path": "languages[2]", "term_id": "T-003"},
+                {"field_path": "languages[0]", "term_id": "0190b000-0000-7000-0000-000000000001"},
+                {"field_path": "languages[1]", "term_id": "0190b000-0000-7000-0000-000000000002"},
+                {"field_path": "languages[2]", "term_id": "0190b000-0000-7000-0000-000000000003"},
             ],
         }
 
@@ -164,7 +164,7 @@ class TestDocumentTransformer:
 
         document = {
             "document_id": "doc-123",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "template_version": 1,
             "version": 1,
             "status": "active",

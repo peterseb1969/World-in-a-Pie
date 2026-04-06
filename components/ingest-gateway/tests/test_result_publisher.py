@@ -56,7 +56,7 @@ class TestPublishSuccess:
         result = _make_result(
             status=IngestResultStatus.SUCCESS,
             http_status_code=200,
-            response={"results": [{"index": 0, "status": "created", "id": "T-001"}]},
+            response={"results": [{"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"}]},
         )
 
         ok = await publisher.publish(result)
@@ -89,8 +89,8 @@ class TestPublishSuccess:
         """The full response dict is included in the published payload."""
         response_data = {
             "results": [
-                {"index": 0, "status": "created", "id": "T-100"},
-                {"index": 1, "status": "created", "id": "T-101"},
+                {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000100"},
+                {"index": 1, "status": "created", "id": "0190b000-0000-7000-0000-000000000101"},
             ],
             "total": 2,
             "succeeded": 2,

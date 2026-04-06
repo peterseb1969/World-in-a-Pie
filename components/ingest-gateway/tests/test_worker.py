@@ -130,7 +130,7 @@ class TestSubjectRouting:
         )
         msg = make_nats_msg("wip.ingest.terms.bulk", {
             "correlation_id": "c-11",
-            "payload": {"terminology_id": "T-1", "terms": []},
+            "payload": {"terminology_id": "0190b000-0000-7000-0000-000000000001", "terms": []},
         })
         await worker._process_message(msg)
         assert mock_http_client.forward_request.call_args.args[0] == IngestAction.TERMS_BULK

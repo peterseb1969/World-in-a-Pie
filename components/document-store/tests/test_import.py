@@ -84,7 +84,7 @@ async def test_import_csv_success(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": mapping,
             "namespace": "wip",
             "skip_errors": "false",
@@ -122,7 +122,7 @@ async def test_import_csv_with_bad_rows_skip(client: AsyncClient, auth_headers: 
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": mapping,
             "namespace": "wip",
             "skip_errors": "true",
@@ -160,7 +160,7 @@ async def test_import_csv_without_skip_stops_on_error(client: AsyncClient, auth_
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": mapping,
             "namespace": "wip",
             "skip_errors": "false",
@@ -181,7 +181,7 @@ async def test_import_invalid_column_mapping(client: AsyncClient, auth_headers: 
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": json.dumps({"nonexistent_column": "first_name"}),
             "namespace": "wip",
         },
@@ -201,7 +201,7 @@ async def test_import_bad_json_mapping(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": "not valid json{{{",
             "namespace": "wip",
         },

@@ -247,7 +247,7 @@ async def test_deprecate_requires_authentication(client: AsyncClient):
     response = await client.post(
         "/api/def-store/terms/deprecate",
         json=[{
-            "term_id": "T-000001",
+            "term_id": "0190b000-0000-7000-0000-000000000001",
             "reason": "Should fail auth"
         }]
     )
@@ -403,7 +403,7 @@ async def test_restore_nonexistent_terminology(
 async def test_restore_terminology_requires_authentication(client: AsyncClient):
     """Test that restore endpoint requires authentication."""
     response = await client.post(
-        "/api/def-store/terminologies/TERM-000001/restore"
+        "/api/def-store/terminologies/0190a000-0000-7000-0000-000000000001/restore"
     )
     assert response.status_code == 401
 
@@ -506,7 +506,7 @@ async def test_get_terminology_dependencies_with_deps(
     # Simulate _get_referencing_templates returning one matching template
     mock_referencing = [
         {
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "value": "patient_form",
             "label": "Patient Form",
             "field": "status",
@@ -532,7 +532,7 @@ async def test_get_terminology_dependencies_with_deps(
     assert data["can_deactivate"] is True  # Can still deactivate, but with warning
     assert "1 template" in data["warning_message"]
     assert len(data["templates"]) == 1
-    assert data["templates"][0]["template_id"] == "TPL-000001"
+    assert data["templates"][0]["template_id"] == "0190c000-0000-7000-0000-000000000001"
 
 
 @pytest.mark.asyncio
@@ -558,7 +558,7 @@ async def test_delete_terminology_blocked_by_dependencies(
     # Simulate _get_referencing_templates returning one matching template
     mock_referencing = [
         {
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "value": "patient_form",
             "label": "Patient Form",
             "field": "status",
@@ -618,7 +618,7 @@ async def test_delete_terminology_with_force_bypasses_dependencies(
 async def test_dependencies_requires_authentication(client: AsyncClient):
     """Test that dependencies endpoint requires authentication."""
     response = await client.get(
-        "/api/def-store/terminologies/TERM-000001/dependencies"
+        "/api/def-store/terminologies/0190a000-0000-7000-0000-000000000001/dependencies"
     )
     assert response.status_code == 401
 

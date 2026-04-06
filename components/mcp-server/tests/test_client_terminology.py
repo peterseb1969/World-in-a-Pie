@@ -144,7 +144,7 @@ async def test_create_terminology_sends_bulk_request():
     """create_terminology wraps single item in list and posts to /terminologies."""
     bulk_response = {
         "results": [
-            {"index": 0, "status": "created", "terminology_id": "T-001", "value": "COUNTRY"}
+            {"index": 0, "status": "created", "terminology_id": "0190b000-0000-7000-0000-000000000001", "value": "COUNTRY"}
         ],
         "total": 1,
         "succeeded": 1,
@@ -158,7 +158,7 @@ async def test_create_terminology_sends_bulk_request():
             value="COUNTRY", label="Country", namespace="wip"
         )
 
-    assert result["terminology_id"] == "T-001"
+    assert result["terminology_id"] == "0190b000-0000-7000-0000-000000000001"
     mock_http.post.assert_awaited_once()
     call_args = mock_http.post.call_args
     assert "/api/def-store/terminologies" in call_args.args[0]
@@ -171,7 +171,7 @@ async def test_create_terminology_with_kwargs():
     """create_terminology passes extra kwargs (description, mutable) in payload."""
     bulk_response = {
         "results": [
-            {"index": 0, "status": "created", "terminology_id": "T-002"}
+            {"index": 0, "status": "created", "terminology_id": "0190b000-0000-7000-0000-000000000002"}
         ],
         "total": 1,
         "succeeded": 1,
@@ -209,7 +209,7 @@ async def test_update_terminology_sends_bulk_put():
     """update_terminology sends PUT with terminology_id and updates."""
     bulk_response = {
         "results": [
-            {"index": 0, "status": "updated", "terminology_id": "T-001"}
+            {"index": 0, "status": "updated", "terminology_id": "0190b000-0000-7000-0000-000000000001"}
         ],
         "total": 1,
         "succeeded": 1,
@@ -220,14 +220,14 @@ async def test_update_terminology_sends_bulk_put():
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
         result = await client.update_terminology(
-            "T-001", {"label": "Countries", "mutable": True}
+            "0190b000-0000-7000-0000-000000000001", {"label": "Countries", "mutable": True}
         )
 
-    assert result["terminology_id"] == "T-001"
+    assert result["terminology_id"] == "0190b000-0000-7000-0000-000000000001"
     mock_http.put.assert_awaited_once()
     body = mock_http.put.call_args.kwargs["json"]
     assert body == [{
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "label": "Countries",
         "mutable": True,
     }]
@@ -251,13 +251,13 @@ async def test_delete_terminology_sends_delete_with_id():
 
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        await client.delete_terminology("T-001")
+        await client.delete_terminology("0190b000-0000-7000-0000-000000000001")
 
     mock_http.request.assert_awaited_once()
     args = mock_http.request.call_args.args
     assert args[0] == "DELETE"
     body = mock_http.request.call_args.kwargs["json"]
-    assert body == [{"id": "T-001"}]
+    assert body == [{"id": "0190b000-0000-7000-0000-000000000001"}]
 
 
 @pytest.mark.asyncio
@@ -273,10 +273,10 @@ async def test_delete_terminology_with_force():
 
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        await client.delete_terminology("T-001", force=True)
+        await client.delete_terminology("0190b000-0000-7000-0000-000000000001", force=True)
 
     body = mock_http.request.call_args.kwargs["json"]
-    assert body == [{"id": "T-001", "force": True}]
+    assert body == [{"id": "0190b000-0000-7000-0000-000000000001", "force": True}]
 
 
 # =========================================================================
@@ -293,13 +293,13 @@ async def test_list_terms_sends_get_with_params():
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
         result = await client.list_terms(
-            terminology_id="T-001", search="switz", page=2, page_size=25
+            terminology_id="0190b000-0000-7000-0000-000000000001", search="switz", page=2, page_size=25
         )
 
     assert result == expected
     mock_http.get.assert_awaited_once()
     url = mock_http.get.call_args.args[0]
-    assert url == "http://test:8002/api/def-store/terminologies/T-001/terms"
+    assert url == "http://test:8002/api/def-store/terminologies/0190b000-0000-7000-0000-000000000001/terms"
 
 
 # =========================================================================
@@ -328,12 +328,12 @@ async def test_create_terms_sends_post_to_terminology_terms():
 
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):
-        result = await client.create_terms(terminology_id="T-001", terms=terms)
+        result = await client.create_terms(terminology_id="0190b000-0000-7000-0000-000000000001", terms=terms)
 
     assert result["succeeded"] == 2
     mock_http.post.assert_awaited_once()
     url = mock_http.post.call_args.args[0]
-    assert "/api/def-store/terminologies/T-001/terms" in url
+    assert "/api/def-store/terminologies/0190b000-0000-7000-0000-000000000001/terms" in url
 
 
 # =========================================================================

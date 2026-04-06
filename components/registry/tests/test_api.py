@@ -159,7 +159,7 @@ class TestSynonymAPI:
             json=[{
                 "namespace": "default",
                 "entity_type": "terms",
-                "composite_key": {"internal_id": "INT-001"}
+                "composite_key": {"internal_id": "IN0190b000-0000-7000-0000-000000000001"}
             }],
             headers=auth_headers
         )
@@ -483,7 +483,7 @@ class TestIdentityValuesRegistration:
             json=[{
                 "namespace": "default",
                 "entity_type": "documents",
-                "composite_key": {"namespace": "default", "template_id": "TPL-000001"},
+                "composite_key": {"namespace": "default", "template_id": "0190c000-0000-7000-0000-000000000001"},
                 "identity_values": {"email": "john@example.com", "name": "John Doe"},
             }],
             headers=auth_headers
@@ -519,7 +519,7 @@ class TestIdentityValuesRegistration:
     async def test_register_same_identity_values_returns_existing(self, client: AsyncClient, auth_headers: dict):
         """Test that registering same identity_values returns already_exists with same identity_hash."""
         identity_values = {"email": "jane@example.com"}
-        composite_key = {"namespace": "default", "template_id": "TPL-000002"}
+        composite_key = {"namespace": "default", "template_id": "0190c000-0000-7000-0000-000000000002"}
 
         # First registration
         resp1 = await client.post(
@@ -591,7 +591,7 @@ class TestIdentityValuesRegistration:
             json=[{
                 "namespace": "default",
                 "entity_type": "documents",
-                "composite_key": {"namespace": "default", "template_id": "TPL-000001"},
+                "composite_key": {"namespace": "default", "template_id": "0190c000-0000-7000-0000-000000000001"},
                 "identity_values": {"employee_id": "EMP-SEARCHTEST-42"},
             }],
             headers=auth_headers

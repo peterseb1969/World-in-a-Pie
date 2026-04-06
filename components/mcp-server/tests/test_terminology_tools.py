@@ -43,7 +43,7 @@ async def test_create_terminology_basic():
     """Create terminology with value, label, namespace passes correct args."""
     mock = _mock_client()
     mock.create_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "value": "COUNTRY",
         "label": "Country",
         "namespace": "wip",
@@ -55,7 +55,7 @@ async def test_create_terminology_basic():
         )
 
     data = json.loads(result)
-    assert data["terminology_id"] == "T-001"
+    assert data["terminology_id"] == "0190b000-0000-7000-0000-000000000001"
     assert data["value"] == "COUNTRY"
     mock.create_terminology.assert_awaited_once_with(
         value="COUNTRY", label="Country", namespace="wip"
@@ -67,7 +67,7 @@ async def test_create_terminology_mutable_true():
     """Create terminology with mutable=True passes mutable=True to client."""
     mock = _mock_client()
     mock.create_terminology.return_value = {
-        "terminology_id": "T-002",
+        "terminology_id": "0190b000-0000-7000-0000-000000000002",
         "value": "TEST_MUT",
         "mutable": True,
     }
@@ -89,7 +89,7 @@ async def test_create_terminology_mutable_false_default():
     """Create terminology with mutable=False (default) does not pass mutable kwarg."""
     mock = _mock_client()
     mock.create_terminology.return_value = {
-        "terminology_id": "T-003",
+        "terminology_id": "0190b000-0000-7000-0000-000000000003",
         "value": "IMMUTABLE",
     }
 
@@ -108,7 +108,7 @@ async def test_create_terminology_with_description():
     """Create terminology with description passes description to client."""
     mock = _mock_client()
     mock.create_terminology.return_value = {
-        "terminology_id": "T-004",
+        "terminology_id": "0190b000-0000-7000-0000-000000000004",
         "value": "GENDER",
         "description": "Gender identity codes",
     }
@@ -141,16 +141,16 @@ async def test_update_terminology_label_only():
     """Update terminology with label only passes {label: ...} to client."""
     mock = _mock_client()
     mock.update_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "label": "Countries",
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await update_terminology(terminology_id="T-001", label="Countries")
+        result = await update_terminology(terminology_id="0190b000-0000-7000-0000-000000000001", label="Countries")
 
     data = json.loads(result)
     assert data["label"] == "Countries"
-    mock.update_terminology.assert_awaited_once_with("T-001", {"label": "Countries"})
+    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"label": "Countries"})
 
 
 @pytest.mark.asyncio
@@ -158,16 +158,16 @@ async def test_update_terminology_mutable_true():
     """Update terminology with mutable=True includes mutable in updates."""
     mock = _mock_client()
     mock.update_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "mutable": True,
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await update_terminology(terminology_id="T-001", mutable=True)
+        result = await update_terminology(terminology_id="0190b000-0000-7000-0000-000000000001", mutable=True)
 
     data = json.loads(result)
     assert data["mutable"] is True
-    mock.update_terminology.assert_awaited_once_with("T-001", {"mutable": True})
+    mock.update_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", {"mutable": True})
 
 
 @pytest.mark.asyncio
@@ -176,7 +176,7 @@ async def test_update_terminology_no_fields_returns_error():
     mock = _mock_client()
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await update_terminology(terminology_id="T-001")
+        result = await update_terminology(terminology_id="0190b000-0000-7000-0000-000000000001")
 
     assert "error" in result.lower()
     assert "at least one field" in result.lower()
@@ -188,7 +188,7 @@ async def test_update_terminology_multiple_fields():
     """Update terminology with multiple fields includes all in updates dict."""
     mock = _mock_client()
     mock.update_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "label": "Countries (updated)",
         "description": "ISO country codes",
         "mutable": True,
@@ -196,7 +196,7 @@ async def test_update_terminology_multiple_fields():
 
     with patch("wip_mcp.server.get_client", return_value=mock):
         result = await update_terminology(
-            terminology_id="T-001",
+            terminology_id="0190b000-0000-7000-0000-000000000001",
             label="Countries (updated)",
             description="ISO country codes",
             mutable=True,
@@ -205,7 +205,7 @@ async def test_update_terminology_multiple_fields():
     data = json.loads(result)
     assert data["label"] == "Countries (updated)"
     mock.update_terminology.assert_awaited_once_with(
-        "T-001",
+        "0190b000-0000-7000-0000-000000000001",
         {
             "label": "Countries (updated)",
             "description": "ISO country codes",
@@ -224,20 +224,20 @@ async def test_get_terminology_success():
     """Successful get_terminology returns JSON response."""
     mock = _mock_client()
     mock.get_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "value": "COUNTRY",
         "label": "Country",
         "term_count": 195,
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await get_terminology(terminology_id="T-001")
+        result = await get_terminology(terminology_id="0190b000-0000-7000-0000-000000000001")
 
     data = json.loads(result)
-    assert data["terminology_id"] == "T-001"
+    assert data["terminology_id"] == "0190b000-0000-7000-0000-000000000001"
     assert data["value"] == "COUNTRY"
     assert data["term_count"] == 195
-    mock.get_terminology.assert_awaited_once_with("T-001")
+    mock.get_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001")
 
 
 @pytest.mark.asyncio
@@ -263,16 +263,16 @@ async def test_delete_terminology_without_force():
     """Delete terminology without force calls client correctly."""
     mock = _mock_client()
     mock.delete_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "status": "deleted",
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await delete_terminology(terminology_id="T-001")
+        result = await delete_terminology(terminology_id="0190b000-0000-7000-0000-000000000001")
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("T-001", force=False, hard_delete=False)
+    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=False, hard_delete=False)
 
 
 @pytest.mark.asyncio
@@ -280,16 +280,16 @@ async def test_delete_terminology_with_force():
     """Delete terminology with force=True passes force=True to client."""
     mock = _mock_client()
     mock.delete_terminology.return_value = {
-        "terminology_id": "T-001",
+        "terminology_id": "0190b000-0000-7000-0000-000000000001",
         "status": "deleted",
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await delete_terminology(terminology_id="T-001", force=True)
+        result = await delete_terminology(terminology_id="0190b000-0000-7000-0000-000000000001", force=True)
 
     data = json.loads(result)
     assert data["status"] == "deleted"
-    mock.delete_terminology.assert_awaited_once_with("T-001", force=True, hard_delete=False)
+    mock.delete_terminology.assert_awaited_once_with("0190b000-0000-7000-0000-000000000001", force=True, hard_delete=False)
 
 
 # =========================================================================
@@ -311,13 +311,13 @@ async def test_list_terms_by_terminology_id():
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await list_terms(terminology_id="T-001")
+        result = await list_terms(terminology_id="0190b000-0000-7000-0000-000000000001")
 
     data = json.loads(result)
     assert data["total"] == 2
     assert len(data["items"]) == 2
     mock.list_terms.assert_awaited_once_with(
-        terminology_id="T-001", search=None, page=1, page_size=50
+        terminology_id="0190b000-0000-7000-0000-000000000001", search=None, page=1, page_size=50
     )
 
 
@@ -331,12 +331,12 @@ async def test_list_terms_with_search_filter():
     }
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await list_terms(terminology_id="T-001", search="switz")
+        result = await list_terms(terminology_id="0190b000-0000-7000-0000-000000000001", search="switz")
 
     data = json.loads(result)
     assert data["total"] == 1
     mock.list_terms.assert_awaited_once_with(
-        terminology_id="T-001", search="switz", page=1, page_size=50
+        terminology_id="0190b000-0000-7000-0000-000000000001", search="switz", page=1, page_size=50
     )
 
 
@@ -365,12 +365,12 @@ async def test_create_terms_with_terminology_id_and_terms():
     ]
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await create_terms(terminology_id="T-001", terms=terms)
+        result = await create_terms(terminology_id="0190b000-0000-7000-0000-000000000001", terms=terms)
 
     data = json.loads(result)
     assert data["succeeded"] == 2
     mock.create_terms.assert_awaited_once_with(
-        terminology_id="T-001", terms=terms
+        terminology_id="0190b000-0000-7000-0000-000000000001", terms=terms
     )
 
 

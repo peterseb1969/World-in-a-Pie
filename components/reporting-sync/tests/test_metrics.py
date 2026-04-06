@@ -99,7 +99,7 @@ class TestRecordEventFailed:
 
     def test_tracks_multiple_error_types(self, collector: MetricsCollector):
         collector.record_event_failed(None, None, "invalid_event", "missing field")
-        collector.record_event_failed(None, None, "template_not_found", "TPL-999")
+        collector.record_event_failed(None, None, "template_not_found", "0190c000-0000-7000-0000-000000000999")
         assert collector._errors_by_type["invalid_event"] == 1
         assert collector._errors_by_type["template_not_found"] == 1
 

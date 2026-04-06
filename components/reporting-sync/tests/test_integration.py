@@ -47,8 +47,8 @@ def make_fields(*specs: tuple) -> list[TemplateField]:
 
 
 def make_document(
-    doc_id: str = "DOC-001",
-    template_id: str = "TPL-001",
+    doc_id: str = "0190d000-0000-7000-0000-000000000001",
+    template_id: str = "0190c000-0000-7000-0000-000000000001",
     namespace: str = "test",
     version: int = 1,
     data: dict | None = None,
@@ -350,7 +350,7 @@ class TestSchemaEvolution:
                     created_at, data_json)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
-                "DOC-1", "test", "TPL-1", 1, 1, "active", "hash1", "Alice",
+                "0190d000-0000-7000-0000-000000000001", "test", "0190c000-0000-7000-0000-000000000001", 1, 1, "active", "hash1", "Alice",
                 datetime.now(UTC), "{}",
             )
 
@@ -363,7 +363,7 @@ class TestSchemaEvolution:
 
         # Verify existing row still there, new column is NULL
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, email FROM "doc_preserve" WHERE document_id = $1', "DOC-1")
+            row = await conn.fetchrow('SELECT name, email FROM "doc_preserve" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["name"] == "Alice"
             assert row["email"] is None
 
@@ -419,7 +419,7 @@ class TestSyncStrategies:
             await conn.execute(sql, *values)
 
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "DOC-001")
+            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["name"] == "Updated"
             assert row["version"] == 2
 
@@ -430,7 +430,7 @@ class TestSyncStrategies:
             )[1])
 
         async with pg_pool.acquire() as conn:
-            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "DOC-001")
+            row = await conn.fetchrow('SELECT name, version FROM "doc_item" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["version"] == 2  # Still v2
 
     async def test_all_versions_insert(self, pg_pool):
@@ -503,7 +503,7 @@ class TestTransformAndInsert:
 
         async with pg_pool.acquire() as conn:
             await conn.execute(sql, *values)
-            row = await conn.fetchrow('SELECT gender, gender_term_id FROM "doc_termtest" WHERE document_id = $1', "DOC-001")
+            row = await conn.fetchrow('SELECT gender, gender_term_id FROM "doc_termtest" WHERE document_id = $1', "0190d000-0000-7000-0000-000000000001")
             assert row["gender"] == "Female"
             assert row["gender_term_id"] == "TERM-F-001"
 
@@ -678,11 +678,11 @@ class TestMetadataTables:
                 INSERT INTO terminologies (terminology_id, namespace, value, label, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                "T-001", "test", "Gender", "Gender", "active",
+                "0190b000-0000-7000-0000-000000000001", "test", "Gender", "Gender", "active",
             )
             row = await conn.fetchrow(
                 "SELECT * FROM terminologies WHERE namespace = $1 AND terminology_id = $2",
-                "test", "T-001",
+                "test", "0190b000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Gender"
 
@@ -697,11 +697,11 @@ class TestMetadataTables:
                 INSERT INTO terms (term_id, namespace, terminology_id, value, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                "TERM-001", "test", "T-001", "Female", "active",
+                "0190a000-0000-7000-0000-000000000001", "test", "0190b000-0000-7000-0000-000000000001", "Female", "active",
             )
             row = await conn.fetchrow(
                 "SELECT * FROM terms WHERE namespace = $1 AND term_id = $2",
-                "test", "TERM-001",
+                "test", "0190a000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Female"
 
@@ -716,11 +716,11 @@ class TestMetadataTables:
                 INSERT INTO templates (template_id, namespace, value, version, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
-                "TPL-001", "test", "Person", 1, "active",
+                "0190c000-0000-7000-0000-000000000001", "test", "Person", 1, "active",
             )
             row = await conn.fetchrow(
                 "SELECT * FROM templates WHERE namespace = $1 AND template_id = $2",
-                "test", "TPL-001",
+                "test", "0190c000-0000-7000-0000-000000000001",
             )
             assert row["value"] == "Person"
             assert row["status"] == "active"
@@ -776,7 +776,7 @@ class TestNamespaceDeletion:
                          version, status, identity_hash, name, created_at, data_json)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     """,
-                    f"DOC-{ns}", ns, "TPL-1", 1, 1, "active", f"hash-{ns}", f"Name-{ns}",
+                    f"DOC-{ns}", ns, "0190c000-0000-7000-0000-000000000001", 1, 1, "active", f"hash-{ns}", f"Name-{ns}",
                     datetime.now(UTC), "{}",
                 )
 
@@ -942,7 +942,7 @@ class TestIndexesAndConstraints:
                     template_version, version, status, identity_hash, created_at, data_json)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """,
-                "DOC-DUP", "test", "TPL-1", 1, 1, "active", "hash1",
+                "DOC-DUP", "test", "0190c000-0000-7000-0000-000000000001", 1, 1, "active", "hash1",
                 datetime.now(UTC), "{}",
             )
             with pytest.raises(asyncpg.UniqueViolationError):
@@ -952,7 +952,7 @@ class TestIndexesAndConstraints:
                         template_version, version, status, identity_hash, created_at, data_json)
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                     """,
-                    "DOC-DUP", "test", "TPL-1", 1, 2, "active", "hash2",
+                    "DOC-DUP", "test", "0190c000-0000-7000-0000-000000000001", 1, 2, "active", "hash2",
                     datetime.now(UTC), "{}",
                 )
 

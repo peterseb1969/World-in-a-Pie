@@ -74,7 +74,7 @@ class TestWIPClientPost:
 
     def test_post_with_json_body(self, config, mock_httpx_client):
         payload = {"value": "COUNTRY", "namespace": "wip"}
-        expected = {"results": [{"status": "created", "id": "TERM-001"}]}
+        expected = {"results": [{"status": "created", "id": "0190a000-0000-7000-0000-000000000001"}]}
         mock_httpx_client.post.return_value = _make_response(json_data=expected)
 
         client = WIPClient(config)
@@ -165,7 +165,7 @@ class TestFetchAllPaginated:
 
     def test_single_page(self, config, mock_httpx_client):
         """When results fit in one page, only one request is made."""
-        page_data = {"items": [{"id": f"T-{i}"} for i in range(5)]}
+        page_data = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(5)]}
         mock_httpx_client.get.return_value = _make_response(json_data=page_data)
 
         client = WIPClient(config)
@@ -177,8 +177,8 @@ class TestFetchAllPaginated:
 
     def test_multiple_pages(self, config, mock_httpx_client):
         """When results span multiple pages, all pages are fetched."""
-        page1 = {"items": [{"id": f"T-{i}"} for i in range(3)]}
-        page2 = {"items": [{"id": f"T-{i}"} for i in range(3, 5)]}
+        page1 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(3)]}
+        page2 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(3, 5)]}
 
         mock_httpx_client.get.side_effect = [
             _make_response(json_data=page1),
@@ -244,9 +244,9 @@ class TestFetchAllPaginated:
 
     def test_three_pages_with_exact_boundary(self, config, mock_httpx_client):
         """Full pages followed by a partial page signals end of pagination."""
-        page1 = {"items": [{"id": f"T-{i}"} for i in range(2)]}
-        page2 = {"items": [{"id": f"T-{i}"} for i in range(2, 4)]}
-        page3 = {"items": [{"id": "T-4"}]}
+        page1 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(2)]}
+        page2 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(2, 4)]}
+        page3 = {"items": [{"id": "0190b000-0000-7000-0000-000000000004"}]}
 
         mock_httpx_client.get.side_effect = [
             _make_response(json_data=page1),

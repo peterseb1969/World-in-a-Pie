@@ -38,8 +38,8 @@ class TestFetchTerminologies:
         result = collector.fetch_terminologies()
 
         assert len(result) == 2
-        assert result[0]["terminology_id"] == "TERM-000001"
-        assert result[1]["terminology_id"] == "TERM-000002"
+        assert result[0]["terminology_id"] == "0190a000-0000-7000-0000-000000000001"
+        assert result[1]["terminology_id"] == "0190a000-0000-7000-0000-000000000002"
 
     def test_passes_namespace_param(self, collector, mock_client):
         mock_client.fetch_all_paginated.return_value = []
@@ -87,14 +87,14 @@ class TestFetchTerms:
     def test_fetch_terms_for_terminology(self, collector, mock_client, sample_terms):
         mock_client.fetch_all_paginated.return_value = sample_terms[:2]
 
-        result = collector.fetch_terms("TERM-000001")
+        result = collector.fetch_terms("0190a000-0000-7000-0000-000000000001")
 
         assert len(result) == 2
         call_args = mock_client.fetch_all_paginated.call_args
-        assert "/terminologies/TERM-000001/terms" in call_args[0][1]
+        assert "/terminologies/0190a000-0000-7000-0000-000000000001/terms" in call_args[0][1]
 
     def test_fetch_all_terms(self, collector, mock_client, sample_terminologies, sample_terms):
-        # First call for TERM-000001 returns 2 terms, second for TERM-000002 returns 1
+        # First call for 0190a000-0000-7000-0000-000000000001 returns 2 terms, second for 0190a000-0000-7000-0000-000000000002 returns 1
         mock_client.fetch_all_paginated.side_effect = [
             sample_terms[:2],  # UK, France
             sample_terms[2:],  # active
@@ -157,10 +157,10 @@ class TestFetchDocuments:
     def test_deduplicates_by_id_and_version(self, collector, mock_client):
         """Duplicate documents across page boundaries are removed."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {"a": 1}},
-            {"document_id": "DOC-2", "version": 1, "data": {"b": 2}},
-            {"document_id": "DOC-1", "version": 1, "data": {"a": 1}},  # duplicate
-            {"document_id": "DOC-2", "version": 1, "data": {"b": 2}},  # duplicate
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {"a": 1}},
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "data": {"b": 2}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {"a": 1}},  # duplicate
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "data": {"b": 2}},  # duplicate
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
@@ -168,14 +168,14 @@ class TestFetchDocuments:
 
         assert len(result) == 2
         doc_ids = [d["document_id"] for d in result]
-        assert "DOC-1" in doc_ids
-        assert "DOC-2" in doc_ids
+        assert "0190d000-0000-7000-0000-000000000001" in doc_ids
+        assert "0190d000-0000-7000-0000-000000000002" in doc_ids
 
     def test_different_versions_kept_when_all_versions(self, collector, mock_client):
         """Same document_id with different versions are kept in all-versions mode."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-1", "version": 2, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {}},
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
@@ -186,8 +186,8 @@ class TestFetchDocuments:
     def test_default_version_1(self, collector, mock_client):
         """Documents without version field default to version 1 for dedup."""
         docs = [
-            {"document_id": "DOC-1", "data": {}},
-            {"document_id": "DOC-1", "data": {}},  # duplicate (both default v1)
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "data": {}},  # duplicate (both default v1)
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
@@ -206,9 +206,9 @@ class TestFetchDocuments:
     def test_latest_only_deduplicates_to_highest_version(self, collector, mock_client):
         """latest_only keeps only the highest version per document_id."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-1", "version": 2, "data": {}},
-            {"document_id": "DOC-2", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "data": {}},
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
@@ -216,14 +216,14 @@ class TestFetchDocuments:
 
         assert len(result) == 2
         by_id = {d["document_id"]: d for d in result}
-        assert by_id["DOC-1"]["version"] == 2
-        assert by_id["DOC-2"]["version"] == 1
+        assert by_id["0190d000-0000-7000-0000-000000000001"]["version"] == 2
+        assert by_id["0190d000-0000-7000-0000-000000000002"]["version"] == 1
 
     def test_all_versions_returns_everything(self, collector, mock_client):
         """latest_only=False returns all versions."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-1", "version": 2, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {}},
         ]
         mock_client.fetch_all_paginated.return_value = docs
 
@@ -249,7 +249,7 @@ class TestFetchRegistryEntries:
             "results": [
                 {
                     "status": "found",
-                    "entry_id": "TERM-000001",
+                    "entry_id": "0190a000-0000-7000-0000-000000000001",
                     "namespace": "wip",
                     "entity_type": "terminologies",
                     "matched_composite_key": {"value": "COUNTRY"},
@@ -259,16 +259,16 @@ class TestFetchRegistryEntries:
             ],
         }
 
-        result = collector.fetch_registry_entries(["TERM-000001"])
+        result = collector.fetch_registry_entries(["0190a000-0000-7000-0000-000000000001"])
 
-        assert "TERM-000001" in result
-        assert result["TERM-000001"]["entry_id"] == "TERM-000001"
-        assert result["TERM-000001"]["entity_type"] == "terminologies"
-        assert result["TERM-000001"]["primary_composite_key"] == {"value": "COUNTRY"}
+        assert "0190a000-0000-7000-0000-000000000001" in result
+        assert result["0190a000-0000-7000-0000-000000000001"]["entry_id"] == "0190a000-0000-7000-0000-000000000001"
+        assert result["0190a000-0000-7000-0000-000000000001"]["entity_type"] == "terminologies"
+        assert result["0190a000-0000-7000-0000-000000000001"]["primary_composite_key"] == {"value": "COUNTRY"}
 
     def test_batch_processing(self, collector, mock_client):
         """IDs are batched in groups of 100."""
-        ids = [f"T-{i:06d}" for i in range(250)]
+        ids = [f"0190b000-0000-7000-0000-{i:012d}" for i in range(250)]
 
         # Return empty results for all batches
         mock_client.post.return_value = {"results": []}
@@ -284,7 +284,7 @@ class TestFetchRegistryEntries:
                 {"status": "not_found", "entry_id": "TERM-MISSING"},
                 {
                     "status": "found",
-                    "entry_id": "TERM-001",
+                    "entry_id": "0190a000-0000-7000-0000-000000000001",
                     "namespace": "wip",
                     "entity_type": "terminologies",
                     "matched_composite_key": {},
@@ -293,17 +293,17 @@ class TestFetchRegistryEntries:
             ],
         }
 
-        result = collector.fetch_registry_entries(["TERM-MISSING", "TERM-001"])
+        result = collector.fetch_registry_entries(["TERM-MISSING", "0190a000-0000-7000-0000-000000000001"])
 
         assert "TERM-MISSING" not in result
-        assert "TERM-001" in result
+        assert "0190a000-0000-7000-0000-000000000001" in result
 
     def test_extracts_synonyms(self, collector, mock_client):
         mock_client.post.return_value = {
             "results": [
                 {
                     "status": "found",
-                    "entry_id": "TERM-001",
+                    "entry_id": "0190a000-0000-7000-0000-000000000001",
                     "namespace": "wip",
                     "entity_type": "terminologies",
                     "matched_composite_key": {"value": "COUNTRY"},
@@ -323,9 +323,9 @@ class TestFetchRegistryEntries:
             ],
         }
 
-        result = collector.fetch_registry_entries(["TERM-001"])
+        result = collector.fetch_registry_entries(["0190a000-0000-7000-0000-000000000001"])
 
-        synonyms = result["TERM-001"]["synonyms"]
+        synonyms = result["0190a000-0000-7000-0000-000000000001"]["synonyms"]
         assert len(synonyms) == 2
         assert synonyms[0]["composite_key"] == {"external_code": "ISO-3166"}
         assert synonyms[1]["namespace"] == "other"
@@ -339,7 +339,7 @@ class TestFetchRegistryEntries:
         """API errors for a batch are caught and don't crash the whole operation."""
         mock_client.post.side_effect = Exception("Connection refused")
 
-        result = collector.fetch_registry_entries(["TERM-001"])
+        result = collector.fetch_registry_entries(["0190a000-0000-7000-0000-000000000001"])
 
         # Should return empty dict, not raise
         assert result == {}
@@ -352,18 +352,18 @@ class TestTemplateCaching:
         mock_client.fetch_all_paginated.return_value = sample_templates
 
         # First call populates cache
-        result = collector.fetch_template_by_id("TPL-000001")
+        result = collector.fetch_template_by_id("0190c000-0000-7000-0000-000000000001")
 
         assert len(result) == 1
-        assert result[0]["template_id"] == "TPL-000001"
+        assert result[0]["template_id"] == "0190c000-0000-7000-0000-000000000001"
 
     def test_cache_reused_on_second_call(self, collector, mock_client, sample_templates):
         mock_client.fetch_all_paginated.return_value = sample_templates
 
         # First call
-        collector.fetch_template_by_id("TPL-000001")
+        collector.fetch_template_by_id("0190c000-0000-7000-0000-000000000001")
         # Second call should reuse cache
-        collector.fetch_template_by_id("TPL-000002")
+        collector.fetch_template_by_id("0190c000-0000-7000-0000-000000000002")
 
         # fetch_all_paginated should only be called once for the cache
         assert mock_client.fetch_all_paginated.call_count == 1
@@ -371,7 +371,7 @@ class TestTemplateCaching:
     def test_fetch_template_by_id_returns_matches(self, collector, mock_client, sample_templates):
         mock_client.fetch_all_paginated.return_value = sample_templates
 
-        result = collector.fetch_template_by_id("TPL-000002")
+        result = collector.fetch_template_by_id("0190c000-0000-7000-0000-000000000002")
 
         assert len(result) == 1
         assert result[0]["value"] == "EMPLOYEE"
@@ -386,22 +386,22 @@ class TestTemplateCaching:
     def test_fetch_template_versions_by_id(self, collector, mock_client):
         """Multiple versions of same template_id are returned."""
         templates = [
-            {"template_id": "TPL-001", "version": 1, "value": "A"},
-            {"template_id": "TPL-001", "version": 2, "value": "A"},
-            {"template_id": "TPL-002", "version": 1, "value": "B"},
+            {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "value": "A"},
+            {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 2, "value": "A"},
+            {"template_id": "0190c000-0000-7000-0000-000000000002", "version": 1, "value": "B"},
         ]
         mock_client.fetch_all_paginated.return_value = templates
 
-        result = collector.fetch_template_versions_by_id("TPL-001")
+        result = collector.fetch_template_versions_by_id("0190c000-0000-7000-0000-000000000001")
 
         assert len(result) == 2
-        assert all(t["template_id"] == "TPL-001" for t in result)
+        assert all(t["template_id"] == "0190c000-0000-7000-0000-000000000001" for t in result)
 
     def test_cache_handles_api_error(self, collector, mock_client):
         """If API fails, cache is set to empty list."""
         mock_client.fetch_all_paginated.side_effect = Exception("timeout")
 
-        result = collector.fetch_template_by_id("TPL-001")
+        result = collector.fetch_template_by_id("0190c000-0000-7000-0000-000000000001")
 
         assert result == []
         # Cache should be set (empty list), not None
@@ -415,11 +415,11 @@ class TestStreamDocuments:
         """stream_documents yields one list per page."""
         collector = EntityCollector(mock_client, namespace="wip")
         page1_items = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-2", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "data": {}},
         ]
         page2_items = [
-            {"document_id": "DOC-3", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000003", "version": 1, "data": {}},
         ]
         # stream_documents uses client.get() with manual pagination
         mock_client.get.side_effect = [
@@ -437,9 +437,9 @@ class TestStreamDocuments:
         """latest_only keeps highest version per document_id within a page."""
         collector = EntityCollector(mock_client, namespace="wip")
         page_items = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-1", "version": 2, "data": {}},
-            {"document_id": "DOC-2", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "data": {}},
         ]
         mock_client.get.side_effect = [
             {"items": page_items},  # partial page (< default page_size, stops)
@@ -449,8 +449,8 @@ class TestStreamDocuments:
 
         assert len(pages) == 1
         by_id = {d["document_id"]: d for d in pages[0]}
-        assert by_id["DOC-1"]["version"] == 2
-        assert "DOC-2" in by_id
+        assert by_id["0190d000-0000-7000-0000-000000000001"]["version"] == 2
+        assert "0190d000-0000-7000-0000-000000000002" in by_id
 
     def test_empty_stream(self, mock_client):
         """Empty result yields nothing."""
@@ -485,22 +485,22 @@ class TestFetchDocumentVersions:
             ],
         }
 
-        result = collector.fetch_document_versions("DOC-001")
+        result = collector.fetch_document_versions("0190d000-0000-7000-0000-000000000001")
 
         assert len(result) == 2
         mock_client.get.assert_called_once_with(
-            "document-store", "/documents/DOC-001/versions",
+            "document-store", "/documents/0190d000-0000-7000-0000-000000000001/versions",
         )
 
     def test_fetch_document_version(self, collector, mock_client):
-        expected_doc = {"document_id": "DOC-001", "version": 2, "data": {"x": 1}}
+        expected_doc = {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {"x": 1}}
         mock_client.get.return_value = expected_doc
 
-        result = collector.fetch_document_version("DOC-001", 2)
+        result = collector.fetch_document_version("0190d000-0000-7000-0000-000000000001", 2)
 
         assert result == expected_doc
         mock_client.get.assert_called_once_with(
-            "document-store", "/documents/DOC-001/versions/2",
+            "document-store", "/documents/0190d000-0000-7000-0000-000000000001/versions/2",
         )
 
 
@@ -562,10 +562,10 @@ class TestFetchTerminologyById:
     """Test single terminology lookup."""
 
     def test_returns_terminology(self, collector, mock_client):
-        term_data = {"terminology_id": "TERM-001", "value": "COUNTRY"}
+        term_data = {"terminology_id": "0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"}
         mock_client.get.return_value = term_data
 
-        result = collector.fetch_terminology_by_id("TERM-001")
+        result = collector.fetch_terminology_by_id("0190a000-0000-7000-0000-000000000001")
 
         assert result == term_data
 
@@ -583,16 +583,16 @@ class TestFetchAllDocumentVersions:
     def test_expands_to_all_versions(self, collector, mock_client):
         """Expands a single latest-version doc to all its versions."""
         latest_docs = [
-            {"document_id": "DOC-1", "version": 2, "data": {"v": 2}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {"v": 2}},
         ]
 
         mock_client.get.side_effect = [
             # fetch_document_versions returns version list
             {"versions": [{"version": 1}, {"version": 2}]},
             # fetch_document_version for v1
-            {"document_id": "DOC-1", "version": 1, "data": {"v": 1}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {"v": 1}},
             # fetch_document_version for v2
-            {"document_id": "DOC-1", "version": 2, "data": {"v": 2}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 2, "data": {"v": 2}},
         ]
 
         result = collector.fetch_all_document_versions(latest_docs)
@@ -604,13 +604,13 @@ class TestFetchAllDocumentVersions:
     def test_deduplicates_across_input_documents(self, collector, mock_client):
         """Same document_id appearing multiple times in input is deduplicated."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {}},
-            {"document_id": "DOC-1", "version": 1, "data": {}},  # dup
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},  # dup
         ]
 
         mock_client.get.side_effect = [
             {"versions": [{"version": 1}]},
-            {"document_id": "DOC-1", "version": 1, "data": {}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {}},
         ]
 
         result = collector.fetch_all_document_versions(docs)
@@ -620,7 +620,7 @@ class TestFetchAllDocumentVersions:
     def test_handles_version_fetch_error(self, collector, mock_client):
         """If version listing fails, original documents are preserved."""
         docs = [
-            {"document_id": "DOC-1", "version": 1, "data": {"original": True}},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "data": {"original": True}},
         ]
 
         mock_client.get.side_effect = Exception("timeout")

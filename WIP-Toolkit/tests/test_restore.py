@@ -116,7 +116,7 @@ def _bulk_error(error_msg="already exists", index=0):
 # Sample data builders
 # ---------------------------------------------------------------------------
 
-def _terminology(tid="TERM-000001", value="COUNTRY", label="Country", **overrides):
+def _terminology(tid="0190a000-0000-7000-0000-000000000001", value="COUNTRY", label="Country", **overrides):
     base = {
         "terminology_id": tid,
         "value": value,
@@ -128,7 +128,7 @@ def _terminology(tid="TERM-000001", value="COUNTRY", label="Country", **override
     return base
 
 
-def _term(tid="T-000001", terminology_id="TERM-000001", value="United Kingdom", **overrides):
+def _term(tid="0190b000-0000-7000-0000-000000000001", terminology_id="0190a000-0000-7000-0000-000000000001", value="United Kingdom", **overrides):
     base = {
         "term_id": tid,
         "terminology_id": terminology_id,
@@ -140,7 +140,7 @@ def _term(tid="T-000001", terminology_id="TERM-000001", value="United Kingdom", 
 
 
 def _template(
-    tid="TPL-000001",
+    tid="0190c000-0000-7000-0000-000000000001",
     value="PERSON",
     version=1,
     **overrides,
@@ -162,8 +162,8 @@ def _template(
 
 
 def _document(
-    did="DOC-000001",
-    template_id="TPL-000001",
+    did="0190d000-0000-7000-0000-000000000001",
+    template_id="0190c000-0000-7000-0000-000000000001",
     version=1,
     data=None,
     **overrides,
@@ -373,7 +373,7 @@ class TestCreateTerms:
         client.post.return_value = {"succeeded": 2, "failed": 0, "results": []}
         stats = _make_stats()
 
-        terms = [_term(f"T-{i:03d}", "TERM-001", f"value_{i}") for i in range(5)]
+        terms = [_term(f"0190b000-0000-7000-0000-{i:012d}", "0190a000-0000-7000-0000-000000000001", f"value_{i}") for i in range(5)]
         _create_terms(client, "target-ns", terms, 2, stats, False)
 
         assert client.post.call_count == 3
@@ -385,14 +385,14 @@ class TestCreateTerms:
         stats = _make_stats()
 
         terms = [
-            _term("T-001", "TERM-001", "UK"),
-            _term("T-002", "TERM-002", "active"),
+            _term("0190b000-0000-7000-0000-000000000001", "0190a000-0000-7000-0000-000000000001", "UK"),
+            _term("0190b000-0000-7000-0000-000000000002", "0190a000-0000-7000-0000-000000000002", "active"),
         ]
         _create_terms(client, "target-ns", terms, 50, stats, False)
 
         call_paths = [c[0][1] for c in client.post.call_args_list]
-        assert "/terminologies/TERM-001/terms" in call_paths
-        assert "/terminologies/TERM-002/terms" in call_paths
+        assert "/terminologies/0190a000-0000-7000-0000-000000000001/terms" in call_paths
+        assert "/terminologies/0190a000-0000-7000-0000-000000000002/terms" in call_paths
 
 
 class TestCreateTemplates:
@@ -405,8 +405,8 @@ class TestCreateTemplates:
         stats = _make_stats()
 
         templates = [
-            _template("TPL-001", "PERSON", version=2),
-            _template("TPL-001", "PERSON", version=1),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=2),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=1),
         ]
         _create_templates(client, "target-ns", templates, stats, False)
 
@@ -434,7 +434,7 @@ class TestCreateDocumentsStreamed:
         client.post.return_value = {"succeeded": 2, "failed": 0, "results": []}
         stats = _make_stats()
 
-        documents = [_document(f"DOC-{i:03d}", version=1) for i in range(5)]
+        documents = [_document(f"0190d000-0000-7000-0000-{i:012d}", version=1) for i in range(5)]
         reader = _make_reader(documents=documents)
 
         _create_documents_streamed(client, "target-ns", reader, 2, stats, False)
@@ -457,9 +457,9 @@ class TestCreateDocumentsStreamed:
         stats = _make_stats()
 
         documents = [
-            _document("DOC-001", version=3),
-            _document("DOC-001", version=1),
-            _document("DOC-001", version=2),
+            _document("0190d000-0000-7000-0000-000000000001", version=3),
+            _document("0190d000-0000-7000-0000-000000000001", version=1),
+            _document("0190d000-0000-7000-0000-000000000001", version=2),
         ]
         reader = _make_reader(documents=documents)
 
@@ -475,7 +475,7 @@ class TestCreateDocumentsStreamed:
         client.post.return_value = {"succeeded": 1, "failed": 0, "results": []}
         stats = _make_stats()
 
-        doc = _document("DOC-001", "TPL-001", version=1, data={"name": "Alice"})
+        doc = _document("0190d000-0000-7000-0000-000000000001", "0190c000-0000-7000-0000-000000000001", version=1, data={"name": "Alice"})
         reader = _make_reader(documents=[doc])
 
         _create_documents_streamed(client, "target-ns", reader, 50, stats, False)
@@ -483,7 +483,7 @@ class TestCreateDocumentsStreamed:
         args, kwargs = client.post.call_args
         assert args == ("document-store", "/documents")
         items = kwargs["json"]
-        assert items[0]["document_id"] == "DOC-001"
+        assert items[0]["document_id"] == "0190d000-0000-7000-0000-000000000001"
         assert items[0]["namespace"] == "target-ns"
         assert items[0]["created_by"] == "wip-toolkit-restore"
 
@@ -501,8 +501,8 @@ class TestActivateTemplates:
         stats = _make_stats()
 
         templates = [
-            _template("TPL-001", "PERSON", version=1),
-            _template("TPL-002", "PROJECT", version=1),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=1),
+            _template("0190c000-0000-7000-0000-000000000002", "PROJECT", version=1),
         ]
         _activate_templates(client, "target-ns", templates, stats, False)
 
@@ -515,9 +515,9 @@ class TestActivateTemplates:
         stats = _make_stats()
 
         templates = [
-            _template("TPL-001", "PERSON", version=1),
-            _template("TPL-001", "PERSON", version=2),
-            _template("TPL-001", "PERSON", version=3),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=1),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=2),
+            _template("0190c000-0000-7000-0000-000000000001", "PERSON", version=3),
         ]
         _activate_templates(client, "target-ns", templates, stats, False)
 
@@ -540,10 +540,10 @@ class TestRestoreSynonyms:
         stats = _make_stats()
 
         synonyms = [
-            {"entry_id": "TERM-001", "namespace": "wip",
+            {"entry_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip",
              "entity_type": "terminologies",
              "composite_key": {"external_code": "ISO-3166"}},
-            {"entry_id": "DOC-001", "namespace": "wip",
+            {"entry_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip",
              "entity_type": "documents",
              "composite_key": {"vendor_id": "V-001"}},
         ]
@@ -554,7 +554,7 @@ class TestRestoreSynonyms:
         client.post.assert_called_once()
         batch = client.post.call_args[1]["json"]
         assert len(batch) == 2
-        assert batch[0]["target_id"] == "TERM-001"
+        assert batch[0]["target_id"] == "0190a000-0000-7000-0000-000000000001"
         assert stats.synonyms_registered == 2
 
     @patch("wip_toolkit.import_.restore.console")
@@ -577,7 +577,7 @@ class TestRestoreSynonyms:
 
         reader = _make_reader(
             has_synonyms=False,
-            terminologies=[_terminology("TERM-001", _registry={
+            terminologies=[_terminology("0190a000-0000-7000-0000-000000000001", _registry={
                 "primary_composite_key": {},
                 "synonyms": [
                     {"namespace": "wip", "entity_type": "terminologies",

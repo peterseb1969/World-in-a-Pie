@@ -62,7 +62,7 @@ def mock_pool():
 
 
 def _make_template(
-    template_id="TPL-000001",
+    template_id="0190c000-0000-7000-0000-000000000001",
     value="person",
     version=1,
     fields=None,
@@ -86,8 +86,8 @@ def _make_template(
 
 def _make_document_event(
     event_type="document.created",
-    document_id="DOC-000001",
-    template_id="TPL-000001",
+    document_id="0190d000-0000-7000-0000-000000000001",
+    template_id="0190c000-0000-7000-0000-000000000001",
     data=None,
 ):
     """Build a document event payload."""
@@ -116,7 +116,7 @@ def _make_document_event(
 
 def _make_template_event(
     event_type="template.created",
-    template_id="TPL-000001",
+    template_id="0190c000-0000-7000-0000-000000000001",
     value="person",
 ):
     """Build a template event payload."""
@@ -260,16 +260,16 @@ class TestProcessDocumentDelete:
         template = _make_template()
         event = _make_document_event(
             event_type="document.deleted",
-            document_id="DOC-999",
+            document_id="0190d000-0000-7000-0000-000000000999",
         )
 
         with patch.object(worker, "_fetch_template", AsyncMock(return_value=template)):
             await worker._process_document_event(event)
 
         call_args = conn.execute.call_args
-        # positional args: (sql, "deleted", "DOC-999")
+        # positional args: (sql, "deleted", "0190d000-0000-7000-0000-000000000999")
         assert call_args[0][1] == "deleted"
-        assert call_args[0][2] == "DOC-999"
+        assert call_args[0][2] == "0190d000-0000-7000-0000-000000000999"
 
 
 class TestProcessDocumentArchive:
@@ -363,18 +363,18 @@ class TestProcessTemplateEvent:
     @pytest.mark.asyncio
     async def test_template_event_invalidates_cache(self, worker):
         """Template events clear the matching entry from the template cache."""
-        template = _make_template(template_id="TPL-000001", value="person")
-        worker._template_cache["TPL-000001"] = template
+        template = _make_template(template_id="0190c000-0000-7000-0000-000000000001", value="person")
+        worker._template_cache["0190c000-0000-7000-0000-000000000001"] = template
 
-        event = _make_template_event(template_id="TPL-000001", value="person")
+        event = _make_template_event(template_id="0190c000-0000-7000-0000-000000000001", value="person")
         await worker._process_template_event(event)
 
-        assert "TPL-000001" not in worker._template_cache
+        assert "0190c000-0000-7000-0000-000000000001" not in worker._template_cache
 
     @pytest.mark.asyncio
     async def test_template_event_missing_value_returns_false(self, worker):
         """Template event without a 'value' field returns False."""
-        event = {"event_type": "template.created", "template": {"template_id": "TPL-001"}}
+        event = {"event_type": "template.created", "template": {"template_id": "0190c000-0000-7000-0000-000000000001"}}
         result = await worker._process_template_event(event)
         assert result is False
 
@@ -405,10 +405,10 @@ class TestTemplateCaching:
     async def test_cache_hit_avoids_http_call(self, worker):
         """When template is cached, no HTTP request is made."""
         template = _make_template()
-        worker._template_cache["TPL-000001"] = template
+        worker._template_cache["0190c000-0000-7000-0000-000000000001"] = template
 
         with patch("reporting_sync.worker.httpx.AsyncClient") as mock_client_cls:
-            result = await worker._fetch_template("TPL-000001")
+            result = await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
         assert result == template
         mock_client_cls.assert_not_called()
@@ -428,10 +428,10 @@ class TestTemplateCaching:
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
         with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client):
-            result = await worker._fetch_template("TPL-000001")
+            result = await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
         assert result == template
-        assert "TPL-000001" in worker._template_cache
+        assert "0190c000-0000-7000-0000-000000000001" in worker._template_cache
 
     @pytest.mark.asyncio
     async def test_second_fetch_uses_cache(self, worker, mock_pool):
@@ -450,9 +450,9 @@ class TestTemplateCaching:
 
         with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client):
             # First call fetches via HTTP
-            result1 = await worker._fetch_template("TPL-000001")
+            result1 = await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
             # Second call should use cache
-            result2 = await worker._fetch_template("TPL-000001")
+            result2 = await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
         assert result1 == result2
         # HTTP client.get should only be called once
@@ -473,7 +473,7 @@ class TestErrorHandling:
         event = {
             "event_type": "document.created",
             "document": {
-                "template_id": "TPL-000001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 # missing document_id
             },
         }
@@ -486,7 +486,7 @@ class TestErrorHandling:
         event = {
             "event_type": "document.created",
             "document": {
-                "document_id": "DOC-000001",
+                "document_id": "0190d000-0000-7000-0000-000000000001",
                 # missing template_id
             },
         }
@@ -530,7 +530,7 @@ class TestErrorHandling:
 
         with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
              pytest.raises(RuntimeError, match="Cannot connect to Template Store"):
-            await worker._fetch_template("TPL-000001")
+            await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
     @pytest.mark.asyncio
     async def test_template_fetch_timeout_raises(self, worker):
@@ -542,7 +542,7 @@ class TestErrorHandling:
 
         with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
              pytest.raises(RuntimeError, match="Template Store timeout"):
-            await worker._fetch_template("TPL-000001")
+            await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
     @pytest.mark.asyncio
     async def test_template_fetch_server_error_raises(self, worker):
@@ -557,7 +557,7 @@ class TestErrorHandling:
 
         with patch("reporting_sync.worker.httpx.AsyncClient", return_value=mock_client), \
              pytest.raises(RuntimeError, match="Template Store returned 500"):
-            await worker._fetch_template("TPL-000001")
+            await worker._fetch_template("0190c000-0000-7000-0000-000000000001")
 
     @pytest.mark.asyncio
     async def test_db_insert_error_raises(self, worker, mock_pool):

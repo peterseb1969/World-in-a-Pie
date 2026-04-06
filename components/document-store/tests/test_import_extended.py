@@ -62,7 +62,7 @@ async def test_csv_quoted_fields_with_commas(client: AsyncClient, auth_headers: 
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -110,7 +110,7 @@ async def test_csv_empty_rows_skipped(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -138,7 +138,7 @@ async def test_csv_extra_columns_ignored(client: AsyncClient, auth_headers: dict
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -161,7 +161,7 @@ async def test_csv_missing_mapped_column(client: AsyncClient, auth_headers: dict
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -184,7 +184,7 @@ async def test_csv_utf8_special_characters(client: AsyncClient, auth_headers: di
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -196,7 +196,7 @@ async def test_csv_utf8_special_characters(client: AsyncClient, auth_headers: di
     list_response = await client.get(
         "/api/document-store/documents",
         headers=auth_headers,
-        params={"template_id": "TPL-000001", "page_size": 10},
+        params={"template_id": "PERSON", "page_size": 10},
     )
     assert list_response.status_code == 200
     docs = list_response.json()["items"]
@@ -263,7 +263,7 @@ async def test_import_invalid_term_value(client: AsyncClient, auth_headers: dict
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -276,7 +276,7 @@ async def test_import_invalid_term_value(client: AsyncClient, auth_headers: dict
 async def test_import_missing_required_field(client: AsyncClient, auth_headers: dict):
     """Import with missing required field reports per-row error.
 
-    national_id, first_name, and last_name are mandatory in TPL-000001.
+    national_id, first_name, and last_name are mandatory in PERSON.
     Omitting last_name from the mapping means the field is missing.
     """
     csv_bytes = _make_csv(
@@ -292,7 +292,7 @@ async def test_import_missing_required_field(client: AsyncClient, auth_headers: 
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -307,7 +307,7 @@ async def test_import_missing_required_field(client: AsyncClient, auth_headers: 
 async def test_import_type_mismatch(client: AsyncClient, auth_headers: dict):
     """Import with type mismatch (string where integer expected) reports error.
 
-    The age field in TPL-000001 is type 'integer'. Passing 'not_a_number'
+    The age field in PERSON is type 'integer'. Passing 'not_a_number'
     should trigger a validation error.
     """
     csv_bytes = _make_csv(
@@ -327,7 +327,7 @@ async def test_import_type_mismatch(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -358,7 +358,7 @@ async def test_import_partial_success(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping, skip_errors="true"),
+        data=_import_data("PERSON", mapping, skip_errors="true"),
     )
     assert response.status_code == 200
     data = response.json()
@@ -382,7 +382,7 @@ async def test_bulk_create_multiple_documents(client: AsyncClient, auth_headers:
     """Import multiple documents via JSON bulk endpoint — all created."""
     items = [
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "111111111",
@@ -391,7 +391,7 @@ async def test_bulk_create_multiple_documents(client: AsyncClient, auth_headers:
             },
         },
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "222222222",
@@ -400,7 +400,7 @@ async def test_bulk_create_multiple_documents(client: AsyncClient, auth_headers:
             },
         },
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "333333333",
@@ -427,11 +427,11 @@ async def test_bulk_create_multiple_documents(client: AsyncClient, auth_headers:
 async def test_bulk_import_duplicate_identity_creates_new_version(client: AsyncClient, auth_headers: dict):
     """Import with duplicate identity (same national_id) creates a new version.
 
-    The identity_fields for TPL-000001 is ["national_id"], so submitting
+    The identity_fields for PERSON is ["national_id"], so submitting
     the same national_id twice should create version 1 then version 2.
     """
     doc = {
-        "template_id": "TPL-000001",
+        "template_id": "PERSON",
         "namespace": "wip",
         "data": {
             "national_id": "999888777",
@@ -455,7 +455,7 @@ async def test_bulk_import_duplicate_identity_creates_new_version(client: AsyncC
 
     # Second create with same identity but different data
     doc_v2 = {
-        "template_id": "TPL-000001",
+        "template_id": "PERSON",
         "namespace": "wip",
         "data": {
             "national_id": "999888777",
@@ -517,7 +517,7 @@ async def test_import_empty_file(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("empty.csv", b"", "text/csv")},
-        data=_import_data("TPL-000001", {"a": "b"}),
+        data=_import_data("PERSON", {"a": "b"}),
     )
     assert response.status_code == 200
     data = response.json()
@@ -537,7 +537,7 @@ async def test_import_header_only_file(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -553,7 +553,7 @@ async def test_import_no_column_mapping(client: AsyncClient, auth_headers: dict)
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data={"template_id": "TPL-000001", "namespace": "wip"},
+        data={"template_id": "PERSON", "namespace": "wip"},
     )
     # FastAPI requires column_mapping — should return 422 (unprocessable entity)
     assert response.status_code == 422
@@ -569,7 +569,7 @@ async def test_import_column_mapping_not_a_dict(client: AsyncClient, auth_header
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "column_mapping": json.dumps(["not", "a", "dict"]),
             "namespace": "wip",
         },
@@ -601,7 +601,7 @@ async def test_import_xlsx_success(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -626,7 +626,7 @@ async def test_import_xlsx_with_extra_columns(client: AsyncClient, auth_headers:
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -676,7 +676,7 @@ async def test_csv_import_duplicate_identity_upsert(client: AsyncClient, auth_he
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes_v1, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response1.status_code == 200
     data1 = response1.json()
@@ -693,7 +693,7 @@ async def test_csv_import_duplicate_identity_upsert(client: AsyncClient, auth_he
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes_v2, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response2.status_code == 200
     data2 = response2.json()
@@ -720,7 +720,7 @@ async def test_csv_with_bom(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()
@@ -777,7 +777,7 @@ async def test_bulk_create_partial_success(client: AsyncClient, auth_headers: di
     """Bulk create with mix of valid and invalid items — partial success."""
     items = [
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "111111111",
@@ -786,7 +786,7 @@ async def test_bulk_create_partial_success(client: AsyncClient, auth_headers: di
             },
         },
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 # Missing mandatory national_id and first_name
@@ -794,7 +794,7 @@ async def test_bulk_create_partial_success(client: AsyncClient, auth_headers: di
             },
         },
         {
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "333333333",
@@ -845,7 +845,7 @@ async def test_import_valid_term_value(client: AsyncClient, auth_headers: dict):
         "/api/document-store/import",
         headers=auth_headers,
         files={"file": ("data.csv", csv_bytes, "text/csv")},
-        data=_import_data("TPL-000001", mapping),
+        data=_import_data("PERSON", mapping),
     )
     assert response.status_code == 200
     data = response.json()

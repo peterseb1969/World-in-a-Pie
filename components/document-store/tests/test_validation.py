@@ -11,7 +11,7 @@ async def test_validate_valid_document(client: AsyncClient, auth_headers: dict, 
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": sample_person_data
         }
@@ -32,7 +32,7 @@ async def test_validate_missing_required_field(client: AsyncClient, auth_headers
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "123456789",
@@ -61,7 +61,7 @@ async def test_validate_invalid_type(client: AsyncClient, auth_headers: dict, sa
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -87,7 +87,7 @@ async def test_validate_pattern_mismatch(client: AsyncClient, auth_headers: dict
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -111,7 +111,7 @@ async def test_validate_invalid_term(client: AsyncClient, auth_headers: dict, sa
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -135,7 +135,7 @@ async def test_validate_number_out_of_range(client: AsyncClient, auth_headers: d
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -159,7 +159,7 @@ async def test_validate_invalid_date(client: AsyncClient, auth_headers: dict, sa
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -228,7 +228,7 @@ async def test_validate_conditional_required_rule(client: AsyncClient, auth_head
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000002",
+            "template_id": "EMPLOYEE",
             "namespace": "wip",
             "data": data
         }
@@ -253,7 +253,7 @@ async def test_validate_conditional_required_passes(client: AsyncClient, auth_he
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000002",
+            "template_id": "EMPLOYEE",
             "namespace": "wip",
             "data": data
         }
@@ -271,7 +271,7 @@ async def test_create_document_validation_error(client: AsyncClient, auth_header
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": {
                 "national_id": "invalid"  # Missing required fields and invalid format
@@ -298,7 +298,7 @@ async def test_validate_rejects_unknown_fields(client: AsyncClient, auth_headers
         "/api/document-store/validation/validate",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }
@@ -325,7 +325,7 @@ async def test_create_document_rejects_unknown_fields(client: AsyncClient, auth_
         "/api/document-store/documents",
         headers=auth_headers,
         json=[{
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "namespace": "wip",
             "data": data
         }]

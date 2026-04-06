@@ -77,7 +77,7 @@ from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # no
 
 _TEMPLATE_DEFS = [
     {
-        "legacy_key": "TPL-000001",
+        "legacy_key": "0190c000-0000-7000-0000-000000000001",
         "value": "PERSON",
         "label": "Person Template",
         "version": 1,
@@ -135,7 +135,7 @@ _TEMPLATE_DEFS = [
         "rules": [],
     },
     {
-        "legacy_key": "TPL-000002",
+        "legacy_key": "0190c000-0000-7000-0000-000000000002",
         "value": "EMPLOYEE",
         "label": "Employee Template",
         "version": 1,
@@ -184,7 +184,7 @@ _TEMPLATE_DEFS = [
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.
-# Keyed by BOTH UUID7 (canonical) and legacy key (TPL-000001 etc.) for
+# Keyed by BOTH UUID7 (canonical) and legacy key (0190c000-0000-7000-0000-000000000001 etc.) for
 # backward compatibility with mock template_store_client lookups.
 SAMPLE_TEMPLATES: dict[str, dict] = {}
 
@@ -195,7 +195,7 @@ _TEMPLATE_ID_MAP: dict[str, str] = {}
 async def _register_templates_in_registry(registry_transport):
     """Register template entries in Registry and return legacy→UUID7 mapping.
 
-    Also registers synonyms so that both the legacy key (TPL-000001) and
+    Also registers synonyms so that both the legacy key (0190c000-0000-7000-0000-000000000001) and
     the value name (PERSON) resolve to the canonical UUID7 ID.
     """
     api_key = os.environ["MASTER_API_KEY"]
@@ -220,7 +220,7 @@ async def _register_templates_in_registry(registry_transport):
 
             # Register synonyms so resolution works:
             # 1. Value-based: {"ns": "wip", "type": "template", "value": "PERSON"}
-            # 2. Legacy key: {"ns": "wip", "type": "template", "value": "TPL-000001"}
+            # 2. Legacy key: {"ns": "wip", "type": "template", "value": "0190c000-0000-7000-0000-000000000001"}
             synonyms = [
                 {
                     "target_id": entry_id,
@@ -273,6 +273,9 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
         templates[real_id] = template_data
         # Key by legacy key (for backward compat with test code)
         templates[tdef["legacy_key"]] = template_data
+        # Key by value code (for table_view and other endpoints that pass
+        # the value code directly to the mock template client)
+        templates[tdef["value"]] = template_data
 
     return templates
 
@@ -348,7 +351,7 @@ def create_mock_def_store_client():
                 code = terminology_ref[len(prefix):]
                 break
         if code in VALID_TERMS and value in VALID_TERMS[code]:
-            return {"valid": True, "matched_term": {"term_id": "T-001", "value": value}}
+            return {"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}}
         return {"valid": False, "suggestion": None}
 
     async def mock_validate_values_bulk(items):
@@ -362,7 +365,7 @@ def create_mock_def_store_client():
                     code = terminology_ref[len(prefix):]
                     break
             if code in VALID_TERMS and value in VALID_TERMS[code]:
-                results.append({"valid": True, "matched_term": {"term_id": "T-001", "value": value}})
+                results.append({"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}})
             else:
                 results.append({"valid": False, "suggestion": None})
         return results

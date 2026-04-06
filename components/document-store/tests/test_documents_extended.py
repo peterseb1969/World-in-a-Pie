@@ -33,7 +33,7 @@ async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, 
 @pytest.mark.asyncio
 async def test_get_latest_version_single_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Get latest version when only one version exists."""
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
     response = await client.get(
@@ -50,7 +50,7 @@ async def test_get_latest_version_single_version(client: AsyncClient, auth_heade
 async def test_get_latest_version_multiple_versions(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Get latest version when multiple versions exist (via identity-based upsert)."""
     # Create initial document
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
     assert result["version"] == 1
 
@@ -58,7 +58,7 @@ async def test_get_latest_version_multiple_versions(client: AsyncClient, auth_he
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Jane"
     updated_data["age"] = 35
-    result2 = await create_one(client, auth_headers, "TPL-000001", updated_data)
+    result2 = await create_one(client, auth_headers, "PERSON", updated_data)
     assert result2["document_id"] == doc_id  # Same identity -> same document_id
     assert result2["version"] == 2
 
@@ -89,13 +89,13 @@ async def test_get_latest_version_not_found(client: AsyncClient, auth_headers: d
 async def test_get_specific_version(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Get a specific (older) version of a document."""
     # Create initial document
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
     # Create second version
     updated_data = sample_person_data.copy()
     updated_data["first_name"] = "Updated"
-    await create_one(client, auth_headers, "TPL-000001", updated_data)
+    await create_one(client, auth_headers, "PERSON", updated_data)
 
     # Get version 1 specifically
     response = await client.get(
@@ -112,13 +112,13 @@ async def test_get_specific_version(client: AsyncClient, auth_headers: dict, sam
 async def test_get_version_history(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Get the full version history for a document."""
     # Create 3 versions
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
     for i in range(2):
         updated = sample_person_data.copy()
         updated["first_name"] = f"Version{i + 2}"
-        await create_one(client, auth_headers, "TPL-000001", updated)
+        await create_one(client, auth_headers, "PERSON", updated)
 
     response = await client.get(
         f"/api/document-store/documents/{doc_id}/versions",
@@ -149,7 +149,7 @@ async def test_query_multiple_filters(client: AsyncClient, auth_headers: dict, s
         {"national_id": "100000004", "first_name": "Diana", "last_name": "Smith", "age": 45},
     ]
     for person in people:
-        await create_one(client, auth_headers, "TPL-000001", person)
+        await create_one(client, auth_headers, "PERSON", person)
 
     # Query: last_name == "Smith" AND age >= 30
     response = await client.post(
@@ -160,7 +160,7 @@ async def test_query_multiple_filters(client: AsyncClient, auth_headers: dict, s
                 {"field": "data.last_name", "operator": "eq", "value": "Smith"},
                 {"field": "data.age", "operator": "gte", "value": 30},
             ],
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
         },
     )
     assert response.status_code == 200
@@ -179,7 +179,7 @@ async def test_query_with_in_operator(client: AsyncClient, auth_headers: dict, s
         {"national_id": "200000003", "first_name": "Charlie", "last_name": "Doe", "age": 40},
     ]
     for person in people:
-        await create_one(client, auth_headers, "TPL-000001", person)
+        await create_one(client, auth_headers, "PERSON", person)
 
     response = await client.post(
         "/api/document-store/documents/query",
@@ -188,7 +188,7 @@ async def test_query_with_in_operator(client: AsyncClient, auth_headers: dict, s
             "filters": [
                 {"field": "data.first_name", "operator": "in", "value": ["Alice", "Charlie"]},
             ],
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
         },
     )
     assert response.status_code == 200
@@ -213,8 +213,8 @@ async def test_query_with_exists_operator(client: AsyncClient, auth_headers: dic
         "first_name": "NoEmail",
         "last_name": "Test",
     }
-    await create_one(client, auth_headers, "TPL-000001", person_with_email)
-    await create_one(client, auth_headers, "TPL-000001", person_without_email)
+    await create_one(client, auth_headers, "PERSON", person_with_email)
+    await create_one(client, auth_headers, "PERSON", person_without_email)
 
     # Query: email exists
     response = await client.post(
@@ -224,7 +224,7 @@ async def test_query_with_exists_operator(client: AsyncClient, auth_headers: dic
             "filters": [
                 {"field": "data.email", "operator": "exists", "value": True},
             ],
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
         },
     )
     assert response.status_code == 200
@@ -242,14 +242,14 @@ async def test_query_with_sorting(client: AsyncClient, auth_headers: dict):
         {"national_id": "400000003", "first_name": "Mike", "last_name": "Test", "age": 40},
     ]
     for person in people:
-        await create_one(client, auth_headers, "TPL-000001", person)
+        await create_one(client, auth_headers, "PERSON", person)
 
     # Sort by age ascending
     response = await client.post(
         "/api/document-store/documents/query",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "sort_by": "data.age",
             "sort_order": "asc",
         },
@@ -263,8 +263,8 @@ async def test_query_with_sorting(client: AsyncClient, auth_headers: dict):
 @pytest.mark.asyncio
 async def test_query_cross_template(client: AsyncClient, auth_headers: dict, sample_person_data: dict, sample_employee_data: dict):
     """Query without template_id searches across all templates."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
-    await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
+    await create_one(client, auth_headers, "EMPLOYEE", sample_employee_data)
 
     response = await client.post(
         "/api/document-store/documents/query",
@@ -291,11 +291,11 @@ async def test_pagination_page_beyond_total(client: AsyncClient, auth_headers: d
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"50000000{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     # Request page 10 with page_size=2 (total=3, pages=2)
     response = await client.get(
-        "/api/document-store/documents?template_id=TPL-000001&page=10&page_size=2",
+        "/api/document-store/documents?template_id=PERSON&page=10&page_size=2",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -311,10 +311,10 @@ async def test_pagination_single_item_pages(client: AsyncClient, auth_headers: d
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"60000000{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     response = await client.get(
-        "/api/document-store/documents?template_id=TPL-000001&page=1&page_size=1",
+        "/api/document-store/documents?template_id=PERSON&page=1&page_size=1",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -330,10 +330,10 @@ async def test_pagination_max_page_size(client: AsyncClient, auth_headers: dict,
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"70000000{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     response = await client.get(
-        "/api/document-store/documents?template_id=TPL-000001&page=1&page_size=100",
+        "/api/document-store/documents?template_id=PERSON&page=1&page_size=100",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -347,7 +347,7 @@ async def test_pagination_max_page_size(client: AsyncClient, auth_headers: dict,
 async def test_pagination_empty_collection(client: AsyncClient, auth_headers: dict):
     """Pagination on empty collection returns zeros."""
     response = await client.get(
-        "/api/document-store/documents?template_id=TPL-000001&page=1&page_size=20",
+        "/api/document-store/documents?template_id=PERSON&page=1&page_size=20",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -363,13 +363,13 @@ async def test_query_pagination(client: AsyncClient, auth_headers: dict, sample_
         data = sample_person_data.copy()
         data["national_id"] = f"80000000{i}"
         data["age"] = 20 + i
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     response = await client.post(
         "/api/document-store/documents/query",
         headers=auth_headers,
         json={
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "page": 1,
             "page_size": 2,
         },
@@ -393,7 +393,7 @@ async def test_archive_multiple_documents(client: AsyncClient, auth_headers: dic
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"90000000{i}"
-        result = await create_one(client, auth_headers, "TPL-000001", data)
+        result = await create_one(client, auth_headers, "PERSON", data)
         doc_ids.append(result["document_id"])
 
     # Archive all 3 at once
@@ -435,7 +435,7 @@ async def test_archive_nonexistent_document(client: AsyncClient, auth_headers: d
 @pytest.mark.asyncio
 async def test_archive_mixed_results(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Archive with mixed success/failure results."""
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     valid_id = result["document_id"]
 
     response = await client.post(
@@ -456,7 +456,7 @@ async def test_archive_mixed_results(client: AsyncClient, auth_headers: dict, sa
 @pytest.mark.asyncio
 async def test_archive_already_archived_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Archiving an already-archived document should be idempotent or return an error."""
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
     # Archive it
@@ -486,8 +486,8 @@ async def test_archive_already_archived_document(client: AsyncClient, auth_heade
 @pytest.mark.asyncio
 async def test_list_documents_filter_by_template_value(client: AsyncClient, auth_headers: dict, sample_person_data: dict, sample_employee_data: dict):
     """List documents filtered by template_value."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
-    await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
+    await create_one(client, auth_headers, "EMPLOYEE", sample_employee_data)
 
     # Filter by PERSON template_value
     response = await client.get(
@@ -508,10 +508,10 @@ async def test_list_documents_filter_by_template_value(client: AsyncClient, auth
 async def test_list_documents_filter_by_status(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """List documents filtered by status."""
     # Create two docs
-    result1 = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result1 = await create_one(client, auth_headers, "PERSON", sample_person_data)
     data2 = sample_person_data.copy()
     data2["national_id"] = "999999999"
-    result2 = await create_one(client, auth_headers, "TPL-000001", data2)
+    result2 = await create_one(client, auth_headers, "PERSON", data2)
 
     # Delete one
     await client.request(
@@ -549,7 +549,7 @@ async def test_bulk_delete_documents(client: AsyncClient, auth_headers: dict, sa
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"11000000{i}"
-        result = await create_one(client, auth_headers, "TPL-000001", data)
+        result = await create_one(client, auth_headers, "PERSON", data)
         doc_ids.append(result["document_id"])
 
     response = await client.request(

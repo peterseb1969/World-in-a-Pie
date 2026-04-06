@@ -184,7 +184,7 @@ async def test_import_terminology_with_update(client: AsyncClient, auth_headers:
 async def test_export_not_found(client: AsyncClient, auth_headers: dict):
     """Test exporting a non-existent terminology."""
     response = await client.get(
-        "/api/def-store/import-export/export/TERM-999999?format=json",
+        "/api/def-store/import-export/export/0190a000-0000-7000-0000-000999999999?format=json",
         headers=auth_headers
     )
 

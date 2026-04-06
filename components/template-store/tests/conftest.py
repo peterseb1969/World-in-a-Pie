@@ -79,7 +79,7 @@ def _create_mock_def_store_client():
         return None
 
     async def mock_validate_value(terminology_ref: str, value: str):
-        return {"valid": True, "matched_term": {"term_id": "T-001", "value": value}}
+        return {"valid": True, "matched_term": {"term_id": "0190b000-0000-7000-0000-000000000001", "value": value}}
 
     async def mock_health_check():
         return True

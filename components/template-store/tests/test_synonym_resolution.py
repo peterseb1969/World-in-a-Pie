@@ -11,10 +11,10 @@ import pytest
 from wip_auth.resolve import EntityNotFoundError
 
 SYNONYM_MAP = {
-    ("template", "PERSON", "test-ns"): "TPL-000001",
-    ("template", "EMPLOYEE", "test-ns"): "TPL-000002",
-    ("template", "PERSON", None): "TPL-000001",
-    ("template", "EMPLOYEE", None): "TPL-000002",
+    ("template", "PERSON", "test-ns"): "0190c000-0000-7000-0000-000000000001",
+    ("template", "EMPLOYEE", "test-ns"): "0190c000-0000-7000-0000-000000000002",
+    ("template", "PERSON", None): "0190c000-0000-7000-0000-000000000001",
+    ("template", "EMPLOYEE", None): "0190c000-0000-7000-0000-000000000002",
     ("terminology", "test_colors", "test-ns"): "TRMN-000001",
     ("terminology", "test_colors", None): "TRMN-000001",
 }
@@ -42,7 +42,7 @@ class TestTemplateSynonymResolution:
                 "/api/template-store/templates/PERSON?namespace=test-ns",
                 headers=auth_headers,
             )
-        # TPL-000001 won't exist in test DB, but should not be 500
+        # 0190c000-0000-7000-0000-000000000001 won't exist in test DB, but should not be 500
         assert resp.status_code in (200, 404), f"Unexpected: {resp.status_code} {resp.text}"
 
     async def test_get_template_unresolvable_returns_404(self, client, auth_headers):
@@ -137,7 +137,7 @@ class TestTemplateSynonymResolution:
                 headers=auth_headers,
                 json=[{"id": "PERSON"}],
             )
-        # Should resolve, then fail finding TPL-000001 in DB (per-item error)
+        # Should resolve, then fail finding 0190c000-0000-7000-0000-000000000001 in DB (per-item error)
         assert resp.status_code == 200
 
     async def test_update_template_normalizes_field_references(self, client, auth_headers):
@@ -154,7 +154,7 @@ class TestTemplateSynonymResolution:
                     "/api/template-store/templates",
                     headers=auth_headers,
                     json=[{
-                        "template_id": "TPL-000001",
+                        "template_id": "0190c000-0000-7000-0000-000000000001",
                         "fields": [{
                             "name": "color",
                             "type": "term",
@@ -164,7 +164,7 @@ class TestTemplateSynonymResolution:
                     }],
                 )
 
-        # TPL-000001 may not exist in DB, so update may return per-item error.
+        # 0190c000-0000-7000-0000-000000000001 may not exist in DB, so update may return per-item error.
         # But if it got far enough to attempt normalization, the mock was called.
         # If the template wasn't found, normalization wouldn't run — that's fine.
         assert resp.status_code == 200  # bulk always returns 200

@@ -125,8 +125,8 @@ class TestManifest:
 
     def test_manifest_with_closure_info(self):
         closure = ClosureInfo(
-            external_terminologies=["TERM-EXT-001"],
-            external_templates=["TPL-EXT-001", "TPL-EXT-002"],
+            external_terminologies=["TERM-EX0190b000-0000-7000-0000-000000000001"],
+            external_templates=["TPL-EX0190b000-0000-7000-0000-000000000001", "TPL-EX0190b000-0000-7000-0000-000000000002"],
             iterations=3,
             warnings=["Missing reference"],
         )
@@ -285,10 +285,10 @@ class TestClosureInfo:
 
     def test_custom_values(self):
         c = ClosureInfo(
-            external_terminologies=["TERM-001", "TERM-002"],
-            external_templates=["TPL-001"],
+            external_terminologies=["0190a000-0000-7000-0000-000000000001", "0190a000-0000-7000-0000-000000000002"],
+            external_templates=["0190c000-0000-7000-0000-000000000001"],
             iterations=5,
-            warnings=["Missing reference to TERM-003"],
+            warnings=["Missing reference to 0190a000-0000-7000-0000-000000000003"],
         )
         assert len(c.external_terminologies) == 2
         assert len(c.external_templates) == 1

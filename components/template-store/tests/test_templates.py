@@ -147,7 +147,7 @@ async def test_get_template_by_value(client: AsyncClient, auth_headers: dict):
 async def test_get_template_not_found(client: AsyncClient, auth_headers: dict):
     """Test getting a non-existent template."""
     response = await client.get(
-        "/api/template-store/templates/TPL-999999",
+        "/api/template-store/templates/0190c000-0000-7000-0000-000999999999",
         headers=auth_headers,
     )
     assert response.status_code == 404
@@ -303,7 +303,7 @@ async def test_delete_template_not_found(client: AsyncClient, auth_headers: dict
         "DELETE",
         "/api/template-store/templates",
         headers=auth_headers,
-        json=[{"id": "TPL-999999"}],
+        json=[{"id": "0190c000-0000-7000-0000-000999999999"}],
     )
     assert response.status_code == 200
     data = response.json()

@@ -19,7 +19,7 @@ def _mock_client():
     mock.list_templates.return_value = {
         "items": [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "value": "PATIENT",
                 "label": "Patient Record",
                 "namespace": "clinic",
@@ -40,7 +40,7 @@ def _mock_client():
                 "status": "active",
             },
             {
-                "template_id": "TPL-002",
+                "template_id": "0190c000-0000-7000-0000-000000000002",
                 "value": "VISIT",
                 "label": "Visit Log",
                 "namespace": "clinic",
@@ -186,7 +186,7 @@ async def test_describe_data_model_pagination():
     page1 = {
         "items": [
             {
-                "template_id": "TPL-001", "value": "ALPHA", "label": "Alpha",
+                "template_id": "0190c000-0000-7000-0000-000000000001", "value": "ALPHA", "label": "Alpha",
                 "namespace": "test", "version": 1, "identity_fields": [],
                 "fields": [], "rules": [], "status": "active",
             },
@@ -197,7 +197,7 @@ async def test_describe_data_model_pagination():
     page2 = {
         "items": [
             {
-                "template_id": "TPL-002", "value": "BETA", "label": "Beta",
+                "template_id": "0190c000-0000-7000-0000-000000000002", "value": "BETA", "label": "Beta",
                 "namespace": "test", "version": 1, "identity_fields": [],
                 "fields": [], "rules": [], "status": "active",
             },

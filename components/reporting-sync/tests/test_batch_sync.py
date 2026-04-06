@@ -265,7 +265,7 @@ class TestBatchSyncTerminologies:
 
 
 SAMPLE_TERM = {
-    "term_id": "T-001",
+    "term_id": "0190b000-0000-7000-0000-000000000001",
     "namespace": "wip",
     "terminology_id": "TRM-001",
     "terminology_value": "COUNTRIES",
@@ -429,8 +429,8 @@ class TestBatchSyncTerms:
 
 SAMPLE_RELATIONSHIP = {
     "namespace": "wip",
-    "source_term_id": "T-001",
-    "target_term_id": "T-002",
+    "source_term_id": "0190b000-0000-7000-0000-000000000001",
+    "target_term_id": "0190b000-0000-7000-0000-000000000002",
     "relationship_type": "is_a",
     "source_term_value": "Pneumonia",
     "target_term_value": "Lung Disease",

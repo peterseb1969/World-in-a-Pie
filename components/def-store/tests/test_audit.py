@@ -370,11 +370,11 @@ async def test_audit_log_pagination_beyond_last_page(
 async def test_audit_log_requires_authentication(client: AsyncClient):
     """Test that audit log endpoints require authentication."""
     # Term audit log
-    response = await client.get("/api/def-store/audit/terms/T-000001")
+    response = await client.get("/api/def-store/audit/terms/0190b000-0000-7000-0000-000000000001")
     assert response.status_code == 401
 
     # Terminology audit log
-    response = await client.get("/api/def-store/audit/terminologies/TERM-000001")
+    response = await client.get("/api/def-store/audit/terminologies/0190a000-0000-7000-0000-000000000001")
     assert response.status_code == 401
 
     # Recent audit log

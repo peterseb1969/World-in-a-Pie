@@ -222,7 +222,7 @@ class TestTermEvents:
 
     def _make_event(self, event_type="term.created", **overrides):
         term = {
-            "term_id": "T-001",
+            "term_id": "0190b000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "terminology_id": "TRM-001",
             "terminology_value": "COUNTRIES",
@@ -309,7 +309,7 @@ class TestTermEvents:
         event = self._make_event(
             "term.deprecated",
             deprecated_reason="Replaced by ISO code",
-            replaced_by_term_id="T-002",
+            replaced_by_term_id="0190b000-0000-7000-0000-000000000002",
         )
         event["changed_by"] = "admin"
 
@@ -415,8 +415,8 @@ class TestRelationshipEvents:
     def _make_event(self, event_type="relationship.created", **overrides):
         rel = {
             "namespace": "wip",
-            "source_term_id": "T-001",
-            "target_term_id": "T-002",
+            "source_term_id": "0190b000-0000-7000-0000-000000000001",
+            "target_term_id": "0190b000-0000-7000-0000-000000000002",
             "relationship_type": "is_a",
             "source_term_value": "Pneumonia",
             "target_term_value": "Lung Disease",

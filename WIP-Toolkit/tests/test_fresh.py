@@ -214,16 +214,16 @@ class TestEnsureNamespace:
 class TestCreateTerminologies:
     def test_create_terminologies_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_terminology("NEW-TERM-001")
+        client.post.return_value = _ok_terminology("NEW-0190a000-0000-7000-0000-000000000001")
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY", "label": "Country"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY", "label": "Country"},
         ]
 
         _create_terminologies(client, "ns", terminologies, remapper, stats, False)
 
-        assert remapper.terminology_map["OLD-TERM-001"] == "NEW-TERM-001"
+        assert remapper.terminology_map["OLD-0190a000-0000-7000-0000-000000000001"] == "NEW-0190a000-0000-7000-0000-000000000001"
         assert stats.created.terminologies == 1
 
     def test_create_terminologies_already_exists(self):
@@ -236,7 +236,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"},
         ]
 
         _create_terminologies(client, "ns", terminologies, remapper, stats, False)
@@ -255,7 +255,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "BAD"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "BAD"},
         ]
 
         with pytest.raises(WIPClientError):
@@ -275,7 +275,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "BAD"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "BAD"},
         ]
 
         # Should NOT raise
@@ -309,12 +309,12 @@ class TestCreateTerms:
     def test_create_terms_uses_remapped_terminology_id(self):
         """Terms are posted to /terminologies/{NEW_TID}/terms."""
         client = MagicMock()
-        client.post.return_value = _ok_terms([(0, "NEW-T-001")])
+        client.post.return_value = _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_terminology_mapping("OLD-TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TID", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-TID", "value": "UK"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
@@ -324,19 +324,19 @@ class TestCreateTerms:
 
     def test_create_terms_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_terms([(0, "NEW-T-001"), (1, "NEW-T-002")])
+        client.post.return_value = _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001"), (1, "NEW-0190b000-0000-7000-0000-000000000002")])
         remapper = IDRemapper()
         remapper.add_terminology_mapping("OLD-TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TID", "value": "UK"},
-            {"term_id": "OLD-T-002", "terminology_id": "OLD-TID", "value": "France"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-TID", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000002", "terminology_id": "OLD-TID", "value": "France"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
 
-        assert remapper.term_map["OLD-T-001"] == "NEW-T-001"
-        assert remapper.term_map["OLD-T-002"] == "NEW-T-002"
+        assert remapper.term_map["OLD-0190b000-0000-7000-0000-000000000001"] == "NEW-0190b000-0000-7000-0000-000000000001"
+        assert remapper.term_map["OLD-0190b000-0000-7000-0000-000000000002"] == "NEW-0190b000-0000-7000-0000-000000000002"
         assert stats.created.terms == 2
 
     def test_create_terms_unmapped_terminology_skipped(self):
@@ -345,8 +345,8 @@ class TestCreateTerms:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "T-001", "terminology_id": "UNMAPPED-TID", "value": "foo"},
-            {"term_id": "T-002", "terminology_id": "UNMAPPED-TID", "value": "bar"},
+            {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "UNMAPPED-TID", "value": "foo"},
+            {"term_id": "0190b000-0000-7000-0000-000000000002", "terminology_id": "UNMAPPED-TID", "value": "bar"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
@@ -390,7 +390,7 @@ class TestCreateTerms:
         remapper.add_terminology_mapping("TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": f"T-{i}", "terminology_id": "TID", "value": f"v{i}"}
+            {"term_id": f"0190b000-0000-7000-0000-{i:012d}", "terminology_id": "TID", "value": f"v{i}"}
             for i in range(3)
         ]
 
@@ -412,7 +412,7 @@ class TestCreateTerms:
         remapper.add_terminology_mapping("TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "T-1", "terminology_id": "TID", "value": "v1"},
+            {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "TID", "value": "v1"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, continue_on_error=True)
@@ -431,7 +431,7 @@ class TestCreateTemplatesMultipass:
         client = MagicMock()
         # POST for creation, then POST for activation
         client.post.side_effect = [
-            _ok_template("NEW-TPL-001"),
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
             {},  # activation
         ]
         remapper = IDRemapper()
@@ -439,7 +439,7 @@ class TestCreateTemplatesMultipass:
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
             {
-                "template_id": "OLD-TPL-001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "value": "PERSON",
                 "version": 1,
                 "fields": [
@@ -510,18 +510,18 @@ class TestCreateTemplatesMultipass:
     def test_create_templates_maps_ids(self):
         client = MagicMock()
         client.post.side_effect = [
-            _ok_template("NEW-TPL-001"),
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
             {},  # activation
         ]
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL-001", "value": "THING", "version": 1, "fields": []},
+            {"template_id": "OLD-0190c000-0000-7000-0000-000000000001", "value": "THING", "version": 1, "fields": []},
         ]
 
         _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        assert remapper.template_map["OLD-TPL-001"] == "NEW-TPL-001"
+        assert remapper.template_map["OLD-0190c000-0000-7000-0000-000000000001"] == "NEW-0190c000-0000-7000-0000-000000000001"
 
     def test_create_templates_error_first_version(self):
         """Error on first version is recorded."""
@@ -660,14 +660,14 @@ class TestCreateDocuments:
     def test_create_documents_remaps_references(self):
         """Documents have template_id and term references remapped."""
         client = MagicMock()
-        client.post.return_value = _ok_documents([(0, "NEW-DOC-001")])
+        client.post.return_value = _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         remapper.add_term_mapping("OLD-T", "NEW-T")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         documents = [
             {
-                "document_id": "OLD-DOC-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
                 "template_id": "OLD-TPL",
                 "version": 1,
                 "data": {"name": "Test"},
@@ -684,13 +684,13 @@ class TestCreateDocuments:
 
     def test_create_documents_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_documents([(0, "NEW-DOC-001")])
+        client.post.return_value = _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         documents = [
             {
-                "document_id": "OLD-DOC-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
                 "template_id": "OLD-TPL",
                 "version": 1,
                 "data": {"x": 1},
@@ -699,7 +699,7 @@ class TestCreateDocuments:
 
         _create_documents(client, "ns", documents, remapper, 50, stats, False)
 
-        assert remapper.document_map["OLD-DOC-001"] == "NEW-DOC-001"
+        assert remapper.document_map["OLD-0190d000-0000-7000-0000-000000000001"] == "NEW-0190d000-0000-7000-0000-000000000001"
         assert stats.created.documents == 1
 
     def test_create_documents_batched(self):
@@ -917,12 +917,12 @@ class TestRegisterSynonyms:
         client = MagicMock()
         client.post.return_value = _ok_synonyms(3)
         remapper = IDRemapper()
-        remapper.add_terminology_mapping("OLD-TERM-1", "NEW-TERM-1")
+        remapper.add_terminology_mapping("OLD-0190a000-0000-7000-0000-000000000001", "NEW-0190a000-0000-7000-0000-000000000001")
 
         # Entity with _registry synonyms
         terminologies = [
             {
-                "terminology_id": "OLD-TERM-1",
+                "terminology_id": "OLD-0190a000-0000-7000-0000-000000000001",
                 "value": "COUNTRY",
                 "_registry": {
                     "synonyms": [
@@ -947,7 +947,7 @@ class TestRegisterSynonyms:
             if item.get("synonym_composite_key", {}).get("external_code") == "ISO-3166"
         ]
         assert len(registry_syns) == 1
-        assert registry_syns[0]["target_id"] == "NEW-TERM-1"
+        assert registry_syns[0]["target_id"] == "NEW-0190a000-0000-7000-0000-000000000001"
         assert registry_syns[0]["synonym_entity_type"] == "terminologies"
 
     def test_register_synonyms_remaps_composite_keys(self):
@@ -955,13 +955,13 @@ class TestRegisterSynonyms:
         client = MagicMock()
         client.post.return_value = _ok_synonyms(3)
         remapper = IDRemapper()
-        remapper.add_document_mapping("OLD-DOC-1", "NEW-DOC-1")
-        remapper.add_template_mapping("OLD-TPL-1", "NEW-TPL-1")
+        remapper.add_document_mapping("OLD-0190d000-0000-7000-0000-000000000001", "NEW-0190d000-0000-7000-0000-000000000001")
+        remapper.add_template_mapping("OLD-0190c000-0000-7000-0000-000000000001", "NEW-0190c000-0000-7000-0000-000000000001")
 
         documents = [
             {
-                "document_id": "OLD-DOC-1",
-                "template_id": "OLD-TPL-1",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "version": 1,
                 "data": {},
                 "_registry": {
@@ -970,7 +970,7 @@ class TestRegisterSynonyms:
                             "namespace": "wip",
                             "entity_type": "documents",
                             "composite_key": {
-                                "template_id": "OLD-TPL-1",
+                                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                                 "identity_hash": "abc123",
                             },
                         },
@@ -991,11 +991,11 @@ class TestRegisterSynonyms:
         ]
         assert len(restored) == 1
         # template_id within the composite key should be remapped
-        assert restored[0]["synonym_composite_key"]["template_id"] == "NEW-TPL-1"
+        assert restored[0]["synonym_composite_key"]["template_id"] == "NEW-0190c000-0000-7000-0000-000000000001"
         # identity_hash is a string but not in any map, so stays the same
         assert restored[0]["synonym_composite_key"]["identity_hash"] == "abc123"
         # target_id should be the new document ID
-        assert restored[0]["target_id"] == "NEW-DOC-1"
+        assert restored[0]["target_id"] == "NEW-0190d000-0000-7000-0000-000000000001"
 
     def test_register_synonyms_no_items(self):
         """No synonyms to register prints message and returns."""
@@ -1046,38 +1046,38 @@ class TestFreshImportFullFlow:
         # _upload_files: 1 file
         client.post.side_effect = [
             # terminology creation
-            _ok_terminology("NEW-TERM-001"),
+            _ok_terminology("NEW-0190a000-0000-7000-0000-000000000001"),
             # term creation
-            _ok_terms([(0, "NEW-T-001")]),
+            _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001")]),
             # template creation (POST)
-            _ok_template("NEW-TPL-001"),
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
             # template activation
             {},
             # document creation
-            _ok_documents([(0, "NEW-DOC-001")]),
+            _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")]),
         ]
         client.post_form.return_value = _ok_file("NEW-FILE-001")
 
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"},
         ]
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TERM-001", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "UK"},
         ]
         templates = [
             {
-                "template_id": "OLD-TPL-001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "value": "PERSON",
                 "version": 1,
                 "fields": [
-                    {"name": "country", "type": "term", "terminology_ref": "OLD-TERM-001"},
+                    {"name": "country", "type": "term", "terminology_ref": "OLD-0190a000-0000-7000-0000-000000000001"},
                 ],
             },
         ]
         documents = [
             {
-                "document_id": "OLD-DOC-001",
-                "template_id": "OLD-TPL-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "version": 1,
                 "data": {"name": "Alice"},
             },
@@ -1152,9 +1152,9 @@ class TestSkipFlags:
 
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
-            terms=[{"term_id": "T-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            terms=[{"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
             files=[{"file_id": "F-1", "filename": "f.txt", "content_type": "text/plain", "metadata": {}}],
             blobs=["F-1"],
         )
@@ -1181,9 +1181,9 @@ class TestSkipFlags:
 
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
-            terms=[{"term_id": "T-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            terms=[{"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
             files=[{"file_id": "F-1", "filename": "f.txt", "metadata": {}}],
             blobs=["F-1"],
         )
@@ -1226,8 +1226,8 @@ class TestContinueOnError:
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
             terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
         )
 
         stats = fresh_import(
@@ -1258,8 +1258,8 @@ class TestContinueOnError:
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
             terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
         )
 
         stats = fresh_import(

@@ -32,26 +32,26 @@ def mock_collector():
         "isolation_mode": "open",
     }
     collector.fetch_terminologies.return_value = [
-        {"terminology_id": "TERM-001", "namespace": "wip", "value": "COUNTRY"},
+        {"terminology_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip", "value": "COUNTRY"},
     ]
     collector.fetch_all_terms.return_value = [
-        {"term_id": "T-001", "terminology_id": "TERM-001", "namespace": "wip", "value": "UK"},
+        {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip", "value": "UK"},
     ]
     collector.fetch_templates.return_value = [
-        {"template_id": "TPL-001", "namespace": "wip", "version": 1, "fields": []},
+        {"template_id": "0190c000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1, "fields": []},
     ]
     collector.fetch_template_raw.return_value = {
-        "template_id": "TPL-001", "namespace": "wip", "version": 1, "fields": [],
+        "template_id": "0190c000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1, "fields": [],
     }
     # stream_documents yields pages
     collector.stream_documents.return_value = iter([
-        [{"document_id": "DOC-001", "namespace": "wip", "version": 1,
-          "template_id": "TPL-001", "data": {}}],
+        [{"document_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1,
+          "template_id": "0190c000-0000-7000-0000-000000000001", "data": {}}],
     ])
     # fetch_documents for closure
     collector.fetch_documents.return_value = [
-        {"document_id": "DOC-001", "namespace": "wip", "version": 1,
-         "template_id": "TPL-001", "data": {}},
+        {"document_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1,
+         "template_id": "0190c000-0000-7000-0000-000000000001", "data": {}},
     ]
     collector.fetch_files.return_value = [
         {"file_id": "FILE-001", "namespace": "wip", "filename": "test.pdf"},
@@ -418,8 +418,8 @@ class TestFetchRawTemplates:
         from wip_toolkit.export.exporter import _fetch_raw_templates
 
         collector = MagicMock()
-        resolved = {"template_id": "TPL-001", "version": 1, "fields": [{"resolved": True}]}
-        raw = {"template_id": "TPL-001", "version": 1, "fields": [{"raw": True}]}
+        resolved = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"resolved": True}]}
+        raw = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"raw": True}]}
         collector.fetch_template_raw.return_value = raw
 
         result = _fetch_raw_templates(collector, [resolved])
@@ -431,7 +431,7 @@ class TestFetchRawTemplates:
         from wip_toolkit.export.exporter import _fetch_raw_templates
 
         collector = MagicMock()
-        resolved = {"template_id": "TPL-001", "version": 1, "fields": [{"resolved": True}]}
+        resolved = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"resolved": True}]}
         collector.fetch_template_raw.side_effect = Exception("Not found")
 
         result = _fetch_raw_templates(collector, [resolved])
@@ -461,8 +461,8 @@ class TestBuildStats:
         counts = EntityCounts(terminologies=2, terms=10, templates=3,
                               documents=5, files=1)
         closure_info = ClosureInfo(
-            external_terminologies=["EXT-TERM-1"],
-            external_templates=["EXT-TPL-1", "EXT-TPL-2"],
+            external_terminologies=["EXT-0190a000-0000-7000-0000-000000000001"],
+            external_templates=["EXT-0190c000-0000-7000-0000-000000000001", "EXT-TPL-2"],
             iterations=2,
             warnings=["some warning"],
         )

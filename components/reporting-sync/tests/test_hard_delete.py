@@ -71,7 +71,7 @@ def worker(mock_nats, mock_jetstream, mock_pool, sync_status):
 # =========================================================================
 
 
-def _make_template(template_id="TPL-000001", value="person", version=1, namespace="wip"):
+def _make_template(template_id="0190c000-0000-7000-0000-000000000001", value="person", version=1, namespace="wip"):
     return {
         "template_id": template_id,
         "value": value,
@@ -102,8 +102,8 @@ class TestDocumentHardDelete:
         event = {
             "event_type": "document.deleted",
             "document": {
-                "document_id": "DOC-001",
-                "template_id": "TPL-000001",
+                "document_id": "0190d000-0000-7000-0000-000000000001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "template_version": 1,
                 "status": "active",
                 "identity_hash": "abc",
@@ -134,8 +134,8 @@ class TestDocumentHardDelete:
         event = {
             "event_type": "document.deleted",
             "document": {
-                "document_id": "DOC-002",
-                "template_id": "TPL-000001",
+                "document_id": "0190d000-0000-7000-0000-000000000002",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "template_version": 1,
                 "version": 2,
                 "status": "active",
@@ -156,7 +156,7 @@ class TestDocumentHardDelete:
         assert "DELETE FROM" in sql
         # Should have both document_id and version params
         args = conn.execute.call_args[0]
-        assert args[1] == "DOC-002"
+        assert args[1] == "0190d000-0000-7000-0000-000000000002"
         assert args[2] == 2
 
     @pytest.mark.asyncio
@@ -167,8 +167,8 @@ class TestDocumentHardDelete:
         event = {
             "event_type": "document.deleted",
             "document": {
-                "document_id": "DOC-003",
-                "template_id": "TPL-000001",
+                "document_id": "0190d000-0000-7000-0000-000000000003",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "template_version": 1,
                 "version": 1,
                 "status": "active",
@@ -346,7 +346,7 @@ class TestTermHardDelete:
             "term": {
                 "term_id": "T-HD-001",
                 "namespace": "wip",
-                "terminology_id": "TERM-001",
+                "terminology_id": "0190a000-0000-7000-0000-000000000001",
                 "value": "REMOVED",
                 "label": "Removed",
                 "hard_delete": True,
@@ -373,7 +373,7 @@ class TestTermHardDelete:
             "term": {
                 "term_id": "T-SD-001",
                 "namespace": "wip",
-                "terminology_id": "TERM-001",
+                "terminology_id": "0190a000-0000-7000-0000-000000000001",
                 "value": "SOFT",
                 "label": "Soft",
             },
@@ -404,11 +404,11 @@ class TestRelationshipHardDelete:
             "event_type": "relationship.deleted",
             "relationship": {
                 "namespace": "wip",
-                "source_term_id": "T-001",
-                "target_term_id": "T-002",
+                "source_term_id": "0190b000-0000-7000-0000-000000000001",
+                "target_term_id": "0190b000-0000-7000-0000-000000000002",
                 "relationship_type": "is_a",
-                "source_terminology_id": "TERM-001",
-                "target_terminology_id": "TERM-001",
+                "source_terminology_id": "0190a000-0000-7000-0000-000000000001",
+                "target_terminology_id": "0190a000-0000-7000-0000-000000000001",
                 "hard_delete": True,
             },
         }
@@ -430,11 +430,11 @@ class TestRelationshipHardDelete:
             "event_type": "relationship.deleted",
             "relationship": {
                 "namespace": "wip",
-                "source_term_id": "T-003",
-                "target_term_id": "T-004",
+                "source_term_id": "0190b000-0000-7000-0000-000000000003",
+                "target_term_id": "0190b000-0000-7000-0000-000000000004",
                 "relationship_type": "is_a",
-                "source_terminology_id": "TERM-002",
-                "target_terminology_id": "TERM-002",
+                "source_terminology_id": "0190a000-0000-7000-0000-000000000002",
+                "target_terminology_id": "0190a000-0000-7000-0000-000000000002",
             },
         }
 

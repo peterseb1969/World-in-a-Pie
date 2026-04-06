@@ -12,16 +12,16 @@ import pytest
 from wip_auth.resolve import EntityNotFoundError
 
 SYNONYM_MAP = {
-    ("template", "PERSON", "test-ns"): "TPL-000001",
-    ("template", "AA_PROJECT", "test-ns"): "TPL-000099",
-    ("document", "my-doc", None): "DOC-000001",
+    ("template", "PERSON", "test-ns"): "PERSON",
+    ("template", "AA_PROJECT", "test-ns"): "0190c000-0000-7000-0000-000000000099",
+    ("document", "my-doc", None): "0190d000-0000-7000-0000-000000000001",
 }
 
 
 async def mock_resolve(raw_id, entity_type, namespace, **kwargs):
     """Mock resolve_entity_id that uses SYNONYM_MAP."""
     import re
-    if re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE) or raw_id.startswith(("TPL-", "DOC-")):
+    if re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE) or re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE):
         return raw_id
     key = (entity_type, raw_id, namespace)
     if key in SYNONYM_MAP:
@@ -68,7 +68,7 @@ class TestDocumentSynonymResolution:
                     "data": {"first_name": "Test"},
                 }],
             )
-        # Template TPL-000001 won't exist in test DB, but we should not get 500
+        # Template PERSON won't exist in test DB, but we should not get 500
         assert resp.status_code == 200, f"Unexpected: {resp.status_code}"
         # Check per-item — should be error (template not found), not crash
         body = resp.json()
@@ -106,7 +106,7 @@ class TestDocumentGetSynonymResolution:
                 "/api/document-store/documents/my-doc",
                 headers=auth_headers,
             )
-        # DOC-000001 won't exist, but should be 404 not 500
+        # 0190d000-0000-7000-0000-000000000001 won't exist, but should be 404 not 500
         assert resp.status_code == 404
 
     async def test_get_document_unresolvable_returns_404(self, client, auth_headers):
@@ -125,7 +125,7 @@ class TestDocumentGetSynonymResolution:
                 "/api/document-store/documents/my-doc/versions",
                 headers=auth_headers,
             )
-        assert resp.status_code == 404  # DOC-000001 doesn't exist
+        assert resp.status_code == 404  # 0190d000-0000-7000-0000-000000000001 doesn't exist
 
 
 @pytest.mark.asyncio

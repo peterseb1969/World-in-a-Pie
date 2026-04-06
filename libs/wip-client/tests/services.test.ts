@@ -44,7 +44,7 @@ describe('Service classes via createWipClient', () => {
 
     it('createTerminology sends bulk POST and unwraps', async () => {
       mockJsonResponse({
-        results: [{ index: 0, status: 'created', id: 'T-001' }],
+        results: [{ index: 0, status: 'created', id: '0190b000-0000-7000-0000-000000000001' }],
         total: 1,
         succeeded: 1,
         failed: 0,
@@ -56,7 +56,7 @@ describe('Service classes via createWipClient', () => {
       })
 
       expect(result.status).toBe('created')
-      expect(result.id).toBe('T-001')
+      expect(result.id).toBe('0190b000-0000-7000-0000-000000000001')
 
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/def-store/terminologies')
@@ -80,17 +80,17 @@ describe('Service classes via createWipClient', () => {
 
     it('deleteTerminology sends DELETE with body', async () => {
       mockJsonResponse({
-        results: [{ index: 0, status: 'deleted', id: 'T-001' }],
+        results: [{ index: 0, status: 'deleted', id: '0190b000-0000-7000-0000-000000000001' }],
         total: 1,
         succeeded: 1,
         failed: 0,
       })
 
-      await client.defStore.deleteTerminology('T-001')
+      await client.defStore.deleteTerminology('0190b000-0000-7000-0000-000000000001')
 
       const [, options] = fetchMock.mock.calls[0]
       expect(options.method).toBe('DELETE')
-      expect(JSON.parse(options.body)).toEqual([{ id: 'T-001' }])
+      expect(JSON.parse(options.body)).toEqual([{ id: '0190b000-0000-7000-0000-000000000001' }])
     })
   })
 
@@ -109,27 +109,27 @@ describe('Service classes via createWipClient', () => {
     })
 
     it('getTemplate fetches by ID', async () => {
-      mockJsonResponse({ template_id: 'TPL-1', value: 'TEST', version: 1 })
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000001', value: 'TEST', version: 1 })
 
-      const result = await client.templates.getTemplate('TPL-1')
+      const result = await client.templates.getTemplate('0190c000-0000-7000-0000-000000000001')
 
-      expect(result.template_id).toBe('TPL-1')
+      expect(result.template_id).toBe('0190c000-0000-7000-0000-000000000001')
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/template-store/templates/TPL-1')
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001')
     })
 
     it('getTemplate with version passes version param', async () => {
-      mockJsonResponse({ template_id: 'TPL-1', value: 'TEST', version: 3 })
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000001', value: 'TEST', version: 3 })
 
-      await client.templates.getTemplate('TPL-1', 3)
+      await client.templates.getTemplate('0190c000-0000-7000-0000-000000000001', 3)
 
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/template-store/templates/TPL-1')
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001')
       expect(url).toContain('version=3')
     })
 
     it('getTemplateByValue fetches by value', async () => {
-      mockJsonResponse({ template_id: 'TPL-1', value: 'PATIENT' })
+      mockJsonResponse({ template_id: '0190c000-0000-7000-0000-000000000001', value: 'PATIENT' })
 
       await client.templates.getTemplateByValue('PATIENT')
 
@@ -139,7 +139,7 @@ describe('Service classes via createWipClient', () => {
 
     it('createTemplate sends bulk POST and unwraps', async () => {
       mockJsonResponse({
-        results: [{ index: 0, status: 'created', id: 'TPL-1' }],
+        results: [{ index: 0, status: 'created', id: '0190c000-0000-7000-0000-000000000001' }],
         total: 1,
         succeeded: 1,
         failed: 0,
@@ -152,7 +152,7 @@ describe('Service classes via createWipClient', () => {
       } as any)
 
       expect(result.status).toBe('created')
-      expect(result.id).toBe('TPL-1')
+      expect(result.id).toBe('0190c000-0000-7000-0000-000000000001')
 
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/template-store/templates')
@@ -164,7 +164,7 @@ describe('Service classes via createWipClient', () => {
     it('createTemplates sends bulk POST with multiple items', async () => {
       mockJsonResponse({
         results: [
-          { index: 0, status: 'created', id: 'TPL-1' },
+          { index: 0, status: 'created', id: '0190c000-0000-7000-0000-000000000001' },
           { index: 1, status: 'created', id: 'TPL-2' },
         ],
         total: 2,
@@ -203,65 +203,65 @@ describe('Service classes via createWipClient', () => {
 
     it('updateTemplate sends PUT with template_id in body', async () => {
       mockJsonResponse({
-        results: [{ index: 0, status: 'updated', id: 'TPL-1' }],
+        results: [{ index: 0, status: 'updated', id: '0190c000-0000-7000-0000-000000000001' }],
         total: 1,
         succeeded: 1,
         failed: 0,
       })
 
-      await client.templates.updateTemplate('TPL-1', { label: 'Updated Patient' } as any)
+      await client.templates.updateTemplate('0190c000-0000-7000-0000-000000000001', { label: 'Updated Patient' } as any)
 
       const [, options] = fetchMock.mock.calls[0]
       expect(options.method).toBe('PUT')
       const body = JSON.parse(options.body)
-      expect(body).toEqual([{ label: 'Updated Patient', template_id: 'TPL-1' }])
+      expect(body).toEqual([{ label: 'Updated Patient', template_id: '0190c000-0000-7000-0000-000000000001' }])
     })
 
     it('deleteTemplate sends DELETE with body', async () => {
       mockJsonResponse({
-        results: [{ index: 0, status: 'deleted', id: 'TPL-1' }],
+        results: [{ index: 0, status: 'deleted', id: '0190c000-0000-7000-0000-000000000001' }],
         total: 1,
         succeeded: 1,
         failed: 0,
       })
 
-      await client.templates.deleteTemplate('TPL-1', { version: 2, force: true })
+      await client.templates.deleteTemplate('0190c000-0000-7000-0000-000000000001', { version: 2, force: true })
 
       const [, options] = fetchMock.mock.calls[0]
       expect(options.method).toBe('DELETE')
       const body = JSON.parse(options.body)
-      expect(body).toEqual([{ id: 'TPL-1', version: 2, force: true, updated_by: undefined }])
+      expect(body).toEqual([{ id: '0190c000-0000-7000-0000-000000000001', version: 2, force: true, updated_by: undefined }])
     })
 
     it('validateTemplate sends POST', async () => {
       mockJsonResponse({ valid: true, errors: [] })
 
-      const result = await client.templates.validateTemplate('TPL-1', {})
+      const result = await client.templates.validateTemplate('0190c000-0000-7000-0000-000000000001', {})
 
       expect(result.valid).toBe(true)
       const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/template-store/templates/TPL-1/validate')
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001/validate')
       expect(options.method).toBe('POST')
     })
 
     it('getChildren fetches child templates', async () => {
       mockJsonResponse({ items: [{ template_id: 'TPL-2' }], total: 1, page: 1, page_size: 50, pages: 1 })
 
-      const result = await client.templates.getChildren('TPL-1')
+      const result = await client.templates.getChildren('0190c000-0000-7000-0000-000000000001')
 
       expect(result.items).toHaveLength(1)
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/template-store/templates/TPL-1/children')
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001/children')
     })
 
     it('activateTemplate sends POST with options', async () => {
-      mockJsonResponse({ activated: ['TPL-1', 'TPL-2'] })
+      mockJsonResponse({ activated: ['0190c000-0000-7000-0000-000000000001', 'TPL-2'] })
 
-      const result = await client.templates.activateTemplate('TPL-1', { dry_run: true })
+      const result = await client.templates.activateTemplate('0190c000-0000-7000-0000-000000000001', { dry_run: true })
 
-      expect(result.activated).toEqual(['TPL-1', 'TPL-2'])
+      expect(result.activated).toEqual(['0190c000-0000-7000-0000-000000000001', 'TPL-2'])
       const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/template-store/templates/TPL-1/activate')
+      expect(url).toContain('/api/template-store/templates/0190c000-0000-7000-0000-000000000001/activate')
       expect(url).toContain('dry_run=true')
       expect(options.method).toBe('POST')
     })
@@ -281,14 +281,14 @@ describe('Service classes via createWipClient', () => {
     it('listDocuments sends GET with pagination params', async () => {
       mockJsonResponse({ items: [], total: 0, page: 1, page_size: 50, pages: 0 })
 
-      const result = await client.documents.listDocuments({ page: 1, status: 'active', template_id: 'TPL-1' } as any)
+      const result = await client.documents.listDocuments({ page: 1, status: 'active', template_id: '0190c000-0000-7000-0000-000000000001' } as any)
 
       expect(result.items).toEqual([])
       const [url] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/documents')
       expect(url).toContain('page=1')
       expect(url).toContain('status=active')
-      expect(url).toContain('template_id=TPL-1')
+      expect(url).toContain('template_id=0190c000-0000-7000-0000-000000000001')
     })
 
     it('getDocument fetches by ID', async () => {
@@ -320,7 +320,7 @@ describe('Service classes via createWipClient', () => {
       })
 
       const result = await client.documents.createDocument({
-        template_id: 'TPL-1',
+        template_id: '0190c000-0000-7000-0000-000000000001',
         data: { name: 'Test' },
       })
 
@@ -330,7 +330,7 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/document-store/documents')
       expect(options.method).toBe('POST')
       const body = JSON.parse(options.body)
-      expect(body).toEqual([{ template_id: 'TPL-1', data: { name: 'Test' } }])
+      expect(body).toEqual([{ template_id: '0190c000-0000-7000-0000-000000000001', data: { name: 'Test' } }])
     })
 
     it('createDocument throws WipBulkItemError on error result', async () => {
@@ -342,7 +342,7 @@ describe('Service classes via createWipClient', () => {
       })
 
       await expect(
-        client.documents.createDocument({ template_id: 'TPL-1', data: {} }),
+        client.documents.createDocument({ template_id: '0190c000-0000-7000-0000-000000000001', data: {} }),
       ).rejects.toThrow(WipBulkItemError)
     })
 
@@ -358,8 +358,8 @@ describe('Service classes via createWipClient', () => {
       })
 
       const result = await client.documents.createDocuments([
-        { template_id: 'TPL-1', data: { name: 'A' } },
-        { template_id: 'TPL-1', data: { name: 'B' } },
+        { template_id: '0190c000-0000-7000-0000-000000000001', data: { name: 'A' } },
+        { template_id: '0190c000-0000-7000-0000-000000000001', data: { name: 'B' } },
       ])
 
       expect(result.succeeded).toBe(2)
@@ -388,7 +388,7 @@ describe('Service classes via createWipClient', () => {
 
     it('getTableView sends GET with params', async () => {
       mockJsonResponse({
-        template_id: 'TPL-1',
+        template_id: '0190c000-0000-7000-0000-000000000001',
         columns: [],
         rows: [],
         total_documents: 0,
@@ -398,10 +398,10 @@ describe('Service classes via createWipClient', () => {
         pages: 0,
       })
 
-      await client.documents.getTableView('TPL-1', { status: 'active' })
+      await client.documents.getTableView('0190c000-0000-7000-0000-000000000001', { status: 'active' })
 
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/document-store/table/TPL-1')
+      expect(url).toContain('/api/document-store/table/0190c000-0000-7000-0000-000000000001')
       expect(url).toContain('status=active')
     })
 
@@ -409,7 +409,7 @@ describe('Service classes via createWipClient', () => {
       mockJsonResponse({ items: [{ document_id: 'D-001' }], total: 1, page: 1, page_size: 50, pages: 1 })
 
       const result = await client.documents.queryDocuments({
-        template_id: 'TPL-1',
+        template_id: '0190c000-0000-7000-0000-000000000001',
         filters: { name: 'Test' },
       } as any)
 
@@ -480,7 +480,7 @@ describe('Service classes via createWipClient', () => {
       mockJsonResponse({ valid: true, errors: [] })
 
       const result = await client.documents.validateDocument({
-        template_id: 'TPL-1',
+        template_id: '0190c000-0000-7000-0000-000000000001',
         data: { name: 'Test' },
       } as any)
 
@@ -917,16 +917,16 @@ describe('Service classes via createWipClient', () => {
     it('getTermDocuments sends GET', async () => {
       mockJsonResponse({ documents: [{ document_id: 'D-001' }], total: 1 })
 
-      const result = await client.reporting.getTermDocuments('T-001', 50)
+      const result = await client.reporting.getTermDocuments('0190b000-0000-7000-0000-000000000001', 50)
 
       expect(result.documents).toHaveLength(1)
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/reporting-sync/references/term/T-001/documents')
+      expect(url).toContain('/api/reporting-sync/references/term/0190b000-0000-7000-0000-000000000001/documents')
       expect(url).toContain('limit=50')
     })
 
     it('getEntityReferences sends GET', async () => {
-      mockJsonResponse({ references: [{ type: 'term', id: 'T-001' }] })
+      mockJsonResponse({ references: [{ type: 'term', id: '0190b000-0000-7000-0000-000000000001' }] })
 
       const result = await client.reporting.getEntityReferences('document', 'D-001')
 
@@ -938,11 +938,11 @@ describe('Service classes via createWipClient', () => {
     it('getReferencedBy sends GET with limit', async () => {
       mockJsonResponse({ referenced_by: [{ type: 'document', id: 'D-001' }] })
 
-      const result = await client.reporting.getReferencedBy('term', 'T-001', 50)
+      const result = await client.reporting.getReferencedBy('term', '0190b000-0000-7000-0000-000000000001', 50)
 
       expect(result.referenced_by).toHaveLength(1)
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/reporting-sync/entity/term/T-001/referenced-by')
+      expect(url).toContain('/api/reporting-sync/entity/term/0190b000-0000-7000-0000-000000000001/referenced-by')
       expect(url).toContain('limit=50')
     })
 

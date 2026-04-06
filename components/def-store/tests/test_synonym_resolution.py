@@ -13,22 +13,22 @@ from wip_auth.resolve import EntityNotFoundError
 
 # Known synonym mappings for tests
 SYNONYM_MAP = {
-    ("terminology", "STATUS", "test-ns"): "TERM-000001",
-    ("terminology", "GENDER", "test-ns"): "TERM-000002",
-    ("term", "STATUS:approved", "test-ns"): "T-000001",
-    ("term", "STATUS:rejected", "test-ns"): "T-000002",
+    ("terminology", "STATUS", "test-ns"): "0190a000-0000-7000-0000-000000000001",
+    ("terminology", "GENDER", "test-ns"): "0190a000-0000-7000-0000-000000000002",
+    ("term", "STATUS:approved", "test-ns"): "0190b000-0000-7000-0000-000000000001",
+    ("term", "STATUS:rejected", "test-ns"): "0190b000-0000-7000-0000-000000000002",
     # Also support namespace=None for endpoints without namespace param
-    ("terminology", "STATUS", None): "TERM-000001",
-    ("terminology", "GENDER", None): "TERM-000002",
-    ("term", "STATUS:approved", None): "T-000001",
-    ("term", "STATUS:rejected", None): "T-000002",
+    ("terminology", "STATUS", None): "0190a000-0000-7000-0000-000000000001",
+    ("terminology", "GENDER", None): "0190a000-0000-7000-0000-000000000002",
+    ("term", "STATUS:approved", None): "0190b000-0000-7000-0000-000000000001",
+    ("term", "STATUS:rejected", None): "0190b000-0000-7000-0000-000000000002",
 }
 
 
 async def mock_resolve(raw_id, entity_type, namespace, **kwargs):
     """Mock resolve_entity_id that uses SYNONYM_MAP."""
     import re
-    if re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE) or raw_id.startswith(("TERM-", "T-")):
+    if re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE) or re.match(r"^[0-9a-f]{8}-", raw_id, re.IGNORECASE):
         return raw_id
     key = (entity_type, raw_id, namespace)
     if key in SYNONYM_MAP:
@@ -48,7 +48,7 @@ class TestTermsSynonymResolution:
                 headers=auth_headers,
                 json=[{"value": "new_term", "label": "New Term"}],
             )
-        # The resolved ID TERM-000001 may not exist in test DB, but we should
+        # The resolved ID 0190a000-0000-7000-0000-000000000001 may not exist in test DB, but we should
         # NOT get a 500 — we should get 404 (terminology not found in DB) or 200
         assert resp.status_code in (200, 404), f"Unexpected status: {resp.status_code} {resp.text}"
 
@@ -99,7 +99,7 @@ class TestTermsSynonymResolution:
                 "/api/def-store/terms/deprecate",
                 headers=auth_headers,
                 json=[{
-                    "term_id": "T-000001",
+                    "term_id": "0190b000-0000-7000-0000-000000000001",
                     "reason": "Replaced by rejected",
                     "replaced_by_term_id": "STATUS:rejected",
                 }],

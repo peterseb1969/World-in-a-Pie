@@ -165,7 +165,7 @@ async def test_import_documents():
         result = await client.import_documents(
             file_content=b"csv-data",
             filename="import.csv",
-            template_id="TPL-001",
+            template_id="0190c000-0000-7000-0000-000000000001",
             column_mapping=mapping,
             namespace="test-ns",
             skip_errors=True,
@@ -177,7 +177,7 @@ async def test_import_documents():
     assert "/api/document-store/import" in call_kwargs.args[0]
 
     data = call_kwargs.kwargs["data"]
-    assert data["template_id"] == "TPL-001"
+    assert data["template_id"] == "0190c000-0000-7000-0000-000000000001"
     assert json.loads(data["column_mapping"]) == mapping
     assert data["namespace"] == "test-ns"
     assert data["skip_errors"] == "true"
@@ -193,7 +193,7 @@ async def test_import_documents_default_options():
         await client.import_documents(
             file_content=b"data",
             filename="f.csv",
-            template_id="TPL-002",
+            template_id="0190c000-0000-7000-0000-000000000002",
             column_mapping={},
             namespace="wip",
         )
@@ -378,7 +378,7 @@ async def test_run_report_query():
     with patch.object(client, "_get_client", return_value=mock_http):
         result = await client.run_report_query(
             sql="SELECT name FROM doc_patient WHERE id = $1",
-            params=["DOC-001"],
+            params=["0190d000-0000-7000-0000-000000000001"],
             timeout_seconds=15,
             max_rows=500,
         )
@@ -389,7 +389,7 @@ async def test_run_report_query():
     assert "/api/reporting-sync/query" in call_args.args[0]
     body = call_args.kwargs["json"]
     assert body["sql"] == "SELECT name FROM doc_patient WHERE id = $1"
-    assert body["params"] == ["DOC-001"]
+    assert body["params"] == ["0190d000-0000-7000-0000-000000000001"]
     assert body["timeout_seconds"] == 15
     assert body["max_rows"] == 500
 
@@ -417,7 +417,7 @@ async def test_run_report_query_defaults():
 @pytest.mark.asyncio
 async def test_get_template_by_value():
     """get_template_by_value sends GET with value in URL path."""
-    expected = {"template_id": "TPL-001", "value": "PATIENT", "version": 1}
+    expected = {"template_id": "0190c000-0000-7000-0000-000000000001", "value": "PATIENT", "version": 1}
     mock_http = _mock_http(_mock_response(expected))
 
     client = _make_client()
@@ -433,7 +433,7 @@ async def test_get_template_by_value():
 @pytest.mark.asyncio
 async def test_get_template_by_value_with_namespace():
     """get_template_by_value passes namespace as query param."""
-    mock_http = _mock_http(_mock_response({"template_id": "TPL-002"}))
+    mock_http = _mock_http(_mock_response({"template_id": "0190c000-0000-7000-0000-000000000002"}))
 
     client = _make_client()
     with patch.object(client, "_get_client", return_value=mock_http):

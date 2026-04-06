@@ -42,7 +42,7 @@ async def create_doc(client, auth_headers, data=None):
     """Create a document and return (document_id, version)."""
     payload = {
         "namespace": "wip",
-        "template_id": "TPL-000001",
+        "template_id": "PERSON",
         "data": data or {
             "national_id": "123456789",
             "first_name": "John",
@@ -65,7 +65,7 @@ async def update_doc(client, auth_headers, document_id, data):
     """Update a document (creates a new version)."""
     payload = {
         "namespace": "wip",
-        "template_id": "TPL-000001",
+        "template_id": "PERSON",
         "document_id": document_id,
         "data": data,
     }

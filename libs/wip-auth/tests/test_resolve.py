@@ -46,11 +46,11 @@ class TestLooksLikeUuid:
     def test_uuid7_style(self):
         assert _looks_like_uuid("01903f5a-7b3c-7d4e-8f9a-0b1c2d3e4f5a") is True
 
-    def test_prefixed_id_tpl(self):
-        assert _looks_like_uuid("TPL-000001") is False
+    def test_prefixed_id_varied_prefix_1(self):
+        assert _looks_like_uuid("LOV-000001") is False
 
-    def test_prefixed_id_term(self):
-        assert _looks_like_uuid("TERM-000001") is False
+    def test_prefixed_id_varied_prefix_2(self):
+        assert _looks_like_uuid("PROD-000001") is False
 
     def test_human_readable_value(self):
         assert _looks_like_uuid("GENDER") is False
@@ -169,17 +169,17 @@ class TestResolveEntityId:
 
     @pytest.mark.asyncio
     async def test_non_uuid_canonical_id_resolves(self, httpx_mock):
-        """Non-UUID canonical IDs (e.g., TPL-000001) go through Registry."""
+        """Non-UUID canonical IDs (e.g., LOV-000001) go through Registry."""
         httpx_mock.add_response(
             url="http://localhost:8001/api/registry/entries/resolve",
             json={
                 "results": [
-                    {"status": "found", "entry_id": "TPL-000001"}
+                    {"status": "found", "entry_id": "LOV-000001"}
                 ]
             },
         )
-        result = await resolve_entity_id("TPL-000001", "template", "wip")
-        assert result == "TPL-000001"
+        result = await resolve_entity_id("LOV-000001", "template", "wip")
+        assert result == "LOV-000001"
 
     @pytest.mark.asyncio
     async def test_unknown_synonym_raises(self, httpx_mock):

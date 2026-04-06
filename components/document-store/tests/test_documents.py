@@ -23,7 +23,7 @@ async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, 
 @pytest.mark.asyncio
 async def test_create_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test creating a new document."""
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data, created_by="test_user")
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data, created_by="test_user")
 
     assert result["document_id"] is not None
     assert result["identity_hash"] is not None
@@ -36,7 +36,7 @@ async def test_create_document(client: AsyncClient, auth_headers: dict, sample_p
 async def test_get_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test retrieving a document by ID."""
     # Create document first
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     document_id = result["document_id"]
 
     # Get the document
@@ -76,7 +76,7 @@ async def test_list_documents(client: AsyncClient, auth_headers: dict, sample_pe
             headers=auth_headers,
             json=[{
                 "namespace": "wip",
-                "template_id": "TPL-000001",
+                "template_id": "PERSON",
                 "data": data
             }]
         )
@@ -102,7 +102,7 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
         headers=auth_headers,
         json=[{
             "namespace": "wip",
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "data": sample_person_data.copy()
         }]
     )
@@ -113,14 +113,14 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
         headers=auth_headers,
         json=[{
             "namespace": "wip",
-            "template_id": "TPL-000002",
+            "template_id": "EMPLOYEE",
             "data": sample_employee_data
         }]
     )
 
     # List only person documents
     response = await client.get(
-        "/api/document-store/documents?template_id=TPL-000001",
+        "/api/document-store/documents?template_id=PERSON",
         headers=auth_headers
     )
 
@@ -134,7 +134,7 @@ async def test_list_documents_with_filter(client: AsyncClient, auth_headers: dic
 async def test_delete_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test soft-deleting a document."""
     # Create document
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     document_id = result["document_id"]
 
     # Delete document via bulk-first DELETE
@@ -163,7 +163,7 @@ async def test_delete_document(client: AsyncClient, auth_headers: dict, sample_p
 async def test_archive_document(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test archiving a document."""
     # Create document
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     document_id = result["document_id"]
 
     # Archive document via bulk-first POST /documents/archive
@@ -190,7 +190,7 @@ async def test_archive_document(client: AsyncClient, auth_headers: dict, sample_
 async def test_get_document_by_identity(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Test getting a document by identity hash."""
     # Create document
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     identity_hash = result["identity_hash"]
 
     # Get by identity
@@ -217,7 +217,7 @@ async def test_query_documents(client: AsyncClient, auth_headers: dict, sample_p
             headers=auth_headers,
             json=[{
                 "namespace": "wip",
-                "template_id": "TPL-000001",
+                "template_id": "PERSON",
                 "data": data
             }]
         )
@@ -230,7 +230,7 @@ async def test_query_documents(client: AsyncClient, auth_headers: dict, sample_p
             "filters": [
                 {"field": "data.age", "operator": "gte", "value": 30}
             ],
-            "template_id": "TPL-000001"
+            "template_id": "PERSON"
         }
     )
 
@@ -248,7 +248,7 @@ async def test_bulk_create_documents(client: AsyncClient, auth_headers: dict, sa
         data["national_id"] = f"98765432{i}"
         items.append({
             "namespace": "wip",
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "data": data
         })
 
@@ -272,7 +272,7 @@ async def test_auth_required(client: AsyncClient, sample_person_data: dict):
         "/api/document-store/documents",
         json=[{
             "namespace": "wip",
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "data": sample_person_data
         }]
     )
@@ -334,7 +334,7 @@ async def test_invalid_api_key(client: AsyncClient, sample_person_data: dict):
         headers={"X-API-Key": "invalid_key"},
         json=[{
             "namespace": "wip",
-            "template_id": "TPL-000001",
+            "template_id": "PERSON",
             "data": sample_person_data
         }]
     )
