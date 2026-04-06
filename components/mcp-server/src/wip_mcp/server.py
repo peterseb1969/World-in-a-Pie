@@ -1002,7 +1002,7 @@ async def update_terminology(
     """Update a terminology's label, description, or mutability.
 
     Args:
-        terminology_id: ID of the terminology to update.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         label: New label (optional).
         description: New description (optional).
         mutable: Set mutability (optional). Only allowed when term_count is 0.
@@ -1033,7 +1033,7 @@ async def delete_terminology(
     Blocked if terms depend on it unless force=true.
 
     Args:
-        terminology_id: ID of the terminology to delete.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         force: Force deletion even if terms exist.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
@@ -1053,7 +1053,7 @@ async def restore_terminology(
     """Restore a previously deactivated terminology back to active status.
 
     Args:
-        terminology_id: ID of the inactive terminology.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         restore_terms: Also reactivate its inactive terms (default: true).
     """
     try:
@@ -1097,7 +1097,7 @@ async def list_terms(
 
 @mcp.tool()
 async def get_term(term_id: str) -> str:
-    """Get a term by its ID."""
+    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym."""
     try:
         data = await get_client().get_term(term_id)
         return json.dumps(data, indent=2, default=str)
@@ -1160,7 +1160,7 @@ async def update_term(
     """Update a term's label, aliases, description, or sort order.
 
     Args:
-        term_id: ID of the term to update.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         label: New label (optional).
         aliases: New aliases list (optional). Replaces existing aliases.
         description: New description (optional).
@@ -1192,7 +1192,7 @@ async def delete_term(term_id: str, hard_delete: bool = False) -> str:
     (requires namespace deletion_mode='full').
 
     Args:
-        term_id: ID of the term to delete.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
@@ -1215,9 +1215,9 @@ async def deprecate_term(
     has been replaced by a better term.
 
     Args:
-        term_id: ID of the term to deprecate.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         reason: Reason for deprecation (e.g., 'Merged with TERM-002').
-        replaced_by_term_id: ID of the replacement term (optional).
+        replaced_by_term_id: Replacement term ID, value, or synonym (optional).
     """
     try:
         data = await get_client().deprecate_term(
@@ -1245,7 +1245,7 @@ async def get_term_hierarchy(
     """Traverse ontology relationships for a term.
 
     Args:
-        term_id: The term to start from.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relationship_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
         max_depth: Max traversal depth for ancestors/descendants.
@@ -1316,7 +1316,7 @@ async def list_relationships(
     """List ontology relationships for a specific term.
 
     Args:
-        term_id: The term to list relationships for.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
@@ -1404,7 +1404,7 @@ async def get_template(
     """Get a template by ID. Returns the resolved template (with inherited fields).
 
     Args:
-        template_id: Template ID (e.g., 'TPL-xxxxxxxx').
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         version: Specific version number. None = latest.
     """
     try:
@@ -1430,7 +1430,11 @@ async def get_template_by_value(value: str, namespace: str | None = None) -> str
 
 @mcp.tool()
 async def get_template_raw(template_id: str) -> str:
-    """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template."""
+    """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+    """
     try:
         data = await get_client().get_template_raw(template_id)
         return json.dumps(data, indent=2, default=str)
@@ -1534,7 +1538,7 @@ async def update_template(template_id: str, updates: dict) -> str:
     New documents will validate against the latest version by default.
 
     Args:
-        template_id: Template to update (ID or synonym/value).
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         updates: Fields to change. Only include fields you want to modify:
             - label: New display label
             - description: New description
@@ -1569,7 +1573,7 @@ async def activate_template(
     """Activate a draft template. Validates all references and cascades to referenced drafts.
 
     Args:
-        template_id: Template to activate.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Namespace scope.
         dry_run: If true, validate without activating.
     """
@@ -1596,7 +1600,7 @@ async def deactivate_template(
     If documents reference it, use force=true to delete anyway.
 
     Args:
-        template_id: Template to delete.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         version: Specific version (default: latest for soft-delete, all for hard-delete).
         force: Force deletion even if documents exist.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
@@ -1613,7 +1617,11 @@ async def deactivate_template(
 
 @mcp.tool()
 async def get_template_dependencies(template_id: str) -> str:
-    """Show what depends on a template: child templates and documents."""
+    """Show what depends on a template: child templates and documents.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+    """
     try:
         data = await get_client().get_template_dependencies(template_id)
         return json.dumps(data, indent=2, default=str)
@@ -1634,7 +1642,7 @@ async def get_template_versions(
 
     Args:
         template_value: Template value code (e.g., 'PATIENT').
-        template_id: Template ID (e.g., 'TPL-xxx').
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Namespace to search in (only used with template_value). Omit for all namespaces.
     """
     try:
@@ -1658,7 +1666,7 @@ async def validate_template(template_id: str) -> str:
     active entities. Useful for draft templates before activation.
 
     Args:
-        template_id: Template ID to validate.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
         data = await get_client().validate_template(template_id)
@@ -1686,7 +1694,7 @@ async def list_documents(
 
     Args:
         template_value: Filter by template value code (e.g., 'PATIENT'). Most convenient filter.
-        template_id: Filter by template ID (alternative to template_value).
+        template_id: Filter by template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Filter by namespace.
         status: Filter by status.
         latest_only: Only return the latest version of each document.
@@ -1729,7 +1737,7 @@ async def create_document(document: dict, namespace: str | None = None) -> str:
 
     Args:
         document: Document data. Required:
-            - template_id: Which template this document uses.
+            - template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
             - template_version: Pin to a specific template version. Recommended —
               without it, WIP resolves "latest active" which may not be what you
               expect if multiple versions are active. See wip://conventions.
@@ -1794,7 +1802,7 @@ async def query_documents(filters: dict) -> str:
 
     Args:
         filters: Query body with these fields:
-            - template_id: Filter by template ID (required for field filters).
+            - template_id: Template ID, value code (e.g., 'PERSON'), or synonym (required for field filters).
             - namespace: Filter by namespace.
             - status: Filter by status ('active', 'inactive').
             - page, page_size: Pagination.
@@ -1877,7 +1885,7 @@ async def export_terminology(
     """Export a terminology with all its terms (and optionally relationships).
 
     Args:
-        terminology_id: Terminology ID to export.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         format: 'json' or 'csv'.
         include_relationships: Include ontology relationships in export.
     """
@@ -2485,7 +2493,7 @@ async def start_replay(
 
     Args:
         template_value: Replay documents for this template (optional, replays all if omitted).
-        template_id: Alternative to template_value — use the template ID directly.
+        template_id: Alternative to template_value — template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Namespace to replay from. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         throttle_ms: Delay between events in ms (0-5000, default 10).
         batch_size: Documents per batch (10-1000, default 100).
