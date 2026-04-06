@@ -17,6 +17,7 @@ from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
     check_production_security,
     setup_auth,
+    setup_key_sync,
     setup_rate_limiting,
 )
 
@@ -103,10 +104,21 @@ async def lifespan(app: FastAPI):
         print(f"WARNING: Failed to bootstrap system terminologies: {e}")
         print("System terminologies may need to be created manually.")
 
+    # Start key sync (picks up runtime API keys from Registry)
+    key_sync = await setup_key_sync(
+        _providers,
+        registry_url=settings.REGISTRY_URL,
+        api_key=settings.REGISTRY_API_KEY,
+    )
+    if key_sync:
+        print("Key sync started (polling Registry for runtime API keys).")
+
     yield
 
     # Shutdown
     print("Shutting down WIP Def-Store Service...")
+    if key_sync:
+        await key_sync.stop()
     await close_nats_client()
     app.state.mongodb_client.close()
     print("MongoDB connection closed.")
@@ -146,7 +158,7 @@ unique, system-wide identifiers. IDs are configurable per namespace (default: UU
 )
 
 # Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
-setup_auth(app)
+_providers = setup_auth(app)
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)

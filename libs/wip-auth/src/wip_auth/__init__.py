@@ -282,18 +282,19 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
 
 
 async def setup_key_sync(
-    app,
+    providers: list[AuthProvider],
     registry_url: str | None = None,
     api_key: str | None = None,
     interval_seconds: int = 30,
 ) -> KeySyncService | None:
     """Set up background key sync for a non-Registry service.
 
-    Finds the APIKeyProvider from the app's auth providers, identifies
-    config-file key names, and starts a KeySyncService polling loop.
+    Finds the APIKeyProvider from the providers list (as returned by
+    setup_auth()), identifies config-file key names, and starts a
+    KeySyncService polling loop.
 
     Args:
-        app: The FastAPI application (must have had setup_auth() called first)
+        providers: Provider list returned by setup_auth()
         registry_url: Registry base URL (falls back to REGISTRY_URL env var)
         api_key: API key for authenticating to Registry (falls back to env vars)
         interval_seconds: Polling interval (default 30s)
@@ -314,9 +315,6 @@ async def setup_key_sync(
             or os.getenv("MASTER_API_KEY")
             or ""
         )
-
-    config = get_auth_config()
-    providers = create_providers_from_config(config)
 
     api_key_provider = None
     for p in providers:
