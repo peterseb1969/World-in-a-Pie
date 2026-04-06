@@ -428,11 +428,11 @@ await client.templates.activateTemplate('TPL-DRAFT')                     // acti
 | `boolean` | True/false | |
 | `date` | ISO date (YYYY-MM-DD) | |
 | `datetime` | ISO datetime | |
-| `term` | Reference to a terminology term | `terminology_ref` (terminology value code) |
+| `term` | Reference to a terminology term | `terminology_ref` (value code on write, resolved UUID on read) |
 | `reference` | Reference to another document | `reference_type`, `target_templates` |
 | `file` | Binary file reference | `file_config` (allowed types, max size, multiple) |
 | `object` | Nested object | Child `fields` in template |
-| `array` | Array of values | `array_item_type`, `array_terminology_ref` |
+| `array` | Array of values | `array_item_type`, `array_terminology_ref` (same write/read behavior as `terminology_ref`) |
 
 ### Semantic Types
 
