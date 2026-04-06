@@ -20,6 +20,10 @@ import type {
   RevokeGrantRequest,
   GrantBulkResponse,
   GrantRevokeBulkResponse,
+  APIKeyInfo,
+  CreateAPIKeyRequest,
+  CreateAPIKeyResponse,
+  UpdateAPIKeyRequest,
 } from '../types/registry.js'
 
 export class RegistryService extends BaseService {
@@ -175,5 +179,27 @@ export class RegistryService extends BaseService {
 
   async revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse> {
     return this.del(`/namespaces/${prefix}/grants`, grants)
+  }
+
+  // ---- API Keys ----
+
+  async listAPIKeys(): Promise<APIKeyInfo[]> {
+    return this.get('/api-keys')
+  }
+
+  async createAPIKey(request: CreateAPIKeyRequest): Promise<CreateAPIKeyResponse> {
+    return this.post('/api-keys', request)
+  }
+
+  async getAPIKey(name: string): Promise<APIKeyInfo> {
+    return this.get(`/api-keys/${name}`)
+  }
+
+  async updateAPIKey(name: string, request: UpdateAPIKeyRequest): Promise<APIKeyInfo> {
+    return this.patch(`/api-keys/${name}`, request)
+  }
+
+  async revokeAPIKey(name: string): Promise<{ status: string; name: string }> {
+    return this.del(`/api-keys/${name}`)
   }
 }

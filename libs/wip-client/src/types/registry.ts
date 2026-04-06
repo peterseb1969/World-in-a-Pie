@@ -249,3 +249,39 @@ export interface GrantRevokeBulkResponse {
   succeeded: number
   failed: number
 }
+
+// ---- API Keys ----
+
+export interface APIKeyInfo {
+  name: string
+  owner: string
+  groups: string[]
+  description: string | null
+  created_at: string
+  expires_at: string | null
+  enabled: boolean
+  namespaces: string[] | null
+  created_by: string
+  source: 'config' | 'runtime'
+}
+
+export interface CreateAPIKeyRequest {
+  name: string
+  owner?: string
+  groups?: string[]
+  namespaces?: string[] | null
+  description?: string
+  expires_at?: string
+}
+
+export interface CreateAPIKeyResponse extends APIKeyInfo {
+  plaintext_key: string
+}
+
+export interface UpdateAPIKeyRequest {
+  description?: string
+  groups?: string[]
+  namespaces?: string[] | null
+  expires_at?: string
+  enabled?: boolean
+}
