@@ -438,6 +438,69 @@ if ! $REFRESH_MODE; then
         sed -i '' "s|# WIP_NAMESPACE=myapp|WIP_NAMESPACE=$DEV_NAMESPACE|" "$APP_DIR/.env.example"
         echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
     fi
+
+    # --- Provision namespace-scoped API key ---
+
+    STEP_NUM=$((7 + STEP_OFFSET))
+    echo "$STEP_NUM. Provisioning namespace-scoped API key..."
+    STEP_OFFSET=$((STEP_OFFSET + 1))
+
+    APP_KEY_PLAINTEXT=""
+    if [ "$NS_RESPONSE" != "000" ]; then
+        # WIP is reachable — create a runtime API key scoped to the dev namespace
+        KEY_JSON=$(curl -k -s \
+            -X POST "https://localhost:8443/api/registry/api-keys" \
+            -H "X-API-Key: $ACTIVE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"${APP_SLUG}\",
+                \"owner\": \"dev@wip.local\",
+                \"groups\": [],
+                \"namespaces\": [\"${DEV_NAMESPACE}\"],
+                \"description\": \"${APP_NAME} — scoped to dev namespace\"
+            }" 2>/dev/null || echo "")
+
+        if [ -n "$KEY_JSON" ]; then
+            # Extract plaintext_key — try jq first, fall back to grep
+            if command -v jq &>/dev/null; then
+                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | jq -r '.plaintext_key // empty' 2>/dev/null)
+            else
+                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | grep -o '"plaintext_key":"[^"]*"' | cut -d'"' -f4)
+            fi
+        fi
+
+        if [ -n "$APP_KEY_PLAINTEXT" ]; then
+            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE)"
+            echo "   Key propagates to all services within ~30 seconds"
+
+            # Write .env with the provisioned key
+            cat > "$APP_DIR/.env" << ENVEOF
+# App API key — namespace-scoped to $DEV_NAMESPACE
+# Created by create-app-project.sh via POST /api/registry/api-keys
+# This is a runtime key (managed via API, not config file)
+WIP_API_KEY=$APP_KEY_PLAINTEXT
+ENVEOF
+            echo "   Written: .env (with provisioned key)"
+
+            # Update .env.example if query preset (replace the dev master key placeholder)
+            if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
+                sed -i '' "s|WIP_API_KEY=dev_master_key_for_testing|WIP_API_KEY=$APP_KEY_PLAINTEXT|" "$APP_DIR/.env.example"
+            fi
+        else
+            # Key creation failed — maybe name collision (409) or auth issue
+            echo "   Warning: Could not provision API key (response: ${KEY_JSON:-empty})"
+            echo "   You can create one manually:"
+            echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
+            echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
+            echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
+        fi
+    else
+        echo "   WIP not reachable — skipping key provisioning"
+        echo "   When WIP is running, create a key with:"
+        echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
+        echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
+        echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
+    fi
 fi
 
 # --- Generate CLAUDE.md (new projects only) ---
@@ -480,27 +543,34 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
 
 The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine for data modeling via MCP tools.
 
-**For your app's runtime API calls**, you should use a namespace-scoped key instead of the admin key. Non-privileged API keys MUST have an explicit \`namespaces\` field — keys without namespace scoping get no access.
+**For your app's runtime API calls**, use the namespace-scoped key in \`.env\`.
+EOF
 
-\`\`\`json
-{
-  "name": "${APP_SLUG}",
-  "key": "generate_a_real_key",
-  "owner": "dev@wip.local",
-  "groups": [],
-  "namespaces": ["$DEV_NAMESPACE"],
-  "description": "${APP_NAME} — scoped to dev namespace"
-}
-\`\`\`
+if [ -n "$APP_KEY_PLAINTEXT" ]; then
+cat >> "$APP_DIR/CLAUDE.md" << EOF
+This key was auto-provisioned by \`create-app-project.sh\` and is scoped to \`$DEV_NAMESPACE\`. It is a **runtime key** managed via the Registry API (not a config-file key).
 
-Add this to WIP's \`config/api-keys.dev.json\` and use the key value in your app's \`.env\`:
 \`\`\`bash
-WIP_API_KEY=generate_a_real_key
+# .env (already created)
+WIP_API_KEY=$APP_KEY_PLAINTEXT
 \`\`\`
+EOF
+else
+cat >> "$APP_DIR/CLAUDE.md" << 'EOF'
+No key was auto-provisioned (WIP may not have been running). Create one via the Registry API — see WIP's `docs/api-key-management.md`.
 
-When your app uses a key scoped to a single namespace (like the one above), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call. If your key covers multiple namespaces, you must provide \`namespace\` explicitly.
+Save the `plaintext_key` from the response to `.env`:
+```bash
+WIP_API_KEY=<plaintext_key from response>
+```
+EOF
+fi
 
-See WIP's \`docs/migration-unscoped-api-keys.md\` for details on privileged vs scoped keys.
+cat >> "$APP_DIR/CLAUDE.md" << EOF
+
+Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
+
+**Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
 
 ## Process
 
@@ -743,6 +813,15 @@ Update (overwrite) the summary section — don't append multiple summaries.
 When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
 EOF
 echo "   Written: CLAUDE.md"
+
+# Ensure .env is gitignored (contains plaintext API key)
+if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
+    if [ ! -f "$APP_DIR/.gitignore" ]; then
+        printf '.env\n' > "$APP_DIR/.gitignore"
+    elif ! grep -qx '.env' "$APP_DIR/.gitignore"; then
+        printf '.env\n' >> "$APP_DIR/.gitignore"
+    fi
+fi
 
 # --- Initialise git ---
 

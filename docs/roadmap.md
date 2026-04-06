@@ -42,7 +42,7 @@ Backend done (0e548f3). Vue console button guards (~50) skipped — Vue console 
 
 - Design: `docs/design/namespace-authorization.md`
 
-### HIGH PRIORITY: Namespace-Scoped API Keys & Implicit Namespace Resolution
+### ~~HIGH PRIORITY: Namespace-Scoped API Keys & Implicit Namespace Resolution~~ ✅
 
 Two changes to how API keys and namespaces interact:
 
@@ -58,7 +58,7 @@ Two changes to how API keys and namespaces interact:
 - ✅ `config/api-keys.dev.json` — updated with namespace-scoped example key (e4eacc8)
 - ✅ Startup warning: `wip_auth/config.py` logs warning for misconfigured keys (31841c2)
 - ✅ Migration guide: `docs/migration-unscoped-api-keys.md`
-- `create-app-project.sh` — scaffold should generate a namespace-scoped key per app (needs runtime API key management)
+- ✅ `create-app-project.sh` — scaffold auto-provisions a namespace-scoped runtime key per app via `POST /api/registry/api-keys`
 
 - Related: CASE-03, CASE-01, CASE-02
 - Depends on: Auth Phase 2 backend (done)
@@ -85,20 +85,13 @@ Documents are immutable (create with same identity = new version), but users and
 
 **Blocks:** `useUpdateDocument` React hook, full CRUD in React Console.
 
-### Gap: No Runtime API Key Management
+### ~~Runtime API Key Management~~ ✅
 
-API keys are config-file-only. There is no REST endpoint to create, revoke, rotate, or list keys. Current workflow: run `scripts/security/generate-api-key.sh`, manually edit `config/api-keys.dev.json`, restart all services.
+**Complete** (2026-04-06). Full CRUD REST API at `/api/registry/api-keys` — create, list, get, update, revoke runtime keys stored in MongoDB. Bcrypt hashes only; plaintext shown once on creation. KeySyncService polls Registry every 30s for automatic propagation to def-store, template-store, document-store. Config-file keys remain read-only. MCP tools (create, list, revoke), @wip/client 0.9.0 with TypeScript types and methods, `create-app-project.sh` auto-provisions namespace-scoped keys.
 
-**Why this matters:** `create-app-project.sh` needs to generate a namespace-scoped key per app. Currently it reuses the dev master key (unscoped, admin-group). For the "kill unscoped keys" item above to work, apps need their own keys — and creating them must not require manual config editing and full service restarts.
+Commits: 371780e (model + CRUD), 8f81ecf (sync), efd6c9b (wiring), 0d410bc (MCP), d741d84 (client), b59566a (integration tests).
 
-**Minimum viable:**
-- `POST /api/registry/api-keys` — create a namespace-scoped key (returns plaintext once, stores bcrypt hash). Requires admin permission.
-- `DELETE /api/registry/api-keys/{name}` — revoke a key. Requires admin permission.
-- `GET /api/registry/api-keys` — list keys (names + metadata, never hashes or plaintext). Requires admin permission.
-- Keys stored in MongoDB (Registry), loaded at startup + cached with invalidation on create/revoke.
-- `create-app-project.sh` calls the endpoint to provision a scoped key automatically.
-
-**Design decision needed:** Should keys live in Registry's MongoDB alongside grants, or stay file-based with a sidecar reload mechanism? MongoDB is simpler (single source of truth, no restart). File-based is more ops-friendly (GitOps, auditable diffs).
+- Docs: `docs/api-key-management.md`
 
 ### Auth Phase 3: Audit Trail Verification ✅
 
