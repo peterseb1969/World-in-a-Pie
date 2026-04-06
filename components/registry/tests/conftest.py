@@ -16,7 +16,7 @@ os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
 from registry.api.api_keys import configure_api_key_management
-from registry.main import app
+from registry.main import app, providers as _app_providers
 from registry.models.api_key import StoredAPIKey
 from registry.models.deletion_journal import DeletionJournal
 from registry.models.entry import RegistryEntry
@@ -48,11 +48,9 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Initialize auth service
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
-    # Configure API key management for tests
-    from wip_auth import APIKeyProvider, create_providers_from_config, get_auth_config
-    config = get_auth_config()
-    test_providers = create_providers_from_config(config)
-    for p in test_providers:
+    # Configure API key management using the SAME providers the middleware uses
+    from wip_auth import APIKeyProvider
+    for p in _app_providers:
         if isinstance(p, APIKeyProvider):
             config_key_names = {k.name for k in p._keys}
             configure_api_key_management(p, config_key_names)

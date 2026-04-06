@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+from wip_auth.providers.api_key import verify_api_key
 
 BASE = "/api/registry/api-keys"
 
@@ -212,3 +213,167 @@ class TestSyncEndpoint:
         record = next(r for r in data if r["name"] == "sync-test")
         assert "key_hash" in record
         assert record["key_hash"].startswith("$2b$")
+
+    @pytest.mark.asyncio
+    async def test_sync_excludes_disabled_keys(self, client: AsyncClient, auth_headers: dict):
+        """Disabled keys must not appear in the sync endpoint."""
+        await client.post(
+            BASE,
+            json={"name": "sync-disabled"},
+            headers=auth_headers,
+        )
+        # Disable the key
+        await client.patch(
+            f"{BASE}/sync-disabled",
+            json={"enabled": False},
+            headers=auth_headers,
+        )
+
+        response = await client.get(f"{BASE}/sync", headers=auth_headers)
+        assert response.status_code == 200
+        names = [r["name"] for r in response.json()]
+        assert "sync-disabled" not in names
+
+
+class TestCreatedKeyAuthenticates:
+    """End-to-end: created key's plaintext verifies against its stored hash."""
+
+    @pytest.mark.asyncio
+    async def test_plaintext_verifies_against_stored_hash(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The plaintext returned at creation must verify against the bcrypt hash in MongoDB."""
+        # Create a key and capture the plaintext
+        create_resp = await client.post(
+            BASE,
+            json={"name": "auth-verify", "namespaces": ["wip"]},
+            headers=auth_headers,
+        )
+        assert create_resp.status_code == 201
+        plaintext = create_resp.json()["plaintext_key"]
+
+        # Fetch the hash from the sync endpoint
+        sync_resp = await client.get(f"{BASE}/sync", headers=auth_headers)
+        record = next(r for r in sync_resp.json() if r["name"] == "auth-verify")
+        stored_hash = record["key_hash"]
+
+        # Verify: the plaintext must match the stored bcrypt hash
+        assert verify_api_key(plaintext, stored_hash)
+
+    @pytest.mark.asyncio
+    async def test_created_key_usable_for_requests(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """A newly created runtime key can authenticate to a require_api_key endpoint."""
+        create_resp = await client.post(
+            BASE,
+            json={"name": "use-me", "groups": ["wip-admins"]},
+            headers=auth_headers,
+        )
+        plaintext = create_resp.json()["plaintext_key"]
+
+        # Use the new key to list namespaces (requires require_api_key)
+        response = await client.get(
+            "/api/registry/namespaces",
+            headers={"X-API-Key": plaintext},
+        )
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_revoked_key_stops_working(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """After revocation, the key's plaintext must no longer verify."""
+        # Create and capture plaintext
+        create_resp = await client.post(
+            BASE,
+            json={"name": "revoke-me", "groups": ["wip-admins"]},
+            headers=auth_headers,
+        )
+        plaintext = create_resp.json()["plaintext_key"]
+
+        # Verify it works before revocation
+        resp = await client.get(
+            "/api/registry/namespaces",
+            headers={"X-API-Key": plaintext},
+        )
+        assert resp.status_code == 200
+
+        # Revoke
+        await client.delete(f"{BASE}/revoke-me", headers=auth_headers)
+
+        # Now the same key should fail (401)
+        resp = await client.get(
+            "/api/registry/namespaces",
+            headers={"X-API-Key": plaintext},
+        )
+        assert resp.status_code == 401
+
+
+class TestUpdatePersistence:
+    """Verify that PATCH changes persist to MongoDB and are reflected on re-fetch."""
+
+    @pytest.mark.asyncio
+    async def test_update_persists_all_fields(self, client: AsyncClient, auth_headers: dict):
+        await client.post(
+            BASE,
+            json={"name": "persist-test", "groups": [], "description": "original"},
+            headers=auth_headers,
+        )
+
+        # Update multiple fields at once
+        await client.patch(
+            f"{BASE}/persist-test",
+            json={
+                "groups": ["wip-users", "wip-services"],
+                "description": "changed",
+                "namespaces": ["wip", "dev"],
+                "enabled": False,
+            },
+            headers=auth_headers,
+        )
+
+        # Re-fetch and verify all fields persisted
+        resp = await client.get(f"{BASE}/persist-test", headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["groups"] == ["wip-users", "wip-services"]
+        assert data["description"] == "changed"
+        assert data["namespaces"] == ["wip", "dev"]
+        assert data["enabled"] is False
+
+
+class TestRequestValidation:
+    """Verify that invalid requests are rejected."""
+
+    @pytest.mark.asyncio
+    async def test_extra_fields_rejected_on_create(self, client: AsyncClient, auth_headers: dict):
+        response = await client.post(
+            BASE,
+            json={"name": "bad-key", "bogus_field": "nope"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_extra_fields_rejected_on_update(self, client: AsyncClient, auth_headers: dict):
+        await client.post(
+            BASE,
+            json={"name": "validate-update"},
+            headers=auth_headers,
+        )
+        response = await client.patch(
+            f"{BASE}/validate-update",
+            json={"bogus_field": "nope"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_update_nonexistent_key(self, client: AsyncClient, auth_headers: dict):
+        response = await client.patch(
+            f"{BASE}/ghost-key",
+            json={"description": "does not exist"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
