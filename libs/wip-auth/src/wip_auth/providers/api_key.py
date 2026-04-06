@@ -136,6 +136,14 @@ class APIKeyProvider:
                 return True
         return False
 
+    def replace_runtime_keys(
+        self, runtime_keys: list["APIKeyRecord"], config_key_names: set[str]
+    ) -> None:
+        """Replace all runtime keys atomically. Config keys are untouched."""
+        config_keys = [k for k in self._keys if k.name in config_key_names]
+        self._keys = config_keys + [k for k in runtime_keys if k.enabled]
+        self._verified_cache.clear()
+
     def _get_key_from_header(self, request: Request) -> str | None:
         """Extract API key from request header."""
         return request.headers.get(self.header_name)

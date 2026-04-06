@@ -77,6 +77,7 @@ from .resolve import (
     resolve_entity_id,
     resolve_entity_ids,
 )
+from .key_sync import KeySyncService
 from .security import check_production_security
 
 __version__ = "0.4.0"
@@ -139,6 +140,9 @@ __all__ = [
     "set_current_identity",
     # Setup
     "setup_auth",
+    "setup_key_sync",
+    # Key sync
+    "KeySyncService",
     # Rate limiting
     "setup_rate_limiting",
 ]
@@ -275,3 +279,62 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
         app.add_middleware(middleware_class)
 
     return providers
+
+
+async def setup_key_sync(
+    app,
+    registry_url: str | None = None,
+    api_key: str | None = None,
+    interval_seconds: int = 30,
+) -> KeySyncService | None:
+    """Set up background key sync for a non-Registry service.
+
+    Finds the APIKeyProvider from the app's auth providers, identifies
+    config-file key names, and starts a KeySyncService polling loop.
+
+    Args:
+        app: The FastAPI application (must have had setup_auth() called first)
+        registry_url: Registry base URL (falls back to REGISTRY_URL env var)
+        api_key: API key for authenticating to Registry (falls back to env vars)
+        interval_seconds: Polling interval (default 30s)
+
+    Returns:
+        The KeySyncService instance (caller should call stop() on shutdown),
+        or None if no APIKeyProvider is found.
+    """
+    import os
+
+    if registry_url is None:
+        registry_url = os.getenv("REGISTRY_URL", "http://localhost:8001")
+    if api_key is None:
+        api_key = (
+            os.getenv("REGISTRY_API_KEY")
+            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+            or os.getenv("API_KEY")
+            or os.getenv("MASTER_API_KEY")
+            or ""
+        )
+
+    config = get_auth_config()
+    providers = create_providers_from_config(config)
+
+    api_key_provider = None
+    for p in providers:
+        if isinstance(p, APIKeyProvider):
+            api_key_provider = p
+            break
+
+    if api_key_provider is None:
+        return None
+
+    config_key_names = {k.name for k in api_key_provider._keys}
+
+    sync_service = KeySyncService(
+        registry_url=registry_url,
+        api_key=api_key,
+        provider=api_key_provider,
+        config_key_names=config_key_names,
+        interval_seconds=interval_seconds,
+    )
+    await sync_service.start()
+    return sync_service
