@@ -1016,7 +1016,7 @@ async def get_term_documents(
     term_references containing the given term_id.
 
     Args:
-        term_id: Term ID to search for (e.g., T-000001)
+        term_id: Term ID to search for (UUID or value code, e.g., 019abc42-...)
         limit: Maximum number of documents to return (1-1000, default 100)
 
     Returns:

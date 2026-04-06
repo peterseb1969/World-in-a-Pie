@@ -597,7 +597,7 @@ class UnifiedSearchResultItem(BaseModel):
     )
     resolution_path: str = Field(
         ...,
-        description="Human-readable resolution path (e.g., 'V1-001 → synonym → T-000042 (wip-terms)')"
+        description="Human-readable resolution path (e.g., 'V1-001 → synonym → 019abc42-... (wip-terms)')"
     )
 
 

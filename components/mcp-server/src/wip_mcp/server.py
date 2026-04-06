@@ -800,7 +800,7 @@ async def lookup_entry(
     (lookup by key). Key lookup also searches synonyms.
 
     Args:
-        entry_id: Look up by entry ID (e.g., 'T-000042').
+        entry_id: Look up by entry ID or value code.
         namespace: Namespace for key lookup (e.g., 'wip').
         entity_type: Entity type for key lookup (e.g., 'terms').
         composite_key: Composite key dict for key lookup.
@@ -1216,7 +1216,7 @@ async def deprecate_term(
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
-        reason: Reason for deprecation (e.g., 'Merged with TERM-002').
+        reason: Reason for deprecation (e.g., 'Merged with COUNTRY').
         replaced_by_term_id: Replacement term ID, value, or synonym (optional).
     """
     try:

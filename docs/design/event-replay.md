@@ -179,7 +179,7 @@ Replay events use the **same format as live events** with additional metadata:
       "country": "United States"
     },
     "term_references": {
-      "country": "T-000042"
+      "country": "019abc42-def3-7abc-8def-123456789abc"
     }
   },
   "metadata": {

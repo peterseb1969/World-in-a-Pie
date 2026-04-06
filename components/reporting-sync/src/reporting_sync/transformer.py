@@ -318,8 +318,8 @@ class DocumentTransformer:
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
-        # Array format: [{"field_path": "gender", "term_id": "T-001"}, ...]
-        # Dict format: {"gender": "T-001", ...}
+        # Array format: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
+        # Dict format: {"gender": "019abc42-...", ...}
         term_references = {}
         for ref in term_references_list:
             field_path = ref.get("field_path", "")

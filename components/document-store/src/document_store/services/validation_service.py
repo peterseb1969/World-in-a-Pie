@@ -25,7 +25,7 @@ class ValidationResult:
         self.identity_fields: list[str] = []
         self.template_version: int | None = None
         self.template_value: str | None = None
-        # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
+        # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
         self.references: list[dict[str, Any]] = []

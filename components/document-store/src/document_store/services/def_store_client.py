@@ -394,7 +394,7 @@ class DefStoreClient:
         Get a term by ID.
 
         Args:
-            term_id: Term ID (e.g., 'T-000001')
+            term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
 
         Returns:
             Term data if found, None otherwise

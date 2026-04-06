@@ -190,7 +190,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
       "reference_type": "term",
       "lookup_value": "male",
       "resolved": {
-        "term_id": "T-000042",
+        "term_id": "019abc42-def3-7abc-8def-123456789abc",
         "terminology_value": "GENDER",
         "matched_via": "value"
       },
@@ -226,7 +226,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 **Term:**
 ```json
 {
-  "term_id": "T-000042",
+  "term_id": "019abc42-def3-7abc-8def-123456789abc",
   "terminology_value": "GENDER",
   "matched_via": "value"
 }
@@ -235,7 +235,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 **Terminology:**
 ```json
 {
-  "terminology_id": "TERM-000001",
+  "terminology_id": "019def01-aaa1-7abc-8def-123456789abc",
   "terminology_value": "GENDER",
   "version": 1
 }

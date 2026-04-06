@@ -137,13 +137,13 @@ Every entity in WIP receives its ID from the Registry:
 
 | Entity Type | Default ID Format | Configurable |
 |-------------|-------------------|--------------|
-| Terminologies | UUID7 | Per namespace (e.g., `TERM-000001`) |
-| Terms | UUID7 | Per namespace (e.g., `T-000001`) |
-| Templates | UUID7 | Per namespace (e.g., `TPL-000001`) |
+| Terminologies | UUID7 | Per namespace (e.g., `LOV-000042`) |
+| Terms | UUID7 | Per namespace (e.g., `ITEM-000001`) |
+| Templates | UUID7 | Per namespace (e.g., `SCHEMA-000001`) |
 | Documents | UUID7 | Per namespace |
-| Files | UUID7 | Per namespace (e.g., `FILE-000001`) |
+| Files | UUID7 | Per namespace (e.g., `ASSET-000001`) |
 
-All IDs default to UUID7 (time-ordered, globally unique). Custom namespaces can configure sequential prefixed formats (e.g., the default `wip` namespace uses `TERM-`, `T-`, `TPL-`, `FILE-` prefixes).
+All IDs default to UUID7 (time-ordered, globally unique). Custom namespaces can configure sequential prefixed formats with any prefix they choose (e.g., `LOV-`, `ITEM-`, `SCHEMA-`, `ASSET-`).
 
 This centralization provides:
 - **Guaranteed uniqueness** across all services
@@ -224,19 +224,19 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
         "label": "Gender"
     }
 }
-# → Generates: TERM-000001
+# → Generates: a terminology_id (UUID7 by default, or prefixed like LOV-000042 if configured)
 
 # Term composite key
 {
     "namespace": "wip",
     "entity_type": "terms",
     "composite_key": {
-        "terminology_id": "TERM-000001",
+        "terminology_id": "GENDER",
         "value": "M",
         "label": "Male"
     }
 }
-# → Generates: T-000001
+# → Generates: a term_id (UUID7 by default, or prefixed like ITEM-000001 if configured)
 ```
 
 Composite keys serve three purposes:
@@ -267,7 +267,7 @@ Term aliases handle the problem of **user input variation**. A term for "Male" m
 
 ```json
 {
-  "term_id": "T-000001",
+  "term_id": "019abc12-def3-7abc-8def-123456789abc",
   "code": "M",
   "value": "Male",
   "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
@@ -280,7 +280,7 @@ During validation, the response tells you **how** the input was matched:
 {
   "input_value": "Mr.",
   "valid": true,
-  "term_id": "T-000001",
+  "term_id": "019abc12-def3-7abc-8def-123456789abc",
   "matched_via": "alias",
   "normalized_value": "Male"
 }

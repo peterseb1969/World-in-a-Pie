@@ -279,7 +279,7 @@ All events follow this structure:
       "country": "Germany"
     },
     "term_references": [
-      {"field_path": "country", "term_id": "T-000042"}
+      {"field_path": "country", "term_id": "019abc42-def3-7abc-8def-123456789abc"}
     ],
     "created_at": "2026-02-03T10:30:00.000Z",
     "created_by": "user:admin@wip.local"

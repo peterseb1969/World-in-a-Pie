@@ -277,9 +277,9 @@ wip-tools term list
 # Search terms
 wip-tools term search "United" --terminology COUNTRY
 # Output:
-# T-000042  US   United States   COUNTRY
-# T-000043  GB   United Kingdom  COUNTRY
-# T-000044  AE   United Arab Emirates  COUNTRY
+# 019abc42-...  US   United States        COUNTRY
+# 019abc43-...  GB   United Kingdom       COUNTRY
+# 019abc44-...  AE   United Arab Emirates COUNTRY
 
 # Rename a term value (updates term, not documents)
 wip-tools term rename COUNTRY --code US --new-value "United States of America"

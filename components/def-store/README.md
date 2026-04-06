@@ -142,7 +142,7 @@ curl -X POST http://localhost:8002/api/def-store/terminologies/<terminology_id>/
 ### Validate a value
 
 ```bash
-curl -X POST http://localhost:8002/api/def-store/terms/TERM-000001/validate \
+curl -X POST http://localhost:8002/api/def-store/terms/DOC_STATUS/validate \
   -H "X-API-Key: dev_master_key_for_testing" \
   -H "Content-Type: application/json" \
   -d '{
@@ -153,7 +153,7 @@ curl -X POST http://localhost:8002/api/def-store/terms/TERM-000001/validate \
 ### Export a terminology
 
 ```bash
-curl http://localhost:8002/api/def-store/import-export/export/TERM-000001?format=json \
+curl http://localhost:8002/api/def-store/import-export/export/DOC_STATUS?format=json \
   -H "X-API-Key: dev_master_key_for_testing"
 ```
 
@@ -237,8 +237,8 @@ Def-Store uses the WIP Registry for ID generation:
 
 | Entity | Namespace | ID Format | Example |
 |--------|-----------|-----------|---------|
-| Terminology | `wip-terminologies` | TERM-XXXXXX | TERM-000001 |
-| Term | `wip-terms` | T-XXXXXX | T-000042 |
+| Terminology | `wip-terminologies` | UUID7 (default) | `019def01-aaa1-7abc-...` |
+| Term | `wip-terms` | UUID7 (default) | `019abc42-def3-7abc-...` |
 
 Ensure the Registry service is running and WIP namespaces are initialized:
 ```bash

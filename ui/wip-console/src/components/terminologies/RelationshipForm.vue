@@ -90,7 +90,7 @@ async function submit() {
         <InputText
           id="source"
           v-model="form.source_term_id"
-          placeholder="e.g. T-000123"
+          placeholder="e.g. ALZHEIMERS_DISEASE"
           class="w-full"
           :disabled="!!props.defaultSourceTermId"
         />
@@ -113,7 +113,7 @@ async function submit() {
         <InputText
           id="target"
           v-model="form.target_term_id"
-          placeholder="e.g. T-000456"
+          placeholder="e.g. NEUROLOGY"
           class="w-full"
         />
       </div>

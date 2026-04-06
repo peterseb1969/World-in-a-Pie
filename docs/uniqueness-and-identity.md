@@ -6,7 +6,7 @@ Consider three scenarios:
 
 1. **Backup & restore:** You export namespace `production` and restore it to a test instance. Every terminology, term, template, and document must arrive with its original ID intact — or downstream references break.
 
-2. **Multi-namespace operation:** You run `wip` and `partner-data` side by side. Both have a `TERM-000001`, but they're completely different entities. Uniqueness can't be global, or the second namespace can never be created.
+2. **Multi-namespace operation:** You run `wip` and `partner-data` side by side. Both have a terminology called `COUNTRY`, but they're completely different entities. Uniqueness can't be global, or the second namespace can never be created.
 
 3. **External system integration:** A vendor sends you records keyed by their internal ID (`SAP-PATIENT-4291`). You need to map that to your canonical WIP ID without losing the vendor's key.
 
@@ -41,7 +41,7 @@ All domain entities enforce uniqueness **within their namespace**, not globally:
 | Document | `(namespace, document_id, version)` | `ns_document_id_version_unique_idx` |
 | File | `(namespace, file_id)` | `ns_file_id_unique_idx` |
 
-This means `TERM-000001` in namespace `wip` and `TERM-000001` in namespace `backup` are **independent entities**. They have different Registry `entry_id`s, different data, different lifecycles. The entity_id is a human-friendly label scoped to its namespace.
+This means a terminology `COUNTRY` in namespace `wip` and `COUNTRY` in namespace `backup` are **independent entities**. They have different Registry `entry_id`s, different data, different lifecycles. The entity_id is a human-friendly label scoped to its namespace.
 
 ### Tier 3: Parent-Scoped Uniqueness
 
@@ -88,8 +88,8 @@ A composite key is a **dictionary of key-value pairs** that uniquely identifies 
 The Registry hashes the composite key by serializing the full dictionary to JSON with sorted keys, then computing SHA-256:
 
 ```python
-# Input: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "TPL-001"}
-# Sorted JSON: '{"identity_hash":"a1b2c3...","namespace":"wip","template_id":"TPL-001"}'
+# Input: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
+# Sorted JSON: '{"identity_hash":"a1b2c3...","namespace":"wip","template_id":"019eee01-..."}'
 # Output: SHA-256 of that JSON string
 ```
 
@@ -98,9 +98,9 @@ Each entity type uses a specific composite key structure:
 | Entity | Composite Key | Upsert Behavior |
 |--------|--------------|-----------------|
 | Terminology | `{"namespace": "wip", "value": "GENDER"}` | Same value in same namespace → same ID |
-| Term | `{"terminology_id": "TERM-001", "value": "Male"}` | Same value in same terminology → same ID |
+| Term | `{"terminology_id": "GENDER", "value": "Male"}` | Same value in same terminology → same ID |
 | Template | `{}` (empty) | Always generates a new ID |
-| Document (with identity_fields) | `{"namespace": "wip", "identity_hash": "...", "template_id": "TPL-001"}` | Same identity → same document_id, new version |
+| Document (with identity_fields) | `{"namespace": "wip", "identity_hash": "...", "template_id": "019eee01-..."}` | Same identity → same document_id, new version |
 | Document (no identity_fields) | `{}` (empty) | Always generates a new document_id |
 | File | `{}` (empty) | Always generates a new file_id |
 
@@ -113,7 +113,7 @@ For versioned entities (templates and documents), the entity_id is **stable** �
 ```
 Template "PERSON":
   ┌─────────────────────────────────────┐
-  │ template_id: TPL-000001             │  ← same across all versions
+  │ template_id: 019eee01-aaa1-7abc-... │  ← same across all versions
   │ version: 1  │  version: 2           │
   │ fields: ... │  fields: ... (updated)│
   │ status: active │ status: active     │
@@ -143,7 +143,7 @@ Document-Store                              Registry
     │  2. Build composite key dict:             │
     │     {"namespace": "wip",                  │
     │      "identity_hash": "a1b2c3...",        │
-    │      "template_id": "TPL-001"}            │
+    │      "template_id": "019eee01-..."}            │
     │                                           │
     │  3. POST /entries/register ──────────────►│
     │                                           │ 4. Hash the entire dict
@@ -181,7 +181,7 @@ Template PERSON:
 
 Document 1: { "email": "alice@example.com", "name": "Alice" }
   → identity_hash: sha256("email=alice@example.com") = "a1b2c3..."
-  → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "TPL-001"}
+  → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
   → Registry: NEW → document_id: "019-uuid-001", version: 1
 
 Document 2: { "email": "alice@example.com", "name": "Alice Smith" }
@@ -337,9 +337,9 @@ For the full design, see `docs/design/universal-synonym-resolution.md`.
 
 Early WIP versions enforced globally unique entity IDs (e.g., `terminology_id` unique across all namespaces). This blocked a critical workflow: **restoring a backup into a different namespace on the same instance**.
 
-If namespace `production` has `TERM-000001` and you try to restore a backup containing `TERM-000001` into namespace `backup`, a global unique index rejects it — even though the two entities live in completely separate namespaces.
+If namespace `production` has a terminology `COUNTRY` and you try to restore a backup containing the same `COUNTRY` terminology into namespace `backup`, a global unique index rejects it — even though the two entities live in completely separate namespaces.
 
-The fix: uniqueness indexes are scoped to `(namespace, entity_id)`. The same `TERM-000001` can exist in both namespaces independently. Each has its own Registry `entry_id` (which remains globally unique).
+The fix: uniqueness indexes are scoped to `(namespace, entity_id)`. The same entity_id can exist in both namespaces independently. Each has its own Registry `entry_id` (which remains globally unique).
 
 ### What This Enables
 

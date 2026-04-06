@@ -7,14 +7,14 @@ up Registry entries, MinIO blobs, and PostgreSQL rows so IDs can be re-used.
 
 Usage:
     # Dry run (default) — shows what would be deleted
-    python scripts/dev-delete.py T-0001a2b3 D-0004c5d6
+    python scripts/dev-delete.py 019abc01-def3-7abc-8def-123456789abc
 
-    # Actually delete
-    python scripts/dev-delete.py --force T-0001a2b3
+    # Actually delete (by UUID or value code)
+    python scripts/dev-delete.py --force 019abc01-def3-7abc-8def-123456789abc
 
     # Delete with full cascade (terminology → terms → relationships,
     # template → child templates → documents → files, etc.)
-    python scripts/dev-delete.py --cascade --force TERM-0001a2b3
+    python scripts/dev-delete.py --cascade --force COUNTRY
 
     # Delete entire namespace (cascade is implied)
     python scripts/dev-delete.py --namespace dnd --force
@@ -23,10 +23,10 @@ Usage:
     python scripts/dev-delete.py --prefix DND_ --type terminology --force
 
     # Delete by type when ID format is ambiguous
-    python scripts/dev-delete.py --type template --force TPL-0001a2b3
+    python scripts/dev-delete.py --type template --force PATIENT_RECORD
 
     # Custom MongoDB URI
-    python scripts/dev-delete.py --mongo-uri mongodb://localhost:27017/ --force T-0001a2b3
+    python scripts/dev-delete.py --mongo-uri mongodb://localhost:27017/ --force 019abc01-...
 
     # List all entities in a collection
     python scripts/dev-delete.py --list templates

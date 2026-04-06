@@ -136,7 +136,7 @@ When a service creates an entity, it calls the Registry with:
 The Registry uses these to:
 1. Look up the namespace's ID generation config for that entity type
 2. Generate a counter key: `"{namespace}:{entity_type}:{prefix}"` (e.g., `"seed:terminologies:TERM-"`)
-3. Atomically increment the counter and return the ID (e.g., `SEED-TERM-000001`)
+3. Atomically increment the counter and return the ID (e.g., `SEED-LOV-000001`)
 
 ### Namespace-Scoped ID Prefixes
 
@@ -149,7 +149,7 @@ Custom namespaces get modified ID prefixes to avoid collisions:
 | `wip` | templates | UUID7 (default) |
 | `wip` | documents | UUID7 (default) |
 | `wip` | files | UUID7 (default) |
-| custom | (any) | Configurable via `id_config` — UUID7, prefixed (e.g., `SEED-TERM-000001`), nanoid, pattern |
+| custom | (any) | Configurable via `id_config` — UUID7, prefixed (e.g., `SEED-LOV-000001`), nanoid, pattern |
 
 The `wip` namespace uses UUID7 for all entity types. Custom namespaces can configure per-entity-type ID algorithms including prefixed IDs with custom prefixes and padding.
 

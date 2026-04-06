@@ -179,13 +179,13 @@ const { data } = useTerminologies({ status: 'active', page: 1, page_size: 25 })
 // data.items, data.total, data.pages
 
 // Get single terminology
-const { data: terminology } = useTerminology('T-001')
+const { data: terminology } = useTerminology('COUNTRY')
 
 // List terms under a terminology with search
-const { data: terms } = useTerms('T-001', { search: 'united', page: 1 })
+const { data: terms } = useTerms('COUNTRY', { search: 'united', page: 1 })
 
 // Get single term
-const { data: term } = useTerm('TERM-001')
+const { data: term } = useTerm('COUNTRY:United States')
 ```
 
 ### Templates
@@ -201,7 +201,7 @@ const { data: term } = useTerm('TERM-001')
 const { data } = useTemplates({ latest_only: true, status: 'active' })
 
 // Get by ID
-const { data: template } = useTemplate('TPL-001')
+const { data: template } = useTemplate('PATIENT_RECORD')
 
 // Get by value code (e.g., 'PATIENT_RECORD')
 const { data: template } = useTemplateByValue('PATIENT_RECORD')
@@ -218,14 +218,14 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD')
 
 ```tsx
 // List documents for a template
-const { data } = useDocuments({ template_id: 'TPL-001', status: 'active' })
+const { data } = useDocuments({ template_id: 'PATIENT_RECORD', status: 'active' })
 
 // Get single document
-const { data: doc } = useDocument('DOC-001')
+const { data: doc } = useDocument('my-document-id')
 
 // Complex query with filters
 const { data } = useQueryDocuments({
-  template_id: 'TPL-001',
+  template_id: 'PATIENT_RECORD',
   filters: [
     { field: 'data.country', operator: 'eq', value: 'US' },
     { field: 'data.age', operator: 'gte', value: 18 },
@@ -235,7 +235,7 @@ const { data } = useQueryDocuments({
 })
 
 // Document version history
-const { data: versions } = useDocumentVersions('DOC-001')
+const { data: versions } = useDocumentVersions('my-document-id')
 ```
 
 ### Files
@@ -380,7 +380,7 @@ const handleUpload = (file: File) => {
 const deleteDoc = useDeleteDocument()
 
 deleteDoc.mutate(
-  { id: 'DOC-001', updatedBy: 'user@example.com' },
+  { id: 'my-document-id', updatedBy: 'user@example.com' },
   {
     onSuccess: () => {
       // Documents list auto-refetches via cache invalidation

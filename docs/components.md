@@ -645,7 +645,7 @@ The Registry provides **federated identity management** and is the **ID generato
 
 By default, the Registry generates **UUID7** identifiers (time-ordered UUIDs) for all entity types. This is the default for the `wip` namespace and any new namespace created without explicit configuration.
 
-For namespaces that require human-readable IDs, the Registry supports **prefixed sequential IDs** (e.g., `TERM-000001`, `TPL-000002`) and other algorithms.
+For namespaces that require human-readable IDs, the Registry supports **prefixed sequential IDs** (e.g., `LOV-000042`, `SCHEMA-000001`) and other algorithms. The prefix is user-chosen per namespace.
 
 ### ID Algorithms
 
@@ -653,7 +653,7 @@ For namespaces that require human-readable IDs, the Registry supports **prefixed
 |-----------|--------|----------|
 | `uuid7` | `019abc12-def3-7abc-8def-123456789abc` | **Default.** Time-ordered, sortable by creation time |
 | `uuid4` | `550e8400-e29b-41d4-a716-446655440000` | Universally unique, random |
-| `prefixed` | `TERM-000001`, `TPL-000002` | Human-readable with prefix and sequential counter |
+| `prefixed` | `PROD-0001`, `LOV-000042` | Human-readable with user-chosen prefix and sequential counter |
 | `nanoid` | `V1StGXR8_Z5jdHi6B-myT` | URL-safe compact IDs |
 | `pattern` | (custom regex) | Validated against a regex pattern |
 | `any` | (any string) | No format enforcement |

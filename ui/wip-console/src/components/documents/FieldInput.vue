@@ -291,11 +291,11 @@ const referenceHelpText = computed(() => {
     case 'document':
       return 'Enter document ID, hash:identity_hash, or business key'
     case 'term':
-      return 'Enter term ID (e.g., T-000001)'
+      return 'Enter term value (e.g., COUNTRY:United States) or UUID'
     case 'terminology':
-      return 'Enter terminology ID (e.g., TERM-000001)'
+      return 'Enter terminology value (e.g., COUNTRY) or UUID'
     case 'template':
-      return 'Enter template ID (e.g., TPL-000001)'
+      return 'Enter template value (e.g., PATIENT_RECORD) or UUID'
     default:
       return 'Enter reference value'
   }

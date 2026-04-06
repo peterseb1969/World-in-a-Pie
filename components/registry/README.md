@@ -192,7 +192,7 @@ The registry pre-configures the `wip` namespace with per-entity-type ID algorith
 | `documents` | UUID7 | Document IDs |
 | `files` | UUID7 | File IDs |
 
-ID algorithms are configurable per namespace per entity type (UUID4, UUID7, NanoID, Prefixed, Pattern). For example, a namespace could use `"algorithm": "prefixed", "prefix": "TERM-"` to generate IDs like `TERM-000001`.
+ID algorithms are configurable per namespace per entity type (UUID4, UUID7, NanoID, Prefixed, Pattern). For example, a namespace could use `"algorithm": "prefixed", "prefix": "PROD-"` to generate IDs like `PROD-000001`.
 
 Initialize with:
 ```bash

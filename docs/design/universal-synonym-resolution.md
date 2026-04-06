@@ -293,34 +293,34 @@ This is a read-only batch endpoint optimised for resolution. It does not create 
 ### The reference chain today (fragile)
 
 ```
-Terminology "STATUS" created       → TERM-000001 (canonical ID)
-Term "approved" created            → T-000042 (canonical ID)
-Template "PATIENT" created         → TPL-01abc (canonical ID)
-  field: status (terminology_ref: "TERM-000001")     ← breaks on migration
+Terminology "STATUS" created       → 019def01-... (canonical ID)
+Term "approved" created            → 019abc42-... (canonical ID)
+Template "PATIENT" created         → 019eee01-... (canonical ID)
+  field: status (terminology_ref: "019def01-...")     ← breaks on migration
 Document created against PATIENT
-  template_id: "TPL-01abc"                           ← breaks on migration
+  template_id: "019eee01-..."                        ← breaks on migration
   data.status: "approved"                            ← already portable (term value)
-  data.primary_doctor: "DOC-00089"                   ← breaks on migration
+  data.primary_doctor: "019ddd89-..."                ← breaks on migration
 ```
 
 ### The reference chain with auto-synonyms (portable)
 
 ```
-Terminology "STATUS" created       → TERM-000001
-  auto-synonym: {ns:"wip", type:"terminology", value:"STATUS"} → TERM-000001
+Terminology "STATUS" created       → 019def01-...
+  auto-synonym: {ns:"wip", type:"terminology", value:"STATUS"} → 019def01-...
 
-Term "approved" created            → T-000042
-  auto-synonym: {ns:"wip", type:"term", terminology:"STATUS", value:"approved"} → T-000042
+Term "approved" created            → 019abc42-...
+  auto-synonym: {ns:"wip", type:"term", terminology:"STATUS", value:"approved"} → 019abc42-...
 
-Template "PATIENT" created         → TPL-01abc
-  auto-synonym: {ns:"wip", type:"template", value:"PATIENT"} → TPL-01abc
+Template "PATIENT" created         → 019eee01-...
+  auto-synonym: {ns:"wip", type:"template", value:"PATIENT"} → 019eee01-...
   field: status (terminology_ref: "STATUS")          ← resolved via synonym at runtime
 
 Document created
   API call: create_document(template_id="PATIENT")   ← resolved via synonym
-  Stored: template_id: "TPL-01abc"                   ← canonical ID stored internally
+  Stored: template_id: "019eee01-..."                ← canonical ID stored internally
   data.status: "approved"                            ← term value, already portable
-  data.primary_doctor: "DOC-00089"                   ← canonical ID stored
+  data.primary_doctor: "019ddd89-..."                ← canonical ID stored
     (the referenced doc also has a portable_id synonym for migration)
 ```
 

@@ -616,9 +616,9 @@ watch(
             <div class="search-tips">
               <h4>Search Tips</h4>
               <ul>
-                <li>Search by value: <code>PERSON</code>, <code>T-000001</code></li>
+                <li>Search by value: <code>PERSON</code>, <code>COUNTRY</code></li>
                 <li>Search by label: <code>Salutation</code>, <code>Country</code></li>
-                <li>Search by ID: <code>TPL-000001</code></li>
+                <li>Search by UUID or value code</li>
               </ul>
             </div>
           </div>

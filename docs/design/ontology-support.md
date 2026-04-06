@@ -147,8 +147,8 @@ All relationship endpoints live under `/api/def-store/ontology/`.
 POST /api/def-store/ontology/relationships
 Body: [
     {
-        "source_term_id": "T-000123",
-        "target_term_id": "T-000456",
+        "source_term_id": "019abc01-def3-7abc-8def-100000000123",
+        "target_term_id": "019abc01-def3-7abc-8def-100000000456",
         "relationship_type": "is_a"
     },
     ...
@@ -156,16 +156,16 @@ Body: [
 Response: BulkResponse
 
 # List relationships for a term
-GET /api/def-store/ontology/relationships?term_id=T-000123&direction=outgoing
-GET /api/def-store/ontology/relationships?term_id=T-000123&direction=incoming
-GET /api/def-store/ontology/relationships?term_id=T-000123&relationship_type=is_a
+GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&direction=outgoing
+GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&direction=incoming
+GET /api/def-store/ontology/relationships?term_id=019abc01-def3-7abc-8def-100000000123&relationship_type=is_a
 
 # List all relationships in namespace (paginated)
 GET /api/def-store/ontology/relationships/all?namespace=wip&relationship_type=is_a
 
 # Delete relationships (bulk)
 DELETE /api/def-store/ontology/relationships
-Body: [{"source_term_id": "T-000123", "target_term_id": "T-000456", "relationship_type": "is_a"}]
+Body: [{"source_term_id": "019abc01-def3-7abc-8def-100000000123", "target_term_id": "019abc01-def3-7abc-8def-100000000456", "relationship_type": "is_a"}]
 ```
 
 ### Traversal Queries
@@ -175,12 +175,12 @@ Body: [{"source_term_id": "T-000123", "target_term_id": "T-000456", "relationshi
 GET /api/def-store/ontology/terms/{term_id}/ancestors?relationship_type=is_a&max_depth=10
 
 Response: {
-    "term_id": "T-000123",
+    "term_id": "019abc01-def3-7abc-8def-100000000123",
     "relationship_type": "is_a",
     "direction": "ancestors",
     "nodes": [
-        {"term_id": "T-000456", "value": "Pneumonia", "depth": 1, "path": ["T-000123", "T-000456"]},
-        {"term_id": "T-000789", "value": "Lung Disease", "depth": 2, "path": ["T-000123", "T-000456", "T-000789"]},
+        {"term_id": "019abc01-def3-7abc-8def-100000000456", "value": "Pneumonia", "depth": 1, "path": ["019abc01-def3-7abc-8def-100000000123", "019abc01-def3-7abc-8def-100000000456"]},
+        {"term_id": "019abc01-def3-7abc-8def-100000000789", "value": "Lung Disease", "depth": 2, "path": ["019abc01-def3-7abc-8def-100000000123", "019abc01-def3-7abc-8def-100000000456", "019abc01-def3-7abc-8def-100000000789"]},
         ...
     ],
     "total": 5,
