@@ -30,7 +30,6 @@ React Console is live and in polishing/improvement phase. Built with `@wip/react
 - Document update endpoint (`PATCH /documents/{id}`) — see below. Documents can be created/viewed/archived without it.
 - Permission-aware UI (Auth Phase 2 Console UX)
 - Ongoing UX improvements driven by usage
-- **Lib update needed:** `@wip/react` tarball must be rebuilt — `useCreateTerm` now requires `namespace` as second argument (CASE-18)
 
 ### ~~Test Suites Must Cover Non-UUID ID Formats~~ ✅
 
@@ -72,16 +71,11 @@ Commits: 92cfb90 (helper), c2d572a (migrate 5 endpoints), 2b5b8e1 (ontology), 4a
 - Design: `docs/design/cross-namespace-read-mode.md`
 - Related: CASE-07, CASE-08
 
-### Document Update Endpoint (`PATCH /documents/{id}`)
+### Document Update Endpoint (`PATCH /documents`)
 
-Documents are immutable (create with same identity = new version), but users and AI agents think "update." A `PATCH` endpoint would accept partial `data` changes, read-merge-create internally, and return the new version. Caller sends only changed fields.
+Documents are immutable (create with same identity = new version), but users and AI agents think "update." Bulk endpoint (PoNIF: bulk-first writes) accepts partial `data` changes per item, reads/merges/validates/creates new version server-side, and returns the new versions in a `BulkResponse`. Caller sends only changed fields.
 
-**Design questions (needs fireside chat):**
-- Mutable namespaces: should `PATCH` do true in-place update (no new version) vs read-merge-create?
-- Should the caller know/control which mode?
-- Validation: full re-validation of merged document against template?
-- Deep vs shallow merge of nested `data` fields?
-- Can identity fields be changed via `PATCH`? (Probably no — breaks version chain.)
+**Design complete:** `docs/design/document-patch.md` (RFC 7396 merge semantics, OCC via per-item `if_match`, server-side term/file resolution, full re-validation, smart no-op detection).
 
 **Blocks:** `useUpdateDocument` React hook, full CRUD in React Console.
 
@@ -310,3 +304,4 @@ All feature designs live in `docs/design/`. Status of each:
 | `universal-synonym-resolution.md` | Implemented |
 | `image-based-distribution.md` | High-level design |
 | `wip-nano.md` | Concept only |
+| `document-patch.md` | Design complete, not started |
