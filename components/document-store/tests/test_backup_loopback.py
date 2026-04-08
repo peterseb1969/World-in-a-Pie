@@ -23,6 +23,26 @@ from wip_toolkit.models import ProgressEvent
 from document_store.services import backup_service
 
 
+@pytest.fixture(autouse=True)
+def _clear_container_mode_env(monkeypatch):
+    """Ensure loopback tests default to host mode.
+
+    Document-store's compose file sets REGISTRY_URL (and friends), which
+    _loopback_config treats as a signal to switch to container-mode URLs.
+    These unit tests assert host-mode behavior, so strip those vars unless
+    an individual test sets them back.
+    """
+    for var in (
+        "REGISTRY_URL",
+        "DEF_STORE_URL",
+        "TEMPLATE_STORE_URL",
+        "DOCUMENT_STORE_URL",
+        "REPORTING_SYNC_URL",
+        "INGEST_GATEWAY_URL",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
 class TestLoopbackConfig:
     def test_uses_env_var_when_no_override(self, monkeypatch):
         monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "env-key-123")
@@ -44,7 +64,7 @@ class TestLoopbackConfig:
     def test_direct_urls_for_all_services(self, monkeypatch):
         monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "k")
         cfg = backup_service._loopback_config()
-        # All services reachable via http://localhost:{port}{prefix}
+        # Host mode: every service reachable via http://localhost:{port}{prefix}
         assert cfg.service_url("registry") == "http://localhost:8001/api/registry"
         assert cfg.service_url("def-store") == "http://localhost:8002/api/def-store"
         assert (
@@ -54,6 +74,24 @@ class TestLoopbackConfig:
         assert (
             cfg.service_url("document-store")
             == "http://localhost:8004/api/document-store"
+        )
+
+    def test_container_mode_uses_per_service_hostnames(self, monkeypatch):
+        """When REGISTRY_URL is set, switch to per-service in-network URLs."""
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "k")
+        monkeypatch.setenv("REGISTRY_URL", "http://wip-registry:8001")
+        monkeypatch.setenv("DEF_STORE_URL", "http://wip-def-store:8002")
+        monkeypatch.setenv("TEMPLATE_STORE_URL", "http://wip-template-store:8003")
+        cfg = backup_service._loopback_config()
+        assert (
+            cfg.service_url("registry") == "http://wip-registry:8001/api/registry"
+        )
+        assert (
+            cfg.service_url("def-store") == "http://wip-def-store:8002/api/def-store"
+        )
+        assert (
+            cfg.service_url("template-store")
+            == "http://wip-template-store:8003/api/template-store"
         )
 
 

@@ -118,6 +118,13 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         job.status = BackupJobStatus.COMPLETE
         job.percent = 100.0
         job.completed_at = datetime.now(UTC)
+        # Populate archive_size from disk if the archive file exists.
+        # This is the first opportunity after run_export() has finalized
+        # the ZIP; the API layer set archive_path at job creation but
+        # cannot know the size until the worker thread writes the file.
+        if job.archive_path:
+            with contextlib.suppress(OSError):
+                job.archive_size = Path(job.archive_path).stat().st_size
     elif event.phase == "error":
         job.status = BackupJobStatus.FAILED
         job.error = event.message
@@ -249,14 +256,56 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _loopback_service_urls() -> dict[str, str] | None:
+    """Return per-service base URLs for container-mode loopback, or None.
+
+    Document-store can run in two shapes:
+
+    * **Host / bare metal**: every WIP service is reachable at
+      ``http://localhost:{port}`` for the default SERVICE_PORTS. The default
+      :class:`WIPConfig` (``host="localhost"``) works as-is, so this function
+      returns ``None`` and ``_loopback_config()`` skips the override.
+    * **Container (podman compose)**: each service has its own hostname in
+      the network (``wip-registry``, ``wip-def-store``, …). A single "host"
+      is not enough; we need per-service URL overrides.
+
+    Container mode is detected by the presence of ``REGISTRY_URL`` in the
+    environment — document-store's compose file sets it. The other service
+    URLs are derived from env vars when available, falling back to the
+    conventional in-network hostnames. This keeps unit tests (which run in
+    a venv with no container env) on the localhost path.
+    """
+    registry_url = os.getenv("REGISTRY_URL")
+    if not registry_url:
+        return None
+    return {
+        "registry": registry_url,
+        "def-store": os.getenv("DEF_STORE_URL", "http://wip-def-store:8002"),
+        "template-store": os.getenv(
+            "TEMPLATE_STORE_URL", "http://wip-template-store:8003"
+        ),
+        "document-store": os.getenv(
+            "DOCUMENT_STORE_URL", "http://wip-document-store:8004"
+        ),
+        "reporting-sync": os.getenv(
+            "REPORTING_SYNC_URL", "http://wip-reporting-sync:8005"
+        ),
+        "ingest-gateway": os.getenv(
+            "INGEST_GATEWAY_URL", "http://wip-ingest-gateway:8006"
+        ),
+    }
+
+
 def _loopback_config(api_key: str | None = None) -> WIPConfig:
-    """Build a :class:`WIPConfig` that points the toolkit at the local host.
+    """Build a :class:`WIPConfig` that points the toolkit at local services.
 
     Document-store runs inside the same network as Registry / Def-Store /
-    Template-Store, so the toolkit talks to them via ``http://localhost:{port}``
-    with no proxy. The API key defaults to the ambient
-    ``WIP_AUTH_LEGACY_API_KEY`` (the same env var the rest of document-store
-    uses for its outbound service calls).
+    Template-Store. On a host deployment they share ``localhost``; inside a
+    podman compose network each has its own hostname. :func:`_loopback_service_urls`
+    returns a per-service URL override for container mode, or None for host mode.
+
+    The API key defaults to the ambient ``WIP_AUTH_LEGACY_API_KEY`` (the same
+    env var the rest of document-store uses for its outbound service calls).
 
     Args:
         api_key: Override the API key. Defaults to the env var.
@@ -278,6 +327,11 @@ def _loopback_config(api_key: str | None = None) -> WIPConfig:
         api_key=resolved,
         verify_ssl=False,  # http loopback — TLS not in the path
         verbose=False,
+        service_urls=_loopback_service_urls(),
+        # Backups run inherently slow queries (bulk listing, closure
+        # computation over large namespaces). 10 minutes per HTTP call
+        # is generous but still a real backstop against hangs.
+        request_timeout_seconds=600.0,
     )
 
 

@@ -29,7 +29,7 @@ class WIPClient:
         self._client = httpx.Client(
             headers={"X-API-Key": config.api_key},
             verify=config.verify_ssl,
-            timeout=httpx.Timeout(60.0, connect=10.0),
+            timeout=httpx.Timeout(config.request_timeout_seconds, connect=10.0),
             follow_redirects=True,
         )
 
