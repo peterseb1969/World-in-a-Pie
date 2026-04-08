@@ -60,6 +60,8 @@ interface BulkResultItem {
     error?: string;
     /** Machine-readable error code, set when status === "error". See per-endpoint docs for the code matrix. */
     error_code?: string;
+    /** Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate). */
+    details?: Record<string, unknown>;
     value?: string;
     version?: number;
     is_new_version?: boolean;
@@ -98,8 +100,8 @@ declare abstract class BaseService {
     protected del<T>(path: string, body?: unknown, params?: Record<string, unknown> | object): Promise<T>;
     protected getBlob(path: string, params?: Record<string, unknown> | object): Promise<Blob>;
     protected postFormData<T>(path: string, formData: FormData, params?: Record<string, unknown> | object): Promise<T>;
-    protected bulkWrite(path: string, items: unknown[], method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'): Promise<BulkResponse>;
-    protected bulkWriteOne(path: string, item: unknown, method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'): Promise<BulkResultItem>;
+    protected bulkWrite(path: string, items: unknown[], method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE', params?: Record<string, unknown>): Promise<BulkResponse>;
+    protected bulkWriteOne(path: string, item: unknown, method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE', params?: Record<string, unknown>): Promise<BulkResultItem>;
 }
 
 interface TerminologyMetadata {
@@ -666,8 +668,24 @@ declare class TemplateStoreService extends BaseService {
     getTemplateByValueRaw(value: string, namespace: string): Promise<Template>;
     getTemplateVersions(value: string): Promise<TemplateListResponse>;
     getTemplateByValueAndVersion(value: string, version: number): Promise<Template>;
-    createTemplate(data: CreateTemplateRequest): Promise<BulkResultItem>;
-    createTemplates(data: CreateTemplateRequest[]): Promise<BulkResponse>;
+    /**
+     * Create a single template.
+     *
+     * @param data - The template definition.
+     * @param options - Optional behavior flags.
+     * @param options.onConflict - How to handle a value collision in the same
+     *   namespace. `'error'` (default) treats it as an error. `'validate'` makes
+     *   the call idempotent for app bootstrap: identical schema returns
+     *   `status='unchanged'`; compatible (added optional fields only) bumps to
+     *   version N+1; incompatible throws `WipBulkItemError` with
+     *   `errorCode='incompatible_schema'` and a structured `details` diff.
+     */
+    createTemplate(data: CreateTemplateRequest, options?: {
+        onConflict?: 'error' | 'validate';
+    }): Promise<BulkResultItem>;
+    createTemplates(data: CreateTemplateRequest[], options?: {
+        onConflict?: 'error' | 'validate';
+    }): Promise<BulkResponse>;
     updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem>;
     deleteTemplate(id: string, options?: {
         updatedBy?: string;
@@ -1340,6 +1358,16 @@ declare class RegistryService extends BaseService {
     getNamespaceStats(prefix: string): Promise<NamespaceStats>;
     createNamespace(data: CreateNamespaceRequest): Promise<Namespace>;
     updateNamespace(prefix: string, data: UpdateNamespaceRequest): Promise<Namespace>;
+    /**
+     * Upsert a namespace — create if missing, update if existing.
+     *
+     * Equivalent to `updateNamespace` but communicates intent: callers
+     * (typically app bootstrap scripts) want a single self-healing call
+     * that succeeds whether the namespace already exists or not. On
+     * create, any field not supplied uses the platform default
+     * (isolation_mode='open', deletion_mode='retain', etc).
+     */
+    upsertNamespace(prefix: string, data: UpdateNamespaceRequest): Promise<Namespace>;
     archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace>;
     restoreNamespace(prefix: string, restoredBy?: string): Promise<Namespace>;
     deleteNamespace(prefix: string, deletedBy?: string): Promise<void>;
@@ -1782,7 +1810,8 @@ declare class WipBulkItemError extends WipError {
     readonly index: number;
     readonly itemStatus: string;
     readonly errorCode?: string | undefined;
-    constructor(message: string, index: number, itemStatus: string, errorCode?: string | undefined);
+    readonly details?: Record<string, unknown> | undefined;
+    constructor(message: string, index: number, itemStatus: string, errorCode?: string | undefined, details?: Record<string, unknown> | undefined);
 }
 
 /** Build a URL query string from a params object, handling undefined, arrays, and booleans. */

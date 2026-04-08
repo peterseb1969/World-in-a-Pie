@@ -45,11 +45,12 @@ var WipNetworkError = class extends WipError {
   }
 };
 var WipBulkItemError = class extends WipError {
-  constructor(message, index, itemStatus, errorCode) {
+  constructor(message, index, itemStatus, errorCode, details) {
     super(message, void 0, void 0);
     this.index = index;
     this.itemStatus = itemStatus;
     this.errorCode = errorCode;
+    this.details = details;
     this.name = "WipBulkItemError";
   }
 };
@@ -310,20 +311,22 @@ var BaseService = class {
       params
     });
   }
-  bulkWrite(path, items, method = "POST") {
+  bulkWrite(path, items, method = "POST", params) {
     return this.transport.request(method, `${this.basePath}${path}`, {
-      body: items
+      body: items,
+      params
     });
   }
-  async bulkWriteOne(path, item, method = "POST") {
-    const resp = await this.bulkWrite(path, [item], method);
+  async bulkWriteOne(path, item, method = "POST", params) {
+    const resp = await this.bulkWrite(path, [item], method, params);
     const result = resp.results[0];
     if (result.status === "error") {
       throw new WipBulkItemError(
         result.error || "Operation failed",
         result.index,
         result.status,
-        result.error_code
+        result.error_code,
+        result.details
       );
     }
     return result;
@@ -483,11 +486,25 @@ var TemplateStoreService = class extends BaseService {
   async getTemplateByValueAndVersion(value, version) {
     return this.get(`/templates/by-value/${value}/versions/${version}`);
   }
-  async createTemplate(data) {
-    return this.bulkWriteOne("/templates", data);
+  /**
+   * Create a single template.
+   *
+   * @param data - The template definition.
+   * @param options - Optional behavior flags.
+   * @param options.onConflict - How to handle a value collision in the same
+   *   namespace. `'error'` (default) treats it as an error. `'validate'` makes
+   *   the call idempotent for app bootstrap: identical schema returns
+   *   `status='unchanged'`; compatible (added optional fields only) bumps to
+   *   version N+1; incompatible throws `WipBulkItemError` with
+   *   `errorCode='incompatible_schema'` and a structured `details` diff.
+   */
+  async createTemplate(data, options) {
+    const params = options?.onConflict ? { on_conflict: options.onConflict } : void 0;
+    return this.bulkWriteOne("/templates", data, "POST", params);
   }
-  async createTemplates(data) {
-    return this.bulkWrite("/templates", data);
+  async createTemplates(data, options) {
+    const params = options?.onConflict ? { on_conflict: options.onConflict } : void 0;
+    return this.bulkWrite("/templates", data, "POST", params);
   }
   async updateTemplate(id, data) {
     return this.bulkWriteOne("/templates", { ...data, template_id: id }, "PUT");
@@ -719,6 +736,18 @@ var RegistryService = class extends BaseService {
     return this.post("/namespaces", data);
   }
   async updateNamespace(prefix, data) {
+    return this.put(`/namespaces/${prefix}`, data);
+  }
+  /**
+   * Upsert a namespace — create if missing, update if existing.
+   *
+   * Equivalent to `updateNamespace` but communicates intent: callers
+   * (typically app bootstrap scripts) want a single self-healing call
+   * that succeeds whether the namespace already exists or not. On
+   * create, any field not supplied uses the platform default
+   * (isolation_mode='open', deletion_mode='retain', etc).
+   */
+  async upsertNamespace(prefix, data) {
     return this.put(`/namespaces/${prefix}`, data);
   }
   async archiveNamespace(prefix, archivedBy) {

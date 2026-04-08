@@ -55,12 +55,32 @@ export class TemplateStoreService extends BaseService {
     return this.get(`/templates/by-value/${value}/versions/${version}`)
   }
 
-  async createTemplate(data: CreateTemplateRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/templates', data)
+  /**
+   * Create a single template.
+   *
+   * @param data - The template definition.
+   * @param options - Optional behavior flags.
+   * @param options.onConflict - How to handle a value collision in the same
+   *   namespace. `'error'` (default) treats it as an error. `'validate'` makes
+   *   the call idempotent for app bootstrap: identical schema returns
+   *   `status='unchanged'`; compatible (added optional fields only) bumps to
+   *   version N+1; incompatible throws `WipBulkItemError` with
+   *   `errorCode='incompatible_schema'` and a structured `details` diff.
+   */
+  async createTemplate(
+    data: CreateTemplateRequest,
+    options?: { onConflict?: 'error' | 'validate' },
+  ): Promise<BulkResultItem> {
+    const params = options?.onConflict ? { on_conflict: options.onConflict } : undefined
+    return this.bulkWriteOne('/templates', data, 'POST', params)
   }
 
-  async createTemplates(data: CreateTemplateRequest[]): Promise<BulkResponse> {
-    return this.bulkWrite('/templates', data)
+  async createTemplates(
+    data: CreateTemplateRequest[],
+    options?: { onConflict?: 'error' | 'validate' },
+  ): Promise<BulkResponse> {
+    const params = options?.onConflict ? { on_conflict: options.onConflict } : undefined
+    return this.bulkWrite('/templates', data, 'POST', params)
   }
 
   async updateTemplate(id: string, data: UpdateTemplateRequest): Promise<BulkResultItem> {

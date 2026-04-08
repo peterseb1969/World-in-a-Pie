@@ -56,6 +56,22 @@ export class RegistryService extends BaseService {
     return this.put(`/namespaces/${prefix}`, data)
   }
 
+  /**
+   * Upsert a namespace — create if missing, update if existing.
+   *
+   * Equivalent to `updateNamespace` but communicates intent: callers
+   * (typically app bootstrap scripts) want a single self-healing call
+   * that succeeds whether the namespace already exists or not. On
+   * create, any field not supplied uses the platform default
+   * (isolation_mode='open', deletion_mode='retain', etc).
+   */
+  async upsertNamespace(
+    prefix: string,
+    data: UpdateNamespaceRequest,
+  ): Promise<Namespace> {
+    return this.put(`/namespaces/${prefix}`, data)
+  }
+
   async archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace> {
     return this.post(`/namespaces/${prefix}/archive`, null, archivedBy ? { archived_by: archivedBy } : undefined)
   }

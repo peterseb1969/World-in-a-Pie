@@ -60,9 +60,11 @@ export abstract class BaseService {
     path: string,
     items: unknown[],
     method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+    params?: Record<string, unknown>,
   ): Promise<BulkResponse> {
     return this.transport.request<BulkResponse>(method, `${this.basePath}${path}`, {
       body: items,
+      params,
     })
   }
 
@@ -70,8 +72,9 @@ export abstract class BaseService {
     path: string,
     item: unknown,
     method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+    params?: Record<string, unknown>,
   ): Promise<BulkResultItem> {
-    const resp = await this.bulkWrite(path, [item], method)
+    const resp = await this.bulkWrite(path, [item], method, params)
     const result = resp.results[0]
     if (result.status === 'error') {
       throw new WipBulkItemError(
@@ -79,6 +82,7 @@ export abstract class BaseService {
         result.index,
         result.status,
         result.error_code,
+        result.details,
       )
     }
     return result
