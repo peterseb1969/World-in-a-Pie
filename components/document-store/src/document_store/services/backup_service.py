@@ -29,11 +29,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+from wip_toolkit.client import WIPClient
+from wip_toolkit.config import WIPConfig
+from wip_toolkit.export.exporter import run_export
+from wip_toolkit.import_.importer import run_import
 from wip_toolkit.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobStatus
@@ -232,3 +238,110 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
         await task
     else:
         await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
+
+# ---------------------------------------------------------------------------
+# Loopback toolkit client + runner factories (CASE-23 Phase 3 STEP 4)
+#
+# Guardrail 1 (see docs/design/backup-restore-approach.md): this module is the
+# single import chokepoint for ``wip_toolkit``. ``api/backup.py`` (STEP 5) must
+# never ``import wip_toolkit`` directly — it calls these factories instead.
+# ---------------------------------------------------------------------------
+
+
+def _loopback_config(api_key: str | None = None) -> WIPConfig:
+    """Build a :class:`WIPConfig` that points the toolkit at the local host.
+
+    Document-store runs inside the same network as Registry / Def-Store /
+    Template-Store, so the toolkit talks to them via ``http://localhost:{port}``
+    with no proxy. The API key defaults to the ambient
+    ``WIP_AUTH_LEGACY_API_KEY`` (the same env var the rest of document-store
+    uses for its outbound service calls).
+
+    Args:
+        api_key: Override the API key. Defaults to the env var.
+
+    Returns:
+        A fully-resolved :class:`WIPConfig` ready to hand to :class:`WIPClient`.
+
+    Raises:
+        RuntimeError: If no API key is provided and the env var is unset.
+    """
+    resolved = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+    if not resolved:
+        raise RuntimeError(
+            "WIP_AUTH_LEGACY_API_KEY is not set; cannot build loopback WIPConfig"
+        )
+    return WIPConfig(
+        host="localhost",
+        proxy=False,
+        api_key=resolved,
+        verify_ssl=False,  # http loopback — TLS not in the path
+        verbose=False,
+    )
+
+
+def make_backup_runner(
+    namespace: str,
+    archive_path: str | Path,
+    options: dict[str, Any] | None = None,
+    *,
+    api_key: str | None = None,
+) -> ToolkitRunner:
+    """Build a :data:`ToolkitRunner` that exports ``namespace`` to ``archive_path``.
+
+    The returned callable runs :func:`wip_toolkit.export.exporter.run_export`
+    synchronously inside the worker thread supplied by :func:`start_job`. All
+    supported :func:`run_export` keyword options pass through ``options``
+    (e.g. ``include_files``, ``latest_only``, ``skip_documents``).
+
+    Guardrail 1: this factory exists so ``api/backup.py`` can construct a
+    runner without importing the toolkit itself.
+    """
+    opts = dict(options or {})
+    config = _loopback_config(api_key)
+
+    def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        with WIPClient(config) as client:
+            return run_export(
+                client,
+                namespace,
+                archive_path,
+                progress_callback=progress_callback,
+                non_interactive=True,
+                **opts,
+            )
+
+    return runner
+
+
+def make_restore_runner(
+    archive_path: str | Path,
+    options: dict[str, Any] | None = None,
+    *,
+    api_key: str | None = None,
+) -> ToolkitRunner:
+    """Build a :data:`ToolkitRunner` that imports ``archive_path``.
+
+    The returned callable runs :func:`wip_toolkit.import_.importer.run_import`
+    synchronously inside the worker thread supplied by :func:`start_job`. All
+    supported :func:`run_import` keyword options pass through ``options``
+    (e.g. ``mode``, ``target_namespace``, ``register_synonyms``, ``dry_run``).
+
+    Guardrail 1: this factory exists so ``api/backup.py`` can construct a
+    runner without importing the toolkit itself.
+    """
+    opts = dict(options or {})
+    config = _loopback_config(api_key)
+
+    def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        with WIPClient(config) as client:
+            return run_import(
+                client,
+                archive_path,
+                progress_callback=progress_callback,
+                non_interactive=True,
+                **opts,
+            )
+
+    return runner
