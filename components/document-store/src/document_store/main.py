@@ -23,6 +23,7 @@ from wip_auth import (
 
 from .api import api_router
 from .api.auth import require_api_key
+from .models.backup_job import BackupJob
 from .models.document import Document
 from .models.file import File
 from .services.def_store_client import configure_def_store_client, get_def_store_client
@@ -85,7 +86,7 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Document, File]
+        document_models=[Document, File, BackupJob]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
