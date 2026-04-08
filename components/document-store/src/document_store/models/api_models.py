@@ -255,6 +255,10 @@ class BulkResultItem(BaseModel):
     version: int | None = None
     is_new: bool | None = None
     error: str | None = None
+    error_code: str | None = Field(
+        None,
+        description="Machine-readable error code (e.g., 'not_found', 'validation_failed', 'concurrency_conflict')"
+    )
     warnings: list[str] = Field(default_factory=list)
 
 
@@ -286,6 +290,29 @@ class ArchiveItem(StrictModel):
 
     id: str = Field(..., description="ID of document to archive")
     archived_by: str | None = Field(None, description="User performing the archive")
+
+
+class PatchDocumentItem(StrictModel):
+    """Item in a bulk PATCH /documents request.
+
+    Applies a JSON Merge Patch (RFC 7396) to the document's `data` and creates
+    a new version. Identity fields and namespace cannot be changed via patch.
+    """
+
+    document_id: str = Field(
+        ...,
+        description="Stable document ID (canonical UUID or registered synonym)"
+    )
+    patch: dict[str, Any] = Field(
+        ...,
+        description="Partial data following RFC 7396 (JSON Merge Patch). "
+                    "Objects are deep-merged, arrays are replaced, null deletes a field."
+    )
+    if_match: int | None = Field(
+        None,
+        description="Expected current version. If provided and the current version "
+                    "differs, the item fails with concurrency_conflict."
+    )
 
 
 # ============================================================================

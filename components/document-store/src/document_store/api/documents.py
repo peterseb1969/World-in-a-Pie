@@ -23,6 +23,7 @@ from ..models.api_models import (
     DocumentQueryResponse,
     DocumentResponse,
     DocumentVersionResponse,
+    PatchDocumentItem,
 )
 from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
@@ -90,6 +91,50 @@ async def create_documents(
         namespace = items[0].namespace
         result = await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
 
+    await asyncio.sleep(get_throttle_delay())
+    return result
+
+
+@router.patch(
+    "",
+    response_model=BulkResponse,
+    summary="Patch documents (partial update)",
+    description="""
+Apply JSON Merge Patches (RFC 7396) to one or more existing documents.
+
+Each item is processed independently and a new document version is created
+on success. Errors are returned per item in the BulkResponse — the endpoint
+always returns HTTP 200, matching the bulk-first contract.
+
+Merge semantics:
+- Objects at the same path are deep-merged
+- Arrays are replaced (send the full array)
+- A null value deletes the field
+
+Constraints:
+- Identity fields cannot be changed (use POST to create a new document)
+- Namespace cannot be changed (PATCH only modifies `data`)
+- Archived documents are rejected; unarchive first
+- Optional per-item `if_match` provides optimistic concurrency control
+
+After merge the full document is re-validated against the same template
+version recorded on the existing document, term and file references are
+re-resolved, and a new version is written. Reporting-sync sees the same
+DOCUMENT_UPDATED event as POST-driven version bumps.
+"""
+)
+async def patch_documents(
+    items: list[PatchDocumentItem] = Body(...),
+    _: str = Depends(require_api_key),
+):
+    """Apply JSON Merge Patches to documents (bulk-first)."""
+    # Resolve document_id synonyms in place. Resolution failures are silently
+    # left as-is so the per-item flow returns 'not_found' rather than aborting
+    # the whole batch.
+    await resolve_bulk_ids(items, "document_id", "document", namespace=None)
+
+    service = get_document_service()
+    result = await service.bulk_patch(items)
     await asyncio.sleep(get_throttle_delay())
     return result
 

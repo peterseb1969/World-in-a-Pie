@@ -21,12 +21,14 @@ from ..models.api_models import (
     DocumentResponse,
     DocumentVersionResponse,
     DocumentVersionSummary,
+    PatchDocumentItem,
     ValidationError,
     ValidationResponse,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .def_store_client import get_def_store_client
 from .file_storage_client import is_file_storage_enabled
+from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
 from .registry_client import RegistryError, get_registry_client
@@ -34,6 +36,44 @@ from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
 logger = logging.getLogger(__name__)
+
+
+class PatchError(Exception):
+    """Per-item error during PATCH /documents processing.
+
+    Carries a machine-readable code so the bulk endpoint can populate
+    BulkResultItem.error_code per design doc §"Per-item error codes".
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+def json_merge_patch(target: Any, patch: Any) -> Any:
+    """Apply a JSON Merge Patch (RFC 7396) to a target value.
+
+    - dict-on-dict: deep merge recursively
+    - dict-on-non-dict: replace target with empty dict, then merge
+    - any non-dict patch value (scalar, list, etc.): replaces target
+    - null patch value at any key: deletes that key from target
+
+    Returns a new value; the input target is not mutated at the top level.
+    """
+    if not isinstance(patch, dict):
+        return patch
+    if not isinstance(target, dict):
+        target = {}
+    result = dict(target)
+    for key, value in patch.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict):
+            result[key] = json_merge_patch(result.get(key), value)
+        else:
+            result[key] = value
+    return result
 
 
 class DocumentService:
@@ -1588,6 +1628,262 @@ class DocumentService:
                     logging.getLogger(__name__).warning(
                         f"Failed to update reference count for file {file_id}: {e}"
                     )
+
+
+    # ========================================================================
+    # PATCH /documents
+    # ========================================================================
+
+    async def bulk_patch(self, items: list[PatchDocumentItem]) -> BulkResponse:
+        """Apply JSON Merge Patches to a batch of documents.
+
+        Each item is processed independently. Errors are returned per-item
+        in the BulkResponse rather than aborting the batch (per the bulk-first
+        contract in docs/api-conventions.md).
+        """
+        results: list[BulkResultItem] = []
+        for index, item in enumerate(items):
+            try:
+                results.append(await self._patch_one(index, item))
+            except PatchError as exc:
+                results.append(BulkResultItem(
+                    index=index,
+                    status="error",
+                    document_id=item.document_id,
+                    error=exc.message,
+                    error_code=exc.code,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Unexpected error patching document %s", item.document_id,
+                )
+                results.append(BulkResultItem(
+                    index=index,
+                    status="error",
+                    document_id=item.document_id,
+                    error=f"Internal error: {exc}",
+                    error_code="internal_error",
+                ))
+
+        succeeded = sum(1 for r in results if r.status != "error")
+        failed = sum(1 for r in results if r.status == "error")
+        return BulkResponse(
+            results=results,
+            total=len(items),
+            succeeded=succeeded,
+            failed=failed,
+        )
+
+    async def _patch_one(
+        self,
+        index: int,
+        item: PatchDocumentItem,
+        max_retries: int = 3,
+    ) -> BulkResultItem:
+        """Apply a single PATCH item.
+
+        Implements the read–merge–validate–write loop with optimistic
+        concurrency. The unique index on (namespace, document_id, version)
+        guarantees version uniqueness; on a race, _insert_with_retry handles
+        the retry transparently.
+
+        Raises PatchError on per-item failures (caller wraps into BulkResultItem).
+        """
+        from pymongo.errors import DuplicateKeyError
+
+        # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
+        from wip_auth import (
+            get_current_identity,
+            permission_sufficient,
+            resolve_permission,
+        )
+
+        for attempt in range(max_retries):
+            # 1. Read latest version (regardless of status — we still need to
+            #    detect ARCHIVED/INACTIVE and return the right error code).
+            latest = await Document.find(
+                {"document_id": item.document_id}
+            ).sort([("version", -1)]).limit(1).to_list()
+
+            if not latest:
+                raise PatchError("not_found", "Document not found")
+
+            current = latest[0]
+
+            # Soft-deleted document — treat as not_found per design doc §11.
+            if current.status == DocumentStatus.INACTIVE:
+                raise PatchError("not_found", "Document not found")
+
+            # Archived — explicit error per design doc.
+            if current.status == DocumentStatus.ARCHIVED:
+                raise PatchError(
+                    "archived",
+                    "Document is archived; unarchive before patching",
+                )
+
+            # 2. Permission check on the document's namespace.
+            #    Use resolve_permission directly so we can produce a per-item
+            #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
+            identity = get_current_identity()
+            permission = await resolve_permission(identity, current.namespace)
+            if not permission_sufficient(permission, "write"):
+                raise PatchError(
+                    "forbidden",
+                    f"Requires write access to namespace '{current.namespace}'",
+                )
+
+            # 3. Optimistic concurrency control (per-item if_match).
+            if item.if_match is not None and current.version != item.if_match:
+                raise PatchError(
+                    "concurrency_conflict",
+                    f"Expected version {item.if_match}, current is {current.version}",
+                )
+
+            # 4. Apply RFC 7396 merge to current data.
+            merged_data = json_merge_patch(current.data, item.patch)
+
+            # 5. Re-validate the merged document against the SAME template
+            #    version the existing document was created with (design §13).
+            validation_result = await self.validation_service.validate(
+                current.template_id,
+                merged_data,
+                namespace=current.namespace,
+                template_version=current.template_version,
+            )
+            if not validation_result.valid:
+                raise PatchError(
+                    "validation_failed",
+                    self._format_validation_errors(validation_result.errors),
+                )
+
+            # 6. Identity-field invariant (design §3).
+            #    Compare resolved values via dot-path lookup so nested identity
+            #    fields (e.g. "address.city") are handled correctly.
+            for field_path in validation_result.identity_fields or []:
+                old_val = IdentityService._get_nested_value(current.data, field_path)
+                new_val = IdentityService._get_nested_value(merged_data, field_path)
+                if old_val != new_val:
+                    raise PatchError(
+                        "identity_field_change",
+                        f"Cannot patch identity field '{field_path}' "
+                        f"(use POST to create a new document instead)",
+                    )
+
+            # 7. No-op detection — if data + all 3 reference arrays are byte-equal
+            #    to the current version, return without bumping.
+            if not self._data_has_changed(
+                current,
+                merged_data,
+                validation_result.term_references,
+                validation_result.references,
+                validation_result.file_references,
+            ):
+                return BulkResultItem(
+                    index=index,
+                    status="unchanged",
+                    id=current.document_id,
+                    document_id=current.document_id,
+                    identity_hash=current.identity_hash,
+                    version=current.version,
+                    is_new=False,
+                    warnings=validation_result.warnings,
+                )
+
+            # 8. Cross-namespace reference validation (matches POST flow).
+            try:
+                validator = get_reference_validator()
+                await validator.validate_document_references(
+                    document_namespace=current.namespace,
+                    template_namespace=current.namespace,
+                    term_references=validation_result.term_references,
+                    file_references=validation_result.file_references,
+                )
+            except ReferenceValidationError as exc:
+                raise PatchError(
+                    "reference_violation",
+                    f"Cross-namespace reference violation: {exc.violations}",
+                ) from exc
+
+            # 9. Write new version. Mirror _create_new_version's flow:
+            #    deactivate the existing version, then insert v+1 via the
+            #    retry helper. The unique index serializes concurrent writers.
+            actor = get_identity_string()
+            now = datetime.now(UTC)
+
+            current.status = DocumentStatus.INACTIVE
+            current.updated_at = now
+            current.updated_by = actor
+            await current.save()
+
+            # Preserve metadata.custom from the existing version. Warnings come
+            # from the new validation (they describe the merged state).
+            new_metadata = DocumentMetadata(
+                source_system=current.metadata.source_system,
+                warnings=validation_result.warnings,
+                custom=dict(current.metadata.custom),
+            )
+
+            try:
+                new_doc = await self._insert_with_retry(
+                    namespace=current.namespace,
+                    document_id=current.document_id,
+                    template_id=current.template_id,
+                    template_version=current.template_version,
+                    template_value=current.template_value,
+                    identity_hash=current.identity_hash,  # invariant under PATCH
+                    version=current.version + 1,
+                    data=merged_data,
+                    term_references=validation_result.term_references,
+                    references=validation_result.references,
+                    file_references=validation_result.file_references,
+                    metadata=new_metadata,
+                    actor=actor,
+                    now=now,
+                )
+            except DuplicateKeyError:
+                # Lost the version race even after _insert_with_retry's internal
+                # retries. Try the whole read-merge-write cycle again.
+                if attempt >= max_retries - 1:
+                    raise PatchError(
+                        "concurrency_conflict",
+                        f"Failed after {max_retries} retries due to concurrent writers",
+                    ) from None
+                continue
+
+            # 10. NATS event — reuse DOCUMENT_UPDATED so reporting-sync needs
+            #     no changes (a PATCH is just a new version, semantically).
+            await publish_document_event(
+                EventType.DOCUMENT_UPDATED,
+                self._document_to_event_payload(new_doc),
+                changed_by=actor,
+            )
+
+            # 11. File reference counts: decrement the old version's refs,
+            #     increment the new ones. Same as _create_new_version.
+            await self._update_file_reference_counts(
+                current.file_references, delta=-1
+            )
+            await self._update_file_reference_counts(
+                validation_result.file_references, delta=1
+            )
+
+            return BulkResultItem(
+                index=index,
+                status="updated",
+                id=new_doc.document_id,
+                document_id=new_doc.document_id,
+                identity_hash=new_doc.identity_hash,
+                version=new_doc.version,
+                is_new=False,
+                warnings=validation_result.warnings,
+            )
+
+        # All retries exhausted — should be unreachable because the loop body
+        # either returns or raises, but defensive in case the loop falls through.
+        raise PatchError(
+            "concurrency_conflict",
+            f"Failed after {max_retries} retries due to concurrent writers",
+        )
 
 
 # Singleton instance
