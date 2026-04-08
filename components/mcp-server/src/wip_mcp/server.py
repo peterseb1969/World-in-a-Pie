@@ -2763,6 +2763,181 @@ async def resume_replay(session_id: str) -> str:
 
 
 @mcp.tool()
+async def start_backup(
+    namespace: str | None = None,
+    include_files: bool = False,
+    include_inactive: bool = False,
+    skip_documents: bool = False,
+    skip_closure: bool = False,
+    skip_synonyms: bool = False,
+    latest_only: bool = False,
+    template_prefixes: list[str] | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Start a backup of a namespace. Returns the initial BackupJobSnapshot.
+
+    Backups run in the background; poll get_backup_job to track progress until
+    status is 'complete' or 'failed', then download_backup_archive to fetch
+    the .zip.
+
+    WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
+    non-trivial file content (CASE-28: ArchiveWriter buffers all blob bytes in
+    RAM and will OOM the document-store container). Leave it false until
+    CASE-28 lands.
+
+    Args:
+        namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
+        include_files: Include file blobs in the archive (see WARNING above).
+        include_inactive: Include soft-deleted entities.
+        skip_documents: Skip the documents phase entirely (definitions only).
+        skip_closure: Skip the closure-table (relationships) phase.
+        skip_synonyms: Skip the synonyms phase.
+        latest_only: Export only the latest version of each entity.
+        template_prefixes: Optional template_id prefixes to filter documents.
+        dry_run: Walk the export without writing the archive.
+    """
+    try:
+        data = await get_client().start_backup(
+            namespace=namespace,
+            include_files=include_files,
+            include_inactive=include_inactive,
+            skip_documents=skip_documents,
+            skip_closure=skip_closure,
+            skip_synonyms=skip_synonyms,
+            latest_only=latest_only,
+            template_prefixes=template_prefixes,
+            dry_run=dry_run,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def start_restore(
+    namespace: str,
+    archive_path: str,
+    mode: str = "restore",
+    target_namespace: str | None = None,
+    register_synonyms: bool = False,
+    skip_documents: bool = False,
+    skip_files: bool = False,
+    batch_size: int = 50,
+    continue_on_error: bool = False,
+    dry_run: bool = False,
+) -> str:
+    """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+
+    The archive at archive_path is uploaded as multipart and a restore job is
+    queued. Poll get_backup_job to track progress.
+
+    GOTCHA — restore mode semantics:
+    - mode='restore' writes back to the *source* namespace embedded in the
+      archive and IGNORES target_namespace. Use this only when restoring an
+      archive into the same namespace it came from.
+    - mode='fresh' generates new IDs and honors target_namespace. Use this for
+      round-trip into a new namespace.
+
+    Args:
+        namespace: URL-path namespace (the auth check target).
+        archive_path: Local filesystem path to the .zip archive to upload.
+        mode: 'restore' (preserve IDs) or 'fresh' (generate new IDs).
+        target_namespace: Override target namespace. Honored only in 'fresh' mode.
+        register_synonyms: Register original IDs as synonyms of new IDs (fresh mode).
+        skip_documents: Skip restoring documents (definitions only).
+        skip_files: Skip restoring file blobs.
+        batch_size: Restore batch size (1-500).
+        continue_on_error: Continue past per-item errors.
+        dry_run: Walk the import without applying changes.
+    """
+    try:
+        data = await get_client().start_restore(
+            namespace=namespace,
+            archive_path=archive_path,
+            mode=mode,
+            target_namespace=target_namespace,
+            register_synonyms=register_synonyms,
+            skip_documents=skip_documents,
+            skip_files=skip_files,
+            batch_size=batch_size,
+            continue_on_error=continue_on_error,
+            dry_run=dry_run,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_backup_job(job_id: str) -> str:
+    """Get the current state of a backup or restore job.
+
+    Returns a BackupJobSnapshot with status, phase, percent, message, and
+    archive_size (when complete). Poll this to track progress.
+    """
+    try:
+        data = await get_client().get_backup_job(job_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def list_backup_jobs(
+    namespace: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List recent backup/restore jobs, optionally filtered.
+
+    Args:
+        namespace: Filter by namespace.
+        status: Filter by status ('pending', 'running', 'complete', 'failed').
+        limit: Max jobs to return (1-500, default 50).
+    """
+    try:
+        data = await get_client().list_backup_jobs(
+            namespace=namespace, status=status, limit=limit
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def download_backup_archive(job_id: str, dest_path: str) -> str:
+    """Download a completed backup archive to a local file.
+
+    Streams the .zip from the document-store to dest_path. Job must be a
+    backup job in 'complete' status. Parent directories of dest_path are
+    created automatically.
+
+    Args:
+        job_id: The backup job ID.
+        dest_path: Local filesystem path to write the .zip to.
+    """
+    try:
+        data = await get_client().download_backup_archive(job_id, dest_path)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_backup_job(job_id: str) -> str:
+    """Delete a backup or restore job and its archive file.
+
+    Cannot delete a running job. Removes the MongoDB record and the archive
+    file from disk.
+    """
+    try:
+        data = await get_client().delete_backup_job(job_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_sync_status() -> str:
     """Get the reporting-sync service status.
 
@@ -2888,6 +3063,10 @@ WRITE_TOOLS = frozenset({
     "cancel_replay",
     "pause_replay",
     "resume_replay",
+    # Backup / Restore
+    "start_backup",
+    "start_restore",
+    "delete_backup_job",
     # Registry write ops
     "add_synonym",
     "remove_synonym",

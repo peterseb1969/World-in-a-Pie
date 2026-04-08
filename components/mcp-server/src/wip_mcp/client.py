@@ -1097,6 +1097,132 @@ class WipClient:
         )
 
     # ========================================================
+    # Document-Store: Backup / Restore (CASE-23 Phase 3)
+    # ========================================================
+
+    async def start_backup(
+        self,
+        namespace: str | None = None,
+        include_files: bool = False,
+        include_inactive: bool = False,
+        skip_documents: bool = False,
+        skip_closure: bool = False,
+        skip_synonyms: bool = False,
+        latest_only: bool = False,
+        template_prefixes: list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202)."""
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "include_files": include_files,
+            "include_inactive": include_inactive,
+            "skip_documents": skip_documents,
+            "skip_closure": skip_closure,
+            "skip_synonyms": skip_synonyms,
+            "latest_only": latest_only,
+            "dry_run": dry_run,
+        }
+        if template_prefixes is not None:
+            body["template_prefixes"] = template_prefixes
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/backup/namespaces/{namespace}/backup",
+            json=body,
+        )
+
+    async def start_restore(
+        self,
+        namespace: str,
+        archive_path: str,
+        mode: str = "restore",
+        target_namespace: str | None = None,
+        register_synonyms: bool = False,
+        skip_documents: bool = False,
+        skip_files: bool = False,
+        batch_size: int = 50,
+        continue_on_error: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """Upload a local archive file and start a restore job. Streams from disk."""
+        from pathlib import Path as _Path
+        path = _Path(archive_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+        client = await self._get_client()
+        data: dict[str, str] = {
+            "mode": mode,
+            "register_synonyms": str(register_synonyms).lower(),
+            "skip_documents": str(skip_documents).lower(),
+            "skip_files": str(skip_files).lower(),
+            "batch_size": str(batch_size),
+            "continue_on_error": str(continue_on_error).lower(),
+            "dry_run": str(dry_run).lower(),
+        }
+        if target_namespace is not None:
+            data["target_namespace"] = target_namespace
+
+        with path.open("rb") as fh:
+            files = {"archive": (path.name, fh, "application/zip")}
+            resp = await client.post(
+                f"{self.document_store_url}/api/document-store/backup/namespaces/{namespace}/restore",
+                files=files,
+                data=data,
+                headers={"X-API-Key": self.api_key},
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_backup_job(self, job_id: str) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/backup/jobs/{job_id}",
+        )
+
+    async def list_backup_jobs(
+        self,
+        namespace: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        data = await self._get(
+            self.document_store_url,
+            "/api/document-store/backup/jobs",
+            namespace=namespace,
+            status=status,
+            limit=limit,
+        )
+        return data if isinstance(data, list) else data.get("items", data)
+
+    async def download_backup_archive(
+        self, job_id: str, dest_path: str
+    ) -> dict:
+        """Stream a completed backup archive to a local file. Returns size + path."""
+        from pathlib import Path as _Path
+        dest = _Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        client = await self._get_client()
+        url = f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}/download"
+        size = 0
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                    fh.write(chunk)
+                    size += len(chunk)
+        return {"job_id": job_id, "path": str(dest), "size": size}
+
+    async def delete_backup_job(self, job_id: str) -> dict:
+        client = await self._get_client()
+        resp = await client.request(
+            "DELETE",
+            f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}",
+        )
+        resp.raise_for_status()
+        return {"deleted": job_id}
+
+    # ========================================================
     # Reporting-Sync
     # ========================================================
 

@@ -444,6 +444,170 @@ async def test_get_template_by_value_with_namespace():
 
 
 # =========================================================================
+# Backup / Restore (CASE-23 Phase 3 STEP 8)
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_start_backup_sends_full_body():
+    """start_backup posts to the namespace backup endpoint with all options."""
+    expected = {"job_id": "bkp-abc", "status": "pending"}
+    mock_http = _mock_http(_mock_response(expected))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.start_backup(
+            namespace="wip",
+            include_files=True,
+            include_inactive=True,
+            template_prefixes=["TPL-"],
+            dry_run=False,
+        )
+
+    assert result == expected
+    mock_http.post.assert_awaited_once()
+    url = mock_http.post.call_args.args[0]
+    assert "/api/document-store/backup/namespaces/wip/backup" in url
+    body = mock_http.post.call_args.kwargs["json"]
+    assert body["include_files"] is True
+    assert body["include_inactive"] is True
+    assert body["template_prefixes"] == ["TPL-"]
+    assert body["dry_run"] is False
+
+
+@pytest.mark.asyncio
+async def test_start_backup_omits_template_prefixes_when_none():
+    """start_backup leaves template_prefixes out of the body when not provided."""
+    mock_http = _mock_http(_mock_response({"job_id": "bkp-1"}))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_backup(namespace="wip")
+
+    body = mock_http.post.call_args.kwargs["json"]
+    assert "template_prefixes" not in body
+    assert body["include_files"] is False  # default
+
+
+@pytest.mark.asyncio
+async def test_start_restore_uploads_archive_multipart(tmp_path):
+    """start_restore streams a local archive as multipart form fields."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-1", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(
+            namespace="wip",
+            archive_path=str(archive),
+            mode="fresh",
+            target_namespace="wip-restored",
+            register_synonyms=True,
+            batch_size=100,
+        )
+
+    url = mock_http.post.call_args.args[0]
+    assert "/api/document-store/backup/namespaces/wip/restore" in url
+    files = mock_http.post.call_args.kwargs["files"]
+    assert files["archive"][0] == "ns.zip"
+    data = mock_http.post.call_args.kwargs["data"]
+    assert data["mode"] == "fresh"
+    assert data["target_namespace"] == "wip-restored"
+    assert data["register_synonyms"] == "true"
+    assert data["batch_size"] == "100"
+    headers = mock_http.post.call_args.kwargs["headers"]
+    assert headers == {"X-API-Key": "test_key"}
+
+
+@pytest.mark.asyncio
+async def test_start_restore_missing_archive_raises():
+    """start_restore raises FileNotFoundError if the archive doesn't exist."""
+    client = _make_client()
+    with pytest.raises(FileNotFoundError):
+        await client.start_restore(namespace="wip", archive_path="/nope.zip")
+
+
+@pytest.mark.asyncio
+async def test_get_backup_job():
+    """get_backup_job sends GET to /backup/jobs/{job_id}."""
+    expected = {"job_id": "bkp-1", "status": "complete", "percent": 100.0}
+    mock_http = _mock_http(_mock_response(expected))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.get_backup_job("bkp-1")
+
+    assert result == expected
+    url = mock_http.get.call_args.args[0]
+    assert url == "http://test:8004/api/document-store/backup/jobs/bkp-1"
+
+
+@pytest.mark.asyncio
+async def test_list_backup_jobs_with_filters():
+    """list_backup_jobs sends GET with namespace/status/limit query params."""
+    expected = [{"job_id": "bkp-1"}, {"job_id": "bkp-2"}]
+    mock_http = _mock_http(_mock_response(expected))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.list_backup_jobs(
+            namespace="wip", status="complete", limit=10
+        )
+
+    assert result == expected
+    params = mock_http.get.call_args.kwargs["params"]
+    assert params == {"namespace": "wip", "status": "complete", "limit": 10}
+
+
+@pytest.mark.asyncio
+async def test_download_backup_archive_streams_to_file(tmp_path):
+    """download_backup_archive streams the response body to dest_path."""
+    chunks = [b"PK\x03\x04", b"hello", b"world"]
+
+    class _StreamCM:
+        async def __aenter__(self):
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+
+            async def _aiter(chunk_size):
+                for c in chunks:
+                    yield c
+
+            resp.aiter_bytes = _aiter
+            return resp
+
+        async def __aexit__(self, *exc):
+            return None
+
+    mock_http = MagicMock()
+    mock_http.stream = MagicMock(return_value=_StreamCM())
+
+    dest = tmp_path / "out" / "archive.zip"
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.download_backup_archive("bkp-1", str(dest))
+
+    assert dest.read_bytes() == b"PK\x03\x04helloworld"
+    assert result["job_id"] == "bkp-1"
+    assert result["path"] == str(dest)
+    assert result["size"] == len(b"PK\x03\x04helloworld")
+
+
+@pytest.mark.asyncio
+async def test_delete_backup_job():
+    """delete_backup_job sends DELETE and returns a {deleted: ...} envelope."""
+    resp = _mock_response({})
+    resp.status_code = 204
+    mock_http = _mock_http(resp)
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.delete_backup_job("bkp-1")
+
+    assert result == {"deleted": "bkp-1"}
+    call = mock_http.request.call_args
+    assert call.args[0] == "DELETE"
+    assert "/api/document-store/backup/jobs/bkp-1" in call.args[1]
+
+
+# =========================================================================
 # Edge cases / helpers
 # =========================================================================
 
