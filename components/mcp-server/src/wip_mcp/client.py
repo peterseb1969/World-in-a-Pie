@@ -13,10 +13,12 @@ import httpx
 class BulkError(Exception):
     """Raised when a single-item bulk operation fails."""
 
-    def __init__(self, error: str, index: int = 0):
+    def __init__(self, error: str, index: int = 0, error_code: str | None = None):
         self.error = error
         self.index = index
-        super().__init__(error)
+        self.error_code = error_code
+        msg = f"[{error_code}] {error}" if error_code else error
+        super().__init__(msg)
 
 
 def _resolve_api_key() -> str:
@@ -153,7 +155,11 @@ class WipClient:
         """Unwrap a single-item BulkResponse. Raise on error."""
         result = bulk_response["results"][0]
         if result.get("status") == "error":
-            raise BulkError(result.get("error", "Unknown error"))
+            raise BulkError(
+                result.get("error", "Unknown error"),
+                index=result.get("index", 0),
+                error_code=result.get("error_code"),
+            )
         return result
 
     def _unwrap_bulk(self, bulk_response: dict[str, Any]) -> dict[str, Any]:
@@ -799,6 +805,29 @@ class WipClient:
             json=documents,
         )
         return self._unwrap_bulk(resp)
+
+    async def update_document(
+        self,
+        document_id: str,
+        patch: dict,
+        if_match: int | None = None,
+    ) -> dict:
+        """Apply an RFC 7396 JSON Merge Patch to a document.
+
+        Wraps the bulk PATCH endpoint with a single item and unwraps the
+        result. Raises BulkError (with `error_code` populated) on per-item
+        failure (e.g. not_found, identity_field_change, validation_failed,
+        concurrency_conflict).
+        """
+        item: dict[str, Any] = {"document_id": document_id, "patch": patch}
+        if if_match is not None:
+            item["if_match"] = if_match
+        resp = await self._patch(
+            self.document_store_url,
+            "/api/document-store/documents",
+            json=[item],
+        )
+        return self._unwrap_single(resp)
 
     async def get_document_versions(self, document_id: str) -> dict:
         return await self._get(

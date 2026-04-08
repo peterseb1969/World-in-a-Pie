@@ -1942,6 +1942,55 @@ async def archive_document(document_id: str) -> str:
 
 
 @mcp.tool()
+async def update_document(
+    document_id: str,
+    patch: dict,
+    if_match: int | None = None,
+) -> str:
+    """Apply a partial update to a document via RFC 7396 JSON Merge Patch.
+
+    Creates a new version (N+1) of the document. The previous version becomes
+    inactive. NATS DOCUMENT_UPDATED is published — same event reporting-sync
+    consumes for new versions, so the reporting layer refreshes automatically.
+
+    Args:
+        document_id: Document ID (e.g. 'DOC-xxx') or registered synonym.
+        patch: JSON Merge Patch applied to the document's `data` field.
+            - Objects are deep-merged
+            - Arrays are REPLACED entirely (not merged element-wise)
+            - `null` values DELETE the corresponding key
+        if_match: Optional optimistic concurrency control. If supplied, the
+            patch fails with `concurrency_conflict` unless the current
+            version matches.
+
+    Restrictions:
+        - Cannot change identity fields (use create_document to create a new
+          document instead — error code `identity_field_change`).
+        - Cannot patch archived documents (unarchive first — `archived`).
+        - Soft-deleted / non-existent documents return `not_found`.
+        - The merged document must still validate against the template the
+          document was originally created with (PATCH does NOT migrate to a
+          newer template version).
+
+    Example — update one field:
+        update_document("DOC-123", {"score": 92})
+
+    Example — delete an optional field via null:
+        update_document("DOC-123", {"middle_name": None})
+
+    Example — concurrency-safe update:
+        update_document("DOC-123", {"status": "approved"}, if_match=4)
+    """
+    try:
+        data = await get_client().update_document(
+            document_id, patch, if_match=if_match,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def delete_document(
     document_id: str,
     hard_delete: bool = False,
@@ -2769,6 +2818,7 @@ WRITE_TOOLS = frozenset({
     # Documents
     "create_document",
     "create_documents_bulk",
+    "update_document",
     "archive_document",
     "delete_document",
     # Files
