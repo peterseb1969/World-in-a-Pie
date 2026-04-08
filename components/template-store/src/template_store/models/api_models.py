@@ -194,12 +194,20 @@ class BulkResultItem(BaseModel):
     """Result of a bulk operation for a single item."""
 
     index: int
-    status: str  # created, updated, deleted, skipped, error
+    status: str  # created, updated, unchanged, deleted, skipped, error
     id: str | None = None
     value: str | None = None
     version: int | None = None
     is_new_version: bool | None = None
     error: str | None = None
+    error_code: str | None = Field(
+        None,
+        description="Machine-readable error code (e.g. 'incompatible_schema')"
+    )
+    details: dict[str, Any] | None = Field(
+        None,
+        description="Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate)"
+    )
 
 
 class BulkResponse(BaseModel):

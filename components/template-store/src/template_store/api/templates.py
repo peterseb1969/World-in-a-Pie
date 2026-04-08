@@ -41,6 +41,16 @@ router = APIRouter(
 @router.post("", response_model=BulkResponse)
 async def create_templates(
     items: list[CreateTemplateRequest] = Body(...),
+    on_conflict: str = Query(
+        default="error",
+        description=(
+            "How to handle a value collision with an existing template in the same "
+            "namespace. 'error' (default): treat as error (existing behavior). "
+            "'validate': identical schema returns 'unchanged'; compatible (added "
+            "optional fields only) bumps to version N+1; incompatible returns an "
+            "error item with error_code='incompatible_schema' and a structured diff."
+        ),
+    ),
 ):
     """
     Create one or more templates.
@@ -49,13 +59,28 @@ async def create_templates(
     Namespace is specified per item (default: "wip").
     For single items, uses direct creation. For multiple items, uses batch path.
     """
+    if on_conflict not in ("error", "validate"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid on_conflict value: {on_conflict!r}. Must be 'error' or 'validate'.",
+        )
+
     identity = get_current_identity()
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
 
-    if len(items) == 1:
-        # Single item — use direct create path
+    if on_conflict == "validate":
+        # Per-item dispatch with conflict policy.
+        try:
+            results = await TemplateService.create_templates_with_conflict_policy(
+                items=items,
+                on_conflict=on_conflict,
+            )
+        except RegistryError as e:
+            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
+    elif len(items) == 1:
+        # Single-item fast path (preserves existing behavior).
         try:
             result = await TemplateService.create_template(items[0], namespace=items[0].namespace)
             results = [BulkResultItem(index=0, status="created", id=result.template_id, value=items[0].value, version=result.version)]
@@ -64,7 +89,7 @@ async def create_templates(
         except RegistryError as e:
             results = [BulkResultItem(index=0, status="error", value=items[0].value, error=f"Registry error: {e!s}")]
     else:
-        # Bulk path
+        # Multi-item bulk path (preserves existing behavior — one Registry batch call).
         try:
             results = await TemplateService.create_templates_bulk(
                 templates=items,

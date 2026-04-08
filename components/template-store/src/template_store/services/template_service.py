@@ -476,6 +476,99 @@ class TemplateService:
         return False
 
     @staticmethod
+    def compute_template_compatibility(
+        existing: Template,
+        proposed: CreateTemplateRequest,
+    ) -> tuple[str, dict]:
+        """
+        Compare a proposed CreateTemplateRequest against an existing Template.
+
+        Returns a (verdict, diff) tuple where verdict is one of:
+        - "identical": no schema differences — proposed matches existing exactly
+        - "compatible": only differences are added optional fields (mandatory=false)
+        - "incompatible": any other change (removed field, type change, made-required,
+          identity_fields change, modified existing field, added required field)
+
+        The diff dict captures the structured changes for caller-facing error messages.
+        Used by POST /templates?on_conflict=validate to decide whether to silently
+        adopt the existing template, bump the version, or reject with a structured
+        diff.
+        """
+        import json
+
+        existing_fields = {f.name: f for f in existing.fields}
+        proposed_fields = {f.name: f for f in proposed.fields}
+
+        existing_names = set(existing_fields)
+        proposed_names = set(proposed_fields)
+
+        added_names = proposed_names - existing_names
+        removed_names = existing_names - proposed_names
+        common_names = existing_names & proposed_names
+
+        added_optional: list[str] = []
+        added_required: list[str] = []
+        for name in sorted(added_names):
+            f = proposed_fields[name]
+            if f.mandatory and f.default_value is None:
+                added_required.append(name)
+            else:
+                added_optional.append(name)
+
+        changed_type: list[dict] = []
+        made_required: list[str] = []
+        modified_existing: list[str] = []
+        for name in sorted(common_names):
+            old = existing_fields[name]
+            new = proposed_fields[name]
+            if old.type != new.type:
+                changed_type.append({
+                    "name": name,
+                    "old_type": old.type.value if hasattr(old.type, "value") else str(old.type),
+                    "new_type": new.type.value if hasattr(new.type, "value") else str(new.type),
+                })
+                continue
+            if (not old.mandatory) and new.mandatory:
+                made_required.append(name)
+                continue
+            # Compare full field definitions for any other change
+            old_json = json.dumps(old.model_dump(), sort_keys=True, default=str)
+            new_json = json.dumps(new.model_dump(), sort_keys=True, default=str)
+            if old_json != new_json:
+                modified_existing.append(name)
+
+        identity_changed: dict | None = None
+        if list(existing.identity_fields or []) != list(proposed.identity_fields or []):
+            identity_changed = {
+                "old": list(existing.identity_fields or []),
+                "new": list(proposed.identity_fields or []),
+            }
+
+        diff = {
+            "added_optional": added_optional,
+            "added_required": added_required,
+            "removed": sorted(removed_names),
+            "changed_type": changed_type,
+            "made_required": made_required,
+            "modified_existing": modified_existing,
+            "identity_changed": identity_changed,
+        }
+
+        is_incompatible = bool(
+            added_required
+            or removed_names
+            or changed_type
+            or made_required
+            or modified_existing
+            or identity_changed
+        )
+        if is_incompatible:
+            return "incompatible", diff
+        if added_optional:
+            return "compatible", diff
+        return "identical", diff
+
+    @staticmethod
     async def update_template(
         template_id: str,
         request: UpdateTemplateRequest
@@ -714,6 +807,142 @@ class TemplateService:
     # =========================================================================
     # BULK OPERATIONS
     # =========================================================================
+
+    @staticmethod
+    async def create_templates_with_conflict_policy(
+        items: list[CreateTemplateRequest],
+        on_conflict: str,
+    ) -> list[BulkResultItem]:
+        """
+        Per-item create dispatcher that applies an `on_conflict` policy.
+
+        Behavior per item:
+        - on_conflict='error' (default):
+            * existing (namespace, value) → BulkResultItem(status='error',
+              error='Template with value ... already exists ...')
+            * else → standard create (status='created')
+        - on_conflict='validate':
+            * no existing → standard create (status='created')
+            * identical existing → status='unchanged' (id/version of existing)
+            * compatible existing (added optional fields only) → version N+1
+              via update_template path (status='updated', is_new_version=True)
+            * incompatible existing → status='error',
+              error_code='incompatible_schema', details=<diff>
+
+        For draft items (status='draft'), the conflict check is skipped because
+        drafts may have unresolved references and live in their own value-space.
+        Used by POST /templates?on_conflict=...
+
+        Returns one BulkResultItem per input item, in input order.
+        """
+        results: list[BulkResultItem] = []
+
+        for i, item in enumerate(items):
+            try:
+                if item.status == "draft" or on_conflict == "error":
+                    # Fast path: defer to existing create_template (which raises
+                    # ValueError on conflict). Drafts always take this path.
+                    try:
+                        created = await TemplateService.create_template(
+                            item, namespace=item.namespace
+                        )
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="created",
+                            id=created.template_id,
+                            value=item.value,
+                            version=created.version,
+                        ))
+                    except ValueError as e:
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            value=item.value,
+                            error=str(e),
+                        ))
+                    continue
+
+                # on_conflict == "validate"
+                existing_list = await Template.find(
+                    {"namespace": item.namespace, "value": item.value}
+                ).sort([("version", -1)]).limit(1).to_list()
+                existing = existing_list[0] if existing_list else None
+
+                if existing is None:
+                    created = await TemplateService.create_template(
+                        item, namespace=item.namespace
+                    )
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="created",
+                        id=created.template_id,
+                        value=item.value,
+                        version=created.version,
+                    ))
+                    continue
+
+                verdict, diff = TemplateService.compute_template_compatibility(
+                    existing, item
+                )
+
+                if verdict == "identical":
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="unchanged",
+                        id=existing.template_id,
+                        value=existing.value,
+                        version=existing.version,
+                        details=diff,
+                    ))
+                elif verdict == "compatible":
+                    # Bump version via update_template
+                    update_req = UpdateTemplateRequest(
+                        label=item.label,
+                        description=item.description,
+                        extends=item.extends,
+                        extends_version=item.extends_version,
+                        identity_fields=item.identity_fields,
+                        fields=item.fields,
+                        rules=item.rules,
+                        metadata=item.metadata,
+                        reporting=item.reporting,
+                    )
+                    update_resp = await TemplateService.update_template(
+                        template_id=existing.template_id,
+                        request=update_req,
+                    )
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="updated",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=update_resp.version if update_resp else existing.version,
+                        is_new_version=bool(update_resp and update_resp.is_new_version),
+                        details=diff,
+                    ))
+                else:  # incompatible
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="incompatible_schema",
+                        error=(
+                            f"Proposed schema for '{item.value}' is incompatible "
+                            f"with existing version {existing.version}"
+                        ),
+                        details=diff,
+                    ))
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=item.value,
+                    error=str(e),
+                ))
+
+        return results
 
     @staticmethod
     async def create_templates_bulk(
