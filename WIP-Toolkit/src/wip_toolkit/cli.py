@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 import sys
 from importlib.metadata import version
 
@@ -340,6 +341,74 @@ def backfill_synonyms_cmd(
             console.print(f"  {entity_type}: {added} new, {existing} existing, {failed} failed")
 
         console.print(f"\n  Total: {total_added} new synonyms registered, {total_existing} already existed")
+
+
+@main.command(name="update-document")
+@click.argument("document_id")
+@click.option("--patch", "patch_json", required=True,
+              help="JSON Merge Patch (RFC 7396) to apply to the document's `data`. "
+                   "Use '-' to read JSON from stdin.")
+@click.option("--if-match", type=int, default=None,
+              help="Optimistic concurrency: only apply if current version matches.")
+@click.pass_context
+def update_document_cmd(
+    ctx: click.Context,
+    document_id: str,
+    patch_json: str,
+    if_match: int | None,
+) -> None:
+    """Apply an RFC 7396 JSON Merge Patch to a document.
+
+    DOCUMENT_ID is the canonical document_id (e.g., 'DOC-xxx') or a registered
+    synonym. The patch is applied to the document's `data` field:
+
+      - Objects are deep-merged
+      - Arrays are REPLACED entirely
+      - `null` deletes the corresponding key
+
+    Identity fields cannot be changed via PATCH (use create-document with new
+    identity values instead). Archived or soft-deleted documents are rejected.
+
+    Examples:
+
+      wip-toolkit update-document DOC-123 --patch '{"score": 92}'
+
+      wip-toolkit update-document DOC-123 --patch '{"middle_name": null}'
+
+      cat patch.json | wip-toolkit update-document DOC-123 --patch -
+    """
+    if patch_json == "-":
+        patch_json = sys.stdin.read()
+    try:
+        patch = _json.loads(patch_json)
+    except _json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON in --patch:[/red] {e}")
+        sys.exit(2)
+    if not isinstance(patch, dict):
+        console.print("[red]--patch must be a JSON object.[/red]")
+        sys.exit(2)
+
+    item: dict = {"document_id": document_id, "patch": patch}
+    if if_match is not None:
+        item["if_match"] = if_match
+
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        resp = client.patch(
+            "document-store",
+            "/api/document-store/documents",
+            json=[item],
+        )
+
+    result = resp["results"][0]
+    if result.get("status") == "error":
+        code = result.get("error_code") or "error"
+        console.print(
+            f"[red]PATCH failed[/red] ({code}): {result.get('error', 'unknown')}",
+        )
+        sys.exit(1)
+
+    console.print(_json.dumps(result, indent=2, default=str))
 
 
 @main.command()

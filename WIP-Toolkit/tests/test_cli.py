@@ -361,3 +361,105 @@ class TestInspectCommand:
         result = runner.invoke(main, ["inspect", "/tmp/test.zip", "--show-references"])
 
         assert result.exit_code == 0
+
+
+class TestUpdateDocumentCommand:
+    """Tests for the update-document CLI command."""
+
+    @patch("wip_toolkit.cli.WIPClient")
+    def test_update_document_success(self, MockClient):
+        from wip_toolkit.cli import main
+
+        mock_client = _make_mock_client()
+        mock_client.patch.return_value = {
+            "results": [{
+                "index": 0,
+                "status": "updated",
+                "document_id": "DOC-123",
+                "version": 4,
+                "is_new": False,
+            }],
+            "total": 1, "succeeded": 1, "failed": 0,
+        }
+        MockClient.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["update-document", "DOC-123", "--patch", '{"score": 92}'],
+        )
+
+        assert result.exit_code == 0, result.output
+        mock_client.patch.assert_called_once()
+        args, kwargs = mock_client.patch.call_args
+        assert args[0] == "document-store"
+        assert args[1] == "/api/document-store/documents"
+        body = kwargs["json"]
+        assert body == [{"document_id": "DOC-123", "patch": {"score": 92}}]
+
+    @patch("wip_toolkit.cli.WIPClient")
+    def test_update_document_forwards_if_match(self, MockClient):
+        from wip_toolkit.cli import main
+
+        mock_client = _make_mock_client()
+        mock_client.patch.return_value = {
+            "results": [{"index": 0, "status": "updated", "document_id": "DOC-1", "version": 5}],
+            "total": 1, "succeeded": 1, "failed": 0,
+        }
+        MockClient.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["update-document", "DOC-1", "--patch", '{"x": 1}', "--if-match", "4"],
+        )
+
+        assert result.exit_code == 0, result.output
+        body = mock_client.patch.call_args.kwargs["json"]
+        assert body == [{"document_id": "DOC-1", "patch": {"x": 1}, "if_match": 4}]
+
+    @patch("wip_toolkit.cli.WIPClient")
+    def test_update_document_error_exits_nonzero(self, MockClient):
+        from wip_toolkit.cli import main
+
+        mock_client = _make_mock_client()
+        mock_client.patch.return_value = {
+            "results": [{
+                "index": 0,
+                "status": "error",
+                "document_id": "DOC-1",
+                "error": "Cannot patch identity field",
+                "error_code": "identity_field_change",
+            }],
+            "total": 1, "succeeded": 0, "failed": 1,
+        }
+        MockClient.return_value = mock_client
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["update-document", "DOC-1", "--patch", '{"national_id": "X"}'],
+        )
+
+        assert result.exit_code == 1
+        assert "identity_field_change" in result.output
+
+    def test_update_document_invalid_json_patch(self):
+        from wip_toolkit.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["update-document", "DOC-1", "--patch", "{not json}"],
+        )
+
+        assert result.exit_code == 2
+        assert "Invalid JSON" in result.output
+
+    def test_update_document_non_object_patch_rejected(self):
+        from wip_toolkit.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main, ["update-document", "DOC-1", "--patch", "[1, 2, 3]"],
+        )
+
+        assert result.exit_code == 2
+        assert "must be a JSON object" in result.output

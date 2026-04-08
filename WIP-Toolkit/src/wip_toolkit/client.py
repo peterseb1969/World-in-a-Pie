@@ -68,6 +68,14 @@ class WIPClient:
         self._check_response(resp)
         return resp.json()
 
+    def patch(self, service: str, path: str, json: Any = None) -> dict:
+        url = f"{self.config.service_url(service)}{path}"
+        if self.config.verbose:
+            console.print(f"[dim]PATCH {url}[/dim]")
+        resp = self._client.patch(url, json=json)
+        self._check_response(resp)
+        return resp.json()
+
     def post_form(
         self, service: str, path: str,
         data: dict[str, str] | None = None,
