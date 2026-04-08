@@ -144,9 +144,22 @@ mkdir -p "$APP_DIR/tools"
 # --- Copy slash commands (new projects only) ---
 
 if ! $REFRESH_MODE; then
-    echo "2. Copying slash commands (12 files)..."
+    echo "2. Copying slash commands..."
     cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
     echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
+
+    # --- Copy slash command playbooks (new projects only) ---
+    # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
+    # Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.
+
+    if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
+        mkdir -p "$APP_DIR/docs/playbooks"
+        cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
+        PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+        echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
+    else
+        echo "   Warning: $WIP_ROOT/docs/playbooks/app-builder/ not found, skipping playbooks"
+    fi
 
     # --- Copy reference docs (new projects only) ---
 

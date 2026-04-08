@@ -346,7 +346,7 @@ See `docs/architecture.md` for full details.
 - **Bulk-first API:** Every write endpoint accepts `List[ItemRequest]`, returns `BulkResponse`. Always HTTP 200 — errors are per-item. See `docs/api-conventions.md`.
 - **Synonym resolution:** APIs accept human-readable synonyms wherever IDs are expected. UUIDs pass through. See `docs/design/universal-synonym-resolution.md`.
 - **Stable IDs:** `entity_id` stays the same across versions; `(entity_id, version)` is the unique key. See `docs/uniqueness-and-identity.md`.
-- **API key scoping:** Non-privileged API keys MUST have an explicit `namespaces` list. Keys without namespace scoping and not in `wip-admins`/`wip-services` get no access. See `docs/migration-unscoped-api-keys.md`.
+- **Namespace-scoped keys:** Non-privileged API keys must declare their namespace scope explicitly. Single-namespace keys enable implicit namespace derivation — the server derives namespace automatically when the caller omits the `namespace` parameter, enabling synonym resolution without `namespace` on every request. Multi-namespace keys must provide `namespace` explicitly.
 
 ## Design Principles (Must Follow)
 
