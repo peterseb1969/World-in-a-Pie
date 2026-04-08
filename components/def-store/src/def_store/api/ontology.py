@@ -74,7 +74,7 @@ async def list_relationships(
     relationship_type: str | None = Query(None, description="Filter by relationship type"),
     namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """List relationships for a term, with optional direction and type filtering."""
@@ -142,7 +142,7 @@ async def list_all_relationships(
     source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """

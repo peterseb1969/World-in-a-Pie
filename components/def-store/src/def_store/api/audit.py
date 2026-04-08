@@ -36,7 +36,7 @@ def _to_audit_entry(log: TermAuditLog) -> AuditLogEntry:
 async def get_term_audit_log(
     term_id: str,
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
@@ -70,7 +70,7 @@ async def get_terminology_audit_log(
     terminology_id: str,
     action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
@@ -105,7 +105,7 @@ async def get_terminology_audit_log(
 async def get_recent_audit_log(
     action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get recent audit log entries across all terminologies."""

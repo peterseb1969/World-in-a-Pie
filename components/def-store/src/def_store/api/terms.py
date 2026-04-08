@@ -125,7 +125,7 @@ async def list_terms(
     terminology_id: str,
     namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     status: str | None = Query(None, description="Filter by status"),
     search: str | None = Query(None, description="Search in value, aliases"),
     api_key: str = Depends(require_api_key)
