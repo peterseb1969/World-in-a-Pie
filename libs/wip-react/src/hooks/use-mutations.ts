@@ -12,6 +12,7 @@ import type {
   UpdateTemplateRequest,
   ActivateTemplateResponse,
   CreateDocumentRequest,
+  PatchDocumentRequest,
   FileUploadMetadata,
   FileEntity,
   UpdateFileMetadataRequest,
@@ -255,6 +256,61 @@ export function useCreateDocuments(
   return useMutation({
     ...restOptions,
     mutationFn: (data: CreateDocumentRequest[]) => client.documents.createDocuments(data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+/**
+ * Apply an RFC 7396 JSON Merge Patch to a document.
+ *
+ * Wraps `client.documents.updateDocument`. Throws `WipBulkItemError`
+ * (with `errorCode` populated) on per-item failure. Invalidates both
+ * the document detail and the documents list on success.
+ */
+export function useUpdateDocument(
+  options?: Omit<
+    UseMutationOptions<
+      BulkResultItem,
+      Error,
+      { documentId: string; patch: Record<string, unknown>; ifMatch?: number }
+    >,
+    'mutationFn'
+  >,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ documentId, patch, ifMatch }) =>
+      client.documents.updateDocument(documentId, patch, { ifMatch }),
+    onSuccess: (...args) => {
+      const variables = args[1]
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) })
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.versions(variables.documentId) })
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+/**
+ * Bulk variant of {@link useUpdateDocument}. Returns the raw `BulkResponse`
+ * so the caller can inspect per-item `error_code` values without per-item
+ * exceptions interrupting the batch.
+ */
+export function useUpdateDocuments(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, PatchDocumentRequest[]>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (items: PatchDocumentRequest[]) => client.documents.updateDocuments(items),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
       onSuccess?.(...args)

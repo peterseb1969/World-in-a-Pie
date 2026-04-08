@@ -33,6 +33,8 @@ export {
   // Documents
   useCreateDocument,
   useCreateDocuments,
+  useUpdateDocument,
+  useUpdateDocuments,
   useDeleteDocument,
   useArchiveDocument,
   // Files

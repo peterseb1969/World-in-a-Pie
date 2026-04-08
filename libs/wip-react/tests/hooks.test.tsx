@@ -13,6 +13,8 @@ import {
   useDeleteTerminology,
   useDeleteTerm,
   useCreateDocument,
+  useUpdateDocument,
+  useUpdateDocuments,
   useDeleteDocument,
   useUploadFile,
 } from '../src/hooks/use-mutations'
@@ -49,6 +51,8 @@ function createMockClient() {
       getVersions: vi.fn().mockResolvedValue({ versions: [] }),
       createDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', status: 'created' }),
       createDocuments: vi.fn().mockResolvedValue({ items: [] }),
+      updateDocument: vi.fn().mockResolvedValue({ index: 0, status: 'updated', document_id: 'doc1', version: 2 }),
+      updateDocuments: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
       deleteDocument: vi.fn().mockResolvedValue({ entity_id: 'doc1', status: 'deleted' }),
     },
     files: {
@@ -361,20 +365,20 @@ describe('Mutation hooks', () => {
   })
 
   describe('useCreateTerm', () => {
-    it('calls client.defStore.createTerm with terminologyId', async () => {
+    it('calls client.defStore.createTerm with terminologyId and namespace', async () => {
       const { Wrapper } = createWrapper(mockClient)
-      const { result } = renderHook(() => useCreateTerm('tid1'), { wrapper: Wrapper })
+      const { result } = renderHook(() => useCreateTerm('tid1', 'ns1'), { wrapper: Wrapper })
 
       const data = { value: 'NewTerm' }
       await act(() => result.current.mutateAsync(data as any))
 
-      expect(mockClient.defStore.createTerm).toHaveBeenCalledWith('tid1', data)
+      expect(mockClient.defStore.createTerm).toHaveBeenCalledWith('tid1', data, { namespace: 'ns1' })
     })
 
     it('invalidates terms and terminology detail cache on success', async () => {
       const { Wrapper, queryClient } = createWrapper(mockClient)
       const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
-      const { result } = renderHook(() => useCreateTerm('tid1'), { wrapper: Wrapper })
+      const { result } = renderHook(() => useCreateTerm('tid1', 'ns1'), { wrapper: Wrapper })
 
       await act(() => result.current.mutateAsync({ value: 'New' } as any))
 
@@ -457,6 +461,47 @@ describe('Mutation hooks', () => {
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.documents.all,
       })
+    })
+  })
+
+  describe('useUpdateDocument', () => {
+    it('calls client.documents.updateDocument with documentId, patch, and ifMatch', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useUpdateDocument(), { wrapper: Wrapper })
+
+      await act(() =>
+        result.current.mutateAsync({ documentId: 'doc1', patch: { score: 92 }, ifMatch: 3 }),
+      )
+
+      expect(mockClient.documents.updateDocument).toHaveBeenCalledWith(
+        'doc1',
+        { score: 92 },
+        { ifMatch: 3 },
+      )
+    })
+
+    it('invalidates document detail, versions, and list on success', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { result } = renderHook(() => useUpdateDocument(), { wrapper: Wrapper })
+
+      await act(() => result.current.mutateAsync({ documentId: 'doc1', patch: { x: 1 } }))
+
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: wipKeys.documents.detail('doc1') })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: wipKeys.documents.versions('doc1') })
+      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: wipKeys.documents.all })
+    })
+  })
+
+  describe('useUpdateDocuments', () => {
+    it('calls client.documents.updateDocuments with the items array', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useUpdateDocuments(), { wrapper: Wrapper })
+
+      const items = [{ document_id: 'doc1', patch: { x: 1 } }]
+      await act(() => result.current.mutateAsync(items))
+
+      expect(mockClient.documents.updateDocuments).toHaveBeenCalledWith(items)
     })
   })
 
