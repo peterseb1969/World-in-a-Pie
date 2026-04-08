@@ -7,13 +7,17 @@ from pathlib import Path
 
 from rich.console import Console
 
+from .._progress import ProgressCallback
+from .._progress import emit as _emit
 from ..archive import ArchiveReader
 from ..client import WIPClient
-from ..models import ImportStats
+from ..models import ImportStats, ProgressEvent
 from .fresh import fresh_import
 from .restore import restore_import
 
 console = Console(stderr=True)
+
+__all__ = ["ProgressCallback", "run_import"]
 
 
 def run_import(
@@ -28,18 +32,42 @@ def run_import(
     batch_size: int = 50,
     continue_on_error: bool = False,
     dry_run: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    non_interactive: bool = False,
 ) -> ImportStats:
     """Run an import from an archive file.
 
     Args:
         mode: "restore" (preserve IDs) or "fresh" (new IDs)
         target_namespace: Override target namespace (defaults to source namespace)
+        progress_callback: Optional observer invoked at phase boundaries with
+            a :class:`ProgressEvent`. Designed for callers that need to surface
+            progress without parsing console output (e.g. a REST endpoint
+            streaming SSE). Exceptions raised inside the callback are swallowed.
+        non_interactive: Reserved for parity with :func:`run_export`. The
+            current import path does not prompt, but server callers should set
+            this to ``True`` to opt out of any future interactive branches.
     """
+    del non_interactive  # currently no interactive branches in import path
     start = time.monotonic()
 
     with ArchiveReader(archive_path) as reader:
         manifest = reader.read_manifest()
         namespace = target_namespace or manifest.namespace
+
+        _emit(progress_callback, ProgressEvent(
+            phase="start",
+            message=f"Importing archive into namespace: {namespace}",
+            percent=0.0,
+            details={
+                "archive_path": str(archive_path),
+                "source_namespace": manifest.namespace,
+                "target_namespace": namespace,
+                "mode": mode,
+                "entities": manifest.counts.total,
+                "dry_run": dry_run,
+            },
+        ))
 
         console.print(f"\n[bold]Importing archive:[/bold] {archive_path}")
         console.print(f"  Source namespace: {manifest.namespace}")
@@ -49,6 +77,11 @@ def run_import(
 
         # Check service health
         console.print("\n[bold cyan]Checking services...[/bold cyan]")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_health_check",
+            message="Checking service health",
+            percent=2.0,
+        ))
         health = client.check_all_services()
         all_healthy = True
         for service, (healthy, msg) in health.items():
@@ -59,8 +92,14 @@ def run_import(
 
         if not all_healthy:
             console.print("\n[red bold]Some services are not healthy. Aborting.[/red bold]")
-            return ImportStats(mode=mode, target_namespace=namespace,
-                               errors=["Service health check failed"])
+            failed = ImportStats(mode=mode, target_namespace=namespace,
+                                 errors=["Service health check failed"])
+            _emit(progress_callback, ProgressEvent(
+                phase="error",
+                message="Service health check failed",
+                details={"health": {k: v[1] for k, v in health.items()}},
+            ))
+            return failed
 
         if mode == "restore":
             stats = restore_import(
@@ -70,6 +109,7 @@ def run_import(
                 batch_size=batch_size,
                 continue_on_error=continue_on_error,
                 dry_run=dry_run,
+                progress_callback=progress_callback,
             )
         elif mode == "fresh":
             stats = fresh_import(
@@ -80,6 +120,7 @@ def run_import(
                 batch_size=batch_size,
                 continue_on_error=continue_on_error,
                 dry_run=dry_run,
+                progress_callback=progress_callback,
             )
         else:
             raise ValueError(f"Unknown import mode: {mode}")
@@ -110,5 +151,23 @@ def run_import(
         console.print(f"\n  [yellow]{len(stats.warnings)} warning(s):[/yellow]")
         for w in stats.warnings[:10]:
             console.print(f"    {w}")
+
+    _emit(progress_callback, ProgressEvent(
+        phase="complete",
+        message=(
+            f"Import complete: {stats.created.total} created, "
+            f"{stats.failed.total} failed"
+        ),
+        percent=100.0,
+        details={
+            "mode": stats.mode,
+            "source_namespace": stats.source_namespace,
+            "target_namespace": stats.target_namespace,
+            "created": stats.created.model_dump(),
+            "skipped": stats.skipped.model_dump(),
+            "failed": stats.failed.model_dump(),
+            "duration_seconds": stats.duration_seconds,
+        },
+    ))
 
     return stats

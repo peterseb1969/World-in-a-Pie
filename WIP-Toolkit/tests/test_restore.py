@@ -5,24 +5,21 @@ Registry registration during their create flows when document_id/template_id
 is passed through.
 """
 
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.import_.restore import (
     _activate_templates,
     _create_documents_streamed,
     _create_templates,
-    _create_terms,
     _create_terminologies,
+    _create_terms,
     _ensure_namespace,
     _restore_synonyms,
     _upload_files,
     restore_import,
 )
 from wip_toolkit.models import EntityCounts, ImportStats
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -655,8 +652,107 @@ class TestSkipFlags:
         client.post.side_effect = post_router
         client.get.return_value = {"prefix": "target-ns"}
 
-        stats = restore_import(client, reader, "target-ns", skip_documents=True)
+        restore_import(client, reader, "target-ns", skip_documents=True)
 
         # Documents should NOT have been read
         entity_calls = [c[0][0] for c in reader.read_entities.call_args_list]
         assert "documents" not in entity_calls
+
+
+# ---------------------------------------------------------------------------
+# progress_callback (CASE-23 backup/restore prep)
+# ---------------------------------------------------------------------------
+
+class TestRestoreImportProgressCallback:
+    """Verify restore_import emits expected phase events."""
+
+    @patch("wip_toolkit.import_.restore.console")
+    def test_phase_events_emitted_for_full_flow(self, mock_console):
+        client = _make_client()
+        reader = _make_reader(
+            terminologies=[_terminology()],
+            terms=[_term()],
+            templates=[_template()],
+            documents=[_document()],
+            files=[_file(fid="FILE-000001")],
+            blobs=["FILE-000001"],
+        )
+
+        def post_router(service, path, **kwargs):
+            if path == "/terminologies":
+                return _bulk_result(status="created")
+            if path.startswith("/terminologies/") and "/terms" in path:
+                return {"succeeded": 1, "failed": 0, "results": []}
+            if path == "/templates":
+                return _bulk_result(status="created")
+            if path.endswith("/activate"):
+                return {"status": "active"}
+            if path == "/documents":
+                return {"succeeded": 1, "failed": 0, "results": []}
+            return {"results": []}
+
+        client.post.side_effect = post_router
+        client.put.return_value = _bulk_result(status="created")
+        client.post_form.return_value = {"status": "created"}
+        client.get.return_value = {"prefix": "target-ns"}
+
+        events = []
+        restore_import(
+            client, reader, "target-ns",
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_namespace" in phases
+        assert "phase_terminologies" in phases
+        assert "phase_terms" in phases
+        assert "phase_templates" in phases
+        assert "phase_templates_activate" in phases
+        assert "phase_files" in phases
+        assert "phase_documents" in phases
+        assert "phase_synonyms" in phases
+
+    @patch("wip_toolkit.import_.restore.console")
+    def test_dry_run_does_not_emit_phase_events(self, mock_console):
+        client = _make_client()
+        reader = _make_reader(terminologies=[_terminology()])
+
+        events = []
+        restore_import(
+            client, reader, "target-ns",
+            dry_run=True,
+            progress_callback=events.append,
+        )
+
+        # Dry run short-circuits before any phase emission
+        assert events == []
+
+    @patch("wip_toolkit.import_.restore.console")
+    def test_callback_exception_swallowed(self, mock_console):
+        client = _make_client()
+        reader = _make_reader(
+            terminologies=[_terminology()],
+            templates=[_template()],
+        )
+
+        def post_router(service, path, **kwargs):
+            if path == "/terminologies":
+                return _bulk_result(status="created")
+            if path == "/templates":
+                return _bulk_result(status="created")
+            if path.endswith("/activate"):
+                return {"status": "active"}
+            return {"results": []}
+
+        client.post.side_effect = post_router
+        client.get.return_value = {"prefix": "target-ns"}
+
+        def explosive(_event):
+            raise RuntimeError("observer broken")
+
+        # Must not raise — callback exceptions are swallowed
+        stats = restore_import(
+            client, reader, "target-ns",
+            progress_callback=explosive,
+        )
+        assert stats.mode == "restore"

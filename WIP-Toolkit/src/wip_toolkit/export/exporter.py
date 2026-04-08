@@ -15,13 +15,14 @@ from __future__ import annotations
 import json
 import sys
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import click
 from rich.console import Console
 
+from .._progress import ProgressCallback
+from .._progress import emit as _emit
 from ..archive import ENTITY_FILES, ArchiveWriter
 from ..client import WIPClient
 from ..models import (
@@ -37,21 +38,7 @@ from .collector import EntityCollector
 
 console = Console(stderr=True)
 
-ProgressCallback = Callable[[ProgressEvent], None]
-
-
-def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
-    """Invoke a progress callback, swallowing any exception it raises.
-
-    A misbehaving observer must never break the export. Errors from the
-    callback are reported to stderr but do not propagate.
-    """
-    if callback is None:
-        return
-    try:
-        callback(event)
-    except Exception as e:  # pragma: no cover - defensive
-        console.print(f"  [yellow]progress callback raised {type(e).__name__}: {e}[/yellow]")
+__all__ = ["ProgressCallback", "run_export"]
 
 
 def run_export(

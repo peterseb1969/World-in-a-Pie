@@ -1268,3 +1268,113 @@ class TestContinueOnError:
         )
 
         assert stats.synonyms_registered == 4
+
+
+# ---------------------------------------------------------------------------
+# progress_callback (CASE-23 backup/restore prep)
+# ---------------------------------------------------------------------------
+
+class TestFreshImportProgressCallback:
+    """Verify fresh_import emits expected phase events."""
+
+    def test_phase_events_emitted_for_full_flow(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "target-ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_terms([(0, "NEW-T")]),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+            _ok_documents([(0, "NEW-DOC")]),
+        ]
+        client.post_form.return_value = _ok_file("NEW-FILE")
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
+            files=[{"file_id": "F-1", "filename": "f.txt", "content_type": "text/plain", "metadata": {}}],
+            blobs=["F-1"],
+        )
+
+        events = []
+        fresh_import(
+            client, reader, "target-ns",
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_namespace" in phases
+        assert "phase_terminologies" in phases
+        assert "phase_terms" in phases
+        assert "phase_templates" in phases
+        assert "phase_files" in phases
+        assert "phase_documents" in phases
+
+    def test_phase_synonyms_emitted_when_register_synonyms(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_terms([(0, "NEW-T")]),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+            _ok_documents([(0, "NEW-DOC")]),
+            _ok_synonyms(1),
+        ]
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
+        )
+
+        events = []
+        fresh_import(
+            client, reader, "ns",
+            register_synonyms=True,
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_synonyms" in phases
+
+    def test_dry_run_does_not_emit_phase_events(self):
+        client = MagicMock()
+        reader = _make_reader()
+
+        events = []
+        fresh_import(
+            client, reader, "target-ns",
+            dry_run=True,
+            progress_callback=events.append,
+        )
+
+        # Dry run short-circuits before any phase emission
+        assert events == []
+
+    def test_callback_exception_swallowed(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+        ]
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+        )
+
+        def explosive(_event):
+            raise RuntimeError("observer broken")
+
+        # Must not raise — callback exceptions are swallowed
+        stats = fresh_import(
+            client, reader, "ns",
+            progress_callback=explosive,
+        )
+        assert stats.mode == "fresh"

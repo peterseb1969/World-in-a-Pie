@@ -14,9 +14,11 @@ from typing import Any
 
 from rich.console import Console
 
+from .._progress import ProgressCallback
+from .._progress import emit as _emit
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import ImportStats
+from ..models import ImportStats, ProgressEvent
 from .remap import IDRemapper
 
 console = Console(stderr=True)
@@ -33,6 +35,7 @@ def fresh_import(
     batch_size: int = 50,
     continue_on_error: bool = False,
     dry_run: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> ImportStats:
     """Import archive in fresh mode with new IDs and remapped references."""
     stats = ImportStats(mode="fresh", target_namespace=target_namespace)
@@ -46,33 +49,68 @@ def fresh_import(
         return stats
 
     # Step 1: Ensure namespace exists
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_namespace",
+        message=f"Ensuring namespace '{target_namespace}' exists",
+        percent=5.0,
+    ))
     _ensure_namespace(client, target_namespace, stats)
 
     # Step 2: Create terminologies (new IDs)
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies (new IDs)")
     terminologies = list(reader.read_entities("terminologies"))
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_terminologies",
+        message=f"Creating {len(terminologies)} terminologies (new IDs)",
+        percent=10.0,
+        total=len(terminologies),
+    ))
     _create_terminologies(client, target_namespace, terminologies, remapper, stats, continue_on_error)
 
     # Step 3: Create terms (new IDs)
     console.print("\n[bold cyan]Step 2:[/bold cyan] Creating terms (new IDs)")
     terms = list(reader.read_entities("terms"))
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_terms",
+        message=f"Creating {len(terms)} terms (new IDs)",
+        percent=20.0,
+        total=len(terms),
+    ))
     _create_terms(client, target_namespace, terms, remapper, batch_size, stats, continue_on_error)
 
     # Step 3b: Create relationships (after terms, using remapped IDs)
     relationships = list(reader.read_entities("relationships"))
     if relationships:
         console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships (remapped IDs)")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_relationships",
+            message=f"Creating {len(relationships)} relationships",
+            percent=30.0,
+            total=len(relationships),
+        ))
         _create_relationships(client, target_namespace, relationships, remapper, batch_size, stats, continue_on_error)
 
     # Step 4: Create and activate templates (multi-pass dependency resolution)
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (multi-pass)")
     templates = list(reader.read_entities("templates"))
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_templates",
+        message=f"Creating {len(templates)} template version(s) (multi-pass)",
+        percent=45.0,
+        total=len(templates),
+    ))
     _create_templates_multipass(client, target_namespace, templates, remapper, stats, continue_on_error)
 
     if not skip_files:
         # Step 5: Upload files (before documents so file refs can be remapped)
         console.print("\n[bold cyan]Step 4:[/bold cyan] Uploading files (new IDs)")
         files = list(reader.read_entities("files"))
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_files",
+            message=f"Uploading {len(files)} file(s) (new IDs)",
+            percent=60.0,
+            total=len(files),
+        ))
         _upload_files(client, target_namespace, files, reader, remapper, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
@@ -81,6 +119,12 @@ def fresh_import(
         # Step 6: Create documents with remapped references
         console.print("\n[bold cyan]Step 5:[/bold cyan] Creating documents with remapped references")
         documents = list(reader.read_entities("documents"))
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_documents",
+            message=f"Creating {len(documents)} documents with remapped references",
+            percent=75.0,
+            total=len(documents),
+        ))
         _create_documents(client, target_namespace, documents, remapper, batch_size, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
@@ -88,6 +132,11 @@ def fresh_import(
     # Step 7: Register synonyms
     if register_synonyms:
         console.print("\n[bold cyan]Step 6:[/bold cyan] Registering ID synonyms")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_synonyms",
+            message="Registering ID synonyms",
+            percent=92.0,
+        ))
         _register_synonyms(
             client, target_namespace, reader, remapper, stats, continue_on_error,
             source_namespace=stats.source_namespace,

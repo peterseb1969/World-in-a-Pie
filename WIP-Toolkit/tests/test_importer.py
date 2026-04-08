@@ -3,7 +3,6 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from wip_toolkit.models import EntityCounts, ImportStats
 
 
@@ -126,7 +125,7 @@ class TestRunImportNamespace:
 
         run_import(client, "/tmp/test.zip", mode="restore", target_namespace="override-ns")
 
-        args, kwargs = mock_restore.call_args
+        args, _ = mock_restore.call_args
         # Second positional arg is the reader, third is namespace
         assert args[2] == "override-ns"
 
@@ -147,7 +146,7 @@ class TestRunImportNamespace:
 
         run_import(client, "/tmp/test.zip", mode="restore")
 
-        args, kwargs = mock_restore.call_args
+        args, _ = mock_restore.call_args
         assert args[2] == "manifest-ns"
 
 
@@ -268,6 +267,212 @@ class TestRunImportOptions:
         assert kwargs["batch_size"] == 100
         assert kwargs["continue_on_error"] is True
         assert kwargs["dry_run"] is True
+
+
+# ===========================================================================
+# progress_callback (CASE-23 backup/restore prep)
+# ===========================================================================
+class TestRunImportProgressCallback:
+    """Verify progress_callback observes phase boundaries and is fault-tolerant."""
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_receives_start_and_complete(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        events = []
+
+        from wip_toolkit.import_.importer import run_import
+        run_import(
+            client, "/tmp/test.zip", mode="restore",
+            progress_callback=events.append,
+        )
+
+        phases = [e.phase for e in events]
+        assert phases[0] == "start"
+        assert phases[-1] == "complete"
+        assert events[0].percent == 0.0
+        assert events[-1].percent == 100.0
+        # 'complete' details should include the created counts dict
+        assert "created" in events[-1].details
+        assert events[-1].details["mode"] == "restore"
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_observes_health_check_phase(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        events = []
+
+        from wip_toolkit.import_.importer import run_import
+        run_import(
+            client, "/tmp/test.zip", mode="restore",
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_health_check" in phases
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_emits_error_on_unhealthy_services(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+
+        client = MagicMock()
+        client.check_all_services.return_value = {
+            "registry": (True, "healthy"),
+            "def-store": (False, "connection refused"),
+        }
+
+        events = []
+
+        from wip_toolkit.import_.importer import run_import
+        stats = run_import(
+            client, "/tmp/test.zip", mode="restore",
+            progress_callback=events.append,
+        )
+
+        # Restore should not be invoked
+        mock_restore.assert_not_called()
+        assert stats.errors == ["Service health check failed"]
+        # An error event should have been emitted
+        error_events = [e for e in events if e.phase == "error"]
+        assert len(error_events) == 1
+        assert "def-store" in error_events[0].details["health"]
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_passed_through_to_restore(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        cb = lambda e: None  # noqa: E731
+
+        from wip_toolkit.import_.importer import run_import
+        run_import(
+            client, "/tmp/test.zip", mode="restore",
+            progress_callback=cb,
+        )
+
+        _, kwargs = mock_restore.call_args
+        assert kwargs["progress_callback"] is cb
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_passed_through_to_fresh(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_fresh.return_value = _make_stats("fresh")
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        cb = lambda e: None  # noqa: E731
+
+        from wip_toolkit.import_.importer import run_import
+        run_import(
+            client, "/tmp/test.zip", mode="fresh",
+            progress_callback=cb,
+        )
+
+        _, kwargs = mock_fresh.call_args
+        assert kwargs["progress_callback"] is cb
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_callback_exception_does_not_break_import(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        def explosive(_event):
+            raise RuntimeError("observer is broken")
+
+        from wip_toolkit.import_.importer import run_import
+        # Must complete normally despite the callback raising on every event
+        stats = run_import(
+            client, "/tmp/test.zip", mode="restore",
+            progress_callback=explosive,
+        )
+
+        assert stats.mode == "restore"
+        mock_restore.assert_called_once()
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_no_callback_is_supported(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        from wip_toolkit.import_.importer import run_import
+        # Default (None) callback must not raise
+        stats = run_import(client, "/tmp/test.zip", mode="restore")
+        assert stats.mode == "restore"
+
+    @patch(_FRESH_IMPORT)
+    @patch(_RESTORE_IMPORT)
+    @patch(_ARCHIVE_READER)
+    def test_non_interactive_accepted(
+        self, MockReader, mock_restore, mock_fresh,
+    ):
+        """non_interactive is accepted for parity with run_export."""
+        mock_reader = _make_reader()
+        MockReader.return_value = mock_reader
+        mock_restore.return_value = _make_stats()
+
+        client = MagicMock()
+        client.check_all_services.return_value = _healthy_services()
+
+        from wip_toolkit.import_.importer import run_import
+        # Should accept the parameter without raising
+        stats = run_import(
+            client, "/tmp/test.zip", mode="restore",
+            non_interactive=True,
+        )
+        assert stats.mode == "restore"
 
 
 class TestRunImportStats:
