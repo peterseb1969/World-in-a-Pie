@@ -56,6 +56,7 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
 
 # Models and apps (must be after env var setup; sorted as one block for ruff I001)
 from document_store.main import app  # noqa: E402
+from document_store.models.backup_job import BackupJob  # noqa: E402
 from document_store.models.document import Document  # noqa: E402
 from document_store.services.def_store_client import DefStoreClient  # noqa: E402
 from document_store.services.registry_client import RegistryClient  # noqa: E402
@@ -390,7 +391,7 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     can wire them into their patch context.
     """
     if document_models is None:
-        document_models = [Document]
+        document_models = [Document, BackupJob]
 
     test_db = mongo_client[os.environ["DATABASE_NAME"]]
 

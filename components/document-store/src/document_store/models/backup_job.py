@@ -138,6 +138,124 @@ class BackupJob(BeanieDocument):
         ]
 
 
+class BackupProgressMessage(BaseModel):
+    """SSE wire envelope for backup/restore progress events.
+
+    **Guardrail 2 (CASE-23 Phase 3)** — this type is the public contract for
+    the SSE endpoint. It is deliberately **not** ``wip_toolkit.models.ProgressEvent``:
+    the toolkit's event type is an implementation detail that must not leak
+    to clients, so a future v1.1 rewrite that replaces the toolkit can still
+    emit the same wire format without breaking clients or the @wip/client
+    TypeScript types.
+
+    The fields below are the stable subset of information that SSE
+    subscribers need. ``phase`` is intentionally a free-form string (Guardrail 3).
+    """
+
+    job_id: str = Field(..., description="The BackupJob.job_id this event belongs to")
+    status: BackupJobStatus = Field(..., description="Current lifecycle status of the job")
+    phase: str | None = Field(
+        None,
+        description=(
+            "Current phase name — a free-form runtime convention shared "
+            "between producer and consumer, not a schema contract. Phase "
+            "names may change in a future implementation."
+        ),
+    )
+    percent: float | None = Field(
+        None,
+        ge=0.0,
+        le=100.0,
+        description="Progress percentage (0-100), if known",
+    )
+    message: str | None = Field(None, description="Human-readable status message")
+    current: int | None = Field(
+        None,
+        ge=0,
+        description="Items processed so far in the current phase (if applicable)",
+    )
+    total: int | None = Field(
+        None,
+        ge=0,
+        description="Total items to process in the current phase (if applicable)",
+    )
+    details: dict[str, Any] | None = Field(
+        None,
+        description="Opaque per-phase details (counts, sizes, skipped entities)",
+    )
+
+
+class BackupRequest(BaseModel):
+    """Request body for POST /backup/namespaces/{namespace}/backup.
+
+    All fields map to keyword arguments of the underlying toolkit
+    :func:`run_export` call; the factory in ``backup_service`` forwards this
+    dict as ``**options``.
+    """
+
+    include_files: bool = Field(
+        False, description="Include file blobs in the archive"
+    )
+    include_inactive: bool = Field(
+        False, description="Include inactive (soft-deleted) entities"
+    )
+    skip_documents: bool = Field(
+        False, description="Skip the documents phase entirely"
+    )
+    skip_closure: bool = Field(
+        False, description="Skip the closure-table (relationships) phase"
+    )
+    skip_synonyms: bool = Field(
+        False, description="Skip the synonyms phase"
+    )
+    latest_only: bool = Field(
+        False, description="Export only the latest version of each entity"
+    )
+    template_prefixes: list[str] | None = Field(
+        None,
+        description="Optional list of template_id prefixes to filter documents",
+    )
+    dry_run: bool = Field(
+        False, description="Walk the export without writing the archive"
+    )
+
+
+class RestoreRequest(BaseModel):
+    """Parameters accompanying a multipart restore upload.
+
+    These fields are expected as form fields alongside the ``archive`` file.
+    They map to keyword arguments of :func:`run_import`.
+    """
+
+    mode: str = Field(
+        "restore",
+        description="'restore' (preserve IDs) or 'fresh' (generate new IDs)",
+    )
+    target_namespace: str | None = Field(
+        None,
+        description="Override target namespace (defaults to the archive's source namespace)",
+    )
+    register_synonyms: bool = Field(
+        False,
+        description="Register original IDs as synonyms of the new IDs (fresh mode)",
+    )
+    skip_documents: bool = Field(
+        False, description="Skip restoring documents (definitions only)"
+    )
+    skip_files: bool = Field(
+        False, description="Skip restoring file blobs"
+    )
+    batch_size: int = Field(
+        50, ge=1, le=500, description="Restore batch size"
+    )
+    continue_on_error: bool = Field(
+        False, description="Continue past per-item errors"
+    )
+    dry_run: bool = Field(
+        False, description="Walk the import without applying changes"
+    )
+
+
 class BackupJobSnapshot(BaseModel):
     """API response shape for a BackupJob — hides mongo _id and trims internals."""
 
