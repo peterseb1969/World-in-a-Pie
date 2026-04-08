@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,34 @@ from rich.console import Console
 
 from ..archive import ENTITY_FILES, ArchiveWriter
 from ..client import WIPClient
-from ..models import ClosureInfo, EntityCounts, ExportStats, Manifest, NamespaceConfig
+from ..models import (
+    ClosureInfo,
+    EntityCounts,
+    ExportStats,
+    Manifest,
+    NamespaceConfig,
+    ProgressEvent,
+)
 from .closure import compute_closure
 from .collector import EntityCollector
 
 console = Console(stderr=True)
+
+ProgressCallback = Callable[[ProgressEvent], None]
+
+
+def _emit(callback: ProgressCallback | None, event: ProgressEvent) -> None:
+    """Invoke a progress callback, swallowing any exception it raises.
+
+    A misbehaving observer must never break the export. Errors from the
+    callback are reported to stderr but do not propagate.
+    """
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception as e:  # pragma: no cover - defensive
+        console.print(f"  [yellow]progress callback raised {type(e).__name__}: {e}[/yellow]")
 
 
 def run_export(
@@ -43,13 +67,33 @@ def run_export(
     latest_only: bool = False,
     template_prefixes: list[str] | None = None,
     dry_run: bool = False,
+    progress_callback: ProgressCallback | None = None,
+    non_interactive: bool = False,
 ) -> ExportStats:
     """Run a full namespace export.
 
-    Returns ExportStats with counts and timing.
+    Args:
+        progress_callback: Optional observer invoked at phase boundaries with
+            a :class:`ProgressEvent`. Designed for callers that need to surface
+            progress without parsing console output (e.g. a REST endpoint
+            streaming SSE). Exceptions raised inside the callback are swallowed.
+        non_interactive: If True, never prompt the user. When file blobs are
+            present in the namespace but ``include_files=False``, the export
+            proceeds without blobs and emits a warning instead of asking. Use
+            this when calling from a server context with no controlling TTY.
+
+    Returns:
+        ExportStats with counts and timing.
     """
     start = time.monotonic()
     collector = EntityCollector(client, namespace, include_inactive=include_inactive)
+    _emit(progress_callback, ProgressEvent(
+        phase="start",
+        message=f"Exporting namespace: {namespace}",
+        percent=0.0,
+        details={"namespace": namespace, "include_files": include_files,
+                 "latest_only": latest_only, "dry_run": dry_run},
+    ))
 
     # Fetch namespace config
     console.print(f"\n[bold]Exporting namespace: {namespace}[/bold]")
@@ -65,6 +109,11 @@ def run_export(
 
     # Phase 1a: Collect small entities (fit in memory)
     console.print("\n[bold cyan]Phase 1a:[/bold cyan] Collecting terminologies, terms, templates")
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_1a_entities",
+        message="Collecting terminologies, terms, and templates",
+        percent=5.0,
+    ))
 
     terminologies = collector.fetch_terminologies()
     terms = collector.fetch_all_terms(terminologies)
@@ -118,6 +167,11 @@ def run_export(
     closure_info = ClosureInfo()
     if not skip_closure:
         console.print("\n[bold cyan]Closure:[/bold cyan] Computing referential integrity")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_closure",
+            message="Computing referential integrity closure",
+            percent=15.0,
+        ))
         # For closure computation, we need documents in memory.
         # If skip_documents, pass empty list.
         closure_docs: list[dict[str, Any]] = []
@@ -206,6 +260,11 @@ def run_export(
     # Phase 1b: Stream documents
     if not skip_documents:
         console.print("\n[bold cyan]Phase 1b:[/bold cyan] Streaming documents")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_1b_documents",
+            message="Streaming documents to archive",
+            percent=30.0,
+        ))
         for page in collector.stream_documents(latest_only=latest_only, page_size=1000):
             for doc in page:
                 if filtered_template_ids is not None and doc.get("template_id") not in filtered_template_ids:
@@ -225,24 +284,48 @@ def run_export(
 
         # Warn if files exist but --include-files not set
         if files and not include_files:
-            console.print(
-                f"\n  [yellow]Warning:[/yellow] {len(files)} file(s) found in namespace "
-                f"but --include-files not set.\n"
-                f"  Documents referencing these files may fail during import."
+            warning_msg = (
+                f"{len(files)} file(s) found in namespace but include_files=False. "
+                "Documents referencing these files may fail during import."
             )
-            if sys.stdin.isatty() and not click.confirm("  Continue without file blobs?", default=True):
+            console.print(f"\n  [yellow]Warning:[/yellow] {warning_msg}")
+            _emit(progress_callback, ProgressEvent(
+                phase="warning_files_skipped",
+                message=warning_msg,
+                details={"file_count": len(files)},
+            ))
+            # Only prompt when running interactively from a TTY. In server /
+            # scripted contexts (non_interactive=True or no TTY), proceed.
+            if not non_interactive and sys.stdin.isatty() and not click.confirm(
+                "  Continue without file blobs?", default=True,
+            ):
                 raise SystemExit("Export cancelled by user")
 
         # Optionally download and include file blobs
         if include_files and files:
             console.print(f"  Downloading {len(files)} file(s)...")
-            for file_meta in files:
+            _emit(progress_callback, ProgressEvent(
+                phase="phase_1c_files",
+                message=f"Downloading {len(files)} file blob(s)",
+                percent=55.0,
+                total=len(files),
+            ))
+            for idx, file_meta in enumerate(files, start=1):
                 fid = file_meta["file_id"]
                 try:
                     content = collector.fetch_file_content(fid)
                     writer.add_blob(fid, content)
                 except Exception as e:
                     console.print(f"  [yellow]Warning: Could not download {fid}: {e}[/yellow]")
+                # Emit per-file progress only at every 10th file (or last) to
+                # avoid flooding the callback for large file-stores.
+                if idx == len(files) or idx % 10 == 0:
+                    _emit(progress_callback, ProgressEvent(
+                        phase="phase_1c_files",
+                        message=f"Downloaded {idx}/{len(files)} file(s)",
+                        current=idx,
+                        total=len(files),
+                    ))
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
         files = []
@@ -250,6 +333,11 @@ def run_export(
     # Phase 2: Registry synonyms (unless --skip-synonyms)
     if not skip_synonyms:
         console.print("\n[bold cyan]Phase 2:[/bold cyan] Fetching Registry synonyms")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_2_synonyms",
+            message="Fetching Registry synonyms",
+            percent=80.0,
+        ))
         synonyms = _fetch_synonyms(collector, terminologies, terms, templates,
                                    writer, namespace)
         if synonyms:
@@ -271,6 +359,11 @@ def run_export(
     )
 
     console.print("\n[bold cyan]Phase 3:[/bold cyan] Finalizing archive")
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_3_finalize",
+        message="Writing manifest and finalizing archive",
+        percent=95.0,
+    ))
     manifest = Manifest(
         source_host=client.config.host,
         namespace=namespace,
@@ -285,6 +378,16 @@ def run_export(
     archive_path = writer.write(manifest)
     console.print(f"\n  Archive written to: [green]{archive_path}[/green]")
     _print_counts(counts)
+
+    _emit(progress_callback, ProgressEvent(
+        phase="complete",
+        message=f"Export complete: {counts.total} entities",
+        percent=100.0,
+        details={
+            "archive_path": str(archive_path),
+            "counts": counts.model_dump(),
+        },
+    ))
 
     return _build_stats(namespace, counts, closure_info, start)
 

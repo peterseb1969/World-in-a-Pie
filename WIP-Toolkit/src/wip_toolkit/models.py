@@ -41,7 +41,7 @@ class EntityCounts(BaseModel):
 class Manifest(BaseModel):
     """Archive manifest describing the export."""
     format_version: str = "1.1"
-    tool_version: str = "0.2.3"
+    tool_version: str = "0.4.0"
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
     namespace: str = ""
@@ -62,6 +62,33 @@ class ExportStats(BaseModel):
     external_templates: int = 0
     warnings: list[str] = Field(default_factory=list)
     duration_seconds: float = 0.0
+
+
+class ProgressEvent(BaseModel):
+    """A progress event emitted by export/import orchestrators.
+
+    Used by callers (e.g. a REST endpoint streaming SSE) to observe long-running
+    backup/restore operations without parsing console output. The orchestrators
+    invoke an optional ``progress_callback`` at meaningful checkpoints; this
+    model is the payload.
+
+    Conventions:
+    - ``phase`` names are stable (e.g. ``"start"``, ``"phase_1a_entities"``,
+      ``"phase_1b_documents"``, ``"phase_3_finalize"``, ``"complete"``).
+      Callers may use them for ordering / progress-bar bucketing.
+    - ``percent`` is best-effort and may be ``None`` for phases where total
+      work is unknown ahead of time. When set, it covers 0-100 across the
+      whole operation, not the current phase.
+    - ``current`` and ``total`` apply within a phase (e.g. document N of M).
+    - ``message`` is a short, human-readable line suitable for a status row.
+    - ``details`` carries phase-specific structured fields when useful.
+    """
+    phase: str
+    message: str
+    percent: float | None = None
+    current: int | None = None
+    total: int | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class ImportStats(BaseModel):

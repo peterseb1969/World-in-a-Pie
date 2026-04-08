@@ -55,7 +55,7 @@ class TestManifest:
 
     def test_default_tool_version(self):
         m = Manifest()
-        assert m.tool_version == "0.2.3"
+        assert m.tool_version == "0.4.0"
 
     def test_default_namespace_empty(self):
         m = Manifest()
