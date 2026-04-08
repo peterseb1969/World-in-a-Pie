@@ -27,7 +27,7 @@ React Console is live and in polishing/improvement phase. Built with `@wip/react
 **Repo:** `../WIP-ReactConsole/` (separate repo, not inside World-in-a-Pie). Vendors `@wip/client`, `@wip/react`, and `@wip/proxy` as tarballs in `libs/`.
 
 **Remaining polish:**
-- Document update endpoint (`PATCH /documents/{id}`) — see below. Documents can be created/viewed/archived without it.
+- ~~Document update endpoint (`PATCH /documents/{id}`)~~ ✅ Backend + all client layers shipped (2026-04-08). React can now wire `useUpdateDocument` to inline edit forms.
 - Permission-aware UI (Auth Phase 2 Console UX)
 - Ongoing UX improvements driven by usage
 
@@ -71,13 +71,20 @@ Commits: 92cfb90 (helper), c2d572a (migrate 5 endpoints), 2b5b8e1 (ontology), 4a
 - Design: `docs/design/cross-namespace-read-mode.md`
 - Related: CASE-07, CASE-08
 
-### Document Update Endpoint (`PATCH /documents`)
+### ~~Document Update Endpoint (`PATCH /documents`)~~ ✅
 
-Documents are immutable (create with same identity = new version), but users and AI agents think "update." Bulk endpoint (PoNIF: bulk-first writes) accepts partial `data` changes per item, reads/merges/validates/creates new version server-side, and returns the new versions in a `BulkResponse`. Caller sends only changed fields.
+**Complete** (2026-04-08). Bulk `PATCH /api/document-store/documents` endpoint with RFC 7396 merge semantics, per-item `if_match` OCC, identity-field invariance, and machine-readable `error_code` propagated through every client layer (`identity_field_change`, `validation_failed`, `concurrency_conflict`, `not_found`, `archived`, `reference_violation`). Reuses `EventType.DOCUMENT_UPDATED` so reporting-sync needs zero changes. No-op detection returns `status: "unchanged"` without bumping the version.
 
-**Design complete:** `docs/design/document-patch.md` (RFC 7396 merge semantics, OCC via per-item `if_match`, server-side term/file resolution, full re-validation, smart no-op detection).
+Shipped across all layers in a single sitting:
+- Backend endpoint + 26 tests: `f6ab013`, `579ad64`
+- `@wip/client` 0.10.0 (`documents.updateDocument` / `updateDocuments`, `WipBulkItemError.errorCode`): `99fede5`
+- `@wip/react` 0.6.0 (`useUpdateDocument` / `useUpdateDocuments`): `cd44417`
+- MCP `update_document` tool + `BulkError.error_code`: `74b3ebd`
+- WIP-Toolkit `update-document` CLI: `cbd357f`
 
-**Blocks:** `useUpdateDocument` React hook, full CRUD in React Console.
+Documentation: `docs/api-conventions.md` PATCH section, `docs/uniqueness-and-identity.md` identity-invariance note, MCP `wip://conventions` resource.
+
+- Design: `docs/design/document-patch.md`
 
 ### ~~Runtime API Key Management~~ ✅
 
@@ -304,4 +311,4 @@ All feature designs live in `docs/design/`. Status of each:
 | `universal-synonym-resolution.md` | Implemented |
 | `image-based-distribution.md` | High-level design |
 | `wip-nano.md` | Concept only |
-| `document-patch.md` | Design complete, not started |
+| `document-patch.md` | Implemented (2026-04-08) |

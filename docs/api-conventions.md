@@ -75,9 +75,10 @@ Every write endpoint returns HTTP 200 with:
 | Field | Type | Description |
 |-------|------|-------------|
 | `index` | `int` | Position in the input array |
-| `status` | `str` | `"created"`, `"updated"`, `"deleted"`, `"skipped"`, `"error"` |
+| `status` | `str` | `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"skipped"`, `"error"` |
 | `id` | `str?` | Generated or existing entity ID |
 | `error` | `str?` | Error message (when `status == "error"`) |
+| `error_code` | `str?` | Machine-readable error code (when `status == "error"`). See the PATCH section below for the canonical code set. |
 
 Services extend `BulkResultItem` with extra fields:
 
@@ -91,6 +92,75 @@ Services extend `BulkResultItem` with extra fields:
 3. **Updates use PUT with ID in the body** — `PUT /templates` with `[{"template_id": "...", ...}]`
 4. **Deletes use DELETE with body** — `DELETE /terminologies` with `[{"id": "..."}]`
 5. **GET endpoints are NOT bulk** — single-entity GET and paginated list GET stay as-is
+
+---
+
+## PATCH (Partial Update)
+
+PATCH is the **partial-update** variant of bulk writes. Only `Document-Store` uses it today (`PATCH /api/document-store/documents`) — other services may adopt the same contract in future. The semantics below are the canonical WIP PATCH contract.
+
+### Request Format
+
+A JSON array of patch items:
+
+```json
+[
+  { "document_id": "DOC-123", "patch": { "first_name": "Jane" } },
+  { "document_id": "DOC-456", "patch": { "score": 92 }, "if_match": 3 }
+]
+```
+
+**Item fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `document_id` | yes | Canonical UUID or registered synonym — resolved before processing |
+| `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data` |
+| `if_match` | no | Per-item optimistic concurrency control: if current version != `if_match`, the item fails with `concurrency_conflict` |
+
+### RFC 7396 JSON Merge Patch Semantics
+
+- Objects **deep-merge** with the existing data (recursively)
+- Arrays are **replaced** wholesale (no per-element merging)
+- `null` **deletes** the key from the merged result
+- `null` on a required field fails validation for that item (error_code `validation_failed`)
+- Empty patch `{}` or a patch that results in no change returns `status: "unchanged"` — no new version is created
+
+### Response Format
+
+Standard `BulkResponse`, HTTP 200. Per-item `status` values:
+
+| Status | Meaning |
+|--------|---------|
+| `updated` | New version created |
+| `unchanged` | No-op (empty patch, or merged document is byte-identical) — version not bumped |
+| `error` | Item failed — `error_code` indicates the reason |
+
+### Per-item `error_code`
+
+Bulk-first endpoints extend `BulkResultItem` with an optional `error_code: str | None` field. It is set **only** when `status == "error"`, and it carries a machine-readable code so callers can branch on failure type without parsing message strings.
+
+Codes defined by `PATCH /documents`:
+
+| `error_code` | When |
+|--------------|------|
+| `not_found` | Document does not exist or has been soft-deleted |
+| `forbidden` | Caller lacks write permission on the document's namespace |
+| `archived` | Latest version has `status=ARCHIVED` — unarchive first |
+| `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed |
+| `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
+| `validation_failed` | Merged document fails template validation |
+| `reference_violation` | Cross-namespace reference validation failed |
+| `internal_error` | Unexpected exception (logged with stack trace) |
+
+**New services adopting PATCH** should reuse the same set of codes where they apply and extend it with entity-specific codes only when necessary. Client libraries (`@wip/client`, MCP, WIP-Toolkit) expose `error_code` through their bulk-error types so callers can `instanceof`-check or switch on it.
+
+### Key Rules (PATCH-specific)
+
+1. **PATCH always creates a new version** on success — it is not an in-place mutation of the MongoDB document. The previous version stays in history.
+2. **PATCH cannot change identity fields** — attempting to do so fails with `identity_field_change`. Use POST to create a new entity under a different identity.
+3. **PATCH preserves `template_version` and `identity_hash`** — the new version validates against the template version recorded on the document, not the latest template version.
+4. **PATCH reuses existing NATS event types** — e.g., `EventType.DOCUMENT_UPDATED`. Reporting-sync and other downstream consumers need no changes.
 
 ---
 

@@ -77,7 +77,35 @@ unwrap the response and return the result directly. Bulk tools (create_documents
 create_templates_bulk, create_terminologies_bulk) return the full BulkResponse.
 
 CRITICAL: When using bulk tools, always check results[i].status — a 200 OK
-response can contain per-item errors. Statuses: created, updated, error, skipped.
+response can contain per-item errors. Statuses: created, updated, unchanged,
+error, skipped. Error items carry a machine-readable `error_code` in addition
+to a human `error` message — branch on the code, not the message string.
+
+## Partial Updates: update_document (PATCH)
+The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
+document and creates a new version on success. Use this instead of
+create_document when you want to change a subset of fields without rewriting
+the whole document.
+
+Semantics:
+- Objects deep-merge, arrays replace wholesale, null deletes a field
+- Empty patch or a no-op patch returns status "unchanged" (no new version)
+- Identity fields CANNOT be changed via PATCH — you get error_code
+  `identity_field_change`. To change identity, POST a new document.
+- `if_match=N` is optional per-item optimistic concurrency control: if the
+  current version != N, you get error_code `concurrency_conflict`.
+- template_version and identity_hash are preserved — the new version validates
+  against the template version recorded on the document, not the latest.
+
+Error codes from PATCH: `not_found`, `forbidden`, `archived`,
+`identity_field_change`, `concurrency_conflict`, `validation_failed`,
+`reference_violation`, `internal_error`.
+
+When to PATCH vs create_document:
+- Use update_document when the identity is unchanged and you're correcting or
+  enriching existing fields (e.g., adding a phone number, updating a status).
+- Use create_document when you have a full document payload OR the identity
+  may change (create_document is still an upsert — same identity = new version).
 
 ## Querying Documents
 Two primary query tools:

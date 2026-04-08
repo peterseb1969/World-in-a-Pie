@@ -198,6 +198,17 @@ Templates with **no identity_fields** use an empty composite key — every submi
 
 **Namespace scoping:** The identity hash covers only the field values. Uniqueness is per-namespace because the composite key includes `{"namespace": ...}`. Two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 
+### PATCH Cannot Change Identity
+
+`PATCH /api/document-store/documents` creates a new version of an existing document by applying an RFC 7396 merge patch (see `docs/api-conventions.md`). It is **forbidden** to change any identity field or the namespace via PATCH:
+
+- Attempting to patch a template-defined identity field fails with `error_code: "identity_field_change"`
+- The new version **preserves** the original `identity_hash` — it is invariant under PATCH, never recomputed
+- The new version **preserves** the original `template_version` — PATCH validates against the version recorded on the document, not the latest template version
+- The namespace is not a patchable field — it is fixed at document creation
+
+If you need a document with a different identity, use POST to create a new one. The identity hash is the document's domain identity — changing it would silently break every synonym, Registry entry, and downstream reference that points at the old hash. PATCH is for correcting non-identity data within a stable identity; POST is for "this is a different real-world entity."
+
 ---
 
 ## Registry Synonyms
