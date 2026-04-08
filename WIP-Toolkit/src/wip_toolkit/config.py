@@ -14,6 +14,7 @@ SERVICE_PORTS = {
     "template-store": 8003,
     "document-store": 8004,
     "reporting-sync": 8005,
+    "ingest-gateway": 8006,
 }
 
 # API path prefixes per service
@@ -23,6 +24,7 @@ SERVICE_PREFIXES = {
     "template-store": "/api/template-store",
     "document-store": "/api/document-store",
     "reporting-sync": "/api/reporting-sync",
+    "ingest-gateway": "/api/ingest-gateway",
 }
 
 DEFAULT_DEV_API_KEY = "dev_master_key_for_testing"

@@ -17,6 +17,7 @@ from .config import WIPConfig
 from .export.exporter import run_export
 from .import_.importer import run_import
 from .seed import run_seed
+from .status import StatusThresholds, collect_status
 
 console = Console(stderr=True)
 
@@ -444,6 +445,100 @@ def seed(
 
         if stats.errors:
             sys.exit(1)
+
+
+_SEVERITY_STYLE = {
+    "ok": "[green]OK[/green]",
+    "warning": "[yellow]WARN[/yellow]",
+    "critical": "[red bold]CRIT[/red bold]",
+    "unknown": "[dim]?[/dim]",
+}
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Output JSON instead of human-readable text")
+@click.option("--quiet", is_flag=True, help="Cron mode: print nothing on overall=ok")
+@click.option("--integrity", is_flag=True,
+              help="Also run aggregated referential integrity check (heavier)")
+@click.option("--integrity-template-limit", default=1000, type=int,
+              help="Max templates to scan for integrity (0 = all, default 1000)")
+@click.option("--integrity-document-limit", default=1000, type=int,
+              help="Max documents to scan for integrity (0 = all, default 1000)")
+@click.option("--failed-events-warning", default=1, type=int,
+              help="Failed-event count that triggers a warning (default 1)")
+@click.option("--consumer-lag-warning", default=100, type=int,
+              help="NATS pending messages that trigger a warning (default 100)")
+@click.option("--consumer-lag-critical", default=1000, type=int,
+              help="NATS pending messages that trigger critical (default 1000)")
+@click.pass_context
+def status(
+    ctx: click.Context,
+    as_json: bool,
+    quiet: bool,
+    integrity: bool,
+    integrity_template_limit: int,
+    integrity_document_limit: int,
+    failed_events_warning: int,
+    consumer_lag_warning: int,
+    consumer_lag_critical: int,
+) -> None:
+    """Aggregate WIP service status and exit non-zero on problems.
+
+    Default mode is cheap and cron-friendly: liveness checks for every service,
+    plus reporting-sync /metrics and /alerts and ingest-gateway /metrics.
+
+    Pass --integrity to also run the referential integrity scan (heavier; the
+    full scan can take minutes on large instances — limits default to 1000).
+
+    Exit codes:
+        0 ok       1 warning       2 critical       3 unknown / unreachable
+    """
+    config = ctx.obj["config"]
+    thresholds = StatusThresholds(
+        failed_events_warning=failed_events_warning,
+        consumer_lag_warning=consumer_lag_warning,
+        consumer_lag_critical=consumer_lag_critical,
+    )
+    with WIPClient(config) as client:
+        report = collect_status(
+            client,
+            thresholds,
+            include_integrity=integrity,
+            integrity_template_limit=integrity_template_limit,
+            integrity_document_limit=integrity_document_limit,
+        )
+
+    if as_json:
+        if not (quiet and not report.has_problems()):
+            click.echo(_json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        if quiet and not report.has_problems():
+            pass
+        else:
+            _print_status_report(report)
+
+    sys.exit(report.exit_code())
+
+
+def _print_status_report(report) -> None:
+    """Render a StatusReport in human-readable form (to stderr console)."""
+    overall_style = _SEVERITY_STYLE.get(report.overall, report.overall)
+    console.print(f"[bold]WIP status:[/bold] {overall_style}  [dim]({report.checked_at})[/dim]")
+    if report.services_unreachable:
+        console.print(
+            f"  [red]Unreachable:[/red] {', '.join(report.services_unreachable)}"
+        )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for c in report.checks:
+        table.add_row(c.name, _SEVERITY_STYLE.get(c.severity, c.severity), c.message)
+    console.print(table)
+    # Print details for non-OK checks (helps cron output explain itself)
+    for c in report.checks:
+        if c.severity != "ok" and c.details:
+            console.print(f"  [dim]{c.name} details:[/dim] {c.details}")
 
 
 def _show_references(reader: ArchiveReader) -> None:
