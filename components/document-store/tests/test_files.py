@@ -34,7 +34,7 @@ async def _register_file_in_registry(namespace: str, checksum: str) -> str:
     """Register a file entry in Registry and return the UUID7 file_id.
 
     Mirrors what FileService._generate_file_id does in production:
-    empty composite_key, Registry assigns UUID7 ID.
+    SHA-256 checksum as composite key (CASE-32), Registry assigns UUID7 ID.
     """
     api_key = os.environ["MASTER_API_KEY"]
     headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
@@ -46,13 +46,13 @@ async def _register_file_in_registry(namespace: str, checksum: str) -> str:
             json=[{
                 "namespace": namespace,
                 "entity_type": "files",
-                "composite_key": {},
-                "metadata": {"type": "file", "checksum": checksum},
+                "composite_key": {"checksum": checksum},
+                "metadata": {"type": "file"},
             }],
         )
         assert resp.status_code == 200, f"Register file failed: {resp.text}"
         result = resp.json()["results"][0]
-        assert result["status"] in ("created", "exists"), f"Register file: {result}"
+        assert result["status"] in ("created", "already_exists"), f"Register file: {result}"
         return result["registry_id"]
 
 
@@ -714,21 +714,24 @@ async def test_list_orphan_files_with_limit(file_client: AsyncClient, auth_heade
 
 @pytest.mark.asyncio
 async def test_find_by_checksum(file_client: AsyncClient, auth_headers: dict):
-    """Find files by SHA-256 checksum (duplicate detection)."""
-    shared_checksum = "abc123def456" * 6  # fake but consistent
-    file_dup1 = await _insert_file(checksum=shared_checksum)
-    file_dup2 = await _insert_file(checksum=shared_checksum)
+    """Find files by SHA-256 checksum.
+
+    Since CASE-32, the SHA-256 checksum is the Registry composite key for
+    files, so there is at most one File per (namespace, checksum). Uploading
+    the same bytes twice returns the same file_id.
+    """
+    target_checksum = "abc123def456" * 6  # fake but consistent
+    file = await _insert_file(checksum=target_checksum)
     await _insert_file(checksum="unique_checksum_value_0000000000")
 
     response = await file_client.get(
-        f"/api/document-store/files/by-checksum/{shared_checksum}",
+        f"/api/document-store/files/by-checksum/{target_checksum}",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 2
-    found_ids = {item["file_id"] for item in data}
-    assert found_ids == {file_dup1.file_id, file_dup2.file_id}
+    assert len(data) == 1
+    assert data[0]["file_id"] == file.file_id
 
 
 @pytest.mark.asyncio

@@ -88,14 +88,27 @@ class FileService:
         # Compute checksum
         checksum = hashlib.sha256(content).hexdigest()
 
-        # Generate file ID from Registry (or use pre-assigned ID for restore/migration)
+        # Generate file ID from Registry (or use pre-assigned ID for restore/migration).
+        # Identity is content-addressed: same checksum in same namespace reuses the
+        # existing file_id (CASE-32).
         try:
             registry = get_registry_client()
-            file_id = await self._generate_file_id(
+            file_id, already_exists = await self._generate_file_id(
                 registry, checksum, actor, namespace=namespace, entry_id=file_id,
             )
         except RegistryError as e:
             raise FileServiceError(f"Failed to generate file ID: {e}") from e
+
+        # If Registry already had this checksum in this namespace, the File
+        # document should already exist — return it without re-uploading or
+        # re-inserting. This makes upload_file idempotent for identical bytes.
+        if already_exists:
+            existing = await File.find_one({"file_id": file_id})
+            if existing is not None:
+                return self._to_response(existing)
+            # Fallback: Registry has the entry but Mongo does not (e.g. after
+            # a partial failure or data loss). Fall through and re-create the
+            # File doc + storage object with the existing file_id.
 
         # Upload to MinIO (storage_key = file_id)
         try:
@@ -156,15 +169,21 @@ class FileService:
         created_by: str | None,
         namespace: str,
         entry_id: str | None = None,
-    ) -> str:
-        """Generate a file ID from the Registry (empty composite key — always fresh,
-        unless entry_id is provided for restore/migration)."""
+    ) -> tuple[str, bool]:
+        """Generate a file ID from the Registry using the SHA-256 checksum as
+        the composite key (content-addressed identity, CASE-32).
+
+        Returns (file_id, already_exists). If already_exists is True, the
+        Registry already had an entry for these bytes in this namespace and
+        the caller should reuse the existing File document instead of
+        inserting a new one.
+        """
         item = {
             "namespace": namespace,
             "entity_type": "files",
-            "composite_key": {},
+            "composite_key": {"checksum": checksum},
             "created_by": created_by,
-            "metadata": {"type": "file", "checksum": checksum},
+            "metadata": {"type": "file"},
         }
         if entry_id:
             item["entry_id"] = entry_id
@@ -187,7 +206,7 @@ class FileService:
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
-            return result["registry_id"]
+            return result["registry_id"], result["status"] == "already_exists"
 
     async def get_file(self, file_id: str) -> FileResponse | None:
         """
