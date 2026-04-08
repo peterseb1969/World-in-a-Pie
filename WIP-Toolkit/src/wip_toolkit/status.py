@@ -16,8 +16,9 @@ Exit codes (used by the CLI wrapper):
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from .client import WIPClient
@@ -176,10 +177,8 @@ def collect_status(
 
     # 4. Ingest gateway metrics (optional, only if reachable)
     if "ingest-gateway" not in unreachable:
-        try:
+        with contextlib.suppress(KeyError):
             checks.extend(_check_ingest_gateway_metrics(client, thresholds))
-        except KeyError:
-            pass
 
     # 5. Integrity (opt-in, heavy)
     if include_integrity and "reporting-sync" not in unreachable:
@@ -196,7 +195,7 @@ def collect_status(
 
     return StatusReport(
         overall=overall,
-        checked_at=datetime.now(timezone.utc).isoformat(),
+        checked_at=datetime.now(UTC).isoformat(),
         checks=checks,
         services_unreachable=unreachable,
     )

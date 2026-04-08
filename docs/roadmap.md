@@ -38,11 +38,17 @@ Commits: `1b05b7a`, `b7152d5`, `b7d34f2`, _this commit_.
 
 - Case: `yac-discussions/CASE-25-open-app-bootstrapping-api-gaps.md`
 
-### Phase 2 — Observability: `wip-toolkit status` (CASE-26)
+### Phase 2 — Observability: `wip-toolkit status` (CASE-26) ✅
 
-Aggregator command that hits every WIP service's `/metrics` and `/health/integrity` endpoints, applies configurable thresholds (failed events, consumer lag, integrity drift, stale writes), and exits non-zero on anomalies. Cron-friendly. JSON + human output modes. Sample cron entry in the install guide.
+**Complete** (2026-04-08). New `wip-toolkit status` aggregator that closes the silent-failure detection gap from the CASE-22 incident.
 
-**Why second:** The install demo's audience is the most fragile audience this project will ever serve. Silent failures (the CASE-22 backstory) must become loud before the backup/restore REST wrapper ships on top of them. Cheap insurance that also helps us verify backup/restore doesn't silently corrupt anything. No new service endpoints needed — the data already exists on reporting-sync and the stores. Effort: small (~1-2 days).
+Default mode is cron-fast: liveness for every required service, plus reporting-sync `/metrics`, reporting-sync `/alerts` (server-side stall detection rides on the existing alerts engine), and ingest-gateway `/metrics`. Pass `--integrity` to also run the aggregated referential integrity scan (heavier — opt-in because the full scan can take minutes on large instances).
+
+Configurable thresholds (`--failed-events-warning`, `--consumer-lag-warning`, `--consumer-lag-critical`) with the CASE-26 defaults. Output modes: human-readable Rich table (default) or `--json`. `--quiet` for cron use suppresses output unless something is wrong. Exit codes: `0` ok, `1` warning, `2` critical, `3` unknown / unreachable.
+
+No new service endpoints were added — every data point already existed on reporting-sync and the stores; the toolkit just plumbs and thresholds.
+
+Commits: `add9902`, _this commit_.
 
 - Case: `yac-discussions/CASE-26-open-observability-silent-failure-detection.md`
 

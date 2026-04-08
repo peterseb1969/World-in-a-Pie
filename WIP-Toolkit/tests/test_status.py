@@ -6,10 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-
 from wip_toolkit.status import (
     LIVENESS_SERVICES,
-    StatusReport,
     StatusThresholds,
     collect_status,
 )
@@ -269,8 +267,9 @@ def test_cli_status_critical_exit_two(runner):
 
 
 def test_cli_status_json_output(runner):
-    from wip_toolkit.cli import main as cli
     import json
+
+    from wip_toolkit.cli import main as cli
 
     client = _make_client()
     with patch("wip_toolkit.cli.WIPClient", return_value=client):
