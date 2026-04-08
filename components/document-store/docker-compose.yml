@@ -24,8 +24,10 @@ services:
       - CORS_ORIGINS=${WIP_CORS_ORIGINS:-}
     volumes:
       - ../../libs/wip-auth:/app/libs/wip-auth:ro
+      - ../../WIP-Toolkit:/app/libs/wip-toolkit:ro
     command: >
       bash -c "pip install -q /app/libs/wip-auth &&
+      pip install -q /app/libs/wip-toolkit &&
       uvicorn document_store.main:app --host 0.0.0.0 --port 8004
       ${WIP_DEV_RELOAD:+--reload}"
     networks:
