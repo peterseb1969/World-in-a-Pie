@@ -23,16 +23,18 @@ Unblocks: `useUpdateDocument` wiring in the React Console.
 
 - Design: `docs/design/document-patch.md`
 
-### Phase 1 — Bootstrapping API Gaps (CASE-25)
+### Phase 1 — Bootstrapping API Gaps (CASE-25) ✅
 
-Two small, contained API additions that let apps bootstrap themselves cleanly against any WIP instance:
+**Complete** (2026-04-08). Two small API additions that let apps bootstrap themselves cleanly against any WIP instance:
 
-1. **`PUT /api/registry/namespaces/{name}`** — upsert. Create if missing, return existing if present. Replaces the current `GET → 404 → POST` dance.
-2. **`POST /templates?on_conflict=validate`** — compatibility-checked template create. Compatible upgrades (added optional fields, new identity fields) produce version N+1; incompatible upgrades (removed fields, changed types) return 409 with a structured diff.
+1. **`PUT /api/registry/namespaces/{prefix}`** — upsert. Creates the namespace on missing using platform defaults; updates supplied fields when existing. Replaces the `GET → 404 → POST` dance with a single self-healing call.
+2. **`POST /api/template-store/templates?on_conflict=validate`** — schema-aware conflict handling. Identical → `unchanged`; compatible (added optional field only) → `updated` version N+1; incompatible → `error` with `error_code='incompatible_schema'` and a structured diff (`added_required`, `removed`, `changed_type`, `made_required`, `modified_existing`, `identity_changed`).
 
-Plus: `@wip/client` methods (`namespaces.upsert`, `templates.create({on_conflict})`), tests, and docs.
+Shipped end-to-end: backend + 13 new tests, `@wip/client` 0.11.0 (`upsertNamespace`, `createTemplate(s)({ onConflict })`), docs (`api-conventions.md` Idempotent Bootstrap section, MCP `wip://conventions` resource).
 
-**Why first:** Smallest, most contained change. Unblocks Phase 5 (app distribution) and gives app authors a concrete answer for install-time idempotency. Effort: small (~1-2 days).
+Compatibility is intentionally narrow ("added optional field only") so silent guardrail violations are impossible — anything else returns a structured diff the caller can show the human.
+
+Commits: `1b05b7a`, `b7152d5`, `b7d34f2`, _this commit_.
 
 - Case: `yac-discussions/CASE-25-open-app-bootstrapping-api-gaps.md`
 

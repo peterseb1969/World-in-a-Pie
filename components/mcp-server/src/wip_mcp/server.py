@@ -107,6 +107,33 @@ When to PATCH vs create_document:
 - Use create_document when you have a full document payload OR the identity
   may change (create_document is still an upsert — same identity = new version).
 
+## Idempotent Bootstrap (apps installing themselves)
+Two endpoints exist so an app can provision its namespace and templates against
+a fresh WIP instance and re-run the same script repeatedly without ugly
+GET → 404 → POST dances or silent schema drift.
+
+### Namespace upsert: PUT /api/registry/namespaces/{prefix}
+PUT is an upsert — creates the namespace on missing using platform defaults
+(isolation_mode='open', deletion_mode='retain', description='',
+allowed_external_refs=[]); updates supplied fields when existing. Always 200 OK.
+Idempotent: re-running with the same body is a no-op.
+
+### Template create with conflict validation: POST /templates?on_conflict=validate
+Adds a query parameter to control collision behavior on (namespace, value):
+- on_conflict='error' (default): collisions return per-item status='error',
+  preserving the existing behavior.
+- on_conflict='validate':
+  * identical schema → status='unchanged' (returns existing template_id/version)
+  * compatible schema → status='updated', is_new_version=true, version=N+1
+    (compatible = added optional field only — anything else is incompatible)
+  * incompatible schema → status='error', error_code='incompatible_schema',
+    details={added_required, removed, changed_type, made_required,
+    modified_existing, identity_changed}
+
+The narrow compatibility rule is intentional: silent guardrails are worse than
+loud ones. If the bootstrap script wants to evolve the template in a way the
+platform considers incompatible, it must explicitly bump the version itself.
+
 ## Querying Documents
 Two primary query tools:
 - query_by_template(template_value, field_filters) — the most common way to

@@ -164,6 +164,58 @@ Codes defined by `PATCH /documents`:
 
 ---
 
+## Idempotent Bootstrap
+
+App bootstrap scripts need to provision a namespace and a set of templates against any WIP instance and re-run cleanly. Two endpoints support this directly so callers don't have to fake idempotency with `GET → 404 → POST` dances.
+
+### Namespace upsert — `PUT /api/registry/namespaces/{prefix}`
+
+`PUT` is an upsert: it creates the namespace on missing and updates it when present. Any field omitted from the body uses the platform default on create (`isolation_mode='open'`, `deletion_mode='retain'`, `description=''`, `allowed_external_refs=[]`, `id_config=null`). On update, only fields explicitly supplied are touched.
+
+```python
+client.registry.upsert_namespace("my-app", {
+    "description": "My App namespace",
+    "isolation_mode": "strict",
+})
+```
+
+The response is always `200 OK` with the resulting `NamespaceResponse`. Calling it twice with the same body is a no-op on the second call.
+
+### Template create with conflict validation — `POST /api/template-store/templates?on_conflict=validate`
+
+`POST /templates` accepts an `on_conflict` query parameter:
+
+| Mode | Behavior on `(namespace, value)` collision |
+|------|---------------------------------------------|
+| `error` (default) | Returns a per-item `status: "error"`, `error: "Template with value '...' already exists ..."`. Existing behavior — backwards compatible. |
+| `validate` | Schema-aware: identical → `unchanged`; compatible → `updated` (version N+1); incompatible → `error` with structured diff. |
+
+In `validate` mode the per-item result reflects the verdict:
+
+| Verdict | Status | Notes |
+|---------|--------|-------|
+| Identical schema | `unchanged` | Same `id` and `version` as the existing template. `details` carries the (empty) diff. |
+| Compatible (added optional fields only) | `updated` | New version created; `is_new_version: true`, `version: N+1`. `details.added_optional` lists the added field names. |
+| Incompatible | `error` | `error_code: "incompatible_schema"`. `details` contains: `removed`, `added_required`, `changed_type` (`{name, old_type, new_type}`), `made_required`, `modified_existing`, `identity_changed` (`{old, new}` or `null`). |
+
+Compatibility is intentionally narrow: **only "added optional field" qualifies as compatible**. Any change to an existing field (label, description, validation, type, mandatory flag), removed field, added required field, or `identity_fields` change is incompatible. The structured diff lets the bootstrap script show the human a useful error.
+
+```typescript
+import { WipBulkItemError } from '@wip/client'
+
+try {
+  await client.templateStore.createTemplate(personDef, { onConflict: 'validate' })
+} catch (e) {
+  if (e instanceof WipBulkItemError && e.errorCode === 'incompatible_schema') {
+    console.error('PERSON template drift:', e.details)
+    process.exit(1)
+  }
+  throw e
+}
+```
+
+---
+
 ## Client Code Examples
 
 ### Python (WIP-Toolkit / scripts)
