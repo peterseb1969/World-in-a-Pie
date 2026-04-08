@@ -358,6 +358,61 @@ class TestCheckAllServices:
         assert unhealthy_count == 2
 
 
+class TestStreamToFile:
+    """Test stream_to_file (CASE-28 streaming download)."""
+
+    def test_streams_chunks_into_dest(self, config, mock_httpx_client):
+        """stream_to_file writes httpx iter_bytes() chunks into the dest handle."""
+        from io import BytesIO
+
+        chunks = [b"AAA", b"BBB", b"CCC"]
+
+        # Build a fake streamed response: a context manager whose __enter__
+        # returns an object with is_success + iter_bytes.
+        resp = MagicMock()
+        resp.is_success = True
+        resp.iter_bytes.return_value = iter(chunks)
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        cm.__exit__.return_value = False
+        mock_httpx_client.stream.return_value = cm
+
+        sink = BytesIO()
+        client = WIPClient(config)
+        client.stream_to_file("document-store", "/files/FILE-1/content", sink)
+
+        assert sink.getvalue() == b"AAABBBCCC"
+        mock_httpx_client.stream.assert_called_once()
+        call = mock_httpx_client.stream.call_args
+        assert call.args[0] == "GET"
+        assert "/api/document-store/files/FILE-1/content" in call.args[1]
+
+    def test_raises_on_error_response(self, config, mock_httpx_client):
+        """A non-2xx streamed response is read and raised as WIPClientError."""
+        from io import BytesIO
+
+        resp = MagicMock()
+        resp.is_success = False
+        resp.status_code = 404
+        resp.url = "http://localhost:8004/api/document-store/files/missing/content"
+        resp.json.return_value = {"detail": "file not found"}
+        resp.text = '{"detail": "file not found"}'
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        cm.__exit__.return_value = False
+        mock_httpx_client.stream.return_value = cm
+
+        client = WIPClient(config)
+        with pytest.raises(WIPClientError) as excinfo:
+            client.stream_to_file("document-store", "/files/missing/content", BytesIO())
+
+        assert excinfo.value.status_code == 404
+        # iter_bytes must NOT be called when the status is non-success.
+        resp.iter_bytes.assert_not_called()
+        # The body should have been pre-read so _check_response can use it.
+        resp.read.assert_called_once()
+
+
 class TestWIPClientContextManager:
     """Test context manager protocol."""
 

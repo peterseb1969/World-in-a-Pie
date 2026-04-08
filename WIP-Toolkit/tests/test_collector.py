@@ -1,5 +1,6 @@
 """Tests for EntityCollector using mock WIPClient."""
 
+from io import BytesIO
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,7 +14,7 @@ def mock_client():
     client.fetch_all_paginated = MagicMock()
     client.get = MagicMock()
     client.post = MagicMock()
-    client.get_stream = MagicMock()
+    client.stream_to_file = MagicMock()
     return client
 
 
@@ -521,17 +522,22 @@ class TestFetchFiles:
         assert call_args[0][0] == "document-store"
         assert call_args[0][1] == "/files"
 
-    def test_fetch_file_content(self, collector, mock_client):
-        mock_resp = MagicMock()
-        mock_resp.content = b"\x89PNG binary data"
-        mock_client.get_stream.return_value = mock_resp
+    def test_download_file_content(self, collector, mock_client):
+        """download_file_content streams chunks straight into the dest handle."""
+        def fake_stream(service, path, dest, chunk_size=64 * 1024):
+            dest.write(b"\x89PNG binary data")
 
-        result = collector.fetch_file_content("FILE-001")
+        mock_client.stream_to_file.side_effect = fake_stream
 
-        assert result == b"\x89PNG binary data"
-        mock_client.get_stream.assert_called_once_with(
-            "document-store", "/files/FILE-001/content",
-        )
+        sink = BytesIO()
+        collector.download_file_content("FILE-001", sink)
+
+        assert sink.getvalue() == b"\x89PNG binary data"
+        # Service + path forwarded; dest is whatever the caller passed in.
+        call = mock_client.stream_to_file.call_args
+        assert call.args[0] == "document-store"
+        assert call.args[1] == "/files/FILE-001/content"
+        assert call.args[2] is sink
 
 
 class TestFetchNamespaceConfig:

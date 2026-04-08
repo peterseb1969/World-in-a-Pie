@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 from rich.console import Console
 
@@ -235,10 +235,16 @@ class EntityCollector:
         console.print(f"  Fetched {len(items)} files")
         return items
 
-    def fetch_file_content(self, file_id: str) -> bytes:
-        """Download binary file content."""
-        resp = self.client.get_stream("document-store", f"/files/{file_id}/content")
-        return resp.content
+    def download_file_content(self, file_id: str, dest: BinaryIO) -> None:
+        """Stream binary file content directly into ``dest``.
+
+        No full body is held in Python — the underlying
+        :meth:`WIPClient.stream_to_file` writes chunks straight from the
+        socket to the destination handle (CASE-28).
+        """
+        self.client.stream_to_file(
+            "document-store", f"/files/{file_id}/content", dest,
+        )
 
     # --- Single entity lookups (for closure) ---
 

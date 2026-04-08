@@ -125,6 +125,29 @@ class TestBackupRunnerFactory:
         assert captured["kwargs"]["non_interactive"] is True
         assert callable(captured["kwargs"]["progress_callback"])
 
+    def test_runner_passes_wip_backup_dir_as_tmp_dir(self, monkeypatch, tmp_path):
+        """The runner threads WIP_BACKUP_DIR through to run_export's tmp_dir.
+
+        CASE-29: scratch storage must live under the same operator-controlled
+        volume as the final archive, not the system /tmp default.
+        """
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "k")
+        scratch = tmp_path / "wip-backups-scratch"
+        monkeypatch.setenv("WIP_BACKUP_DIR", str(scratch))
+
+        captured: dict[str, Any] = {}
+
+        def fake_run_export(client, namespace, output_path, **kwargs):
+            captured["kwargs"] = kwargs
+
+        with patch.object(backup_service, "run_export", fake_run_export):
+            runner = backup_service.make_backup_runner("wip", tmp_path / "b.zip")
+            runner(lambda e: None)
+
+        assert captured["kwargs"]["tmp_dir"] == str(scratch)
+        # Factory should also have created the directory.
+        assert scratch.is_dir()
+
     def test_runner_forwards_progress_callback(self, monkeypatch, tmp_path):
         monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "k")
         received: list[ProgressEvent] = []
@@ -185,5 +208,9 @@ class TestRestoreRunnerFactory:
             runner = backup_service.make_restore_runner(tmp_path / "a.zip")
             runner(lambda e: None)
 
-        # Only the two kwargs the factory injects itself should be present.
-        assert set(captured["kwargs"].keys()) == {"progress_callback", "non_interactive"}
+        # The factory injects three kwargs by default: progress_callback,
+        # non_interactive, and tmp_dir (CASE-29 — co-locates scratch with
+        # the configured WIP_BACKUP_DIR volume).
+        assert set(captured["kwargs"].keys()) == {
+            "progress_callback", "non_interactive", "tmp_dir",
+        }

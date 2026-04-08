@@ -34,6 +34,7 @@ def run_import(
     dry_run: bool = False,
     progress_callback: ProgressCallback | None = None,
     non_interactive: bool = False,
+    tmp_dir: str | Path | None = None,
 ) -> ImportStats:
     """Run an import from an archive file.
 
@@ -47,8 +48,14 @@ def run_import(
         non_interactive: Reserved for parity with :func:`run_export`. The
             current import path does not prompt, but server callers should set
             this to ``True`` to opt out of any future interactive branches.
+        tmp_dir: Reserved for parity with :func:`run_export`. The current
+            :class:`ArchiveReader` reads entities directly from the ZIP and
+            needs no scratch dir, but accepting the kwarg keeps the
+            export/import API symmetric and lets server callers thread
+            ``WIP_BACKUP_DIR`` through both runners (CASE-29).
     """
     del non_interactive  # currently no interactive branches in import path
+    del tmp_dir  # reserved — ArchiveReader has no scratch dir today
     start = time.monotonic()
 
     with ArchiveReader(archive_path) as reader:

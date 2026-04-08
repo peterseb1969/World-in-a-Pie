@@ -54,7 +54,10 @@ def mock_collector():
     collector.fetch_files.return_value = [
         {"file_id": "FILE-001", "namespace": "wip", "filename": "test.pdf"},
     ]
-    collector.fetch_file_content.return_value = b"binary-data"
+    # download_file_content streams bytes into the dest handle.
+    def _download(file_id, dest):
+        dest.write(b"binary-data")
+    collector.download_file_content.side_effect = _download
     collector.fetch_registry_entries.return_value = {}
     return collector
 
@@ -361,8 +364,12 @@ class TestRunExportIncludeFiles:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", include_files=True)
 
-        mock_collector.fetch_file_content.assert_called_once_with("FILE-001")
-        mock_writer.add_blob.assert_called_once_with("FILE-001", b"binary-data")
+        # New streaming path: writer.open_blob() yields a dest, collector
+        # writes into it. No bytes are ever held in Python (CASE-28).
+        mock_writer.open_blob.assert_called_once_with("FILE-001")
+        mock_collector.download_file_content.assert_called_once()
+        call = mock_collector.download_file_content.call_args
+        assert call.args[0] == "FILE-001"
 
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
@@ -379,8 +386,8 @@ class TestRunExportIncludeFiles:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", include_files=False)
 
-        mock_collector.fetch_file_content.assert_not_called()
-        mock_writer.add_blob.assert_not_called()
+        mock_collector.download_file_content.assert_not_called()
+        mock_writer.open_blob.assert_not_called()
 
 
 class TestRunExportLatestOnly:

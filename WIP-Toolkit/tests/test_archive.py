@@ -106,6 +106,55 @@ class TestArchiveRoundTrip:
             assert entities[0]["term_id"] == "0190b000-0000-7000-0000-000000000000"
             assert entities[-1]["term_id"] == f"0190b000-0000-7000-0000-{count - 1:012d}"
 
+    def test_open_blob_streaming(self, tmp_path):
+        """open_blob() yields a binary handle that streams to disk (CASE-28).
+
+        Verifies the new streaming entry point: writes happen in chunks
+        through a context-managed file handle, no full-blob bytes object
+        is constructed in Python.
+        """
+        output = tmp_path / "stream-blob.zip"
+        writer = ArchiveWriter(output)
+
+        chunks = [b"chunk-1-", b"chunk-2-", b"chunk-3"]
+        with writer.open_blob("FILE-STREAM") as fh:
+            for chunk in chunks:
+                fh.write(chunk)
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(files=0),
+            include_files=True,
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            assert reader.list_blobs() == ["FILE-STREAM"]
+            assert reader.read_blob("FILE-STREAM") == b"".join(chunks)
+
+    def test_archivewriter_tmp_dir_override(self, tmp_path):
+        """tmp_dir kwarg lands the scratch dir under the supplied path (CASE-29).
+
+        Verifies the document-store /backup endpoint can co-locate scratch
+        with the configured WIP_BACKUP_DIR instead of the system /tmp.
+        """
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        output = tmp_path / "out.zip"
+
+        writer = ArchiveWriter(output, tmp_dir=scratch_root)
+
+        # Scratch should live under the override, not under /tmp
+        assert Path(writer._tmp_dir).parent == scratch_root
+        assert writer._blobs_dir.parent == Path(writer._tmp_dir)
+        assert writer._blobs_dir.exists()
+
+        # Round-trip still works
+        writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
+        writer.write(Manifest(namespace="wip", counts=EntityCounts(terms=1)))
+        with ArchiveReader(output) as reader:
+            assert reader.entity_count("terms") == 1
+
     def test_blob_round_trip(self, tmp_path):
         """Binary blobs survive round-trip."""
         output = tmp_path / "blobs.zip"

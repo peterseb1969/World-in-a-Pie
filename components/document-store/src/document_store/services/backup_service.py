@@ -354,6 +354,11 @@ def make_backup_runner(
     """
     opts = dict(options or {})
     config = _loopback_config(api_key)
+    # Co-locate scratch storage with the final archive volume so a single
+    # operator-controlled directory bounds *all* backup-related disk usage
+    # (CASE-29). Same env var the API endpoint reads at api/backup.py:79.
+    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
 
     def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
         with WIPClient(config) as client:
@@ -363,6 +368,7 @@ def make_backup_runner(
                 archive_path,
                 progress_callback=progress_callback,
                 non_interactive=True,
+                tmp_dir=backup_dir,
                 **opts,
             )
 
@@ -387,6 +393,11 @@ def make_restore_runner(
     """
     opts = dict(options or {})
     config = _loopback_config(api_key)
+    # See CASE-29 note above on make_backup_runner. ArchiveReader doesn't
+    # currently use a scratch dir, but threading this kwarg keeps the two
+    # runners symmetric and future-proofs the wiring.
+    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
 
     def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
         with WIPClient(config) as client:
@@ -395,6 +406,7 @@ def make_restore_runner(
                 archive_path,
                 progress_callback=progress_callback,
                 non_interactive=True,
+                tmp_dir=backup_dir,
                 **opts,
             )
 

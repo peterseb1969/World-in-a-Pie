@@ -56,6 +56,7 @@ def run_export(
     dry_run: bool = False,
     progress_callback: ProgressCallback | None = None,
     non_interactive: bool = False,
+    tmp_dir: str | Path | None = None,
 ) -> ExportStats:
     """Run a full namespace export.
 
@@ -68,6 +69,11 @@ def run_export(
             present in the namespace but ``include_files=False``, the export
             proceeds without blobs and emits a warning instead of asking. Use
             this when calling from a server context with no controlling TTY.
+        tmp_dir: Override the directory used for scratch files (JSONL temp
+            files and per-blob tempfiles). Defaults to the system temp dir.
+            Server callers should pass the same value as their final-archive
+            destination so all backup-related disk usage lives under one
+            operator-controlled volume (CASE-29).
 
     Returns:
         ExportStats with counts and timing.
@@ -233,7 +239,7 @@ def run_export(
 
     # Phase 1a: Write small entities to archive
     console.print("\n[bold cyan]Phase 1:[/bold cyan] Writing entities to archive")
-    writer = ArchiveWriter(output_path)
+    writer = ArchiveWriter(output_path, tmp_dir=tmp_dir)
 
     for entity in terminologies:
         writer.add_entity("terminologies", entity)
@@ -300,8 +306,8 @@ def run_export(
             for idx, file_meta in enumerate(files, start=1):
                 fid = file_meta["file_id"]
                 try:
-                    content = collector.fetch_file_content(fid)
-                    writer.add_blob(fid, content)
+                    with writer.open_blob(fid) as dest:
+                        collector.download_file_content(fid, dest)
                 except Exception as e:
                     console.print(f"  [yellow]Warning: Could not download {fid}: {e}[/yellow]")
                 # Emit per-file progress only at every 10th file (or last) to
