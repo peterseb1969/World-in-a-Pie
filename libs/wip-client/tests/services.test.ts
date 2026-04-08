@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createWipClient } from '../src/client'
 import type { WipClient } from '../src/client'
 import { WipBulkItemError } from '../src/errors'
+import type { BackupProgressMessage as BackupProgressMessageType } from '../src/types/backup'
 
 describe('Service classes via createWipClient', () => {
   let client: WipClient
@@ -577,6 +578,225 @@ describe('Service classes via createWipClient', () => {
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/validation/validate')
       expect(options.method).toBe('POST')
+    })
+
+    // ---- Backup / Restore (CASE-23 Phase 3 STEP 7) ----
+
+    function backupSnapshot(overrides: Record<string, unknown> = {}) {
+      return {
+        job_id: 'bkp-abc123',
+        kind: 'backup',
+        namespace: 'aa',
+        status: 'pending',
+        phase: null,
+        percent: null,
+        message: null,
+        error: null,
+        created_at: '2026-04-08T18:30:00Z',
+        started_at: null,
+        completed_at: null,
+        archive_size: null,
+        options: {},
+        created_by: 'apikey:legacy',
+        ...overrides,
+      }
+    }
+
+    it('startBackup POSTs the request body to the namespace endpoint', async () => {
+      mockJsonResponse(backupSnapshot())
+
+      const result = await client.documents.startBackup('aa', {
+        include_files: false,
+        latest_only: true,
+      })
+
+      expect(result.job_id).toBe('bkp-abc123')
+      expect(result.status).toBe('pending')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/namespaces/aa/backup')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual({
+        include_files: false,
+        latest_only: true,
+      })
+    })
+
+    it('startBackup defaults to an empty body', async () => {
+      mockJsonResponse(backupSnapshot())
+
+      await client.documents.startBackup('aa')
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)).toEqual({})
+    })
+
+    it('startRestore uploads multipart form with the archive and options', async () => {
+      mockJsonResponse(
+        backupSnapshot({
+          job_id: 'rst-xyz789',
+          kind: 'restore',
+          namespace: 'aa-restored',
+        }),
+      )
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], {
+        type: 'application/zip',
+      })
+      const result = await client.documents.startRestore(
+        'aa-restored',
+        archive,
+        {
+          mode: 'fresh',
+          target_namespace: 'aa-restored',
+          batch_size: 100,
+          register_synonyms: true,
+        },
+        'aa-backup.zip',
+      )
+
+      expect(result.job_id).toBe('rst-xyz789')
+      expect(result.kind).toBe('restore')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/namespaces/aa-restored/restore')
+      expect(options.method).toBe('POST')
+      expect(options.body).toBeInstanceOf(FormData)
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBe('fresh')
+      expect(fd.get('target_namespace')).toBe('aa-restored')
+      expect(fd.get('batch_size')).toBe('100')
+      expect(fd.get('register_synonyms')).toBe('true')
+      // Archive part is present and named.
+      const archivePart = fd.get('archive')
+      expect(archivePart).toBeInstanceOf(Blob)
+      expect((archivePart as File).name).toBe('aa-backup.zip')
+    })
+
+    it('startRestore omits unset option fields', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore' }))
+
+      const archive = new Blob([new Uint8Array([0])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive)
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('mode')).toBeNull()
+      expect(fd.get('target_namespace')).toBeNull()
+      expect(fd.get('batch_size')).toBeNull()
+      expect(fd.get('archive')).toBeInstanceOf(Blob)
+    })
+
+    it('getBackupJob fetches by job_id', async () => {
+      mockJsonResponse(backupSnapshot({ status: 'complete', percent: 100, archive_size: 90840 }))
+
+      const result = await client.documents.getBackupJob('bkp-abc123')
+
+      expect(result.status).toBe('complete')
+      expect(result.archive_size).toBe(90840)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/jobs/bkp-abc123')
+    })
+
+    it('listBackupJobs sends filter params', async () => {
+      mockJsonResponse([backupSnapshot()])
+
+      const result = await client.documents.listBackupJobs({
+        namespace: 'aa',
+        status: 'complete',
+        limit: 10,
+      })
+
+      expect(result).toHaveLength(1)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/jobs')
+      expect(url).toContain('namespace=aa')
+      expect(url).toContain('status=complete')
+      expect(url).toContain('limit=10')
+    })
+
+    it('downloadBackupArchive returns a Blob', async () => {
+      const blob = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      fetchMock.mockResolvedValue(
+        new Response(blob, {
+          status: 200,
+          headers: { 'Content-Type': 'application/zip' },
+        }),
+      )
+
+      const result = await client.documents.downloadBackupArchive('bkp-abc123')
+
+      expect(result).toBeInstanceOf(Blob)
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/jobs/bkp-abc123/download')
+    })
+
+    it('deleteBackupJob sends DELETE', async () => {
+      fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
+
+      await client.documents.deleteBackupJob('bkp-abc123')
+
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/jobs/bkp-abc123')
+      expect(options.method).toBe('DELETE')
+    })
+
+    it('streamBackupJobEvents yields parsed progress messages and stops on done', async () => {
+      // Three SSE messages: a comment keep-alive, a progress event, then a
+      // terminal complete event. The reader should yield exactly the two
+      // progress payloads.
+      const sse =
+        ': connected\n\n' +
+        'event: progress\n' +
+        'data: {"job_id":"bkp-1","status":"running","phase":"phase_documents","percent":42,"message":"...","current":null,"total":null,"details":null}\n\n' +
+        'event: progress\n' +
+        'data: {"job_id":"bkp-1","status":"complete","phase":"complete","percent":100,"message":"done","current":null,"total":null,"details":null}\n\n'
+      const encoder = new TextEncoder()
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sse))
+          controller.close()
+        },
+      })
+      fetchMock.mockResolvedValue(
+        new Response(stream, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        }),
+      )
+
+      const events: BackupProgressMessageType[] = []
+      for await (const evt of client.documents.streamBackupJobEvents('bkp-1')) {
+        events.push(evt)
+      }
+
+      expect(events).toHaveLength(2)
+      expect(events[0].percent).toBe(42)
+      expect(events[0].phase).toBe('phase_documents')
+      expect(events[1].status).toBe('complete')
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/backup/jobs/bkp-1/events')
+    })
+
+    it('streamBackupJobEvents skips malformed payloads without aborting', async () => {
+      const sse =
+        'event: progress\ndata: not-json\n\n' +
+        'event: progress\ndata: {"job_id":"bkp-2","status":"running","phase":"x","percent":10,"message":null,"current":null,"total":null,"details":null}\n\n'
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(sse))
+          controller.close()
+        },
+      })
+      fetchMock.mockResolvedValue(
+        new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
+      )
+
+      const events: BackupProgressMessageType[] = []
+      for await (const evt of client.documents.streamBackupJobEvents('bkp-2')) {
+        events.push(evt)
+      }
+
+      expect(events).toHaveLength(1)
+      expect(events[0].percent).toBe(10)
     })
   })
 

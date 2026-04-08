@@ -193,6 +193,54 @@ export class FetchTransport {
     throw lastError ?? new WipNetworkError('Request failed after all retries')
   }
 
+  /**
+   * Open a streaming request (used for Server-Sent Events).
+   *
+   * Unlike `request()`, this returns the raw `Response` so the caller can
+   * read `response.body` as a `ReadableStream`. No retries — streaming
+   * connections are stateful and a retry would re-deliver duplicate events.
+   *
+   * Throws the same `Wip*Error` taxonomy as `request()` for non-2xx
+   * responses, so callers can handle 401/404/410 etc. before they start
+   * reading the body.
+   */
+  async stream(
+    method: string,
+    path: string,
+    options?: {
+      params?: Record<string, unknown>
+      headers?: Record<string, string>
+      signal?: AbortSignal
+    },
+  ): Promise<Response> {
+    const url = this.buildUrl(path, options?.params)
+    const headers: Record<string, string> = { ...options?.headers }
+
+    if (this.auth) {
+      if (!this.cachedAuthHeaders) {
+        this.cachedAuthHeaders = await this.auth.getHeaders()
+      }
+      Object.assign(headers, this.cachedAuthHeaders)
+    }
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      signal: options?.signal,
+    })
+
+    if (!response.ok) {
+      const error = await this.mapResponseError(response)
+      if (error instanceof WipAuthError) {
+        this.cachedAuthHeaders = null
+        if (this.onAuthError) this.onAuthError()
+      }
+      throw error
+    }
+
+    return response
+  }
+
   private buildUrl(path: string, params?: Record<string, unknown>): string {
     const fullUrl = `${this.baseUrl}${path.startsWith('/') ? path : '/' + path}`
 

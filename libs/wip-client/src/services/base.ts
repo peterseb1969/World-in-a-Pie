@@ -56,6 +56,18 @@ export abstract class BaseService {
     })
   }
 
+  protected stream(
+    method: string,
+    path: string,
+    options?: {
+      params?: Record<string, unknown>
+      signal?: AbortSignal
+      headers?: Record<string, string>
+    },
+  ): Promise<Response> {
+    return this.transport.stream(method, `${this.basePath}${path}`, options)
+  }
+
   protected bulkWrite(
     path: string,
     items: unknown[],
