@@ -186,7 +186,89 @@ Conditions for revisiting earlier (before v1.1):
 
 ## Decision
 
-*To be recorded here when Peter decides.*
+**2026-04-08 — Peter decided Option A (reuse wip-toolkit) for v1.0**, conditional
+on STEP 5 landing the three guardrails below that keep a v1.1 rewrite clean.
+
+### Removal audit (how cheap v1 is to rip out if we rewrite)
+
+Files that would be **deleted** on rewrite (~540 LOC, concentrated):
+
+| File | LOC |
+|---|---|
+| `services/backup_service.py` | ~220 |
+| `tests/test_backup_service.py` | ~260 |
+| Loopback `WIPClient` config (STEP 4, not yet written) | ~30 |
+| `-e ../../WIP-Toolkit` in `components/document-store/requirements.txt` | 1 line |
+| `ToolkitRunner` closure inside `api/backup.py` (STEP 5) | ~30 |
+| `init_beanie` line for `BackupJob` in `main.py` | stays |
+
+Files that **survive any rewrite** (already toolkit-independent):
+
+- `models/backup_job.py` — schema is strings + enums, zero toolkit types
+- `api/backup.py` URL and request/response shapes — rewrite swaps internals
+- `@wip/client` methods (STEP 7) — talks to REST, not to the toolkit
+- MCP tools (STEP 8) — same
+- Integration test (STEP 6) backup→restore round-trip — tests correctness
+- Toolkit-side `progress_callback` work (`d71b3f6`, `11aa075`) — still valuable
+  for CLI users
+
+### The three guardrails (MANDATORY for STEP 5)
+
+These are small, zero-cost in v1.0, and the entire reason v1 can be
+cleanly removed. Whoever writes STEP 5 **must** enforce all three or
+the rewrite path gets expensive.
+
+**Guardrail 1 — Single import chokepoint**
+
+`components/document-store/src/document_store/api/backup.py` must not
+`import wip_toolkit` directly. It only imports from
+`services.backup_service`. The toolkit runner closure that calls
+`run_export` / `run_import` must live inside `api/backup.py` as a
+local factory function that `backup_service.start_job` accepts as a
+callable — or inside `backup_service.py` itself. Either way, the
+import surface touching the toolkit is **one file**. Rewriting
+becomes: delete that file, replace the closure.
+
+Check during review: `grep -r "import wip_toolkit" components/document-store/src/document_store/api/`
+must return zero hits.
+
+**Guardrail 2 — SSE event envelope ≠ toolkit `ProgressEvent`**
+
+The `on_event` hook inside `backup_service.py` currently forwards the
+raw `wip_toolkit.models.ProgressEvent`. That type **must not leak to
+the wire**. Define a dedicated envelope in
+`models/backup_job.py` (suggested name: `BackupProgressMessage` or
+reuse `BackupJobSnapshot`) derived from the `BackupJob` record's
+fields (phase, percent, message, details, status). The SSE endpoint
+serializes this envelope only. A future rewrite can produce the
+same envelope from a non-toolkit source without the client noticing.
+
+Check during review: `grep "ProgressEvent" components/document-store/src/document_store/api/backup.py`
+must return zero hits. The SSE `data:` payload shape must be documented
+in the endpoint docstring.
+
+**Guardrail 3 — `BackupJob.phase` stays a free-form string, not an enum**
+
+Already true in the current model. **Do not** "tighten" it to a
+literal union of toolkit phase names (`Literal["start", "phase_1a_entities", ...]`).
+Phase strings are a runtime convention shared between the emitter
+and the consumer, not a schema contract. A rewrite that uses
+different phase names must still be able to save progress to the
+same MongoDB collection.
+
+Check during review: no `Literal[...]` on `BackupJob.phase` or
+`BackupJobSnapshot.phase`. No enum for phase.
+
+### Rewrite cost if we decide to switch in v1.1
+
+- **Deletion PR:** ~1 hour. `rm` the two files listed above, delete
+  the closure in `api/backup.py`, drop the toolkit dep line.
+- **Reimplementation under the unchanged API:** 1–2 weeks for
+  correctness-equivalent async rewrite plus tests. But API surface,
+  client libraries, MCP tools, and integration test **do not move**.
+
+Risk of v1 entanglement: **low**, conditional on the guardrails above
+being enforced in STEP 5.
 
 ## Follow-ups regardless of decision
 
