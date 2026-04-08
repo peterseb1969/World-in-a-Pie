@@ -370,6 +370,95 @@ describe('Service classes via createWipClient', () => {
       expect(body).toHaveLength(2)
     })
 
+    it('updateDocument sends bulk PATCH and unwraps single result', async () => {
+      mockJsonResponse({
+        results: [{
+          index: 0,
+          status: 'updated',
+          document_id: 'D-001',
+          identity_hash: 'abc',
+          version: 4,
+          is_new: false,
+        }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      const result = await client.documents.updateDocument('D-001', { score: 92 })
+
+      expect(result.status).toBe('updated')
+      expect(result.version).toBe(4)
+
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents')
+      expect(options.method).toBe('PATCH')
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ document_id: 'D-001', patch: { score: 92 } }])
+    })
+
+    it('updateDocument forwards ifMatch as if_match', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'D-001', version: 5 }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.updateDocument('D-001', { name: 'Jane' }, { ifMatch: 4 })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const body = JSON.parse(options.body)
+      expect(body).toEqual([{ document_id: 'D-001', patch: { name: 'Jane' }, if_match: 4 }])
+    })
+
+    it('updateDocument throws WipBulkItemError carrying error_code', async () => {
+      mockJsonResponse({
+        results: [{
+          index: 0,
+          status: 'error',
+          document_id: 'D-001',
+          error: 'Cannot patch identity field',
+          error_code: 'identity_field_change',
+        }],
+        total: 1,
+        succeeded: 0,
+        failed: 1,
+      })
+
+      try {
+        await client.documents.updateDocument('D-001', { national_id: 'X' })
+        throw new Error('expected throw')
+      } catch (err) {
+        expect(err).toBeInstanceOf(WipBulkItemError)
+        expect((err as WipBulkItemError).errorCode).toBe('identity_field_change')
+      }
+    })
+
+    it('updateDocuments sends bulk PATCH with multiple items', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'updated', document_id: 'D-001', version: 2 },
+          { index: 1, status: 'error', document_id: 'D-002', error: 'not found', error_code: 'not_found' },
+        ],
+        total: 2,
+        succeeded: 1,
+        failed: 1,
+      })
+
+      const result = await client.documents.updateDocuments([
+        { document_id: 'D-001', patch: { x: 1 } },
+        { document_id: 'D-002', patch: { y: 2 } },
+      ])
+
+      expect(result.succeeded).toBe(1)
+      expect(result.failed).toBe(1)
+      expect(result.results[1].error_code).toBe('not_found')
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect(options.method).toBe('PATCH')
+    })
+
     it('deleteDocument sends DELETE with body', async () => {
       mockJsonResponse({
         results: [{ index: 0, status: 'deleted', id: 'D-001' }],

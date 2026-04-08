@@ -9,6 +9,7 @@ import type {
   DocumentValidationResponse,
   ValidateDocumentRequest,
   DocumentVersionResponse,
+  PatchDocumentRequest,
   TableViewResponse,
   TableViewParams,
   ImportPreviewResponse,
@@ -39,6 +40,38 @@ export class DocumentStoreService extends BaseService {
 
   async createDocuments(data: CreateDocumentRequest[]): Promise<BulkResponse> {
     return this.bulkWrite('/documents', data)
+  }
+
+  /**
+   * Apply an RFC 7396 JSON Merge Patch to a document.
+   *
+   * Single-item convenience that wraps the bulk PATCH endpoint and unwraps the
+   * single result. Throws {@link WipBulkItemError} (with `errorCode` populated)
+   * on a per-item failure (e.g. `not_found`, `validation_failed`,
+   * `concurrency_conflict`, `identity_field_change`).
+   *
+   * Identity fields cannot be changed via PATCH — use {@link createDocument}
+   * to create a new document instead.
+   */
+  async updateDocument(
+    documentId: string,
+    patch: Record<string, unknown>,
+    options?: { ifMatch?: number },
+  ): Promise<BulkResultItem> {
+    const item: PatchDocumentRequest = { document_id: documentId, patch }
+    if (options?.ifMatch !== undefined) {
+      item.if_match = options.ifMatch
+    }
+    return this.bulkWriteOne('/documents', item, 'PATCH')
+  }
+
+  /**
+   * Bulk PATCH /documents — apply RFC 7396 merge patches to multiple documents
+   * in a single round-trip. Each item is processed independently; per-item
+   * failures appear in the response with a populated `error_code`.
+   */
+  async updateDocuments(items: PatchDocumentRequest[]): Promise<BulkResponse> {
+    return this.bulkWrite('/documents', items, 'PATCH')
   }
 
   async deleteDocument(id: string, options?: {

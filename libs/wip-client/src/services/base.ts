@@ -78,6 +78,7 @@ export abstract class BaseService {
         result.error || 'Operation failed',
         result.index,
         result.status,
+        result.error_code,
       )
     }
     return result

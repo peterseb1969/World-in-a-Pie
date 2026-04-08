@@ -136,6 +136,27 @@ export interface DocumentValidationResponse {
   file_references?: Array<Record<string, unknown>>
 }
 
+/**
+ * Single item in a PATCH /documents bulk request.
+ *
+ * Applies an RFC 7396 JSON Merge Patch to the document's `data`. Identity fields
+ * cannot be changed (use POST to create a new document instead).
+ */
+export interface PatchDocumentRequest {
+  /** Canonical document_id (UUID) or registered synonym. Synonyms are resolved server-side. */
+  document_id: string
+  /**
+   * RFC 7396 JSON Merge Patch applied to the document's `data` field.
+   * Objects deep-merge, arrays replace, `null` deletes the key.
+   */
+  patch: Record<string, unknown>
+  /**
+   * Optional optimistic concurrency control. If supplied, the patch fails with
+   * `concurrency_conflict` unless the current document version matches.
+   */
+  if_match?: number
+}
+
 export interface ValidateDocumentRequest {
   template_id: string
   namespace: string
