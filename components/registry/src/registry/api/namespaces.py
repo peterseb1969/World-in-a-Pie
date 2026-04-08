@@ -204,25 +204,50 @@ async def create_namespace(
 @router.put(
     "/{prefix}",
     response_model=NamespaceResponse,
-    summary="Update namespace"
+    summary="Upsert namespace (create-or-update)"
 )
-async def update_namespace(
+async def upsert_namespace(
     prefix: str,
     request: NamespaceUpdate,
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
-    """Update a namespace's configuration."""
-    ns = await Namespace.find_one({"prefix": prefix})
-    if not ns:
-        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
+    """
+    Upsert a namespace's configuration.
 
+    If the namespace exists, update the fields supplied in the body
+    (only fields explicitly provided are touched). If the namespace
+    does not exist, create it with the supplied fields and defaults
+    for anything omitted (`isolation_mode='open'`, `deletion_mode='retain'`,
+    `description=''`, `allowed_external_refs=[]`, `id_config=None`).
+
+    This makes app bootstrap scripts idempotent — a single self-healing
+    call replaces the `GET → 404 → POST` dance.
+    """
+    ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
+    actor = request.updated_by
+
+    if ns is None:
+        # Create path — use provided fields, defaults for the rest.
+        ns = Namespace(
+            prefix=prefix,
+            description=update_data.get("description", "") or "",
+            isolation_mode=update_data.get("isolation_mode") or "open",
+            allowed_external_refs=update_data.get("allowed_external_refs") or [],
+            id_config=update_data.get("id_config") or {},
+            deletion_mode=update_data.get("deletion_mode") or "retain",
+            created_by=actor,
+        )
+        await ns.create()
+        return namespace_to_response(ns)
+
+    # Update path — only touch explicitly provided fields.
     for field, value in update_data.items():
         if value is not None and field != "updated_by":
             setattr(ns, field, value)
 
     ns.updated_at = datetime.now(UTC)
-    ns.updated_by = request.updated_by
+    ns.updated_by = actor
     await ns.save()
 
     return namespace_to_response(ns)
