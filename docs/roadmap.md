@@ -187,6 +187,20 @@ Verified by code review (2026-04-01).
 
 These are known-useful items that explicitly do not serve the install test and are deferred until v1.0 ships.
 
+### Reporting-Sync: File Event Handling Gap
+
+**Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relationship.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
+
+Concrete consequences:
+
+- File metadata (filename, content_type, metadata) is denormalized onto a document's PostgreSQL row at document-event time. If the file is later edited via `PATCH /files`, the document row shows stale values until the next document update re-syncs.
+- File soft-delete and hard-delete (orphan cleanup, mutable-namespace cascade) do not propagate — reporting-sync's document row still references the old file_id.
+- There is no `files` table in PostgreSQL, so there is no "list all files for namespace X" reporting query path today. Files only show up as denormalized columns on their referencing documents.
+
+Needs a decision: (a) add a `file.*` event handler in reporting-sync that updates denormalized columns on referencing documents and maintains a `files` table; or (b) declare denormalized file metadata intentionally snapshot-at-reference-time and document the limitation. CASE-32 (now implemented) makes option (a) easier because file identity is content-addressed — the same checksum in a namespace is a stable key.
+
+Not v1.0-blocking on current evidence (CT install test doesn't exercise file metadata updates post-reference). But it should be audited alongside any other entity type whose delete/update cascade has gaps — there may be more.
+
 ### Sync-Aware Helpers for Reporting Reads
 
 Apps need guidance on when to read from API (MongoDB) vs reporting (PostgreSQL). Two helper approaches under consideration: explicit wait (`{ waitForSync: true, timeout: 5000 }`) vs versioned reads (`sync_version` column from NATS sequence). Needs a design decision.
