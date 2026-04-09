@@ -193,6 +193,18 @@ Verified by code review (2026-04-01).
 
 These are known-useful items that explicitly do not serve the install test and are deferred until v1.0 ships.
 
+### Audit: identity_hash Lookups Without Template Scope (CASE-36 followup)
+
+**Critical fix landed (2026-04-09, `0021e50`):** Document-store's upsert path used `identity_hash` for existing-document lookup without `template_id` scoping. Two templates with the same identity fields in one namespace could silently re-parent documents. Fixed in both single-create and bulk-create paths.
+
+**Remaining read-path instances** that have the same cross-template ambiguity but don't corrupt data:
+
+- `validation_service.py:1527` — `hash:` prefix reference lookup (no template scope)
+- `validation_service.py:1699` — inactive→active version chain follow (no template scope)
+- `document_service.py:636` — `get_document_by_identity()` public API (no template scope)
+
+These should be audited and either scoped to template or replaced with Registry-based resolution. Not v1.0-blocking (read paths, not write paths), but should be fixed before anyone relies on `hash:` lookups in reference fields.
+
 ### Reporting-Sync: File Event Handling Gap
 
 **Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relationship.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
