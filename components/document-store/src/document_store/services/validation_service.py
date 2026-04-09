@@ -1522,12 +1522,9 @@ class ValidationService:
                     # Try inactive too for pinned references
                     doc = await Document.find_one({"document_id": value})
             elif value.startswith("hash:"):
-                # Identity hash lookup
-                identity_hash = value[5:]  # Remove "hash:" prefix
-                doc = await Document.find_one({
-                    "identity_hash": identity_hash,
-                    "status": DocumentStatus.ACTIVE
-                })
+                # Identity hash lookup — route through Registry to avoid
+                # cross-template ambiguity (CASE-36).
+                doc = await self._resolve_via_registry(value, namespace, "documents")
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
                 doc = await self._resolve_via_registry(value, namespace, "documents")
@@ -1692,11 +1689,13 @@ class ValidationService:
             if doc:
                 return doc
 
-            # If inactive, follow identity_hash chain to latest active version
+            # If inactive, follow document_id chain to latest active version.
+            # Uses document_id (stable across versions), NOT identity_hash
+            # which can match across templates (CASE-36).
             inactive_doc = await Document.find_one({"document_id": resolved_id})
             if inactive_doc:
                 active_doc = await Document.find_one({
-                    "identity_hash": inactive_doc.identity_hash,
+                    "document_id": inactive_doc.document_id,
                     "status": DocumentStatus.ACTIVE
                 })
                 if active_doc:

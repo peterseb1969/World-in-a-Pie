@@ -410,12 +410,17 @@ async def query_documents(
 )
 async def get_document_by_identity(
     identity_hash: str,
+    namespace: str | None = Query(None, description="Filter by namespace (recommended to avoid cross-template ambiguity)"),
+    template_id: str | None = Query(None, description="Filter by template_id (recommended to avoid cross-template ambiguity)"),
     include_inactive: bool = Query(False, description="Include inactive documents"),
     _: str = Depends(require_api_key)
 ):
     """Get a document by identity hash."""
     service = get_document_service()
-    document = await service.get_document_by_identity(identity_hash, include_inactive)
+    document = await service.get_document_by_identity(
+        identity_hash, include_inactive,
+        namespace=namespace, template_id=template_id,
+    )
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")

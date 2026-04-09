@@ -636,12 +636,23 @@ class DocumentService:
     async def get_document_by_identity(
         self,
         identity_hash: str,
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        namespace: str | None = None,
+        template_id: str | None = None,
     ) -> DocumentResponse | None:
-        """Get a document by identity hash."""
-        query = {"identity_hash": identity_hash}
+        """Get a document by identity hash.
+
+        Without namespace and template_id filters, identity_hash can match
+        documents across templates (CASE-36). Callers should always provide
+        both to avoid ambiguity.
+        """
+        query: dict[str, Any] = {"identity_hash": identity_hash}
         if not include_inactive:
             query["status"] = DocumentStatus.ACTIVE.value
+        if namespace:
+            query["namespace"] = namespace
+        if template_id:
+            query["template_id"] = template_id
 
         document = await Document.find_one(query)
         if not document:
