@@ -62,7 +62,6 @@ async def lifespan(app: FastAPI):
     app.state.mongodb_client = client
 
     # Ensure the 'wip' system namespace exists with default grants
-    from .models.grant import NamespaceGrant
     existing_wip = await Namespace.find_one({"prefix": "wip"})
     if not existing_wip:
         wip_ns = Namespace(
