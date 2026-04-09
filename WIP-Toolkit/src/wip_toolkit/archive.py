@@ -23,6 +23,7 @@ DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
 RELATIONSHIPS_FILE = "relationships.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
+REGISTRY_ENTRIES_FILE = "registry_entries.jsonl"
 BLOBS_DIR = "blobs/"
 
 ENTITY_FILES = {
@@ -32,6 +33,7 @@ ENTITY_FILES = {
     "templates": TEMPLATES_FILE,
     "documents": DOCUMENTS_FILE,
     "files": FILES_FILE,
+    "registry_entries": REGISTRY_ENTRIES_FILE,
 }
 
 

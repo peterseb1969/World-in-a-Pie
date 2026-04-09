@@ -294,7 +294,7 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             # Verify format version
             m = reader.read_manifest()
-            assert m.format_version == "1.1"
+            assert m.format_version == "2.0"
 
             # Terminology _registry round-trip
             terms = list(reader.read_entities("terminologies"))

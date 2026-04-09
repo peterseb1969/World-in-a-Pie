@@ -93,11 +93,11 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     fake_task.set_result(None)
     with (
         patch(
-            "document_store.api.backup.backup_service.make_backup_runner",
-            return_value=lambda cb: None,
+            "document_store.api.backup.backup_service.make_direct_backup_runner",
+            return_value=AsyncMock(),
         ) as mk_runner,
         patch(
-            "document_store.api.backup.backup_service.start_job",
+            "document_store.api.backup.backup_service.start_async_job",
             new=AsyncMock(return_value=fake_task),
         ) as start_job,
     ):
@@ -116,7 +116,7 @@ async def test_start_backup_creates_job_and_returns_snapshot(
     assert body["options"]["include_files"] is True
     assert body["options"]["latest_only"] is True
 
-    # Runner factory received the snapshot options; start_job was called once.
+    # Runner factory received the snapshot options; start_async_job was called once.
     assert mk_runner.called
     _, kwargs = mk_runner.call_args
     assert kwargs["namespace"] == "wip"
@@ -146,11 +146,11 @@ async def test_start_restore_streams_upload_and_creates_job(
 
     with (
         patch(
-            "document_store.api.backup.backup_service.make_restore_runner",
-            return_value=lambda cb: None,
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
         ),
         patch(
-            "document_store.api.backup.backup_service.start_job",
+            "document_store.api.backup.backup_service.start_async_job",
             new=AsyncMock(return_value=fake_task),
         ),
     ):

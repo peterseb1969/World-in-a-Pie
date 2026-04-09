@@ -1,12 +1,17 @@
 """Backup/restore job orchestration (CASE-23 Phase 3 STEP 3).
 
-Bridges the sync wip-toolkit orchestrators (`run_export` / `run_import`) onto
-the async FastAPI event loop. The toolkit runs in a worker thread; its
-`progress_callback` hops events back to the loop via
-``loop.call_soon_threadsafe`` into a per-job ``asyncio.Queue``. A consumer
-coroutine drains the queue, updates the persistent ``BackupJob`` document in
-MongoDB, and forwards each event to downstream subscribers (the SSE endpoint
-in STEP 5).
+Two execution paths:
+
+1. **Thread-based (legacy toolkit path):** ``start_job`` + ``ToolkitRunner``.
+   Bridges the sync wip-toolkit orchestrators onto the async event loop via
+   ThreadPoolExecutor + ``call_soon_threadsafe``. Used by the old
+   ``make_backup_runner`` / ``make_restore_runner`` factories.
+
+2. **Async (direct engine path):** ``start_async_job`` + ``AsyncRunner``.
+   Runs the async DirectBackupEngine / DirectRestoreEngine as coroutines
+   directly on the event loop. No thread pool. Preferred for v1.0+.
+
+Both paths share the same queue→consumer→persist→SSE machinery.
 
 Design notes
 ------------
@@ -60,6 +65,9 @@ _SENTINEL: _Sentinel = _Sentinel()
 # Signature: (progress_callback) -> None. Takes the callback so it can emit
 # phase events; raises on failure.
 ToolkitRunner = Callable[[Callable[[ProgressEvent], None]], Any]
+
+# Async variant for the direct engine path. Same contract but async.
+AsyncRunner = Callable[[Callable[[ProgressEvent], None]], Awaitable[Any]]
 
 # Per-job in-process state (process-local by design — see module docstring).
 _job_queues: dict[str, asyncio.Queue[ProgressEvent | _Sentinel]] = {}
@@ -226,6 +234,71 @@ async def start_job(
             _job_queues.pop(job_id, None)
             _job_tasks.pop(job_id, None)
 
+    task = asyncio.create_task(consume(), name=f"backup-consume-{job_id}")
+    _job_tasks[job_id] = task
+    return task
+
+
+async def start_async_job(
+    job_id: str,
+    runner: AsyncRunner,
+    *,
+    on_event: Callable[[ProgressEvent], Awaitable[None]] | None = None,
+) -> asyncio.Task[None]:
+    """Kick off a backup/restore job using an async runner.
+
+    Same contract as :func:`start_job` but the runner is a coroutine
+    function. Runs directly on the event loop — no ThreadPoolExecutor.
+    """
+    if job_id in _job_queues:
+        raise ValueError(f"Job {job_id} is already running in this worker")
+
+    queue: asyncio.Queue[ProgressEvent | _Sentinel] = asyncio.Queue()
+    _job_queues[job_id] = queue
+
+    def callback(event: ProgressEvent) -> None:
+        queue.put_nowait(event)
+
+    async def produce() -> None:
+        try:
+            await runner(callback)
+        except Exception as exc:
+            logger.exception("Async engine failed for job %s", job_id)
+            err_event = ProgressEvent(
+                phase="error",
+                message=str(exc) or type(exc).__name__,
+                details={"type": type(exc).__name__},
+            )
+            queue.put_nowait(err_event)
+        finally:
+            queue.put_nowait(_SENTINEL)
+
+    async def consume() -> None:
+        try:
+            while True:
+                item = await queue.get()
+                if isinstance(item, _Sentinel):
+                    return
+                try:
+                    await _persist_event(job_id, item)
+                except Exception:
+                    logger.exception("Failed to persist event for %s", job_id)
+                if on_event is not None:
+                    try:
+                        await on_event(item)
+                    except Exception:
+                        logger.exception("on_event hook failed for %s", job_id)
+        finally:
+            job = await BackupJob.find_one(BackupJob.job_id == job_id)
+            if job is not None and job.status == BackupJobStatus.RUNNING:
+                await _mark_failed(job_id, "worker terminated without terminal event")
+            _job_queues.pop(job_id, None)
+            _job_tasks.pop(job_id, None)
+
+    # Launch producer and consumer concurrently. The consumer task is the
+    # one we track — it completes after the producer finishes and sentinel
+    # is drained.
+    asyncio.create_task(produce(), name=f"backup-produce-{job_id}")
     task = asyncio.create_task(consume(), name=f"backup-consume-{job_id}")
     _job_tasks[job_id] = task
     return task
@@ -409,5 +482,68 @@ def make_restore_runner(
                 tmp_dir=backup_dir,
                 **opts,
             )
+
+    return runner
+
+
+# ---------------------------------------------------------------------------
+# Direct engine factories (CASE-23 redesign)
+#
+# These produce AsyncRunner callables that use DirectBackupEngine /
+# DirectRestoreEngine with direct motor reads instead of HTTP fan-out.
+# ---------------------------------------------------------------------------
+
+
+def make_direct_backup_runner(
+    namespace: str,
+    archive_path: str | Path,
+    options: dict[str, Any] | None = None,
+) -> AsyncRunner:
+    """Build an :data:`AsyncRunner` that backs up ``namespace`` via direct Mongo reads."""
+    opts = dict(options or {})
+    backup_dir = os.getenv("WIP_BACKUP_DIR", "/tmp/wip-backups")
+    Path(backup_dir).mkdir(parents=True, exist_ok=True)
+
+    async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        from .backup_engine import DirectBackupEngine
+        from .file_storage_client import get_file_storage_client, is_file_storage_enabled
+
+        mongo_client = BackupJob.get_motor_collection().database.client
+        storage = get_file_storage_client() if is_file_storage_enabled() else None
+        engine = DirectBackupEngine(mongo_client, storage, progress_callback)
+        await engine.run_backup(
+            namespace,
+            Path(archive_path),
+            include_files=opts.get("include_files", False),
+            include_inactive=opts.get("include_inactive", False),
+            skip_documents=opts.get("skip_documents", False),
+            latest_only=opts.get("latest_only", False),
+            tmp_dir=Path(backup_dir),
+        )
+
+    return runner
+
+
+def make_direct_restore_runner(
+    archive_path: str | Path,
+    options: dict[str, Any] | None = None,
+) -> AsyncRunner:
+    """Build an :data:`AsyncRunner` that restores from ``archive_path`` via direct Mongo writes."""
+    opts = dict(options or {})
+
+    async def runner(progress_callback: Callable[[ProgressEvent], None]) -> Any:
+        from .backup_engine import DirectRestoreEngine
+        from .file_storage_client import get_file_storage_client, is_file_storage_enabled
+
+        mongo_client = BackupJob.get_motor_collection().database.client
+        storage = get_file_storage_client() if is_file_storage_enabled() else None
+        engine = DirectRestoreEngine(mongo_client, storage, progress_callback)
+        await engine.run_restore(
+            Path(archive_path),
+            target_namespace=opts.get("target_namespace", ""),
+            skip_documents=opts.get("skip_documents", False),
+            skip_files=opts.get("skip_files", False),
+            batch_size=opts.get("batch_size", 500),
+        )
 
     return runner

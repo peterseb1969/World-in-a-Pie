@@ -32,20 +32,26 @@ class EntityCounts(BaseModel):
     templates: int = 0
     documents: int = 0
     files: int = 0
+    registry_entries: int = 0
 
     @property
     def total(self) -> int:
-        return self.terminologies + self.terms + self.relationships + self.templates + self.documents + self.files
+        return (
+            self.terminologies + self.terms + self.relationships
+            + self.templates + self.documents + self.files
+            + self.registry_entries
+        )
 
 
 class Manifest(BaseModel):
     """Archive manifest describing the export."""
-    format_version: str = "1.1"
+    format_version: str = "2.0"
     tool_version: str = "0.5.0"
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
     namespace: str = ""
     namespace_config: NamespaceConfig | None = None
+    source_install: dict[str, Any] | None = None
     include_inactive: bool = False
     include_files: bool = False
     include_all_versions: bool = False

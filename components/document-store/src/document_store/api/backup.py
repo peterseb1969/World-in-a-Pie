@@ -119,13 +119,13 @@ async def start_backup(
     )
     await job.insert()
 
-    runner = backup_service.make_backup_runner(
+    runner = backup_service.make_direct_backup_runner(
         namespace=namespace,
         archive_path=archive_path,
         options=options,
     )
     try:
-        await backup_service.start_job(job_id, runner)
+        await backup_service.start_async_job(job_id, runner)
     except ValueError as exc:  # duplicate in this worker
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -168,6 +168,10 @@ async def start_restore(
     if mode not in ("restore", "fresh"):
         raise HTTPException(
             status_code=400, detail=f"Invalid mode '{mode}' — must be 'restore' or 'fresh'"
+        )
+    if mode == "fresh":
+        raise HTTPException(
+            status_code=400, detail="Fresh mode is not yet implemented. Use 'restore' mode."
         )
 
     job_id = f"rst-{uuid.uuid4().hex[:16]}"
@@ -212,12 +216,12 @@ async def start_restore(
     )
     await job.insert()
 
-    runner = backup_service.make_restore_runner(
+    runner = backup_service.make_direct_restore_runner(
         archive_path=archive_path,
         options=options,
     )
     try:
-        await backup_service.start_job(job_id, runner)
+        await backup_service.start_async_job(job_id, runner)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

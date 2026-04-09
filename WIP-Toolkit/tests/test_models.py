@@ -51,7 +51,7 @@ class TestManifest:
 
     def test_default_format_version(self):
         m = Manifest()
-        assert m.format_version == "1.1"
+        assert m.format_version == "2.0"
 
     def test_default_tool_version(self):
         m = Manifest()
