@@ -52,22 +52,27 @@ Commits: `add9902`, _this commit_.
 
 - Case: `yac-discussions/CASE-26-open-observability-silent-failure-detection.md`
 
-### Phase 3 — Backup/Restore REST Wrapper (CASE-23)
+### Phase 3 — Backup/Restore (CASE-23) 🔶
 
-Wrap `wip-toolkit` (which already does export/import/closure/files/synonyms/remap) as a thin REST surface on document-store. In-process import, not shell-out. Add a callback parameter to the toolkit's `export`/`import` entry points so the REST endpoint can stream progress via SSE. New endpoints:
+**REST surface landed** (2026-04-08): BackupJob Beanie model, REST endpoints (`/backup`, `/restore`, SSE progress, `/download`), `@wip/client` methods, MCP tools. CASE-28 (blob OOM) + CASE-29 (scratch dir) fixed. CASE-32 (file composite key) landed. Smoke tests pass on `aa` and `seed` namespaces.
 
-```
-POST /api/document-store/namespaces/{ns}/backup
-GET  /api/document-store/jobs/{job_id}/events     (SSE)
-GET  /api/document-store/jobs/{job_id}/download
-POST /api/document-store/namespaces/{ns}/restore  (multipart)
-```
+**Clintrial still failing** (228k docs): the toolkit-based exporter's closure phase walks document-store's HTTP filter API, which 500s at scale.
 
-Job state in a `BackupJob` Beanie collection so restarts don't lose tracking. `@wip/client` methods, MCP tools, CLI shortcut, tests, docs. Update CASE-23 status to "implemented" on completion.
+**Redesign decided (2026-04-09 fireside):** rather than patching the closure phase, replace the engine entirely. Direct Mongo cursor reads for backup, ID-preserving bulk insert for restore. The toolkit-based pipeline is superseded for the backup use case. See `docs/design/backup-restore-redesign.md`.
 
-**Why third:** Builds on the toolkit. Enables the snapshot/disaster-recovery story for the install test. Observability (Phase 2) is in place so we can verify it. Effort: medium (~2-3 days).
+**v1.0 scope (restore mode only):**
+
+1. ~~CASE-32 (file composite key)~~ ✅ `a2dec0c`
+2. Dump format spec + manifest (includes namespace config with `id_config`)
+3. Direct-read backup engine (Mongo cursors, no HTTP fan-out, no closure)
+4. Restore engine (upsert namespace from manifest, bulk-insert into empty namespace)
+
+Pre-flight: run existing integrity check, ignore issues outside namespace of interest. Cross-namespace reference warnings.
+
+**Explicitly deferred past v1.0:** fresh mode, target_namespace, cross-install DR, registry_externals.jsonl, draft/activate state machine.
 
 - Case: `yac-discussions/CASE-23-responded-platform-backup-restore.md`
+- Design: `docs/design/backup-restore-redesign.md`
 
 ### Phase 4 — Container Suite (the Big One)
 
@@ -332,3 +337,5 @@ All feature designs live in `docs/design/`. Status of each:
 | `image-based-distribution.md` | **Needs update before v1.0 Phase 4** — see Design Document Gaps above |
 | `wip-nano.md` | Concept only |
 | `document-patch.md` | Implemented (2026-04-08) |
+| `backup-restore-redesign.md` | v1.0 scope decided (2026-04-09); phases 2-4 ready to implement |
+| `terminology-mutability-model.md` | Discussion draft — open, blocked on alias/synonym resolution |

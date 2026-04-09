@@ -1,6 +1,6 @@
 # Backup / Restore Redesign
 
-**Status:** Design — not yet implemented
+**Status:** Design — v1.0 scope decided (2026-04-09 fireside), implementation next
 **Author:** BE-YAC-20260408-2138
 **Context:** Followup to `backup-restore-approach.md` (the reuse-vs-rewrite
 decision for CASE-23 Phase 3). That doc established the toolkit-wrapping
@@ -15,7 +15,57 @@ the approach itself.
   land before CASE-31 does.
 - **CASE-32** (File composite key = checksum) — **blocker for fresh mode
   and cross-install restore**. ID-preserving "restore mode" can land
-  without it.
+  without it. **Landed 2026-04-09 as `a2dec0c`.**
+
+---
+
+## v1.0 Scope Decision (2026-04-09 fireside)
+
+Peter's call: "Are we patching something we are going to rip out anyway?"
+Answer: yes. The toolkit-based pipeline is superseded. Implement the
+redesign properly instead of patching the closure phase.
+
+**v1.0 delivers phases 1-4 only (restore mode).** Everything else is
+post-v1.0.
+
+### What ships in v1.0
+
+1. **Backup engine:** direct Mongo cursor per collection
+   (`{namespace: X}` filter), JSONL per entity type to ZIP, manifest
+   includes full namespace config with `id_config`. No HTTP fan-out,
+   no closure phase. O(cursor) memory.
+2. **Restore engine:** ID-preserving bulk insert into an empty namespace.
+   Upsert namespace from manifest config (including ID algorithms).
+   No draft/activate, no synonym lookup, no reference rewriting.
+3. **Pre-flight (should-have):** run existing integrity check, ignore
+   issues outside namespace of interest. Cross-namespace reference
+   warnings.
+4. **Existing REST surface stays:** BackupJob model, SSE progress,
+   `/backup` + `/restore` endpoints, MCP tools, `@wip/client` methods.
+   Only the engine inside `backup_service.py` changes.
+
+### What is explicitly deferred past v1.0
+
+- Fresh mode (3-pass synonym-based engine)
+- `target_namespace` mode
+- Cross-install DR
+- `registry_externals.jsonl`
+- Draft/activate state machine
+- Namespace-scoped integrity endpoint (general enhancement)
+- Cross-namespace reference detection as bulk endpoint
+
+### Open question #3 resolved — ID algorithm compatibility
+
+Peter: "If you are doing a true restore (not fresh), you cannot choose
+as a user — you have to restore the algo, too."
+
+- Backup archive includes full namespace config with `id_config`.
+- Restore upserts the namespace with the source config as-is.
+- If the destination already exists with different settings, user can:
+  (a) change the namespace ID algo to match, or (b) delete the empty
+  namespace and let restore recreate it.
+- **No algorithm mismatch detection needed.** The empty-namespace
+  precondition makes this safe.
 
 ---
 
@@ -521,43 +571,58 @@ from CASE-23 Phase 3. It replaces the *implementation* inside
 
 ## Implementation phases
 
-1. **CASE-32** — File checksum composite key. Small, standalone, unblocks
-   fresh-mode file references. Land first.
-2. **Dump format spec + manifest changes** — Lock the new archive layout,
-   including `registry_externals.jsonl`. Update `ArchiveWriter` /
-   `ArchiveReader` in the toolkit. Should be incremental from today's
-   format (just additions).
-3. **Direct-read backup path** — Replace `run_export`'s service-walking
-   with Mongo cursor reads. Keep the existing archive output. Validate
-   on aa + seed, then clintrial (the failing case).
-4. **Restore mode: `restore`** — Implement the fast bulk path. Validate
-   with rollback scenarios on aa + seed.
-5. **Restore mode: `fresh`** — Implement the three-pass path. Validate
-   with `target_namespace` (the most likely real use) on aa + seed.
+### v1.0 (restore mode only)
+
+1. **CASE-32** — File checksum composite key. **Done** (`a2dec0c`,
+   2026-04-09).
+2. **Dump format spec + manifest changes** — Lock the new archive layout.
+   Manifest includes full namespace config with `id_config` and
+   `source_install` metadata. `registry_externals.jsonl` deferred (not
+   needed for restore mode). Update `ArchiveWriter` / `ArchiveReader`.
+3. **Direct-read backup engine** — Replace the toolkit-based service-HTTP
+   fan-out with direct Mongo cursor reads inside `backup_service.py`.
+   No closure phase. Write JSONL per entity type + manifest to ZIP.
+   Validate on aa + seed, then clintrial.
+4. **Restore mode: `restore`** — Upsert namespace from manifest config
+   (including `id_config`). Bulk-insert entities with original IDs into
+   empty namespace. Empty-namespace precondition enforced. Validate with
+   round-trip scenarios on aa + seed.
+
+Phases 2–4 close the clintrial backup failure and ship v1.0.
+
+### Post-v1.0
+
+5. **Restore mode: `fresh`** — Three-pass synonym-based engine
+   (insert-draft, rewrite-refs via composite-key lookup, activate).
+   Depends on CASE-32 (done). Validate with `target_namespace`.
 6. **Cross-install DR** — Add `registry_externals.jsonl` handling and
-   the cross-namespace policy knob. Test on a two-namespace scenario.
-7. **Reporting-sync integration** — Wire up the catch-up step. Validate
-   that restored namespaces show up correctly in reporting queries.
+   the cross-namespace policy knob.
+7. **Reporting-sync integration** — Wire up the NATS catch-up step.
 8. **Post-restore integrity verification** — Implement and make mandatory.
 9. **CASE-23 Phase 3 STEP 9** — Deployment docs including the
-   `WIP_BACKUP_DIR` sizing rule and the new restore-mode matrix.
-
-Phases 1–3 close the clintrial backup failure. Phases 4–9 deliver the
-full redesign.
+   `WIP_BACKUP_DIR` sizing rule and the restore-mode matrix.
 
 ---
 
 ## Open items for Peter
 
-1. **Fresh mode as edge case?** This design treats `restore` as the
-   common case and `fresh` as the edge case. Confirm. If true, phase 5
-   may be deprioritized relative to 1–4.
+1. **Fresh mode as edge case?** ~~This design treats `restore` as the
+   common case and `fresh` as the edge case. Confirm.~~
+   **Resolved (2026-04-08).** Peter confirmed: "restore mode is the
+   common case; fresh mode is an edge case, possibly only for merging
+   data." Fresh mode deferred past v1.0.
 2. **Cross-namespace policy default.** `strict` for same-install,
-   `best-effort` for cross-install. Acceptable?
-3. **Schema/hash version compatibility.** Refuse on mismatch, or offer
-   a rehash pass? Rehash is more work but avoids operator pain during
-   upgrades.
+   `best-effort` for cross-install. Acceptable? *(Deferred — not
+   relevant for v1.0 restore-only scope.)*
+3. **Schema/hash version compatibility.** ~~Refuse on mismatch, or offer
+   a rehash pass?~~
+   **Resolved (2026-04-09 fireside).** No mismatch detection needed.
+   Restore writes the source namespace config (including ID algorithms)
+   as-is via upsert. The empty-namespace precondition makes this safe.
+   User can delete and let restore recreate, or pre-adjust the config.
 4. **`registry_externals.jsonl` scope.** One-hop walk — good enough, or
-   should it be a full transitive closure?
+   should it be a full transitive closure? *(Deferred — not relevant
+   for v1.0 restore-only scope.)*
 5. **Full-install DR** (Registry global state, id_counters, all
    namespaces in one archive). In scope here or a separate track?
+   *(Deferred — not relevant for v1.0.)*
