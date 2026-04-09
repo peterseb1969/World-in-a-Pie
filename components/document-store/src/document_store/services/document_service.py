@@ -233,9 +233,12 @@ class DocumentService:
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
         else:
-            # Existing identity — find current active version and create new version
+            # Existing identity — find current active version and create new version.
+            # Use document_id (from Registry) — NOT identity_hash. The Registry is
+            # the identity authority; local identity_hash lookups bypass it and can
+            # match documents from different templates (CASE-36).
             start = time.perf_counter()
-            existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+            existing = await self._find_active_by_document_id(document_id, namespace=namespace)
             if existing:
                 result = await self._create_new_version(
                     request, existing, validation_result,
@@ -563,15 +566,20 @@ class DocumentService:
             warnings=validation_result.warnings
         ), None
 
-    async def _find_active_by_identity(
+    async def _find_active_by_document_id(
         self,
-        identity_hash: str,
+        document_id: str,
         namespace: str
     ) -> Document | None:
-        """Find the active document with the given identity hash within namespace."""
+        """Find the active version of a document by its canonical ID.
+
+        Uses the Registry-resolved document_id, not identity_hash. The
+        Registry is the identity authority — local identity_hash lookups
+        can match across templates and corrupt data (CASE-36).
+        """
         return await Document.find_one({
             "namespace": namespace,
-            "identity_hash": identity_hash,
+            "document_id": document_id,
             "status": DocumentStatus.ACTIVE.value
         })
 
@@ -1285,15 +1293,20 @@ class DocumentService:
             if reg_result.get("status") != "error":
                 vr.identity_hash = reg_result.get("identity_hash")
 
-        # Stage 3: Batch check for existing documents using registry-returned hashes
+        # Stage 3: Batch check for existing documents using Registry-resolved IDs.
+        # Uses document_id (from Registry), NOT identity_hash — local
+        # identity_hash lookups can match across templates (CASE-36).
         start = time.perf_counter()
-        identity_hashes = [vr[2].identity_hash for vr in validation_results if vr[2].identity_hash]
+        registry_doc_ids = [
+            r.get("registry_id") for r in registry_results
+            if r.get("status") == "already_exists" and r.get("registry_id")
+        ]
         existing_docs = await Document.find({
             "namespace": namespace,
-            "identity_hash": {"$in": identity_hashes},
+            "document_id": {"$in": registry_doc_ids},
             "status": DocumentStatus.ACTIVE.value
-        }).to_list() if identity_hashes else []
-        existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
+        }).to_list() if registry_doc_ids else []
+        existing_by_doc_id = {doc.document_id: doc for doc in existing_docs}
         timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
@@ -1322,11 +1335,9 @@ class DocumentService:
                 identity_hash = validation_result.identity_hash
                 is_new_from_registry = registry_result.get("status") == "created"
 
-                # For existing identity (Registry returned already_exists), check
-                # the live map (updated within this loop) instead of only the
-                # Stage 3 snapshot — this handles duplicate identity hashes in
-                # the same batch correctly.
-                existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
+                # For existing identity (Registry returned already_exists), look
+                # up by document_id — NOT identity_hash (CASE-36).
+                existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
 
                 # Version override for restore/migration: if the request
                 # supplies both document_id and version, use them as-is.
@@ -1397,10 +1408,10 @@ class DocumentService:
                 new_version = document.version
                 is_new = new_version == 1
 
-                # Update existing_by_hash so subsequent items in this batch
-                # with the same identity hash see the correct latest version.
-                if identity_hash:
-                    existing_by_hash[identity_hash] = document
+                # Update existing_by_doc_id so subsequent items in this batch
+                # with the same document_id see the correct latest version.
+                if document_id:
+                    existing_by_doc_id[document_id] = document
 
                 # Defer NATS event — published concurrently after the loop
                 event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
