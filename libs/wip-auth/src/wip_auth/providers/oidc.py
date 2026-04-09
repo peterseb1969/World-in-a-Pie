@@ -237,6 +237,7 @@ class OIDCProvider:
         if isinstance(groups, str):
             groups = [groups]
 
+
         return UserIdentity(
             user_id=user_id,
             username=username,

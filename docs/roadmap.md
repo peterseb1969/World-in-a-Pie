@@ -126,12 +126,30 @@ To hold the scope discipline, specific versions are pinned as the install-test t
 - **ClinTrial Explorer vX.Y** — pinned when CT declares "frozen for v1.0" (commit SHA recorded here at that time)
 - **WIP ReactConsole vX.Y** — pinned when RC declares feature-complete (see separate workstream below)
 
-### Separate workstream: React Console
+### Separate workstream: Console for v1.0
 
-React Console is a **parallel workstream**, tracked outside v1.0 phases because it is close to feature-complete but not yet frozen. It will be pinned for v1.0 once it declares itself complete. Until then:
+**Decision needed:** Which console ships in the v1.0 install test?
+
+**Option A: Fix the Vue Console (wip-console)**
+The Vue console is already containerized and deployed. It has a group claims bug — OIDC tokens include group membership but the Console doesn't pass groups to the API permission check, so users see "No Namespace Access" despite having grants. This is BE-YAC work (the Vue console was built by BE-YAC). Fixing the group claims bug is probably a small change.
+
+**Option B: Package the React Console**
+The React Console is closer to feature-complete and is the long-term replacement. However, it's not currently in the container family — there's no Dockerfile, no entry in `build-release.sh`, and no service in `docker-compose.production.yml`. Packaging it requires:
+- A Dockerfile (multi-stage Node build → nginx, similar to Vue console)
+- Adding it to `build-release.sh`
+- Adding it to the production compose
+- Verifying OIDC integration works with the same Dex setup
+- The React Console is APP-YAC work; BE-YAC would only handle the containerization.
+
+**Option C: Ship both** — Vue console as the default (fix the bug), React Console as an optional add-on. Unnecessary complexity for v1.0.
+
+### React Console (parallel workstream)
+
+React Console is tracked outside v1.0 phases because it is close to feature-complete but not yet frozen.
 
 - `useUpdateDocument` wiring (now unblocked by Phase 0) is ongoing polish, done by APP-YAC, not BE-YAC.
 - Permission-aware UI polish (Auth Phase 2 Console UX) is ongoing polish.
+- **Missing from v1.0 pipeline:** Dockerfile, build-release.sh entry, production compose service. These are needed before it can replace the Vue console in the install test.
 - When RC declares complete: pin the version, record the commit SHA, stop accepting feature PRs into the v1.0 test target.
 
 ---
