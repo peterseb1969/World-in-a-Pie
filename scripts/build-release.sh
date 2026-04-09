@@ -273,7 +273,7 @@ services:
       - wip-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand(\"ping\").ok'"]
       interval: 30s
       timeout: 10s
       retries: 3
