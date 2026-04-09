@@ -16,8 +16,16 @@ If `missing`, tell the user: "No `data-model/` directory found. Bootstrap requir
 
 If any prerequisite fails, report it and stop.
 
+### Critical API gotchas (memorize these)
+
+1. **Namespace must exist first** — create with `create_namespace` before any terminologies or templates
+2. **`create_terms` needs terminology UUID**, not value — use the UUID from the create response
+3. **`create_relationships` needs `TERMINOLOGY:TERM_VALUE` format** — bare term values fail
+4. **Cross-namespace terminology refs** (e.g., COUNTRY in `wip`) need UUID lookup, not value
+5. **System terminology extensions** (`_*_EXT.json`) must be processed before ontology relationships
+
 ### Procedure
 
-If pre-flight passes and prerequisites are met, you MUST Read `docs/playbooks/bootstrap.md` before creating any entities. The playbook contains the seed file directory structure, the terminology and template JSON formats, the 5-step bootstrap procedure (with idempotency rules), and the "when to update seed files" guidance. Do not guess the file formats from memory.
+If pre-flight passes and prerequisites are met, you MUST Read `docs/playbooks/bootstrap.md` before creating any entities. The playbook contains the seed file formats, the 7-step bootstrap procedure (namespace creation, system extensions, terminologies, ontology relationships, templates, seed data, summary), idempotency rules, and the full API gotchas list. Do not guess the file formats or step ordering from memory.
 
 Then execute the playbook against the current `data-model/` directory.

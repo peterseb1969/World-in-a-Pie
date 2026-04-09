@@ -85,6 +85,7 @@ services:
     command: ["dex", "serve", "/etc/dex/config.yaml"]
     volumes:
       - ./config/dex/config.yaml:/etc/dex/config.yaml:ro
+      - wip-dex-data:/data
     networks:
       - wip-network
     restart: unless-stopped
@@ -108,12 +109,14 @@ services:
     container_name: wip-registry
     ports:
       - "8001:8001"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       DATABASE_NAME: wip_registry
       MASTER_API_KEY: ${API_KEY}
       AUTH_ENABLED: "true"
+      REPORTING_SYNC_URL: http://wip-reporting-sync:8005
       CORS_ORIGINS: ${WIP_CORS_ORIGINS:-}
     command: ["uvicorn", "registry.main:app", "--host", "0.0.0.0", "--port", "8001"]
     networks:
@@ -134,6 +137,7 @@ services:
     container_name: wip-def-store
     ports:
       - "8002:8002"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
@@ -163,6 +167,7 @@ services:
     container_name: wip-template-store
     ports:
       - "8003:8003"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
@@ -194,6 +199,7 @@ services:
     container_name: wip-document-store
     ports:
       - "8004:8004"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
@@ -232,6 +238,7 @@ services:
     container_name: wip-reporting-sync
     ports:
       - "8005:8005"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
@@ -259,6 +266,7 @@ services:
     container_name: wip-ingest-gateway
     ports:
       - "8006:8006"
+    env_file: .env
     environment:
       PYTHONPATH: /app/src
       NATS_URL: nats://wip-nats:4222
@@ -288,6 +296,7 @@ volumes:
   wip-postgres-data:
   wip-nats-data:
   wip-minio-data:
+  wip-dex-data:
   wip-caddy-data:
 
 networks:

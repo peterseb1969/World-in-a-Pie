@@ -334,6 +334,7 @@ services:
     command: ["dex", "serve", "/etc/dex/config.yaml"]
     volumes:
       - ./config/dex/config.yaml:/etc/dex/config.yaml:ro
+      - wip-dex-data:/data
     networks:
       - wip-network
     restart: unless-stopped
@@ -537,6 +538,7 @@ volumes:
   wip-postgres-data:
   wip-nats-data:
   wip-minio-data:
+  wip-dex-data:
   wip-caddy-data:
 
 networks:

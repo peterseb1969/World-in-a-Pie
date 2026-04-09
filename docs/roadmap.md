@@ -72,23 +72,26 @@ Backup smoke-tested on aa (32ms), seed, and clintrial. Restore engine coded and 
 - Case: `yac-discussions/CASE-23-responded-platform-backup-restore.md`
 - Design: `docs/design/backup-restore-redesign.md`
 
-### Phase 4 — Container Suite (the Big One)
+### Phase 4 — Container Suite (the Big One) 🔶
 
-The single biggest piece of v1.0 work. All the features are in place by this point, the dev install path has been exercised, time to package for humans.
+**Build pipeline landed** (2026-04-09): `scripts/build-release.sh` builds all 8 service images with wip-auth + wip-toolkit baked in, pushes to Gitea registry. `docker-compose.production.yml` generated. Gitea Actions workflow triggers on `v*` tags. Commits: `3cca263`, `ae38f7c`.
 
-**Deliverables:**
-1. Standardize Dockerfiles across all WIP services (some exist, some need polish). Shared `wip-base` Python image to kill redundant pip installs.
-2. **Multi-arch build CI** in Gitea Actions on every `v*` tag — amd64 and arm64. The install test has to work on both Peter's Mac and a non-techie's Windows/Intel laptop, not just the Pi.
-3. Push to **GHCR** (`ghcr.io/peterseb1969/wip-<service>:1.0.0`) — already mirroring to GitHub, and GHCR is public/free for the install story. Gitea registry stays for dev builds.
-4. **New `docker-compose.production.yml`** that *only* references published images — no `build:` directives, no volume-mounted libs. Paired with a slim `.env.example`.
-5. **Slim human install path:** download two files (`docker-compose.production.yml` + `.env.example`), edit one line, `docker compose pull && docker compose up -d`, visit `https://localhost:8443`, bootstrap admin via Dex → RC-Console → first runtime API key.
-6. Smoke test on a clean machine (not Peter's dev box).
+**First Pi deployment tested** (2026-04-09): all 14 containers pulled from Gitea and running healthy on `pi-poe-8gb.local`. Fixes applied during test: MongoDB health check quoting for podman-compose, Dex data volume, `env_file: .env` on all services, `REPORTING_SYNC_URL` on registry (CASE-34).
 
-**Crucial sequencing rule:** Container packaging is one of the *last* things in v1.0 — but every phase before it has to pass through the "is this in the image?" test.
+**Completed:**
+1. ~~Dockerfiles~~ ✅ — all 8 services have working Dockerfiles
+2. ~~Build script~~ ✅ `3cca263` — `scripts/build-release.sh` with `--registry`, `--push`, `--insecure`, `--generate-compose`
+3. ~~Production compose~~ ✅ — `docker-compose.production.yml` with pull-only images, infra, health checks
+4. ~~CI workflow~~ ✅ — `.gitea/workflows/build.yaml` on `v*` tags
+5. ~~Gitea registry~~ ✅ — 8 images pushed and pullable
+6. ~~Pi smoke test~~ ✅ — all services healthy on arm64
 
-**Depends on the image-based-distribution design doc being updated** — see gap notes below.
-
-**Why this order:** All affordances in place; iteration on the dev path is faster than rebuilding images every time. Effort: medium-large (~3-5 days).
+**Still needed for v1.0:**
+- **Production compose env var audit** — the generated compose was missing several env vars that the dev setup provides (`REPORTING_SYNC_URL`, OIDC settings). A systematic audit of what each service needs vs what the compose provides is required before the install test is reliable. CASE-34 was one instance; there may be more.
+- **Caddy + Dex config templating** — currently hand-copied from dev and manually edited for hostname. Needs a cleaner path (template files with hostname placeholder, or a setup script).
+- **GHCR push** — deferred until stable. Gitea-first for now.
+- **Multi-arch builds** — deferred. arm64 only (Mac/Pi) for now.
+- **Shared `wip-base` image** — optimization, not blocking.
 
 - Related design: `docs/design/image-based-distribution.md` (needs update — see "Design Document Gaps" below)
 
