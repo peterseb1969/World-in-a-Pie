@@ -115,6 +115,7 @@ services:
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       DATABASE_NAME: wip_registry
       MASTER_API_KEY: ${API_KEY}
+      WIP_AUTH_LEGACY_API_KEY: ${API_KEY}
       AUTH_ENABLED: "true"
       REPORTING_SYNC_URL: http://wip-reporting-sync:8005
       CORS_ORIGINS: ${WIP_CORS_ORIGINS:-}
@@ -216,6 +217,7 @@ services:
       WIP_FILE_STORAGE_ACCESS_KEY: ${WIP_FILE_STORAGE_ACCESS_KEY:-wip-minio-root}
       WIP_FILE_STORAGE_SECRET_KEY: ${WIP_FILE_STORAGE_SECRET_KEY:-wip-minio-password}
       WIP_FILE_STORAGE_BUCKET: wip-attachments
+      WIP_FILE_STORAGE_PUBLIC_ENDPOINT: ${WIP_FILE_STORAGE_PUBLIC_ENDPOINT:-http://localhost:9000}
       CORS_ORIGINS: ${WIP_CORS_ORIGINS:-}
     command: ["uvicorn", "document_store.main:app", "--host", "0.0.0.0", "--port", "8004"]
     networks:

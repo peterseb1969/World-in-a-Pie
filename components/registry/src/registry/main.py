@@ -61,6 +61,43 @@ async def lifespan(app: FastAPI):
     # Store client in app state
     app.state.mongodb_client = client
 
+    # Ensure the 'wip' system namespace exists with default grants
+    from .models.grant import NamespaceGrant
+    existing_wip = await Namespace.find_one({"prefix": "wip"})
+    if not existing_wip:
+        wip_ns = Namespace(
+            prefix="wip",
+            description="Default World In a Pie namespace",
+            isolation_mode="open",
+            id_config={},
+        )
+        await wip_ns.create()
+        print("Created 'wip' system namespace.")
+    else:
+        print("'wip' system namespace exists.")
+
+    # Ensure default grants exist for the wip namespace
+    default_grants = [
+        ("wip-admins", "group", "admin"),
+        ("wip-editors", "group", "write"),
+        ("wip-viewers", "group", "read"),
+    ]
+    for subject, subject_type, permission in default_grants:
+        existing_grant = await NamespaceGrant.find_one({
+            "namespace": "wip",
+            "subject": subject,
+            "subject_type": subject_type,
+        })
+        if not existing_grant:
+            await NamespaceGrant(
+                namespace="wip",
+                subject=subject,
+                subject_type=subject_type,
+                permission=permission,
+                granted_by="system:bootstrap",
+            ).create()
+            print(f"  Created grant: {subject} ({permission}) on 'wip'")
+
     # Recover any incomplete namespace deletions
     from .api.namespace_deletion import get_deletion_service
     try:
