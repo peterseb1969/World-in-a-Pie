@@ -1,0 +1,44 @@
+name: Build & Push Release Images
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract tag
+        id: tag
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Login to Gitea registry
+        run: |
+          echo "${{ secrets.GITEA_REGISTRY_TOKEN }}" | \
+            podman login --tls-verify=false gitea.local:3000 -u peter --password-stdin
+
+      - name: Build and push all images
+        run: |
+          bash scripts/build-release.sh \
+            --registry gitea.local:3000/peter \
+            --tag "${{ steps.tag.outputs.version }}" \
+            --push \
+            --insecure \
+            --builder podman
+
+      - name: Generate production compose
+        run: |
+          bash scripts/build-release.sh \
+            --registry gitea.local:3000/peter \
+            --tag "${{ steps.tag.outputs.version }}" \
+            --generate-compose
+
+      - name: Upload production compose as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-compose-${{ steps.tag.outputs.version }}
+          path: |
+            docker-compose.production.yml
+            .env.production.example
