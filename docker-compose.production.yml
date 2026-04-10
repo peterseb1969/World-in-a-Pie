@@ -118,6 +118,13 @@ services:
       WIP_AUTH_LEGACY_API_KEY: ${API_KEY}
       AUTH_ENABLED: "true"
       REPORTING_SYNC_URL: http://wip-reporting-sync:8005
+      DEF_STORE_URL: http://wip-def-store:8002
+      TEMPLATE_STORE_URL: http://wip-template-store:8003
+      DOCUMENT_STORE_URL: http://wip-document-store:8004
+      MINIO_URL: http://wip-minio:9000
+      MINIO_ACCESS_KEY: ${WIP_FILE_STORAGE_ACCESS_KEY:-wip-minio-root}
+      MINIO_SECRET_KEY: ${WIP_FILE_STORAGE_SECRET_KEY:-wip-minio-password}
+      MINIO_BUCKET: wip-attachments
       CORS_ORIGINS: ${WIP_CORS_ORIGINS:-}
     command: ["uvicorn", "registry.main:app", "--host", "0.0.0.0", "--port", "8001"]
     networks:
@@ -244,9 +251,15 @@ services:
     environment:
       PYTHONPATH: /app/src
       MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
-      POSTGRES_URI: postgresql://${WIP_POSTGRES_USER:-wip}:${WIP_POSTGRES_PASSWORD:-wip}@wip-postgres:5432/${WIP_POSTGRES_DB:-wip_reporting}
+      POSTGRES_HOST: wip-postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${WIP_POSTGRES_DB:-wip_reporting}
+      POSTGRES_USER: ${WIP_POSTGRES_USER:-wip}
+      POSTGRES_PASSWORD: ${WIP_POSTGRES_PASSWORD:-wip}
       TEMPLATE_STORE_URL: http://wip-template-store:8003
       TEMPLATE_STORE_API_KEY: ${API_KEY}
+      DOCUMENT_STORE_URL: http://wip-document-store:8004
+      DEF_STORE_URL: http://wip-def-store:8002
       NATS_URL: nats://wip-nats:4222
       CORS_ORIGINS: ${WIP_CORS_ORIGINS:-}
     command: ["uvicorn", "reporting_sync.main:app", "--host", "0.0.0.0", "--port", "8005"]

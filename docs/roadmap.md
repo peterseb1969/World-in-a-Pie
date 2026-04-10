@@ -222,7 +222,7 @@ These are known-useful items that explicitly do not serve the install test and a
 - Inactive→active chain follow: now uses `document_id`
 - `get_document_by_identity()` API: now accepts `namespace` + `template_id` filters
 
-**Broader audit needed:** Other components (def-store, template-store) should be checked for similar local identity_hash lookups that bypass the Registry. Not yet audited.
+**Broader audit needed (v1.0 blocking):** Other components (def-store, template-store) must be checked for similar local identity_hash lookups that bypass the Registry. Not yet audited. Peter: this must be done before v1.0.
 
 ### Reporting-Sync: File Event Handling Gap
 
