@@ -72,57 +72,38 @@ Backup smoke-tested on aa (32ms), seed, and clintrial. Restore engine coded and 
 - Case: `yac-discussions/CASE-23-responded-platform-backup-restore.md`
 - Design: `docs/design/backup-restore-redesign.md`
 
-### Phase 4 — Container Suite (the Big One) 🔶
+### Phase 4 — Container Suite ✅
 
-**Build pipeline landed** (2026-04-09): `scripts/build-release.sh` builds all 8 service images with wip-auth + wip-toolkit baked in, pushes to Gitea registry. `docker-compose.production.yml` generated. Gitea Actions workflow triggers on `v*` tags. Commits: `3cca263`, `ae38f7c`.
+**Complete** (2026-04-10). Full production deployment pipeline from build to install.
 
-**First Pi deployment tested** (2026-04-09): all 14 containers pulled from Gitea and running healthy on `pi-poe-8gb.local`. Fixes applied during test: MongoDB health check quoting for podman-compose, Dex data volume, `env_file: .env` on all services, `REPORTING_SYNC_URL` on registry (CASE-34).
+- `scripts/build-release.sh` — builds 8 service images with baked libs, pushes to Gitea
+- `docker-compose.production.yml` — pull-only compose with all infra + services
+- `.env.production.example` — annotated template with hostname placeholders
+- `config/production/` — Caddyfile and Dex config templates with `{{WIP_HOSTNAME}}`
+- `scripts/setup-wip.sh` — generates .env (random passwords), configs (bcrypt-hashed users), and start-wip.sh
+- `.gitea/workflows/build.yaml` — CI on `v*` tags
+- `scripts/setup-wip.sh` dependency check, app scanning, Caddy/Dex generation
+- Clean e2e validated: build → push → wipe Pi → setup-wip.sh → compose up → login → restore 3GB backup
+- Registry self-bootstraps `wip` namespace + grants on startup
+- Dex v2.45+ (required for group claims)
+- `build-release.sh --generate-compose` does in-place tag update (no heredoc)
+
+### Phase 5 — App Distribution 🔶
+
+**Framework landed** (2026-04-10, `9ee4b50`). Apps self-package as compose chunks with `wip.app.*` labels. `setup-wip.sh` auto-discovers chunks, generates Caddy routes and Dex OIDC clients. `start-wip.sh` prompts for app approval (Y/n/select, -y for auto).
 
 **Completed:**
-1. ~~Dockerfiles~~ ✅ — all 8 services have working Dockerfiles
-2. ~~Build script~~ ✅ `3cca263` — `scripts/build-release.sh` with `--registry`, `--push`, `--insecure`, `--generate-compose`
-3. ~~Production compose~~ ✅ — `docker-compose.production.yml` with pull-only images, infra, health checks
-4. ~~CI workflow~~ ✅ — `.gitea/workflows/build.yaml` on `v*` tags
-5. ~~Gitea registry~~ ✅ — 8 images pushed and pullable
-6. ~~Pi smoke test~~ ✅ — all services healthy on arm64
-
-**Additionally completed (2026-04-10):**
-7. ~~Production compose env var audit~~ ✅ `62d54e5` — registry MinIO + inter-service URLs, reporting-sync PostgreSQL fields
-8. ~~Caddy + Dex config templating~~ ✅ `12f975f` — `config/production/` templates with `{{WIP_HOSTNAME}}` placeholder
-9. ~~Install setup script~~ ✅ `a8b276d` — `scripts/setup-wip.sh` generates .env (random passwords), Caddy config, Dex config (bcrypt-hashed user passwords) from templates. Pre-flight dependency check.
-10. ~~Clean e2e test~~ ✅ — build → push to Gitea → wipe Pi → copy kit → setup-wip.sh → compose up → login → restore 3GB backup. All working.
-11. ~~CASE-36 identity_hash audit~~ ✅ `7aa3fc4` — def-store and template-store clean. Bug was document-store-only.
-12. ~~Dex v2.45~~ ✅ `965660b` — groups claim requires v2.45+
-13. ~~build-release.sh template sync~~ — deferred; the hand-edited compose is the source of truth for now
+1. ~~App contract~~ ✅ — `docker-compose.app.<name>.yml` with `wip.app.route`, `wip.app.port`, optional `wip.app.oidc.*` labels
+2. ~~Compose chunks~~ ✅ — React Console (OIDC, port 3010) and CT Explorer (API key, port 3001)
+3. ~~setup-wip.sh app scanning~~ ✅ — auto-generates Caddy routes and Dex clients from labels
+4. ~~start-wip.sh generation~~ ✅ — interactive app approval, .disabled opt-out
+5. ~~Remote mode design~~ ✅ — `WIP_BASE_URL` configurable for app-on-Mac / WIP-on-Pi
+6. ~~Dual OIDC redirect URIs~~ ✅ — co-located (hostname:8443) + remote (localhost:port)
 
 **Still needed for v1.0:**
-- **Phase 5: App distribution** — React Console and CT Explorer as installable app images (see below)
-- **GHCR push** — deferred until stable. Gitea-first for now.
-- **Multi-arch builds** — deferred. arm64 only (Mac/Pi) for now.
-- **Shared `wip-base` image** — optimization, not blocking.
-
-- Related design: `docs/design/image-based-distribution.md` (needs update — see "Design Document Gaps" below)
-
-### Phase 5 — App Distribution (CASE-24)
-
-Package apps as container images and compose chunks. The install test ships two apps alongside WIP core to demonstrate that WIP is a platform, not a single-app backend.
-
-**v1.0 apps:**
-1. **React Console** — the full-featured UI (replaces Vue console for users who want it). Dockerfile exists at `../WIP-ReactConsole/Dockerfile`. Needs: build + push to Gitea, compose chunk, Caddy route (`/apps/rc/*`).
-2. **ClinTrial Explorer** — the reference data app. Dockerfile exists at `../WIP-ClinTrial/clintrial-explorer/Dockerfile`. Needs: build + push to Gitea (with @wip/client + @wip/react tarballs), compose chunk, Caddy route (`/apps/clintrial/*`).
-
-**Deliverables:**
-1. Add both apps to `build-release.sh` (build + push alongside WIP core images).
-2. **Compose chunks** — optional service blocks the installer can uncomment or add. Each chunk references the published app image and plumbs the WIP API key.
-3. **Caddy routes** — uncommentable entries in the Caddyfile template for each app.
-4. Verify both apps work on the Pi via the install kit.
-
-**Deferred past v1.0:**
-- `app-manifest.json` standard with `requires_wip` version check
-- App image build CI per app repo
-- `create-app-project.sh` Dockerfile template standardization
-
-Effort: small-medium (~1-2 days). Both Dockerfiles exist; the work is integration.
+- **Build and push app images** — React Console and CT Explorer images not yet in Gitea
+- **Pi e2e test with apps** — WIP core tested, apps not yet running on Pi
+- **Update create-app-project.sh** — scaffold should generate compose chunk + build-app.sh
 
 - Case: `yac-discussions/CASE-24-open-app-distribution.md`
 - Related design: `docs/design/distributable-app-format.md`
