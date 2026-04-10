@@ -392,16 +392,17 @@ Example filters:
 )
 async def query_documents(
     request: DocumentQueryRequest,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution and filtering"),
     _: str = Depends(require_api_key)
 ):
     """Query documents with filters."""
     if request.template_id:
         request.template_id = await resolve_or_404(
-            request.template_id, "template", namespace=None, param_name="template_id"
+            request.template_id, "template", namespace=namespace, param_name="template_id"
         )
 
     identity = get_current_identity()
-    ns_filter = await resolve_namespace_filter(identity, namespace=None)
+    ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
 
     service = get_document_service()
     return await service.query_documents(request, ns_filter=ns_filter.query)

@@ -18,7 +18,7 @@ import logging
 from fastapi import HTTPException
 
 from .identity import get_current_identity
-from .resolve import EntityNotFoundError, resolve_entity_id
+from .resolve import EntityNotFoundError, _looks_like_uuid, resolve_entity_id
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,13 @@ async def resolve_or_404(
         namespace = _derive_namespace_from_identity()
 
     if namespace is None:
-        # Still no namespace — cannot resolve, return raw for value-based fallback
+        # Still no namespace — cannot resolve, return raw for value-based fallback.
+        if not _looks_like_uuid(raw_id):
+            logger.warning(
+                "resolve_or_404: no namespace for %s=%s — synonym resolution skipped. "
+                "Use a namespace-scoped API key or pass namespace explicitly.",
+                param_name or entity_type, raw_id,
+            )
         return raw_id
 
     try:
