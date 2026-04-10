@@ -261,11 +261,14 @@ awk \
         print
     }' "$DEX_TEMPLATE" > "$DEX_OUT"
 
-# Append app OIDC clients to Dex config
+# Insert app OIDC clients into the staticClients section of Dex config
 if [[ -n "$DEX_CLIENTS" ]]; then
+    # Write client entries to a temp file
+    clients_tmp="${DEX_OUT}.clients"
+    > "$clients_tmp"
     while IFS=: read -r _ client_id app_name client_secret app_route app_port; do
         [[ -z "$client_id" ]] && continue
-        cat >> "$DEX_OUT" <<DEXCLIENT
+        cat >> "$clients_tmp" <<DEXCLIENT
   - id: ${client_id}
     name: ${app_name}
     secret: ${client_secret}
@@ -274,6 +277,17 @@ if [[ -n "$DEX_CLIENTS" ]]; then
       - http://localhost:${app_port}/auth/callback
 DEXCLIENT
     done <<< "$DEX_CLIENTS"
+
+    # Insert the clients file content before the "connectors:" line
+    tmp="${DEX_OUT}.tmp"
+    while IFS= read -r line; do
+        if [[ "$line" == "connectors:"* ]]; then
+            cat "$clients_tmp"
+            echo ""
+        fi
+        echo "$line"
+    done < "$DEX_OUT" > "$tmp" && mv "$tmp" "$DEX_OUT"
+    rm -f "$clients_tmp"
 fi
 echo -e "${GREEN}[OK]${NC} config/dex/config.yaml generated"
 
