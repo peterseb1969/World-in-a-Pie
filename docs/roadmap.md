@@ -229,6 +229,12 @@ Fixed: every endpoint now accepts an optional `namespace` query parameter. MCP c
 
 **Broader audit still needed:** A full review of all endpoints to verify that synonym handling is consistent — not just the resolution calls, but also whether returned IDs, error messages, and documentation consistently support human-readable values. This is a quality pass, not a bug fix.
 
+### PostgreSQL Password Desync Risk
+
+PostgreSQL stores its initial password in the data volume and ignores the `POSTGRES_PASSWORD` env var on subsequent starts. If `.env` is regenerated with a new password (e.g., user deletes `.env` and re-runs `setup-wip.sh`), PostgreSQL keeps the old password and reporting-sync fails with `password authentication failed`.
+
+Discovered during Pi deployment. No automated fix yet. Options: (a) `setup-wip.sh` detects existing PostgreSQL volume and warns; (b) startup init script runs `ALTER USER` to sync the password; (c) document "never delete .env without wiping volumes." At minimum, `setup-wip.sh` should warn when `.env` is regenerated that volume data may be inconsistent.
+
 ### Reporting-Sync: File Event Handling Gap
 
 **Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relationship.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
