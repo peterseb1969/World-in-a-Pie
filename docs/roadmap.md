@@ -221,6 +221,14 @@ These are known-useful items that explicitly do not serve the install test and a
 
 **Audit complete (2026-04-10).** Def-store: zero `identity_hash` references. Template-store: one reference (response model field, not a lookup). Neither component does identity resolution — the bug was document-store-only. All components clean.
 
+### Audit: Synonym Resolution Across All Endpoints (CASE-40/41)
+
+**Systemic fix landed (2026-04-10).** All 31 `resolve_bulk_ids` and `resolve_or_404` calls across all services passed `namespace=None`, silently skipping synonym resolution for unscoped API keys. Value codes (e.g., `"DND_CLASS"`, `"CT_ORGANIZATION"`) failed to resolve on write and read endpoints.
+
+Fixed: every endpoint now accepts an optional `namespace` query parameter. MCP client passes `default_namespace` automatically. `resolve_or_404` and `resolve_bulk_ids` log warnings when namespace is unavailable. Zero `namespace=None` calls remain.
+
+**Broader audit still needed:** A full review of all endpoints to verify that synonym handling is consistent — not just the resolution calls, but also whether returned IDs, error messages, and documentation consistently support human-readable values. This is a quality pass, not a bug fix.
+
 ### Reporting-Sync: File Event Handling Gap
 
 **Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relationship.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
