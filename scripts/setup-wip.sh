@@ -62,6 +62,38 @@ echo -e "${BOLD}WIP Production Setup${NC}"
 echo "Hostname: ${HOSTNAME}"
 echo ""
 
+# ── Pre-flight: check dependencies ───────────────────────────────
+
+MISSING=()
+
+if ! command -v podman-compose &>/dev/null && ! command -v docker &>/dev/null; then
+    MISSING+=("podman-compose or docker")
+fi
+
+if ! command -v python3 &>/dev/null; then
+    MISSING+=("python3")
+fi
+
+if command -v python3 &>/dev/null && ! python3 -c "import bcrypt" &>/dev/null; then
+    MISSING+=("python3-bcrypt (pip install bcrypt or apt install python3-bcrypt)")
+fi
+
+if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
+    MISSING+=("curl or wget (for health checks)")
+fi
+
+if [[ ${#MISSING[@]} -gt 0 ]]; then
+    echo -e "${RED}[ERROR]${NC} Missing dependencies:"
+    for dep in "${MISSING[@]}"; do
+        echo "  - ${dep}"
+    done
+    echo ""
+    echo "Install them and re-run this script."
+    exit 1
+fi
+
+echo -e "${GREEN}[OK]${NC} Dependencies checked"
+
 # ── Step 1: Generate .env ────────────────────────────────────────
 
 ENV_FILE="${INSTALL_DIR}/.env"
@@ -102,12 +134,6 @@ EDITOR_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
 VIEWER_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
 
 # Hash with bcrypt (Dex requires bcrypt hashes)
-if ! command -v python3 &>/dev/null; then
-    echo -e "${RED}[ERROR]${NC} python3 is required for password hashing"
-    echo "       Install python3 and python3-bcrypt, then re-run."
-    exit 1
-fi
-
 bcrypt_hash() {
     python3 -c "import bcrypt; print(bcrypt.hashpw(b'$1', bcrypt.gensalt(10)).decode())"
 }
