@@ -126,21 +126,52 @@ else
     echo "     MinIO password: ${MINIO_PASS}"
 fi
 
-# ── Step 1b: Generate user passwords ────────────────────────────
+# ── Step 1b: Dex user passwords ──────────────────────────────────
+#
+# Passwords and hashes are stored in .env so re-running setup doesn't
+# invalidate them. Only generated on first run.
 
-# Generate random passwords for Dex static users
-ADMIN_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
-EDITOR_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
-VIEWER_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
-
-# Hash with bcrypt (Dex requires bcrypt hashes)
 bcrypt_hash() {
     python3 -c "import bcrypt; print(bcrypt.hashpw(b'$1', bcrypt.gensalt(10)).decode())"
 }
 
-ADMIN_HASH=$(bcrypt_hash "$ADMIN_PASS")
-EDITOR_HASH=$(bcrypt_hash "$EDITOR_PASS")
-VIEWER_HASH=$(bcrypt_hash "$VIEWER_PASS")
+# Check if passwords already exist in .env
+EXISTING_ADMIN_HASH=$(grep '^WIP_DEX_ADMIN_HASH=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+
+if [[ -n "$EXISTING_ADMIN_HASH" ]]; then
+    # Re-read stored passwords and hashes
+    ADMIN_PASS=$(grep '^WIP_DEX_ADMIN_PASS=' "$ENV_FILE" | cut -d= -f2- || true)
+    EDITOR_PASS=$(grep '^WIP_DEX_EDITOR_PASS=' "$ENV_FILE" | cut -d= -f2- || true)
+    VIEWER_PASS=$(grep '^WIP_DEX_VIEWER_PASS=' "$ENV_FILE" | cut -d= -f2- || true)
+    ADMIN_HASH=$(grep '^WIP_DEX_ADMIN_HASH=' "$ENV_FILE" | cut -d= -f2- || true)
+    EDITOR_HASH=$(grep '^WIP_DEX_EDITOR_HASH=' "$ENV_FILE" | cut -d= -f2- || true)
+    VIEWER_HASH=$(grep '^WIP_DEX_VIEWER_HASH=' "$ENV_FILE" | cut -d= -f2- || true)
+    echo -e "${GREEN}[OK]${NC} Dex user passwords loaded from .env"
+else
+    # Generate new passwords and hashes
+    ADMIN_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+    EDITOR_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+    VIEWER_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+
+    ADMIN_HASH=$(bcrypt_hash "$ADMIN_PASS")
+    EDITOR_HASH=$(bcrypt_hash "$EDITOR_PASS")
+    VIEWER_HASH=$(bcrypt_hash "$VIEWER_PASS")
+
+    # Persist to .env
+    cat >> "$ENV_FILE" <<DEXPASSWORDS
+
+# =============================================================================
+# DEX USER CREDENTIALS (auto-generated — do not edit hashes manually)
+# =============================================================================
+WIP_DEX_ADMIN_PASS=${ADMIN_PASS}
+WIP_DEX_ADMIN_HASH=${ADMIN_HASH}
+WIP_DEX_EDITOR_PASS=${EDITOR_PASS}
+WIP_DEX_EDITOR_HASH=${EDITOR_HASH}
+WIP_DEX_VIEWER_PASS=${VIEWER_PASS}
+WIP_DEX_VIEWER_HASH=${VIEWER_HASH}
+DEXPASSWORDS
+    echo -e "${GREEN}[OK]${NC} Dex user passwords generated and saved to .env"
+fi
 
 # ── Step 2: Generate Caddy config ────────────────────────────────
 
@@ -274,6 +305,7 @@ if [[ -n "$DEX_CLIENTS" ]]; then
     secret: ${client_secret}
     redirectURIs:
       - https://${HOSTNAME}:8443${app_route}/auth/callback
+      - https://${HOSTNAME}:8443/auth/callback
       - http://localhost:${app_port}/auth/callback
 DEXCLIENT
     done <<< "$DEX_CLIENTS"
