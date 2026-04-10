@@ -1,0 +1,37 @@
+# WIP App: React Console
+# Drop this file into your WIP install directory and re-run setup-wip.sh.
+# See docs/install-test-guide.md for details.
+
+services:
+  react-console:
+    image: gitea.local:3000/peter/react-console:latest
+    container_name: wip-react-console
+    labels:
+      wip.app: "true"
+      wip.app.name: "React Console"
+      wip.app.route: "/apps/rc"
+      wip.app.port: "3010"
+      wip.app.oidc: "true"
+      wip.app.oidc.client_id: "react-console"
+      wip.app.oidc.client_secret: "react-console-secret"
+    environment:
+      WIP_BASE_URL: ${WIP_BASE_URL:-https://wip-caddy:8443}
+      WIP_API_KEY: ${API_KEY}
+      OIDC_ISSUER: https://${WIP_HOSTNAME:-localhost}:8443/dex
+      OIDC_CLIENT_ID: react-console
+      OIDC_CLIENT_SECRET: react-console-secret
+      PORT: "3010"
+      NODE_ENV: production
+    networks:
+      - wip-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  wip-network:
+    external: true
