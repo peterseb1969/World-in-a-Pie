@@ -122,20 +122,22 @@ class WipClient:
         return resp.json()
 
     async def _put(
-        self, base_url: str, path: str, json: Any = None
+        self, base_url: str, path: str, json: Any = None, **params
     ) -> dict[str, Any]:
         """PUT request, return parsed JSON."""
         client = await self._get_client()
-        resp = await client.put(f"{base_url}{path}", json=json)
+        params = {k: v for k, v in params.items() if v is not None}
+        resp = await client.put(f"{base_url}{path}", json=json, params=params)
         resp.raise_for_status()
         return resp.json()
 
     async def _patch(
-        self, base_url: str, path: str, json: Any = None
+        self, base_url: str, path: str, json: Any = None, **params
     ) -> dict[str, Any]:
         """PATCH request, return parsed JSON."""
         client = await self._get_client()
-        resp = await client.patch(f"{base_url}{path}", json=json)
+        params = {k: v for k, v in params.items() if v is not None}
+        resp = await client.patch(f"{base_url}{path}", json=json, params=params)
         resp.raise_for_status()
         return resp.json()
 
@@ -404,15 +406,17 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_terminology(self, terminology_id: str, updates: dict) -> dict:
+    async def update_terminology(self, terminology_id: str, updates: dict, namespace: str | None = None) -> dict:
         item = {"terminology_id": terminology_id, **updates}
         resp = await self._put(
-            self.def_store_url, "/api/def-store/terminologies", json=[item]
+            self.def_store_url, "/api/def-store/terminologies", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
     async def delete_terminology(
         self, terminology_id: str, force: bool = False, hard_delete: bool = False,
+        namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"id": terminology_id}
         if force:
@@ -420,7 +424,8 @@ class WipClient:
         if hard_delete:
             item["hard_delete"] = True
         resp = await self._delete(
-            self.def_store_url, "/api/def-store/terminologies", json=[item]
+            self.def_store_url, "/api/def-store/terminologies", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -468,30 +473,34 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_term(self, term_id: str, updates: dict) -> dict:
+    async def update_term(self, term_id: str, updates: dict, namespace: str | None = None) -> dict:
         item = {"term_id": term_id, **updates}
         resp = await self._put(
-            self.def_store_url, "/api/def-store/terms", json=[item]
+            self.def_store_url, "/api/def-store/terms", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
-    async def delete_term(self, term_id: str, hard_delete: bool = False) -> dict:
+    async def delete_term(self, term_id: str, hard_delete: bool = False, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": term_id}
         if hard_delete:
             item["hard_delete"] = True
         resp = await self._delete(
-            self.def_store_url, "/api/def-store/terms", json=[item]
+            self.def_store_url, "/api/def-store/terms", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
     async def deprecate_term(
-        self, term_id: str, reason: str, replaced_by_term_id: str | None = None
+        self, term_id: str, reason: str, replaced_by_term_id: str | None = None,
+        namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"term_id": term_id, "reason": reason}
         if replaced_by_term_id:
             item["replaced_by_term_id"] = replaced_by_term_id
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terms/deprecate", json=[item]
+            self.def_store_url, "/api/def-store/terms/deprecate", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -692,12 +701,13 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_template(self, template_id: str, updates: dict) -> dict:
+    async def update_template(self, template_id: str, updates: dict, namespace: str | None = None) -> dict:
         item = {"template_id": template_id, **updates}
         resp = await self._put(
             self.template_store_url,
             "/api/template-store/templates",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -811,6 +821,7 @@ class WipClient:
         document_id: str,
         patch: dict,
         if_match: int | None = None,
+        namespace: str | None = None,
     ) -> dict:
         """Apply an RFC 7396 JSON Merge Patch to a document.
 
@@ -826,6 +837,7 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/documents",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -835,7 +847,7 @@ class WipClient:
             f"/api/document-store/documents/{document_id}/versions",
         )
 
-    async def archive_document(self, document_id: str, archived_by: str | None = None) -> dict:
+    async def archive_document(self, document_id: str, archived_by: str | None = None, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": document_id}
         if archived_by:
             item["archived_by"] = archived_by
@@ -843,12 +855,13 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/documents/archive",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
     async def delete_document(
         self, document_id: str, hard_delete: bool = False,
-        version: int | None = None,
+        version: int | None = None, namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"id": document_id}
         if hard_delete:
@@ -859,6 +872,7 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/documents",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -959,7 +973,7 @@ class WipClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def delete_file(self, file_id: str, force: bool = False) -> dict:
+    async def delete_file(self, file_id: str, force: bool = False, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": file_id}
         if force:
             item["force"] = True
@@ -967,6 +981,7 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/files",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
