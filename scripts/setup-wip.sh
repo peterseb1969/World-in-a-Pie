@@ -250,7 +250,6 @@ if [[ -n "$APP_ROUTES" ]]; then
                 while IFS=: read -r _ route container port; do
                     [[ -z "$route" ]] && continue
                     echo "    handle ${route}/* {"
-                    echo "        uri strip_prefix ${route}"
                     echo "        reverse_proxy ${container}:${port}"
                     echo "    }"
                 done <<< "$APP_ROUTES"
