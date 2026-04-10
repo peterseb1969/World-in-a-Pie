@@ -35,12 +35,13 @@ def _to_audit_entry(log: TermAuditLog) -> AuditLogEntry:
 )
 async def get_term_audit_log(
     term_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
-    term_id = await resolve_or_404(term_id, "term", namespace=None, param_name="term_id")
+    term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
     query = {"term_id": term_id}
 
     total = await TermAuditLog.find(query).count()
@@ -68,13 +69,14 @@ async def get_term_audit_log(
 )
 async def get_terminology_audit_log(
     terminology_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     action: str | None = Query(None, description="Filter by action: created, updated, deprecated, deleted"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
-    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=None, param_name="terminology_id")
+    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
     query = {"terminology_id": terminology_id}
     if action:
         query["action"] = action

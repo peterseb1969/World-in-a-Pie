@@ -19,6 +19,7 @@ router = APIRouter(prefix="/import-export", tags=["Import/Export"])
 )
 async def export_terminology(
     terminology_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     format: str = Query("json", description="Export format: json, csv"),
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
@@ -32,7 +33,7 @@ async def export_terminology(
     Supports JSON and CSV formats. Use include_relationships=true to include
     ontology relationships (is_a, part_of, etc.) in JSON exports.
     """
-    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=None, param_name="terminology_id")
+    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
 
     try:
         language_list = languages.split(",") if languages else None

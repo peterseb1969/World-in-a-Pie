@@ -313,7 +313,7 @@ async def update_templates(
 
 
 @router.get("/{template_id}/dependencies", response_model=TemplateDependencies)
-async def get_template_dependencies(template_id: str):
+async def get_template_dependencies(template_id: str, namespace: str | None = Query(None, description="Namespace for synonym resolution")):
     """
     Get dependencies of a template.
 
@@ -323,7 +323,7 @@ async def get_template_dependencies(template_id: str):
 
     Use this to check before deactivating a template.
     """
-    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+    template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     try:
         return await DependencyService.check_template_dependencies(template_id)
@@ -387,6 +387,7 @@ async def delete_templates(
 @router.post("/{template_id}/validate", response_model=ValidateTemplateResponse)
 async def validate_template(
     template_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     request: ValidateTemplateRequest = ValidateTemplateRequest()
 ):
     """
@@ -397,7 +398,7 @@ async def validate_template(
     - template_ref fields point to existing templates
     - extends points to an existing template
     """
-    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+    template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     return await TemplateService.validate_template(
         template_id=template_id,
@@ -438,7 +439,7 @@ async def activate_template(
 
 
 @router.post("/{template_id}/cascade", response_model=CascadeResponse)
-async def cascade_template(template_id: str):
+async def cascade_template(template_id: str, namespace: str | None = Query(None, description="Namespace for synonym resolution")):
     """
     Cascade a parent template update to all child templates.
 
@@ -448,7 +449,7 @@ async def cascade_template(template_id: str):
 
     Only the `extends` pointer is updated — child-specific fields are preserved.
     """
-    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+    template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
 
     try:
         return await TemplateService.cascade_to_children(template_id)
@@ -459,11 +460,11 @@ async def cascade_template(template_id: str):
 
 
 @router.get("/{template_id}/children", response_model=TemplateListResponse)
-async def get_template_children(template_id: str):
+async def get_template_children(template_id: str, namespace: str | None = Query(None, description="Namespace for synonym resolution")):
     """
     Get templates that directly extend this template.
     """
-    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+    template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
     children = await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
@@ -475,11 +476,11 @@ async def get_template_children(template_id: str):
 
 
 @router.get("/{template_id}/descendants", response_model=TemplateListResponse)
-async def get_template_descendants(template_id: str):
+async def get_template_descendants(template_id: str, namespace: str | None = Query(None, description="Namespace for synonym resolution")):
     """
     Get all templates that extend this template (directly or indirectly).
     """
-    template_id = await resolve_or_404(template_id, "template", namespace=None, param_name="template_id")
+    template_id = await resolve_or_404(template_id, "template", namespace=namespace, param_name="template_id")
     descendants = await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(

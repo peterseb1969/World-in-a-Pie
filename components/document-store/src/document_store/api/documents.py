@@ -196,10 +196,11 @@ async def list_documents(
 async def get_document(
     document_id: str,
     version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""
-    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
     document = await service.get_document(document_id, version=version)
@@ -221,10 +222,11 @@ async def get_document(
 )
 async def get_document_versions(
     document_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get all versions of a document."""
-    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
     versions = await service.get_document_versions(document_id)
@@ -250,10 +252,11 @@ async def get_document_versions(
 async def get_document_version(
     document_id: str,
     version: int,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get a specific version of a document."""
-    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
     document = await service.get_document_version(document_id, version)
@@ -280,10 +283,11 @@ the current data. The response includes the latest document ID and version.
 )
 async def get_latest_document(
     document_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get the latest version of a document."""
-    document_id = await resolve_or_404(document_id, "document", namespace=None, param_name="document_id")
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
     document = await service.get_latest_document(document_id)

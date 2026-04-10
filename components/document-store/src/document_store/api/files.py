@@ -187,10 +187,11 @@ async def list_files(
 )
 async def get_file(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
-    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.file import File as FileModel
 
@@ -223,11 +224,12 @@ Use this for browser downloads or when sharing files externally.
 )
 async def get_download_url(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     expires_in: int = Query(3600, ge=60, le=86400, description="URL expiration in seconds (1 min to 24 hours)"),
     _: str = Depends(require_api_key)
 ):
     """Get a pre-signed download URL for a file."""
-    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     service = get_file_service()
 
@@ -256,10 +258,11 @@ async def get_download_url(
 )
 async def download_file_content(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
-    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.file import File as FileModel
     from ..models.file import FileStatus
@@ -384,12 +387,13 @@ Uses the file_references index for efficient lookup.
 )
 async def get_file_documents(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
 ):
     """List documents that reference this file."""
-    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.document import Document as DocumentModel
     from ..models.file import File as FileModel
@@ -452,10 +456,11 @@ Only works on files with status 'inactive'. Use soft-delete first.
 )
 async def hard_delete_file(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Permanently delete a file."""
-    file_id = await resolve_or_404(file_id, "file", namespace=None, param_name="file_id")
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     service = get_file_service()
 
