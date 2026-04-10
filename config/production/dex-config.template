@@ -40,19 +40,19 @@ enablePasswordDB: true
 
 staticPasswords:
   - email: admin@wip.local
-    hash: "$2a$10$zzmomSC6p.AU3eOb9rZ7s.cg5gDVsZxdBXb16N1fnqPws4Hyw1TlK"
+    hash: "{{ADMIN_HASH}}"
     username: admin
     userID: admin-001
     groups:
       - wip-admins
   - email: editor@wip.local
-    hash: "$2a$10$4KJXN9H1VcoF1UsaZ36a1OtNJLJ4swk82HZsDvqjZi/.na2.lzBoG"
+    hash: "{{EDITOR_HASH}}"
     username: editor
     userID: editor-001
     groups:
       - wip-editors
   - email: viewer@wip.local
-    hash: "$2a$10$eAHYouzyQAtHTbZDcxq2b.LertsTaEP3eNel4Zdffv7pT8LTbjqi2"
+    hash: "{{VIEWER_HASH}}"
     username: viewer
     userID: viewer-001
     groups:

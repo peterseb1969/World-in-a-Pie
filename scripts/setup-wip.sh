@@ -25,9 +25,9 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# The install directory is wherever this script lives
-# (the user downloads the install kit and runs setup-wip.sh from there)
-INSTALL_DIR="$SCRIPT_DIR"
+# The install directory is the parent of scripts/
+# (install kit layout: wip/scripts/setup-wip.sh, wip/docker-compose.production.yml, etc.)
+INSTALL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 usage() {
     cat <<EOF
@@ -68,7 +68,7 @@ ENV_FILE="${INSTALL_DIR}/.env"
 ENV_TEMPLATE="${INSTALL_DIR}/.env.production.example"
 
 if [[ -f "$ENV_FILE" ]]; then
-    echo -e "${YELLOW}[SKIP]${NC} .env already exists — not overwriting"
+    echo -e "${YELLOW}[SKIP]${NC} .env already exists at ${ENV_FILE} — not overwriting"
     echo "       Delete it first if you want to regenerate."
 else
     if [[ ! -f "$ENV_TEMPLATE" ]]; then
@@ -93,6 +93,28 @@ else
     echo "     Postgres password: ${PG_PASS}"
     echo "     MinIO password: ${MINIO_PASS}"
 fi
+
+# ── Step 1b: Generate user passwords ────────────────────────────
+
+# Generate random passwords for Dex static users
+ADMIN_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+EDITOR_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+VIEWER_PASS=$(head -c 12 /dev/urandom | base64 | tr -d '+/=' | head -c 12)
+
+# Hash with bcrypt (Dex requires bcrypt hashes)
+if ! command -v python3 &>/dev/null; then
+    echo -e "${RED}[ERROR]${NC} python3 is required for password hashing"
+    echo "       Install python3 and python3-bcrypt, then re-run."
+    exit 1
+fi
+
+bcrypt_hash() {
+    python3 -c "import bcrypt; print(bcrypt.hashpw(b'$1', bcrypt.gensalt(10)).decode())"
+}
+
+ADMIN_HASH=$(bcrypt_hash "$ADMIN_PASS")
+EDITOR_HASH=$(bcrypt_hash "$EDITOR_PASS")
+VIEWER_HASH=$(bcrypt_hash "$VIEWER_PASS")
 
 # ── Step 2: Generate Caddy config ────────────────────────────────
 
@@ -123,7 +145,19 @@ if [[ ! -f "$DEX_TEMPLATE" ]]; then
     exit 1
 fi
 
-sed "s/{{WIP_HOSTNAME}}/${HOSTNAME}/g" "$DEX_TEMPLATE" > "$DEX_OUT"
+# Hashes contain $ and / which break sed delimiters — use awk instead
+awk \
+    -v hostname="$HOSTNAME" \
+    -v admin_hash="$ADMIN_HASH" \
+    -v editor_hash="$EDITOR_HASH" \
+    -v viewer_hash="$VIEWER_HASH" \
+    '{
+        gsub(/\{\{WIP_HOSTNAME\}\}/, hostname)
+        gsub(/\{\{ADMIN_HASH\}\}/, admin_hash)
+        gsub(/\{\{EDITOR_HASH\}\}/, editor_hash)
+        gsub(/\{\{VIEWER_HASH\}\}/, viewer_hash)
+        print
+    }' "$DEX_TEMPLATE" > "$DEX_OUT"
 echo -e "${GREEN}[OK]${NC} config/dex/config.yaml generated"
 
 # ── Done ─────────────────────────────────────────────────────────
@@ -143,10 +177,15 @@ echo "     docker compose -f docker-compose.production.yml up -d"
 echo ""
 echo "  3. Wait ~45 seconds for health checks"
 echo "  4. Open https://${HOSTNAME}:8443"
-echo "     Login: admin@wip.local / admin"
 echo ""
-echo "  Default users:"
-echo "    admin@wip.local  (password: admin)  — admin access"
-echo "    editor@wip.local (password: editor) — write access"
-echo "    viewer@wip.local (password: viewer) — read access"
+echo "  Login credentials (generated — save these!):"
+echo ""
+echo "    admin@wip.local   password: ${ADMIN_PASS}   (admin access)"
+echo "    editor@wip.local  password: ${EDITOR_PASS}  (write access)"
+echo "    viewer@wip.local  password: ${VIEWER_PASS}  (read access)"
+echo ""
+echo "  To change a password later, edit config/dex/config.yaml"
+echo "  and replace the bcrypt hash. Generate a new hash with:"
+echo "    python3 -c \"import bcrypt; print(bcrypt.hashpw(b'NEW_PASSWORD', bcrypt.gensalt(10)).decode())\""
+echo "  Then restart Dex: podman restart wip-dex"
 echo "=========================================="
