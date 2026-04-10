@@ -121,6 +121,11 @@ async def resolve_bulk_ids(
             continue
 
         if not item_ns:
+            logger.warning(
+                "resolve_bulk_ids: no namespace for item %s=%s — synonym resolution skipped. "
+                "Use a namespace-scoped API key or pass namespace explicitly.",
+                id_field, raw_id,
+            )
             continue
 
         try:

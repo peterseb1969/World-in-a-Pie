@@ -138,6 +138,7 @@ async def get_terminology(
 @router.put("", response_model=BulkResponse, summary="Update terminologies")
 async def update_terminologies(
     items: list[UpdateTerminologyItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -146,7 +147,7 @@ async def update_terminologies(
     If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
-    await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=None)
+    await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):
@@ -222,6 +223,7 @@ async def restore_terminology(
 @router.delete("", response_model=BulkResponse, summary="Delete terminologies")
 async def delete_terminologies(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -230,7 +232,7 @@ async def delete_terminologies(
     All terms in each terminology will also be deactivated.
     Set force=true per item to delete even if templates reference it.
     """
-    await resolve_bulk_ids(items, "id", "terminology", namespace=None)
+    await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):

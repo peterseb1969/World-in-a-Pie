@@ -279,6 +279,7 @@ async def get_template_by_value_and_version(value: str, version: int):
 @router.put("", response_model=BulkResponse)
 async def update_templates(
     items: list[UpdateTemplateItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
     Update one or more templates by creating new versions.
@@ -286,7 +287,7 @@ async def update_templates(
     The template_id is stable across versions — updates create a new version
     document with the same template_id but incremented version number.
     """
-    await resolve_bulk_ids(items, "template_id", "template", namespace=None)
+    await resolve_bulk_ids(items, "template_id", "template", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):
@@ -333,6 +334,7 @@ async def get_template_dependencies(template_id: str):
 @router.delete("", response_model=BulkResponse)
 async def delete_templates(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
 ):
     """
     Soft-delete one or more templates.
@@ -341,7 +343,7 @@ async def delete_templates(
     have other templates extending them.
     Set force=true per item to delete even if documents exist.
     """
-    await resolve_bulk_ids(items, "id", "template", namespace=None)
+    await resolve_bulk_ids(items, "id", "template", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):

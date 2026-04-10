@@ -60,7 +60,9 @@ async def create_documents(
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
 
-    # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID)
+    # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID).
+    # namespace=None is correct here — each item carries its own namespace field,
+    # and resolve_bulk_ids reads it per-item.
     await resolve_bulk_ids(items, "template_id", "template", namespace=None)
 
     service = get_document_service()
@@ -125,13 +127,14 @@ DOCUMENT_UPDATED event as POST-driven version bumps.
 )
 async def patch_documents(
     items: list[PatchDocumentItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key),
 ):
     """Apply JSON Merge Patches to documents (bulk-first)."""
     # Resolve document_id synonyms in place. Resolution failures are silently
     # left as-is so the per-item flow returns 'not_found' rather than aborting
     # the whole batch.
-    await resolve_bulk_ids(items, "document_id", "document", namespace=None)
+    await resolve_bulk_ids(items, "document_id", "document", namespace=namespace)
 
     service = get_document_service()
     result = await service.bulk_patch(items)
@@ -302,10 +305,11 @@ async def get_latest_document(
 )
 async def delete_documents(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Delete one or more documents."""
-    await resolve_bulk_ids(items, "id", "document", namespace=None)
+    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
 
     identity = get_current_identity()
     service = get_document_service()
@@ -344,10 +348,11 @@ async def delete_documents(
 )
 async def archive_documents(
     items: list[ArchiveItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Archive one or more documents."""
-    await resolve_bulk_ids(items, "id", "document", namespace=None)
+    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
 
     identity = get_current_identity()
     service = get_document_service()

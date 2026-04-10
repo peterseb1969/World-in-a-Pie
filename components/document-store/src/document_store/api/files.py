@@ -297,10 +297,11 @@ async def download_file_content(
 )
 async def update_files_metadata(
     items: list[UpdateFileItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
-    await resolve_bulk_ids(items, "file_id", "file", namespace=None)
+    await resolve_bulk_ids(items, "file_id", "file", namespace=namespace)
 
     from ..models.file import File as FileModel
     identity = get_current_identity()
@@ -338,10 +339,11 @@ async def update_files_metadata(
 )
 async def delete_files(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
-    await resolve_bulk_ids(items, "id", "file", namespace=None)
+    await resolve_bulk_ids(items, "id", "file", namespace=namespace)
 
     from ..models.file import File as FileModel
     identity = get_current_identity()

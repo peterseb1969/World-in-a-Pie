@@ -197,11 +197,12 @@ async def get_term(
 )
 async def update_terms(
     items: list[UpdateTermItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """Update one or more terms."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=None)
+    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):
@@ -229,6 +230,7 @@ async def update_terms(
 )
 async def deprecate_terms(
     items: list[DeprecateTermItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -238,8 +240,8 @@ async def deprecate_terms(
     Optionally specify a replacement term per item.
     """
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "term_id", "term", namespace=None)
-    await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=None)
+    await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
+    await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):
@@ -265,11 +267,12 @@ async def deprecate_terms(
 )
 async def delete_terms(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """Soft-delete one or more terms (set status to inactive)."""
     from wip_auth import resolve_bulk_ids
-    await resolve_bulk_ids(items, "id", "term", namespace=None)
+    await resolve_bulk_ids(items, "id", "term", namespace=namespace)
 
     results = []
     for i, item in enumerate(items):
