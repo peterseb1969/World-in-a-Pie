@@ -318,14 +318,134 @@ No TLS between containers. No Caddy in the internal path. No `NODE_TLS_REJECT_UN
 
 ---
 
+## App-Scoped Authorization
+
+The gateway resolves a unified permission model: `(user/group, app, namespace, role)`.
+
+The existing `NamespaceGrant` model extends naturally:
+
+```
+NamespaceGrant:
+  namespace: clintrial
+  subject: wip-editors           # group
+  subject_type: group
+  permission: write
+  app_scope: clintrial-explorer  # NEW — null means "all apps"
+```
+
+The gateway evaluates all matching grants (user + group, direct + inherited) for the specific app and injects the resolved role:
+
+```
+X-WIP-User: editor@wip.local
+X-WIP-Groups: wip-editors
+X-WIP-App-Role: write
+X-WIP-Namespaces: clintrial(write), wip(read)
+```
+
+Example grant table:
+
+| Subject | Type | App | Namespace | Permission |
+|---------|------|-----|-----------|------------|
+| wip-admins | group | *(all)* | *(all)* | admin |
+| wip-editors | group | clintrial-explorer | clintrial | write |
+| wip-editors | group | react-console | *(all)* | admin |
+| clinical-viewers | group | clintrial-explorer | clintrial | read |
+| clinical-viewers | group | dnd-compendium | — | *(no grant = no access)* |
+
+Apps never see the grant logic — they receive the resolved role in headers. The Console manages grants via the existing Registry API (extended with `app_scope`). No restart, no config files.
+
+---
+
+## Users as WIP Data, Not Infrastructure Config
+
+**Today:** Users live in Dex's config file as static passwords with bcrypt hashes. Adding a user means editing `config.yaml` and restarting Dex. Password changes require regenerating hashes. WIP has no control over user management.
+
+**Ideal:** Users are a WIP resource stored in MongoDB, managed via API, visible in the Console. Dex (or its successor) is just the OIDC protocol layer — it delegates credential validation to WIP.
+
+### Option A: Keep Dex, Add a WIP User Backend (v1.5)
+
+Dex stays as the OIDC protocol handler. A custom connector delegates authentication to WIP's Registry:
+
+```
+Browser → Dex login page → Dex connector → POST /api/registry/auth/validate
+  → Registry checks MongoDB users collection → returns user + groups
+  → Dex issues JWT with groups claim
+```
+
+Users are managed via WIP API:
+- `POST /api/registry/users` — create user
+- `PATCH /api/registry/users/{id}` — update profile, change password
+- `DELETE /api/registry/users/{id}` — deactivate
+- `GET /api/registry/users` — list (admin only)
+
+The Console gets a user management page. No config files, no Dex restarts, no bcrypt hashing in shell scripts.
+
+**MongoDB schema:**
+```
+users collection:
+  email: "admin@wip.local"
+  username: "admin"
+  display_name: "Admin User"
+  password_hash: "$2b$10$..."   # bcrypt
+  groups: ["wip-admins"]
+  status: active
+  created_at: ...
+  last_login: ...
+```
+
+**What this eliminates:**
+- Dex `config.yaml` static passwords section
+- `setup-wip.sh` bcrypt password generation
+- The CASE-39 password desync problem
+- Dex restart on user changes
+- The Dex version sensitivity (v2.38 vs v2.45 for group claims — WIP controls the JWT content)
+
+### Option B: Replace Dex Entirely (v2.0)
+
+WIP implements the OIDC endpoints itself:
+
+- `/.well-known/openid-configuration`
+- `/authorize` (authorization code flow)
+- `/token` (code exchange)
+- `/keys` (JWKS for JWT validation)
+- `/userinfo`
+
+Users in MongoDB. JWTs signed by WIP's own keys. WIP already has JWT validation (`wip-auth`), key concepts, and the user/group model. The gap is token issuance and the authorization code flow.
+
+**What this eliminates:** Dex container, Dex config, Dex SQLite volume, Dex version management — one fewer moving part in the stack.
+
+**What this costs:** Implementing OIDC correctly is non-trivial. But libraries exist (`node-oidc-provider` for Node, `authlib` for Python). And WIP only needs to support the authorization code flow with PKCE — not the full OIDC spec.
+
+### Option C: Defer External Identity (v2.0+)
+
+For organizations with existing identity providers (Active Directory, Okta, Google Workspace), WIP should federate — not replace. Dex's connector model handles this well. The key is that WIP's internal user model is the canonical source of groups and app-scoped permissions, even when the actual authentication happens externally.
+
+```
+Google → Dex connector → WIP maps external identity to internal groups → JWT
+```
+
+The WIP user record becomes a profile enrichment layer:
+- External auth: "this person is authenticated by Google"
+- WIP user record: "this person is in groups [wip-editors, clinical-viewers] and has these app grants"
+
+### Recommendation
+
+**v1.5:** Option A — MongoDB users with Dex connector. Biggest user-facing improvement for the least risk.
+
+**v2.0:** Evaluate Option B. If WIP's OIDC needs remain simple (one flow, internal users only), it's worth eliminating Dex. If federation with external IdPs is needed, keep Dex as the protocol layer and focus on Option C.
+
+**Principle:** Users are data, not config. Everything about a user — credentials, groups, permissions, app access — should be queryable via API and manageable via Console.
+
+---
+
 ## Migration Path
 
-| Version | What changes |
-|---------|-------------|
-| **v1.0** (today) | Compose chunks, setup-wip.sh, manual bootstrap, per-app OIDC. Works but fragile. |
-| **v1.5** | App Manager service, manifest-driven bootstrap, Caddy admin API for dynamic routes. Apps still need compose chunks but lifecycle is managed. |
-| **v2.0** | Gateway auth replaces per-app OIDC. Console app store. Hot add/remove. No compose chunks — just image references. |
-| **v3.0** | App marketplace. Version compatibility enforcement. Automatic updates. Multi-instance federation (install app on instance A from instance B's catalog). |
+| Version | Apps | Auth | Users | Routing |
+|---------|------|------|-------|---------|
+| **v1.0** (today) | Compose chunks, setup-wip.sh, manual bootstrap | Per-app OIDC via Dex | Static in Dex config.yaml | Generated Caddyfile |
+| **v1.5** | App Manager, manifest-driven bootstrap | Per-app OIDC (but managed by App Manager) | MongoDB via WIP API, Dex connector | Caddy admin API (dynamic) |
+| **v2.0** | Hot add/remove via API, Console app store | Gateway auth — apps receive headers only | WIP-native (Dex optional for federation) | Caddy admin API |
+| **v3.0** | Marketplace, version enforcement, auto-updates | App-scoped RBAC, federated IdP support | Full user lifecycle, external IdP mapping | Service mesh / discovery |
 
 ---
 
@@ -340,3 +460,5 @@ No TLS between containers. No Caddy in the internal path. No `NODE_TLS_REJECT_UN
 4. **Multi-tenancy.** Can two instances of the same app run in different namespaces? (e.g., ClinTrial for Roche data in `roche-ct`, ClinTrial for public data in `public-ct`)
 
 5. **App-to-app communication.** Can apps discover and talk to each other? Should they? Or should all inter-app communication go through WIP's data layer?
+
+6. **User management scope.** Should WIP own the full user lifecycle (create, password reset, disable, delete) or should it always delegate to an external IdP? If WIP owns users, it becomes a mini identity provider — is that a feature or a liability?
