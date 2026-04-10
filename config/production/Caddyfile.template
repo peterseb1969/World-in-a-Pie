@@ -5,6 +5,32 @@
     auto_https disable_redirects
 }
 
+# Internal HTTP listener for container-to-container communication.
+# Apps use http://wip-caddy:8080 to avoid TLS cert issues.
+:8080 {
+    # API services
+    handle /api/registry/* {
+        reverse_proxy wip-registry:8001
+    }
+    handle /api/def-store/* {
+        reverse_proxy wip-def-store:8002
+    }
+    handle /api/template-store/* {
+        reverse_proxy wip-template-store:8003
+    }
+    handle /api/document-store/* {
+        reverse_proxy wip-document-store:8004 {
+            flush_interval -1
+        }
+    }
+    handle /api/reporting-sync/* {
+        reverse_proxy wip-reporting-sync:8005
+    }
+    handle /api/ingest-gateway/* {
+        reverse_proxy wip-ingest-gateway:8006
+    }
+}
+
 {{WIP_HOSTNAME}}:8443 {
     tls {
         issuer internal {

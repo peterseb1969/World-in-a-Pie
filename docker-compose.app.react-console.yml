@@ -10,23 +10,26 @@ services:
       wip.app: "true"
       wip.app.name: "React Console"
       wip.app.route: "/apps/rc"
-      wip.app.port: "3010"
+      wip.app.port: "3011"
       wip.app.oidc: "true"
       wip.app.oidc.client_id: "react-console"
       wip.app.oidc.client_secret: "react-console-secret"
+    env_file: .env
     environment:
-      WIP_BASE_URL: ${WIP_BASE_URL:-https://wip-caddy:8443}
+      WIP_BASE_URL: http://wip-caddy:8080
       WIP_API_KEY: ${API_KEY}
       OIDC_ISSUER: https://${WIP_HOSTNAME:-localhost}:8443/dex
       OIDC_CLIENT_ID: react-console
       OIDC_CLIENT_SECRET: react-console-secret
-      PORT: "3010"
+      PORT: "3011"
+      APP_BASE_PATH: /apps/rc
       NODE_ENV: production
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
     networks:
       - wip-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3010/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3011/apps/rc/health"]
       interval: 30s
       timeout: 10s
       retries: 3

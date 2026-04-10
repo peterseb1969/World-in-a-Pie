@@ -11,8 +11,9 @@ services:
       wip.app.name: "ClinTrial Explorer"
       wip.app.route: "/apps/clintrial"
       wip.app.port: "3001"
+    env_file: .env
     environment:
-      WIP_BASE_URL: ${WIP_BASE_URL:-https://wip-caddy:8443}
+      WIP_BASE_URL: http://wip-caddy:8080
       WIP_API_KEY: ${API_KEY}
       VITE_BASE_PATH: /apps/clintrial
       PORT: "3001"
