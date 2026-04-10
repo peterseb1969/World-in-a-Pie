@@ -194,6 +194,21 @@ async def start_restore(
 
     archive_size = archive_path.stat().st_size
 
+    # In restore mode, read the source namespace from the archive manifest.
+    # The URL namespace is used for auth only — the archive is authoritative.
+    if mode == "restore":
+        try:
+            from wip_toolkit.archive import ArchiveReader
+            with ArchiveReader(archive_path) as reader:
+                manifest = reader.read_manifest()
+                if manifest.namespace:
+                    effective_target = manifest.namespace
+                    # Re-check permission on the actual target namespace
+                    await check_namespace_permission(identity, effective_target, "admin")
+        except Exception as exc:
+            logger.warning("Could not read manifest from archive: %s", exc)
+            # Fall through with the URL-derived namespace
+
     options = {
         "mode": mode,
         "target_namespace": effective_target,
