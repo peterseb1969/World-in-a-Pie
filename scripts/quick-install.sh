@@ -281,12 +281,24 @@ log_info "WIP containers started. Waiting 45s for health checks..."
 sleep 45
 echo ""
 
+# Pull the generated passwords out of .env so we can print them in the final
+# banner. The curl-piped UX scrolls the setup-wip.sh output off the top of the
+# terminal, so this is often the only place the user sees the credentials.
+ADMIN_PASS=$(grep '^WIP_DEX_ADMIN_PASS=' "${INSTALL_DIR}/.env" | cut -d= -f2-)
+EDITOR_PASS=$(grep '^WIP_DEX_EDITOR_PASS=' "${INSTALL_DIR}/.env" | cut -d= -f2-)
+VIEWER_PASS=$(grep '^WIP_DEX_VIEWER_PASS=' "${INSTALL_DIR}/.env" | cut -d= -f2-)
+
 cat <<DONE
 ==========================================
   ${BOLD}WIP is (probably) up${NC}
 
   Open:  https://${HOSTNAME_ARG}:8443
-  Login credentials: see the output of setup-wip.sh above.
+
+  Login credentials (also in ${INSTALL_DIR}/.env):
+
+    admin@wip.local    ${ADMIN_PASS}    (admin access)
+    editor@wip.local   ${EDITOR_PASS}    (write access)
+    viewer@wip.local   ${VIEWER_PASS}    (read access)
 
   Notes:
     - Your browser will show a cert warning (Caddy self-signed). Click through.
