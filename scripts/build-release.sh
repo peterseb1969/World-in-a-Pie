@@ -152,9 +152,13 @@ run_build() {
     shift 2
     local extra=("$@")
 
+    # bash 3.2 (default on macOS) aborts under `set -u` on "${arr[@]}" when arr
+    # is empty. The ${arr[@]+"${arr[@]}"} idiom expands to nothing for an
+    # empty/unset array and to the array contents otherwise.
+
     if [[ -z "$PLATFORMS" ]]; then
         # Native-only fast path (unchanged behavior).
-        if $BUILDER build "${extra[@]}" -t "$img" "$context"; then
+        if $BUILDER build ${extra[@]+"${extra[@]}"} -t "$img" "$context"; then
             push_image "$img"
             return 0
         fi
@@ -173,7 +177,7 @@ run_build() {
     IFS=',' read -ra plat_list <<< "$PLATFORMS"
     for plat in "${plat_list[@]}"; do
         log_info "  Building ${plat}"
-        if ! $BUILDER build --platform "$plat" --manifest "$img" "${extra[@]}" "$context"; then
+        if ! $BUILDER build --platform "$plat" --manifest "$img" ${extra[@]+"${extra[@]}"} "$context"; then
             log_error "  Build failed for platform ${plat}"
             return 1
         fi
