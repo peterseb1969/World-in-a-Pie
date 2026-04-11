@@ -10,10 +10,18 @@
 #   scripts/build-release.sh --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
 #   scripts/build-release.sh --service document-store           # Build one service
 #   scripts/build-release.sh --generate-compose                 # Also emit docker-compose.production.yml
+#   scripts/build-release.sh --platforms linux/amd64,linux/arm64 --push  # Multi-arch
 #
 # Image naming:
 #   With --registry: <registry>/<service>:<tag>    (e.g. gitea.local:3000/peter/registry:1.0.0)
 #   Without:         wip/<service>:<tag>           (local only)
+#
+# Multi-arch builds:
+#   Pass --platforms with a comma-separated list (e.g. linux/amd64,linux/arm64).
+#   Each platform is built in turn and added to a manifest list under the image
+#   name. On --push, the manifest list + all per-arch images are pushed together.
+#   Non-native builds use QEMU emulation — expect 2-3x longer per emulated arch.
+#   Without --platforms, the build is native-only (current fast path).
 
 set -euo pipefail
 
@@ -28,6 +36,7 @@ INSECURE=false
 ONLY_SERVICE=""
 GENERATE_COMPOSE=false
 BUILDER="${BUILDER:-podman}"
+PLATFORMS=""  # empty = native only (fast path). Set via --platforms to go multi-arch.
 
 # Colors
 RED='\033[0;31m'
@@ -55,6 +64,9 @@ Options:
   --insecure           Use --tls-verify=false for push (needed for HTTP registries)
   --service NAME       Build only one service
   --generate-compose   Generate docker-compose.production.yml after building
+  --platforms LIST     Comma-separated platforms (e.g. linux/amd64,linux/arm64).
+                       Enables multi-arch manifest builds via QEMU emulation.
+                       Default: native only (fast).
   --builder CMD        Container build tool: podman or docker (default: podman)
   -h, --help           Show this help
 
@@ -62,7 +74,7 @@ Services: registry, def-store, template-store, document-store,
           reporting-sync, ingest-gateway, mcp-server, console
 
 Examples:
-  # Build all and push to Gitea
+  # Build all and push to Gitea (native arch only)
   $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure
 
   # Build one service locally
@@ -70,6 +82,10 @@ Examples:
 
   # Build all + generate production compose
   $(basename "$0") --registry gitea.local:3000/peter --tag 1.0.0 --push --insecure --generate-compose
+
+  # Multi-arch build for GHCR (amd64 + arm64)
+  $(basename "$0") --registry ghcr.io/peterseb1969 --tag v1.0 \\
+                   --platforms linux/amd64,linux/arm64 --push
 EOF
     exit 0
 }
@@ -82,11 +98,18 @@ while [[ $# -gt 0 ]]; do
         --insecure)          INSECURE=true; shift ;;
         --service)           ONLY_SERVICE="$2"; shift 2 ;;
         --generate-compose)  GENERATE_COMPOSE=true; shift ;;
+        --platforms)         PLATFORMS="$2"; shift 2 ;;
         --builder)           BUILDER="$2"; shift 2 ;;
         -h|--help)           usage ;;
         *)                   log_error "Unknown option: $1"; usage ;;
     esac
 done
+
+# Multi-arch requires a registry (manifests must be pushed — local-only is nonsense)
+if [[ -n "$PLATFORMS" ]] && [[ -z "$REGISTRY" ]]; then
+    log_error "--platforms requires --registry (multi-arch builds must be pushable)"
+    exit 1
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────
 
@@ -109,6 +132,62 @@ push_image() {
             $BUILDER push "$img"
         fi
     fi
+}
+
+# run_build: unified build driver.
+#   $1         = image name (fully qualified if REGISTRY is set)
+#   $2         = build context path
+#   $3..       = any extra args to pass to the builder (e.g. --target, --build-arg)
+#
+# Native path (PLATFORMS empty): runs one `builder build -t IMG CONTEXT EXTRA_ARGS`
+# and then push_image. Same behavior as before the multi-arch refactor.
+#
+# Multi-arch path (PLATFORMS set): drops any existing manifest under the image
+# name, creates a fresh one, runs one `builder build --platform P --manifest IMG ...`
+# per platform, then (if --push) runs `builder manifest push --all` to ship the
+# whole list + referenced blobs in one go.
+run_build() {
+    local img="$1"
+    local context="$2"
+    shift 2
+    local extra=("$@")
+
+    if [[ -z "$PLATFORMS" ]]; then
+        # Native-only fast path (unchanged behavior).
+        if $BUILDER build "${extra[@]}" -t "$img" "$context"; then
+            push_image "$img"
+            return 0
+        fi
+        return 1
+    fi
+
+    # Multi-arch path.
+    log_info "  Multi-arch build: ${PLATFORMS}"
+    $BUILDER manifest rm "$img" 2>/dev/null || true
+    if ! $BUILDER manifest create "$img"; then
+        log_error "  Failed to create manifest ${img}"
+        return 1
+    fi
+
+    local plat
+    IFS=',' read -ra plat_list <<< "$PLATFORMS"
+    for plat in "${plat_list[@]}"; do
+        log_info "  Building ${plat}"
+        if ! $BUILDER build --platform "$plat" --manifest "$img" "${extra[@]}" "$context"; then
+            log_error "  Build failed for platform ${plat}"
+            return 1
+        fi
+    done
+
+    if $PUSH; then
+        log_info "  Pushing manifest ${img} (all platforms)"
+        if $INSECURE; then
+            $BUILDER manifest push --all --tls-verify=false "$img" || return 1
+        else
+            $BUILDER manifest push --all "$img" || return 1
+        fi
+    fi
+    return 0
 }
 
 BUILT_IMAGES=()
@@ -178,9 +257,8 @@ build_python_with_libs() {
     ' "$dockerfile" > "$patched"
     mv "$patched" "$dockerfile"
 
-    if $BUILDER build -t "$img" "$tmpdir"; then
+    if run_build "$img" "$tmpdir"; then
         BUILT_IMAGES+=("$img")
-        push_image "$img"
         log_info "  ${svc}: OK"
     else
         log_error "  ${svc}: BUILD FAILED"
@@ -197,9 +275,8 @@ build_python_plain() {
 
     log_step "Building ${img}"
 
-    if $BUILDER build -t "$img" "$svc_dir"; then
+    if run_build "$img" "$svc_dir"; then
         BUILT_IMAGES+=("$img")
-        push_image "$img"
         log_info "  ${svc}: OK"
     else
         log_error "  ${svc}: BUILD FAILED"
@@ -214,19 +291,19 @@ build_console() {
 
     log_step "Building ${img}"
 
-    if $BUILDER build \
-        --target production \
-        --build-arg VITE_OIDC_AUTHORITY=/dex \
-        --build-arg VITE_OIDC_CLIENT_ID=wip-console \
-        --build-arg VITE_OIDC_CLIENT_SECRET=wip-console-secret \
-        --build-arg VITE_OIDC_PROVIDER_NAME=Dex \
-        --build-arg VITE_REPORTING_ENABLED=true \
-        --build-arg VITE_FILES_ENABLED=true \
-        --build-arg VITE_INGEST_ENABLED=true \
-        -t "$img" \
-        "${PROJECT_ROOT}/ui/wip-console"; then
+    local console_args=(
+        --target production
+        --build-arg VITE_OIDC_AUTHORITY=/dex
+        --build-arg VITE_OIDC_CLIENT_ID=wip-console
+        --build-arg VITE_OIDC_CLIENT_SECRET=wip-console-secret
+        --build-arg VITE_OIDC_PROVIDER_NAME=Dex
+        --build-arg VITE_REPORTING_ENABLED=true
+        --build-arg VITE_FILES_ENABLED=true
+        --build-arg VITE_INGEST_ENABLED=true
+    )
+
+    if run_build "$img" "${PROJECT_ROOT}/ui/wip-console" "${console_args[@]}"; then
         BUILT_IMAGES+=("$img")
-        push_image "$img"
         log_info "  console: OK"
     else
         log_error "  console: BUILD FAILED"
@@ -276,11 +353,12 @@ generate_production_compose() {
 
 echo ""
 echo -e "${BOLD}WIP Release Image Builder${NC}"
-echo "Builder:  ${BUILDER}"
-echo "Registry: ${REGISTRY:-<local>}"
-echo "Tag:      ${TAG}"
-echo "Push:     ${PUSH}"
-echo "Insecure: ${INSECURE}"
+echo "Builder:   ${BUILDER}"
+echo "Registry:  ${REGISTRY:-<local>}"
+echo "Tag:       ${TAG}"
+echo "Push:      ${PUSH}"
+echo "Insecure:  ${INSECURE}"
+echo "Platforms: ${PLATFORMS:-<native>}"
 echo ""
 
 START_TIME=$(date +%s)
