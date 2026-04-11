@@ -68,6 +68,11 @@ Options:
 Arguments:
   hostname            Hostname as seen by browsers. Default: localhost
 
+Environment:
+  ANTHROPIC_API_KEY   If set, enables the RC Console askBar / NL query feature.
+                      Must be EXPORTED before the curl pipe (see examples).
+                      When unset, the feature is disabled but the app works.
+
 Examples:
   # Piped from curl (use --yes, no interactive prompts)
   curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \\
@@ -75,6 +80,12 @@ Examples:
 
   # With a LAN hostname
   bash quick-install.sh --yes pi-poe-8gb.local
+
+  # With the Anthropic key for NL query (export first — env prefix on curl
+  # does NOT propagate to bash)
+  export ANTHROPIC_API_KEY=sk-ant-...
+  curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \\
+    | bash -s -- --yes pi-poe-8gb.local
 
   # Smoke test from a local checkout
   bash quick-install.sh --source /Users/peter/Development/World-in-a-Pie localhost
@@ -242,6 +253,9 @@ FILES=(
     "scripts/setup-wip.sh"
     "config/production/Caddyfile.template"
     "config/production/dex-config.template"
+    "docker-compose.app.react-console.yml"
+    "docker-compose.app.dnd.yml"
+    "docker-compose.app.clintrial.yml"
 )
 
 for f in "${FILES[@]}"; do
@@ -256,6 +270,40 @@ log_info "Install kit fetched"
 log_step "Running setup-wip.sh ${HOSTNAME_ARG}"
 echo ""
 bash "${INSTALL_DIR}/scripts/setup-wip.sh" "$HOSTNAME_ARG"
+
+# ── Inject ANTHROPIC_API_KEY into .env if caller set it ────────
+#
+# RC Console's askBar / NL query feature reads ANTHROPIC_API_KEY server-side.
+# The feature degrades gracefully when the key is empty, so this is optional.
+# Caller passes the key via an exported env var BEFORE running curl | bash:
+#
+#     export ANTHROPIC_API_KEY=sk-ant-...
+#     curl -fsSL .../quick-install.sh | bash -s -- --yes pi.local
+#
+# (Note: `VAR=val curl ... | bash ...` does NOT work — the env prefix binds
+# to curl only, not bash. Export is the correct form.)
+
+if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    ENV_FILE="${INSTALL_DIR}/.env"
+    # Strip any existing ANTHROPIC_API_KEY line (re-run safety), then append fresh.
+    if grep -q '^ANTHROPIC_API_KEY=' "$ENV_FILE"; then
+        grep -v '^ANTHROPIC_API_KEY=' "$ENV_FILE" > "${ENV_FILE}.tmp"
+        mv "${ENV_FILE}.tmp" "$ENV_FILE"
+    fi
+    {
+        echo ""
+        echo "# Anthropic API key for RC Console NL query (set by quick-install.sh)"
+        echo "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}"
+    } >> "$ENV_FILE"
+    log_info "ANTHROPIC_API_KEY injected — RC Console NL query enabled"
+else
+    log_warn "ANTHROPIC_API_KEY not set — RC Console NL query will be disabled"
+    log_warn "To enable later:"
+    log_warn "  1. Edit ${INSTALL_DIR}/.env, add  ANTHROPIC_API_KEY=sk-ant-..."
+    log_warn "  2. cd ${INSTALL_DIR}"
+    log_warn "  3. podman-compose -f docker-compose.production.yml \\"
+    log_warn "       -f docker-compose.app.react-console.yml up -d"
+fi
 
 # ── Optionally start ───────────────────────────────────────────
 
@@ -292,7 +340,10 @@ cat <<DONE
 ==========================================
   ${BOLD}WIP is (probably) up${NC}
 
-  Open:  https://${HOSTNAME_ARG}:8443
+  Main console:       https://${HOSTNAME_ARG}:8443
+  React Console:      https://${HOSTNAME_ARG}:8443/apps/rc/
+  D&D Compendium:     https://${HOSTNAME_ARG}:8443/apps/dnd/
+  ClinTrial Explorer: https://${HOSTNAME_ARG}:8443/apps/clintrial/
 
   Login credentials (also in ${INSTALL_DIR}/.env):
 

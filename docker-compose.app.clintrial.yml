@@ -4,7 +4,7 @@
 
 services:
   clintrial-explorer:
-    image: gitea.local:3000/peter/clintrial-explorer:test2
+    image: gitea.local:3000/peter/clintrial-explorer:v1.0-rc2
     container_name: wip-clintrial-explorer
     labels:
       wip.app: "true"
@@ -16,6 +16,7 @@ services:
       WIP_BASE_URL: http://wip-caddy:8080
       WIP_API_KEY: ${API_KEY}
       VITE_BASE_PATH: /apps/clintrial
+      APP_BASE_PATH: /apps/clintrial
       PORT: "3001"
       NODE_ENV: production
     networks:

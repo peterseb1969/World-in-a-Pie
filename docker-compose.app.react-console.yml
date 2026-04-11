@@ -4,7 +4,7 @@
 
 services:
   react-console:
-    image: gitea.local:3000/peter/react-console:test2
+    image: gitea.local:3000/peter/react-console:v1.0-rc2
     container_name: wip-react-console
     labels:
       wip.app: "true"
@@ -25,6 +25,12 @@ services:
       APP_BASE_PATH: /apps/rc
       NODE_ENV: production
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # askBar / NL query feature. Leave empty to disable — RC Console degrades
+      # gracefully (the page shows an "unavailable" notice). To enable, set
+      # ANTHROPIC_API_KEY=sk-ant-... in .env and recreate this container:
+      #   podman-compose -f docker-compose.production.yml \
+      #                  -f docker-compose.app.react-console.yml up -d
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     networks:
       - wip-network
     restart: unless-stopped
