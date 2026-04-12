@@ -1,6 +1,6 @@
 services:
   dnd-compendium:
-    image: gitea.local:3000/peter/dnd-compendium:v1.0-rc3
+    image: gitea.local:3000/peter/dnd-compendium:v1.0-rc4
     container_name: wip-dnd-compendium
     labels:
       wip.app: "true"
