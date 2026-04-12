@@ -402,6 +402,12 @@ for f in "${APPROVED_FILES[@]}"; do
     COMPOSE_FILES="$COMPOSE_FILES -f $f"
 done
 
+# Always pull latest images before starting. Without this, Podman reuses
+# locally cached images even when the remote registry has a newer digest
+# for the same tag — causing stale code to run after a rebuild+push.
+echo "Pulling latest images..."
+$COMPOSE $COMPOSE_FILES pull --ignore-buildable 2>/dev/null || $COMPOSE $COMPOSE_FILES pull 2>/dev/null || true
+
 echo "Starting: $COMPOSE $COMPOSE_FILES up -d"
 $COMPOSE $COMPOSE_FILES up -d
 STARTEOF

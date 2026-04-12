@@ -229,6 +229,15 @@ if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)
         echo "$OLD_VOLUMES" | xargs -r podman volume rm 2>/dev/null || true
     fi
 
+    # Remove cached WIP images. Without this, Podman reuses locally cached
+    # images even when the registry has a newer build under the same tag.
+    # This caused stale code to run after a rebuild+push cycle.
+    OLD_IMAGES=$(podman images --format '{{.Repository}}:{{.Tag}}' | grep -E "^gitea\.local:3000/peter/|^ghcr\.io/peterseb1969/" || true)
+    if [[ -n "$OLD_IMAGES" ]]; then
+        log_step "Removing cached WIP images"
+        echo "$OLD_IMAGES" | xargs -r podman rmi -f 2>/dev/null || true
+    fi
+
     rm -rf "$INSTALL_DIR"
 fi
 
