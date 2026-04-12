@@ -216,7 +216,17 @@ class SearchService:
                 all_results.extend(result)
                 counts[entity_type] = len(result)
 
-        # Sort by relevance (exact matches first, then by updated_at)
+        # Sort by relevance (exact matches first, then by updated_at).
+        # Normalize updated_at to UTC-aware to avoid naive/aware comparison errors.
+        _epoch = datetime.min.replace(tzinfo=UTC)
+
+        def _sort_dt(dt: datetime | None) -> datetime:
+            if dt is None:
+                return _epoch
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=UTC)
+            return dt
+
         query_lower = query.lower()
         all_results.sort(
             key=lambda r: (
@@ -224,7 +234,7 @@ class SearchService:
                 1 if r.id.lower() == query_lower else
                 2 if r.value and query_lower in r.value.lower() else
                 3,
-                r.updated_at or datetime.min.replace(tzinfo=UTC)
+                _sort_dt(r.updated_at),
             ),
             reverse=False  # Lower score = better match
         )
@@ -396,26 +406,107 @@ class SearchService:
     async def _search_documents(
         self, query: str, namespace: str | None, status: str | None, limit: int
     ) -> list[SearchResult]:
-        """Search documents in Document Store."""
+        """Search documents via PostgreSQL reporting tables.
+
+        Builds a UNION ALL across all ``doc_*`` tables, searching every
+        text/varchar column with ILIKE. This is a real content search — it
+        finds "Ankylosaurus" inside a monster's name field, not just in the
+        document ID or template name.
+
+        Falls back to the REST API scan if PostgreSQL is unavailable.
+        """
+        if not self.postgres_pool:
+            return await self._search_documents_rest_fallback(query, namespace, status, limit)
+
+        try:
+            async with self.postgres_pool.acquire() as conn:
+                # 1. Discover doc_* tables.
+                tables = await conn.fetch("""
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                      AND table_type = 'BASE TABLE'
+                      AND table_name LIKE 'doc_%'
+                    ORDER BY table_name
+                """)
+
+                if not tables:
+                    return []
+
+                pattern = f"%{query}%"
+                results: list[SearchResult] = []
+
+                # 2. Search each table individually — simpler and more robust
+                #    than a giant UNION ALL across heterogeneous schemas.
+                for tbl_row in tables:
+                    if len(results) >= limit:
+                        break
+
+                    tname = tbl_row["table_name"]
+
+                    # Find text-searchable columns in this table.
+                    cols = await conn.fetch("""
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = $1
+                          AND data_type IN ('text', 'character varying')
+                    """, tname)
+
+                    if not cols:
+                        continue
+
+                    col_names = [c["column_name"] for c in cols]
+                    or_clauses = " OR ".join(f'"{c}" ILIKE $1' for c in col_names)
+
+                    # Derive template_value from table name: doc_ct_trial → CT_TRIAL
+                    template_value = tname[4:].upper()
+
+                    # Check which ID column exists (document_id or entity_id).
+                    id_col = "document_id" if "document_id" in col_names else None
+                    if not id_col:
+                        all_cols = await conn.fetch("""
+                            SELECT column_name FROM information_schema.columns
+                            WHERE table_schema = 'public' AND table_name = $1
+                        """, tname)
+                        all_col_names = [c["column_name"] for c in all_cols]
+                        id_col = "document_id" if "document_id" in all_col_names else (
+                            "entity_id" if "entity_id" in all_col_names else None
+                        )
+
+                    id_expr = f'"{id_col}"' if id_col else "''"
+                    remaining = limit - len(results)
+
+                    sql = f'SELECT {id_expr} AS doc_id FROM "{tname}" WHERE ({or_clauses}) LIMIT {remaining}'
+                    try:
+                        rows = await conn.fetch(sql, pattern)
+                    except Exception as table_err:
+                        logger.warning("Search in table %s failed: %s", tname, table_err)
+                        continue
+
+                    for row in rows:
+                        results.append(SearchResult(
+                            type="document",
+                            id=row["doc_id"] or "",
+                            value=template_value,
+                            label=f"{template_value} document",
+                            status="active",
+                            description=f"Matched in {tname}",
+                            updated_at=None,
+                        ))
+
+                return results
+
+        except Exception as e:
+            logger.error(f"PostgreSQL document search failed: {e}")
+            return await self._search_documents_rest_fallback(query, namespace, status, limit)
+
+    async def _search_documents_rest_fallback(
+        self, query: str, namespace: str | None, status: str | None, limit: int
+    ) -> list[SearchResult]:
+        """Fallback: scan documents via REST API (limited to first 100)."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # First fetch templates to build template_id -> value mapping
-                # (Document list API returns template_value as null)
-                tpl_params: dict[str, Any] = {"page_size": 100}
-                if namespace:
-                    tpl_params["namespace"] = namespace
-                template_response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates",
-                    params=tpl_params,
-                    headers={"X-API-Key": settings.api_key}
-                )
-
-                template_map: dict[str, str] = {}
-                if template_response.status_code == 200:
-                    for tpl in template_response.json().get("items", []):
-                        template_map[tpl.get("template_id")] = tpl.get("value", "")
-
-                # Fetch more items than limit to search through, then filter
                 params: dict[str, Any] = {"page_size": 100}
                 if namespace:
                     params["namespace"] = namespace
@@ -437,13 +528,8 @@ class SearchService:
 
                 for item in data.get("items", []):
                     doc_id = item.get("document_id", "")
-                    template_id = item.get("template_id", "")
-                    # Get template_value from our lookup (API returns null)
-                    template_value = template_map.get(template_id, item.get("template_value") or "unknown")
-
-                    # Filter by query (search in ID and template value)
-                    if (query_lower in doc_id.lower() or
-                        query_lower in template_value.lower()):
+                    template_value = item.get("template_value") or "unknown"
+                    if query_lower in doc_id.lower() or query_lower in template_value.lower():
                         results.append(SearchResult(
                             type="document",
                             id=doc_id,
@@ -456,7 +542,7 @@ class SearchService:
 
                 return results[:limit]
         except Exception as e:
-            logger.error(f"Document search failed: {e}")
+            logger.error(f"Document search REST fallback failed: {e}")
             return []
 
     async def get_recent_activity(
