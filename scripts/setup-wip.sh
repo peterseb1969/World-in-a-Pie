@@ -249,6 +249,13 @@ if [[ -n "$APP_ROUTES" ]]; then
                 # Expand each ROUTE: entry into a Caddy handle block
                 while IFS=: read -r _ route container port; do
                     [[ -z "$route" ]] && continue
+                    # Redirect /apps/foo → /apps/foo/ (trailing slash).
+                    # Without this, Caddy's handle /apps/foo/* glob doesn't
+                    # match the bare path, and it falls through to the
+                    # default handler (Vue Console).
+                    echo "    handle ${route} {"
+                    echo "        redir ${route}/ permanent"
+                    echo "    }"
                     echo "    handle ${route}/* {"
                     echo "        reverse_proxy ${container}:${port}"
                     echo "    }"
