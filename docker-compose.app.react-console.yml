@@ -23,6 +23,7 @@ services:
       OIDC_CLIENT_SECRET: react-console-secret
       PORT: "3011"
       APP_BASE_PATH: /apps/rc
+      NATS_URL: nats://wip-nats:4222
       NODE_ENV: production
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
       # askBar / NL query feature. Leave empty to disable — RC Console degrades

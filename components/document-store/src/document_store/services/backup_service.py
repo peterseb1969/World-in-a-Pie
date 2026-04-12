@@ -47,9 +47,38 @@ from wip_toolkit.export.exporter import run_export
 from wip_toolkit.import_.importer import run_import
 from wip_toolkit.models import ProgressEvent
 
-from ..models.backup_job import BackupJob, BackupJobStatus
+from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
 
 logger = logging.getLogger("document_store.backup_service")
+
+import httpx as _httpx
+
+
+async def _trigger_reporting_batch_sync(namespace: str) -> None:
+    """Fire-and-forget POST to reporting-sync's batch endpoint.
+
+    Called after a successful restore so that the restored documents appear
+    in PostgreSQL. Failures are logged but never propagated — reporting-sync
+    is a convenience layer, not a correctness dependency.
+    """
+    url = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
+    api_key = os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
+    try:
+        async with _httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(
+                f"{url}/api/reporting-sync/sync/batch",
+                json={"namespace": namespace},
+                headers={"X-API-Key": api_key},
+            )
+            logger.info(
+                "Triggered reporting batch sync for namespace %s: HTTP %s",
+                namespace, resp.status_code,
+            )
+    except Exception:
+        logger.warning(
+            "Could not trigger reporting batch sync for namespace %s (non-fatal)",
+            namespace, exc_info=True,
+        )
 
 
 # Sentinel placed on the queue after the worker thread finishes (success or
@@ -133,6 +162,12 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         if job.archive_path:
             with contextlib.suppress(OSError):
                 job.archive_size = Path(job.archive_path).stat().st_size
+        # After a successful restore, trigger a batch sync so reporting-sync
+        # picks up the restored documents in PostgreSQL. The restore engine
+        # writes directly to MongoDB and bypasses the NATS event path that
+        # reporting-sync normally subscribes to.
+        if job.kind == BackupJobKind.RESTORE and job.namespace:
+            asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace))
     elif event.phase == "error":
         job.status = BackupJobStatus.FAILED
         job.error = event.message
