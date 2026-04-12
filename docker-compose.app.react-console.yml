@@ -24,6 +24,7 @@ services:
       PORT: "3011"
       APP_BASE_PATH: /apps/rc
       NATS_URL: nats://wip-nats:4222
+      MONGO_URI: ${WIP_MONGO_URI:-mongodb://wip-mongodb:27017/}
       NODE_ENV: production
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
       # askBar / NL query feature. Leave empty to disable — RC Console degrades
