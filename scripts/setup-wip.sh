@@ -404,6 +404,14 @@ if [[ ${#APPS[@]} -gt 0 ]]; then
     echo ""
 fi
 
+# Ensure wip-network exists before compose tries to use it.
+# The production compose defines the network, but app chunks declare it as
+# external. When compose processes the app chunks first, it fails because
+# the network doesn't exist yet.
+if command -v podman &>/dev/null; then
+    podman network exists wip-network 2>/dev/null || podman network create wip-network >/dev/null 2>&1
+fi
+
 # Build compose command
 for f in "${APPROVED_FILES[@]}"; do
     COMPOSE_FILES="$COMPOSE_FILES -f $f"
