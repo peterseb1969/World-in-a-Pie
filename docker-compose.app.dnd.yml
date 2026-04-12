@@ -15,6 +15,8 @@ services:
       PORT: "3012"
       SERVER_PORT: "3012"
       WIP_NAMESPACE: dnd
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MCP_URL: http://wip-mcp-server:8007/sse
       NODE_ENV: production
     networks:
       - wip-network

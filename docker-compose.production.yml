@@ -299,6 +299,28 @@ services:
       retries: 3
       start_period: 10s
 
+  mcp-server:
+    image: gitea.local:3000/peter/mcp-server:v1.0-rc3
+    container_name: wip-mcp-server
+    ports:
+      - "8007:8007"
+    env_file: .env
+    environment:
+      PYTHONPATH: /app/src
+      WIP_API_KEY: ${API_KEY}
+      REGISTRY_URL: http://wip-registry:8001
+      DEF_STORE_URL: http://wip-def-store:8002
+      TEMPLATE_STORE_URL: http://wip-template-store:8003
+      DOCUMENT_STORE_URL: http://wip-document-store:8004
+      REPORTING_SYNC_URL: http://wip-reporting-sync:8005
+    command: ["python", "-m", "wip_mcp", "--sse"]
+    networks:
+      - wip-network
+    restart: unless-stopped
+    depends_on:
+      registry:
+        condition: service_healthy
+
   console:
     image: gitea.local:3000/peter/console:v1.0-rc3
     container_name: wip-console
