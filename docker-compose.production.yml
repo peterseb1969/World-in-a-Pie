@@ -313,6 +313,8 @@ services:
       TEMPLATE_STORE_URL: http://wip-template-store:8003
       DOCUMENT_STORE_URL: http://wip-document-store:8004
       REPORTING_SYNC_URL: http://wip-reporting-sync:8005
+      MCP_PORT: "8007"
+      MCP_ALLOWED_HOST: wip-mcp-server
     command: ["python", "-m", "wip_mcp", "--sse"]
     networks:
       - wip-network
