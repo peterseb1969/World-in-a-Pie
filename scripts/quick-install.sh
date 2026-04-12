@@ -247,6 +247,22 @@ if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)
     rm -rf "$INSTALL_DIR"
 fi
 
+# Always check for orphan WIP resources even when the install dir is empty
+# or doesn't exist. A previous install can fail AFTER creating containers,
+# pods, and volumes but BEFORE writing anything to the install dir — or the
+# user may have deleted the dir manually while Podman resources persist.
+INSTALL_BASENAME="$(basename "$INSTALL_DIR")"
+ORPHAN_CONTAINERS=$(podman ps -a --filter 'name=wip-' --format '{{.Names}}' 2>/dev/null || true)
+ORPHAN_PODS=$(podman pod ls -q 2>/dev/null || true)
+ORPHAN_VOLUMES=$(podman volume ls -q 2>/dev/null | grep "^${INSTALL_BASENAME}_wip-" || true)
+
+if [[ -n "$ORPHAN_CONTAINERS" || -n "$ORPHAN_PODS" || -n "$ORPHAN_VOLUMES" ]]; then
+    log_step "Cleaning orphan WIP resources from a previous install"
+    [[ -n "$ORPHAN_CONTAINERS" ]] && echo "$ORPHAN_CONTAINERS" | xargs -r podman rm -f 2>/dev/null || true
+    [[ -n "$ORPHAN_PODS" ]] && echo "$ORPHAN_PODS" | xargs -r podman pod rm -f 2>/dev/null || true
+    [[ -n "$ORPHAN_VOLUMES" ]] && echo "$ORPHAN_VOLUMES" | xargs -r podman volume rm 2>/dev/null || true
+fi
+
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 log_info "Install directory: ${INSTALL_DIR}"
