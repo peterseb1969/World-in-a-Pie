@@ -19,6 +19,7 @@ services:
       WIP_BASE_URL: http://wip-caddy:8080
       WIP_API_KEY: ${API_KEY}
       OIDC_ISSUER: https://${WIP_HOSTNAME:-localhost}:8443/dex
+      OIDC_INTERNAL_ISSUER: http://wip-dex:5556/dex
       OIDC_CLIENT_ID: react-console
       OIDC_CLIENT_SECRET: react-console-secret
       PORT: "3011"
