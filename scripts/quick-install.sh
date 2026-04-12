@@ -206,6 +206,29 @@ if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)
         log_error "Aborted."
         exit 1
     fi
+
+    # Stop any running WIP containers from the previous install.
+    if [[ -f "${INSTALL_DIR}/docker-compose.production.yml" ]]; then
+        log_step "Stopping previous WIP containers"
+        # Compose files may reference app chunks that no longer exist — ignore errors.
+        (cd "$INSTALL_DIR" && podman-compose -f docker-compose.production.yml down 2>/dev/null) || true
+        # Force-remove any strays that survived compose down.
+        podman ps -a --filter 'name=wip-' --format '{{.Names}}' | xargs -r podman rm -f 2>/dev/null || true
+    fi
+
+    # Remove Podman volumes from the previous install. These live in Podman's
+    # internal storage (~/.local/share/containers/storage/volumes/), NOT in the
+    # install directory. Without this step, a fresh install reuses old volumes
+    # whose passwords no longer match the newly generated .env — causing silent
+    # auth failures (e.g. Postgres rejects the new password because the volume
+    # still holds the old one from initdb).
+    INSTALL_BASENAME="$(basename "$INSTALL_DIR")"
+    OLD_VOLUMES=$(podman volume ls -q | grep "^${INSTALL_BASENAME}_wip-" || true)
+    if [[ -n "$OLD_VOLUMES" ]]; then
+        log_step "Removing ${INSTALL_BASENAME}_wip-* volumes from previous install"
+        echo "$OLD_VOLUMES" | xargs -r podman volume rm 2>/dev/null || true
+    fi
+
     rm -rf "$INSTALL_DIR"
 fi
 
