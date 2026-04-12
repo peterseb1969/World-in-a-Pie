@@ -216,6 +216,12 @@ if [[ -d "$INSTALL_DIR" ]] && [[ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)
         podman ps -a --filter 'name=wip-' --format '{{.Names}}' | xargs -r podman rm -f 2>/dev/null || true
     fi
 
+    # Remove pods created by podman-compose. Version 1.5+ creates a pod per
+    # compose project. Without this, the next install fails with "container
+    # name already in use" because the old pod still holds references to
+    # the removed containers.
+    podman pod ls -q 2>/dev/null | xargs -r podman pod rm -f 2>/dev/null || true
+
     # Remove Podman volumes from the previous install. These live in Podman's
     # internal storage (~/.local/share/containers/storage/volumes/), NOT in the
     # install directory. Without this step, a fresh install reuses old volumes
