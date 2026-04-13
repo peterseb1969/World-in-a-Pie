@@ -103,6 +103,12 @@ class AuthConfig(BaseSettings):
         description="Salt used when hashing API keys"
     )
 
+    # Trusted proxy headers
+    trust_proxy_headers: bool = Field(
+        default=False,
+        description="Trust X-WIP-User/X-WIP-Groups headers from proxies (requires valid API key)"
+    )
+
     # Groups
     default_groups: list[str] = Field(
         default_factory=lambda: ["wip-users"],
@@ -228,6 +234,20 @@ class AuthConfig(BaseSettings):
                         keys = [k for k in keys if k.name != key_record.name]
                     keys.append(key_record)
                     seen_names.add(key_record.name)
+
+        # Warn about unscoped non-privileged keys at load time
+        _PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
+        import logging
+        logger = logging.getLogger("wip_auth")
+        for key in keys:
+            if key.namespaces is None:
+                if not any(g in _PRIVILEGED_GROUPS for g in key.groups):
+                    logger.warning(
+                        "API key '%s' has no namespace scope and is not in a privileged "
+                        "group — it will have NO access. Add 'namespaces' to the key "
+                        "config or assign it to wip-admins/wip-services.",
+                        key.name,
+                    )
 
         return keys
 

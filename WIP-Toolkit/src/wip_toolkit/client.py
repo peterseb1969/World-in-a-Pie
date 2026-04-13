@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 import httpx
 from rich.console import Console
@@ -29,7 +29,7 @@ class WIPClient:
         self._client = httpx.Client(
             headers={"X-API-Key": config.api_key},
             verify=config.verify_ssl,
-            timeout=httpx.Timeout(60.0, connect=10.0),
+            timeout=httpx.Timeout(config.request_timeout_seconds, connect=10.0),
             follow_redirects=True,
         )
 
@@ -68,6 +68,14 @@ class WIPClient:
         self._check_response(resp)
         return resp.json()
 
+    def patch(self, service: str, path: str, json: Any = None) -> dict:
+        url = f"{self.config.service_url(service)}{path}"
+        if self.config.verbose:
+            console.print(f"[dim]PATCH {url}[/dim]")
+        resp = self._client.patch(url, json=json)
+        self._check_response(resp)
+        return resp.json()
+
     def post_form(
         self, service: str, path: str,
         data: dict[str, str] | None = None,
@@ -80,14 +88,31 @@ class WIPClient:
         self._check_response(resp)
         return resp.json()
 
-    def get_stream(self, service: str, path: str) -> httpx.Response:
-        """Get a streaming response (for file downloads)."""
+    def stream_to_file(
+        self,
+        service: str,
+        path: str,
+        dest: BinaryIO,
+        chunk_size: int = 64 * 1024,
+    ) -> None:
+        """Stream a GET response body directly into ``dest``.
+
+        Uses ``httpx.Client.stream`` so the response body is consumed in
+        chunks of ``chunk_size`` bytes — no full body is ever materialized
+        in Python. The httpx context manager guarantees connection cleanup
+        even if ``dest.write`` raises (CASE-28).
+        """
         url = f"{self.config.service_url(service)}{path}"
         if self.config.verbose:
-            console.print(f"[dim]GET (stream) {url}[/dim]")
-        resp = self._client.get(url)
-        self._check_response(resp)
-        return resp
+            console.print(f"[dim]GET (stream→file) {url}[/dim]")
+        with self._client.stream("GET", url) as resp:
+            if not resp.is_success:
+                # Body of a streamed response is not pre-read; read it now
+                # so _check_response can surface a useful detail message.
+                resp.read()
+                self._check_response(resp)
+            for chunk in resp.iter_bytes(chunk_size=chunk_size):
+                dest.write(chunk)
 
     def _check_response(self, resp: httpx.Response) -> None:
         if resp.is_success:

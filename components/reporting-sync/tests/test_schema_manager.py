@@ -20,7 +20,6 @@ from reporting_sync.models import (
 )
 from reporting_sync.schema_manager import SchemaManager
 
-
 # =========================================================================
 # Fixtures
 # =========================================================================
@@ -46,7 +45,7 @@ def mock_pool():
 @pytest.fixture
 def sm(mock_pool):
     """SchemaManager wired to the mock pool."""
-    pool, conn = mock_pool
+    pool, _conn = mock_pool
     return SchemaManager(pool)
 
 
@@ -414,7 +413,7 @@ class TestUpdateTableSchema:
     @pytest.mark.asyncio
     async def test_adds_new_column(self, mock_pool):
         """New field not in existing columns triggers ALTER TABLE ADD COLUMN."""
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         # Simulate table exists with just the name column
@@ -441,7 +440,7 @@ class TestUpdateTableSchema:
     @pytest.mark.asyncio
     async def test_no_migration_when_no_new_columns(self, mock_pool):
         """When all fields already exist, no ALTER TABLE is generated."""
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         sm.table_exists = AsyncMock(return_value=True)
@@ -459,7 +458,7 @@ class TestUpdateTableSchema:
     @pytest.mark.asyncio
     async def test_creates_table_if_not_exists(self, mock_pool):
         """If table does not exist, update_table_schema creates it."""
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         sm.table_exists = AsyncMock(return_value=False)
@@ -475,7 +474,7 @@ class TestUpdateTableSchema:
     @pytest.mark.asyncio
     async def test_new_term_field_adds_two_columns(self, mock_pool):
         """Adding a new term field adds both value and term_id columns."""
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         sm.table_exists = AsyncMock(return_value=True)
@@ -501,7 +500,7 @@ class TestUpdateTableSchema:
     @pytest.mark.asyncio
     async def test_alter_table_strips_not_null_and_pk(self, mock_pool):
         """ALTER TABLE ADD COLUMN strips NOT NULL and PRIMARY KEY constraints."""
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         sm.table_exists = AsyncMock(return_value=True)
@@ -552,7 +551,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_creates_table_when_not_exists(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
@@ -573,7 +572,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_updates_schema_when_table_exists(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=True)
         sm.update_table_schema = AsyncMock(return_value=["ALTER TABLE ..."])
@@ -595,7 +594,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_returns_empty_string_when_sync_disabled(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
 
         template = {
@@ -610,7 +609,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_parses_term_fields_correctly(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
@@ -634,7 +633,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_parses_file_fields_correctly(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
@@ -661,7 +660,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_parses_semantic_type_fields(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
@@ -682,7 +681,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_uses_custom_table_name_from_reporting_config(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
@@ -699,7 +698,7 @@ class TestEnsureTableForTemplate:
 
     @pytest.mark.asyncio
     async def test_handles_array_item_type(self, mock_pool):
-        pool, conn = mock_pool
+        pool, _conn = mock_pool
         sm = SchemaManager(pool)
         sm.table_exists = AsyncMock(return_value=False)
         sm.create_table = AsyncMock(return_value="CREATE TABLE ...")

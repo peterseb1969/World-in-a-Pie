@@ -2,6 +2,29 @@
 
 This document describes all 4 deployment scenarios and how networking, Caddy, and service endpoints must be configured in each case.
 
+## Critical: Three-Value OIDC Rule
+
+> **These THREE values MUST be identical — mismatch causes 401 errors:**
+>
+> | Config File | Variable |
+> |-------------|----------|
+> | `config/dex/config.yaml` | `issuer` |
+> | `.env` | `WIP_AUTH_JWT_ISSUER_URL` |
+> | `.env` | `VITE_OIDC_AUTHORITY` |
+>
+> **After changing `.env`, RECREATE containers** (`podman-compose down && up -d`), not just `restart`.
+
+## Critical: Caddy `handle` vs `handle_path`
+
+> **Always use `handle`, NOT `handle_path`** for API routes. Services expect the full path.
+>
+> ```caddyfile
+> handle /api/def-store/*       # CORRECT — preserves /api/def-store/
+> handle_path /api/def-store/*  # WRONG — strips prefix, causes 404s
+> ```
+
+---
+
 ## Quick Reference
 
 | Scenario | Console Access | API Access | OIDC (Dex) |

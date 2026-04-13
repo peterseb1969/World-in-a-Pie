@@ -1,16 +1,15 @@
 """Document API endpoints."""
 
 import asyncio
-import contextlib
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
-    EntityNotFoundError,
     check_namespace_permission,
     get_current_identity,
-    resolve_accessible_namespaces,
-    resolve_entity_id,
+    resolve_bulk_ids,
+    resolve_namespace_filter,
+    resolve_or_404,
 )
 
 from ..models.api_models import (
@@ -24,6 +23,7 @@ from ..models.api_models import (
     DocumentQueryResponse,
     DocumentResponse,
     DocumentVersionResponse,
+    PatchDocumentItem,
 )
 from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
@@ -60,12 +60,10 @@ async def create_documents(
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
 
-    # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID)
-    for item in items:
-        with contextlib.suppress(EntityNotFoundError):
-            item.template_id = await resolve_entity_id(
-                item.template_id, "template", item.namespace
-            )
+    # Resolve template_id synonyms to canonical IDs (e.g., "PATIENT" → UUID).
+    # namespace=None is correct here — each item carries its own namespace field,
+    # and resolve_bulk_ids reads it per-item.
+    await resolve_bulk_ids(items, "template_id", "template", namespace=None)
 
     service = get_document_service()
 
@@ -92,9 +90,54 @@ async def create_documents(
         result = BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
     else:
         # Bulk path — uses cache warmup and batch Registry calls
-        namespace = items[0].namespace if items else "wip"
+        namespace = items[0].namespace
         result = await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
 
+    await asyncio.sleep(get_throttle_delay())
+    return result
+
+
+@router.patch(
+    "",
+    response_model=BulkResponse,
+    summary="Patch documents (partial update)",
+    description="""
+Apply JSON Merge Patches (RFC 7396) to one or more existing documents.
+
+Each item is processed independently and a new document version is created
+on success. Errors are returned per item in the BulkResponse — the endpoint
+always returns HTTP 200, matching the bulk-first contract.
+
+Merge semantics:
+- Objects at the same path are deep-merged
+- Arrays are replaced (send the full array)
+- A null value deletes the field
+
+Constraints:
+- Identity fields cannot be changed (use POST to create a new document)
+- Namespace cannot be changed (PATCH only modifies `data`)
+- Archived documents are rejected; unarchive first
+- Optional per-item `if_match` provides optimistic concurrency control
+
+After merge the full document is re-validated against the same template
+version recorded on the existing document, term and file references are
+re-resolved, and a new version is written. Reporting-sync sees the same
+DOCUMENT_UPDATED event as POST-driven version bumps.
+"""
+)
+async def patch_documents(
+    items: list[PatchDocumentItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    _: str = Depends(require_api_key),
+):
+    """Apply JSON Merge Patches to documents (bulk-first)."""
+    # Resolve document_id synonyms in place. Resolution failures are silently
+    # left as-is so the per-item flow returns 'not_found' rather than aborting
+    # the whole batch.
+    await resolve_bulk_ids(items, "document_id", "document", namespace=namespace)
+
+    service = get_document_service()
+    result = await service.bulk_patch(items)
     await asyncio.sleep(get_throttle_delay())
     return result
 
@@ -123,18 +166,13 @@ async def list_documents(
     When cursor is provided, page parameter is ignored and total is -1.
     """
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve template_id synonym if provided (e.g., "PATIENT" → UUID)
     if template_id:
-        with contextlib.suppress(EntityNotFoundError):
-            template_id = await resolve_entity_id(
-                template_id, "template", namespace or "wip"
-            )
+        template_id = await resolve_or_404(
+            template_id, "template", namespace, param_name="template_id"
+        )
 
     service = get_document_service()
     return await service.list_documents(
@@ -143,10 +181,9 @@ async def list_documents(
         status=status,
         page=page,
         page_size=page_size,
-        namespace=namespace,
         latest_only=latest_only,
         cursor=cursor,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
 
 
@@ -159,14 +196,20 @@ async def list_documents(
 async def get_document(
     document_id: str,
     version: int | None = Query(None, description="Specific version (default: latest)"),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_document(document_id, version=version)
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document
 
@@ -179,14 +222,23 @@ async def get_document(
 )
 async def get_document_versions(
     document_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get all versions of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
     service = get_document_service()
     versions = await service.get_document_versions(document_id)
 
     if not versions:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Check namespace — fetch the document to get its namespace
+    doc = await service.get_document(document_id)
+    if doc:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, doc.namespace, "read")
 
     return versions
 
@@ -200,14 +252,20 @@ async def get_document_versions(
 async def get_document_version(
     document_id: str,
     version: int,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get a specific version of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_document_version(document_id, version)
 
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document
 
@@ -225,14 +283,20 @@ the current data. The response includes the latest document ID and version.
 )
 async def get_latest_document(
     document_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get the latest version of a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
     service = get_document_service()
     document = await service.get_latest_document(document_id)
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document
 
@@ -240,22 +304,38 @@ async def get_latest_document(
 @router.delete(
     "",
     response_model=BulkResponse,
-    summary="Soft-delete documents",
-    description="Soft-delete one or more documents by setting their status to inactive."
+    summary="Delete documents",
+    description="Delete one or more documents. Soft-delete by default. Set hard_delete=true to permanently remove (requires namespace deletion_mode='full')."
 )
 async def delete_documents(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
-    """Soft-delete one or more documents."""
+    """Delete one or more documents."""
+    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
+
+    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
-        success = await service.delete_document(item.id, item.updated_by)
-        if not success:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
-        else:
-            results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        try:
+            doc = await service.get_document(item.id)
+            if not doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+                continue
+            await check_namespace_permission(identity, doc.namespace, "write")
+            success = await service.delete_document(
+                item.id, item.updated_by,
+                hard_delete=item.hard_delete,
+                version=item.version,
+            )
+            if not success:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            else:
+                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except ValueError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error=str(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=results, total=len(items),
@@ -272,12 +352,21 @@ async def delete_documents(
 )
 async def archive_documents(
     items: list[ArchiveItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Archive one or more documents."""
+    await resolve_bulk_ids(items, "id", "document", namespace=namespace)
+
+    identity = get_current_identity()
     service = get_document_service()
     results = []
     for i, item in enumerate(items):
+        doc = await service.get_document(item.id)
+        if not doc:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
+            continue
+        await check_namespace_permission(identity, doc.namespace, "write")
         success = await service.archive_document(item.id, item.archived_by)
         if not success:
             results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found"))
@@ -307,11 +396,20 @@ Example filters:
 )
 async def query_documents(
     request: DocumentQueryRequest,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution and filtering"),
     _: str = Depends(require_api_key)
 ):
     """Query documents with filters."""
+    if request.template_id:
+        request.template_id = await resolve_or_404(
+            request.template_id, "template", namespace=namespace, param_name="template_id"
+        )
+
+    identity = get_current_identity()
+    ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
+
     service = get_document_service()
-    return await service.query_documents(request)
+    return await service.query_documents(request, ns_filter=ns_filter.query)
 
 
 @router.get(
@@ -322,14 +420,22 @@ async def query_documents(
 )
 async def get_document_by_identity(
     identity_hash: str,
+    namespace: str | None = Query(None, description="Filter by namespace (recommended to avoid cross-template ambiguity)"),
+    template_id: str | None = Query(None, description="Filter by template_id (recommended to avoid cross-template ambiguity)"),
     include_inactive: bool = Query(False, description="Include inactive documents"),
     _: str = Depends(require_api_key)
 ):
     """Get a document by identity hash."""
     service = get_document_service()
-    document = await service.get_document_by_identity(identity_hash, include_inactive)
+    document = await service.get_document_by_identity(
+        identity_hash, include_inactive,
+        namespace=namespace, template_id=template_id,
+    )
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, document.namespace, "read")
 
     return document

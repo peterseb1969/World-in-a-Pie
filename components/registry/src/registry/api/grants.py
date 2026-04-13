@@ -31,6 +31,11 @@ def _is_superadmin(identity: UserIdentity) -> bool:
     return identity.has_any_group(["wip-admins"])
 
 
+# Groups whose API keys are allowed to have namespaces=None (all-namespace access).
+# wip-admins: human/admin keys, wip-services: service-to-service keys (e.g. reporting-sync).
+_PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
+
+
 def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
     return GrantResponse(
         namespace=grant.namespace,
@@ -49,10 +54,14 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     Resolution order:
     0. Locked namespace → always "none" (deletion in progress)
     1. Superadmin bypass (wip-admins group)
-    2. Direct user grant (by email or API key name)
-    3. Group grants (any matching group)
-    4. API key namespace list (read-only)
-    5. Default: none
+    2. API key namespace check:
+       - Scoped key: namespace must be in key's list, otherwise "none"
+       - Unscoped key (namespaces=None): only allowed for privileged groups
+         (wip-admins, wip-services); non-privileged unscoped keys get "none"
+    3. Direct user grant (by email or API key name)
+    4. Group grants (any matching group)
+    5. API key namespace list fallback (read-only if in list but no grant)
+    6. Default: none
     """
     # Locked namespaces are inaccessible to everyone
     ns = await Namespace.find_one({"prefix": namespace})
@@ -66,13 +75,17 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     subjects = []
     if identity.auth_method == "api_key":
         subjects.append(("api_key", identity.username))
-        # Also check API key namespace restrictions
+        # Check API key namespace restrictions
         namespaces = (identity.raw_claims or {}).get("namespaces")
         if namespaces is not None:
             if namespace not in namespaces:
                 return "none"
             # API key with namespace list but no explicit grant → read
             # (can be overridden by explicit grant below)
+        else:
+            # Unscoped key (namespaces=None): only privileged groups may omit scoping
+            if not any(g in _PRIVILEGED_GROUPS for g in identity.groups):
+                return "none"
     else:
         # OIDC user — check by email
         if identity.email:
@@ -324,10 +337,10 @@ async def check_permission_internal(
     Groups are read from the X-User-Groups header (preferred) or the
     groups query parameter (legacy, deprecated).
 
-    Only callable by admin/service API keys (superadmin check).
+    Only callable by privileged API keys (wip-admins or wip-services group).
     """
     caller = get_current_identity()
-    if not _is_superadmin(caller):
+    if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
     # Prefer groups from header (M2 — avoid leaking in logs/caches)
@@ -364,9 +377,11 @@ async def accessible_namespaces_internal(
     whether they are a superadmin (meaning: access to everything).
 
     Groups are read from X-User-Groups header (preferred) or groups query param.
+
+    Only callable by privileged API keys (wip-admins or wip-services group).
     """
     caller = get_current_identity()
-    if not _is_superadmin(caller):
+    if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
     header_groups = request.headers.get("X-User-Groups")

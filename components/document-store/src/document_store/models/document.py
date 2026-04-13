@@ -47,7 +47,7 @@ class Document(BeanieDocument):
 
     # Namespace for multi-tenant isolation
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation (e.g., wip, dev, seed)"
     )
 
@@ -90,7 +90,7 @@ class Document(BeanieDocument):
     )
 
     # Term references - resolved term IDs for term fields (legacy, use references instead)
-    # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
+    # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
     term_references: list[dict[str, Any]] = Field(
         default_factory=list,
         description="Resolved term IDs for term fields"

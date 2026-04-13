@@ -315,8 +315,15 @@ async def register_keys(
     exists_count = 0
     error_count = 0
 
-    # Phase 0: Batch-validate that all referenced namespaces exist
+    # Phase 0a: Reject mixed namespaces — all items in a batch must share the same namespace
     unique_namespaces = {item.namespace for item in items}
+    if len(unique_namespaces) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"All items in a register batch must share the same namespace. Got: {sorted(unique_namespaces)}"
+        )
+
+    # Phase 0b: Batch-validate that all referenced namespaces exist
     existing_ns_docs = await Namespace.find(
         {"prefix": {"$in": list(unique_namespaces)}, "status": "active"}
     ).to_list()
@@ -372,6 +379,7 @@ async def register_keys(
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
+    seen_in_batch: dict[str, tuple[int, str]] = {}  # key_hash → (first_index, entry_id)
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -410,16 +418,34 @@ async def register_keys(
                 error_count += 1
                 continue
 
-            # Check if exists by composite key hash (dedup)
+            # Check if exists by composite key hash (dedup) — scoped to namespace+entity_type
             if key_hash:
                 existing = existing_by_hash.get(key_hash)
-                if existing:
+                if (
+                    existing
+                    and existing.namespace == item.namespace
+                    and existing.entity_type == item.entity_type
+                ):
                     results[i] = RegisterKeyResponse(
                         input_index=i,
                         status="already_exists",
                         registry_id=existing.entry_id,
                         namespace=existing.namespace,
                         entity_type=existing.entity_type,
+                        identity_hash=id_hash,
+                    )
+                    exists_count += 1
+                    continue
+
+                # Intra-batch dedup: second item with same hash gets already_exists
+                if key_hash in seen_in_batch:
+                    first_entry_id = seen_in_batch[key_hash]
+                    results[i] = RegisterKeyResponse(
+                        input_index=i,
+                        status="already_exists",
+                        registry_id=first_entry_id,
+                        namespace=item.namespace,
+                        entity_type=item.entity_type,
                         identity_hash=id_hash,
                     )
                     exists_count += 1
@@ -457,6 +483,8 @@ async def register_keys(
             entry.rebuild_search_values()
             entries_to_insert.append(entry)
             insert_indices.append(i)
+            if key_hash:
+                seen_in_batch[key_hash] = entry_id
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
@@ -950,13 +978,17 @@ async def update_entries(
 @router.delete(
     "",
     response_model=BulkDeleteResponse,
-    summary="Delete entries (bulk, soft delete)"
+    summary="Delete entries (bulk, soft or hard delete)"
 )
 async def delete_entries(
     items: list[DeleteItem] = Body(...),
     api_key: str = Depends(require_api_key)
 ) -> BulkDeleteResponse:
-    """Deactivate one or more registry entries (soft delete)."""
+    """Deactivate or hard-delete one or more registry entries.
+
+    Hard-delete (hard_delete=True) permanently removes the entry from MongoDB.
+    Requires the entry's namespace to have deletion_mode='full'.
+    """
     results = []
 
     for i, item in enumerate(items):
@@ -969,14 +1001,32 @@ async def delete_entries(
                 ))
                 continue
 
-            entry.status = "inactive"
-            entry.updated_at = datetime.now(UTC)
-            entry.updated_by = item.updated_by
-            await entry.save()
+            if item.hard_delete:
+                # Verify namespace allows hard-delete
+                namespace = await Namespace.find_one({"prefix": entry.namespace})
+                if not namespace or namespace.deletion_mode != "full":
+                    mode = namespace.deletion_mode if namespace else "unknown"
+                    results.append(DeleteResponse(
+                        input_index=i, status="error", registry_id=item.entry_id,
+                        error=f"Hard-delete requires namespace deletion_mode='full' (currently '{mode}')",
+                    ))
+                    continue
 
-            results.append(DeleteResponse(
-                input_index=i, status="deactivated", registry_id=item.entry_id,
-            ))
+                # Permanently remove from MongoDB
+                await entry.delete()
+                results.append(DeleteResponse(
+                    input_index=i, status="deleted", registry_id=item.entry_id,
+                ))
+            else:
+                # Soft-delete: set status to inactive
+                entry.status = "inactive"
+                entry.updated_at = datetime.now(UTC)
+                entry.updated_by = item.updated_by
+                await entry.save()
+
+                results.append(DeleteResponse(
+                    input_index=i, status="deactivated", registry_id=item.entry_id,
+                ))
 
         except Exception as e:
             results.append(DeleteResponse(
@@ -985,7 +1035,7 @@ async def delete_entries(
 
     return BulkDeleteResponse(
         results=results, total=len(items),
-        succeeded=sum(1 for r in results if r.status == "deactivated"),
+        succeeded=sum(1 for r in results if r.status in ("deactivated", "deleted")),
         failed=sum(1 for r in results if r.status in ("not_found", "error")),
     )
 
@@ -1000,11 +1050,11 @@ async def resolve_synonyms(
     api_key: str = Depends(require_api_key)
 ) -> BulkResolveResponse:
     """
-    Resolve synonym composite keys to canonical entry IDs.
+    Resolve synonyms or verify canonical IDs.
 
-    This is a read-only batch endpoint optimised for synonym resolution.
-    For each composite key, computes its hash and looks up the entry
-    that has a matching synonym (or primary key).
+    Each item may provide ``entry_id`` (canonical ID verification),
+    ``composite_key`` (synonym resolution), or both.  When both are
+    given, ``entry_id`` is tried first.
 
     Returns entry_id for each found item, "not_found" otherwise.
     """
@@ -1015,17 +1065,43 @@ async def resolve_synonyms(
 
     for i, item in enumerate(items):
         try:
-            key_hash = HashService.compute_composite_key_hash(item.composite_key)
+            if not item.entry_id and not item.composite_key:
+                results.append(ResolveResponse(
+                    input_index=i, status="error",
+                    error="Provide either entry_id or composite_key",
+                ))
+                error_count += 1
+                continue
 
-            # Search both primary key and synonyms — no namespace/entity_type filter
-            # because the composite key itself contains ns and type for uniqueness
-            entry = await RegistryEntry.find_one({
-                "$or": [
-                    {"primary_composite_key_hash": key_hash},
-                    {"synonyms.composite_key_hash": key_hash},
-                ],
-                "status": "active",
-            })
+            status_filter = (
+                {"$in": item.include_statuses}
+                if item.include_statuses
+                else "active"
+            )
+            entry = None
+
+            # Path 1: Canonical ID verification
+            if item.entry_id:
+                entry = await RegistryEntry.find_one({
+                    "entry_id": item.entry_id,
+                    "status": status_filter,
+                })
+
+            # Path 2: Composite key resolution (synonym or primary key)
+            if not entry and item.composite_key:
+                key_hash = HashService.compute_composite_key_hash(item.composite_key)
+                query = {
+                    "$or": [
+                        {"primary_composite_key_hash": key_hash},
+                        {"synonyms.composite_key_hash": key_hash},
+                    ],
+                    "status": status_filter,
+                }
+                if item.namespace:
+                    query["namespace"] = item.namespace
+                if item.entity_type:
+                    query["entity_type"] = item.entity_type
+                entry = await RegistryEntry.find_one(query)
 
             if entry:
                 results.append(ResolveResponse(
@@ -1040,6 +1116,7 @@ async def resolve_synonyms(
                     input_index=i,
                     status="not_found",
                     composite_key=item.composite_key,
+                    entry_id=item.entry_id,
                 ))
                 not_found_count += 1
 

@@ -90,7 +90,11 @@ export const useDocumentStore = defineStore('document', () => {
     loading.value = true
     error.value = null
     try {
-      const payload = { ...data, namespace: data.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip' }
+      const ns = data.namespace ?? namespaceStore.currentNamespaceParam
+      if (!ns) {
+        throw new Error('Namespace is required to create a document. Please select a namespace (not "all").')
+      }
+      const payload = { ...data, namespace: ns }
       const result = await documentStoreClient.createDocument(payload)
       // Don't add to documents array - the view will navigate and fetch the full document
       if (result.is_new) {

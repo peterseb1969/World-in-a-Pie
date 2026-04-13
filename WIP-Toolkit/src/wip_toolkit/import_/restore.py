@@ -20,9 +20,11 @@ from typing import Any
 
 from rich.console import Console
 
+from .._progress import ProgressCallback
+from .._progress import emit as _emit
 from ..archive import ArchiveReader
 from ..client import WIPClient, WIPClientError
-from ..models import ImportStats
+from ..models import ImportStats, ProgressEvent
 
 console = Console(stderr=True)
 
@@ -37,6 +39,7 @@ def restore_import(
     batch_size: int = 50,
     continue_on_error: bool = False,
     dry_run: bool = False,
+    progress_callback: ProgressCallback | None = None,
 ) -> ImportStats:
     """Import archive in restore mode, preserving all original IDs."""
     stats = ImportStats(mode="restore", target_namespace=target_namespace)
@@ -49,6 +52,11 @@ def restore_import(
         return stats
 
     # Step 0: Ensure namespace exists
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_namespace",
+        message=f"Ensuring namespace '{target_namespace}' exists",
+        percent=5.0,
+    ))
     _ensure_namespace(client, target_namespace, stats)
 
     # Step 1: Create terminologies via Def-Store (service handles Registry)
@@ -56,6 +64,12 @@ def restore_import(
     # old→new ID mappings after creation and remap all downstream references.
     console.print("\n[bold cyan]Step 1:[/bold cyan] Creating terminologies")
     terminologies = list(reader.read_entities("terminologies"))
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_terminologies",
+        message=f"Creating {len(terminologies)} terminologies",
+        percent=10.0,
+        total=len(terminologies),
+    ))
     _create_terminologies(client, target_namespace, terminologies, stats, continue_on_error)
     term_id_map = _build_terminology_id_map(client, target_namespace, terminologies)
     if term_id_map:
@@ -64,7 +78,25 @@ def restore_import(
     # Step 2: Create terms via Def-Store (using remapped terminology IDs)
     console.print("\n[bold cyan]Step 2:[/bold cyan] Creating terms")
     terms = list(reader.read_entities("terms"))
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_terms",
+        message=f"Creating {len(terms)} terms",
+        percent=20.0,
+        total=len(terms),
+    ))
     _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error, term_id_map)
+
+    # Step 2b: Create relationships (after terms exist)
+    relationships = list(reader.read_entities("relationships"))
+    if relationships:
+        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_relationships",
+            message=f"Creating {len(relationships)} relationships",
+            percent=30.0,
+            total=len(relationships),
+        ))
+        _create_relationships(client, target_namespace, relationships, batch_size, stats, continue_on_error)
 
     # Step 3: Create templates as drafts with ID pass-through
     # Remap terminology_ref fields to new IDs
@@ -72,16 +104,33 @@ def restore_import(
     templates = list(reader.read_entities("templates"))
     if term_id_map:
         _remap_template_terminology_refs(templates, term_id_map)
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_templates",
+        message=f"Creating {len(templates)} template version(s)",
+        percent=40.0,
+        total=len(templates),
+    ))
     _create_templates(client, target_namespace, templates, stats, continue_on_error)
 
     # Step 4: Activate all draft templates
     console.print("\n[bold cyan]Step 4:[/bold cyan] Activating templates")
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_templates_activate",
+        message="Activating templates",
+        percent=50.0,
+    ))
     _activate_templates(client, target_namespace, templates, stats, continue_on_error)
 
     if not skip_files and not skip_documents:
         # Step 5: Upload files (before documents — documents may reference files)
         console.print("\n[bold cyan]Step 5:[/bold cyan] Uploading files")
         files = list(reader.read_entities("files"))
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_files",
+            message=f"Uploading {len(files)} file(s)",
+            percent=60.0,
+            total=len(files),
+        ))
         _upload_files(client, target_namespace, files, reader, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping files[/dim]")
@@ -89,12 +138,22 @@ def restore_import(
     if not skip_documents:
         # Step 6: Create documents (streamed from archive)
         console.print("\n[bold cyan]Step 6:[/bold cyan] Creating documents")
+        _emit(progress_callback, ProgressEvent(
+            phase="phase_documents",
+            message="Creating documents",
+            percent=75.0,
+        ))
         _create_documents_streamed(client, target_namespace, reader, batch_size, stats, continue_on_error)
     else:
         console.print("\n[dim]Skipping documents (--skip-documents)[/dim]")
 
     # Step 7: Restore synonyms (from synonyms.jsonl if present)
     console.print("\n[bold cyan]Step 7:[/bold cyan] Restoring Registry synonyms")
+    _emit(progress_callback, ProgressEvent(
+        phase="phase_synonyms",
+        message="Restoring Registry synonyms",
+        percent=92.0,
+    ))
     _restore_synonyms(
         client, target_namespace, reader, stats, continue_on_error,
         skip_documents=skip_documents, skip_files=skip_files,
@@ -145,6 +204,7 @@ def _create_terminologies(
                 "case_sensitive": t.get("case_sensitive", False),
                 "allow_multiple": t.get("allow_multiple", False),
                 "extensible": t.get("extensible", False),
+                "mutable": t.get("mutable", False),
                 "metadata": t.get("metadata"),
                 "created_by": "wip-toolkit-restore",
             }
@@ -259,6 +319,62 @@ def _create_terms(
     console.print(
         f"  Created {stats.created.terms}, failed {stats.failed.terms}"
     )
+
+
+def _create_relationships(
+    client: WIPClient,
+    namespace: str,
+    relationships: list[dict],
+    batch_size: int,
+    stats: ImportStats,
+    continue_on_error: bool,
+) -> None:
+    """Create relationships via Def-Store ontology API."""
+    from .fresh import _ensure_relationship_types
+    _ensure_relationship_types(client, namespace, relationships, stats)
+    created = 0
+    failed = 0
+    skipped = 0
+
+    for i in range(0, len(relationships), batch_size):
+        batch = relationships[i:i + batch_size]
+        payloads = []
+        for r in batch:
+            payloads.append({
+                "source_term_id": r["source_term_id"],
+                "target_term_id": r["target_term_id"],
+                "relationship_type": r["relationship_type"],
+                "metadata": r.get("metadata") or {},
+            })
+
+        try:
+            result = client.post(
+                "def-store", "/ontology/relationships",
+                json=payloads,
+                params={"namespace": namespace},
+            )
+            for r in result.get("results", []):
+                if r.get("status") == "created":
+                    created += 1
+                elif r.get("status") == "skipped":
+                    skipped += 1
+                else:
+                    failed += 1
+        except WIPClientError as e:
+            failed += len(batch)
+            stats.errors.append(f"Failed to create relationship batch at index {i}: {e}")
+            if not continue_on_error:
+                raise
+
+    stats.created.relationships = created
+    stats.failed.relationships = failed
+    stats.skipped.relationships = skipped
+    msg = f"  Created {created}"
+    if skipped:
+        msg += f", skipped {skipped}"
+    if failed:
+        msg += f", failed {failed}"
+    console.print(msg)
 
 
 def _create_templates(
@@ -401,12 +517,24 @@ def _activate_templates(
     already_active = 0
     for tid in unique_ids:
         try:
-            client.post(
+            result = client.post(
                 "template-store",
                 f"/templates/{tid}/activate",
                 params={"namespace": namespace},
             )
-            activated += 1
+            # Activation returns 200 with errors in body — must check
+            activation_errors = result.get("errors", [])
+            if activation_errors:
+                error_msgs = "; ".join(e.get("message", str(e)) for e in activation_errors)
+                msg = f"Failed to activate template {tid}: {error_msgs}"
+                stats.errors.append(msg)
+                console.print(f"  [red]Activation failed:[/red] {tid}: {error_msgs}")
+                if not continue_on_error:
+                    raise WIPClientError(msg)
+            elif result.get("total_activated", 0) > 0:
+                activated += 1
+            else:
+                already_active += 1
         except WIPClientError as e:
             if e.status_code == 400 and "not 'draft'" in str(e):
                 # Already activated by cascading activation — benign
@@ -742,9 +870,11 @@ def _preview(
 ) -> None:
     """Preview what would be imported."""
     counts = manifest.counts
-    console.print(f"  Terminologies: {counts.terminologies}")
-    console.print(f"  Terms:         {counts.terms}")
-    console.print(f"  Templates:     {counts.templates}")
+    console.print(f"  Terminologies:  {counts.terminologies}")
+    console.print(f"  Terms:          {counts.terms}")
+    if counts.relationships:
+        console.print(f"  Relationships:  {counts.relationships}")
+    console.print(f"  Templates:      {counts.templates}")
     if not skip_documents:
         console.print(f"  Documents:     {counts.documents}")
     else:

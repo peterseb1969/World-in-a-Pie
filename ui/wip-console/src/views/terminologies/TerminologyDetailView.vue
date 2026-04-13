@@ -260,6 +260,13 @@ function getFieldsUsingTerminology(template: Template): string[] {
               <span class="info-value">{{ terminologyStore.currentTerminology.metadata?.language || 'en' }}</span>
             </div>
             <div class="info-item">
+              <span class="info-label">Mutable</span>
+              <span class="info-value">
+                <Tag v-if="terminologyStore.currentTerminology.mutable" value="Yes" severity="warn" />
+                <span v-else>No</span>
+              </span>
+            </div>
+            <div class="info-item">
               <span class="info-label">Created</span>
               <span class="info-value">{{ formatDate(terminologyStore.currentTerminology.created_at) }}</span>
             </div>

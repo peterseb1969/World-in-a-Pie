@@ -11,11 +11,12 @@ import Tag from 'primevue/tag'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import { defStoreClient } from '@/api/client'
-import { useTerminologyStore, useUiStore } from '@/stores'
+import { useTerminologyStore, useUiStore, useNamespaceStore } from '@/stores'
 import type { Terminology, ValidateValueResponse, BulkValidateResponse } from '@/types'
 
 const terminologyStore = useTerminologyStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const selectedTerminology = ref<Terminology | null>(null)
 const singleValue = ref('')
@@ -44,7 +45,8 @@ async function validateSingle() {
   try {
     singleResult.value = await defStoreClient.validateValue({
       terminology_id: selectedTerminology.value.terminology_id,
-      value: singleValue.value.trim()
+      value: singleValue.value.trim(),
+      namespace: namespaceStore.currentNamespaceParam
     })
   } catch (e) {
     uiStore.showError('Validation Failed', (e as Error).message)
@@ -75,7 +77,8 @@ async function validateBulk() {
     bulkResult.value = await defStoreClient.bulkValidate({
       items: values.map(value => ({
         terminology_id: selectedTerminology.value!.terminology_id,
-        value
+        value,
+        namespace: namespaceStore.currentNamespaceParam
       }))
     })
     uiStore.showInfo('Validation Complete', `${bulkResult.value.valid_count}/${bulkResult.value.total} valid`)

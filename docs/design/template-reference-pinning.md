@@ -8,7 +8,7 @@ Entity reference fields in templates store bare **values** — user-supplied str
 
 The only valid ways to reference an entity in WIP are:
 
-1. **Canonical ID** — Registry-issued, globally unique (e.g., `TPL-000001`, `TERM-000001`)
+1. **Canonical ID** — Registry-issued, globally unique (UUID7 by default, or prefixed like `PROD-0001` if configured)
 2. **Composite key hash** — SHA-256 of the composite key, scoped to a namespace
 3. **Registered synonym** — an alternative key registered in the Registry that resolves to a canonical ID
 
@@ -48,21 +48,21 @@ A bare value like `"PERSON"` or `"DOC_STATUS"` is none of these. It's an unquali
 ### Storage
 
 ```
-target_templates: ["TPL-000042", "TPL-000015"]    # not ["PERSON", "EMPLOYEE"]
-template_ref: "TPL-000008"                         # not "ADDRESS"
-array_template_ref: "TPL-000023"                   # not "CONTACT"
-terminology_ref: "TERM-000001"                     # not "DOC_STATUS"
-array_terminology_ref: "TERM-000005"               # not "COUNTRY"
-target_terminologies: ["TERM-000003"]              # not ["GENDER"]
+target_templates: ["019abc42-...", "019abc15-..."]  # not ["PERSON", "EMPLOYEE"]
+template_ref: "019abc08-..."                        # not "ADDRESS"
+array_template_ref: "019abc23-..."                  # not "CONTACT"
+terminology_ref: "019def01-..."                     # not "DOC_STATUS"
+array_terminology_ref: "019def05-..."               # not "COUNTRY"
+target_terminologies: ["019def03-..."]              # not ["GENDER"]
 ```
 
 ### Normalization at Template Creation
 
 When a user provides a value (for convenience), the system resolves it to a canonical ID before storing:
 
-1. User provides `"PERSON"` → system looks up latest active template with value PERSON in the pool → resolves to `TPL-000042` → stores `TPL-000042`
-2. User provides `"TPL-000042"` → system validates it exists → stores `TPL-000042`
-3. User provides `"DOC_STATUS"` → system looks up terminology → resolves to `TERM-000001` → stores `TERM-000001`
+1. User provides `"PERSON"` → system looks up latest active template with value PERSON in the pool → resolves to canonical ID → stores it
+2. User provides the canonical ID directly → system validates it exists → stores it
+3. User provides `"DOC_STATUS"` → system looks up terminology → resolves to canonical ID → stores it
 
 This happens in `create_template()`, `activate_template()`, and `create_templates_bulk()`.
 
@@ -128,16 +128,16 @@ After normalization:
   "fields": [
     {
       "name": "employee",
-      "target_templates": ["TPL-000015"],
+      "target_templates": ["019abc15-def3-7abc-8def-123456789abc"],
       "version_strategy": "pinned"
     },
     {
       "name": "status",
-      "terminology_ref": "TERM-000001"
+      "terminology_ref": "019def01-aaa1-7abc-8def-123456789abc"
     },
     {
       "name": "department_head",
-      "target_templates": ["TPL-000015"],
+      "target_templates": ["019abc15-def3-7abc-8def-123456789abc"],
       "version_strategy": "latest"
     }
   ]

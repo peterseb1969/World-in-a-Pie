@@ -3,9 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from wip_toolkit.models import ClosureInfo, EntityCounts, ExportStats
-
 
 # ---------------------------------------------------------------------------
 # Module-level patch targets
@@ -32,31 +30,34 @@ def mock_collector():
         "isolation_mode": "open",
     }
     collector.fetch_terminologies.return_value = [
-        {"terminology_id": "TERM-001", "namespace": "wip", "value": "COUNTRY"},
+        {"terminology_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip", "value": "COUNTRY"},
     ]
     collector.fetch_all_terms.return_value = [
-        {"term_id": "T-001", "terminology_id": "TERM-001", "namespace": "wip", "value": "UK"},
+        {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip", "value": "UK"},
     ]
     collector.fetch_templates.return_value = [
-        {"template_id": "TPL-001", "namespace": "wip", "version": 1, "fields": []},
+        {"template_id": "0190c000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1, "fields": []},
     ]
     collector.fetch_template_raw.return_value = {
-        "template_id": "TPL-001", "namespace": "wip", "version": 1, "fields": [],
+        "template_id": "0190c000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1, "fields": [],
     }
     # stream_documents yields pages
     collector.stream_documents.return_value = iter([
-        [{"document_id": "DOC-001", "namespace": "wip", "version": 1,
-          "template_id": "TPL-001", "data": {}}],
+        [{"document_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1,
+          "template_id": "0190c000-0000-7000-0000-000000000001", "data": {}}],
     ])
     # fetch_documents for closure
     collector.fetch_documents.return_value = [
-        {"document_id": "DOC-001", "namespace": "wip", "version": 1,
-         "template_id": "TPL-001", "data": {}},
+        {"document_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip", "version": 1,
+         "template_id": "0190c000-0000-7000-0000-000000000001", "data": {}},
     ]
     collector.fetch_files.return_value = [
         {"file_id": "FILE-001", "namespace": "wip", "filename": "test.pdf"},
     ]
-    collector.fetch_file_content.return_value = b"binary-data"
+    # download_file_content streams bytes into the dest handle.
+    def _download(file_id, dest):
+        dest.write(b"binary-data")
+    collector.download_file_content.side_effect = _download
     collector.fetch_registry_entries.return_value = {}
     return collector
 
@@ -363,8 +364,12 @@ class TestRunExportIncludeFiles:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", include_files=True)
 
-        mock_collector.fetch_file_content.assert_called_once_with("FILE-001")
-        mock_writer.add_blob.assert_called_once_with("FILE-001", b"binary-data")
+        # New streaming path: writer.open_blob() yields a dest, collector
+        # writes into it. No bytes are ever held in Python (CASE-28).
+        mock_writer.open_blob.assert_called_once_with("FILE-001")
+        mock_collector.download_file_content.assert_called_once()
+        call = mock_collector.download_file_content.call_args
+        assert call.args[0] == "FILE-001"
 
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
@@ -381,8 +386,8 @@ class TestRunExportIncludeFiles:
         from wip_toolkit.export.exporter import run_export
         run_export(mock_client, "wip", "/tmp/export.zip", include_files=False)
 
-        mock_collector.fetch_file_content.assert_not_called()
-        mock_writer.add_blob.assert_not_called()
+        mock_collector.download_file_content.assert_not_called()
+        mock_writer.open_blob.assert_not_called()
 
 
 class TestRunExportLatestOnly:
@@ -418,8 +423,8 @@ class TestFetchRawTemplates:
         from wip_toolkit.export.exporter import _fetch_raw_templates
 
         collector = MagicMock()
-        resolved = {"template_id": "TPL-001", "version": 1, "fields": [{"resolved": True}]}
-        raw = {"template_id": "TPL-001", "version": 1, "fields": [{"raw": True}]}
+        resolved = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"resolved": True}]}
+        raw = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"raw": True}]}
         collector.fetch_template_raw.return_value = raw
 
         result = _fetch_raw_templates(collector, [resolved])
@@ -431,7 +436,7 @@ class TestFetchRawTemplates:
         from wip_toolkit.export.exporter import _fetch_raw_templates
 
         collector = MagicMock()
-        resolved = {"template_id": "TPL-001", "version": 1, "fields": [{"resolved": True}]}
+        resolved = {"template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "fields": [{"resolved": True}]}
         collector.fetch_template_raw.side_effect = Exception("Not found")
 
         result = _fetch_raw_templates(collector, [resolved])
@@ -461,8 +466,8 @@ class TestBuildStats:
         counts = EntityCounts(terminologies=2, terms=10, templates=3,
                               documents=5, files=1)
         closure_info = ClosureInfo(
-            external_terminologies=["EXT-TERM-1"],
-            external_templates=["EXT-TPL-1", "EXT-TPL-2"],
+            external_terminologies=["EXT-0190a000-0000-7000-0000-000000000001"],
+            external_templates=["EXT-0190c000-0000-7000-0000-000000000001", "EXT-TPL-2"],
             iterations=2,
             warnings=["some warning"],
         )
@@ -482,8 +487,9 @@ class TestBuildStats:
         assert stats.duration_seconds > 0
 
     def test_empty_closure_info(self):
-        from wip_toolkit.export.exporter import _build_stats
         import time
+
+        from wip_toolkit.export.exporter import _build_stats
 
         counts = EntityCounts()
         closure_info = ClosureInfo()
@@ -493,3 +499,185 @@ class TestBuildStats:
         assert stats.namespace == "test"
         assert stats.closure_iterations == 0
         assert stats.external_terminologies == 0
+
+
+# ===========================================================================
+# progress_callback + non_interactive (CASE-23 backup/restore prep)
+# ===========================================================================
+class TestRunExportProgressCallback:
+    """Verify progress_callback observes phase boundaries and is fault-tolerant."""
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_callback_receives_start_and_complete(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        events = []
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            progress_callback=events.append,
+        )
+
+        phases = [e.phase for e in events]
+        assert phases[0] == "start"
+        assert phases[-1] == "complete"
+        assert events[0].percent == 0.0
+        assert events[-1].percent == 100.0
+        assert events[-1].details["counts"]["terminologies"] == 1
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_callback_observes_all_default_phases(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        events = []
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        # All five default phases plus start + complete
+        assert "start" in phases
+        assert "phase_1a_entities" in phases
+        assert "phase_closure" in phases
+        assert "phase_1b_documents" in phases
+        assert "phase_2_synonyms" in phases
+        assert "phase_3_finalize" in phases
+        assert "complete" in phases
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_callback_emits_file_phase_when_include_files(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        events = []
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            include_files=True,
+            progress_callback=events.append,
+        )
+
+        phases = [e.phase for e in events]
+        assert "phase_1c_files" in phases
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_callback_emits_warning_when_files_skipped(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        events = []
+
+        from wip_toolkit.export.exporter import run_export
+        run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            include_files=False,  # mock_collector returns one file
+            non_interactive=True,
+            progress_callback=events.append,
+        )
+
+        warning_events = [e for e in events if e.phase == "warning_files_skipped"]
+        assert len(warning_events) == 1
+        assert warning_events[0].details["file_count"] == 1
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_callback_exception_does_not_break_export(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        def explosive(_event):
+            raise RuntimeError("observer is broken")
+
+        from wip_toolkit.export.exporter import run_export
+        # Must complete normally despite the callback raising on every event
+        stats = run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            progress_callback=explosive,
+        )
+
+        assert stats.namespace == "wip"
+        mock_writer.write.assert_called_once()
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_no_callback_is_supported(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        # Default (None) callback must not raise
+        stats = run_export(mock_client, "wip", "/tmp/export.zip")
+        assert stats.namespace == "wip"
+
+
+class TestRunExportNonInteractive:
+    """Verify non_interactive mode never prompts and never exits unexpectedly."""
+
+    @patch(f"{EXPORTER}.click.confirm")
+    @patch(f"{EXPORTER}.sys.stdin")
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_non_interactive_skips_confirm_even_with_tty(
+        self, MockCollector, mock_closure, MockWriter,
+        mock_stdin, mock_confirm,
+        mock_client, mock_collector, mock_writer,
+    ):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+        # Force isatty=True so the interactive branch *would* normally fire
+        mock_stdin.isatty.return_value = True
+        # If confirm were called and returned False the export would SystemExit
+        mock_confirm.return_value = False
+
+        from wip_toolkit.export.exporter import run_export
+        stats = run_export(
+            mock_client, "wip", "/tmp/export.zip",
+            include_files=False,
+            non_interactive=True,
+        )
+
+        mock_confirm.assert_not_called()
+        assert stats.namespace == "wip"

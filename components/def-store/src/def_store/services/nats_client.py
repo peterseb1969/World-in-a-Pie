@@ -208,7 +208,7 @@ async def publish_terminology_event(
         }
 
         # Subject: wip.terminologies.<namespace>.<action>
-        namespace = terminology.get("namespace", "wip")
+        namespace = terminology["namespace"]
         action = event_type.value.split(".")[1]
         subject = f"wip.terminologies.{namespace}.{action}"
 

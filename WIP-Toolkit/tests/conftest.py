@@ -8,7 +8,7 @@ def sample_terminologies():
     """Sample terminology entities for testing."""
     return [
         {
-            "terminology_id": "TERM-000001",
+            "terminology_id": "0190a000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "value": "COUNTRY",
             "label": "Country",
@@ -16,7 +16,7 @@ def sample_terminologies():
             "fields": [],
         },
         {
-            "terminology_id": "TERM-000002",
+            "terminology_id": "0190a000-0000-7000-0000-000000000002",
             "namespace": "wip",
             "value": "DOC_STATUS",
             "label": "Document Status",
@@ -31,20 +31,20 @@ def sample_terms():
     """Sample term entities for testing."""
     return [
         {
-            "term_id": "T-000001",
-            "terminology_id": "TERM-000001",
+            "term_id": "0190b000-0000-7000-0000-000000000001",
+            "terminology_id": "0190a000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "value": "United Kingdom",
         },
         {
-            "term_id": "T-000002",
-            "terminology_id": "TERM-000001",
+            "term_id": "0190b000-0000-7000-0000-000000000002",
+            "terminology_id": "0190a000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "value": "France",
         },
         {
-            "term_id": "T-000003",
-            "terminology_id": "TERM-000002",
+            "term_id": "0190b000-0000-7000-0000-000000000003",
+            "terminology_id": "0190a000-0000-7000-0000-000000000002",
             "namespace": "wip",
             "value": "active",
         },
@@ -56,7 +56,7 @@ def sample_templates():
     """Sample template entities with various reference types."""
     return [
         {
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "value": "BASE_PERSON",
             "label": "Base Person",
@@ -64,24 +64,24 @@ def sample_templates():
             "extends": None,
             "fields": [
                 {"name": "name", "type": "string"},
-                {"name": "country", "type": "term", "terminology_ref": "TERM-000001"},
+                {"name": "country", "type": "term", "terminology_ref": "0190a000-0000-7000-0000-000000000001"},
             ],
         },
         {
-            "template_id": "TPL-000002",
+            "template_id": "0190c000-0000-7000-0000-000000000002",
             "namespace": "wip",
             "value": "EMPLOYEE",
             "label": "Employee",
             "version": 1,
-            "extends": "TPL-000001",
+            "extends": "0190c000-0000-7000-0000-000000000001",
             "fields": [
                 {"name": "department", "type": "string"},
-                {"name": "status", "type": "term", "terminology_ref": "TERM-000002"},
-                {"name": "manager", "type": "reference", "target_templates": ["TPL-000002"]},
+                {"name": "status", "type": "term", "terminology_ref": "0190a000-0000-7000-0000-000000000002"},
+                {"name": "manager", "type": "reference", "target_templates": ["0190c000-0000-7000-0000-000000000002"]},
             ],
         },
         {
-            "template_id": "TPL-000003",
+            "template_id": "0190c000-0000-7000-0000-000000000003",
             "namespace": "wip",
             "value": "PROJECT",
             "label": "Project",
@@ -89,11 +89,11 @@ def sample_templates():
             "extends": None,
             "fields": [
                 {"name": "title", "type": "string"},
-                {"name": "lead", "type": "object", "template_ref": "TPL-000002"},
-                {"name": "tags", "type": "array", "array_terminology_ref": "TERM-000003"},
-                {"name": "related", "type": "reference", "target_templates": ["TPL-000003"]},
+                {"name": "lead", "type": "object", "template_ref": "0190c000-0000-7000-0000-000000000002"},
+                {"name": "tags", "type": "array", "array_terminology_ref": "0190a000-0000-7000-0000-000000000003"},
+                {"name": "related", "type": "reference", "target_templates": ["0190c000-0000-7000-0000-000000000003"]},
                 {"name": "categories", "type": "reference",
-                 "target_terminologies": ["TERM-000004"]},
+                 "target_terminologies": ["0190a000-0000-7000-0000-000000000004"]},
             ],
         },
     ]
@@ -106,12 +106,12 @@ def sample_documents():
         {
             "document_id": "019abc00-0000-7000-8000-000000000001",
             "namespace": "wip",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "version": 1,
             "identity_hash": "hash1",
             "data": {"name": "John", "country": "United Kingdom"},
             "term_references": [
-                {"field_path": "country", "term_id": "T-000001", "terminology_ref": "TERM-000001"},
+                {"field_path": "country", "term_id": "0190b000-0000-7000-0000-000000000001", "terminology_ref": "0190a000-0000-7000-0000-000000000001"},
             ],
             "references": [],
             "file_references": [],
@@ -119,12 +119,12 @@ def sample_documents():
         {
             "document_id": "019abc00-0000-7000-8000-000000000002",
             "namespace": "wip",
-            "template_id": "TPL-000002",
+            "template_id": "0190c000-0000-7000-0000-000000000002",
             "version": 1,
             "identity_hash": None,
             "data": {"department": "Engineering"},
             "term_references": [
-                {"field_path": "status", "term_id": "T-000003", "terminology_ref": "TERM-000002"},
+                {"field_path": "status", "term_id": "0190b000-0000-7000-0000-000000000003", "terminology_ref": "0190a000-0000-7000-0000-000000000002"},
             ],
             "references": [
                 {
@@ -132,7 +132,7 @@ def sample_documents():
                     "reference_type": "document",
                     "resolved": {
                         "document_id": "019abc00-0000-7000-8000-000000000001",
-                        "template_id": "TPL-000001",
+                        "template_id": "0190c000-0000-7000-0000-000000000001",
                         "identity_hash": "hash1",
                     },
                 },
@@ -149,7 +149,7 @@ def sample_registry_data():
     """Sample _registry metadata for entities."""
     return {
         "terminology": {
-            "entry_id": "TERM-000001",
+            "entry_id": "0190a000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "entity_type": "terminologies",
             "primary_composite_key": {"value": "COUNTRY", "label": "Country"},
@@ -163,7 +163,7 @@ def sample_registry_data():
             "source_info": None,
         },
         "template": {
-            "entry_id": "TPL-000001",
+            "entry_id": "0190c000-0000-7000-0000-000000000001",
             "namespace": "wip",
             "entity_type": "templates",
             "primary_composite_key": {},
@@ -177,7 +177,7 @@ def sample_registry_data():
             "primary_composite_key": {
                 "namespace": "wip",
                 "identity_hash": "abc123hash",
-                "template_id": "TPL-000001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
             },
             "synonyms": [
                 {

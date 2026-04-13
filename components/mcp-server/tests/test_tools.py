@@ -5,27 +5,28 @@ Tests the tool functions directly by mocking the WipClient.
 
 import json
 import os
-import tempfile
-from unittest.mock import AsyncMock, patch, MagicMock
-
-import pytest
 
 # Mock yaml before importing server (it may not be installed in test env)
 import sys
+import tempfile
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 sys.modules.setdefault("yaml", MagicMock())
 
-from wip_mcp.server import (
-    upload_file,
-    get_template_fields,
-    query_by_template,
-    list_report_tables,
-    run_report_query,
-    import_documents_csv,
-    start_replay,
-    get_replay_status,
+from wip_mcp.client import WipClient  # noqa: E402
+from wip_mcp.server import (  # noqa: E402
     cancel_replay,
+    get_replay_status,
+    get_template_fields,
+    import_documents_csv,
+    list_report_tables,
+    query_by_template,
+    run_report_query,
+    start_replay,
+    upload_file,
 )
-from wip_mcp.client import WipClient
 
 
 def _mock_client():
@@ -86,7 +87,7 @@ async def test_get_template_fields():
     """Get template fields returns clean summary."""
     mock = _mock_client()
     mock.get_template_by_value.return_value = {
-        "template_id": "TPL-001",
+        "template_id": "0190c000-0000-7000-0000-000000000001",
         "value": "PATIENT",
         "version": 1,
         "namespace": "wip",
@@ -102,12 +103,12 @@ async def test_get_template_fields():
         result = await get_template_fields(template_value="PATIENT")
 
     data = json.loads(result)
-    assert data["template_id"] == "TPL-001"
+    assert data["template_id"] == "0190c000-0000-7000-0000-000000000001"
     assert len(data["fields"]) == 3
     # Check that optional keys are only present when needed
-    country_field = [f for f in data["fields"] if f["name"] == "country"][0]
+    country_field = next(f for f in data["fields"] if f["name"] == "country")
     assert "terminology_ref" in country_field
-    name_field = [f for f in data["fields"] if f["name"] == "name"][0]
+    name_field = next(f for f in data["fields"] if f["name"] == "name")
     assert "terminology_ref" not in name_field
 
 
@@ -115,11 +116,11 @@ async def test_get_template_fields():
 async def test_query_by_template_auto_prefix():
     """query_by_template auto-prefixes field names with data."""
     mock = _mock_client()
-    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+    mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
     mock.query_documents.return_value = {"items": [], "total": 0}
 
     with patch("wip_mcp.server.get_client", return_value=mock):
-        result = await query_by_template(
+        await query_by_template(
             template_value="PATIENT",
             field_filters=[{"field": "country", "operator": "eq", "value": "CH"}],
         )
@@ -136,7 +137,7 @@ async def test_query_by_template_auto_prefix():
 async def test_query_by_template_no_double_prefix():
     """query_by_template doesn't double-prefix data.* fields."""
     mock = _mock_client()
-    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+    mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
     mock.query_documents.return_value = {"items": [], "total": 0}
 
     with patch("wip_mcp.server.get_client", return_value=mock):
@@ -271,15 +272,15 @@ async def test_cancel_replay():
 async def test_import_documents_csv_success():
     """import_documents_csv reads file and calls client."""
     mock = _mock_client()
-    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+    mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
     mock.import_documents.return_value = {
         "total_rows": 2,
         "succeeded": 2,
         "failed": 0,
         "skipped": 0,
         "results": [
-            {"row": 2, "document_id": "DOC-001", "version": 1, "is_new": True},
-            {"row": 3, "document_id": "DOC-002", "version": 1, "is_new": True},
+            {"row": 2, "document_id": "0190d000-0000-7000-0000-000000000001", "version": 1, "is_new": True},
+            {"row": 3, "document_id": "0190d000-0000-7000-0000-000000000002", "version": 1, "is_new": True},
         ],
         "errors": [],
     }
@@ -301,7 +302,7 @@ async def test_import_documents_csv_success():
         assert data["succeeded"] == 2
         mock.import_documents.assert_awaited_once()
         call_kwargs = mock.import_documents.call_args.kwargs
-        assert call_kwargs["template_id"] == "TPL-001"
+        assert call_kwargs["template_id"] == "0190c000-0000-7000-0000-000000000001"
         assert call_kwargs["column_mapping"] == {"name": "name", "email": "email"}
     finally:
         os.unlink(tmp_path)
@@ -311,7 +312,7 @@ async def test_import_documents_csv_success():
 async def test_import_documents_csv_not_found():
     """import_documents_csv returns error for missing file."""
     mock = _mock_client()
-    mock.get_template_by_value.return_value = {"template_id": "TPL-001"}
+    mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
 
     with patch("wip_mcp.server.get_client", return_value=mock):
         result = await import_documents_csv(
@@ -327,7 +328,7 @@ async def test_import_documents_csv_auto_mapping():
     """import_documents_csv with no mapping auto-maps columns to fields."""
     mock = _mock_client()
     mock.get_template_by_value.return_value = {
-        "template_id": "TPL-001",
+        "template_id": "0190c000-0000-7000-0000-000000000001",
         "fields": [{"name": "name", "type": "string"}],
     }
     mock.preview_import.return_value = {

@@ -12,7 +12,7 @@ import httpx
 from ingest_gateway.http_client import IngestHTTPClient, ACTION_ENDPOINTS
 from ingest_gateway.models import IngestAction, IngestResultStatus
 
-from conftest import make_mock_response, make_bulk_response
+from tests.conftest import make_mock_response, make_bulk_response
 
 
 # ---- Payload wrapping: single-entity actions ----
@@ -23,7 +23,7 @@ class TestSingleEntityWrapping:
     @pytest.mark.asyncio
     async def test_terminology_create_wraps_in_list(self, http_client):
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "T-001"},
+            {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -41,7 +41,7 @@ class TestSingleEntityWrapping:
     @pytest.mark.asyncio
     async def test_template_create_wraps_in_list(self, http_client):
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "TPL-001"},
+            {"index": 0, "status": "created", "id": "0190c000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -59,13 +59,13 @@ class TestSingleEntityWrapping:
     @pytest.mark.asyncio
     async def test_document_create_wraps_in_list(self, http_client):
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "DOC-001"},
+            {"index": 0, "status": "created", "id": "0190d000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
         )
 
-        payload = {"template_id": "TPL-001", "data": {"name": "Test"}}
+        payload = {"template_id": "0190c000-0000-7000-0000-000000000001", "data": {"name": "Test"}}
         result = await http_client.forward_request(
             IngestAction.DOCUMENTS_CREATE, payload, "corr-3"
         )
@@ -87,8 +87,8 @@ class TestBulkPayloadExtraction:
             {"value": "pending", "label": "Pending"},
         ]
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "T-001"},
-            {"index": 1, "status": "created", "id": "T-002"},
+            {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
+            {"index": 1, "status": "created", "id": "0190b000-0000-7000-0000-000000000002"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -110,8 +110,8 @@ class TestBulkPayloadExtraction:
             {"value": "TPL_2", "label": "Template 2", "fields": []},
         ]
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "TPL-001"},
-            {"index": 1, "status": "created", "id": "TPL-002"},
+            {"index": 0, "status": "created", "id": "0190c000-0000-7000-0000-000000000001"},
+            {"index": 1, "status": "created", "id": "0190c000-0000-7000-0000-000000000002"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -128,12 +128,12 @@ class TestBulkPayloadExtraction:
     @pytest.mark.asyncio
     async def test_documents_bulk_extracts_documents_list(self, http_client):
         docs = [
-            {"template_id": "TPL-001", "data": {"name": "Doc 1"}},
-            {"template_id": "TPL-001", "data": {"name": "Doc 2"}},
+            {"template_id": "0190c000-0000-7000-0000-000000000001", "data": {"name": "Doc 1"}},
+            {"template_id": "0190c000-0000-7000-0000-000000000001", "data": {"name": "Doc 2"}},
         ]
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "DOC-001"},
-            {"index": 1, "status": "created", "id": "DOC-002"},
+            {"index": 0, "status": "created", "id": "0190d000-0000-7000-0000-000000000001"},
+            {"index": 1, "status": "created", "id": "0190d000-0000-7000-0000-000000000002"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -172,7 +172,7 @@ class TestPathParameters:
     async def test_terminology_id_in_url(self, http_client):
         """terminology_id is extracted from payload and substituted in URL."""
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "T-001"},
+            {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -205,7 +205,7 @@ class TestPathParameters:
     async def test_path_param_not_in_request_body(self, http_client):
         """Extracted path params must not leak into the request body."""
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "T-001"},
+            {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
@@ -228,14 +228,14 @@ class TestPathParameters:
     async def test_original_payload_not_mutated(self, http_client):
         """Path param extraction must not mutate the caller's dict."""
         bulk_resp = make_bulk_response([
-            {"index": 0, "status": "created", "id": "T-001"},
+            {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
         ])
         http_client._client.request = AsyncMock(
             return_value=make_mock_response(200, bulk_resp)
         )
 
         original = {
-            "terminology_id": "TERM-123",
+            "terminology_id": "0190a000-0000-7000-0000-000000000123",
             "terms": [{"value": "x", "label": "X"}],
         }
         snapshot = original.copy()
@@ -291,7 +291,7 @@ class TestBulkResponseStatus:
         """When some items fail in BulkResponse → PARTIAL."""
         bulk_resp = make_bulk_response(
             [
-                {"index": 0, "status": "created", "id": "T-1"},
+                {"index": 0, "status": "created", "id": "0190b000-0000-7000-0000-000000000001"},
                 {"index": 1, "status": "error", "error": "duplicate"},
             ],
             total=2, succeeded=1, failed=1,

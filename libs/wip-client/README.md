@@ -28,15 +28,15 @@ const response = await client.defStore.createTerminologies([
 Templates define `identity_fields` (e.g., `["email"]`). When you create a document, the identity fields are hashed (SHA-256) and sent to the Registry. If the hash matches an existing document, you get the **same `document_id`** with an incremented `version` — this is an upsert, not a duplicate.
 
 ```typescript
-// First call: creates DOC-001 version 1
+// First call: creates version 1
 await client.documents.createDocument({
-  template_id: 'TPL-PATIENT',
+  template_id: 'PATIENT_RECORD',
   data: { email: 'jane@example.com', name: 'Jane' },
 })
 
-// Second call with same email: creates DOC-001 version 2 (NOT a new document)
+// Second call with same email: creates version 2 of the SAME document (NOT a new document)
 await client.documents.createDocument({
-  template_id: 'TPL-PATIENT',
+  template_id: 'PATIENT_RECORD',
   data: { email: 'jane@example.com', name: 'Jane Doe' },  // name changed
 })
 ```
@@ -77,7 +77,7 @@ GET requests retry automatically on 502/503/504 with exponential backoff (defaul
 import { createWipClient } from '@wip/client'
 
 const client = createWipClient({
-  baseUrl: '',  // In browser: uses window.location.origin (e.g. https://localhost:8443)
+  baseUrl: '/wip',  // In browser: resolved to window.location.origin + '/wip'
   auth: { type: 'api-key', key: 'dev_master_key_for_testing' },
 })
 
@@ -92,7 +92,7 @@ const result = await client.defStore.createTerminology({
 console.log(result.id) // UUID7
 
 // Bulk create terms (returns BulkResponse — check results[] yourself)
-const bulkResult = await client.defStore.createTerms('T-001', [
+const bulkResult = await client.defStore.createTerms('GENDER', [
   { value: 'MALE', label: 'Male' },
   { value: 'FEMALE', label: 'Female' },
 ])
@@ -120,9 +120,10 @@ import { createWipClient, ApiKeyAuthProvider, OidcAuthProvider } from '@wip/clie
 
 const client = createWipClient({
   // Required: base URL of your WIP instance
-  // In browser, empty string defaults to window.location.origin (recommended)
+  // In browser behind Vite proxy: '/wip' (resolved to origin + '/wip')
+  // In browser direct to Caddy: '' (resolved to window.location.origin)
   // For Node.js scripts: 'https://localhost:8443' or 'https://your-host:8443'
-  baseUrl: '',
+  baseUrl: '/wip',
 
   // Auth: API key, OIDC token callback, or custom AuthProvider
   auth: { type: 'api-key', key: 'your-key' },
@@ -167,7 +168,7 @@ API key auth headers are cached internally for performance. OIDC headers call th
 | Registry | `client.registry` | 8001 | Namespaces, ID management, synonyms, merge |
 | Reporting-Sync | `client.reporting` | 8005 | Cross-service search, integrity checks, activity feed |
 
-All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps, use `baseUrl: ''` (resolves to `window.location.origin`). In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
+All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind a Vite proxy, use `baseUrl: '/wip'` (resolved to `window.location.origin + '/wip'`). Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 
 ---
 
@@ -187,7 +188,7 @@ const list = await client.defStore.listTerminologies({
 // list.items: Terminology[], list.total, list.pages
 
 // Get by ID
-const terminology = await client.defStore.getTerminology('T-001')
+const terminology = await client.defStore.getTerminology('COUNTRY')
 
 // Create (single — throws on error)
 const result = await client.defStore.createTerminology({
@@ -204,17 +205,17 @@ const bulk = await client.defStore.createTerminologies([
 ])
 
 // Update
-await client.defStore.updateTerminology('T-001', { label: 'Updated Label' })
+await client.defStore.updateTerminology('COUNTRY', { label: 'Updated Label' })
 
 // Delete (soft-delete — sets status to inactive)
-await client.defStore.deleteTerminology('T-001')
+await client.defStore.deleteTerminology('COUNTRY')
 ```
 
 ### Terms
 
 ```typescript
 // List terms under a terminology
-const terms = await client.defStore.listTerms('T-001', {
+const terms = await client.defStore.listTerms('COUNTRY', {
   status: 'active',
   search: 'united',          // substring search in value/label/aliases
   page: 1,
@@ -222,32 +223,32 @@ const terms = await client.defStore.listTerms('T-001', {
 })
 
 // Get single term
-const term = await client.defStore.getTerm('TERM-001')
+const term = await client.defStore.getTerm('COUNTRY:United States')
 
 // Create single term (throws on error)
-await client.defStore.createTerm('T-001', {
+await client.defStore.createTerm('COUNTRY', {
   value: 'US',
   label: 'United States',
   aliases: ['USA', 'U.S.A.'],
 })
 
 // Bulk create terms with tuning options
-const bulk = await client.defStore.createTerms('T-001', terms, {
+const bulk = await client.defStore.createTerms('COUNTRY', terms, {
   batch_size: 1000,             // items per batch (default: server-side)
   registry_batch_size: 50,      // registry calls per sub-batch
 })
 
 // Deprecate (with replacement pointer)
-await client.defStore.deprecateTerm('TERM-001', {
-  reason: 'Merged with TERM-002',
-  replaced_by_term_id: 'TERM-002',
+await client.defStore.deprecateTerm('COUNTRY:Burma', {
+  reason: 'Merged with Myanmar',
+  replaced_by_term_id: 'COUNTRY:Myanmar',
 })
 
 // Delete (soft-delete)
-await client.defStore.deleteTerm('TERM-001')
+await client.defStore.deleteTerm('COUNTRY:Burma')
 
 // Update
-await client.defStore.updateTerm('TERM-001', {
+await client.defStore.updateTerm('COUNTRY:United States', {
   label: 'Updated Label',
   aliases: ['new-alias'],
 })
@@ -285,7 +286,7 @@ const imported = await client.defStore.importTerminology({
 // imported.terminology, imported.terms_result (BulkResponse)
 
 // Export
-const exported = await client.defStore.exportTerminology('T-001', {
+const exported = await client.defStore.exportTerminology('COUNTRY', {
   format: 'json',              // or 'csv'
   includeRelationships: true,
   includeInactive: false,
@@ -308,7 +309,7 @@ const ontology = await client.defStore.importOntology(oboGraphJson, {
 ```typescript
 // List relationships for a term
 const rels = await client.defStore.listRelationships({
-  term_id: 'TERM-001',
+  term_id: 'ALZHEIMERS_DISEASE',
   direction: 'outgoing',        // 'incoming', 'outgoing', or 'both'
   relationship_type: 'is_a',
 })
@@ -323,17 +324,17 @@ const allRels = await client.defStore.listAllRelationships({
 
 // Create relationships
 await client.defStore.createRelationships([
-  { source_term_id: 'TERM-002', target_term_id: 'TERM-001', relationship_type: 'is_a' },
+  { source_term_id: 'ALZHEIMERS_DISEASE', target_term_id: 'NEUROLOGY', relationship_type: 'is_a' },
 ])
 
 // Traversal
-const ancestors = await client.defStore.getAncestors('TERM-001', {
+const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
   relationship_type: 'is_a',
   max_depth: 10,
 })
-const descendants = await client.defStore.getDescendants('TERM-001', { max_depth: 3 })
-const parents = await client.defStore.getParents('TERM-001')
-const children = await client.defStore.getChildren('TERM-001')
+const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
+const parents = await client.defStore.getParents('ALZHEIMERS_DISEASE')
+const children = await client.defStore.getChildren('NEUROLOGY')
 ```
 
 ---
@@ -345,15 +346,15 @@ const children = await client.defStore.getChildren('TERM-001')
 const templates = await client.templates.listTemplates({
   latest_only: true,            // only latest version of each template
   status: 'active',
-  extends: 'TPL-BASE',         // filter by parent template
+  extends: 'BASE_RECORD',      // filter by parent template value
   namespace: 'wip',
   page: 1,
   page_size: 50,
 })
 
 // Get template (latest version by default)
-const template = await client.templates.getTemplate('TPL-001')
-const v1 = await client.templates.getTemplate('TPL-001', 1)  // specific version
+const template = await client.templates.getTemplate('PATIENT_RECORD')
+const v1 = await client.templates.getTemplate('PATIENT_RECORD', 1)  // specific version
 
 // Get by value (code name)
 const byValue = await client.templates.getTemplateByValue('PATIENT_RECORD')
@@ -365,7 +366,7 @@ const versions = await client.templates.getTemplateVersions('PATIENT_RECORD')
 const v2 = await client.templates.getTemplateByValueAndVersion('PATIENT_RECORD', 2)
 
 // Raw variants (without resolving inheritance)
-const raw = await client.templates.getTemplateRaw('TPL-001')
+const raw = await client.templates.getTemplateRaw('PATIENT_RECORD')
 const rawByValue = await client.templates.getTemplateByValueRaw('PATIENT_RECORD')
 
 // Create a template
@@ -386,25 +387,25 @@ await client.templates.createTemplate({
 })
 
 // Update (creates a new version — old version stays active)
-await client.templates.updateTemplate('TPL-001', {
+await client.templates.updateTemplate('LAB_RESULT', {
   label: 'Lab Result v2',
   fields: [/* updated fields */],
 })
 
 // Delete (soft-delete)
-await client.templates.deleteTemplate('TPL-001', {
+await client.templates.deleteTemplate('LAB_RESULT', {
   version: 2,                   // delete specific version
   force: true,                  // bypass referential integrity check
 })
 
 // Validate data against a template
-const validation = await client.templates.validateTemplate('TPL-001', {
+const validation = await client.templates.validateTemplate('LAB_RESULT', {
   data: { patient_email: 'test@example.com' },
 })
 
 // Template inheritance
-const children = await client.templates.getChildren('TPL-001')
-const allDescendants = await client.templates.getDescendants('TPL-001')
+const children = await client.templates.getChildren('BASE_RECORD')
+const allDescendants = await client.templates.getDescendants('BASE_RECORD')
 
 // Draft mode: create without validating references, then activate
 await client.templates.createTemplate({
@@ -413,8 +414,8 @@ await client.templates.createTemplate({
   status: 'draft',              // skip reference validation
   fields: [/* ... */],
 })
-await client.templates.activateTemplate('TPL-DRAFT', { dry_run: true })  // preview
-await client.templates.activateTemplate('TPL-DRAFT')                     // activate
+await client.templates.activateTemplate('DRAFT_TPL', { dry_run: true })  // preview
+await client.templates.activateTemplate('DRAFT_TPL')                     // activate
 ```
 
 ### Field Types
@@ -427,11 +428,11 @@ await client.templates.activateTemplate('TPL-DRAFT')                     // acti
 | `boolean` | True/false | |
 | `date` | ISO date (YYYY-MM-DD) | |
 | `datetime` | ISO datetime | |
-| `term` | Reference to a terminology term | `terminology_ref` (terminology value code) |
+| `term` | Reference to a terminology term | `terminology_ref` (value code on write, resolved UUID on read) |
 | `reference` | Reference to another document | `reference_type`, `target_templates` |
 | `file` | Binary file reference | `file_config` (allowed types, max size, multiple) |
 | `object` | Nested object | Child `fields` in template |
-| `array` | Array of values | `array_item_type`, `array_terminology_ref` |
+| `array` | Array of values | `array_item_type`, `array_terminology_ref` (same write/read behavior as `terminology_ref`) |
 
 ### Semantic Types
 
@@ -444,46 +445,46 @@ Fields can have `semantic_type` for enhanced validation and UI hints: `email`, `
 ```typescript
 // List with filtering
 const docs = await client.documents.listDocuments({
-  template_id: 'TPL-001',
-  template_value: 'PATIENT_RECORD',
+  template_id: 'PATIENT_RECORD',  // accepts value code or UUID
+  template_value: 'PATIENT_RECORD',  // exact value match filter
   status: 'active',
   page: 1,
   page_size: 50,
 })
 
 // Get document (latest version by default)
-const doc = await client.documents.getDocument('DOC-001')
-const v1 = await client.documents.getVersion('DOC-001', 1)  // specific version
-const latest = await client.documents.getLatestDocument('DOC-001')
+const doc = await client.documents.getDocument('my-document-id')
+const v1 = await client.documents.getVersion('my-document-id', 1)  // specific version
+const latest = await client.documents.getLatestDocument('my-document-id')
 
 // Create document (upsert via identity hash)
 const result = await client.documents.createDocument({
-  template_id: 'TPL-001',
+  template_id: 'PATIENT_RECORD',
   data: { name: 'Jane Doe', email: 'jane@example.com' },
 })
-// result: { status: "created", id: "DOC-...", version: 1,
+// result: { status: "created", id: "...", version: 1,
 //           identity_hash: "abc123...", is_new: true }
 
 // Bulk create (returns BulkResponse)
 const bulk = await client.documents.createDocuments([
-  { template_id: 'TPL-001', data: { name: 'Alice', email: 'alice@example.com' } },
-  { template_id: 'TPL-001', data: { name: 'Bob', email: 'bob@example.com' } },
+  { template_id: 'PATIENT_RECORD', data: { name: 'Alice', email: 'alice@example.com' } },
+  { template_id: 'PATIENT_RECORD', data: { name: 'Bob', email: 'bob@example.com' } },
 ])
 // bulk.results[0].status, bulk.succeeded, bulk.failed
 
 // Document versions
-const versions = await client.documents.getVersions('DOC-001')
+const versions = await client.documents.getVersions('my-document-id')
 
 // Look up by identity hash
 const byIdentity = await client.documents.getDocumentByIdentity('abc123hash')
 
 // Delete (soft-delete) and archive
-await client.documents.deleteDocument('DOC-001', 'user@example.com')
-await client.documents.archiveDocument('DOC-001', 'user@example.com')
+await client.documents.deleteDocument('my-document-id', 'user@example.com')
+await client.documents.archiveDocument('my-document-id', 'user@example.com')
 
 // Validate without creating
 const validation = await client.documents.validateDocument({
-  template_id: 'TPL-001',
+  template_id: 'PATIENT_RECORD',
   data: { email: 'invalid' },
 })
 ```
@@ -493,7 +494,7 @@ const validation = await client.documents.validateDocument({
 ```typescript
 // Simple query with filters
 const results = await client.documents.queryDocuments({
-  template_id: 'TPL-001',
+  template_id: 'PATIENT_RECORD',
   filters: [
     { field: 'data.country', operator: 'eq', value: 'US' },
     { field: 'data.age', operator: 'gte', value: 18 },
@@ -514,7 +515,7 @@ const results = await client.documents.queryDocuments({
 
 ```typescript
 // Table view (denormalized, spreadsheet-like)
-const table = await client.documents.getTableView('TPL-001', {
+const table = await client.documents.getTableView('PATIENT_RECORD', {
   status: 'active',
   page: 1,
   page_size: 100,
@@ -524,7 +525,7 @@ const table = await client.documents.getTableView('TPL-001', {
 // table.total_documents, table.total_rows
 
 // Export as CSV (returns Blob)
-const csv = await client.documents.exportTableCsv('TPL-001', {
+const csv = await client.documents.exportTableCsv('PATIENT_RECORD', {
   status: 'active',
   include_metadata: true,
 })
@@ -542,7 +543,7 @@ const file = await client.files.uploadFile(myFile, 'report.pdf', {
   description: 'Monthly report',
   tags: ['report', 'monthly'],
   category: 'reports',
-  allowed_templates: ['TPL-REPORT'],  // restrict which templates can reference this file
+  allowed_templates: ['REPORT'],      // restrict which templates can reference this file
 })
 // file: FileEntity { file_id, filename, content_type, size_bytes, checksum, ... }
 
@@ -696,9 +697,9 @@ const activity = await client.reporting.getRecentActivity({
 // activity.activities: [{ type, action, entity_id, timestamp, user, version }]
 
 // Reference tracking
-const refs = await client.reporting.getEntityReferences('document', 'DOC-001')
-const usedBy = await client.reporting.getReferencedBy('terminology', 'T-001', 50)
-const termDocs = await client.reporting.getTermDocuments('TERM-001', 100)
+const refs = await client.reporting.getEntityReferences('document', 'my-document-id')
+const usedBy = await client.reporting.getReferencedBy('terminology', 'COUNTRY', 50)
+const termDocs = await client.reporting.getTermDocuments('COUNTRY:United States', 100)
 ```
 
 ---

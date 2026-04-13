@@ -2,7 +2,7 @@
 
 This document provides detailed specifications for each component in the World In a Pie (WIP) system.
 
-> **Accessing services:** All API calls should go through the Caddy reverse proxy at `https://localhost:8443` (or `https://<hostname>:8443`). Caddy routes `/api/registry/*`, `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, and `/api/reporting-sync/*` to the correct service. The internal ports listed below (8001–8005) are for reference and service-to-service communication only — do not use them from external clients or application code.
+> **Accessing services:** All API calls should go through the Caddy reverse proxy at `https://localhost:8443` (or `https://<hostname>:8443`). Caddy routes `/api/registry/*`, `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/reporting-sync/*`, and `/api/ingest-gateway/*` to the correct service. The internal ports listed below (8001–8006) are for reference and service-to-service communication only — do not use them from external clients or application code.
 
 ---
 
@@ -13,8 +13,10 @@ This document provides detailed specifications for each component in the World I
 3. [Document Store](#document-store)
 4. [Registry](#registry)
 5. [Reporting Sync](#reporting-sync)
-6. [WIP Console](#wip-console)
-7. [Infrastructure](#infrastructure)
+6. [Ingest Gateway](#ingest-gateway)
+7. [MCP Server](#mcp-server)
+8. [WIP Console](#wip-console)
+9. [Infrastructure](#infrastructure)
 
 ---
 
@@ -643,7 +645,7 @@ The Registry provides **federated identity management** and is the **ID generato
 
 By default, the Registry generates **UUID7** identifiers (time-ordered UUIDs) for all entity types. This is the default for the `wip` namespace and any new namespace created without explicit configuration.
 
-For namespaces that require human-readable IDs, the Registry supports **prefixed sequential IDs** (e.g., `TERM-000001`, `TPL-000002`) and other algorithms.
+For namespaces that require human-readable IDs, the Registry supports **prefixed sequential IDs** (e.g., `LOV-000042`, `SCHEMA-000001`) and other algorithms. The prefix is user-chosen per namespace.
 
 ### ID Algorithms
 
@@ -651,7 +653,7 @@ For namespaces that require human-readable IDs, the Registry supports **prefixed
 |-----------|--------|----------|
 | `uuid7` | `019abc12-def3-7abc-8def-123456789abc` | **Default.** Time-ordered, sortable by creation time |
 | `uuid4` | `550e8400-e29b-41d4-a716-446655440000` | Universally unique, random |
-| `prefixed` | `TERM-000001`, `TPL-000002` | Human-readable with prefix and sequential counter |
+| `prefixed` | `PROD-0001`, `LOV-000042` | Human-readable with user-chosen prefix and sequential counter |
 | `nanoid` | `V1StGXR8_Z5jdHi6B-myT` | URL-safe compact IDs |
 | `pattern` | (custom regex) | Validated against a regex pattern |
 | `any` | (any string) | No format enforcement |
@@ -931,6 +933,45 @@ Events contain the full document (self-contained):
 
 ---
 
+## Ingest Gateway
+
+**Port:** 8006 | **Caddy Route:** `/api/ingest-gateway/*`
+
+Async bulk ingestion service. Consumes messages from NATS JetStream subjects (`wip.ingest.terminologies.>`, `wip.ingest.terms.>`, `wip.ingest.templates.>`, `wip.ingest.documents.>`) and delegates to the appropriate store for validation and storage.
+
+The Ingest Gateway does not accept documents via HTTP POST — ingestion is triggered by publishing to NATS. The HTTP endpoints are for monitoring only.
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | /health | Health check (status, NATS connection, worker state) |
+| GET | /status | Worker status and message counts |
+| GET | /metrics | Detailed metrics (processed/failed/success counts, per-action breakdown, average duration) |
+
+---
+
+## MCP Server
+
+**Transport:** stdio (Claude Code), SSE (other clients)
+**Not proxied through Caddy** — runs as a local process, not a network service.
+
+Provides 73 tools and 5 resources for AI-assisted development. Used by YAC agents to interact with WIP services programmatically.
+
+### Key Resources
+
+| Resource | Description |
+|----------|-------------|
+| `wip://conventions` | API conventions and bulk-first patterns |
+| `wip://data-model` | Core data model (terminologies, terms, templates, documents, registry) |
+| `wip://development-guide` | Development guide and best practices |
+| `wip://ponifs` | Six non-intuitive behaviours |
+| `wip://query-assistant-prompt` | Query assistant prompt |
+
+Tools span all WIP domains: namespaces, registry, terminologies, terms, ontology relationships, templates, documents, files, reporting, search, replay, and import/export. Use MCP resource discovery for the full tool listing.
+
+---
+
 ## WIP Console
 
 **Port:** 3000 (dev) / 80 (production) | **Access:** `https://localhost:8443`
@@ -1045,7 +1086,7 @@ Reverse proxy with auto-generated TLS certificates. Routes:
 
 **Port:** 8081
 
-MongoDB admin UI. Included in `mac` and `pi-large` profiles.
+MongoDB admin UI. Included via the `dev-tools.yml` compose module (part of `standard` and `full` presets).
 
 ---
 

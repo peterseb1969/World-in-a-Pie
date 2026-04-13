@@ -482,12 +482,18 @@ class TestNamespaceDeletion:
             json={"prefix": "del-target", "deletion_mode": "full"},
             headers=auth_headers,
         )
-        # Register entries in both the target and default namespaces
+        # Register entries in the target and default namespaces (separate calls — mixed namespaces not allowed)
         await client.post(
             "/api/registry/entries/register",
             json=[
                 {"namespace": "del-target", "entity_type": "documents",
                  "composite_key": {"value": "target-doc"}, "created_by": "test"},
+            ],
+            headers=auth_headers,
+        )
+        await client.post(
+            "/api/registry/entries/register",
+            json=[
                 {"namespace": "default", "entity_type": "documents",
                  "composite_key": {"value": "default-doc"}, "created_by": "test"},
             ],

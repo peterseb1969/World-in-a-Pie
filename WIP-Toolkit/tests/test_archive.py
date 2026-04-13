@@ -33,7 +33,7 @@ class TestArchiveRoundTrip:
         writer = ArchiveWriter(output)
 
         terminology = {
-            "terminology_id": "TERM-000001",
+            "terminology_id": "0190a000-0000-7000-0000-000000000001",
             "value": "COUNTRY",
             "label": "Country",
             "_source": "primary",
@@ -49,7 +49,7 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             entities = list(reader.read_entities("terminologies"))
             assert len(entities) == 1
-            assert entities[0]["terminology_id"] == "TERM-000001"
+            assert entities[0]["terminology_id"] == "0190a000-0000-7000-0000-000000000001"
             assert entities[0]["value"] == "COUNTRY"
             assert entities[0]["_source"] == "primary"
 
@@ -57,10 +57,10 @@ class TestArchiveRoundTrip:
         output = tmp_path / "multi.zip"
         writer = ArchiveWriter(output)
 
-        writer.add_entity("terminologies", {"terminology_id": "TERM-1", "value": "A"})
-        writer.add_entity("terms", {"term_id": "T-1", "value": "a"})
-        writer.add_entity("templates", {"template_id": "TPL-1", "value": "X"})
-        writer.add_entity("documents", {"document_id": "DOC-1", "data": {"x": 1}})
+        writer.add_entity("terminologies", {"terminology_id": "0190a000-0000-7000-0000-000000000001", "value": "A"})
+        writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001", "value": "a"})
+        writer.add_entity("templates", {"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X"})
+        writer.add_entity("documents", {"document_id": "0190d000-0000-7000-0000-000000000001", "data": {"x": 1}})
         writer.add_entity("files", {"file_id": "FILE-1", "filename": "test.txt"})
 
         manifest = Manifest(
@@ -89,9 +89,9 @@ class TestArchiveRoundTrip:
         count = 500
         for i in range(count):
             writer.add_entity("terms", {
-                "term_id": f"T-{i:06d}",
+                "term_id": f"0190b000-0000-7000-0000-{i:012d}",
                 "value": f"term_{i}",
-                "terminology_id": "TERM-000001",
+                "terminology_id": "0190a000-0000-7000-0000-000000000001",
             })
 
         manifest = Manifest(
@@ -103,8 +103,57 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             entities = list(reader.read_entities("terms"))
             assert len(entities) == count
-            assert entities[0]["term_id"] == "T-000000"
-            assert entities[-1]["term_id"] == f"T-{count - 1:06d}"
+            assert entities[0]["term_id"] == "0190b000-0000-7000-0000-000000000000"
+            assert entities[-1]["term_id"] == f"0190b000-0000-7000-0000-{count - 1:012d}"
+
+    def test_open_blob_streaming(self, tmp_path):
+        """open_blob() yields a binary handle that streams to disk (CASE-28).
+
+        Verifies the new streaming entry point: writes happen in chunks
+        through a context-managed file handle, no full-blob bytes object
+        is constructed in Python.
+        """
+        output = tmp_path / "stream-blob.zip"
+        writer = ArchiveWriter(output)
+
+        chunks = [b"chunk-1-", b"chunk-2-", b"chunk-3"]
+        with writer.open_blob("FILE-STREAM") as fh:
+            for chunk in chunks:
+                fh.write(chunk)
+
+        manifest = Manifest(
+            namespace="wip",
+            counts=EntityCounts(files=0),
+            include_files=True,
+        )
+        writer.write(manifest)
+
+        with ArchiveReader(output) as reader:
+            assert reader.list_blobs() == ["FILE-STREAM"]
+            assert reader.read_blob("FILE-STREAM") == b"".join(chunks)
+
+    def test_archivewriter_tmp_dir_override(self, tmp_path):
+        """tmp_dir kwarg lands the scratch dir under the supplied path (CASE-29).
+
+        Verifies the document-store /backup endpoint can co-locate scratch
+        with the configured WIP_BACKUP_DIR instead of the system /tmp.
+        """
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        output = tmp_path / "out.zip"
+
+        writer = ArchiveWriter(output, tmp_dir=scratch_root)
+
+        # Scratch should live under the override, not under /tmp
+        assert Path(writer._tmp_dir).parent == scratch_root
+        assert writer._blobs_dir.parent == Path(writer._tmp_dir)
+        assert writer._blobs_dir.exists()
+
+        # Round-trip still works
+        writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
+        writer.write(Manifest(namespace="wip", counts=EntityCounts(terms=1)))
+        with ArchiveReader(output) as reader:
+            assert reader.entity_count("terms") == 1
 
     def test_blob_round_trip(self, tmp_path):
         """Binary blobs survive round-trip."""
@@ -165,7 +214,7 @@ class TestArchiveRoundTrip:
         writer = ArchiveWriter(output)
 
         writer.add_entity("documents", {
-            "document_id": "DOC-1",
+            "document_id": "0190d000-0000-7000-0000-000000000001",
             "data": {
                 "name": 'O\'Brien "the great"',
                 "notes": "line1\nline2\ttab",
@@ -191,7 +240,7 @@ class TestArchiveRoundTrip:
         output = tmp_path / "count.zip"
         writer = ArchiveWriter(output)
         for i in range(7):
-            writer.add_entity("terms", {"term_id": f"T-{i}"})
+            writer.add_entity("terms", {"term_id": f"0190b000-0000-7000-0000-{i:012d}"})
 
         manifest = Manifest(namespace="wip", counts=EntityCounts(terms=7))
         writer.write(manifest)
@@ -204,7 +253,7 @@ class TestArchiveRoundTrip:
         output = tmp_path / "sizes.zip"
         writer = ArchiveWriter(output)
         for i in range(100):
-            writer.add_entity("terms", {"term_id": f"T-{i}", "value": f"term_{i}" * 10})
+            writer.add_entity("terms", {"term_id": f"0190b000-0000-7000-0000-{i:012d}", "value": f"term_{i}" * 10})
 
         manifest = Manifest(namespace="wip", counts=EntityCounts(terms=100))
         writer.write(manifest)
@@ -221,7 +270,7 @@ class TestArchiveRoundTrip:
         writer = ArchiveWriter(output)
 
         terminology = {
-            "terminology_id": "TERM-000001",
+            "terminology_id": "0190a000-0000-7000-0000-000000000001",
             "value": "COUNTRY",
             "_source": "primary",
             "_registry": sample_registry_data["terminology"],
@@ -245,14 +294,14 @@ class TestArchiveRoundTrip:
         with ArchiveReader(output) as reader:
             # Verify format version
             m = reader.read_manifest()
-            assert m.format_version == "1.1"
+            assert m.format_version == "2.0"
 
             # Terminology _registry round-trip
             terms = list(reader.read_entities("terminologies"))
             assert len(terms) == 1
             reg = terms[0].get("_registry")
             assert reg is not None
-            assert reg["entry_id"] == "TERM-000001"
+            assert reg["entry_id"] == "0190a000-0000-7000-0000-000000000001"
             assert reg["primary_composite_key"] == {"value": "COUNTRY", "label": "Country"}
             assert len(reg["synonyms"]) == 1
             assert reg["synonyms"][0]["composite_key"] == {"external_code": "ISO-3166"}
@@ -272,12 +321,12 @@ class TestArchiveRoundTrip:
 
         # Simulate format 1.0: no _registry field
         writer.add_entity("templates", {
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "value": "PERSON",
             "version": 1,
         })
         writer.add_entity("documents", {
-            "document_id": "DOC-000001",
+            "document_id": "0190d000-0000-7000-0000-000000000001",
             "data": {"x": 1},
         })
 
@@ -331,9 +380,9 @@ class TestArchiveWriterTempFiles:
         writer = ArchiveWriter(output)
 
         for i in range(10):
-            writer.add_entity("documents", {"document_id": f"DOC-{i}"})
+            writer.add_entity("documents", {"document_id": f"0190d000-0000-7000-0000-{i:012d}"})
         for i in range(3):
-            writer.add_entity("templates", {"template_id": f"TPL-{i}"})
+            writer.add_entity("templates", {"template_id": f"0190c000-0000-7000-0000-{i:012d}"})
 
         assert writer.entity_count("documents") == 10
         assert writer.entity_count("templates") == 3
@@ -346,7 +395,7 @@ class TestArchiveWriterTempFiles:
         """Temp directory is removed after write()."""
         output = tmp_path / "cleanup.zip"
         writer = ArchiveWriter(output)
-        writer.add_entity("terms", {"term_id": "T-1"})
+        writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
 
         tmp_dir = writer._tmp_dir
         assert Path(tmp_dir).exists()
@@ -361,10 +410,10 @@ class TestArchiveWriterTempFiles:
         writer = ArchiveWriter(output)
 
         synonyms = [
-            {"entry_id": "TERM-001", "namespace": "wip",
+            {"entry_id": "0190a000-0000-7000-0000-000000000001", "namespace": "wip",
              "entity_type": "terminologies",
              "composite_key": {"code": "ISO"}},
-            {"entry_id": "DOC-001", "namespace": "wip",
+            {"entry_id": "0190d000-0000-7000-0000-000000000001", "namespace": "wip",
              "entity_type": "documents",
              "composite_key": {"vendor": "V1"}},
         ]
@@ -375,14 +424,14 @@ class TestArchiveWriterTempFiles:
             assert reader.has_synonyms()
             read_syns = list(reader.read_synonyms())
             assert len(read_syns) == 2
-            assert read_syns[0]["entry_id"] == "TERM-001"
+            assert read_syns[0]["entry_id"] == "0190a000-0000-7000-0000-000000000001"
             assert read_syns[1]["composite_key"] == {"vendor": "V1"}
 
     def test_no_synonyms_file(self, tmp_path):
         """Archive without synonyms.jsonl reports has_synonyms=False."""
         output = tmp_path / "no-synonyms.zip"
         writer = ArchiveWriter(output)
-        writer.add_entity("terms", {"term_id": "T-1"})
+        writer.add_entity("terms", {"term_id": "0190b000-0000-7000-0000-000000000001"})
         writer.write(Manifest(namespace="wip"))
 
         with ArchiveReader(output) as reader:
@@ -401,7 +450,7 @@ class TestArchiveWriterTempFiles:
         count = 5000
         for i in range(count):
             writer.add_entity("documents", {
-                "document_id": f"DOC-{i:06d}",
+                "document_id": f"0190d000-0000-7000-0000-{i:012d}",
                 "data": {"value": f"data_{i}" * 10},
             })
 

@@ -212,6 +212,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     terminology_id = await registry.register_terminology(
                         value=term_def["value"],
                         label=term_def["label"],
+                        namespace="wip",
                         created_by="system:bootstrap"
                     )
                 except RegistryError as e:
@@ -225,6 +226,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
 
                 terminology = Terminology(
                     terminology_id=terminology_id,
+                    namespace="wip",
                     value=term_def["value"],
                     label=term_def["label"],
                     description=term_def.get("description"),
@@ -265,6 +267,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                     results = await registry.register_terms_bulk(
                         terminology_id=terminology_id,
                         terms=[{"value": t["value"]} for t in terms_to_create],
+                        namespace="wip",
                         created_by="system:bootstrap"
                     )
                 except RegistryError as e:
@@ -279,6 +282,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
 
                     term = Term(
                         term_id=term_id,
+                        namespace="wip",
                         terminology_id=terminology_id,
                         terminology_value=term_def["value"],
                         value=term_data["value"],

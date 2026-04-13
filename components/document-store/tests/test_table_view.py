@@ -12,7 +12,7 @@ from tests.conftest import SAMPLE_TEMPLATES
 
 async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, data: dict, **extra):
     """Create a single document via the bulk-first API and return the result item."""
-    payload = {"template_id": template_id, "data": data, **extra}
+    payload = {"namespace": "wip", "template_id": template_id, "data": data, **extra}
     response = await client.post(
         "/api/document-store/documents",
         headers=auth_headers,
@@ -32,12 +32,12 @@ async def create_one(client: AsyncClient, auth_headers: dict, template_id: str, 
 async def test_table_view_empty(client: AsyncClient, auth_headers: dict):
     """Table view for a template with no documents."""
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["template_id"] == "TPL-000001"
+    assert data["template_id"]  # truthy canonical ID
     assert data["template_value"] == "PERSON"
     assert data["total_documents"] == 0
     assert data["total_rows"] == 0
@@ -52,15 +52,15 @@ async def test_table_view_with_documents(client: AsyncClient, auth_headers: dict
     for i in range(3):
         data = sample_person_data.copy()
         data["national_id"] = f"10000000{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["template_id"] == "TPL-000001"
+    assert data["template_id"]  # truthy canonical ID
     assert data["template_value"] == "PERSON"
     assert data["total_documents"] == 3
     assert data["total_rows"] == 3
@@ -93,17 +93,18 @@ async def test_table_view_template_not_found(client: AsyncClient, auth_headers: 
 @pytest.mark.asyncio
 async def test_table_view_columns_match_template(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Table view column definitions match the template fields."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
 
     columns = {c["name"]: c for c in data["columns"]}
-    template_fields = {f["name"]: f for f in SAMPLE_TEMPLATES["TPL-000001"]["fields"]}
+    # Look up template by the canonical ID returned in the response
+    template_fields = {f["name"]: f for f in SAMPLE_TEMPLATES[data["template_id"]]["fields"]}
 
     # Every template field should have a corresponding column
     for field_name, field_def in template_fields.items():
@@ -116,10 +117,10 @@ async def test_table_view_columns_match_template(client: AsyncClient, auth_heade
 @pytest.mark.asyncio
 async def test_table_view_row_data_values(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Table view rows contain actual document data values."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -140,11 +141,11 @@ async def test_table_view_pagination(client: AsyncClient, auth_headers: dict, sa
     for i in range(5):
         data = sample_person_data.copy()
         data["national_id"] = f"20000000{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     # Page 1 of 2 (3 per page)
     response = await client.get(
-        "/api/document-store/table/TPL-000001?page=1&page_size=3",
+        "/api/document-store/table/PERSON?page=1&page_size=3",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -157,7 +158,7 @@ async def test_table_view_pagination(client: AsyncClient, auth_headers: dict, sa
 
     # Page 2
     response = await client.get(
-        "/api/document-store/table/TPL-000001?page=2&page_size=3",
+        "/api/document-store/table/PERSON?page=2&page_size=3",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -170,7 +171,7 @@ async def test_table_view_pagination(client: AsyncClient, auth_headers: dict, sa
 async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Table view filters by document status."""
     # Create a document and then archive it
-    result = await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    result = await create_one(client, auth_headers, "PERSON", sample_person_data)
     doc_id = result["document_id"]
 
     # Archive it
@@ -183,11 +184,11 @@ async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict,
     # Create another active document
     data2 = sample_person_data.copy()
     data2["national_id"] = "987654321"
-    await create_one(client, auth_headers, "TPL-000001", data2)
+    await create_one(client, auth_headers, "PERSON", data2)
 
     # Default filter = active
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -195,7 +196,7 @@ async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict,
 
     # Filter: archived
     response = await client.get(
-        "/api/document-store/table/TPL-000001?status=archived",
+        "/api/document-store/table/PERSON?status=archived",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -205,10 +206,10 @@ async def test_table_view_status_filter(client: AsyncClient, auth_headers: dict,
 @pytest.mark.asyncio
 async def test_table_view_no_arrays(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """Table view with no array fields has array_handling='none'."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -220,28 +221,28 @@ async def test_table_view_no_arrays(client: AsyncClient, auth_headers: dict, sam
 async def test_table_view_different_templates(client: AsyncClient, auth_headers: dict, sample_person_data: dict, sample_employee_data: dict):
     """Table view returns only documents for the requested template."""
     # Create person and employee documents
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
-    await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
+    await create_one(client, auth_headers, "EMPLOYEE", sample_employee_data)
 
     # Person table
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
     assert data["total_documents"] == 1
-    assert data["template_id"] == "TPL-000001"
+    assert data["template_value"] == "PERSON"
 
     # Employee table
     response = await client.get(
-        "/api/document-store/table/TPL-000002",
+        "/api/document-store/table/EMPLOYEE",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
     assert data["total_documents"] == 1
-    assert data["template_id"] == "TPL-000002"
+    assert data["template_value"] == "EMPLOYEE"
 
 
 # ============================================================================
@@ -252,7 +253,7 @@ async def test_table_view_different_templates(client: AsyncClient, auth_headers:
 async def test_csv_export_empty(client: AsyncClient, auth_headers: dict):
     """CSV export for template with no documents returns empty content."""
     response = await client.get(
-        "/api/document-store/table/TPL-000001/csv",
+        "/api/document-store/table/PERSON/csv",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -269,10 +270,10 @@ async def test_csv_export_with_data(client: AsyncClient, auth_headers: dict, sam
         data = sample_person_data.copy()
         data["national_id"] = f"30000000{i}"
         data["first_name"] = f"Person{i}"
-        await create_one(client, auth_headers, "TPL-000001", data)
+        await create_one(client, auth_headers, "PERSON", data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001/csv",
+        "/api/document-store/table/PERSON/csv",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -298,10 +299,10 @@ async def test_csv_export_with_data(client: AsyncClient, auth_headers: dict, sam
 @pytest.mark.asyncio
 async def test_csv_export_without_metadata(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """CSV export with include_metadata=false excludes system columns."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001/csv?include_metadata=false",
+        "/api/document-store/table/PERSON/csv?include_metadata=false",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -330,10 +331,10 @@ async def test_csv_export_template_not_found(client: AsyncClient, auth_headers: 
 @pytest.mark.asyncio
 async def test_csv_export_filename(client: AsyncClient, auth_headers: dict, sample_person_data: dict):
     """CSV export Content-Disposition uses template value as filename."""
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001/csv",
+        "/api/document-store/table/PERSON/csv",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -344,10 +345,10 @@ async def test_csv_export_filename(client: AsyncClient, auth_headers: dict, samp
 @pytest.mark.asyncio
 async def test_csv_export_employee_template(client: AsyncClient, auth_headers: dict, sample_employee_data: dict):
     """CSV export works for employee template with all fields."""
-    await create_one(client, auth_headers, "TPL-000002", sample_employee_data)
+    await create_one(client, auth_headers, "EMPLOYEE", sample_employee_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000002/csv",
+        "/api/document-store/table/EMPLOYEE/csv",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -373,10 +374,10 @@ async def test_table_view_array_handling_label(client: AsyncClient, auth_headers
     The PERSON template has no array fields, so array_handling should be 'none'.
     This test documents the baseline behavior before array fields are introduced.
     """
-    await create_one(client, auth_headers, "TPL-000001", sample_person_data)
+    await create_one(client, auth_headers, "PERSON", sample_person_data)
 
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -397,7 +398,7 @@ async def test_table_view_array_handling_label(client: AsyncClient, auth_headers
 async def test_table_view_requires_auth(client: AsyncClient):
     """Table view requires authentication."""
     response = await client.get(
-        "/api/document-store/table/TPL-000001",
+        "/api/document-store/table/PERSON",
     )
     assert response.status_code == 401
 
@@ -406,6 +407,6 @@ async def test_table_view_requires_auth(client: AsyncClient):
 async def test_csv_export_requires_auth(client: AsyncClient):
     """CSV export requires authentication."""
     response = await client.get(
-        "/api/document-store/table/TPL-000001/csv",
+        "/api/document-store/table/PERSON/csv",
     )
     assert response.status_code == 401

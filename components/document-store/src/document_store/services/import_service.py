@@ -110,7 +110,7 @@ class ImportService:
         rows: list[dict[str, str]],
         template_id: str,
         column_mapping: dict[str, str],
-        namespace: str = "wip",
+        namespace: str,
     ) -> list[dict[str, Any]]:
         """Convert parsed rows to document create requests using column mapping.
 

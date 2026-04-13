@@ -7,7 +7,8 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_namespace_filter
+from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
     BulkResponse,
@@ -80,7 +81,7 @@ Metadata can be provided as form fields:
 )
 async def upload_file(
     file: UploadFile = File(..., description="The file to upload"),
-    namespace: str = Form(default="wip", description="Namespace for the file"),
+    namespace: str = Form(..., description="Namespace for the file"),
     file_id: str | None = Form(None, description="Pre-assigned file ID (for restore/migration)"),
     description: str | None = Form(None, description="File description"),
     tags: str | None = Form(None, description="Comma-separated tags"),
@@ -147,7 +148,7 @@ async def upload_file(
     dependencies=[Depends(require_file_storage)]
 )
 async def list_files(
-    namespace: str = Query(default="wip", description="Namespace to query"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     status: FileStatus | None = Query(None, description="Filter by status"),
     content_type: str | None = Query(None, description="Filter by MIME type (e.g., 'image/*')"),
     category: str | None = Query(None, description="Filter by category"),
@@ -159,7 +160,7 @@ async def list_files(
 ):
     """List files with pagination."""
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     service = get_file_service()
 
@@ -173,7 +174,7 @@ async def list_files(
         uploaded_by=uploaded_by,
         page=page,
         page_size=page_size,
-        namespace=namespace,
+        ns_filter=ns_filter.query,
     )
 
 
@@ -186,14 +187,25 @@ async def list_files(
 )
 async def get_file(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
+
+    from ..models.file import File as FileModel
+
     service = get_file_service()
     file_response = await service.get_file(file_id)
 
     if not file_response:
         raise HTTPException(status_code=404, detail="File not found")
+
+    # Check namespace permission (File model has namespace, FileResponse doesn't)
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if file_doc:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, file_doc.namespace, "read")
 
     return file_response
 
@@ -212,11 +224,22 @@ Use this for browser downloads or when sharing files externally.
 )
 async def get_download_url(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     expires_in: int = Query(3600, ge=60, le=86400, description="URL expiration in seconds (1 min to 24 hours)"),
     _: str = Depends(require_api_key)
 ):
     """Get a pre-signed download URL for a file."""
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
+
     service = get_file_service()
+
+    # Check namespace permission before generating presigned URL
+    from ..models.file import File as FileModel
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -235,9 +258,12 @@ async def get_download_url(
 )
 async def download_file_content(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
+
     from ..models.file import File as FileModel
     from ..models.file import FileStatus
 
@@ -248,6 +274,10 @@ async def download_file_content(
 
     if file_doc.status == FileStatus.INACTIVE:
         raise HTTPException(status_code=400, detail="File has been deleted")
+
+    # Check namespace permission
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
 
     # Stream chunks directly from MinIO → browser (no full buffering)
     storage = get_file_storage_client()
@@ -270,13 +300,23 @@ async def download_file_content(
 )
 async def update_files_metadata(
     items: list[UpdateFileItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
+    await resolve_bulk_ids(items, "file_id", "file", namespace=namespace)
+
+    from ..models.file import File as FileModel
+    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
         try:
+            file_doc = await FileModel.find_one({"file_id": item.file_id})
+            if not file_doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
+                continue
+            await check_namespace_permission(identity, file_doc.namespace, "write")
             response = await service.update_metadata(item.file_id, item)
             if not response:
                 results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found"))
@@ -302,13 +342,23 @@ async def update_files_metadata(
 )
 async def delete_files(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
+    await resolve_bulk_ids(items, "id", "file", namespace=namespace)
+
+    from ..models.file import File as FileModel
+    identity = get_current_identity()
     service = get_file_service()
     results = []
     for i, item in enumerate(items):
         try:
+            file_doc = await FileModel.find_one({"file_id": item.id})
+            if not file_doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
+                continue
+            await check_namespace_permission(identity, file_doc.namespace, "write")
             success = await service.delete_file(item.id, force=item.force)
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found"))
@@ -337,18 +387,24 @@ Uses the file_references index for efficient lookup.
 )
 async def get_file_documents(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Items per page"),
     _: str = Depends(require_api_key)
 ):
     """List documents that reference this file."""
-    from ..models.document import Document as DocumentModel
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
-    # Verify file exists
-    service = get_file_service()
-    file_response = await service.get_file(file_id)
-    if not file_response:
+    from ..models.document import Document as DocumentModel
+    from ..models.file import File as FileModel
+
+    # Verify file exists and check namespace permission
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "read")
 
     # Query documents with this file_id in file_references
     query = {
@@ -400,10 +456,21 @@ Only works on files with status 'inactive'. Use soft-delete first.
 )
 async def hard_delete_file(
     file_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     _: str = Depends(require_api_key)
 ):
     """Permanently delete a file."""
+    file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
+
     service = get_file_service()
+
+    # Check namespace permission — hard delete requires admin
+    from ..models.file import File as FileModel
+    file_doc = await FileModel.find_one({"file_id": file_id})
+    if not file_doc:
+        raise HTTPException(status_code=404, detail="File not found")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, file_doc.namespace, "admin")
 
     try:
         success = await service.hard_delete_file(file_id)

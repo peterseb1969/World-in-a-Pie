@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any, BinaryIO, Iterator
 
 from rich.console import Console
 
@@ -53,6 +53,39 @@ class EntityCollector:
         console.print(f"  Fetched {len(all_terms)} terms across {len(terminologies)} terminologies")
         return all_terms
 
+    def fetch_relationships(self, terminology_id: str) -> list[dict[str, Any]]:
+        """Fetch all relationships for a terminology (paginated)."""
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            data = self.client.get(
+                "def-store", "/ontology/relationships/all",
+                params={
+                    "namespace": self.namespace,
+                    "source_terminology_id": terminology_id,
+                    "status": "active" if not self.include_inactive else "",
+                    "page": page,
+                    "page_size": 100,
+                },
+            )
+            page_items = data.get("items", [])
+            items.extend(page_items)
+            if len(page_items) < 100:
+                break
+            page += 1
+        return items
+
+    def fetch_all_relationships(self, terminologies: list[dict]) -> list[dict[str, Any]]:
+        """Fetch relationships for all terminologies."""
+        all_rels: list[dict[str, Any]] = []
+        for t in terminologies:
+            tid = t["terminology_id"]
+            rels = self.fetch_relationships(tid)
+            all_rels.extend(rels)
+        if all_rels:
+            console.print(f"  Fetched {len(all_rels)} relationships across {len(terminologies)} terminologies")
+        return all_rels
+
     # --- Template-Store ---
 
     def fetch_templates(self) -> list[dict[str, Any]]:
@@ -74,7 +107,7 @@ class EntityCollector:
         return self.client.get(
             "template-store",
             f"/templates/{template_id}/raw",
-            params={"version": version},
+            params={"version": version, "namespace": self.namespace},
         )
 
     # --- Document-Store ---
@@ -202,10 +235,16 @@ class EntityCollector:
         console.print(f"  Fetched {len(items)} files")
         return items
 
-    def fetch_file_content(self, file_id: str) -> bytes:
-        """Download binary file content."""
-        resp = self.client.get_stream("document-store", f"/files/{file_id}/content")
-        return resp.content
+    def download_file_content(self, file_id: str, dest: BinaryIO) -> None:
+        """Stream binary file content directly into ``dest``.
+
+        No full body is held in Python — the underlying
+        :meth:`WIPClient.stream_to_file` writes chunks straight from the
+        socket to the destination handle (CASE-28).
+        """
+        self.client.stream_to_file(
+            "document-store", f"/files/{file_id}/content", dest,
+        )
 
     # --- Single entity lookups (for closure) ---
 

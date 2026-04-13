@@ -5,20 +5,18 @@ Covers event recording, latency statistics, per-template aggregation,
 error tracking, uptime calculation, and the full alert lifecycle.
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from reporting_sync.metrics import MetricsCollector
 from reporting_sync.models import (
-    Alert,
     AlertConfig,
     AlertSeverity,
     AlertThresholds,
     AlertType,
     ConsumerInfo,
 )
-
 
 # =========================================================================
 # Fixtures
@@ -52,7 +50,7 @@ class TestRecordEventProcessed:
         assert collector.last_event_at is None
         collector.record_event_processed("person", "doc_person", 10.0)
         assert collector.last_event_at is not None
-        assert (datetime.now(timezone.utc) - collector.last_event_at).total_seconds() < 2
+        assert (datetime.now(UTC) - collector.last_event_at).total_seconds() < 2
 
     def test_appends_latency_sample(self, collector: MetricsCollector):
         collector.record_event_processed("person", "doc_person", 42.5)
@@ -101,7 +99,7 @@ class TestRecordEventFailed:
 
     def test_tracks_multiple_error_types(self, collector: MetricsCollector):
         collector.record_event_failed(None, None, "invalid_event", "missing field")
-        collector.record_event_failed(None, None, "template_not_found", "TPL-999")
+        collector.record_event_failed(None, None, "template_not_found", "0190c000-0000-7000-0000-000000000999")
         assert collector._errors_by_type["invalid_event"] == 1
         assert collector._errors_by_type["template_not_found"] == 1
 
@@ -243,7 +241,7 @@ class TestGetEventsPerSecond:
     def test_calculates_rate_after_processing(self, collector: MetricsCollector):
         """After processing events, EPS reflects the delta."""
         # Backdate the last measurement time so elapsed > 1 second
-        collector._last_events_time = datetime.now(timezone.utc) - timedelta(seconds=2)
+        collector._last_events_time = datetime.now(UTC) - timedelta(seconds=2)
         collector._last_events_count = 0
         collector.events_processed = 10
 
@@ -254,7 +252,7 @@ class TestGetEventsPerSecond:
 
     def test_updates_baseline_after_call(self, collector: MetricsCollector):
         """Calling get_events_per_second resets the baseline for next call."""
-        collector._last_events_time = datetime.now(timezone.utc) - timedelta(seconds=2)
+        collector._last_events_time = datetime.now(UTC) - timedelta(seconds=2)
         collector._last_events_count = 0
         collector.events_processed = 10
 
@@ -265,7 +263,7 @@ class TestGetEventsPerSecond:
 
     def test_second_call_reflects_only_new_events(self, collector: MetricsCollector):
         """Consecutive calls compute delta from last measurement."""
-        collector._last_events_time = datetime.now(timezone.utc) - timedelta(seconds=2)
+        collector._last_events_time = datetime.now(UTC) - timedelta(seconds=2)
         collector._last_events_count = 0
         collector.events_processed = 10
 
@@ -349,12 +347,12 @@ class TestGetUptimeSeconds:
 
     def test_uptime_increases_over_time(self, collector: MetricsCollector):
         # Backdate started_at to ensure measurable uptime
-        collector.started_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+        collector.started_at = datetime.now(UTC) - timedelta(seconds=10)
         uptime = collector.get_uptime_seconds()
         assert uptime >= 9.0  # allow small timing variance
 
     def test_uptime_reflects_started_at(self, collector: MetricsCollector):
-        collector.started_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        collector.started_at = datetime.now(UTC) - timedelta(hours=1)
         uptime = collector.get_uptime_seconds()
         assert 3590 < uptime < 3610  # approximately 3600 seconds
 
@@ -530,7 +528,7 @@ class TestCheckAlertsProcessingStalled:
     async def test_stall_warning(self, collector: MetricsCollector):
         """No events for stall_warning_seconds triggers warning."""
         # Set last_event_at to well past the warning threshold (default 300s)
-        collector.last_event_at = datetime.now(timezone.utc) - timedelta(seconds=350)
+        collector.last_event_at = datetime.now(UTC) - timedelta(seconds=350)
         alerts = await collector.check_alerts(None, True, True)
         stall_alerts = [a for a in alerts if a.alert_type == AlertType.PROCESSING_STALLED]
         assert len(stall_alerts) == 1
@@ -539,7 +537,7 @@ class TestCheckAlertsProcessingStalled:
     @pytest.mark.asyncio
     async def test_stall_critical(self, collector: MetricsCollector):
         """No events for stall_critical_seconds triggers critical."""
-        collector.last_event_at = datetime.now(timezone.utc) - timedelta(seconds=700)
+        collector.last_event_at = datetime.now(UTC) - timedelta(seconds=700)
         alerts = await collector.check_alerts(None, True, True)
         stall_alerts = [a for a in alerts if a.alert_type == AlertType.PROCESSING_STALLED]
         assert len(stall_alerts) == 1
@@ -549,12 +547,12 @@ class TestCheckAlertsProcessingStalled:
     async def test_stall_resolves_when_event_received(self, collector: MetricsCollector):
         """Stall alert resolves when a recent event is recorded."""
         # Trigger stall
-        collector.last_event_at = datetime.now(timezone.utc) - timedelta(seconds=350)
+        collector.last_event_at = datetime.now(UTC) - timedelta(seconds=350)
         await collector.check_alerts(None, True, True)
         assert len(collector.get_active_alerts()) == 1
 
         # Recent event
-        collector.last_event_at = datetime.now(timezone.utc)
+        collector.last_event_at = datetime.now(UTC)
         await collector.check_alerts(None, True, True)
         assert len(collector.get_active_alerts()) == 0
         assert len(collector.get_resolved_alerts()) == 1
@@ -678,7 +676,7 @@ class TestAlertResolution:
         """When alerts are disabled, check_alerts returns no alerts."""
         collector.update_alert_config(AlertConfig(enabled=False))
         # Conditions that would otherwise trigger alerts
-        collector.last_event_at = datetime.now(timezone.utc) - timedelta(seconds=700)
+        collector.last_event_at = datetime.now(UTC) - timedelta(seconds=700)
         alerts = await collector.check_alerts(None, nats_connected=False, postgres_connected=False)
         assert alerts == []
 
@@ -696,7 +694,7 @@ class TestAlertResolution:
     @pytest.mark.asyncio
     async def test_multiple_alert_types_simultaneously(self, collector: MetricsCollector):
         """Multiple different alert conditions can fire in one check."""
-        collector.last_event_at = datetime.now(timezone.utc) - timedelta(seconds=700)
+        collector.last_event_at = datetime.now(UTC) - timedelta(seconds=700)
         collector.events_processed = 75
         collector.events_failed = 25  # 25% error rate
 

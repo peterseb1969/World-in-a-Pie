@@ -8,7 +8,7 @@ import Button from 'primevue/button'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import Skeleton from 'primevue/skeleton'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import { defStoreClient } from '@/api/client'
 import type { Term, Relationship } from '@/types'
 import TruncatedId from '@/components/common/TruncatedId.vue'
@@ -22,6 +22,7 @@ const props = defineProps<{
 
 const router = useRouter()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const term = ref<Term | null>(null)
 const loading = ref(false)
@@ -67,9 +68,10 @@ async function loadFamily() {
   if (!term.value) return
   loadingFamily.value = true
   try {
+    const ns = term.value?.namespace ?? namespaceStore.currentNamespaceParam
     const [p, c] = await Promise.all([
-      defStoreClient.getParents(props.id),
-      defStoreClient.getChildren(props.id),
+      defStoreClient.getParents(props.id, ns),
+      defStoreClient.getChildren(props.id, ns),
     ])
     parents.value = p
     children.value = c
@@ -259,6 +261,7 @@ function formatDate(dateStr: string) {
           <RelationshipList
             :terminology-id="term.terminology_id"
             :term-id="term.term_id"
+            :namespace="term.namespace"
             @navigate-to-term="navigateToTerm"
           />
         </TabPanel>
@@ -267,6 +270,7 @@ function formatDate(dateStr: string) {
           <HierarchyTree
             :term-id="term.term_id"
             :term-value="term.label || term.value"
+            :namespace="term.namespace"
             @navigate-to-term="navigateToTerm"
           />
         </TabPanel>

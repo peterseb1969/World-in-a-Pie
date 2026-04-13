@@ -40,21 +40,25 @@ from .dependencies import (
     require_namespace_read,
     require_namespace_write,
 )
+from .fastapi_helpers import resolve_bulk_ids, resolve_or_404
 from .identity import (
     clear_current_identity,
     get_actor_info,
     get_current_identity,
     get_identity_owner,
     get_identity_string,
+    reset_current_identity,
     set_current_identity,
 )
 from .middleware import AuthMiddleware, create_auth_middleware
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .permissions import (
+    NamespaceFilter,
     check_namespace_permission,
     clear_permission_cache,
     permission_sufficient,
     resolve_accessible_namespaces,
+    resolve_namespace_filter,
     resolve_permission,
 )
 from .providers import (
@@ -62,6 +66,7 @@ from .providers import (
     AuthProvider,
     NoAuthProvider,
     OIDCProvider,
+    TrustedHeaderProvider,
     hash_api_key,
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
@@ -69,13 +74,13 @@ from .ratelimit import setup_rate_limiting
 from .resolve import (
     EntityNotFoundError,
     clear_resolution_cache,
-    is_canonical_format,
     resolve_entity_id,
     resolve_entity_ids,
 )
+from .key_sync import KeySyncService
 from .security import check_production_security
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "APIKeyProvider",
@@ -91,6 +96,8 @@ __all__ = [
     "NoAuthProvider",
     "OIDCProvider",
     "RejectUnknownQueryParamsMiddleware",
+    "TrustedHeaderProvider",
+    "NamespaceFilter",
     # Models
     "UserIdentity",
     # Permissions
@@ -109,7 +116,6 @@ __all__ = [
     "get_identity_owner",
     "get_identity_string",
     "hash_api_key",
-    "is_canonical_format",
     "optional_identity",
     "permission_sufficient",
     "require_admin",
@@ -121,15 +127,22 @@ __all__ = [
     "require_namespace_read",
     "require_namespace_write",
     "reset_auth_config",
+    "reset_current_identity",
     "resolve_accessible_namespaces",
+    "resolve_namespace_filter",
     # Synonym resolution
+    "resolve_bulk_ids",
     "resolve_entity_id",
     "resolve_entity_ids",
+    "resolve_or_404",
     "resolve_permission",
     "set_auth_config",
     "set_current_identity",
     # Setup
     "setup_auth",
+    "setup_key_sync",
+    # Key sync
+    "KeySyncService",
     # Rate limiting
     "setup_rate_limiting",
 ]
@@ -161,6 +174,16 @@ def create_providers_from_config(
     elif config.mode == "api_key_only":
         # API key only - load keys and create provider
         keys = config.load_api_keys()
+
+        # Trusted header provider runs first (checks X-WIP-User + API key)
+        if config.trust_proxy_headers and keys:
+            providers.append(TrustedHeaderProvider(
+                keys=keys,
+                header_name=config.api_key_header,
+                hash_salt=config.api_key_hash_salt,
+                default_groups=config.default_groups,
+            ))
+
         providers.append(APIKeyProvider(
             keys=keys,
             header_name=config.api_key_header,
@@ -186,8 +209,19 @@ def create_providers_from_config(
         ))
 
     elif config.mode == "dual":
-        # Dual mode - try JWT first, then API key
-        # JWT is checked first because Bearer token is more explicit
+        # Dual mode - try trusted headers first, then JWT, then API key
+        keys = config.load_api_keys()
+
+        # Trusted header provider runs first (checks X-WIP-User + API key)
+        if config.trust_proxy_headers and keys:
+            providers.append(TrustedHeaderProvider(
+                keys=keys,
+                header_name=config.api_key_header,
+                hash_salt=config.api_key_hash_salt,
+                default_groups=config.default_groups,
+            ))
+
+        # JWT is checked next because Bearer token is more explicit
         if config.jwt_issuer_url or config.jwt_jwks_uri:
             providers.append(OIDCProvider(
                 issuer_url=config.jwt_issuer_url,
@@ -200,7 +234,6 @@ def create_providers_from_config(
                 leeway=config.jwt_leeway_seconds,
             ))
 
-        keys = config.load_api_keys()
         if keys:
             providers.append(APIKeyProvider(
                 keys=keys,
@@ -246,3 +279,60 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
         app.add_middleware(middleware_class)
 
     return providers
+
+
+async def setup_key_sync(
+    providers: list[AuthProvider],
+    registry_url: str | None = None,
+    api_key: str | None = None,
+    interval_seconds: int = 30,
+) -> KeySyncService | None:
+    """Set up background key sync for a non-Registry service.
+
+    Finds the APIKeyProvider from the providers list (as returned by
+    setup_auth()), identifies config-file key names, and starts a
+    KeySyncService polling loop.
+
+    Args:
+        providers: Provider list returned by setup_auth()
+        registry_url: Registry base URL (falls back to REGISTRY_URL env var)
+        api_key: API key for authenticating to Registry (falls back to env vars)
+        interval_seconds: Polling interval (default 30s)
+
+    Returns:
+        The KeySyncService instance (caller should call stop() on shutdown),
+        or None if no APIKeyProvider is found.
+    """
+    import os
+
+    if registry_url is None:
+        registry_url = os.getenv("REGISTRY_URL", "http://localhost:8001")
+    if api_key is None:
+        api_key = (
+            os.getenv("REGISTRY_API_KEY")
+            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
+            or os.getenv("API_KEY")
+            or os.getenv("MASTER_API_KEY")
+            or ""
+        )
+
+    api_key_provider = None
+    for p in providers:
+        if isinstance(p, APIKeyProvider):
+            api_key_provider = p
+            break
+
+    if api_key_provider is None:
+        return None
+
+    config_key_names = {k.name for k in api_key_provider._keys}
+
+    sync_service = KeySyncService(
+        registry_url=registry_url,
+        api_key=api_key,
+        provider=api_key_provider,
+        config_key_names=config_key_names,
+        interval_seconds=interval_seconds,
+    )
+    await sync_service.start()
+    return sync_service

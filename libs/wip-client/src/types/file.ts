@@ -11,6 +11,7 @@ export interface FileMetadata {
 
 export interface FileEntity {
   file_id: string
+  namespace: string
   filename: string
   content_type: string
   size_bytes: number

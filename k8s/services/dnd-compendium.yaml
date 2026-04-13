@@ -1,0 +1,179 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: dnd-compendium
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: dnd-compendium
+    app.kubernetes.io/part-of: wip
+spec:
+  type: ClusterIP
+  ports:
+    - port: 3011
+      targetPort: 3011
+  selector:
+    app.kubernetes.io/name: dnd-compendium
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dnd-compendium
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: dnd-compendium
+    app.kubernetes.io/part-of: wip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dnd-compendium
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dnd-compendium
+        app.kubernetes.io/part-of: wip
+    spec:
+      containers:
+        - name: dnd-compendium
+          image: localhost:32000/dnd-compendium:latest
+          ports:
+            - containerPort: 3011
+          env:
+            - name: WIP_BASE_URL
+              value: "https://wip-kubi.local"
+            - name: WIP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+            - name: WIP_NAMESPACE
+              value: "dnd"
+            - name: MCP_URL
+              value: "http://dnd-mcp-server.wip:8007/sse"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            - name: NODE_TLS_REJECT_UNAUTHORIZED
+              value: "0"
+          readinessProbe:
+            httpGet:
+              path: /api/image-proxy/health
+              port: 3011
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/image-proxy/health
+              port: 3011
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+---
+# MCP server in SSE mode for the DnD agent (Node.js MCP SDK
+# has a content-length bug with streamable HTTP transport)
+apiVersion: v1
+kind: Service
+metadata:
+  name: dnd-mcp-server
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: dnd-mcp-server
+    app.kubernetes.io/part-of: wip
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8007
+      targetPort: 8007
+  selector:
+    app.kubernetes.io/name: dnd-mcp-server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dnd-mcp-server
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: dnd-mcp-server
+    app.kubernetes.io/part-of: wip
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: dnd-mcp-server
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: dnd-mcp-server
+        app.kubernetes.io/part-of: wip
+    spec:
+      containers:
+        - name: mcp-server
+          image: localhost:32000/wip-mcp-server:latest
+          command: ["python", "-m", "wip_mcp", "--sse"]
+          ports:
+            - containerPort: 8007
+          env:
+            - name: MCP_PORT
+              value: "8007"
+            - name: MCP_ALLOWED_HOST
+              value: "dnd-mcp-server.wip"
+            # No API_KEY — internal pod-to-pod only, not exposed via ingress.
+            # The SSE transport breaks with BaseHTTPMiddleware auth wrapper.
+            - name: WIP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wip-secrets
+                  key: api-key
+          envFrom:
+            - configMapRef:
+                name: wip-config
+          readinessProbe:
+            tcpSocket:
+              port: 8007
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "250m"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dnd-compendium-ingress
+  namespace: wip
+  labels:
+    app.kubernetes.io/name: dnd-compendium
+    app.kubernetes.io/part-of: wip
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - wip-kubi.local
+      secretName: wip-tls
+  rules:
+    - host: wip-kubi.local
+      http:
+        paths:
+          - path: /apps/dnd(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: dnd-compendium
+                port:
+                  number: 3011

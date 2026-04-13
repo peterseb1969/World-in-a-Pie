@@ -4,7 +4,13 @@ import math
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_accessible_namespaces
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_bulk_ids,
+    resolve_namespace_filter,
+    resolve_or_404,
+)
 
 from ..models.api_models import (
     BulkResponse,
@@ -61,24 +67,19 @@ async def list_terminologies(
     status: str | None = Query(None, description="Filter by status"),
     value: str | None = Query(None, description="Filter by exact value match"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Items per page"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     api_key: str = Depends(require_api_key)
 ) -> TerminologyListResponse:
     """List all terminologies with pagination and optional filters."""
     identity = get_current_identity()
-    allowed_namespaces = None
-    if namespace:
-        await check_namespace_permission(identity, namespace, "read")
-    else:
-        allowed_namespaces = await resolve_accessible_namespaces(identity)
+    ns_filter = await resolve_namespace_filter(identity, namespace)
 
     terminologies, total = await TerminologyService.list_terminologies(
         status=status,
         value=value,
         page=page,
         page_size=page_size,
-        namespace=namespace,
-        allowed_namespaces=allowed_namespaces,
+        ns_filter=ns_filter.query,
     )
     return TerminologyListResponse(
         items=terminologies,
@@ -118,6 +119,11 @@ async def get_terminology(
     The ID can be either the Registry ID or the value (DOC_STATUS).
     When falling back to value lookup, namespace is used for scoping.
     """
+    # Resolve synonym (e.g., "STATUS" → UUID)
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace, param_name="terminology_id"
+    )
+
     # Try as ID first, then as value
     result = await TerminologyService.get_terminology(terminology_id=terminology_id)
     if not result:
@@ -132,6 +138,7 @@ async def get_terminology(
 @router.put("", response_model=BulkResponse, summary="Update terminologies")
 async def update_terminologies(
     items: list[UpdateTerminologyItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -140,6 +147,8 @@ async def update_terminologies(
     If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
+    await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -176,10 +185,14 @@ async def get_terminology_dependencies(
 
     Use this to check before deactivating a terminology.
     """
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+    )
+
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from None
 
 
 @router.post("/{terminology_id}/restore", response_model=TerminologyResponse, summary="Restore a terminology")
@@ -194,6 +207,10 @@ async def restore_terminology(
     By default also reactivates all terms that were deactivated with it.
     Set restore_terms=false to restore only the terminology itself.
     """
+    terminology_id = await resolve_or_404(
+        terminology_id, "terminology", namespace=None, param_name="terminology_id"
+    )
+
     result = await TerminologyService.restore_terminology(
         terminology_id=terminology_id,
         restore_terms=restore_terms
@@ -206,6 +223,7 @@ async def restore_terminology(
 @router.delete("", response_model=BulkResponse, summary="Delete terminologies")
 async def delete_terminologies(
     items: list[DeleteItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     api_key: str = Depends(require_api_key)
 ) -> BulkResponse:
     """
@@ -214,6 +232,8 @@ async def delete_terminologies(
     All terms in each terminology will also be deactivated.
     Set force=true per item to delete even if templates reference it.
     """
+    await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -228,7 +248,8 @@ async def delete_terminologies(
                     continue
 
             success = await TerminologyService.delete_terminology(
-                terminology_id=item.id, updated_by=item.updated_by
+                terminology_id=item.id, updated_by=item.updated_by,
+                hard_delete=item.hard_delete,
             )
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Terminology not found"))

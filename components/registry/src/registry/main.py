@@ -13,9 +13,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import check_production_security, setup_auth, setup_rate_limiting
+from wip_auth import APIKeyProvider, APIKeyRecord, check_production_security, setup_auth, setup_rate_limiting
 
 from .api import api_router
+from .api.api_keys import configure_api_key_management
+from .models.api_key import StoredAPIKey
 from .models.deletion_journal import DeletionJournal
 from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
@@ -52,12 +54,48 @@ async def lifespan(app: FastAPI):
     # Initialize Beanie ODM with document models
     await init_beanie(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey]
     )
     print("MongoDB connection and Beanie initialization successful.")
 
     # Store client in app state
     app.state.mongodb_client = client
+
+    # Ensure the 'wip' system namespace exists with default grants
+    existing_wip = await Namespace.find_one({"prefix": "wip"})
+    if not existing_wip:
+        wip_ns = Namespace(
+            prefix="wip",
+            description="Default World In a Pie namespace",
+            isolation_mode="open",
+            id_config={},
+        )
+        await wip_ns.create()
+        print("Created 'wip' system namespace.")
+    else:
+        print("'wip' system namespace exists.")
+
+    # Ensure default grants exist for the wip namespace
+    default_grants = [
+        ("wip-admins", "group", "admin"),
+        ("wip-editors", "group", "write"),
+        ("wip-viewers", "group", "read"),
+    ]
+    for subject, subject_type, permission in default_grants:
+        existing_grant = await NamespaceGrant.find_one({
+            "namespace": "wip",
+            "subject": subject,
+            "subject_type": subject_type,
+        })
+        if not existing_grant:
+            await NamespaceGrant(
+                namespace="wip",
+                subject=subject,
+                subject_type=subject_type,
+                permission=permission,
+                granted_by="system:bootstrap",
+            ).create()
+            print(f"  Created grant: {subject} ({permission}) on 'wip'")
 
     # Recover any incomplete namespace deletions
     from .api.namespace_deletion import get_deletion_service
@@ -72,6 +110,37 @@ async def lifespan(app: FastAPI):
         print("Auth service initialized with master key.")
     else:
         print("WARNING: No MASTER_API_KEY set. Auth may not work correctly.")
+
+    # Wire runtime API key management
+    api_key_provider = None
+    for p in providers:
+        if isinstance(p, APIKeyProvider):
+            api_key_provider = p
+            break
+
+    if api_key_provider:
+        # Identify config-file key names (these cannot be modified via API)
+        config_key_names = {k.name for k in api_key_provider._keys}
+
+        # Load runtime keys from MongoDB and add to provider
+        runtime_docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
+        for doc in runtime_docs:
+            api_key_provider.add_key(APIKeyRecord(
+                name=doc.name,
+                key_hash=doc.key_hash,
+                owner=doc.owner,
+                groups=doc.groups,
+                description=doc.description,
+                created_at=doc.created_at,
+                expires_at=doc.expires_at,
+                enabled=doc.enabled,
+                namespaces=doc.namespaces,
+            ))
+        print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
+
+        configure_api_key_management(api_key_provider, config_key_names)
+    else:
+        print("WARNING: No APIKeyProvider found — runtime key management disabled.")
 
     yield
 

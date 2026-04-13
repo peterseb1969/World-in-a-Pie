@@ -13,10 +13,12 @@ import httpx
 class BulkError(Exception):
     """Raised when a single-item bulk operation fails."""
 
-    def __init__(self, error: str, index: int = 0):
+    def __init__(self, error: str, index: int = 0, error_code: str | None = None):
         self.error = error
         self.index = index
-        super().__init__(error)
+        self.error_code = error_code
+        msg = f"[{error_code}] {error}" if error_code else error
+        super().__init__(msg)
 
 
 def _resolve_api_key() -> str:
@@ -67,8 +69,18 @@ class WipClient:
             "REPORTING_SYNC_URL", "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
+        self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
         self._client: httpx.AsyncClient | None = None
+
+    def _ns(self, namespace: str | None) -> str:
+        """Resolve namespace: explicit > env default > error."""
+        resolved = namespace or self.default_namespace
+        if not resolved:
+            raise ValueError(
+                "namespace is required. Pass it explicitly or set WIP_MCP_DEFAULT_NAMESPACE."
+            )
+        return resolved
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -110,11 +122,22 @@ class WipClient:
         return resp.json()
 
     async def _put(
-        self, base_url: str, path: str, json: Any = None
+        self, base_url: str, path: str, json: Any = None, **params
     ) -> dict[str, Any]:
         """PUT request, return parsed JSON."""
         client = await self._get_client()
-        resp = await client.put(f"{base_url}{path}", json=json)
+        params = {k: v for k, v in params.items() if v is not None}
+        resp = await client.put(f"{base_url}{path}", json=json, params=params)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def _patch(
+        self, base_url: str, path: str, json: Any = None, **params
+    ) -> dict[str, Any]:
+        """PATCH request, return parsed JSON."""
+        client = await self._get_client()
+        params = {k: v for k, v in params.items() if v is not None}
+        resp = await client.patch(f"{base_url}{path}", json=json, params=params)
         resp.raise_for_status()
         return resp.json()
 
@@ -134,7 +157,11 @@ class WipClient:
         """Unwrap a single-item BulkResponse. Raise on error."""
         result = bulk_response["results"][0]
         if result.get("status") == "error":
-            raise BulkError(result.get("error", "Unknown error"))
+            raise BulkError(
+                result.get("error", "Unknown error"),
+                index=result.get("index", 0),
+                error_code=result.get("error_code"),
+            )
         return result
 
     def _unwrap_bulk(self, bulk_response: dict[str, Any]) -> dict[str, Any]:
@@ -158,6 +185,14 @@ class WipClient:
         )
         # Registry returns a list directly
         return data if isinstance(data, list) else data.get("items", data)
+
+    async def create_namespace(
+        self, prefix: str, description: str = "", **kwargs
+    ) -> dict:
+        payload = {"prefix": prefix, "description": description, **kwargs}
+        return await self._post(
+            self.registry_url, "/api/registry/namespaces", json=payload
+        )
 
     async def get_namespace(self, prefix: str) -> dict:
         return await self._get(
@@ -356,8 +391,9 @@ class WipClient:
         )
 
     async def create_terminology(
-        self, value: str, label: str, namespace: str = "wip", **kwargs
+        self, value: str, label: str, namespace: str | None = None, **kwargs
     ) -> dict:
+        namespace = self._ns(namespace)
         payload = {"value": value, "label": label, "namespace": namespace, **kwargs}
         resp = await self._post(
             self.def_store_url, "/api/def-store/terminologies", json=[payload]
@@ -370,19 +406,26 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_terminology(self, terminology_id: str, updates: dict) -> dict:
+    async def update_terminology(self, terminology_id: str, updates: dict, namespace: str | None = None) -> dict:
         item = {"terminology_id": terminology_id, **updates}
         resp = await self._put(
-            self.def_store_url, "/api/def-store/terminologies", json=[item]
+            self.def_store_url, "/api/def-store/terminologies", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
-    async def delete_terminology(self, terminology_id: str, force: bool = False) -> dict:
+    async def delete_terminology(
+        self, terminology_id: str, force: bool = False, hard_delete: bool = False,
+        namespace: str | None = None,
+    ) -> dict:
         item: dict[str, Any] = {"id": terminology_id}
         if force:
             item["force"] = True
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
-            self.def_store_url, "/api/def-store/terminologies", json=[item]
+            self.def_store_url, "/api/def-store/terminologies", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -430,35 +473,49 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
-    async def update_term(self, term_id: str, updates: dict) -> dict:
+    async def update_term(self, term_id: str, updates: dict, namespace: str | None = None) -> dict:
         item = {"term_id": term_id, **updates}
         resp = await self._put(
-            self.def_store_url, "/api/def-store/terms", json=[item]
+            self.def_store_url, "/api/def-store/terms", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
-    async def delete_term(self, term_id: str) -> dict:
+    async def delete_term(self, term_id: str, hard_delete: bool = False, namespace: str | None = None) -> dict:
+        item: dict[str, Any] = {"id": term_id}
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
-            self.def_store_url, "/api/def-store/terms", json=[{"id": term_id}]
+            self.def_store_url, "/api/def-store/terms", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
     async def deprecate_term(
-        self, term_id: str, reason: str, replaced_by_term_id: str | None = None
+        self, term_id: str, reason: str, replaced_by_term_id: str | None = None,
+        namespace: str | None = None,
     ) -> dict:
         item: dict[str, Any] = {"term_id": term_id, "reason": reason}
         if replaced_by_term_id:
             item["replaced_by_term_id"] = replaced_by_term_id
         resp = await self._post(
-            self.def_store_url, "/api/def-store/terms/deprecate", json=[item]
+            self.def_store_url, "/api/def-store/terms/deprecate", json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
-    async def validate_term(self, terminology_id: str, value: str) -> dict:
+    async def validate_term(self, terminology: str, value: str) -> dict:
+        # Use terminology_value when it's not a UUID, terminology_id when it is
+        import re
+        is_uuid = bool(re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            terminology, re.IGNORECASE
+        ))
+        key = "terminology_id" if is_uuid else "terminology_value"
         return await self._post(
             self.def_store_url,
             "/api/def-store/validate",
-            json={"terminology_id": terminology_id, "value": value},
+            json={key: terminology, "value": value},
         )
 
     # ========================================================
@@ -516,11 +573,15 @@ class WipClient:
 
     async def delete_relationships(
         self, relationships: list[dict], namespace: str | None = None,
+        hard_delete: bool = False,
     ) -> dict:
+        items = relationships
+        if hard_delete:
+            items = [{**r, "hard_delete": True} for r in relationships]
         resp = await self._delete(
             self.def_store_url,
             "/api/def-store/ontology/relationships",
-            json=relationships,
+            json=items,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
@@ -640,6 +701,16 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
+    async def update_template(self, template_id: str, updates: dict, namespace: str | None = None) -> dict:
+        item = {"template_id": template_id, **updates}
+        resp = await self._put(
+            self.template_store_url,
+            "/api/template-store/templates",
+            json=[item],
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_single(resp)
+
     async def activate_template(
         self, template_id: str, namespace: str | None = None, dry_run: bool = False
     ) -> dict:
@@ -651,13 +722,16 @@ class WipClient:
         )
 
     async def deactivate_template(
-        self, template_id: str, version: int | None = None, force: bool = False
+        self, template_id: str, version: int | None = None, force: bool = False,
+        hard_delete: bool = False,
     ) -> dict:
         item: dict[str, Any] = {"id": template_id}
         if version is not None:
             item["version"] = version
         if force:
             item["force"] = True
+        if hard_delete:
+            item["hard_delete"] = True
         resp = await self._delete(
             self.template_store_url,
             "/api/template-store/templates",
@@ -742,13 +816,38 @@ class WipClient:
         )
         return self._unwrap_bulk(resp)
 
+    async def update_document(
+        self,
+        document_id: str,
+        patch: dict,
+        if_match: int | None = None,
+        namespace: str | None = None,
+    ) -> dict:
+        """Apply an RFC 7396 JSON Merge Patch to a document.
+
+        Wraps the bulk PATCH endpoint with a single item and unwraps the
+        result. Raises BulkError (with `error_code` populated) on per-item
+        failure (e.g. not_found, identity_field_change, validation_failed,
+        concurrency_conflict).
+        """
+        item: dict[str, Any] = {"document_id": document_id, "patch": patch}
+        if if_match is not None:
+            item["if_match"] = if_match
+        resp = await self._patch(
+            self.document_store_url,
+            "/api/document-store/documents",
+            json=[item],
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_single(resp)
+
     async def get_document_versions(self, document_id: str) -> dict:
         return await self._get(
             self.document_store_url,
             f"/api/document-store/documents/{document_id}/versions",
         )
 
-    async def archive_document(self, document_id: str, archived_by: str | None = None) -> dict:
+    async def archive_document(self, document_id: str, archived_by: str | None = None, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": document_id}
         if archived_by:
             item["archived_by"] = archived_by
@@ -756,6 +855,24 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/documents/archive",
             json=[item],
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_single(resp)
+
+    async def delete_document(
+        self, document_id: str, hard_delete: bool = False,
+        version: int | None = None, namespace: str | None = None,
+    ) -> dict:
+        item: dict[str, Any] = {"id": document_id}
+        if hard_delete:
+            item["hard_delete"] = True
+        if version is not None:
+            item["version"] = version
+        resp = await self._delete(
+            self.document_store_url,
+            "/api/document-store/documents",
+            json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -830,12 +947,13 @@ class WipClient:
         file_content: bytes,
         filename: str,
         content_type: str,
-        namespace: str = "wip",
+        namespace: str | None = None,
         description: str | None = None,
         tags: list[str] | None = None,
         category: str | None = None,
     ) -> dict:
         """Upload a file via multipart form. Returns single FileResponse (not bulk)."""
+        namespace = self._ns(namespace)
         client = await self._get_client()
         files = {"file": (filename, file_content, content_type)}
         data: dict[str, str] = {"namespace": namespace}
@@ -855,7 +973,7 @@ class WipClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def delete_file(self, file_id: str, force: bool = False) -> dict:
+    async def delete_file(self, file_id: str, force: bool = False, namespace: str | None = None) -> dict:
         item: dict[str, Any] = {"id": file_id}
         if force:
             item["force"] = True
@@ -863,6 +981,7 @@ class WipClient:
             self.document_store_url,
             "/api/document-store/files",
             json=[item],
+            namespace=namespace or self.default_namespace,
         )
         return self._unwrap_single(resp)
 
@@ -880,6 +999,20 @@ class WipClient:
             f"/api/document-store/files/{file_id}/documents",
             page=page,
             page_size=page_size,
+        )
+
+    async def validate_document(
+        self,
+        template_id: str,
+        data: dict,
+        namespace: str | None = None,
+    ) -> dict:
+        """Validate document data against a template without saving."""
+        namespace = self._ns(namespace)
+        return await self._post(
+            self.document_store_url,
+            "/api/document-store/validation/validate",
+            json={"template_id": template_id, "namespace": namespace, "data": data},
         )
 
     # ========================================================
@@ -908,10 +1041,11 @@ class WipClient:
         filename: str,
         template_id: str,
         column_mapping: dict,
-        namespace: str = "wip",
+        namespace: str | None = None,
         skip_errors: bool = False,
     ) -> dict:
         """Import documents from CSV/XLSX."""
+        namespace = self._ns(namespace)
         import json as _json
         client = await self._get_client()
         files = {"file": (filename, file_content, "application/octet-stream")}
@@ -978,6 +1112,132 @@ class WipClient:
         )
 
     # ========================================================
+    # Document-Store: Backup / Restore (CASE-23 Phase 3)
+    # ========================================================
+
+    async def start_backup(
+        self,
+        namespace: str | None = None,
+        include_files: bool = False,
+        include_inactive: bool = False,
+        skip_documents: bool = False,
+        skip_closure: bool = False,
+        skip_synonyms: bool = False,
+        latest_only: bool = False,
+        template_prefixes: list[str] | None = None,
+        dry_run: bool = False,
+    ) -> dict:
+        """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202)."""
+        namespace = self._ns(namespace)
+        body: dict[str, Any] = {
+            "include_files": include_files,
+            "include_inactive": include_inactive,
+            "skip_documents": skip_documents,
+            "skip_closure": skip_closure,
+            "skip_synonyms": skip_synonyms,
+            "latest_only": latest_only,
+            "dry_run": dry_run,
+        }
+        if template_prefixes is not None:
+            body["template_prefixes"] = template_prefixes
+        return await self._post(
+            self.document_store_url,
+            f"/api/document-store/backup/namespaces/{namespace}/backup",
+            json=body,
+        )
+
+    async def start_restore(
+        self,
+        namespace: str,
+        archive_path: str,
+        mode: str = "restore",
+        target_namespace: str | None = None,
+        register_synonyms: bool = False,
+        skip_documents: bool = False,
+        skip_files: bool = False,
+        batch_size: int = 50,
+        continue_on_error: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
+        """Upload a local archive file and start a restore job. Streams from disk."""
+        from pathlib import Path as _Path
+        path = _Path(archive_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Archive not found: {archive_path}")
+
+        client = await self._get_client()
+        data: dict[str, str] = {
+            "mode": mode,
+            "register_synonyms": str(register_synonyms).lower(),
+            "skip_documents": str(skip_documents).lower(),
+            "skip_files": str(skip_files).lower(),
+            "batch_size": str(batch_size),
+            "continue_on_error": str(continue_on_error).lower(),
+            "dry_run": str(dry_run).lower(),
+        }
+        if target_namespace is not None:
+            data["target_namespace"] = target_namespace
+
+        with path.open("rb") as fh:
+            files = {"archive": (path.name, fh, "application/zip")}
+            resp = await client.post(
+                f"{self.document_store_url}/api/document-store/backup/namespaces/{namespace}/restore",
+                files=files,
+                data=data,
+                headers={"X-API-Key": self.api_key},
+            )
+        resp.raise_for_status()
+        return resp.json()
+
+    async def get_backup_job(self, job_id: str) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/backup/jobs/{job_id}",
+        )
+
+    async def list_backup_jobs(
+        self,
+        namespace: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        data = await self._get(
+            self.document_store_url,
+            "/api/document-store/backup/jobs",
+            namespace=namespace,
+            status=status,
+            limit=limit,
+        )
+        return data if isinstance(data, list) else data.get("items", data)
+
+    async def download_backup_archive(
+        self, job_id: str, dest_path: str
+    ) -> dict:
+        """Stream a completed backup archive to a local file. Returns size + path."""
+        from pathlib import Path as _Path
+        dest = _Path(dest_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        client = await self._get_client()
+        url = f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}/download"
+        size = 0
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            with dest.open("wb") as fh:
+                async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                    fh.write(chunk)
+                    size += len(chunk)
+        return {"job_id": job_id, "path": str(dest), "size": size}
+
+    async def delete_backup_job(self, job_id: str) -> dict:
+        client = await self._get_client()
+        resp = await client.request(
+            "DELETE",
+            f"{self.document_store_url}/api/document-store/backup/jobs/{job_id}",
+        )
+        resp.raise_for_status()
+        return {"deleted": job_id}
+
+    # ========================================================
     # Reporting-Sync
     # ========================================================
 
@@ -1015,6 +1275,34 @@ class WipClient:
             self.reporting_sync_url, "/api/reporting-sync/query", json=body
         )
 
+    async def export_report_csv(
+        self,
+        table: str | None = None,
+        sql: str | None = None,
+        params: list | None = None,
+        timeout_seconds: int = 120,
+    ) -> str:
+        """Export reporting data as CSV. Either table or sql must be provided."""
+        client = await self._get_client()
+        if table:
+            resp = await client.get(
+                f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
+                params={"table": table, "timeout_seconds": timeout_seconds},
+            )
+        elif sql:
+            resp = await client.post(
+                f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
+                json={
+                    "sql": sql,
+                    "params": params or [],
+                    "timeout_seconds": timeout_seconds,
+                },
+            )
+        else:
+            raise ValueError("Either table or sql must be provided")
+        resp.raise_for_status()
+        return resp.text
+
     async def unified_search(
         self,
         query: str,
@@ -1029,6 +1317,51 @@ class WipClient:
             body["namespace"] = namespace
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/search", json=body
+        )
+
+    # ========================================================
+    # API Keys (Registry)
+    # ========================================================
+
+    async def create_api_key(
+        self,
+        name: str,
+        owner: str = "system",
+        groups: list[str] | None = None,
+        namespaces: list[str] | None = None,
+        description: str | None = None,
+        expires_at: str | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {"name": name, "owner": owner}
+        if groups is not None:
+            payload["groups"] = groups
+        if namespaces is not None:
+            payload["namespaces"] = namespaces
+        if description is not None:
+            payload["description"] = description
+        if expires_at is not None:
+            payload["expires_at"] = expires_at
+        return await self._post(
+            self.registry_url, "/api/registry/api-keys", json=payload
+        )
+
+    async def list_api_keys(self) -> list[dict]:
+        data = await self._get(self.registry_url, "/api/registry/api-keys")
+        return data if isinstance(data, list) else data.get("items", data)
+
+    async def get_api_key(self, name: str) -> dict:
+        return await self._get(
+            self.registry_url, f"/api/registry/api-keys/{name}"
+        )
+
+    async def update_api_key(self, name: str, **kwargs) -> dict:
+        return await self._patch(
+            self.registry_url, f"/api/registry/api-keys/{name}", json=kwargs
+        )
+
+    async def revoke_api_key(self, name: str) -> dict:
+        return await self._delete(
+            self.registry_url, f"/api/registry/api-keys/{name}"
         )
 
     # ========================================================

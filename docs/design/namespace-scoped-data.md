@@ -316,7 +316,7 @@ POST /api/registry/namespace-groups
 {
     "prefix": "dev",
     "description": "Development and testing",
-    "id_prefix_modifier": "DEV-"  # Optional: DEV-TERM-000001 instead of TERM-000001
+    "id_prefix_modifier": "DEV-"  # Optional: modifies prefixed IDs (e.g., DEV-LOV-000001)
 }
 
 # List namespace groups

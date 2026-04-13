@@ -3,6 +3,10 @@ export interface BulkResultItem {
   status: string
   id?: string
   error?: string
+  /** Machine-readable error code, set when status === "error". See per-endpoint docs for the code matrix. */
+  error_code?: string
+  /** Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate). */
+  details?: Record<string, unknown>
   value?: string
   version?: number
   is_new_version?: boolean

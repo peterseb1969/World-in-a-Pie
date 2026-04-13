@@ -57,9 +57,9 @@ A new field type that can reference any WIP entity.
   "name": "field_name",
   "type": "reference",
   "reference_type": "document",
-  "target_templates": ["TEMPLATE_CODE_1", "TEMPLATE_CODE_2"],
+  "target_templates": ["TEMPLATE_VALUE_1", "TEMPLATE_VALUE_2"],
   "version_strategy": "latest",
-  "required": true,
+  "mandatory": true,
   "description": "Reference to parent entity"
 }
 ```
@@ -100,7 +100,7 @@ This ensures efficient resolution without re-parsing business keys.
   "reference_type": "document",
   "target_templates": ["STUDY_DEFINITION"],
   "version_strategy": "latest",
-  "required": true
+  "mandatory": true
 }
 ```
 
@@ -190,7 +190,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
       "reference_type": "term",
       "lookup_value": "male",
       "resolved": {
-        "term_id": "T-000042",
+        "term_id": "019abc42-def3-7abc-8def-123456789abc",
         "terminology_value": "GENDER",
         "matched_via": "value"
       },
@@ -226,7 +226,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 **Term:**
 ```json
 {
-  "term_id": "T-000042",
+  "term_id": "019abc42-def3-7abc-8def-123456789abc",
   "terminology_value": "GENDER",
   "matched_via": "value"
 }
@@ -235,7 +235,7 @@ References are stored in a dedicated `references` field (replacing/extending `te
 **Terminology:**
 ```json
 {
-  "terminology_id": "TERM-000001",
+  "terminology_id": "019def01-aaa1-7abc-8def-123456789abc",
   "terminology_value": "GENDER",
   "version": 1
 }
@@ -650,7 +650,7 @@ With the new reference system, the Study Plan templates would be updated:
 {
   "name": "study_id",
   "type": "string",
-  "required": true,
+  "mandatory": true,
   "description": "Parent study identifier"
 }
 ```
@@ -663,7 +663,7 @@ With the new reference system, the Study Plan templates would be updated:
   "reference_type": "document",
   "target_templates": ["STUDY_DEFINITION"],
   "version_strategy": "latest",
-  "required": true,
+  "mandatory": true,
   "description": "Parent study"
 }
 ```
@@ -676,7 +676,7 @@ With the new reference system, the Study Plan templates would be updated:
   "reference_type": "document",
   "target_templates": ["STUDY_DEFINITION"],
   "version_strategy": "latest",
-  "required": true
+  "mandatory": true
 },
 {
   "name": "phase",
@@ -694,21 +694,21 @@ With the new reference system, the Study Plan templates would be updated:
   "type": "reference",
   "reference_type": "document",
   "target_templates": ["STUDY_DEFINITION"],
-  "required": true
+  "mandatory": true
 },
 {
   "name": "timepoint",
   "type": "reference",
   "reference_type": "document",
   "target_templates": ["STUDY_TIMEPOINT"],
-  "required": true
+  "mandatory": true
 },
 {
   "name": "event_type",
   "type": "reference",
   "reference_type": "term",
   "target_terminologies": ["EVENT_TYPE"],
-  "required": true
+  "mandatory": true
 }
 ```
 

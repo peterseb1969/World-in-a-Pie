@@ -1,10 +1,15 @@
 """Template service for business logic."""
 
 import contextlib
+import logging
 from datetime import UTC, datetime
 
-# Import identity helper from wip-auth
-# This returns the authenticated identity, not the client-provided value
+from wip_auth.resolve import (
+    EntityNotFoundError,
+    resolve_entity_id,
+    resolve_entity_ids,
+)
+
 from ..api.auth import get_identity_string
 from ..models.api_models import (
     BulkResultItem,
@@ -23,7 +28,9 @@ from .def_store_client import DefStoreError, get_def_store_client
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
-from .registry_client import get_registry_client
+from .registry_client import RegistryError, get_registry_client
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateService:
@@ -36,7 +43,7 @@ class TemplateService:
     @staticmethod
     async def create_template(
         request: CreateTemplateRequest,
-        namespace: str = "wip"
+        namespace: str
     ) -> TemplateResponse:
         """
         Create a new template.
@@ -89,10 +96,13 @@ class TemplateService:
                 parent_namespace = parent.namespace
 
         # Normalize all field references to canonical IDs — skip for drafts.
-        # Normalization implicitly validates (raises ValueError for invalid refs),
-        # so a separate validation pass is not needed.
+        # Normalization implicitly validates (raises EntityNotFoundError for invalid refs),
+        # which is converted to ValueError for the API boundary.
         if not is_draft:
-            await TemplateService._normalize_field_references(request.fields, namespace)
+            try:
+                await TemplateService._normalize_field_references(request.fields, namespace)
+            except EntityNotFoundError as e:
+                raise ValueError(str(e)) from e
 
         # Validate cross-namespace references (isolation mode check) — skip for drafts
         if not is_draft and parent_namespace:
@@ -143,21 +153,30 @@ class TemplateService:
         )
         await template.insert()
 
-        # Register auto-synonym for human-readable resolution (best-effort)
+        # Register auto-synonym for human-readable resolution
         # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
         # Skip for restore mode (synonyms are imported separately)
+        # On failure, roll back the MongoDB document and re-raise
         if version == 1 and not is_restore:
-            client = get_registry_client()
-            await client.register_auto_synonym(
-                target_id=template_id,
-                namespace=namespace,
-                composite_key={
-                    "ns": namespace,
-                    "type": "template",
-                    "value": request.value,
-                },
-                created_by=actor,
-            )
+            try:
+                client = get_registry_client()
+                await client.register_auto_synonym(
+                    target_id=template_id,
+                    namespace=namespace,
+                    composite_key={
+                        "ns": namespace,
+                        "type": "template",
+                        "value": request.value,
+                    },
+                    created_by=actor,
+                )
+            except RegistryError:
+                logger.error(
+                    "Auto-synonym registration failed for template %s — rolling back",
+                    template_id,
+                )
+                await template.delete()
+                raise
 
         # Publish template created event — skip for drafts
         if not is_draft:
@@ -203,9 +222,10 @@ class TemplateService:
                 results = await Template.find(query).sort([("version", -1)]).limit(1).to_list()
                 template = results[0] if results else None
         elif value:
-            # Value lookups require namespace (defaults to wip)
-            ns = namespace or "wip"
-            query = {"namespace": ns, "value": value}
+            # Value lookups require namespace — no silent fallback to "wip"
+            if not namespace:
+                raise ValueError("Namespace is required for value-based template lookup")
+            query = {"namespace": namespace, "value": value}
             if version is not None:
                 query["version"] = version
                 template = await Template.find_one(query)
@@ -227,7 +247,8 @@ class TemplateService:
     @staticmethod
     async def get_template_raw(
         template_id: str | None = None,
-        value: str | None = None
+        value: str | None = None,
+        namespace: str | None = None,
     ) -> TemplateResponse | None:
         """
         Get a template by ID or value without inheritance resolution.
@@ -235,6 +256,7 @@ class TemplateService:
         Args:
             template_id: Template ID
             value: Template value
+            namespace: Namespace (required for value-based lookups)
 
         Returns:
             Template as stored, without inheritance resolution
@@ -242,7 +264,8 @@ class TemplateService:
         return await TemplateService.get_template(
             template_id=template_id,
             value=value,
-            resolve_inheritance=False
+            resolve_inheritance=False,
+            namespace=namespace,
         )
 
     @staticmethod
@@ -253,8 +276,7 @@ class TemplateService:
         latest_only: bool = False,
         page: int = 1,
         page_size: int = 50,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TemplateResponse], int]:
         """
         List templates with pagination.
@@ -266,16 +288,14 @@ class TemplateService:
             latest_only: If True, only return the latest version of each template
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (None returns all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (templates, total_count)
         """
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
         if extends:
@@ -456,6 +476,99 @@ class TemplateService:
         return False
 
     @staticmethod
+    def compute_template_compatibility(
+        existing: Template,
+        proposed: CreateTemplateRequest,
+    ) -> tuple[str, dict]:
+        """
+        Compare a proposed CreateTemplateRequest against an existing Template.
+
+        Returns a (verdict, diff) tuple where verdict is one of:
+        - "identical": no schema differences — proposed matches existing exactly
+        - "compatible": only differences are added optional fields (mandatory=false)
+        - "incompatible": any other change (removed field, type change, made-required,
+          identity_fields change, modified existing field, added required field)
+
+        The diff dict captures the structured changes for caller-facing error messages.
+        Used by POST /templates?on_conflict=validate to decide whether to silently
+        adopt the existing template, bump the version, or reject with a structured
+        diff.
+        """
+        import json
+
+        existing_fields = {f.name: f for f in existing.fields}
+        proposed_fields = {f.name: f for f in proposed.fields}
+
+        existing_names = set(existing_fields)
+        proposed_names = set(proposed_fields)
+
+        added_names = proposed_names - existing_names
+        removed_names = existing_names - proposed_names
+        common_names = existing_names & proposed_names
+
+        added_optional: list[str] = []
+        added_required: list[str] = []
+        for name in sorted(added_names):
+            f = proposed_fields[name]
+            if f.mandatory and f.default_value is None:
+                added_required.append(name)
+            else:
+                added_optional.append(name)
+
+        changed_type: list[dict] = []
+        made_required: list[str] = []
+        modified_existing: list[str] = []
+        for name in sorted(common_names):
+            old = existing_fields[name]
+            new = proposed_fields[name]
+            if old.type != new.type:
+                changed_type.append({
+                    "name": name,
+                    "old_type": old.type.value if hasattr(old.type, "value") else str(old.type),
+                    "new_type": new.type.value if hasattr(new.type, "value") else str(new.type),
+                })
+                continue
+            if (not old.mandatory) and new.mandatory:
+                made_required.append(name)
+                continue
+            # Compare full field definitions for any other change
+            old_json = json.dumps(old.model_dump(), sort_keys=True, default=str)
+            new_json = json.dumps(new.model_dump(), sort_keys=True, default=str)
+            if old_json != new_json:
+                modified_existing.append(name)
+
+        identity_changed: dict | None = None
+        if list(existing.identity_fields or []) != list(proposed.identity_fields or []):
+            identity_changed = {
+                "old": list(existing.identity_fields or []),
+                "new": list(proposed.identity_fields or []),
+            }
+
+        diff = {
+            "added_optional": added_optional,
+            "added_required": added_required,
+            "removed": sorted(removed_names),
+            "changed_type": changed_type,
+            "made_required": made_required,
+            "modified_existing": modified_existing,
+            "identity_changed": identity_changed,
+        }
+
+        is_incompatible = bool(
+            added_required
+            or removed_names
+            or changed_type
+            or made_required
+            or modified_existing
+            or identity_changed
+        )
+        if is_incompatible:
+            return "incompatible", diff
+        if added_optional:
+            return "compatible", diff
+        return "identical", diff
+
+    @staticmethod
     async def update_template(
         template_id: str,
         request: UpdateTemplateRequest
@@ -534,9 +647,18 @@ class TemplateService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
+        # Normalize field references to canonical IDs (same as create_template)
+        new_fields = request.fields if request.fields is not None else original.fields
+        if request.fields is not None:
+            try:
+                await TemplateService._normalize_field_references(new_fields, original.namespace)
+            except EntityNotFoundError as e:
+                raise ValueError(str(e)) from e
+
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version
         new_template = Template(
+            namespace=original.namespace,
             template_id=original.template_id,
             value=new_value,
             label=request.label if request.label is not None else original.label,
@@ -545,7 +667,7 @@ class TemplateService:
             extends=extends_value if extends_value else None,
             extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
-            fields=request.fields if request.fields is not None else original.fields,
+            fields=new_fields,
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
             reporting=request.reporting if request.reporting is not None else original.reporting,
@@ -576,20 +698,86 @@ class TemplateService:
     async def delete_template(
         template_id: str,
         updated_by: str | None = None,  # Deprecated: uses authenticated identity
-        version: int | None = None
+        version: int | None = None,
+        hard_delete: bool = False,
     ) -> bool:
         """
-        Soft-delete a template version (set status to inactive).
+        Delete a template version. Soft-delete by default, hard-delete if requested
+        and namespace deletion_mode is 'full'.
 
         Args:
             template_id: Template to delete
             updated_by: Deprecated - uses authenticated identity
-            version: Specific version to deactivate (None = latest)
+            version: Specific version to delete (None = latest for soft, all for hard)
+            hard_delete: Permanently remove (requires namespace deletion_mode='full')
 
         Returns:
             True if deleted, False if not found
         """
-        # Find the specific version or latest
+        # Check if any templates extend this one (blocks both soft and hard delete)
+        children = await InheritanceService.get_children(template_id)
+        if children:
+            raise ValueError(
+                f"Cannot delete template: {len(children)} template(s) extend it"
+            )
+
+        # Get authenticated identity (not client-provided)
+        actor = get_identity_string()
+
+        if hard_delete:
+            # Validate namespace deletion_mode
+            # Need any version to get the namespace
+            any_version = await Template.find_one({"template_id": template_id})
+            if not any_version:
+                return False
+
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(any_version.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+
+            if version is not None:
+                # Version-specific hard-delete
+                target = await Template.find_one({"template_id": template_id, "version": version})
+                if not target:
+                    return False
+
+                event_payload = TemplateService._template_to_event_payload(target)
+                event_payload["hard_delete"] = True
+                event_payload["version"] = version
+
+                await target.delete()
+
+                # Check if any versions remain
+                remaining = await Template.find({"template_id": template_id}).count()
+                if remaining == 0:
+                    try:
+                        await client.hard_delete_entry(template_id, updated_by=actor)
+                    except Exception as e:
+                        logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
+            else:
+                # All versions hard-delete
+                event_payload = TemplateService._template_to_event_payload(any_version)
+                event_payload["hard_delete"] = True
+
+                await Template.find({"template_id": template_id}).delete()
+
+                try:
+                    await client.hard_delete_entry(template_id, updated_by=actor)
+                except Exception as e:
+                    logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
+
+            # Publish template deleted event
+            await publish_template_event(
+                EventType.TEMPLATE_DELETED,
+                event_payload,
+                changed_by=actor,
+            )
+            return True
+
+        # SOFT DELETE path (existing behavior)
         if version is not None:
             template = await Template.find_one({"template_id": template_id, "version": version})
         else:
@@ -600,16 +788,6 @@ class TemplateService:
 
         if template.status == "inactive":
             return True  # Already inactive
-
-        # Check if any templates extend this one
-        children = await InheritanceService.get_children(template_id)
-        if children:
-            raise ValueError(
-                f"Cannot delete template: {len(children)} template(s) extend it"
-            )
-
-        # Get authenticated identity (not client-provided)
-        actor = get_identity_string()
 
         # Deactivate template
         template.status = "inactive"
@@ -631,10 +809,146 @@ class TemplateService:
     # =========================================================================
 
     @staticmethod
+    async def create_templates_with_conflict_policy(
+        items: list[CreateTemplateRequest],
+        on_conflict: str,
+    ) -> list[BulkResultItem]:
+        """
+        Per-item create dispatcher that applies an `on_conflict` policy.
+
+        Behavior per item:
+        - on_conflict='error' (default):
+            * existing (namespace, value) → BulkResultItem(status='error',
+              error='Template with value ... already exists ...')
+            * else → standard create (status='created')
+        - on_conflict='validate':
+            * no existing → standard create (status='created')
+            * identical existing → status='unchanged' (id/version of existing)
+            * compatible existing (added optional fields only) → version N+1
+              via update_template path (status='updated', is_new_version=True)
+            * incompatible existing → status='error',
+              error_code='incompatible_schema', details=<diff>
+
+        For draft items (status='draft'), the conflict check is skipped because
+        drafts may have unresolved references and live in their own value-space.
+        Used by POST /templates?on_conflict=...
+
+        Returns one BulkResultItem per input item, in input order.
+        """
+        results: list[BulkResultItem] = []
+
+        for i, item in enumerate(items):
+            try:
+                if item.status == "draft" or on_conflict == "error":
+                    # Fast path: defer to existing create_template (which raises
+                    # ValueError on conflict). Drafts always take this path.
+                    try:
+                        created = await TemplateService.create_template(
+                            item, namespace=item.namespace
+                        )
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="created",
+                            id=created.template_id,
+                            value=item.value,
+                            version=created.version,
+                        ))
+                    except ValueError as e:
+                        results.append(BulkResultItem(
+                            index=i,
+                            status="error",
+                            value=item.value,
+                            error=str(e),
+                        ))
+                    continue
+
+                # on_conflict == "validate"
+                existing_list = await Template.find(
+                    {"namespace": item.namespace, "value": item.value}
+                ).sort([("version", -1)]).limit(1).to_list()
+                existing = existing_list[0] if existing_list else None
+
+                if existing is None:
+                    created = await TemplateService.create_template(
+                        item, namespace=item.namespace
+                    )
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="created",
+                        id=created.template_id,
+                        value=item.value,
+                        version=created.version,
+                    ))
+                    continue
+
+                verdict, diff = TemplateService.compute_template_compatibility(
+                    existing, item
+                )
+
+                if verdict == "identical":
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="unchanged",
+                        id=existing.template_id,
+                        value=existing.value,
+                        version=existing.version,
+                        details=diff,
+                    ))
+                elif verdict == "compatible":
+                    # Bump version via update_template
+                    update_req = UpdateTemplateRequest(
+                        label=item.label,
+                        description=item.description,
+                        extends=item.extends,
+                        extends_version=item.extends_version,
+                        identity_fields=item.identity_fields,
+                        fields=item.fields,
+                        rules=item.rules,
+                        metadata=item.metadata,
+                        reporting=item.reporting,
+                    )
+                    update_resp = await TemplateService.update_template(
+                        template_id=existing.template_id,
+                        request=update_req,
+                    )
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="updated",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=update_resp.version if update_resp else existing.version,
+                        is_new_version=bool(update_resp and update_resp.is_new_version),
+                        details=diff,
+                    ))
+                else:  # incompatible
+                    results.append(BulkResultItem(
+                        index=i,
+                        status="error",
+                        id=existing.template_id,
+                        value=item.value,
+                        version=existing.version,
+                        error_code="incompatible_schema",
+                        error=(
+                            f"Proposed schema for '{item.value}' is incompatible "
+                            f"with existing version {existing.version}"
+                        ),
+                        details=diff,
+                    ))
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=item.value,
+                    error=str(e),
+                ))
+
+        return results
+
+    @staticmethod
     async def create_templates_bulk(
         templates: list[CreateTemplateRequest],
+        namespace: str,
         created_by: str | None = None,  # Deprecated: uses authenticated identity
-        namespace: str = "wip",
     ) -> list[BulkResultItem]:
         """
         Create multiple templates.
@@ -695,7 +1009,7 @@ class TemplateService:
                     await TemplateService._normalize_field_references(
                         template_req.fields, namespace
                     )
-                except ValueError as e:
+                except (ValueError, EntityNotFoundError) as e:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
@@ -722,6 +1036,28 @@ class TemplateService:
                 created_by=actor,
             )
             await template.insert()
+
+            # Register auto-synonym for human-readable resolution
+            # Version is always 1 for bulk create (existing templates are skipped above)
+            # On failure, roll back the MongoDB document and re-raise through bulk handler
+            try:
+                await client.register_auto_synonym(
+                    target_id=template_id,
+                    namespace=namespace,
+                    composite_key={
+                        "ns": namespace,
+                        "type": "template",
+                        "value": template_req.value,
+                    },
+                    created_by=actor,
+                )
+            except RegistryError:
+                logger.error(
+                    "Auto-synonym registration failed for template %s — rolling back",
+                    template_id,
+                )
+                await template.delete()
+                raise
 
             # Publish event — skip for drafts
             if not is_draft:
@@ -891,10 +1227,13 @@ class TemplateService:
                         # Validate target_templates for document references
                         if field.reference_type.value == "document":
                             if not field.target_templates:
-                                errors.append(ValidationError(
+                                # target_templates is optional — document-store
+                                # resolves references by identity lookup even
+                                # without it.  Warn but don't block activation.
+                                warnings.append(ValidationWarning(
                                     field=f"fields.{field.name}.target_templates",
-                                    code="required",
-                                    message="target_templates is required for document references"
+                                    code="recommended",
+                                    message="target_templates is recommended for document references"
                                 ))
                             elif check_templates:
                                 for tpl_ref in field.target_templates:
@@ -1034,6 +1373,7 @@ class TemplateService:
                 # Stable ID: reuse child's template_id (no Registry call)
                 # Create new child version with updated extends pointer
                 new_child = Template(
+                    namespace=child.namespace,
                     template_id=child.template_id,
                     value=child.value,
                     label=child.label,
@@ -1310,10 +1650,11 @@ class TemplateService:
                     else:
                         if field.reference_type.value == "document":
                             if not field.target_templates:
-                                errors.append(ValidationError(
+                                # target_templates is optional — warn only
+                                warnings.append(ValidationWarning(
                                     field=f"{prefix}fields.{field.name}.target_templates",
-                                    code="required",
-                                    message="target_templates is required for document references"
+                                    code="recommended",
+                                    message="target_templates is recommended for document references"
                                 ))
                             else:
                                 for tpl_val in field.target_templates:
@@ -1366,7 +1707,7 @@ class TemplateService:
     @staticmethod
     async def activate_template(
         template_id: str,
-        namespace: str = "wip",
+        namespace: str,
         dry_run: bool = False
     ):
         """
@@ -1444,18 +1785,25 @@ class TemplateService:
             known_templates[t.value] = t.template_id
             known_templates[t.template_id] = t.template_id
 
-        # Normalize all references to canonical IDs
-        for t in activation_set:
-            await TemplateService._normalize_field_references(
-                t.fields, namespace, known_templates=known_templates
-            )
-            # Also normalize extends if it's a value (not already an ID)
-            if t.extends:
-                resolved = await TemplateService._resolve_to_template_id(
-                    t.extends, namespace, known_templates=known_templates
+        # Normalize all references to canonical IDs (include reserved for activation set)
+        activation_statuses = ["active", "reserved"]
+        try:
+            for t in activation_set:
+                await TemplateService._normalize_field_references(
+                    t.fields, namespace,
+                    known_templates=known_templates,
+                    include_statuses=activation_statuses,
                 )
-                if resolved:
-                    t.extends = resolved
+                # Also resolve extends (known_templates checked first, then Registry)
+                if t.extends and t.extends in known_templates:
+                    t.extends = known_templates[t.extends]
+                elif t.extends:
+                    t.extends = await resolve_entity_id(
+                        t.extends, "template", namespace,
+                        include_statuses=activation_statuses,
+                    )
+        except EntityNotFoundError as e:
+            raise ValueError(str(e)) from e
 
         # Activate all templates in the set
         actor = get_identity_string()
@@ -1500,6 +1848,7 @@ class TemplateService:
         """Convert Template document to event payload for NATS publishing."""
         return {
             "template_id": t.template_id,
+            "namespace": t.namespace,
             "value": t.value,
             "label": t.label,
             "description": t.description,
@@ -1569,134 +1918,94 @@ class TemplateService:
         return results[0] if results else None
 
     @staticmethod
-    async def _resolve_to_template_id(
-        ref: str,
-        namespace: str,
-        known_templates: dict[str, str] | None = None
-    ) -> str:
-        """
-        Resolve a template reference to a canonical template_id.
-
-        Accepts either a template_id or a value.
-        Returns the canonical template_id.
-
-        Args:
-            ref: Template ID or value
-            namespace: Namespace to search in for value lookups
-            known_templates: Optional dict {value->template_id, template_id->template_id}
-                for resolving within an activation set
-        """
-        # Check known_templates first (for activation set cross-references)
-        if known_templates and ref in known_templates:
-            return known_templates[ref]
-
-        # Try by template_id (stable ID — check if any version exists)
-        exists = await Template.find({"template_id": ref}).limit(1).to_list()
-        if exists:
-            return ref
-
-        # It's a value — resolve to template_id of the latest active version
-        results = await Template.find(
-            {"namespace": namespace, "value": ref, "status": "active"}
-        ).sort([("version", -1)]).limit(1).to_list()
-        if not results:
-            raise ValueError(
-                f"No active template with value '{ref}' found in namespace '{namespace}'"
-            )
-        return results[0].template_id
-
-    @staticmethod
-    async def _resolve_to_terminology_id(
-        ref: str,
-        namespace: str = "wip"
-    ) -> str:
-        """
-        Resolve a terminology reference to a canonical terminology_id.
-
-        Accepts either a terminology_id or a value.
-        Returns the canonical terminology_id.
-
-        Args:
-            ref: Terminology ID or value
-            namespace: Namespace to search in for value lookups
-        """
-        def_store = get_def_store_client()
-
-        # Try as ID first
-        terminology = await def_store.get_terminology(terminology_id=ref, namespace=namespace)
-        if terminology:
-            if terminology.get("status") != "active":
-                raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
-            return terminology["terminology_id"]
-
-        # Try as value
-        terminology = await def_store.get_terminology(terminology_value=ref, namespace=namespace)
-        if not terminology:
-            raise ValueError(f"No terminology with value '{ref}' found")
-        if terminology.get("status") != "active":
-            raise ValueError(f"Terminology '{ref}' is {terminology.get('status')}, not active")
-        return terminology["terminology_id"]
-
-    @staticmethod
     async def _normalize_field_references(
         fields: list,
         namespace: str,
-        known_templates: dict[str, str] | None = None
+        known_templates: dict[str, str] | None = None,
+        include_statuses: list[str] | None = None,
     ) -> None:
         """
-        Normalize all reference fields to canonical IDs.
+        Normalize all reference fields to canonical IDs via batch Registry resolution.
 
-        Resolves template values to template_ids and terminology values to
-        terminology_ids. Mutates fields in-place.
+        Collects all template and terminology refs across fields, resolves them
+        in two batch calls (one for templates, one for terminologies), then
+        applies the resolved IDs back to field objects. Mutates fields in-place.
 
         Args:
             fields: List of FieldDefinition objects
             namespace: Namespace for lookups
             known_templates: Optional dict for activation set cross-references
+                (entries found here skip the Registry call)
+            include_statuses: Status filter for resolution (e.g. ["active", "reserved"]
+                during activation). Default: active only.
         """
+        # Phase 1: Collect all refs (skip known_templates hits — those are
+        # resolved within the activation set without a Registry call)
+        template_refs: set[str] = set()
+        terminology_refs: set[str] = set()
+
         for field in fields:
-            # Template references
-            if field.target_templates:
-                field.target_templates = [
-                    await TemplateService._resolve_to_template_id(
-                        ref, namespace, known_templates
-                    )
-                    for ref in field.target_templates
-                ]
+            for ref in (field.target_templates or []):
+                if not (known_templates and ref in known_templates):
+                    template_refs.add(ref)
+            if field.template_ref and not (known_templates and field.template_ref in known_templates):
+                template_refs.add(field.template_ref)
+            if field.array_template_ref and not (known_templates and field.array_template_ref in known_templates):
+                template_refs.add(field.array_template_ref)
 
-            if field.template_ref:
-                field.template_ref = await TemplateService._resolve_to_template_id(
-                    field.template_ref, namespace, known_templates
-                )
-
-            if field.array_template_ref:
-                field.array_template_ref = await TemplateService._resolve_to_template_id(
-                    field.array_template_ref, namespace, known_templates
-                )
-
-            # Terminology references
             if field.terminology_ref:
-                field.terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.terminology_ref, namespace=namespace
-                )
-
+                terminology_refs.add(field.terminology_ref)
             if field.array_terminology_ref:
-                field.array_terminology_ref = await TemplateService._resolve_to_terminology_id(
-                    field.array_terminology_ref, namespace=namespace
-                )
+                terminology_refs.add(field.array_terminology_ref)
+            for ref in (field.target_terminologies or []):
+                terminology_refs.add(ref)
 
+        # Phase 2: Batch resolve via Registry (all IDs verified, no format bypass)
+        resolved_templates: dict[str, str] = {}
+        resolved_terminologies: dict[str, str] = {}
+
+        if template_refs:
+            resolved_templates = await resolve_entity_ids(
+                list(template_refs), "template", namespace,
+                include_statuses=include_statuses,
+            )
+        if terminology_refs:
+            resolved_terminologies = await resolve_entity_ids(
+                list(terminology_refs), "terminology", namespace,
+                include_statuses=include_statuses,
+            )
+
+        # Merge known_templates into resolved map
+        if known_templates:
+            resolved_templates.update(known_templates)
+
+        def _resolve_tpl(ref: str) -> str:
+            return resolved_templates[ref]
+
+        def _resolve_term(ref: str) -> str:
+            return resolved_terminologies[ref]
+
+        # Phase 3: Apply resolved IDs back to fields
+        for field in fields:
+            if field.target_templates:
+                field.target_templates = [_resolve_tpl(r) for r in field.target_templates]
+            if field.template_ref:
+                field.template_ref = _resolve_tpl(field.template_ref)
+            if field.array_template_ref:
+                field.array_template_ref = _resolve_tpl(field.array_template_ref)
+            if field.terminology_ref:
+                field.terminology_ref = _resolve_term(field.terminology_ref)
+            if field.array_terminology_ref:
+                field.array_terminology_ref = _resolve_term(field.array_terminology_ref)
             if field.target_terminologies:
-                field.target_terminologies = [
-                    await TemplateService._resolve_to_terminology_id(
-                        ref, namespace=namespace
-                    )
-                    for ref in field.target_terminologies
-                ]
+                field.target_terminologies = [_resolve_term(r) for r in field.target_terminologies]
 
     @staticmethod
-    async def _validate_field_references(fields: list, namespace: str = "wip") -> list[str]:
+    async def _validate_field_references(fields: list, namespace: str) -> list[str]:
         """
-        Validate terminology_ref and template_ref values in fields.
+        Validate terminology_ref and template_ref values in fields via batch Registry resolution.
+
+        Collects all refs, attempts batch resolution, and reports errors for failures.
 
         Args:
             fields: List of field definitions
@@ -1706,60 +2015,50 @@ class TemplateService:
             List of error messages for invalid references
         """
         errors = []
-        def_store = get_def_store_client()
+
+        # Collect refs with their field context for error reporting
+        template_refs: dict[str, list[str]] = {}  # ref -> [field_name, ...]
+        terminology_refs: dict[str, list[str]] = {}  # ref -> [field_name, ...]
 
         for field in fields:
             field_name = field.name if hasattr(field, 'name') else field.get('name', 'unknown')
             field_type = field.type if hasattr(field, 'type') else field.get('type')
 
-            # Check terminology_ref for term fields
             if field_type == 'term':
                 term_ref = field.terminology_ref if hasattr(field, 'terminology_ref') else field.get('terminology_ref')
                 if term_ref:
-                    try:
-                        exists = await def_store.terminology_exists(
-                            term_ref, namespace=namespace
-                        )
-                        if not exists:
-                            errors.append(f"Field '{field_name}': terminology '{term_ref}' not found or inactive")
-                    except DefStoreError as e:
-                        errors.append(f"Field '{field_name}': could not validate terminology '{term_ref}': {e}")
+                    terminology_refs.setdefault(term_ref, []).append(field_name)
 
-            # Check template_ref for object fields
             if field_type == 'object':
                 tpl_ref = field.template_ref if hasattr(field, 'template_ref') else field.get('template_ref')
                 if tpl_ref:
-                    referenced = await TemplateService._find_template_by_ref(tpl_ref, namespace)
-                    if referenced is None:
-                        errors.append(f"Field '{field_name}': template '{tpl_ref}' not found")
-                    elif referenced.status != 'active':
-                        errors.append(f"Field '{field_name}': template '{tpl_ref}' is {referenced.status}")
+                    template_refs.setdefault(tpl_ref, []).append(field_name)
 
-            # Check array item references
             if field_type == 'array':
                 array_item_type = field.array_item_type if hasattr(field, 'array_item_type') else field.get('array_item_type')
-
                 if array_item_type == 'term':
                     array_term_ref = field.array_terminology_ref if hasattr(field, 'array_terminology_ref') else field.get('array_terminology_ref')
                     if array_term_ref:
-                        try:
-                            exists = await def_store.terminology_exists(
-                                array_term_ref, namespace=namespace
-                            )
-                            if not exists:
-                                errors.append(f"Field '{field_name}[]': terminology '{array_term_ref}' not found or inactive")
-                        except DefStoreError as e:
-                            errors.append(f"Field '{field_name}[]': could not validate terminology '{array_term_ref}': {e}")
-
+                        terminology_refs.setdefault(array_term_ref, []).append(f"{field_name}[]")
                 if array_item_type == 'object':
                     array_tpl_ref = field.array_template_ref if hasattr(field, 'array_template_ref') else field.get('array_template_ref')
                     if array_tpl_ref:
-                        referenced = await TemplateService._find_template_by_ref(
-                            array_tpl_ref, namespace
-                        )
-                        if referenced is None:
-                            errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' not found")
-                        elif referenced.status != 'active':
-                            errors.append(f"Field '{field_name}[]': template '{array_tpl_ref}' is {referenced.status}")
+                        template_refs.setdefault(array_tpl_ref, []).append(f"{field_name}[]")
+
+        # Batch resolve templates
+        if template_refs:
+            try:
+                await resolve_entity_ids(list(template_refs.keys()), "template", namespace)
+            except EntityNotFoundError as e:
+                for field_name in template_refs.get(e.identifier, [e.identifier]):
+                    errors.append(f"Field '{field_name}': template '{e.identifier}' not found")
+
+        # Batch resolve terminologies
+        if terminology_refs:
+            try:
+                await resolve_entity_ids(list(terminology_refs.keys()), "terminology", namespace)
+            except EntityNotFoundError as e:
+                for field_name in terminology_refs.get(e.identifier, [e.identifier]):
+                    errors.append(f"Field '{field_name}': terminology '{e.identifier}' not found or inactive")
 
         return errors

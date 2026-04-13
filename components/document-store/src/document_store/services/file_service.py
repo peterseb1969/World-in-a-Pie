@@ -50,8 +50,8 @@ class FileService:
         content: bytes,
         filename: str,
         content_type: str,
+        namespace: str,
         metadata: FileUploadMetadata | None = None,
-        namespace: str = "wip",
         file_id: str | None = None,
     ) -> FileResponse:
         """
@@ -88,14 +88,27 @@ class FileService:
         # Compute checksum
         checksum = hashlib.sha256(content).hexdigest()
 
-        # Generate file ID from Registry (or use pre-assigned ID for restore/migration)
+        # Generate file ID from Registry (or use pre-assigned ID for restore/migration).
+        # Identity is content-addressed: same checksum in same namespace reuses the
+        # existing file_id (CASE-32).
         try:
             registry = get_registry_client()
-            file_id = await self._generate_file_id(
+            file_id, already_exists = await self._generate_file_id(
                 registry, checksum, actor, namespace=namespace, entry_id=file_id,
             )
         except RegistryError as e:
-            raise FileServiceError(f"Failed to generate file ID: {e}")
+            raise FileServiceError(f"Failed to generate file ID: {e}") from e
+
+        # If Registry already had this checksum in this namespace, the File
+        # document should already exist — return it without re-uploading or
+        # re-inserting. This makes upload_file idempotent for identical bytes.
+        if already_exists:
+            existing = await File.find_one({"file_id": file_id})
+            if existing is not None:
+                return self._to_response(existing)
+            # Fallback: Registry has the entry but Mongo does not (e.g. after
+            # a partial failure or data loss). Fall through and re-create the
+            # File doc + storage object with the existing file_id.
 
         # Upload to MinIO (storage_key = file_id)
         try:
@@ -111,7 +124,7 @@ class FileService:
                 }
             )
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to upload file to storage: {e}")
+            raise FileServiceError(f"Failed to upload file to storage: {e}") from e
 
         # Create File document in MongoDB
         now = datetime.now(UTC)
@@ -154,17 +167,23 @@ class FileService:
         registry,
         checksum: str,
         created_by: str | None,
-        namespace: str = "wip",
+        namespace: str,
         entry_id: str | None = None,
-    ) -> str:
-        """Generate a file ID from the Registry (empty composite key — always fresh,
-        unless entry_id is provided for restore/migration)."""
+    ) -> tuple[str, bool]:
+        """Generate a file ID from the Registry using the SHA-256 checksum as
+        the composite key (content-addressed identity, CASE-32).
+
+        Returns (file_id, already_exists). If already_exists is True, the
+        Registry already had an entry for these bytes in this namespace and
+        the caller should reuse the existing File document instead of
+        inserting a new one.
+        """
         item = {
             "namespace": namespace,
             "entity_type": "files",
-            "composite_key": {},
+            "composite_key": {"checksum": checksum},
             "created_by": created_by,
-            "metadata": {"type": "file", "checksum": checksum},
+            "metadata": {"type": "file"},
         }
         if entry_id:
             item["entry_id"] = entry_id
@@ -187,7 +206,7 @@ class FileService:
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
-            return result["registry_id"]
+            return result["registry_id"], result["status"] == "already_exists"
 
     async def get_file(self, file_id: str) -> FileResponse | None:
         """
@@ -237,7 +256,7 @@ class FileService:
                 filename=file_doc.filename,
             )
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to generate download URL: {e}")
+            raise FileServiceError(f"Failed to generate download URL: {e}") from e
 
         return FileDownloadResponse(
             file_id=file_doc.file_id,
@@ -273,7 +292,7 @@ class FileService:
             content = await storage.download(file_doc.storage_key)
             return content, file_doc
         except FileStorageError as e:
-            raise FileServiceError(f"Failed to download file: {e}")
+            raise FileServiceError(f"Failed to download file: {e}") from e
 
     async def delete_file(
         self,
@@ -412,7 +431,7 @@ class FileService:
         uploaded_by: str | None = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str = "wip"
+        ns_filter: dict | None = None,
     ) -> FileListResponse:
         """
         List files with pagination and filters.
@@ -425,12 +444,14 @@ class FileService:
             uploaded_by: Filter by uploader
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (default: wip)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             FileListResponse with paginated results
         """
-        query = {"namespace": namespace}
+        query: dict = {}
+        if ns_filter:
+            query.update(ns_filter)
 
         if status:
             query["status"] = status.value
@@ -565,10 +586,10 @@ class FileService:
             return False, f"File type '{file_doc.content_type}' not allowed. Allowed: {allowed_types}", None
 
         # Check template restriction (from file's allowed_templates)
-        if file_doc.allowed_templates is not None and allowed_templates:
-            # File has restrictions - check if any of the allowed_templates are in file's list
-            if not any(t in file_doc.allowed_templates for t in allowed_templates):
-                return False, f"File not allowed for templates: {allowed_templates}", None
+        if file_doc.allowed_templates is not None and allowed_templates and not any(
+            t in file_doc.allowed_templates for t in allowed_templates
+        ):
+            return False, f"File not allowed for templates: {allowed_templates}", None
 
         # Create file reference
         file_ref = FileReference(
@@ -720,6 +741,7 @@ class FileService:
         """Convert File document to FileResponse."""
         return FileResponse(
             file_id=file_doc.file_id,
+            namespace=file_doc.namespace,
             filename=file_doc.filename,
             content_type=file_doc.content_type,
             size_bytes=file_doc.size_bytes,

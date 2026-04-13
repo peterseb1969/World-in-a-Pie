@@ -1,6 +1,6 @@
 # WIP Registry Service
 
-Federated identity management service for the World In a Pie ecosystem.
+Identity management service for the World In a Pie ecosystem.
 
 > **Note:** The curl examples below use direct service ports (e.g., `localhost:8001`) for local development and testing. In production and for application code, always use the Caddy reverse proxy at `https://<hostname>:8443/api/registry/...` instead.
 
@@ -78,7 +78,7 @@ export MASTER_API_KEY=$(openssl rand -hex 32)
 | POST | `/api/registry/namespaces` | Create namespaces (bulk) |
 | GET | `/api/registry/namespaces/{id}` | Get namespace |
 | PUT | `/api/registry/namespaces/{id}` | Update namespace |
-| DELETE | `/api/registry/namespaces/{id}` | Delete namespace |
+| DELETE | `/api/registry/namespaces/{id}` | Delete namespace (**hard-delete** — see `docs/design/namespace-deletion.md`) |
 | POST | `/api/registry/namespaces/initialize-wip` | Initialize WIP internal namespaces |
 
 ### Entries
@@ -97,7 +97,7 @@ export MASTER_API_KEY=$(openssl rand -hex 32)
 |--------|----------|-------------|
 | POST | `/api/registry/synonyms/add` | Add synonyms (bulk) |
 | POST | `/api/registry/synonyms/remove` | Remove synonyms (bulk) |
-| POST | `/api/registry/synonyms/merge` | Merge entries (bulk) |
+| POST | `/api/registry/synonyms/merge` | Merge entries (bulk) — source ID becomes synonym of target, all synonyms migrate. Can be reversed by removing the synonym, but the deprecated entry remains inactive until a reactivation endpoint is added. |
 | POST | `/api/registry/synonyms/set-preferred` | Change preferred ID (bulk) |
 
 ### Search
@@ -107,6 +107,8 @@ export MASTER_API_KEY=$(openssl rand -hex 32)
 | POST | `/api/registry/search/by-fields` | Search by field values (bulk) |
 | POST | `/api/registry/search/by-term` | Free-text search (bulk) |
 | POST | `/api/registry/search/across-namespaces` | Search all namespaces (bulk) |
+
+> **For service developers:** Services should resolve identities via `wip_auth/resolve.py` rather than calling the Registry REST API directly. See `docs/design/universal-synonym-resolution.md`.
 
 ## Example Usage
 
@@ -190,7 +192,7 @@ The registry pre-configures the `wip` namespace with per-entity-type ID algorith
 | `documents` | UUID7 | Document IDs |
 | `files` | UUID7 | File IDs |
 
-ID algorithms are configurable per namespace per entity type (UUID4, UUID7, NanoID, Prefixed, Pattern).
+ID algorithms are configurable per namespace per entity type (UUID4, UUID7, NanoID, Prefixed, Pattern). For example, a namespace could use `"algorithm": "prefixed", "prefix": "PROD-"` to generate IDs like `PROD-000001`.
 
 Initialize with:
 ```bash

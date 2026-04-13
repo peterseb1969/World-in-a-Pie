@@ -82,13 +82,14 @@ class TestStats:
 # Phase 1: Create Prerequisites via REST API
 # ============================================================
 
-async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str) -> Optional[str]:
+async def create_test_terminology(client: httpx.AsyncClient, code: str, name: str, namespace: str = "wip") -> Optional[str]:
     """Create a terminology via REST API, return terminology_id."""
     try:
         response = await client.post(
             f"{DEF_STORE_URL}/api/def-store/terminologies",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
             json=[{
+                "namespace": namespace,
                 "value": code,
                 "label": name,
                 "description": f"Test terminology created by stress test {TEST_RUN_ID}"
@@ -126,7 +127,8 @@ async def create_test_terms(
 async def create_test_template(
     client: httpx.AsyncClient,
     code: str,
-    terminology_id: str
+    terminology_id: str,
+    namespace: str = "wip"
 ) -> Optional[str]:
     """Create a template that references the test terminology."""
     try:
@@ -134,6 +136,7 @@ async def create_test_template(
             f"{TEMPLATE_STORE_URL}/api/template-store/templates",
             headers={"X-API-Key": API_KEY, "Content-Type": "application/json"},
             json=[{
+                "namespace": namespace,
                 "value": code,
                 "label": f"Ingest Test Template {code}",
                 "description": f"Test template for stress test {TEST_RUN_ID}",
@@ -397,6 +400,7 @@ async def run_stress_test(
     template_count: int = 5,
     invalid_count: int = 50,
     terms_per_bulk: int = 50,
+    namespace: str = "wip",
 ) -> bool:
     """Run the full stress test."""
 
@@ -442,7 +446,7 @@ async def run_stress_test(
         # Create test terminology for documents
         test_term_code = f"STRESS_TEST_{TEST_RUN_ID}"
         test_terminology_id = await create_test_terminology(
-            http_client, test_term_code, "Stress Test Terminology"
+            http_client, test_term_code, "Stress Test Terminology", namespace=namespace
         )
         if test_terminology_id:
             print(f"  Created terminology: {test_terminology_id}")
@@ -460,7 +464,7 @@ async def run_stress_test(
         # Create test template for documents
         test_template_value = f"STRESS_TEST_TPL_{TEST_RUN_ID}"
         test_template_id = await create_test_template(
-            http_client, test_template_value, test_terminology_id
+            http_client, test_template_value, test_terminology_id, namespace=namespace
         )
         if test_template_id:
             print(f"  Created template: {test_template_id}")
@@ -607,6 +611,10 @@ Examples:
         "--invalid-count", type=int, default=50,
         help="Number of invalid messages per category (default: 50)"
     )
+    parser.add_argument(
+        "--namespace", default="wip",
+        help="Namespace for created entities (default: wip)"
+    )
 
     args = parser.parse_args()
 
@@ -616,6 +624,7 @@ Examples:
         terminology_count=args.terminology_count,
         template_count=args.template_count,
         invalid_count=args.invalid_count,
+        namespace=args.namespace,
     ))
 
     sys.exit(0 if success else 1)

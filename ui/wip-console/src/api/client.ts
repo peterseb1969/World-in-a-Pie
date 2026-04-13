@@ -217,8 +217,15 @@ class DefStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'put')
   }
 
-  async deleteTerminology(id: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terminologies', { id }, 'delete')
+  async deleteTerminology(id: string, options?: {
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', {
+      id,
+      force: options?.force,
+      hard_delete: options?.hardDelete,
+    }, 'delete')
   }
 
   // ===========================================================================
@@ -256,8 +263,11 @@ class DefStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
   }
 
-  async deleteTerm(termId: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms', { id: termId }, 'delete')
+  async deleteTerm(termId: string, options?: { hardDelete?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', {
+      id: termId,
+      hard_delete: options?.hardDelete,
+    }, 'delete')
   }
 
   async bulkCreateTerms(
@@ -355,6 +365,7 @@ class DefStoreClient extends BaseApiClient {
   async listAllRelationships(params?: {
     namespace?: string
     relationship_type?: string
+    source_terminology_id?: string
     status?: string
     page?: number
     page_size?: number
@@ -471,8 +482,8 @@ class TemplateStoreClient extends BaseApiClient {
     return response.data
   }
 
-  async getTemplateByValueRaw(value: string): Promise<Template> {
-    const response = await this.client.get<Template>(`/templates/by-value/${value}/raw`)
+  async getTemplateByValueRaw(value: string, namespace: string): Promise<Template> {
+    const response = await this.client.get<Template>(`/templates/by-value/${value}/raw`, { params: { namespace } })
     return response.data
   }
 
@@ -494,12 +505,18 @@ class TemplateStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/templates', { ...data, template_id: id }, 'put')
   }
 
-  async deleteTemplate(id: string, options?: { updatedBy?: string; version?: number; force?: boolean }): Promise<BulkResultItem> {
+  async deleteTemplate(id: string, options?: {
+    updatedBy?: string
+    version?: number
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/templates', {
       id,
       version: options?.version,
       force: options?.force,
-      updated_by: options?.updatedBy
+      hard_delete: options?.hardDelete,
+      updated_by: options?.updatedBy,
     }, 'delete')
   }
 
@@ -586,8 +603,17 @@ class DocumentStoreClient extends BaseApiClient {
     return this.bulkWriteOne('/documents', payload)
   }
 
-  async deleteDocument(id: string, updatedBy?: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/documents', { id, updated_by: updatedBy }, 'delete')
+  async deleteDocument(id: string, options?: {
+    updatedBy?: string
+    hardDelete?: boolean
+    version?: number
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/documents', {
+      id,
+      updated_by: options?.updatedBy,
+      hard_delete: options?.hardDelete,
+      version: options?.version,
+    }, 'delete')
   }
 
   async archiveDocument(id: string, archivedBy?: string): Promise<BulkResultItem> {
@@ -604,6 +630,7 @@ class DocumentStoreClient extends BaseApiClient {
     filters?: { field: string; operator: string; value: unknown }[]
     template_id?: string
     status?: string
+    namespace?: string
     page?: number
     page_size?: number
     sort_by?: string
@@ -647,7 +674,7 @@ class DocumentStoreClient extends BaseApiClient {
 
   async exportTableCsv(
     templateId: string,
-    params?: { status?: string; include_metadata?: boolean; max_cross_product?: number }
+    params?: { status?: string; namespace?: string; include_metadata?: boolean; max_cross_product?: number }
   ): Promise<Blob> {
     const response = await this.client.get(`/table/${templateId}/csv`, {
       params,
@@ -679,7 +706,7 @@ class DocumentStoreClient extends BaseApiClient {
     file: File,
     templateId: string,
     columnMapping: Record<string, string>,
-    namespace: string = 'wip',
+    namespace: string,
     skipErrors: boolean = false
   ): Promise<{
     total_rows: number
@@ -834,10 +861,10 @@ class FileStoreClient extends BaseApiClient {
   // STORAGE STATUS
   // ===========================================================================
 
-  async isStorageEnabled(): Promise<boolean> {
+  async isStorageEnabled(namespace?: string): Promise<boolean> {
     try {
       // Try listing files - if storage is disabled, this will return 503
-      await this.client.get('', { params: { page_size: 1 } })
+      await this.client.get('', { params: { page_size: 1, namespace: namespace ?? 'wip' } })
       return true
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -1026,6 +1053,7 @@ class ReportingSyncClient extends BaseApiClient {
     query: string
     types?: string[]
     status?: string
+    namespace?: string
     limit?: number
   }): Promise<SearchResponse> {
     const response = await this.client.post<SearchResponse>('/search', params)
@@ -1034,6 +1062,7 @@ class ReportingSyncClient extends BaseApiClient {
 
   async getRecentActivity(params?: {
     types?: string
+    namespace?: string
     limit?: number
   }): Promise<ActivityResponse> {
     const response = await this.client.get<ActivityResponse>('/activity/recent', { params })

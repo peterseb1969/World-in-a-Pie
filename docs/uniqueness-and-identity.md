@@ -6,7 +6,7 @@ Consider three scenarios:
 
 1. **Backup & restore:** You export namespace `production` and restore it to a test instance. Every terminology, term, template, and document must arrive with its original ID intact — or downstream references break.
 
-2. **Multi-namespace operation:** You run `wip` and `partner-data` side by side. Both have a `TERM-000001`, but they're completely different entities. Uniqueness can't be global, or the second namespace can never be created.
+2. **Multi-namespace operation:** You run `wip` and `partner-data` side by side. Both have a terminology called `COUNTRY`, but they're completely different entities. Uniqueness can't be global, or the second namespace can never be created.
 
 3. **External system integration:** A vendor sends you records keyed by their internal ID (`SAP-PATIENT-4291`). You need to map that to your canonical WIP ID without losing the vendor's key.
 
@@ -41,7 +41,7 @@ All domain entities enforce uniqueness **within their namespace**, not globally:
 | Document | `(namespace, document_id, version)` | `ns_document_id_version_unique_idx` |
 | File | `(namespace, file_id)` | `ns_file_id_unique_idx` |
 
-This means `TERM-000001` in namespace `wip` and `TERM-000001` in namespace `backup` are **independent entities**. They have different Registry `entry_id`s, different data, different lifecycles. The entity_id is a human-friendly label scoped to its namespace.
+This means a terminology `COUNTRY` in namespace `wip` and `COUNTRY` in namespace `backup` are **independent entities**. They have different Registry `entry_id`s, different data, different lifecycles. The entity_id is a human-friendly label scoped to its namespace.
 
 ### Tier 3: Parent-Scoped Uniqueness
 
@@ -88,8 +88,8 @@ A composite key is a **dictionary of key-value pairs** that uniquely identifies 
 The Registry hashes the composite key by serializing the full dictionary to JSON with sorted keys, then computing SHA-256:
 
 ```python
-# Input: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "TPL-001"}
-# Sorted JSON: '{"identity_hash":"a1b2c3...","namespace":"wip","template_id":"TPL-001"}'
+# Input: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
+# Sorted JSON: '{"identity_hash":"a1b2c3...","namespace":"wip","template_id":"019eee01-..."}'
 # Output: SHA-256 of that JSON string
 ```
 
@@ -98,9 +98,9 @@ Each entity type uses a specific composite key structure:
 | Entity | Composite Key | Upsert Behavior |
 |--------|--------------|-----------------|
 | Terminology | `{"namespace": "wip", "value": "GENDER"}` | Same value in same namespace → same ID |
-| Term | `{"terminology_id": "TERM-001", "value": "Male"}` | Same value in same terminology → same ID |
+| Term | `{"terminology_id": "GENDER", "value": "Male"}` | Same value in same terminology → same ID |
 | Template | `{}` (empty) | Always generates a new ID |
-| Document (with identity_fields) | `{"namespace": "wip", "identity_hash": "...", "template_id": "TPL-001"}` | Same identity → same document_id, new version |
+| Document (with identity_fields) | `{"namespace": "wip", "identity_hash": "...", "template_id": "019eee01-..."}` | Same identity → same document_id, new version |
 | Document (no identity_fields) | `{}` (empty) | Always generates a new document_id |
 | File | `{}` (empty) | Always generates a new file_id |
 
@@ -113,7 +113,7 @@ For versioned entities (templates and documents), the entity_id is **stable** �
 ```
 Template "PERSON":
   ┌─────────────────────────────────────┐
-  │ template_id: TPL-000001             │  ← same across all versions
+  │ template_id: 019eee01-aaa1-7abc-... │  ← same across all versions
   │ version: 1  │  version: 2           │
   │ fields: ... │  fields: ... (updated)│
   │ status: active │ status: active     │
@@ -143,7 +143,7 @@ Document-Store                              Registry
     │  2. Build composite key dict:             │
     │     {"namespace": "wip",                  │
     │      "identity_hash": "a1b2c3...",        │
-    │      "template_id": "TPL-001"}            │
+    │      "template_id": "019eee01-..."}            │
     │                                           │
     │  3. POST /entries/register ──────────────►│
     │                                           │ 4. Hash the entire dict
@@ -181,7 +181,7 @@ Template PERSON:
 
 Document 1: { "email": "alice@example.com", "name": "Alice" }
   → identity_hash: sha256("email=alice@example.com") = "a1b2c3..."
-  → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "TPL-001"}
+  → composite key sent to Registry: {"namespace": "wip", "identity_hash": "a1b2c3...", "template_id": "019eee01-..."}
   → Registry: NEW → document_id: "019-uuid-001", version: 1
 
 Document 2: { "email": "alice@example.com", "name": "Alice Smith" }
@@ -197,6 +197,17 @@ Document 3: { "email": "bob@example.com", "name": "Bob" }
 Templates with **no identity_fields** use an empty composite key — every submission creates a brand new document. This is correct for event logs, audit entries, and other append-only data.
 
 **Namespace scoping:** The identity hash covers only the field values. Uniqueness is per-namespace because the composite key includes `{"namespace": ...}`. Two documents in different namespaces can share the same identity hash but receive different `document_id`s.
+
+### PATCH Cannot Change Identity
+
+`PATCH /api/document-store/documents` creates a new version of an existing document by applying an RFC 7396 merge patch (see `docs/api-conventions.md`). It is **forbidden** to change any identity field or the namespace via PATCH:
+
+- Attempting to patch a template-defined identity field fails with `error_code: "identity_field_change"`
+- The new version **preserves** the original `identity_hash` — it is invariant under PATCH, never recomputed
+- The new version **preserves** the original `template_version` — PATCH validates against the version recorded on the document, not the latest template version
+- The namespace is not a patchable field — it is fixed at document creation
+
+If you need a document with a different identity, use POST to create a new one. The identity hash is the document's domain identity — changing it would silently break every synonym, Registry entry, and downstream reference that points at the old hash. PATCH is for correcting non-identity data within a stable identity; POST is for "this is a different real-world entity."
 
 ---
 
@@ -290,7 +301,7 @@ While the synonym infrastructure (above) enables any composite key to resolve to
 Every WIP service endpoint that accepts an entity ID will resolve it automatically:
 
 1. **UUID format?** → pass through unchanged (no Registry call)
-2. **Non-UUID string?** → build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
+2. **Non-UUID string?** → determine namespace (from `namespace` parameter, or implicitly from single-namespace API keys), build a composite key, call `POST /api/registry/entries/resolve`, use the returned canonical ID
 3. **Resolution fails?** → pass the raw value through unchanged (best-effort); downstream validation catches invalid IDs
 
 This is implemented in `wip-auth`'s `resolve_entity_id()` function, called at the API boundary before business logic runs.
@@ -315,6 +326,8 @@ This registration is fire-and-forget — it runs asynchronously and failures don
 
 ```bash
 # These are equivalent — both resolve to the same template
+# (requires namespace context: either pass namespace explicitly,
+# or use a single-namespace API key for automatic derivation)
 POST /api/document-store/documents
 {"template_id": "019abc12-def3-7abc-...", "data": {...}}
 
@@ -335,9 +348,9 @@ For the full design, see `docs/design/universal-synonym-resolution.md`.
 
 Early WIP versions enforced globally unique entity IDs (e.g., `terminology_id` unique across all namespaces). This blocked a critical workflow: **restoring a backup into a different namespace on the same instance**.
 
-If namespace `production` has `TERM-000001` and you try to restore a backup containing `TERM-000001` into namespace `backup`, a global unique index rejects it — even though the two entities live in completely separate namespaces.
+If namespace `production` has a terminology `COUNTRY` and you try to restore a backup containing the same `COUNTRY` terminology into namespace `backup`, a global unique index rejects it — even though the two entities live in completely separate namespaces.
 
-The fix: uniqueness indexes are scoped to `(namespace, entity_id)`. The same `TERM-000001` can exist in both namespaces independently. Each has its own Registry `entry_id` (which remains globally unique).
+The fix: uniqueness indexes are scoped to `(namespace, entity_id)`. The same entity_id can exist in both namespaces independently. Each has its own Registry `entry_id` (which remains globally unique).
 
 ### What This Enables
 
@@ -356,13 +369,13 @@ Only the Registry `entry_id` and namespace `prefix`. These are the cross-cutting
 
 When a uniqueness constraint is violated:
 
-| Scenario | HTTP Response | Detail |
-|----------|--------------|--------|
-| Duplicate composite key in Registry | `200` — returns existing entry_id | This is upsert, not an error |
-| Duplicate `(namespace, value)` for terminology | `409 Conflict` | "Terminology 'X' already exists" |
-| Duplicate `(namespace, term_id)` | `409 Conflict` | "Term ID 'X' already exists" |
-| Duplicate `(namespace, terminology_id, value)` for term | `409 Conflict` | "Term value 'X' already exists" |
-| Duplicate `(namespace, template_id, version)` | `409 Conflict` | Prevented by service layer |
-| Duplicate `(namespace, document_id, version)` | `409 Conflict` | Prevented by service layer |
+| Scenario | HTTP Response | Per-item status | Detail |
+|----------|--------------|-----------------|--------|
+| Duplicate composite key in Registry | `200` | `already_exists` | Returns existing entry_id — this is upsert, not an error |
+| Duplicate `(namespace, value)` for terminology | `200` | `already_exists` | "Terminology 'X' already exists" |
+| Duplicate `(namespace, term_id)` | `200` | `already_exists` | "Term ID 'X' already exists" |
+| Duplicate `(namespace, terminology_id, value)` for term | `200` | `already_exists` | "Term value 'X' already exists" |
+| Duplicate `(namespace, template_id, version)` | `200` | `error` | Prevented by service layer |
+| Duplicate `(namespace, document_id, version)` | `200` | `error` | Prevented by service layer |
 
-The Registry returning an existing ID is **not an error** — it's the upsert mechanism working as designed. A `409` means you tried to create an entity that already exists at the domain level (bypassing the Registry's dedup, or using a different composite key that happens to produce the same namespace-scoped entity_id).
+All write endpoints return HTTP 200 with a BulkResponse. Duplicates are reported per-item via the `status` field — check each item's status rather than the HTTP status code. See `docs/api-conventions.md`.

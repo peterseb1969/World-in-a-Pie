@@ -12,14 +12,14 @@ Bypasses soft-delete, removes all versions, and cleans up Registry entries, MinI
 
 ```bash
 # Dry run (default) — shows what would be deleted
-python scripts/dev-delete.py T-0001a2b3
+python scripts/dev-delete.py 019abc01-def3-7abc-8def-123456789abc
 
 # Actually delete
-python scripts/dev-delete.py --force T-0001a2b3
+python scripts/dev-delete.py --force 019abc01-def3-7abc-8def-123456789abc
 
 # Delete with full cascade (terminology -> terms -> relationships,
 # template -> child templates -> documents -> files)
-python scripts/dev-delete.py --cascade --force TERM-0001a2b3
+python scripts/dev-delete.py --cascade --force COUNTRY
 
 # Delete entire namespace
 python scripts/dev-delete.py --namespace myapp --force
@@ -38,22 +38,22 @@ python scripts/dev-delete.py --list documents --limit 20
 
 ### ID Mode
 
-Delete one or more entities by WIP ID. Auto-detects entity type from the ID format.
+Delete one or more entities by WIP ID. Accepts UUIDs, value codes, or prefixed IDs.
 
 ```bash
-python scripts/dev-delete.py --force T-0001a2b3 D-0004c5d6
+python scripts/dev-delete.py --force 019abc01-... 019def04-...
 ```
 
 Use `--type` to disambiguate when the ID format is ambiguous:
 
 ```bash
-python scripts/dev-delete.py --type template --force TPL-0001a2b3
+python scripts/dev-delete.py --type template --force PATIENT_RECORD
 ```
 
 Use `--cascade` to delete child entities (terms under a terminology, documents under a template, etc.):
 
 ```bash
-python scripts/dev-delete.py --cascade --force TERM-0001a2b3
+python scripts/dev-delete.py --cascade --force COUNTRY
 ```
 
 ### Namespace Mode

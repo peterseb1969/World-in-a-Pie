@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipBulkItemError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Terminology,
@@ -16,6 +17,7 @@ import type {
   ValidateValueResponse,
   BulkValidateRequest,
   BulkValidateResponse,
+  AuditLogResponse,
 } from '../types/terminology.js'
 import type {
   Relationship,
@@ -58,8 +60,15 @@ export class DefStoreService extends BaseService {
     return this.bulkWriteOne('/terminologies', { ...data, terminology_id: id }, 'PUT')
   }
 
-  async deleteTerminology(id: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terminologies', { id }, 'DELETE')
+  async deleteTerminology(id: string, options?: {
+    force?: boolean
+    hardDelete?: boolean
+  }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terminologies', {
+      id,
+      force: options?.force,
+      hard_delete: options?.hardDelete,
+    }, 'DELETE')
   }
 
   // ---- Terms ----
@@ -78,14 +87,31 @@ export class DefStoreService extends BaseService {
     return this.get(`/terms/${termId}`)
   }
 
-  async createTerm(terminologyId: string, data: CreateTermRequest): Promise<BulkResultItem> {
-    return this.bulkWriteOne(`/terminologies/${terminologyId}/terms`, data)
+  async createTerm(
+    terminologyId: string,
+    data: CreateTermRequest,
+    options: { namespace: string },
+  ): Promise<BulkResultItem> {
+    const resp = await this.post<BulkResponse>(
+      `/terminologies/${terminologyId}/terms`,
+      [data],
+      { namespace: options.namespace },
+    )
+    const result = resp.results[0]
+    if (result.status === 'error') {
+      throw new WipBulkItemError(
+        result.error || 'Operation failed',
+        result.index,
+        result.status,
+      )
+    }
+    return result
   }
 
   async createTerms(
     terminologyId: string,
     terms: CreateTermRequest[],
-    options?: { batch_size?: number; registry_batch_size?: number },
+    options: { namespace: string; batch_size?: number; registry_batch_size?: number },
   ): Promise<BulkResponse> {
     return this.post(`/terminologies/${terminologyId}/terms`, terms, options)
   }
@@ -98,8 +124,11 @@ export class DefStoreService extends BaseService {
     return this.bulkWriteOne('/terms/deprecate', { ...data, term_id: termId })
   }
 
-  async deleteTerm(termId: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('/terms', { id: termId }, 'DELETE')
+  async deleteTerm(termId: string, options?: { hardDelete?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/terms', {
+      id: termId,
+      hard_delete: options?.hardDelete,
+    }, 'DELETE')
   }
 
   // ---- Import/Export ----
@@ -133,10 +162,10 @@ export class DefStoreService extends BaseService {
 
   async importOntology(
     data: Record<string, unknown>,
-    options?: {
+    options: {
+      namespace: string
       terminology_value?: string
       terminology_label?: string
-      namespace?: string
       prefix_filter?: string
       include_deprecated?: boolean
       max_synonyms?: number
@@ -192,12 +221,12 @@ export class DefStoreService extends BaseService {
     return this.get('/ontology/relationships/all', params)
   }
 
-  async createRelationships(items: CreateRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
-    return this.post('/ontology/relationships', items, namespace ? { namespace } : undefined)
+  async createRelationships(items: CreateRelationshipRequest[], namespace: string): Promise<BulkResponse> {
+    return this.post('/ontology/relationships', items, { namespace })
   }
 
-  async deleteRelationships(items: DeleteRelationshipRequest[], namespace?: string): Promise<BulkResponse> {
-    return this.del('/ontology/relationships', items, namespace ? { namespace } : undefined)
+  async deleteRelationships(items: DeleteRelationshipRequest[], namespace: string): Promise<BulkResponse> {
+    return this.del('/ontology/relationships', items, { namespace })
   }
 
   async getAncestors(termId: string, params?: {
@@ -216,11 +245,37 @@ export class DefStoreService extends BaseService {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, namespace?: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/parents`, namespace ? { namespace } : undefined)
+  async getParents(termId: string, namespace: string): Promise<Relationship[]> {
+    return this.get(`/ontology/terms/${termId}/parents`, { namespace })
   }
 
-  async getChildren(termId: string, namespace?: string): Promise<Relationship[]> {
-    return this.get(`/ontology/terms/${termId}/children`, namespace ? { namespace } : undefined)
+  async getChildren(termId: string, namespace: string): Promise<Relationship[]> {
+    return this.get(`/ontology/terms/${termId}/children`, { namespace })
+  }
+
+  // ---- Audit Log ----
+
+  async getTerminologyAuditLog(terminologyId: string, params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get(`/audit/terminologies/${terminologyId}`, params)
+  }
+
+  async getTermAuditLog(termId: string, params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get(`/audit/terms/${termId}`, params)
+  }
+
+  async getRecentAuditLog(params?: {
+    action?: string
+    page?: number
+    page_size?: number
+  }): Promise<AuditLogResponse> {
+    return this.get('/audit/', params)
   }
 }

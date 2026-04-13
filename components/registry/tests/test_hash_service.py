@@ -40,7 +40,7 @@ class TestDeterministicHashing:
 
     def test_hash_consistency_across_calls(self):
         """Hash is consistent across multiple independent calls."""
-        key = {"namespace": "wip", "template_id": "TPL-001", "identity_hash": "abc123"}
+        key = {"namespace": "wip", "template_id": "0190c000-0000-7000-0000-000000000001", "identity_hash": "abc123"}
         hashes = [HashService.compute_composite_key_hash(key) for _ in range(100)]
         assert len(set(hashes)) == 1
 

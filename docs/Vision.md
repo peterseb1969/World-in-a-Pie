@@ -106,7 +106,7 @@ NATS JetStream powers event-driven sync from MongoDB to PostgreSQL. All document
 |-----------|--------|----------|
 | WIP internal | Implemented | MongoDB → PostgreSQL reporting sync via NATS JetStream |
 | WIP → External | Available via NATS subscription | React to document changes |
-| External → WIP | Planned (streaming ingest) | High-volume data ingestion |
+| External → WIP | Ingest Gateway (async bulk ingestion via NATS JetStream, port 8006) | High-volume data ingestion |
 
 ### Business Logic
 
@@ -137,13 +137,13 @@ Every entity in WIP receives its ID from the Registry:
 
 | Entity Type | Default ID Format | Configurable |
 |-------------|-------------------|--------------|
-| Terminologies | UUID7 | Per namespace (e.g., `TERM-000001`) |
-| Terms | UUID7 | Per namespace (e.g., `T-000001`) |
-| Templates | UUID7 | Per namespace (e.g., `TPL-000001`) |
+| Terminologies | UUID7 | Per namespace (e.g., `LOV-000042`) |
+| Terms | UUID7 | Per namespace (e.g., `ITEM-000001`) |
+| Templates | UUID7 | Per namespace (e.g., `SCHEMA-000001`) |
 | Documents | UUID7 | Per namespace |
-| Files | UUID7 | Per namespace (e.g., `FILE-000001`) |
+| Files | UUID7 | Per namespace (e.g., `ASSET-000001`) |
 
-All IDs default to UUID7 (time-ordered, globally unique). Custom namespaces can configure sequential prefixed formats (e.g., the default `wip` namespace uses `TERM-`, `T-`, `TPL-`, `FILE-` prefixes).
+All IDs default to UUID7 (time-ordered, globally unique). Custom namespaces can configure sequential prefixed formats with any prefix they choose (e.g., `LOV-`, `ITEM-`, `SCHEMA-`, `ASSET-`).
 
 This centralization provides:
 - **Guaranteed uniqueness** across all services
@@ -224,19 +224,19 @@ Every entity is registered with a **composite key**—a set of fields that uniqu
         "label": "Gender"
     }
 }
-# → Generates: TERM-000001
+# → Generates: a terminology_id (UUID7 by default, or prefixed like LOV-000042 if configured)
 
 # Term composite key
 {
     "namespace": "wip",
     "entity_type": "terms",
     "composite_key": {
-        "terminology_id": "TERM-000001",
+        "terminology_id": "GENDER",
         "value": "M",
         "label": "Male"
     }
 }
-# → Generates: T-000001
+# → Generates: a term_id (UUID7 by default, or prefixed like ITEM-000001 if configured)
 ```
 
 Composite keys serve three purposes:
@@ -267,7 +267,7 @@ Term aliases handle the problem of **user input variation**. A term for "Male" m
 
 ```json
 {
-  "term_id": "T-000001",
+  "term_id": "019abc12-def3-7abc-8def-123456789abc",
   "code": "M",
   "value": "Male",
   "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
@@ -280,7 +280,7 @@ During validation, the response tells you **how** the input was matched:
 {
   "input_value": "Mr.",
   "valid": true,
-  "term_id": "T-000001",
+  "term_id": "019abc12-def3-7abc-8def-123456789abc",
   "matched_via": "alias",
   "normalized_value": "Male"
 }
@@ -333,36 +333,53 @@ WIP Instance (Raspberry Pi)
 
 ## Design Principles
 
-### 1. Never Delete, Only Deactivate
+### 1. Prefer Deactivation Over Deletion
 
-Data is never physically deleted. Documents, templates, and terms are soft-deleted (`status: inactive`). This ensures:
+The default behavior: data is never physically deleted. Documents, templates, and terms are soft-deleted (`status: inactive`). This ensures:
 - Historical references always resolve
 - Audit trails remain complete
 - Recovery is always possible
 
-**Exception:** Binary files (stored in MinIO) support an optional hard-delete after soft-delete, to reclaim storage. Domain entities in MongoDB are never hard-deleted.
+**Accepted deviations:**
+
+- **Binary files** (stored in MinIO) support hard-delete after soft-delete, to reclaim storage.
+- **Mutable terminologies** (`mutable: true`) allow hard-deletion of terms. This exists for app-scoped user-defined vocabularies (e.g., custom classifications in a clinical trial app) where users must be able to remove entries entirely, not just deprecate them. The terminology creator opts into mutability explicitly; immutable remains the default.
+- **Namespace deletion** removes all entities in a namespace. This is a development and lifecycle operation — tearing down a test namespace, removing an uninstalled app's data. It is intentionally destructive and requires explicit confirmation.
+
+These deviations exist because WIP is a tool, not an ideology. The default behavior (soft-delete, full audit trail) is the right choice for production data. But development dead-ends must be cleanable, user-facing vocabularies must be editable, and storage must be reclaimable. WIP gives you the sane default and lets you deviate when you understand the consequences.
 
 ### 2. References Must Resolve
 
-Every reference (term_id, template_id, document_id) must point to an existing entity. The system validates references and warns about inactive targets.
+Every reference (term_id, template_id, document_id) must point to an existing entity. The system validates references at creation time and warns about inactive targets.
 
-### 3. Preserve Original Values
+**The resolution principle:** Wherever WIP accepts an entity identifier, any valid synonym for that entity should work identically to the canonical ID. The canonical ID is special only in that it is guaranteed to exist and guaranteed to be stable. All other identifiers (auto-synonyms, custom synonyms, legacy IDs) are equally valid for resolution.
+
+This principle is the foundation for cross-system integration, data migration, and ergonomic API usage. It is **not yet fully implemented** — see `docs/design/synonym-resolution-gaps.md` for the current state and remediation plan. Achieving consistent resolution across all services is a prerequisite for federation and for reliable agentic application development.
+
+### 3. The Registry Is the Identity Authority
+
+The Registry is not merely an ID generator. It is the **single source of truth for identity** in WIP. Every entity gets its canonical ID from the Registry. Every synonym is registered in the Registry. Every identity resolution — whether by canonical ID, by human-readable value, or by external system identifier — should go through the Registry.
+
+This means services must not implement their own identity resolution as a substitute for Registry resolution. Direct database lookups by value, hardcoded namespace defaults, and service-specific fallback logic are implementation shortcuts that undermine the Registry's authority. They must be replaced with calls through the shared resolution layer (`wip_auth/resolve.py`) that delegates to the Registry.
+
+**Why this matters:** The Registry's authority is what makes federation possible, what makes data migration reliable, and what makes the synonym philosophy real. If services bypass the Registry for resolution, synonyms become a feature that works sometimes — which is worse than not having it at all, because callers can't predict when it will work.
+
+### 4. Preserve Original Values
 
 Documents store both the original submitted value AND the resolved reference. This supports:
 - Audit compliance (what was actually submitted)
 - Data recovery (original values available)
 - ETL flexibility (transform in reporting layer, not source)
 
-### 4. Configuration Over Code
+### 5. Configuration Over Code
 
 Backend selection, auth providers, and sync behavior are configured via environment variables and config files—not code changes.
 
-### 5. Pluggable Architecture
+### 6. Standard Infrastructure, Swappable Auth
 
-Every major component has an abstraction layer:
-- Storage: MongoDB now, SQLite later
-- Auth: Dex ships as default, any OIDC-compliant provider works
-- Reporting: PostgreSQL now, other SQL databases possible
+WIP's infrastructure choices are deliberate and permanent: MongoDB for document storage, PostgreSQL for reporting, NATS for events, MinIO for files. These are not abstracted behind pluggable interfaces — the services use them directly (Beanie ODM, asyncpg, nats-py, boto3). Swapping storage engines was analysed and rejected: the effort-to-value ratio is prohibitive, and it serves neither thesis. WIP runs on a Raspberry Pi 5 with these components; that's small enough.
+
+The exception is authentication: Dex ships as the default OIDC provider, but any OIDC-compliant provider works. This is a genuine abstraction — WIP validates JWT tokens and doesn't care who issued them.
 
 ---
 
@@ -437,8 +454,29 @@ WIP is well-suited for:
 
 ---
 
+## WIP as Guardrails for Agentic Development
+
+WIP's design principles are not just architectural preferences — they are **structural constraints** that make AI-assisted application development viable. This is the connection to WIP's broader purpose (see `WIP_TwoTheses.md`).
+
+A coding agent building on WIP inherits the platform's discipline:
+
+- **Schema validation via templates** prevents the agent from storing unvalidated data
+- **Controlled vocabularies** prevent the agent from inventing ad-hoc category strings
+- **Referential integrity** prevents the agent from creating dangling references
+- **Identity-based versioning** gives the agent versioning for free
+- **Soft-delete by default** means the agent cannot accidentally lose data
+- **Reporting sync** means the agent never needs to build ETL pipelines
+
+The agent's decision surface is reduced to domain-specific questions: which terminologies, which templates, which fields determine identity, which references link entities. Everything else — storage, validation, versioning, integrity, queryability — is handled by the platform.
+
+**But this only works if the guardrails are trustworthy.** An agent that creates a template referencing a terminology by value must get consistent behavior regardless of which code path handles the request. If synonym resolution works at some API endpoints but not others, if cross-namespace references resolve in one service but fail in another, the agent encounters unpredictable failures that aren't its fault — they're WIP's fault. The agent can't reason about inconsistent behavior, and it can't work around guardrails that have gaps.
+
+This is why internal consistency is not optional. The design principles above — especially Registry authority and universal synonym resolution — are prerequisites for WIP to serve as a reliable foundation for agentic development. Every gap in the identity model is a gap in the guardrails. Closing those gaps is not a performance optimization or a convenience feature. It is alignment with the stated purpose of the platform.
+
+---
+
 ## Summary
 
 World In a Pie is a **meta-system**: a validated, versioned, SQL-queryable data layer that knows nothing about your domain until you teach it through terminologies and templates.
 
-Its power comes from what it **doesn't** do—by staying generic, it becomes a foundation for anything.
+Its power comes from what it **doesn't** do — by staying generic, it becomes a foundation for anything. And its real potential emerges when combined with AI-assisted development: a platform whose structural constraints discipline the coding agent, reducing an unbounded design space to a well-defined surface where human judgment and AI execution meet.

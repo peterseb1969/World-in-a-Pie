@@ -3,14 +3,12 @@
 from unittest.mock import MagicMock
 
 import pytest
-
 from wip_toolkit.client import WIPClientError
 from wip_toolkit.import_.fresh import (
-    _activate_templates,
     _create_documents,
-    _create_templates,
-    _create_terms,
+    _create_templates_multipass,
     _create_terminologies,
+    _create_terms,
     _ensure_namespace,
     _register_synonyms,
     _remap_composite_key,
@@ -20,7 +18,6 @@ from wip_toolkit.import_.fresh import (
 )
 from wip_toolkit.import_.remap import IDRemapper
 from wip_toolkit.models import ImportStats
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -217,16 +214,16 @@ class TestEnsureNamespace:
 class TestCreateTerminologies:
     def test_create_terminologies_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_terminology("NEW-TERM-001")
+        client.post.return_value = _ok_terminology("NEW-0190a000-0000-7000-0000-000000000001")
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY", "label": "Country"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY", "label": "Country"},
         ]
 
         _create_terminologies(client, "ns", terminologies, remapper, stats, False)
 
-        assert remapper.terminology_map["OLD-TERM-001"] == "NEW-TERM-001"
+        assert remapper.terminology_map["OLD-0190a000-0000-7000-0000-000000000001"] == "NEW-0190a000-0000-7000-0000-000000000001"
         assert stats.created.terminologies == 1
 
     def test_create_terminologies_already_exists(self):
@@ -239,7 +236,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"},
         ]
 
         _create_terminologies(client, "ns", terminologies, remapper, stats, False)
@@ -258,7 +255,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "BAD"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "BAD"},
         ]
 
         with pytest.raises(WIPClientError):
@@ -278,7 +275,7 @@ class TestCreateTerminologies:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "BAD"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "BAD"},
         ]
 
         # Should NOT raise
@@ -312,34 +309,34 @@ class TestCreateTerms:
     def test_create_terms_uses_remapped_terminology_id(self):
         """Terms are posted to /terminologies/{NEW_TID}/terms."""
         client = MagicMock()
-        client.post.return_value = _ok_terms([(0, "NEW-T-001")])
+        client.post.return_value = _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_terminology_mapping("OLD-TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TID", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-TID", "value": "UK"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
 
-        args, kwargs = client.post.call_args
+        args, _kwargs = client.post.call_args
         assert args == ("def-store", "/terminologies/NEW-TID/terms")
 
     def test_create_terms_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_terms([(0, "NEW-T-001"), (1, "NEW-T-002")])
+        client.post.return_value = _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001"), (1, "NEW-0190b000-0000-7000-0000-000000000002")])
         remapper = IDRemapper()
         remapper.add_terminology_mapping("OLD-TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TID", "value": "UK"},
-            {"term_id": "OLD-T-002", "terminology_id": "OLD-TID", "value": "France"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-TID", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000002", "terminology_id": "OLD-TID", "value": "France"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
 
-        assert remapper.term_map["OLD-T-001"] == "NEW-T-001"
-        assert remapper.term_map["OLD-T-002"] == "NEW-T-002"
+        assert remapper.term_map["OLD-0190b000-0000-7000-0000-000000000001"] == "NEW-0190b000-0000-7000-0000-000000000001"
+        assert remapper.term_map["OLD-0190b000-0000-7000-0000-000000000002"] == "NEW-0190b000-0000-7000-0000-000000000002"
         assert stats.created.terms == 2
 
     def test_create_terms_unmapped_terminology_skipped(self):
@@ -348,8 +345,8 @@ class TestCreateTerms:
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "T-001", "terminology_id": "UNMAPPED-TID", "value": "foo"},
-            {"term_id": "T-002", "terminology_id": "UNMAPPED-TID", "value": "bar"},
+            {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "UNMAPPED-TID", "value": "foo"},
+            {"term_id": "0190b000-0000-7000-0000-000000000002", "terminology_id": "UNMAPPED-TID", "value": "bar"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, False)
@@ -393,7 +390,7 @@ class TestCreateTerms:
         remapper.add_terminology_mapping("TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": f"T-{i}", "terminology_id": "TID", "value": f"v{i}"}
+            {"term_id": f"0190b000-0000-7000-0000-{i:012d}", "terminology_id": "TID", "value": f"v{i}"}
             for i in range(3)
         ]
 
@@ -415,7 +412,7 @@ class TestCreateTerms:
         remapper.add_terminology_mapping("TID", "NEW-TID")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         terms = [
-            {"term_id": "T-1", "terminology_id": "TID", "value": "v1"},
+            {"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "TID", "value": "v1"},
         ]
 
         _create_terms(client, "ns", terms, remapper, 50, stats, continue_on_error=True)
@@ -425,20 +422,24 @@ class TestCreateTerms:
 
 
 # ---------------------------------------------------------------------------
-# _create_templates
+# _create_templates_multipass
 # ---------------------------------------------------------------------------
 
-class TestCreateTemplates:
+class TestCreateTemplatesMultipass:
     def test_create_templates_remaps_references(self):
         """remap_template is called (indirectly) via remapper."""
         client = MagicMock()
-        client.post.return_value = _ok_template("NEW-TPL-001")
+        # POST for creation, then POST for activation
+        client.post.side_effect = [
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
+            {},  # activation
+        ]
         remapper = IDRemapper()
         remapper.add_terminology_mapping("OLD-TERM", "NEW-TERM")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
             {
-                "template_id": "OLD-TPL-001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "value": "PERSON",
                 "version": 1,
                 "fields": [
@@ -447,25 +448,29 @@ class TestCreateTemplates:
             },
         ]
 
-        _create_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        payload = client.post.call_args[1]["json"]
-        # The field references should have been remapped
-        assert payload[0]["fields"][0]["terminology_ref"] == "NEW-TERM"
+        # First POST is the template creation
+        create_payload = client.post.call_args_list[0][1]["json"]
+        assert create_payload[0]["fields"][0]["terminology_ref"] == "NEW-TERM"
 
     def test_create_templates_first_version_post(self):
         """First version uses POST with status=draft."""
         client = MagicMock()
-        client.post.return_value = _ok_template("NEW-TPL")
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            {},  # activation
+        ]
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
             {"template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": []},
         ]
 
-        _create_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        args, kwargs = client.post.call_args
+        # First POST is template creation
+        args, kwargs = client.post.call_args_list[0]
         assert args == ("template-store", "/templates")
         assert kwargs["json"][0]["status"] == "draft"
         assert kwargs["json"][0]["namespace"] == "ns"
@@ -473,9 +478,12 @@ class TestCreateTemplates:
     def test_create_templates_subsequent_version_put(self):
         """Subsequent versions use PUT with the new template_id."""
         client = MagicMock()
-        # First call: POST v1
-        client.post.return_value = _ok_template("NEW-TPL")
-        # Second call: PUT v2
+        # POST v1, then POST activate
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            {},  # activation
+        ]
+        # PUT v2
         client.put.return_value = {
             "results": [{"index": 0, "status": "created", "id": "NEW-TPL"}],
             "succeeded": 1,
@@ -488,10 +496,10 @@ class TestCreateTemplates:
             {"template_id": "OLD-TPL", "value": "THING", "version": 2, "fields": []},
         ]
 
-        _create_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        # POST for version 1
-        assert client.post.call_count == 1
+        # POST: v1 creation + activation = 2
+        assert client.post.call_count == 2
         # PUT for version 2
         assert client.put.call_count == 1
         put_args, put_kwargs = client.put.call_args
@@ -501,16 +509,19 @@ class TestCreateTemplates:
 
     def test_create_templates_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_template("NEW-TPL-001")
+        client.post.side_effect = [
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
+            {},  # activation
+        ]
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL-001", "value": "THING", "version": 1, "fields": []},
+            {"template_id": "OLD-0190c000-0000-7000-0000-000000000001", "value": "THING", "version": 1, "fields": []},
         ]
 
-        _create_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        assert remapper.template_map["OLD-TPL-001"] == "NEW-TPL-001"
+        assert remapper.template_map["OLD-0190c000-0000-7000-0000-000000000001"] == "NEW-0190c000-0000-7000-0000-000000000001"
 
     def test_create_templates_error_first_version(self):
         """Error on first version is recorded."""
@@ -527,16 +538,19 @@ class TestCreateTemplates:
         ]
 
         with pytest.raises(WIPClientError):
-            _create_templates(client, "ns", templates, remapper, stats, False)
+            _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
         assert stats.failed.templates == 1
 
     def test_create_templates_extends_remapped(self):
-        """extends field is remapped to new parent template_id."""
+        """extends field is remapped to new parent template_id via multi-pass."""
         client = MagicMock()
+        # Pass 1: parent created + activated, Pass 2: child created + activated
         client.post.side_effect = [
             _ok_template("NEW-PARENT"),
             _ok_template("NEW-CHILD"),
+            {},  # activate parent
+            {},  # activate child
         ]
         remapper = IDRemapper()
         stats = ImportStats(mode="fresh", target_namespace="ns")
@@ -545,111 +559,95 @@ class TestCreateTemplates:
             {"template_id": "OLD-CHILD", "value": "CHILD", "version": 1, "extends": "OLD-PARENT", "fields": []},
         ]
 
-        _create_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        # Second POST should have extends remapped
-        second_payload = client.post.call_args_list[1][1]["json"]
-        assert second_payload[0]["extends"] == "NEW-PARENT"
-
-
-# ---------------------------------------------------------------------------
-# _activate_templates
-# ---------------------------------------------------------------------------
-
-class TestActivateTemplates:
-    def test_activate_uses_new_ids(self):
-        """Activation calls use the remapped (new) template_id."""
-        client = MagicMock()
-        client.post.return_value = {}
-        remapper = IDRemapper()
-        remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
-        stats = ImportStats(mode="fresh", target_namespace="ns")
-        templates = [
-            {"template_id": "OLD-TPL", "version": 1},
+        # Find the child creation POST (second template-store /templates POST)
+        create_posts = [
+            c for c in client.post.call_args_list
+            if c[0] == ("template-store", "/templates")
         ]
-
-        _activate_templates(client, "ns", templates, remapper, stats, False)
-
-        client.post.assert_called_once_with(
-            "template-store",
-            "/templates/NEW-TPL/activate",
-            params={"namespace": "ns"},
-        )
+        assert len(create_posts) == 2
+        child_payload = create_posts[1][1]["json"]
+        assert child_payload[0]["extends"] == "NEW-PARENT"
 
     def test_activate_already_active(self):
         """400 'not draft' is counted as already active, not an error."""
         client = MagicMock()
-        client.post.side_effect = WIPClientError(
-            "Template status is 'active', not 'draft'", status_code=400
-        )
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            # activation returns "not draft"
+            WIPClientError("Template status is 'active', not 'draft'", status_code=400),
+        ]
         remapper = IDRemapper()
-        remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL", "version": 1},
+            {"template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": []},
         ]
 
         # Should not raise
-        _activate_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
         # No error recorded in stats.warnings
         assert len(stats.warnings) == 0
 
-    def test_activate_skips_unmapped(self):
-        """Templates with no mapping in remapper are skipped."""
-        client = MagicMock()
-        remapper = IDRemapper()  # No mappings
-        stats = ImportStats(mode="fresh", target_namespace="ns")
-        templates = [
-            {"template_id": "UNMAPPED-TPL", "version": 1},
-        ]
-
-        _activate_templates(client, "ns", templates, remapper, stats, False)
-
-        client.post.assert_not_called()
-
     def test_activate_deduplicates(self):
         """Same template_id (different versions) only activated once."""
         client = MagicMock()
-        client.post.return_value = {}
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            {},  # single activation
+        ]
+        client.put.return_value = {
+            "results": [{"index": 0, "status": "created", "id": "NEW-TPL"}],
+            "succeeded": 1,
+            "failed": 0,
+        }
         remapper = IDRemapper()
-        remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL", "version": 1},
-            {"template_id": "OLD-TPL", "version": 2},
+            {"template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": []},
+            {"template_id": "OLD-TPL", "value": "THING", "version": 2, "fields": []},
         ]
 
-        _activate_templates(client, "ns", templates, remapper, stats, False)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-        assert client.post.call_count == 1
+        # Activation calls: only 1 (deduplicated across versions)
+        activate_calls = [
+            c for c in client.post.call_args_list
+            if "/activate" in str(c)
+        ]
+        assert len(activate_calls) == 1
 
-    def test_activate_other_error_raises(self):
-        """Non-400 errors raise when continue_on_error=False."""
+    def test_activate_error_raises(self):
+        """Non-400 activation errors raise when continue_on_error=False."""
         client = MagicMock()
-        client.post.side_effect = WIPClientError("Server error", status_code=500)
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            WIPClientError("Server error", status_code=500),  # activation fails
+        ]
         remapper = IDRemapper()
-        remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL", "version": 1},
+            {"template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": []},
         ]
 
         with pytest.raises(WIPClientError):
-            _activate_templates(client, "ns", templates, remapper, stats, False)
+            _create_templates_multipass(client, "ns", templates, remapper, stats, False)
 
-    def test_activate_other_error_continue(self):
-        """Non-400 errors recorded in warnings with continue_on_error=True."""
+    def test_activate_error_continue(self):
+        """Non-400 activation errors recorded in warnings with continue_on_error=True."""
         client = MagicMock()
-        client.post.side_effect = WIPClientError("Server error", status_code=500)
+        client.post.side_effect = [
+            _ok_template("NEW-TPL"),
+            WIPClientError("Server error", status_code=500),  # activation fails
+        ]
         remapper = IDRemapper()
-        remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         templates = [
-            {"template_id": "OLD-TPL", "version": 1},
+            {"template_id": "OLD-TPL", "value": "THING", "version": 1, "fields": []},
         ]
 
-        _activate_templates(client, "ns", templates, remapper, stats, True)
+        _create_templates_multipass(client, "ns", templates, remapper, stats, True)
 
         assert len(stats.warnings) == 1
 
@@ -662,14 +660,14 @@ class TestCreateDocuments:
     def test_create_documents_remaps_references(self):
         """Documents have template_id and term references remapped."""
         client = MagicMock()
-        client.post.return_value = _ok_documents([(0, "NEW-DOC-001")])
+        client.post.return_value = _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         remapper.add_term_mapping("OLD-T", "NEW-T")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         documents = [
             {
-                "document_id": "OLD-DOC-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
                 "template_id": "OLD-TPL",
                 "version": 1,
                 "data": {"name": "Test"},
@@ -686,13 +684,13 @@ class TestCreateDocuments:
 
     def test_create_documents_maps_ids(self):
         client = MagicMock()
-        client.post.return_value = _ok_documents([(0, "NEW-DOC-001")])
+        client.post.return_value = _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")])
         remapper = IDRemapper()
         remapper.add_template_mapping("OLD-TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
         documents = [
             {
-                "document_id": "OLD-DOC-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
                 "template_id": "OLD-TPL",
                 "version": 1,
                 "data": {"x": 1},
@@ -701,7 +699,7 @@ class TestCreateDocuments:
 
         _create_documents(client, "ns", documents, remapper, 50, stats, False)
 
-        assert remapper.document_map["OLD-DOC-001"] == "NEW-DOC-001"
+        assert remapper.document_map["OLD-0190d000-0000-7000-0000-000000000001"] == "NEW-0190d000-0000-7000-0000-000000000001"
         assert stats.created.documents == 1
 
     def test_create_documents_batched(self):
@@ -731,14 +729,24 @@ class TestCreateDocuments:
     def test_create_documents_error_recorded(self):
         """Individual document errors in results are recorded."""
         client = MagicMock()
-        client.post.return_value = {
-            "results": [
-                {"index": 0, "status": "created", "document_id": "NEW-1"},
-                {"index": 1, "status": "error", "error": "validation failed"},
-            ],
-            "succeeded": 1,
-            "failed": 1,
-        }
+        # Pass 1: D-1 succeeds, D-2 fails. Pass 2: D-2 fails again (no progress → stop).
+        client.post.side_effect = [
+            {
+                "results": [
+                    {"index": 0, "status": "created", "document_id": "NEW-1"},
+                    {"index": 1, "status": "error", "error": "validation failed"},
+                ],
+                "succeeded": 1,
+                "failed": 1,
+            },
+            {
+                "results": [
+                    {"index": 0, "status": "error", "error": "validation failed"},
+                ],
+                "succeeded": 0,
+                "failed": 1,
+            },
+        ]
         remapper = IDRemapper()
         remapper.add_template_mapping("TPL", "NEW-TPL")
         stats = ImportStats(mode="fresh", target_namespace="ns")
@@ -753,7 +761,7 @@ class TestCreateDocuments:
         assert stats.failed.documents == 1
         assert remapper.document_map["D-1"] == "NEW-1"
         assert "D-2" not in remapper.document_map
-        assert len(stats.errors) == 1
+        assert len(stats.errors) >= 1
 
     def test_create_documents_api_error_continue(self):
         client = MagicMock()
@@ -909,12 +917,12 @@ class TestRegisterSynonyms:
         client = MagicMock()
         client.post.return_value = _ok_synonyms(3)
         remapper = IDRemapper()
-        remapper.add_terminology_mapping("OLD-TERM-1", "NEW-TERM-1")
+        remapper.add_terminology_mapping("OLD-0190a000-0000-7000-0000-000000000001", "NEW-0190a000-0000-7000-0000-000000000001")
 
         # Entity with _registry synonyms
         terminologies = [
             {
-                "terminology_id": "OLD-TERM-1",
+                "terminology_id": "OLD-0190a000-0000-7000-0000-000000000001",
                 "value": "COUNTRY",
                 "_registry": {
                     "synonyms": [
@@ -939,7 +947,7 @@ class TestRegisterSynonyms:
             if item.get("synonym_composite_key", {}).get("external_code") == "ISO-3166"
         ]
         assert len(registry_syns) == 1
-        assert registry_syns[0]["target_id"] == "NEW-TERM-1"
+        assert registry_syns[0]["target_id"] == "NEW-0190a000-0000-7000-0000-000000000001"
         assert registry_syns[0]["synonym_entity_type"] == "terminologies"
 
     def test_register_synonyms_remaps_composite_keys(self):
@@ -947,13 +955,13 @@ class TestRegisterSynonyms:
         client = MagicMock()
         client.post.return_value = _ok_synonyms(3)
         remapper = IDRemapper()
-        remapper.add_document_mapping("OLD-DOC-1", "NEW-DOC-1")
-        remapper.add_template_mapping("OLD-TPL-1", "NEW-TPL-1")
+        remapper.add_document_mapping("OLD-0190d000-0000-7000-0000-000000000001", "NEW-0190d000-0000-7000-0000-000000000001")
+        remapper.add_template_mapping("OLD-0190c000-0000-7000-0000-000000000001", "NEW-0190c000-0000-7000-0000-000000000001")
 
         documents = [
             {
-                "document_id": "OLD-DOC-1",
-                "template_id": "OLD-TPL-1",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "version": 1,
                 "data": {},
                 "_registry": {
@@ -962,7 +970,7 @@ class TestRegisterSynonyms:
                             "namespace": "wip",
                             "entity_type": "documents",
                             "composite_key": {
-                                "template_id": "OLD-TPL-1",
+                                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                                 "identity_hash": "abc123",
                             },
                         },
@@ -983,11 +991,11 @@ class TestRegisterSynonyms:
         ]
         assert len(restored) == 1
         # template_id within the composite key should be remapped
-        assert restored[0]["synonym_composite_key"]["template_id"] == "NEW-TPL-1"
+        assert restored[0]["synonym_composite_key"]["template_id"] == "NEW-0190c000-0000-7000-0000-000000000001"
         # identity_hash is a string but not in any map, so stays the same
         assert restored[0]["synonym_composite_key"]["identity_hash"] == "abc123"
         # target_id should be the new document ID
-        assert restored[0]["target_id"] == "NEW-DOC-1"
+        assert restored[0]["target_id"] == "NEW-0190d000-0000-7000-0000-000000000001"
 
     def test_register_synonyms_no_items(self):
         """No synonyms to register prints message and returns."""
@@ -1033,44 +1041,43 @@ class TestFreshImportFullFlow:
         client.get.return_value = {"prefix": "target-ns"}
         # _create_terminologies: 1 terminology
         # _create_terms: 1 term
-        # _create_templates: 1 template (POST)
-        # _activate_templates: 1 activation
+        # _create_templates_multipass: 1 template (POST) + 1 activation
         # _create_documents: 1 document
         # _upload_files: 1 file
         client.post.side_effect = [
             # terminology creation
-            _ok_terminology("NEW-TERM-001"),
+            _ok_terminology("NEW-0190a000-0000-7000-0000-000000000001"),
             # term creation
-            _ok_terms([(0, "NEW-T-001")]),
+            _ok_terms([(0, "NEW-0190b000-0000-7000-0000-000000000001")]),
             # template creation (POST)
-            _ok_template("NEW-TPL-001"),
+            _ok_template("NEW-0190c000-0000-7000-0000-000000000001"),
             # template activation
             {},
             # document creation
-            _ok_documents([(0, "NEW-DOC-001")]),
+            _ok_documents([(0, "NEW-0190d000-0000-7000-0000-000000000001")]),
         ]
         client.post_form.return_value = _ok_file("NEW-FILE-001")
 
         terminologies = [
-            {"terminology_id": "OLD-TERM-001", "value": "COUNTRY"},
+            {"terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"},
         ]
         terms = [
-            {"term_id": "OLD-T-001", "terminology_id": "OLD-TERM-001", "value": "UK"},
+            {"term_id": "OLD-0190b000-0000-7000-0000-000000000001", "terminology_id": "OLD-0190a000-0000-7000-0000-000000000001", "value": "UK"},
         ]
         templates = [
             {
-                "template_id": "OLD-TPL-001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "value": "PERSON",
                 "version": 1,
                 "fields": [
-                    {"name": "country", "type": "term", "terminology_ref": "OLD-TERM-001"},
+                    {"name": "country", "type": "term", "terminology_ref": "OLD-0190a000-0000-7000-0000-000000000001"},
                 ],
             },
         ]
         documents = [
             {
-                "document_id": "OLD-DOC-001",
-                "template_id": "OLD-TPL-001",
+                "document_id": "OLD-0190d000-0000-7000-0000-000000000001",
+                "template_id": "OLD-0190c000-0000-7000-0000-000000000001",
                 "version": 1,
                 "data": {"name": "Alice"},
             },
@@ -1131,7 +1138,7 @@ class TestFreshImportFullFlow:
 
 class TestSkipFlags:
     def test_skip_documents(self):
-        """With skip_documents=True, no document creation occurs."""
+        """With skip_documents=True, no document creation occurs. Files still uploaded."""
         client = MagicMock()
         client.get.return_value = {"prefix": "ns"}
         # terminology + term + template POST + activate
@@ -1141,23 +1148,23 @@ class TestSkipFlags:
             _ok_template("NEW-TPL"),
             {},  # activate
         ]
+        client.post_form.return_value = _ok_file("NEW-FILE")
 
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
-            terms=[{"term_id": "T-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
-            files=[{"file_id": "F-1", "filename": "f.txt", "metadata": {}}],
+            terms=[{"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
+            files=[{"file_id": "F-1", "filename": "f.txt", "content_type": "text/plain", "metadata": {}}],
             blobs=["F-1"],
         )
 
         stats = fresh_import(client, reader, "ns", skip_documents=True)
 
         assert stats.created.documents == 0
-        assert stats.created.files == 0  # files also skipped when skip_documents
+        assert stats.created.files == 1  # files uploaded independently of documents
         # 4 posts total: terminology, terms, template, activate
         assert client.post.call_count == 4
-        client.post_form.assert_not_called()
 
     def test_skip_files(self):
         """With skip_files=True, no file upload occurs but documents still created."""
@@ -1174,9 +1181,9 @@ class TestSkipFlags:
 
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
-            terms=[{"term_id": "T-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            terms=[{"term_id": "0190b000-0000-7000-0000-000000000001", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
             files=[{"file_id": "F-1", "filename": "f.txt", "metadata": {}}],
             blobs=["F-1"],
         )
@@ -1219,8 +1226,8 @@ class TestContinueOnError:
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
             terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
         )
 
         stats = fresh_import(
@@ -1251,8 +1258,8 @@ class TestContinueOnError:
         reader = _make_reader(
             terminologies=[{"terminology_id": "T1", "value": "V"}],
             terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
-            templates=[{"template_id": "TPL-1", "value": "X", "version": 1, "fields": []}],
-            documents=[{"document_id": "D-1", "template_id": "TPL-1", "version": 1, "data": {}}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
         )
 
         stats = fresh_import(
@@ -1261,3 +1268,113 @@ class TestContinueOnError:
         )
 
         assert stats.synonyms_registered == 4
+
+
+# ---------------------------------------------------------------------------
+# progress_callback (CASE-23 backup/restore prep)
+# ---------------------------------------------------------------------------
+
+class TestFreshImportProgressCallback:
+    """Verify fresh_import emits expected phase events."""
+
+    def test_phase_events_emitted_for_full_flow(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "target-ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_terms([(0, "NEW-T")]),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+            _ok_documents([(0, "NEW-DOC")]),
+        ]
+        client.post_form.return_value = _ok_file("NEW-FILE")
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
+            files=[{"file_id": "F-1", "filename": "f.txt", "content_type": "text/plain", "metadata": {}}],
+            blobs=["F-1"],
+        )
+
+        events = []
+        fresh_import(
+            client, reader, "target-ns",
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_namespace" in phases
+        assert "phase_terminologies" in phases
+        assert "phase_terms" in phases
+        assert "phase_templates" in phases
+        assert "phase_files" in phases
+        assert "phase_documents" in phases
+
+    def test_phase_synonyms_emitted_when_register_synonyms(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_terms([(0, "NEW-T")]),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+            _ok_documents([(0, "NEW-DOC")]),
+            _ok_synonyms(1),
+        ]
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            terms=[{"term_id": "TM-1", "terminology_id": "T1", "value": "v"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+            documents=[{"document_id": "D-1", "template_id": "0190c000-0000-7000-0000-000000000001", "version": 1, "data": {}}],
+        )
+
+        events = []
+        fresh_import(
+            client, reader, "ns",
+            register_synonyms=True,
+            progress_callback=events.append,
+        )
+
+        phases = {e.phase for e in events}
+        assert "phase_synonyms" in phases
+
+    def test_dry_run_does_not_emit_phase_events(self):
+        client = MagicMock()
+        reader = _make_reader()
+
+        events = []
+        fresh_import(
+            client, reader, "target-ns",
+            dry_run=True,
+            progress_callback=events.append,
+        )
+
+        # Dry run short-circuits before any phase emission
+        assert events == []
+
+    def test_callback_exception_swallowed(self):
+        client = MagicMock()
+        client.get.return_value = {"prefix": "ns"}
+        client.post.side_effect = [
+            _ok_terminology("NEW-TERM"),
+            _ok_template("NEW-TPL"),
+            {},  # activate
+        ]
+
+        reader = _make_reader(
+            terminologies=[{"terminology_id": "T1", "value": "V"}],
+            templates=[{"template_id": "0190c000-0000-7000-0000-000000000001", "value": "X", "version": 1, "fields": []}],
+        )
+
+        def explosive(_event):
+            raise RuntimeError("observer broken")
+
+        # Must not raise — callback exceptions are swallowed
+        stats = fresh_import(
+            client, reader, "ns",
+            progress_callback=explosive,
+        )
+        assert stats.mode == "fresh"

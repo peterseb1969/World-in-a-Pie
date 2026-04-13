@@ -141,8 +141,7 @@ const router = createRouter({
     {
       path: '/namespaces',
       name: 'namespaces',
-      component: () => import('@/views/NamespacesView.vue'),
-      meta: { requiresAdmin: true }
+      component: () => import('@/views/NamespacesView.vue')
     },
     {
       path: '/registry',

@@ -52,5 +52,6 @@ export const wipKeys = {
     integrity: (params?: object) => ['wip', 'reporting', 'integrity', params] as const,
     activity: (params?: object) => ['wip', 'reporting', 'activity', params] as const,
     search: (params?: object) => ['wip', 'reporting', 'search', params] as const,
+    query: (sql: string, params?: unknown[]) => ['wip', 'reporting', 'query', sql, params] as const,
   },
 } as const

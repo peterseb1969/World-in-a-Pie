@@ -74,7 +74,7 @@ class TestWIPClientPost:
 
     def test_post_with_json_body(self, config, mock_httpx_client):
         payload = {"value": "COUNTRY", "namespace": "wip"}
-        expected = {"results": [{"status": "created", "id": "TERM-001"}]}
+        expected = {"results": [{"status": "created", "id": "0190a000-0000-7000-0000-000000000001"}]}
         mock_httpx_client.post.return_value = _make_response(json_data=expected)
 
         client = WIPClient(config)
@@ -165,7 +165,7 @@ class TestFetchAllPaginated:
 
     def test_single_page(self, config, mock_httpx_client):
         """When results fit in one page, only one request is made."""
-        page_data = {"items": [{"id": f"T-{i}"} for i in range(5)]}
+        page_data = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(5)]}
         mock_httpx_client.get.return_value = _make_response(json_data=page_data)
 
         client = WIPClient(config)
@@ -177,8 +177,8 @@ class TestFetchAllPaginated:
 
     def test_multiple_pages(self, config, mock_httpx_client):
         """When results span multiple pages, all pages are fetched."""
-        page1 = {"items": [{"id": f"T-{i}"} for i in range(3)]}
-        page2 = {"items": [{"id": f"T-{i}"} for i in range(3, 5)]}
+        page1 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(3)]}
+        page2 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(3, 5)]}
 
         mock_httpx_client.get.side_effect = [
             _make_response(json_data=page1),
@@ -244,9 +244,9 @@ class TestFetchAllPaginated:
 
     def test_three_pages_with_exact_boundary(self, config, mock_httpx_client):
         """Full pages followed by a partial page signals end of pagination."""
-        page1 = {"items": [{"id": f"T-{i}"} for i in range(2)]}
-        page2 = {"items": [{"id": f"T-{i}"} for i in range(2, 4)]}
-        page3 = {"items": [{"id": "T-4"}]}
+        page1 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(2)]}
+        page2 = {"items": [{"id": f"0190b000-0000-7000-0000-{i:012d}"} for i in range(2, 4)]}
+        page3 = {"items": [{"id": "0190b000-0000-7000-0000-000000000004"}]}
 
         mock_httpx_client.get.side_effect = [
             _make_response(json_data=page1),
@@ -356,6 +356,61 @@ class TestCheckAllServices:
         unhealthy_count = sum(1 for _, (h, _) in results.items() if not h)
         assert healthy_count == 2
         assert unhealthy_count == 2
+
+
+class TestStreamToFile:
+    """Test stream_to_file (CASE-28 streaming download)."""
+
+    def test_streams_chunks_into_dest(self, config, mock_httpx_client):
+        """stream_to_file writes httpx iter_bytes() chunks into the dest handle."""
+        from io import BytesIO
+
+        chunks = [b"AAA", b"BBB", b"CCC"]
+
+        # Build a fake streamed response: a context manager whose __enter__
+        # returns an object with is_success + iter_bytes.
+        resp = MagicMock()
+        resp.is_success = True
+        resp.iter_bytes.return_value = iter(chunks)
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        cm.__exit__.return_value = False
+        mock_httpx_client.stream.return_value = cm
+
+        sink = BytesIO()
+        client = WIPClient(config)
+        client.stream_to_file("document-store", "/files/FILE-1/content", sink)
+
+        assert sink.getvalue() == b"AAABBBCCC"
+        mock_httpx_client.stream.assert_called_once()
+        call = mock_httpx_client.stream.call_args
+        assert call.args[0] == "GET"
+        assert "/api/document-store/files/FILE-1/content" in call.args[1]
+
+    def test_raises_on_error_response(self, config, mock_httpx_client):
+        """A non-2xx streamed response is read and raised as WIPClientError."""
+        from io import BytesIO
+
+        resp = MagicMock()
+        resp.is_success = False
+        resp.status_code = 404
+        resp.url = "http://localhost:8004/api/document-store/files/missing/content"
+        resp.json.return_value = {"detail": "file not found"}
+        resp.text = '{"detail": "file not found"}'
+        cm = MagicMock()
+        cm.__enter__.return_value = resp
+        cm.__exit__.return_value = False
+        mock_httpx_client.stream.return_value = cm
+
+        client = WIPClient(config)
+        with pytest.raises(WIPClientError) as excinfo:
+            client.stream_to_file("document-store", "/files/missing/content", BytesIO())
+
+        assert excinfo.value.status_code == 404
+        # iter_bytes must NOT be called when the status is non-success.
+        resp.iter_bytes.assert_not_called()
+        # The body should have been pre-read so _check_response can use it.
+        resp.read.assert_called_once()
 
 
 class TestWIPClientContextManager:

@@ -6,6 +6,9 @@ The actual sync work is done by the worker module.
 """
 
 import asyncio
+import contextlib
+import csv
+import io
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -16,8 +19,12 @@ import asyncpg
 import httpx
 import nats
 from fastapi import APIRouter, FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from nats.js import JetStreamContext
 from pydantic import BaseModel, Field
+
+from wip_auth.ratelimit import setup_rate_limiting
+from wip_auth.security import check_production_security
 
 from . import __version__
 from .batch_sync import BatchSyncService
@@ -43,8 +50,6 @@ from .search_service import (
     TermDocumentsResponse,
 )
 from .worker import run_sync_worker
-from wip_auth.ratelimit import setup_rate_limiting
-from wip_auth.security import check_production_security
 
 # Configure logging
 logging.basicConfig(
@@ -238,11 +243,12 @@ async def lifespan(app: FastAPI):
         # Initialize schema
         await init_postgres_schema(state.postgres_pool)
 
-        # Ensure def-store tables exist
+        # Ensure metadata tables exist
         from .schema_manager import SchemaManager
         sm = SchemaManager(state.postgres_pool)
         await sm.ensure_terminologies_table()
         await sm.ensure_terms_table()
+        await sm.ensure_templates_table()
         await sm.ensure_term_relationships_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
@@ -296,18 +302,14 @@ async def lifespan(app: FastAPI):
     # Cancel alert check task
     if state.alert_check_task:
         state.alert_check_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await state.alert_check_task
-        except asyncio.CancelledError:
-            pass
 
     # Cancel sync task
     if state.sync_task:
         state.sync_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await state.sync_task
-        except asyncio.CancelledError:
-            pass
 
     # Close connections
     if state.postgres_pool:
@@ -550,7 +552,7 @@ async def get_schema(template_value: str) -> dict[str, Any]:
 
 @router.post("/sync/batch/terminologies")
 async def trigger_terminology_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
@@ -577,7 +579,7 @@ async def trigger_terminology_sync(
 
 @router.post("/sync/batch/terms")
 async def trigger_term_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
@@ -606,7 +608,7 @@ async def trigger_term_sync(
 
 @router.post("/sync/batch/relationships")
 async def trigger_relationship_sync(
-    namespace: str = "wip",
+    namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
@@ -796,8 +798,8 @@ class AggregatedIntegrityResult(BaseModel):
 
 @router.get("/health/integrity", response_model=AggregatedIntegrityResult)
 async def aggregated_integrity_check(
-    template_status: str = None,
-    document_status: str = None,
+    template_status: str | None = None,
+    document_status: str | None = None,
     template_limit: int = 0,
     document_limit: int = 0,
     check_term_refs: bool = True,
@@ -927,12 +929,7 @@ async def aggregated_integrity_check(
     has_warnings = any(i.severity == "warning" for i in all_issues)
 
     if services_unavailable:
-        if services_checked:
-            # Partial check
-            status = "partial"
-        else:
-            # No services reachable
-            status = "error"
+        status = "partial" if services_checked else "error"
     elif has_errors:
         status = "error"
     elif has_warnings:
@@ -1019,7 +1016,7 @@ async def get_term_documents(
     term_references containing the given term_id.
 
     Args:
-        term_id: Term ID to search for (e.g., T-000001)
+        term_id: Term ID to search for (UUID or value code, e.g., 019abc42-...)
         limit: Maximum number of documents to return (1-1000, default 100)
 
     Returns:
@@ -1257,15 +1254,188 @@ async def execute_query(body: ReportQuery):
                 "truncated": truncated,
             }
 
-    except asyncpg.QueryCanceledError:
+    except asyncpg.QueryCanceledError as e:
         raise HTTPException(
             status_code=408,
             detail=f"Query timed out after {body.timeout_seconds} seconds",
-        )
+        ) from e
     except asyncpg.PostgresSyntaxError as e:
-        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}")
+        raise HTTPException(status_code=400, detail=f"SQL syntax error: {e}") from e
     except asyncpg.PostgresError as e:
-        raise HTTPException(status_code=400, detail=f"Query error: {e}")
+        raise HTTPException(status_code=400, detail=f"Query error: {e}") from e
+
+
+# =============================================================================
+# CSV EXPORT
+# =============================================================================
+
+# Allowed tables for CSV export (same whitelist as /tables)
+_EXPORT_ALLOWED_PREFIXES = ("doc_",)
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relationships"}
+
+
+def _is_allowed_table(name: str) -> bool:
+    return name.startswith(_EXPORT_ALLOWED_PREFIXES) or name in _EXPORT_ALLOWED_EXACT
+
+
+class CsvExportQuery(BaseModel):
+    """Request model for query-based CSV export."""
+
+    sql: str
+    params: list[Any] = []
+    timeout_seconds: int = Field(default=120, ge=1, le=600)
+    filename: str = Field(default="export.csv", pattern=r"^[\w\-. ]+\.csv$")
+
+
+async def _stream_csv(conn: asyncpg.Connection, sql: str, params: list[Any]):
+    """Yield CSV rows from a PostgreSQL query using a cursor."""
+    stmt = await conn.prepare(sql)
+    columns = [attr.name for attr in stmt.get_attributes()]
+
+    # Header row
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(columns)
+    yield buf.getvalue()
+
+    # Data rows — fetch in batches to limit memory
+    async with conn.transaction():
+        async for record in stmt.cursor(*params):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow([record[col] for col in columns])
+            yield buf.getvalue()
+
+
+@router.get("/export/csv")
+async def export_table_csv(
+    table: str = Query(description="Table name to export (e.g. doc_patient)"),
+    timeout_seconds: int = Query(default=120, ge=1, le=600),
+    filename: str | None = Query(default=None, description="Download filename"),
+):
+    """Export a full reporting table as streaming CSV."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if not _is_allowed_table(table):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Table '{table}' is not available for export. "
+            "Only doc_* tables and metadata tables (terminologies, terms, term_relationships) are allowed.",
+        )
+
+    download_name = filename or f"{table}.csv"
+
+    async def generate():
+        async with state.postgres_pool.acquire() as conn:
+            await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
+            await conn.execute("SET default_transaction_read_only = on")
+            async for chunk in _stream_csv(conn, f'SELECT * FROM "{table}"', []):
+                yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
+
+
+@router.post("/export/csv")
+async def export_query_csv(body: CsvExportQuery):
+    """Export a SQL query result as streaming CSV."""
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if _DANGEROUS_SQL_RE.search(body.sql):
+        raise HTTPException(
+            status_code=400,
+            detail="Only read-only queries are allowed. "
+            "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
+        )
+
+    async def generate():
+        async with state.postgres_pool.acquire() as conn:
+            await conn.execute(
+                f"SET statement_timeout = {body.timeout_seconds * 1000}"
+            )
+            await conn.execute("SET default_transaction_read_only = on")
+            async for chunk in _stream_csv(conn, body.sql, body.params):
+                yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{body.filename}"'},
+    )
+
+
+# =============================================================================
+# NAMESPACE DELETION
+# =============================================================================
+
+
+@router.delete("/namespace/{prefix}")
+async def delete_namespace(prefix: str):
+    """Delete all reporting data for a namespace.
+
+    Removes rows from all doc_* tables, metadata tables (terminologies, terms,
+    term_relationships, templates), and sync status where namespace matches.
+
+    Called by Registry during namespace deletion.
+    """
+    if not state.postgres_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+
+    if not prefix or not prefix.strip():
+        raise HTTPException(status_code=400, detail="Namespace prefix is required")
+
+    total_deleted = 0
+
+    async with state.postgres_pool.acquire() as conn:
+        # Find all doc_* tables
+        doc_tables = await conn.fetch(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+              AND table_name LIKE 'doc_%'
+            ORDER BY table_name
+            """
+        )
+
+        # Delete from each doc_* table
+        for row in doc_tables:
+            table_name = row["table_name"]
+            result = await conn.execute(
+                f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
+            )
+            count = int(result.split()[-1])  # "DELETE N"
+            if count > 0:
+                logger.info(
+                    f"Deleted {count} rows from {table_name} for namespace {prefix}"
+                )
+            total_deleted += count
+
+        # Delete from metadata tables
+        for table_name in ("terminologies", "templates", "terms", "term_relationships"):
+            try:
+                result = await conn.execute(
+                    f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix
+                )
+                count = int(result.split()[-1])
+                if count > 0:
+                    logger.info(
+                        f"Deleted {count} rows from {table_name} for namespace {prefix}"
+                    )
+                total_deleted += count
+            except asyncpg.UndefinedTableError:
+                pass  # Table doesn't exist yet — nothing to clean
+
+    logger.info(
+        f"Namespace {prefix} cleanup complete: {total_deleted} total rows deleted"
+    )
+    return {"total_deleted": total_deleted}
 
 
 @router.get("/")

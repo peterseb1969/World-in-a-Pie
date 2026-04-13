@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: template-store
-          image: wip/template-store:latest
+          image: localhost:32000/wip-template-store:latest
           ports:
             - containerPort: 8003
           command: ["uvicorn", "template_store.main:app", "--host", "0.0.0.0", "--port", "8003"]

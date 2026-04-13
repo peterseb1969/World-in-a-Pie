@@ -25,7 +25,7 @@ class ValidationResult:
         self.identity_fields: list[str] = []
         self.template_version: int | None = None
         self.template_value: str | None = None
-        # Array format for indexing: [{"field_path": "gender", "term_id": "T-001"}, ...]
+        # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
         self.references: list[dict[str, Any]] = []
@@ -163,8 +163,8 @@ class ValidationService:
         self,
         template_id: str,
         data: dict[str, Any],
+        namespace: str,
         template_version: int | None = None,
-        namespace: str = "wip",
         doc_ref_cache: dict | None = None
     ) -> ValidationResult:
         """
@@ -344,11 +344,13 @@ class ValidationService:
                 value, field, full_path, template, result
             )
 
-        # Check for unknown fields
+        # Reject unknown fields — if it's not in the template, it doesn't belong
         for field_name in data:
             if field_name not in field_map:
-                result.add_warning(
-                    f"Unknown field '{prefix}{field_name}' will be stored but not validated"
+                result.add_error(
+                    code="unknown_field",
+                    message=f"Unknown field '{prefix}{field_name}' is not declared in the template",
+                    field=f"{prefix}{field_name}"
                 )
 
     async def _validate_field_value(
@@ -1195,7 +1197,7 @@ class ValidationService:
         data: dict[str, Any],
         template: dict[str, Any],
         result: ValidationResult,
-        namespace: str = "wip",
+        namespace: str,
         doc_ref_cache: dict | None = None
     ):
         """
@@ -1476,8 +1478,8 @@ class ValidationService:
         target_templates: list[str],
         result: ValidationResult,
         field_path: str,
+        namespace: str,
         version_strategy: str = "latest",
-        namespace: str = "wip",
         doc_ref_cache: dict | None = None
     ) -> dict[str, Any] | None:
         """Resolve a document reference by ID, hash, or business key.
@@ -1520,12 +1522,9 @@ class ValidationService:
                     # Try inactive too for pinned references
                     doc = await Document.find_one({"document_id": value})
             elif value.startswith("hash:"):
-                # Identity hash lookup
-                identity_hash = value[5:]  # Remove "hash:" prefix
-                doc = await Document.find_one({
-                    "identity_hash": identity_hash,
-                    "status": DocumentStatus.ACTIVE
-                })
+                # Identity hash lookup — route through Registry to avoid
+                # cross-template ambiguity (CASE-36).
+                doc = await self._resolve_via_registry(value, namespace, "documents")
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
                 doc = await self._resolve_via_registry(value, namespace, "documents")
@@ -1690,11 +1689,13 @@ class ValidationService:
             if doc:
                 return doc
 
-            # If inactive, follow identity_hash chain to latest active version
+            # If inactive, follow document_id chain to latest active version.
+            # Uses document_id (stable across versions), NOT identity_hash
+            # which can match across templates (CASE-36).
             inactive_doc = await Document.find_one({"document_id": resolved_id})
             if inactive_doc:
                 active_doc = await Document.find_one({
-                    "identity_hash": inactive_doc.identity_hash,
+                    "document_id": inactive_doc.document_id,
                     "status": DocumentStatus.ACTIVE
                 })
                 if active_doc:

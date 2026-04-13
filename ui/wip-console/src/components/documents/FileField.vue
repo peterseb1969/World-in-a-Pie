@@ -11,7 +11,7 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Select from 'primevue/select'
 import { fileStoreClient } from '@/api/client'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import type { FileEntity, FieldDefinition, FileFieldConfig } from '@/types'
 
 const props = defineProps<{
@@ -26,6 +26,7 @@ const emit = defineEmits<{
 }>()
 
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // Track uploaded files
 const uploadedFiles = ref<FileEntity[]>([])
@@ -180,7 +181,8 @@ async function browseFiles() {
   fileBrowseLoading.value = true
   try {
     const params: Record<string, unknown> = {
-      page_size: 50
+      page_size: 50,
+      namespace: namespaceStore.currentNamespaceParam ?? 'wip'
     }
     if (fileBrowseType.value) {
       params.content_type = fileBrowseType.value

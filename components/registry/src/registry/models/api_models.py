@@ -120,8 +120,8 @@ class BrowseEntriesResponse(BaseModel):
 class RegisterKeyItem(StrictModel):
     """Request model for registering a composite key (reserve + activate in one step)."""
 
-    namespace: str = Field(default="wip", description="Namespace")
-    entity_type: str = Field(default="terms", description="Entity type")
+    namespace: str = Field(..., description="Namespace")
+    entity_type: str = Field(..., description="Entity type")
     entry_id: str | None = Field(None, description="Client-provided ID (if not provided, registry generates one)")
     composite_key: dict[str, Any] = Field(default_factory=dict, description="Composite key values (empty = no dedup, always generates new ID)")
     identity_values: dict[str, Any] | None = Field(
@@ -330,8 +330,8 @@ class LookupByIdItem(StrictModel):
 class LookupByKeyItem(StrictModel):
     """Request model for looking up by composite key."""
 
-    namespace: str = Field(default="wip", description="Namespace to search in")
-    entity_type: str = Field(default="terms", description="Entity type to search in")
+    namespace: str = Field(..., description="Namespace to search in")
+    entity_type: str = Field(..., description="Entity type to search in")
     composite_key: dict[str, Any] = Field(..., description="Composite key to look up")
     search_synonyms: bool = Field(default=True, description="Also search in synonyms")
     fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
@@ -379,9 +379,17 @@ class LookupBulkResponse(BaseModel):
 # =============================================================================
 
 class ResolveItem(StrictModel):
-    """Request model for resolving a synonym composite key to an entry ID."""
+    """Request model for resolving a synonym or canonical ID to an entry ID.
 
-    composite_key: dict[str, Any] = Field(..., description="Synonym composite key to resolve")
+    Provide either ``composite_key`` (synonym resolution) or ``entry_id``
+    (canonical ID verification). If both are given, ``entry_id`` is tried first.
+    """
+
+    composite_key: dict[str, Any] | None = Field(None, description="Synonym composite key to resolve")
+    entry_id: str | None = Field(None, description="Canonical entry ID to verify")
+    namespace: str | None = Field(None, description="Namespace filter for composite key resolution")
+    entity_type: str | None = Field(None, description="Entity type filter for composite key resolution")
+    include_statuses: list[str] | None = Field(None, description="Status filter. Default: active only.")
 
 
 class ResolveResponse(BaseModel):
@@ -495,9 +503,10 @@ class UpdateEntryResponse(BaseModel):
 # =============================================================================
 
 class DeleteItem(StrictModel):
-    """Request model for deleting (deactivating) an entry."""
+    """Request model for deleting (deactivating) or hard-deleting an entry."""
 
     entry_id: str
+    hard_delete: bool = Field(default=False, description="Permanently remove entry (requires namespace deletion_mode='full')")
     updated_by: str | None = None
 
 
@@ -505,7 +514,7 @@ class DeleteResponse(BaseModel):
     """Response model for a delete operation."""
 
     input_index: int
-    status: str  # deactivated, not_found, error
+    status: str  # deactivated, deleted, not_found, error
     registry_id: str | None = None
     error: str | None = None
 
@@ -588,7 +597,7 @@ class UnifiedSearchResultItem(BaseModel):
     )
     resolution_path: str = Field(
         ...,
-        description="Human-readable resolution path (e.g., 'V1-001 → synonym → T-000042 (wip-terms)')"
+        description="Human-readable resolution path (e.g., 'V1-001 → synonym → 019abc42-... (wip-terms)')"
     )
 
 

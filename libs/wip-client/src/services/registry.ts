@@ -3,7 +3,7 @@ import type {
   Namespace,
   NamespaceStats,
   CreateNamespaceRequest,
-  IdAlgorithmConfig,
+  UpdateNamespaceRequest,
   RegistryEntryListResponse,
   RegistryLookupResponse,
   RegistryEntryFull,
@@ -13,6 +13,17 @@ import type {
   AddSynonymRequest,
   RemoveSynonymRequest,
   MergeRequest,
+  ExportResponse,
+  ImportResponse,
+  Grant,
+  CreateGrantRequest,
+  RevokeGrantRequest,
+  GrantBulkResponse,
+  GrantRevokeBulkResponse,
+  APIKeyInfo,
+  CreateAPIKeyRequest,
+  CreateAPIKeyResponse,
+  UpdateAPIKeyRequest,
 } from '../types/registry.js'
 
 export class RegistryService extends BaseService {
@@ -40,12 +51,23 @@ export class RegistryService extends BaseService {
 
   async updateNamespace(
     prefix: string,
-    data: {
-      description?: string
-      isolation_mode?: 'open' | 'strict'
-      id_config?: Record<string, IdAlgorithmConfig>
-      updated_by?: string
-    },
+    data: UpdateNamespaceRequest,
+  ): Promise<Namespace> {
+    return this.put(`/namespaces/${prefix}`, data)
+  }
+
+  /**
+   * Upsert a namespace — create if missing, update if existing.
+   *
+   * Equivalent to `updateNamespace` but communicates intent: callers
+   * (typically app bootstrap scripts) want a single self-healing call
+   * that succeeds whether the namespace already exists or not. On
+   * create, any field not supplied uses the platform default
+   * (isolation_mode='open', deletion_mode='retain', etc).
+   */
+  async upsertNamespace(
+    prefix: string,
+    data: UpdateNamespaceRequest,
   ): Promise<Namespace> {
     return this.put(`/namespaces/${prefix}`, data)
   }
@@ -137,5 +159,63 @@ export class RegistryService extends BaseService {
       [{ entry_id: entryId, updated_by: updatedBy }],
     )
     return resp.results[0]
+  }
+
+  // ---- Namespace Export/Import ----
+
+  async exportNamespace(prefix: string, options?: {
+    include_files?: boolean
+  }): Promise<ExportResponse> {
+    return this.post(`/namespaces/${prefix}/export`, null, options)
+  }
+
+  async downloadExport(exportId: string): Promise<Blob> {
+    return this.getBlob(`/namespaces/exports/${exportId}`)
+  }
+
+  async importNamespace(file: Blob, options?: {
+    target_prefix?: string
+    mode?: 'create' | 'merge' | 'replace'
+    imported_by?: string
+  }): Promise<ImportResponse> {
+    const form = new FormData()
+    form.append('file', file)
+    return this.postFormData('/namespaces/import', form, options)
+  }
+
+  // ---- Grants ----
+
+  async listGrants(prefix: string): Promise<Grant[]> {
+    return this.get(`/namespaces/${prefix}/grants`)
+  }
+
+  async createGrants(prefix: string, grants: CreateGrantRequest[]): Promise<GrantBulkResponse> {
+    return this.post(`/namespaces/${prefix}/grants`, grants)
+  }
+
+  async revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse> {
+    return this.del(`/namespaces/${prefix}/grants`, grants)
+  }
+
+  // ---- API Keys ----
+
+  async listAPIKeys(): Promise<APIKeyInfo[]> {
+    return this.get('/api-keys')
+  }
+
+  async createAPIKey(request: CreateAPIKeyRequest): Promise<CreateAPIKeyResponse> {
+    return this.post('/api-keys', request)
+  }
+
+  async getAPIKey(name: string): Promise<APIKeyInfo> {
+    return this.get(`/api-keys/${name}`)
+  }
+
+  async updateAPIKey(name: string, request: UpdateAPIKeyRequest): Promise<APIKeyInfo> {
+    return this.patch(`/api-keys/${name}`, request)
+  }
+
+  async revokeAPIKey(name: string): Promise<{ status: string; name: string }> {
+    return this.del(`/api-keys/${name}`)
   }
 }

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json as _json
 import sys
+from importlib.metadata import version
 
 import click
 from rich.console import Console
@@ -14,27 +16,41 @@ from .client import WIPClient
 from .config import WIPConfig
 from .export.exporter import run_export
 from .import_.importer import run_import
+from .seed import run_seed
+from .status import StatusThresholds, collect_status
 
 console = Console(stderr=True)
 
 
+def _get_version() -> str:
+    try:
+        return version("wip-toolkit")
+    except Exception:
+        return "unknown"
+
+
 @click.group()
+@click.version_option(_get_version(), prog_name="wip-toolkit")
 @click.option("--host", default="localhost", help="WIP host (default: localhost)")
-@click.option("--proxy", is_flag=True, help="Route through Caddy (https://HOST:8443)")
+@click.option("--proxy", is_flag=True, help="Route through Caddy/Ingress reverse proxy")
+@click.option("--port", default=None, type=int, help="Proxy port (default: 8443 for Caddy, 443 for K8s Ingress)")
 @click.option("--api-key", default="", help="API key (default: from .env or dev key)")
 @click.option("--no-verify-ssl", is_flag=True, help="Disable SSL verification")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 @click.pass_context
-def main(ctx: click.Context, host: str, proxy: bool, api_key: str, no_verify_ssl: bool, verbose: bool) -> None:
+def main(ctx: click.Context, host: str, proxy: bool, port: int | None, api_key: str, no_verify_ssl: bool, verbose: bool) -> None:
     """WIP Toolkit — Backup, migration, and data management for World In a Pie."""
     ctx.ensure_object(dict)
-    ctx.obj["config"] = WIPConfig(
+    config_kwargs: dict = dict(
         host=host,
         proxy=proxy,
         api_key=api_key,
         verify_ssl=not no_verify_ssl,
         verbose=verbose,
     )
+    if port is not None:
+        config_kwargs["proxy_port"] = port
+    ctx.obj["config"] = WIPConfig(**config_kwargs)
 
 
 @main.command()
@@ -326,6 +342,203 @@ def backfill_synonyms_cmd(
             console.print(f"  {entity_type}: {added} new, {existing} existing, {failed} failed")
 
         console.print(f"\n  Total: {total_added} new synonyms registered, {total_existing} already existed")
+
+
+@main.command(name="update-document")
+@click.argument("document_id")
+@click.option("--patch", "patch_json", required=True,
+              help="JSON Merge Patch (RFC 7396) to apply to the document's `data`. "
+                   "Use '-' to read JSON from stdin.")
+@click.option("--if-match", type=int, default=None,
+              help="Optimistic concurrency: only apply if current version matches.")
+@click.pass_context
+def update_document_cmd(
+    ctx: click.Context,
+    document_id: str,
+    patch_json: str,
+    if_match: int | None,
+) -> None:
+    """Apply an RFC 7396 JSON Merge Patch to a document.
+
+    DOCUMENT_ID is the canonical document_id (e.g., 'DOC-xxx') or a registered
+    synonym. The patch is applied to the document's `data` field:
+
+      - Objects are deep-merged
+      - Arrays are REPLACED entirely
+      - `null` deletes the corresponding key
+
+    Identity fields cannot be changed via PATCH (use create-document with new
+    identity values instead). Archived or soft-deleted documents are rejected.
+
+    Examples:
+
+      wip-toolkit update-document DOC-123 --patch '{"score": 92}'
+
+      wip-toolkit update-document DOC-123 --patch '{"middle_name": null}'
+
+      cat patch.json | wip-toolkit update-document DOC-123 --patch -
+    """
+    if patch_json == "-":
+        patch_json = sys.stdin.read()
+    try:
+        patch = _json.loads(patch_json)
+    except _json.JSONDecodeError as e:
+        console.print(f"[red]Invalid JSON in --patch:[/red] {e}")
+        sys.exit(2)
+    if not isinstance(patch, dict):
+        console.print("[red]--patch must be a JSON object.[/red]")
+        sys.exit(2)
+
+    item: dict = {"document_id": document_id, "patch": patch}
+    if if_match is not None:
+        item["if_match"] = if_match
+
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        resp = client.patch(
+            "document-store",
+            "/api/document-store/documents",
+            json=[item],
+        )
+
+    result = resp["results"][0]
+    if result.get("status") == "error":
+        code = result.get("error_code") or "error"
+        console.print(
+            f"[red]PATCH failed[/red] ({code}): {result.get('error', 'unknown')}",
+        )
+        sys.exit(1)
+
+    console.print(_json.dumps(result, indent=2, default=str))
+
+
+@main.command()
+@click.argument("data_model_dir")
+@click.argument("namespace")
+@click.option("--skip-templates", is_flag=True, help="Only seed terminologies and terms")
+@click.option("--dry-run", is_flag=True, help="Preview without making changes")
+@click.option("--continue-on-error", is_flag=True, help="Don't stop on individual failures")
+@click.pass_context
+def seed(
+    ctx: click.Context,
+    data_model_dir: str,
+    namespace: str,
+    skip_templates: bool,
+    dry_run: bool,
+    continue_on_error: bool,
+) -> None:
+    """Seed a namespace from /export-model seed files.
+
+    DATA_MODEL_DIR is the path to the data-model/ directory containing
+    terminologies/ and templates/ subdirectories with JSON seed files.
+
+    NAMESPACE is the target WIP namespace (e.g., "dnd").
+    """
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        stats = run_seed(
+            client, data_model_dir, namespace,
+            skip_templates=skip_templates,
+            dry_run=dry_run,
+            continue_on_error=continue_on_error,
+        )
+
+        if stats.errors:
+            sys.exit(1)
+
+
+_SEVERITY_STYLE = {
+    "ok": "[green]OK[/green]",
+    "warning": "[yellow]WARN[/yellow]",
+    "critical": "[red bold]CRIT[/red bold]",
+    "unknown": "[dim]?[/dim]",
+}
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Output JSON instead of human-readable text")
+@click.option("--quiet", is_flag=True, help="Cron mode: print nothing on overall=ok")
+@click.option("--integrity", is_flag=True,
+              help="Also run aggregated referential integrity check (heavier)")
+@click.option("--integrity-template-limit", default=1000, type=int,
+              help="Max templates to scan for integrity (0 = all, default 1000)")
+@click.option("--integrity-document-limit", default=1000, type=int,
+              help="Max documents to scan for integrity (0 = all, default 1000)")
+@click.option("--failed-events-warning", default=1, type=int,
+              help="Failed-event count that triggers a warning (default 1)")
+@click.option("--consumer-lag-warning", default=100, type=int,
+              help="NATS pending messages that trigger a warning (default 100)")
+@click.option("--consumer-lag-critical", default=1000, type=int,
+              help="NATS pending messages that trigger critical (default 1000)")
+@click.pass_context
+def status(
+    ctx: click.Context,
+    as_json: bool,
+    quiet: bool,
+    integrity: bool,
+    integrity_template_limit: int,
+    integrity_document_limit: int,
+    failed_events_warning: int,
+    consumer_lag_warning: int,
+    consumer_lag_critical: int,
+) -> None:
+    """Aggregate WIP service status and exit non-zero on problems.
+
+    Default mode is cheap and cron-friendly: liveness checks for every service,
+    plus reporting-sync /metrics and /alerts and ingest-gateway /metrics.
+
+    Pass --integrity to also run the referential integrity scan (heavier; the
+    full scan can take minutes on large instances — limits default to 1000).
+
+    Exit codes:
+        0 ok       1 warning       2 critical       3 unknown / unreachable
+    """
+    config = ctx.obj["config"]
+    thresholds = StatusThresholds(
+        failed_events_warning=failed_events_warning,
+        consumer_lag_warning=consumer_lag_warning,
+        consumer_lag_critical=consumer_lag_critical,
+    )
+    with WIPClient(config) as client:
+        report = collect_status(
+            client,
+            thresholds,
+            include_integrity=integrity,
+            integrity_template_limit=integrity_template_limit,
+            integrity_document_limit=integrity_document_limit,
+        )
+
+    if as_json:
+        if not (quiet and not report.has_problems()):
+            click.echo(_json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        if quiet and not report.has_problems():
+            pass
+        else:
+            _print_status_report(report)
+
+    sys.exit(report.exit_code())
+
+
+def _print_status_report(report) -> None:
+    """Render a StatusReport in human-readable form (to stderr console)."""
+    overall_style = _SEVERITY_STYLE.get(report.overall, report.overall)
+    console.print(f"[bold]WIP status:[/bold] {overall_style}  [dim]({report.checked_at})[/dim]")
+    if report.services_unreachable:
+        console.print(
+            f"  [red]Unreachable:[/red] {', '.join(report.services_unreachable)}"
+        )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail")
+    for c in report.checks:
+        table.add_row(c.name, _SEVERITY_STYLE.get(c.severity, c.severity), c.message)
+    console.print(table)
+    # Print details for non-OK checks (helps cron output explain itself)
+    for c in report.checks:
+        if c.severity != "ok" and c.details:
+            console.print(f"  [dim]{c.name} details:[/dim] {c.details}")
 
 
 def _show_references(reader: ArchiveReader) -> None:

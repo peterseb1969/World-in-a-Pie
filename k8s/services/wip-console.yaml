@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: console
-          image: wip/console:latest
+          image: localhost:32000/wip-console:latest
           ports:
             - containerPort: 80
           volumeMounts:

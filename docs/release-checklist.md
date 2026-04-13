@@ -91,7 +91,7 @@ done
 
 - [ ] `podman-compose` used everywhere (not `docker-compose`) — exception: design docs for future features
 - [ ] API field names match current code (`value`/`label`, not old `code`/`name`)
-- [ ] Tool count matches reality (currently 68 `@mcp.tool` decorators)
+- [ ] Tool count matches reality (70+ `@mcp.tool` decorators — verify with grep count)
 - [ ] Service count and port assignments consistent across all docs
 
 ### 5d. Client library READMEs
@@ -130,7 +130,7 @@ Test on at least one real device (Pi or VM), not just localhost.
 - [ ] CI passes on `develop` (check Gitea Actions)
 - [ ] Merge `develop` → `main`
 - [ ] Tag with `vX.Y.Z` on `main`
-- [ ] Push to both remotes: `git push gitea main --tags && git push github main --tags`
+- [ ] Push to both remotes: `git push origin main --tags && git push github main --tags`
 
 ## 8. Post-Release
 

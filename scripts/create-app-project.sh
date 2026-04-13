@@ -4,10 +4,12 @@
 #
 # Usage:
 #   ./scripts/create-app-project.sh /path/to/my-new-app [--name "My App"]
+#   ./scripts/create-app-project.sh /path/to/my-new-app --preset query [--name "My App"]
+#   ./scripts/create-app-project.sh --refresh /path/to/cloned-app
 #
 # This script:
 #   1. Creates the directory structure
-#   2. Copies slash commands from docs/slash-commands/
+#   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
 #      ontology-support.md, dev-delete.md)
 #   4. Generates .mcp.json pointing to this WIP installation
@@ -15,6 +17,11 @@
 #   6. Copies wip-toolkit wheel and dev-delete.py
 #   7. Generates a starter CLAUDE.md
 #   8. Initialises a git repo
+#
+# --refresh mode (for cloned/existing apps):
+#   Only regenerates .mcp.json and refreshes libs/tools. Does NOT touch
+#   CLAUDE.md, slash commands, docs, or git. Use after cloning an app repo
+#   on a new machine where the WIP installation path differs.
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.
@@ -27,6 +34,8 @@ WIP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 APP_DIR=""
 APP_NAME=""
+PRESET="standard"
+REFRESH_MODE=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -34,14 +43,25 @@ while [[ $# -gt 0 ]]; do
             APP_NAME="$2"
             shift 2
             ;;
+        --preset)
+            PRESET="$2"
+            shift 2
+            ;;
+        --refresh)
+            REFRESH_MODE=true
+            shift
+            ;;
         -h|--help)
-            echo "Usage: $0 <app-directory> [--name \"App Name\"]"
+            echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
+            echo "       $0 --refresh <existing-app-directory>"
             echo ""
             echo "Creates a new WIP app project with all required files."
             echo ""
             echo "Options:"
-            echo "  --name    Display name for the app (default: derived from directory name)"
-            echo "  -h        Show this help"
+            echo "  --name      Display name for the app (default: derived from directory name)"
+            echo "  --preset    Project preset: 'standard' (default) or 'query' (NL query app)"
+            echo "  --refresh   Refresh machine-specific files (.mcp.json, libs) in an existing app"
+            echo "  -h          Show this help"
             exit 0
             ;;
         *)
@@ -53,7 +73,12 @@ done
 
 if [ -z "$APP_DIR" ]; then
     echo "Error: App directory path is required."
-    echo "Usage: $0 <app-directory> [--name \"App Name\"]"
+    echo "Usage: $0 <app-directory> [--name \"App Name\"] [--preset standard|query]"
+    exit 1
+fi
+
+if [[ "$PRESET" != "standard" && "$PRESET" != "query" ]]; then
+    echo "Error: Unknown preset '$PRESET'. Use 'standard' or 'query'."
     exit 1
 fi
 
@@ -65,66 +90,109 @@ if [ -z "$APP_NAME" ]; then
     APP_NAME="$(basename "$APP_DIR" | sed 's/[-_]/ /g' | awk '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)}1')"
 fi
 
-echo "Creating WIP app project:"
+# Derive slug from app name (lowercase, hyphens) — used for namespace and package name
+APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
+DEV_NAMESPACE="dev-${APP_SLUG}"
+
+if $REFRESH_MODE; then
+    echo "Refreshing WIP app environment:"
+else
+    echo "Creating WIP app project:"
+fi
 echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
+echo "  Slug:      $APP_SLUG"
+echo "  Dev ns:    $DEV_NAMESPACE"
+echo "  Preset:    $PRESET"
 echo "  WIP root:  $WIP_ROOT"
 echo ""
 
 # --- Check prerequisites ---
 
-if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
-    echo "Error: $APP_DIR already exists and is not empty."
-    echo "Choose a new directory or remove the existing one."
-    exit 1
+if $REFRESH_MODE; then
+    if [ ! -d "$APP_DIR" ]; then
+        echo "Error: $APP_DIR does not exist. Use --refresh on an existing app directory."
+        exit 1
+    fi
+    if [ ! -f "$APP_DIR/CLAUDE.md" ]; then
+        echo "Warning: $APP_DIR/CLAUDE.md not found — this may not be a WIP app project."
+    fi
+else
+    if [ -d "$APP_DIR" ] && [ "$(ls -A "$APP_DIR" 2>/dev/null)" ]; then
+        echo "Error: $APP_DIR already exists and is not empty."
+        echo "Choose a new directory or remove the existing one."
+        exit 1
+    fi
+
+    if [ ! -d "$WIP_ROOT/docs/slash-commands/app-builder" ]; then
+        echo "Error: $WIP_ROOT/docs/slash-commands/app-builder/ not found."
+        echo "Run this script from the WIP project root."
+        exit 1
+    fi
 fi
 
-if [ ! -d "$WIP_ROOT/docs/slash-commands" ]; then
-    echo "Error: $WIP_ROOT/docs/slash-commands/ not found."
-    echo "Run this script from the WIP project root."
-    exit 1
+# --- Create directory structure (new projects only) ---
+
+if ! $REFRESH_MODE; then
+    echo "1. Creating directory structure..."
+    mkdir -p "$APP_DIR/.claude/commands"
+    mkdir -p "$APP_DIR/docs"
 fi
-
-# --- Create directory structure ---
-
-echo "1. Creating directory structure..."
-mkdir -p "$APP_DIR/.claude/commands"
-mkdir -p "$APP_DIR/docs"
 mkdir -p "$APP_DIR/libs"
 mkdir -p "$APP_DIR/tools"
 
-# --- Copy slash commands ---
+# --- Copy slash commands (new projects only) ---
 
-echo "2. Copying slash commands (12 files)..."
-cp "$WIP_ROOT/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
-echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
+if ! $REFRESH_MODE; then
+    echo "2. Copying slash commands..."
+    cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
+    echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-# --- Copy reference docs ---
+    # --- Copy slash command playbooks (new projects only) ---
+    # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
+    # Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.
 
-echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
-    if [ -f "$WIP_ROOT/docs/$doc" ]; then
-        cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
-        echo "   Copied: docs/$doc"
+    if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
+        mkdir -p "$APP_DIR/docs/playbooks"
+        cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
+        PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+        echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
     else
-        echo "   Warning: docs/$doc not found, skipping"
+        echo "   Warning: $WIP_ROOT/docs/playbooks/app-builder/ not found, skipping playbooks"
     fi
-done
-# Design docs live in a subdirectory
-for doc in ontology-support.md; do
-    if [ -f "$WIP_ROOT/docs/design/$doc" ]; then
-        cp "$WIP_ROOT/docs/design/$doc" "$APP_DIR/docs/"
-        echo "   Copied: docs/design/$doc"
+
+    # --- Copy reference docs (new projects only) ---
+
+    echo "3. Copying reference documentation..."
+    for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
+        if [ -f "$WIP_ROOT/docs/$doc" ]; then
+            cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
+            echo "   Copied: docs/$doc"
+        else
+            echo "   Warning: docs/$doc not found, skipping"
+        fi
+    done
+    # Design docs live in a subdirectory
+    if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
+        cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
+        echo "   Copied: docs/design/ontology-support.md"
     else
-        echo "   Warning: docs/design/$doc not found, skipping"
+        echo "   Warning: docs/design/ontology-support.md not found, skipping"
     fi
-done
+fi
 
 # --- Generate .mcp.json ---
 
-echo "4. Generating .mcp.json..."
+if $REFRESH_MODE; then
+    echo "1. Regenerating .mcp.json..."
+else
+    echo "4. Generating .mcp.json..."
+fi
 
 # Determine API key from .env (source of truth for running containers)
+# NOTE: The MCP server needs a privileged key (wip-admins or wip-services) because
+# it operates across namespaces. App code should use a namespace-scoped key instead.
+# See docs/migration-unscoped-api-keys.md for details.
 ACTIVE_KEY=""
 if [ -f "$WIP_ROOT/.env" ]; then
     ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
@@ -138,7 +206,7 @@ if [ "$ACTIVE_KEY" = "dev_master_key_for_testing" ]; then
         "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
 ENVEOF
 )
-    echo "   API key: dev_master_key_for_testing (dev mode)"
+    echo "   API key: dev_master_key_for_testing (dev mode, privileged)"
 else
     # Production — embed the actual key from .env
     MCP_ENV=$(cat <<ENVEOF
@@ -192,17 +260,28 @@ validate_tarball() {
     return 0
 }
 
-echo "5. Copying client libraries..."
+if $REFRESH_MODE; then
+    echo "2. Refreshing client libraries..."
+else
+    echo "5. Copying client libraries..."
+fi
 MISSING_LIBS=()
 CLIENT_TARBALL=$(find "$WIP_ROOT/libs/wip-client/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 REACT_TARBALL=$(find "$WIP_ROOT/libs/wip-react/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
+PROXY_TARBALL=$(find "$WIP_ROOT/libs/wip-proxy/" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1)
 
-# Auto-build tarballs if missing or empty (npm pack triggers prepack → build automatically)
+# Auto-build tarballs if missing or invalid
+# Fresh clones have no node_modules, so we must npm install before npm pack
+# NOTE: Only the final 'find' line goes to stdout (captured by caller).
+# All progress/error messages go to stderr so they display without polluting the return value.
 rebuild_tarball() {
     local lib_dir="$1"
     local lib_name="$2"
-    echo "   Building $lib_name tarball..."
-    (cd "$lib_dir" && npm pack --quiet 2>/dev/null)
+    echo "   Building $lib_name tarball..." >&2
+    if ! (cd "$lib_dir" && npm install --quiet 2>&1 && npm pack --quiet 2>&1) >&2; then
+        echo "   Warning: failed to build $lib_name tarball" >&2
+        return 1
+    fi
     find "$lib_dir" -maxdepth 1 -name '*.tgz' -type f 2>/dev/null | head -1
 }
 
@@ -212,6 +291,9 @@ if command -v npm &>/dev/null; then
     fi
     if [ -z "$REACT_TARBALL" ] || ! validate_tarball "$REACT_TARBALL" "wip-react"; then
         REACT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-react" "@wip/react")
+    fi
+    if [ -z "$PROXY_TARBALL" ] || ! validate_tarball "$PROXY_TARBALL" "wip-proxy"; then
+        PROXY_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-proxy" "@wip/proxy")
     fi
 else
     echo "   npm not found — cannot auto-build tarballs"
@@ -244,20 +326,36 @@ copy_tarball() {
 
 copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
 copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
+copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
 
 # --- Copy wip-toolkit and dev-delete.py ---
 
-echo "6. Copying wip-toolkit and dev-delete.py..."
+if $REFRESH_MODE; then
+    echo "3. Refreshing wip-toolkit and dev-delete.py..."
+else
+    echo "6. Copying wip-toolkit and dev-delete.py..."
+fi
 
 # wip-toolkit wheel
-TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
+TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
 if [ -z "$TOOLKIT_WHEEL" ]; then
-    # Try to build it
-    if command -v python3 &>/dev/null || command -v python &>/dev/null; then
-        PYTHON_CMD="$(command -v python3 2>/dev/null || command -v python)"
-        echo "   Building wip-toolkit wheel..."
-        (cd "$WIP_ROOT/WIP-Toolkit" && "$PYTHON_CMD" -m build . --wheel -q 2>/dev/null) || true
-        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1)
+    # Try to build it — prefer WIP's venv (has `build` installed)
+    if [ -f "$WIP_ROOT/.venv/bin/python" ]; then
+        TOOLKIT_PYTHON="$WIP_ROOT/.venv/bin/python"
+    elif command -v python3 &>/dev/null; then
+        TOOLKIT_PYTHON="$(command -v python3)"
+    elif command -v python &>/dev/null; then
+        TOOLKIT_PYTHON="$(command -v python)"
+    else
+        TOOLKIT_PYTHON=""
+    fi
+    if [ -n "$TOOLKIT_PYTHON" ]; then
+        echo "   Building wip-toolkit wheel (using $TOOLKIT_PYTHON)..."
+        if ! (cd "$WIP_ROOT/WIP-Toolkit" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
+            echo "   Warning: wheel build failed — ensure 'build' is installed:"
+            echo "            $TOOLKIT_PYTHON -m pip install build"
+        fi
+        TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
     fi
 fi
 
@@ -266,7 +364,7 @@ if [ -n "$TOOLKIT_WHEEL" ]; then
     echo "   Copied: $(basename "$TOOLKIT_WHEEL")"
 else
     echo "   Warning: wip-toolkit wheel not found. Build it with:"
-    echo "            cd $WIP_ROOT/WIP-Toolkit && python -m build . --wheel"
+    echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
 fi
 
 # dev-delete.py
@@ -277,9 +375,152 @@ else
     echo "   Warning: scripts/dev-delete.py not found"
 fi
 
-# --- Generate CLAUDE.md ---
+# --- Copy query scaffold files (--preset query only, new projects only) ---
 
-echo "7. Generating CLAUDE.md..."
+if ! $REFRESH_MODE && [ "$PRESET" = "query" ]; then
+    SCAFFOLD_DIR="$WIP_ROOT/scripts/scaffold-query"
+    if [ ! -d "$SCAFFOLD_DIR" ]; then
+        echo "Error: Scaffold template directory not found: $SCAFFOLD_DIR"
+        exit 1
+    fi
+
+    echo "7. Copying NL query scaffold..."
+
+    # Copy scaffold structure
+    cp -r "$SCAFFOLD_DIR/server" "$APP_DIR/"
+    cp -r "$SCAFFOLD_DIR/src" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/package.json" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/tsconfig.json" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/vite.config.ts" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/tailwind.config.js" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/postcss.config.js" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/index.html" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/.env.example" "$APP_DIR/"
+    cp "$SCAFFOLD_DIR/.gitignore" "$APP_DIR/.gitignore.scaffold"
+
+    # Merge .gitignore (scaffold additions)
+    if [ -f "$APP_DIR/.gitignore" ]; then
+        cat "$APP_DIR/.gitignore.scaffold" >> "$APP_DIR/.gitignore"
+    else
+        mv "$APP_DIR/.gitignore.scaffold" "$APP_DIR/.gitignore"
+    fi
+    rm -f "$APP_DIR/.gitignore.scaffold"
+
+    # Replace placeholders
+    sed -i '' "s/SCAFFOLD_APP_SLUG/$APP_SLUG/g" "$APP_DIR/package.json"
+    sed -i '' "s/SCAFFOLD_APP_NAME/$APP_NAME/g" "$APP_DIR/index.html"
+
+    # Update .env.example with actual paths
+    sed -i '' "s|/path/to/WorldInPie|$WIP_ROOT|g" "$APP_DIR/.env.example"
+
+    echo "   Copied: server/ (agent.ts, index.ts, prompts/)"
+    echo "   Copied: src/ (App.tsx, AskBar.tsx, HomePage.tsx)"
+    echo "   Copied: package.json, tsconfig.json, vite.config.ts, tailwind, .env.example"
+    echo "   App slug: $APP_SLUG"
+
+    STEP_OFFSET=1
+else
+    STEP_OFFSET=0
+fi
+
+# --- Create dev namespace (new projects only) ---
+
+if ! $REFRESH_MODE; then
+    STEP_NUM=$((7 + STEP_OFFSET))
+    echo "$STEP_NUM. Creating dev namespace '$DEV_NAMESPACE'..."
+    STEP_OFFSET=$((STEP_OFFSET + 1))
+
+    # Best-effort — WIP may not be running. Non-fatal.
+    NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
+        -X POST "https://localhost:8443/api/registry/namespaces" \
+        -H "X-API-Key: $ACTIVE_KEY" \
+        -H "Content-Type: application/json" \
+        -d "{\"prefix\": \"$DEV_NAMESPACE\", \"description\": \"$APP_NAME (dev)\"}" \
+        2>/dev/null || echo "000")
+
+    if [ "$NS_RESPONSE" = "200" ]; then
+        echo "   Created namespace: $DEV_NAMESPACE"
+    elif [ "$NS_RESPONSE" = "000" ]; then
+        echo "   WIP not reachable — APP-YAC will create the namespace on first run"
+    else
+        echo "   HTTP $NS_RESPONSE — namespace may already exist (ok)"
+    fi
+
+    # Set WIP_NAMESPACE in .env.example if query preset
+    if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
+        sed -i '' "s|# WIP_NAMESPACE=myapp|WIP_NAMESPACE=$DEV_NAMESPACE|" "$APP_DIR/.env.example"
+        echo "   Set WIP_NAMESPACE=$DEV_NAMESPACE in .env.example"
+    fi
+
+    # --- Provision namespace-scoped API key ---
+
+    STEP_NUM=$((7 + STEP_OFFSET))
+    echo "$STEP_NUM. Provisioning namespace-scoped API key..."
+    STEP_OFFSET=$((STEP_OFFSET + 1))
+
+    APP_KEY_PLAINTEXT=""
+    if [ "$NS_RESPONSE" != "000" ]; then
+        # WIP is reachable — create a runtime API key scoped to the dev namespace
+        KEY_JSON=$(curl -k -s \
+            -X POST "https://localhost:8443/api/registry/api-keys" \
+            -H "X-API-Key: $ACTIVE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+                \"name\": \"${APP_SLUG}\",
+                \"owner\": \"dev@wip.local\",
+                \"groups\": [],
+                \"namespaces\": [\"${DEV_NAMESPACE}\"],
+                \"description\": \"${APP_NAME} — scoped to dev namespace\"
+            }" 2>/dev/null || echo "")
+
+        if [ -n "$KEY_JSON" ]; then
+            # Extract plaintext_key — try jq first, fall back to grep
+            if command -v jq &>/dev/null; then
+                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | jq -r '.plaintext_key // empty' 2>/dev/null)
+            else
+                APP_KEY_PLAINTEXT=$(echo "$KEY_JSON" | grep -o '"plaintext_key":"[^"]*"' | cut -d'"' -f4)
+            fi
+        fi
+
+        if [ -n "$APP_KEY_PLAINTEXT" ]; then
+            echo "   Created API key: $APP_SLUG (scoped to $DEV_NAMESPACE)"
+            echo "   Key propagates to all services within ~30 seconds"
+
+            # Write .env with the provisioned key
+            cat > "$APP_DIR/.env" << ENVEOF
+# App API key — namespace-scoped to $DEV_NAMESPACE
+# Created by create-app-project.sh via POST /api/registry/api-keys
+# This is a runtime key (managed via API, not config file)
+WIP_API_KEY=$APP_KEY_PLAINTEXT
+ENVEOF
+            echo "   Written: .env (with provisioned key)"
+
+            # Update .env.example if query preset (replace the dev master key placeholder)
+            if [ "$PRESET" = "query" ] && [ -f "$APP_DIR/.env.example" ]; then
+                sed -i '' "s|WIP_API_KEY=dev_master_key_for_testing|WIP_API_KEY=$APP_KEY_PLAINTEXT|" "$APP_DIR/.env.example"
+            fi
+        else
+            # Key creation failed — maybe name collision (409) or auth issue
+            echo "   Warning: Could not provision API key (response: ${KEY_JSON:-empty})"
+            echo "   You can create one manually:"
+            echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
+            echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
+            echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
+        fi
+    else
+        echo "   WIP not reachable — skipping key provisioning"
+        echo "   When WIP is running, create a key with:"
+        echo "     curl -k -X POST https://localhost:8443/api/registry/api-keys \\"
+        echo "       -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \\"
+        echo "       -d '{\"name\": \"$APP_SLUG\", \"namespaces\": [\"$DEV_NAMESPACE\"]}'"
+    fi
+fi
+
+# --- Generate CLAUDE.md (new projects only) ---
+
+if ! $REFRESH_MODE; then
+STEP_NUM=$((7 + STEP_OFFSET))
+echo "$STEP_NUM. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
 
@@ -292,6 +533,57 @@ cat > "$APP_DIR/CLAUDE.md" << EOF
 > **Never modify WIP. Build on top of it.**
 
 WIP is the backend. This app is a frontend that maps a domain onto WIP's primitives (terminologies, templates, documents) and presents them to users.
+
+## Dev Namespace
+
+Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling during development.
+
+**Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
+
+**Workflow:**
+1. Use \`$DEV_NAMESPACE\` for all \`/design-model\` and \`/implement\` work
+2. Create terminologies, templates, and test documents in this namespace
+3. Iterate until the data model is stable
+4. When ready for production, create a new namespace (e.g., \`${APP_SLUG}\`) and recreate the finalized model there
+5. Clean up the dev namespace with \`dev-delete.py\`:
+   \`\`\`bash
+   python tools/dev-delete.py --namespace $DEV_NAMESPACE --force
+   \`\`\`
+
+**Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly. Your app's runtime key (scoped to one namespace) gets automatic namespace derivation — no \`namespace\` parameter needed in app code.
+
+## API Key
+
+The MCP server uses a privileged admin key (from WIP's \`.env\`). This is fine for data modeling via MCP tools.
+
+**For your app's runtime API calls**, use the namespace-scoped key in \`.env\`.
+EOF
+
+if [ -n "$APP_KEY_PLAINTEXT" ]; then
+cat >> "$APP_DIR/CLAUDE.md" << EOF
+This key was auto-provisioned by \`create-app-project.sh\` and is scoped to \`$DEV_NAMESPACE\`. It is a **runtime key** managed via the Registry API (not a config-file key).
+
+\`\`\`bash
+# .env (already created)
+WIP_API_KEY=$APP_KEY_PLAINTEXT
+\`\`\`
+EOF
+else
+cat >> "$APP_DIR/CLAUDE.md" << 'EOF'
+No key was auto-provisioned (WIP may not have been running). Create one via the Registry API — see WIP's `docs/api-key-management.md`.
+
+Save the `plaintext_key` from the response to `.env`:
+```bash
+WIP_API_KEY=<plaintext_key from response>
+```
+EOF
+fi
+
+cat >> "$APP_DIR/CLAUDE.md" << EOF
+
+Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP derives the namespace automatically when you omit the \`namespace\` parameter. This means synonym resolution works without passing \`namespace\` on every API call.
+
+**Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
 
 ## Process
 
@@ -317,6 +609,7 @@ Follow the 4-phase development process. Start with:
 - \`/bootstrap\` — Recreate data model from seed files
 - \`/add-app\` — Add a second app that cross-references the first
 - \`/resume\` — Recover context after compaction or at start of a new session
+- \`/report\` — Capture fireside chat or trigger session summary
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
@@ -331,23 +624,33 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (68 tools, 4 resources). Before starting:
+WIP is accessed exclusively via MCP tools (71 tools, 5 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
 - Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
 - Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
 
 \`wip://development-guide\` provides the full 4-phase workflow reference if needed.
+\`wip://query-assistant-prompt\` provides a complete system prompt for NL query agents (used by --preset query apps).
 
 ## Client Libraries
 
-For Phase 4 (app building), use @wip/client and @wip/react:
+For Phase 4 (app building), use @wip/client, @wip/react, and @wip/proxy:
 - \`libs/wip-client-README.md\` — TypeScript client (6 services, error hierarchy, bulk abstraction)
 - \`libs/wip-react-README.md\` — React hooks (TanStack Query, 30+ hooks)
+- \`libs/wip-proxy-README.md\` — Express middleware for WIP API proxying with auth injection
 
 Install from tarballs in \`libs/\`:
 \`\`\`bash
-npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz
+npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz
 \`\`\`
+
+## Dev Setup Gotchas
+
+**TLS:** WIP uses a self-signed cert on \`https://localhost:8443\`. Node.js \`fetch()\` rejects self-signed certs. Add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). Production with proper certs needs no workaround.
+
+**@wip/client baseUrl:** In browser apps behind a Vite proxy, use \`baseUrl: '/wip'\` (resolved to \`window.location.origin + '/wip'\`). Do NOT use a bare relative path without the client resolving it — \`new URL('/wip/...')\` throws without a protocol.
+
+**@wip/react providers:** Hooks require BOTH \`QueryClientProvider\` (from \`@tanstack/react-query\`) AND \`WipProvider\` (from \`@wip/react\`). Missing either causes silent failure — hooks mount but never fetch, no errors.
 
 ## WIP Toolkit
 
@@ -383,22 +686,175 @@ python tools/dev-delete.py --mongo-uri mongodb://remote-host:27017/ --namespace 
 \`\`\`
 
 Requires \`pymongo\`. For file/reporting cleanup also install \`boto3\` and \`psycopg2-binary\`.
+
+## Session Awareness
+
+You will be replaced. This session — including everything you learn, every correction Peter makes, every insight you gain — ends when your context fills or the task completes. The next agent starts from scratch with no memory of this conversation.
+
+**Consequence:** Anything worth knowing must be encoded into a durable artifact before this session ends. If Peter corrects your approach, consider whether the correction belongs in:
+- A \`/lesson\` entry (quick, structured, for future gene pool review)
+- A session report "Dead Ends" section (for the next YAC continuing this work)
+- A CLAUDE.md update (if Peter agrees it's universal)
+
+Do not say "got it, won't happen again" unless you have written the lesson down. The next agent will make the same mistake unless you leave a trace.
+
+## Scope Budget
+
+Most tasks should complete within a predictable number of commits. If you find yourself significantly exceeding expectations, something is wrong — a misunderstanding, a rabbit hole, or a task that needs decomposition.
+
+**Commit heuristics:**
+- A bug fix: 1-3 commits. If you're past 5, stop and report what's blocking you.
+- A feature addition: 3-7 commits. If you're past 10, stop and reassess scope with Peter.
+- A refactor: 2-5 commits. If you're past 8, you're probably changing too much at once.
+
+**Context window awareness:** You can check your own context usage:
+\`\`\`bash
+cat .claude-context-pct
+\`\`\`
+This file is written to your project directory by the status line. Check it periodically — especially before starting a new subtask.
+- **Past 50%:** Ensure your session report and dead ends section are written. You are halfway to replacement.
+- **Past 75%:** Stop working and write your session summary. Do not push through hoping to finish — the next YAC picks up faster from a clean summary than from a half-finished sprawl.
+
+When stopping for any reason, write a clear status report: what's done, what's left, what's blocking, and what didn't work (dead ends).
+
+## YAC Reporting
+
+You are a YAC (Yet Another Claude). You report your work to the Field Reporter by writing files to a shared directory. This reporting is also useful for the *next* YAC — your session reports are input for future agents resuming your work.
+
+**Getting the current time:** Always use \`date '+%Y-%m-%d %H:%M'\` for timestamps. Do not guess.
+
+**Off the record:** If Peter says "off the record" or "don't report this," skip reporting for that segment. Resume when told.
+
+### Session Identity
+
+At the start of every session, run \`date '+%Y%m%d-%H%M'\` and assign yourself a session ID using your app prefix:
+
+| App | Prefix |
+|-----|--------|
+| Statement Manager | \`APP-SM\` |
+| Receipt Scanner | \`APP-RS\` |
+| D&D Compendium | \`APP-DND\` |
+| ClinTrial Explorer | \`APP-CT\` |
+| New apps | \`APP-<SHORT>\` (pick a 2-4 letter code, tell the user) |
+
+Format: \`<PREFIX>-YYYYMMDD-HHMM\`. Example: \`APP-CT-20260331-2015\`.
+
+### Report Directory
+
+Create your report directory at the start of every session:
+
+\`\`\`bash
+mkdir -p /Users/peter/Development/FR-YAC/reports/<PREFIX>-YYYYMMDD-HHMM/
+\`\`\`
+
+### Resuming — Check Previous Sessions
+
+At session start (and when running \`/resume\`), check for recent sessions with your prefix:
+
+\`\`\`bash
+ls -d /Users/peter/Development/FR-YAC/reports/<PREFIX>-* 2>/dev/null | tail -1
+\`\`\`
+
+If a previous session exists, read its \`session.md\` to recover context from the previous agent's work. This is faster and richer than reconstructing from git alone.
+
+If you are continuing work from that session (e.g., after context compaction), add this to your
+\`session.md\` frontmatter:
+
+\`\`\`
+continues: <PREVIOUS-SESSION-ID>
+\`\`\`
+
+### Session Start
+
+Create \`session.md\` immediately when starting work:
+
+\`\`\`markdown
+---
+session: <PREFIX>-YYYYMMDD-HHMM
+type: app
+app: <app name>
+repo: <repo directory name>
+started: YYYY-MM-DD HH:MM
+phase: <explore | design-model | implement | build-app | improve | other>
+tasks:
+  - <initial task from user>
+---
+\`\`\`
+
+### After Every Commit
+
+Before appending, read \`commits.md\` first. If the commit hash is already listed, skip it (prevents duplicates after context compaction).
+
+Append to \`commits.md\` in your report directory:
+
+\`\`\`markdown
+## <short-hash> — <commit message>
+**Time:** <run \`date '+%H:%M'\`>
+**Files:** <count> changed, +<added>/-<removed>
+**Tests:** <X passed, Y failed — or "not run">
+**What:** <1-2 sentences — what changed>
+**Why:** <1-2 sentences — what motivated this change>
+**PoNIF:** <if you encountered a PoNIF — which one and whether it caused issues. Omit if none.>
+**Discovered:** <anything surprising, bugs found, or gaps identified — omit if nothing>
+\`\`\`
+
+If you encountered a PoNIF and handled it correctly, note which one. If you hit a PoNIF and it caused a bug, definitely note it — the Field Reporter tracks these patterns.
+
+### Session Summary
+
+Write the session summary to \`session.md\` when:
+- Peter runs \`/report session-end\`
+- You detect context is running low (~70-80%)
+- The session is naturally ending
+
+Update (overwrite) the summary section — don't append multiple summaries.
+
+\`\`\`markdown
+## Session Summary
+**Duration:** <start time> – <run \`date '+%H:%M'\`>
+**Commits:** <count>
+**Lines:** +<added>/-<removed>
+**Phase:** <which phase(s) you worked in>
+**What happened:** <3-5 sentences covering the session's arc — not a commit list, but the narrative>
+**WIP interactions:** <any platform bugs, missing MCP tools, or upstream issues discovered — omit if none>
+**Unfinished:** <what's left, if anything>
+**For the next YAC:** <context the next agent needs to pick up where you left off>
+\`\`\`
+
+### Fireside Chats
+
+When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
 EOF
 echo "   Written: CLAUDE.md"
 
+# Ensure .env is gitignored (contains plaintext API key)
+if [ -n "$APP_KEY_PLAINTEXT" ] && [ -f "$APP_DIR/.env" ]; then
+    if [ ! -f "$APP_DIR/.gitignore" ]; then
+        printf '.env\n' > "$APP_DIR/.gitignore"
+    elif ! grep -qx '.env' "$APP_DIR/.gitignore"; then
+        printf '.env\n' >> "$APP_DIR/.gitignore"
+    fi
+fi
+
 # --- Initialise git ---
 
-echo "8. Initialising git repository..."
+STEP_NUM=$((8 + STEP_OFFSET))
+echo "$STEP_NUM. Initialising git repository..."
 (cd "$APP_DIR" && git init -q && git add -A && git commit -q -m "Initial project setup for $APP_NAME
 
 Generated by WIP create-app-project.sh from:
   $WIP_ROOT")
 echo "   Git repo initialised with initial commit"
+fi  # end of ! $REFRESH_MODE block (CLAUDE.md + git init)
 
 # --- Done ---
 
 echo ""
-echo "Done! Your app project is ready at: $APP_DIR"
+if $REFRESH_MODE; then
+    echo "Done! Environment refreshed at: $APP_DIR"
+else
+    echo "Done! Your app project is ready at: $APP_DIR"
+fi
 echo ""
 
 # --- Prominent warning if client libraries are missing ---
@@ -423,10 +879,23 @@ if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
     echo ""
 fi
 
-echo "Next steps:"
-echo "  cd $APP_DIR"
-echo "  claude          # Launch Claude Code"
-echo "  /explore        # Start Phase 1"
-echo ""
-echo "Verify MCP connection:"
-echo "  In Claude Code, run /mcp — you should see 68 tools and 4 resources."
+if $REFRESH_MODE; then
+    echo "Next steps:"
+    echo "  cd $APP_DIR"
+    echo "  claude          # Launch Claude Code"
+    echo "  /resume         # Recover context from existing code and docs"
+    echo ""
+    echo "Verify MCP connection:"
+    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
+    echo ""
+    echo "Note: .mcp.json has been regenerated with paths for this machine."
+    echo "      Add it to .gitignore if you don't want to commit machine-specific paths."
+else
+    echo "Next steps:"
+    echo "  cd $APP_DIR"
+    echo "  claude          # Launch Claude Code"
+    echo "  /explore        # Start Phase 1"
+    echo ""
+    echo "Verify MCP connection:"
+    echo "  In Claude Code, run /mcp — you should see 71 tools and 5 resources."
+fi

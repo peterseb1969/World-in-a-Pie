@@ -36,15 +36,22 @@ export class FetchTransport {
   private cachedAuthHeaders: Record<string, string> | null = null
 
   constructor(config: FetchTransportConfig) {
-    // Resolve empty baseUrl: use window.location.origin in browsers, error in Node
+    // Resolve empty or relative baseUrl to absolute URL
     let baseUrl = config.baseUrl
-    if (!baseUrl) {
+    if (!baseUrl || baseUrl.startsWith('/')) {
       if (typeof window !== 'undefined' && window.location?.origin) {
-        baseUrl = window.location.origin
-      } else {
+        baseUrl = baseUrl
+          ? window.location.origin + baseUrl  // '/wip' → 'http://localhost:5173/wip'
+          : window.location.origin             // '' → 'http://localhost:5173'
+      } else if (!baseUrl) {
         throw new Error(
           'WipClient: baseUrl is required in non-browser environments. ' +
           'Pass an explicit baseUrl (e.g. "http://localhost:8001").'
+        )
+      } else {
+        throw new Error(
+          `WipClient: relative baseUrl "${baseUrl}" requires a browser environment. ` +
+          'Pass an absolute URL (e.g. "http://localhost:8001") in Node.js.'
         )
       }
     }
@@ -184,6 +191,54 @@ export class FetchTransport {
     }
 
     throw lastError ?? new WipNetworkError('Request failed after all retries')
+  }
+
+  /**
+   * Open a streaming request (used for Server-Sent Events).
+   *
+   * Unlike `request()`, this returns the raw `Response` so the caller can
+   * read `response.body` as a `ReadableStream`. No retries — streaming
+   * connections are stateful and a retry would re-deliver duplicate events.
+   *
+   * Throws the same `Wip*Error` taxonomy as `request()` for non-2xx
+   * responses, so callers can handle 401/404/410 etc. before they start
+   * reading the body.
+   */
+  async stream(
+    method: string,
+    path: string,
+    options?: {
+      params?: Record<string, unknown>
+      headers?: Record<string, string>
+      signal?: AbortSignal
+    },
+  ): Promise<Response> {
+    const url = this.buildUrl(path, options?.params)
+    const headers: Record<string, string> = { ...options?.headers }
+
+    if (this.auth) {
+      if (!this.cachedAuthHeaders) {
+        this.cachedAuthHeaders = await this.auth.getHeaders()
+      }
+      Object.assign(headers, this.cachedAuthHeaders)
+    }
+
+    const response = await fetch(url, {
+      method,
+      headers,
+      signal: options?.signal,
+    })
+
+    if (!response.ok) {
+      const error = await this.mapResponseError(response)
+      if (error instanceof WipAuthError) {
+        this.cachedAuthHeaders = null
+        if (this.onAuthError) this.onAuthError()
+      }
+      throw error
+    }
+
+    return response
   }
 
   private buildUrl(path: string, params?: Record<string, unknown>): string {

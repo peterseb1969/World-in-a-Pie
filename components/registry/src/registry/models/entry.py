@@ -171,6 +171,14 @@ class RegistryEntry(Document):
                 [("search_values", 1), ("namespace", 1), ("status", 1)],
                 name="search_values_namespace_status_idx"
             ),
+            # Namespace-scoped dedup: same composite key in different namespaces
+            # must produce separate registry entries (CASE-18)
+            IndexModel(
+                [("namespace", 1), ("entity_type", 1), ("primary_composite_key_hash", 1)],
+                unique=True,
+                partialFilterExpression={"primary_composite_key_hash": {"$gt": ""}},
+                name="namespace_entity_keyhash_unique_idx"
+            ),
         ]
 
     def get_all_hashes(self) -> list[str]:

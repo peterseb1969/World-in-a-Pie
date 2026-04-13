@@ -12,6 +12,7 @@ import type { TraversalNode } from '@/types'
 const props = defineProps<{
   termId: string
   termValue?: string
+  namespace?: string
 }>()
 
 const emit = defineEmits<{
@@ -48,7 +49,7 @@ async function loadHierarchy() {
   if (!props.termId) return
   loading.value = true
   try {
-    const params = { max_depth: maxDepth.value }
+    const params = { max_depth: maxDepth.value, namespace: props.namespace }
     const data = direction.value === 'ancestors'
       ? await defStoreClient.getAncestors(props.termId, params)
       : await defStoreClient.getTermDescendants(props.termId, params)

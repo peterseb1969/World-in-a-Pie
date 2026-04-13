@@ -111,6 +111,66 @@ To automatically fix permission issues:
 
 ---
 
+## Ongoing Health Monitoring
+
+WIP exposes `/health`, `/metrics`, and `/health/integrity` on every service, but in a non-techie deployment nobody is watching them. The `wip-toolkit status` command aggregates them and exits non-zero on anomalies — wire it to cron + email and your install will tell you when something is wrong instead of waiting for an app to notice.
+
+### What it checks
+
+- **Liveness** for every required service (registry, def-store, template-store, document-store, reporting-sync) and the optional ingest-gateway.
+- **Reporting-sync `/metrics`**: NATS + Postgres connection health, total `events_failed`, NATS consumer lag (`pending_messages`).
+- **Reporting-sync `/alerts`**: surfaces the server-side stall detector (no events for N seconds while there is a backlog) and any other active alerts.
+- **Ingest-gateway `/metrics`** (when reachable): `total_failed`.
+- **Aggregated integrity** (`--integrity`, opt-in): orphaned terminology / template / term references across template-store and document-store.
+
+### Default thresholds (configurable)
+
+| Threshold | Default | Severity |
+|-----------|---------|----------|
+| `events_failed >= N` | 1 | warning |
+| `consumer_lag >= N` | 100 | warning |
+| `consumer_lag >= N` | 1000 | critical |
+| `integrity_drift >= N` | 1 | critical |
+
+Override with `--failed-events-warning`, `--consumer-lag-warning`, `--consumer-lag-critical`.
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | OK |
+| `1` | Warning |
+| `2` | Critical |
+| `3` | Unknown / one or more services unreachable but no warnings/criticals |
+
+### Cron entry (recommended)
+
+Run every five minutes; only mail when something is wrong.
+
+```cron
+*/5 * * * *  /usr/local/bin/wip-toolkit --proxy --host wip.local status --quiet --json | mail -E -s "WIP status alert" you@example.com
+```
+
+`mail -E` only sends mail when there is non-empty output, and `--quiet` only prints when overall status is not `ok`. Together that gives "silent unless broken." For a noisier environment, drop `-E` and `--quiet` to receive a heartbeat every cron run.
+
+For larger instances also wire a daily integrity scan separately from the per-5-minute liveness check:
+
+```cron
+17 4 * * *  /usr/local/bin/wip-toolkit --proxy --host wip.local status --integrity --quiet --json | mail -E -s "WIP integrity alert" you@example.com
+```
+
+### Manual one-shot
+
+```bash
+wip-toolkit status                      # human-readable table
+wip-toolkit status --json               # for piping into other tools
+wip-toolkit status --integrity          # adds the heavy referential integrity scan
+```
+
+The React Console can later parse `--json` output for an at-a-glance dashboard panel.
+
+---
+
 ## API Key Management
 
 ### Generating Additional API Keys

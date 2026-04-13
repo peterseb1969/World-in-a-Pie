@@ -40,14 +40,15 @@ SERVICES=()
 
 # --- Service definitions ---
 # Indexed arrays: same order, access by position
-# Format: name:container:health_port:compose_dir
+# Format: name:container:health_port:compose_dir[:health_path]
+# health_path defaults to /health if omitted
 SERVICE_DEFS=(
     "registry:wip-registry:8001:components/registry"
     "def-store:wip-def-store:8002:components/def-store"
     "template-store:wip-template-store:8003:components/template-store"
     "document-store:wip-document-store:8004:components/document-store"
     "reporting-sync:wip-reporting-sync:8005:components/reporting-sync"
-    "ingest-gateway:wip-ingest-gateway:8006:components/ingest-gateway"
+    "ingest-gateway:wip-ingest-gateway:8006:components/ingest-gateway:/api/ingest-gateway/health"
     "console:wip-console:0:ui/wip-console"
 )
 
@@ -161,7 +162,8 @@ rebuild_service() {
     local name=$1
     local def
     def=$(get_service_def "$name") || return 0
-    IFS=: read -r _name container port dir <<< "$def"
+    IFS=: read -r _name container port dir health_path <<< "$def"
+    health_path="${health_path:-/health}"
 
     local compose_file="$PROJECT_ROOT/$dir/docker-compose.yml"
     if [ ! -f "$compose_file" ]; then
@@ -203,7 +205,7 @@ rebuild_service() {
     if [ "$port" != "0" ]; then
         local retries=30
         while [ $retries -gt 0 ]; do
-            if curl -s "http://localhost:$port/health" 2>/dev/null | grep -q "healthy"; then
+            if curl -s "http://localhost:$port$health_path" 2>/dev/null | grep -q "healthy"; then
                 break
             fi
             sleep 2

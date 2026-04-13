@@ -12,17 +12,51 @@ export { useTemplates, useTemplate, useTemplateByValue } from './hooks/use-templ
 export { useDocuments, useDocument, useQueryDocuments, useDocumentVersions } from './hooks/use-documents.js'
 export { useFiles, useFile, useDownloadUrl } from './hooks/use-files.js'
 export { useNamespaces, useRegistrySearch } from './hooks/use-registry.js'
-export { useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
+export { useReportQuery, useIntegrityCheck, useActivity } from './hooks/use-reporting.js'
 
 // Write hooks
 export {
+  // Terminologies
   useCreateTerminology,
+  useUpdateTerminology,
+  useDeleteTerminology,
+  // Terms
   useCreateTerm,
+  useUpdateTerm,
+  useDeprecateTerm,
+  useDeleteTerm,
+  // Templates
   useCreateTemplate,
+  useUpdateTemplate,
+  useDeleteTemplate,
+  useActivateTemplate,
+  // Documents
   useCreateDocument,
   useCreateDocuments,
-  useUploadFile,
+  useUpdateDocument,
+  useUpdateDocuments,
   useDeleteDocument,
+  useArchiveDocument,
+  // Files
+  useUploadFile,
+  useUpdateFileMetadata,
+  useDeleteFile,
+  useDeleteFiles,
+  useHardDeleteFile,
+  // Ontology / Relationships
+  useCreateRelationships,
+  useDeleteRelationships,
+  // Namespaces
+  useCreateNamespace,
+  useUpdateNamespace,
+  useArchiveNamespace,
+  useRestoreNamespace,
+  useDeleteNamespace,
+  // Registry entries
+  useAddSynonym,
+  useRemoveSynonym,
+  useMergeEntries,
+  useDeactivateEntry,
 } from './hooks/use-mutations.js'
 
 // Specialized hooks

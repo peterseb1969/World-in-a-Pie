@@ -38,7 +38,7 @@ class CreateTerminologyRequest(StrictModel):
         description="Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for the terminology"
     )
     case_sensitive: bool = Field(
@@ -52,6 +52,10 @@ class CreateTerminologyRequest(StrictModel):
     extensible: bool = Field(
         default=False,
         description="Whether users can add new terms at runtime"
+    )
+    mutable: bool = Field(
+        default=False,
+        description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
     )
     metadata: TerminologyMetadata | None = Field(
         None,
@@ -90,6 +94,10 @@ class UpdateTerminologyRequest(StrictModel):
         None,
         description="Update extensibility"
     )
+    mutable: bool | None = Field(
+        None,
+        description="Update mutability (only allowed when term_count is 0)"
+    )
     metadata: TerminologyMetadata | None = Field(
         None,
         description="Update metadata"
@@ -111,6 +119,7 @@ class TerminologyResponse(BaseModel):
     case_sensitive: bool = False
     allow_multiple: bool = False
     extensible: bool = False
+    mutable: bool = False
     metadata: TerminologyMetadata
     status: str
     term_count: int = 0
@@ -307,6 +316,7 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if dependencies exist")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(None, description="User performing deletion")
 
 
@@ -490,6 +500,7 @@ class DeleteRelationshipRequest(StrictModel):
     source_term_id: str = Field(..., description="The subject term ID")
     target_term_id: str = Field(..., description="The object term ID")
     relationship_type: str = Field(..., description="Relationship type value")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
 
 
 class RelationshipResponse(BaseModel):

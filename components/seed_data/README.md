@@ -287,6 +287,7 @@ GENERATORS["MY_TEMPLATE"] = generate_my_template
 ## Services Required
 
 Before running, ensure these services are running:
+- Registry (port 8001)
 - Def-Store (port 8002)
 - Template Store (port 8003)
 - Document Store (port 8004)

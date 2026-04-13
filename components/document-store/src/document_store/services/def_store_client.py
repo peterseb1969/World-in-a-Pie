@@ -227,12 +227,14 @@ class DefStoreClient:
 
         return lookup
 
-    async def _get_terminology_cached(self, terminology_ref: str) -> dict[str, Any] | None:
+    async def _get_terminology_cached(
+        self, terminology_ref: str, force_refresh: bool = False
+    ) -> dict[str, Any] | None:
         """Get a terminology, using cache if available."""
-        # Check cache first
-        cached = self._terminology_cache.get(terminology_ref)
-        if cached is not None:
-            return cached
+        if not force_refresh:
+            cached = self._terminology_cache.get(terminology_ref)
+            if cached is not None:
+                return cached
 
         # Fetch and cache
         terminology = await self._fetch_terminology_with_terms(terminology_ref)
@@ -350,7 +352,20 @@ class DefStoreClient:
 
         # Validate locally
         self._validations_local += 1
-        return self._validate_term_locally(terminology, value)
+        result = self._validate_term_locally(terminology, value)
+
+        if not result.get("valid"):
+            # Refresh-on-miss: the term might have been created after the
+            # cache was populated. Re-fetch the terminology from def-store
+            # and try once more. At worst this is one extra HTTP call per
+            # terminology per validation batch with a genuinely new term.
+            terminology = await self._get_terminology_cached(
+                terminology_ref, force_refresh=True
+            )
+            if terminology is not None:
+                result = self._validate_term_locally(terminology, value)
+
+        return result
 
     async def validate_values_bulk(
         self,
@@ -394,7 +409,7 @@ class DefStoreClient:
         Get a term by ID.
 
         Args:
-            term_id: Term ID (e.g., 'T-000001')
+            term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
 
         Returns:
             Term data if found, None otherwise

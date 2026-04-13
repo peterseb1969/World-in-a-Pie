@@ -14,6 +14,7 @@ async def test_terminology(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "DOC_STATUS",
             "label": "Document Status",
+            "namespace": "wip",
             "case_sensitive": False
         }]
     )
@@ -50,7 +51,7 @@ async def test_create_term(client: AsyncClient, auth_headers: dict, test_termino
     assert data["failed"] == 0
     assert data["results"][0]["status"] == "created"
     term_id = data["results"][0]["id"]
-    assert term_id.startswith("T-")
+    assert term_id  # Real Registry assigns the ID format
 
     # Verify the created term via GET
     get_response = await client.get(
@@ -328,7 +329,7 @@ async def test_delete_term(client: AsyncClient, auth_headers: dict, test_termino
         "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
-        content='[{"id": "' + term_id + '"}]'
+        json=[{"id": term_id}]
     )
 
     assert response.status_code == 200

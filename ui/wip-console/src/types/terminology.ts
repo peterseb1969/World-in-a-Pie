@@ -19,6 +19,7 @@ export interface Terminology {
   case_sensitive: boolean
   allow_multiple: boolean
   extensible: boolean
+  mutable: boolean
   metadata: TerminologyMetadata
   status: 'active' | 'inactive'
   term_count: number
@@ -36,6 +37,7 @@ export interface CreateTerminologyRequest {
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
+  mutable?: boolean
   metadata?: Partial<TerminologyMetadata>
   created_by?: string
 }
@@ -47,6 +49,7 @@ export interface UpdateTerminologyRequest {
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
+  mutable?: boolean
   metadata?: Partial<TerminologyMetadata>
   updated_by?: string
 }
@@ -172,6 +175,7 @@ export interface ValidateValueRequest {
   terminology_id?: string
   terminology_value?: string
   value: string
+  namespace?: string
 }
 
 export interface ValidateValueResponse {

@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: registry
-          image: wip/registry:latest
+          image: localhost:32000/wip-registry:latest
           ports:
             - containerPort: 8001
           command: ["uvicorn", "registry.main:app", "--host", "0.0.0.0", "--port", "8001"]

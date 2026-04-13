@@ -30,7 +30,7 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 # Guide 1: Gateway & Portal
 
-> **Status: Partially implemented.** The **API reverse proxy already exists** — Caddy routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. Apps should always use Caddy for WIP API access (e.g., `baseUrl: ''` in browser, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports. What is **not yet implemented** is the app gateway and portal described below: app manifest registration, automatic routing of `/apps/*` paths to app containers, and the portal landing page.
+> **Status: Partially implemented.** The **API reverse proxy already exists** — Caddy routes `/api/def-store/*`, `/api/template-store/*`, `/api/document-store/*`, `/api/registry/*`, and `/api/reporting-sync/*` to the correct service ports. Apps should always use Caddy for WIP API access (e.g., `baseUrl: '/wip'` in browser behind Vite proxy, `baseUrl: ''` for direct Caddy access, `baseUrl: 'https://hostname:8443'` in Node.js) — never direct service ports. What is **not yet implemented** is the app gateway and portal described below: app manifest registration, automatic routing of `/apps/*` paths to app containers, and the portal landing page.
 
 > **Priority: Critical — deploy before the second app**
 > On a Raspberry Pi with a single IP address, every containerised app needs its own port. Without a gateway, users must remember that the Statement Manager is on port 8081, the Receipt Scanner is on 8082, WIP Console is on 8443, and so on. This is unworkable beyond two apps. The gateway solves port management, TLS termination, and app discovery in a single container.
@@ -39,17 +39,17 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 The gateway is a reverse proxy (Caddy is recommended for its automatic TLS and simple configuration) that listens on the host’s ports 80 and 443. All constellation apps sit behind it, accessible via path-based routing on a single hostname.
 
-https://wip-pi.local/ → Portal (landing page)
+https://your-host.local/ → Portal (landing page)
 
-https://wip-pi.local/apps/statements/ → Statement Manager (port 3001 internal)
+https://your-host.local/apps/statements/ → Statement Manager (port 3001 internal)
 
-https://wip-pi.local/apps/receipts/ → Receipt Scanner (port 3002 internal)
+https://your-host.local/apps/receipts/ → Receipt Scanner (port 3002 internal)
 
-https://wip-pi.local/apps/energy/ → Energy Monitor (port 3003 internal)
+https://your-host.local/apps/energy/ → Energy Monitor (port 3003 internal)
 
-https://wip-pi.local/console/ → WIP Console (port 8443 internal)
+https://your-host.local/console/ → WIP Console (port 8443 internal)
 
-https://wip-pi.local/api/ → WIP API services (ports 8001-8005)
+https://your-host.local/api/ → WIP API services (ports 8001-8005)
 
 Each app binds to its own internal port (never exposed to the host). The gateway is the only container that binds to host ports 80 and 443. This eliminates all port conflicts.
 
@@ -241,6 +241,23 @@ app-name/
 
 └── README.md \# App-specific documentation
 
+## TLS in development
+
+WIP uses a self-signed TLS certificate on `https://localhost:8443`. Node.js `fetch()` rejects self-signed certs by default, causing silent proxy failures.
+
+**In dev scripts only**, set `NODE_TLS_REJECT_UNAUTHORIZED=0`:
+
+```json
+{
+  "scripts": {
+    "dev:server": "NODE_TLS_REJECT_UNAUTHORIZED=0 tsx watch server/index.ts",
+    "start": "tsx server/index.ts"
+  }
+}
+```
+
+Do NOT set this in `start` (production). Production deployments should use proper CA-signed certificates — Caddy handles this automatically with real domains.
+
 ## Environment variables
 
 Every app uses the same environment variable pattern for WIP connection and gateway integration:
@@ -336,7 +353,7 @@ import { WipProvider, useDocuments, useCreateDocument } from '@wip/react';
 
 const wip = createWipClient({
 
-host: 'https://wip-pi.local',
+host: 'https://your-host.local',
 
 auth: { mode: 'api-key', key: import.meta.env.VITE_WIP_API_KEY },
 
@@ -428,7 +445,7 @@ Several constellation apps need bulk import for historical data: past bank state
 | **400**         | Validation     | "\[Field\] is invalid: \[reason\]"                                      | Highlight the specific field(s). Show inline validation messages. Do not clear the form.                                  |
 | **401 / 403**   | Authentication | "Session expired. Please log in again."                                 | Redirect to login or prompt for re-authentication. Preserve form state so the user doesn’t lose work.                     |
 | **404**         | Not found      | "\[Entity\] not found. It may have been removed."                       | Show a clear message with a link to go back. Do not show a raw 404 page.                                                  |
-| **409**         | Conflict       | "This record was updated by someone else. Please review and try again." | Show the conflicting version if possible. Offer to reload.                                                                |
+| **200 (per-item error)** | BulkResponse | Check each item's `status` field: `"created"`, `"already_exists"`, `"error"` | WIP write endpoints always return HTTP 200 with per-item results. Parse `results[]` and show errors inline per item.       |
 | **422**         | Unprocessable  | "Could not process: \[specific reason\]"                                | Common for term resolution failures or reference resolution failures. Show which value could not be resolved.             |
 | **500+**        | Server error   | "Something went wrong. Please try again in a moment."                   | Show a non-technical message. Log the full error to console. Offer a retry button.                                        |
 | **Network**     | Connectivity   | "Cannot reach the server. Check your network connection."               | Relevant for Raspberry Pi on local network — the Pi may be off, or the user may be on the wrong WiFi. Retry with backoff. |

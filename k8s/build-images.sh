@@ -32,7 +32,8 @@ Options:
   --tag TAG        Image tag (default: latest)
   --push           Push images after building
   --service NAME   Build only one service (registry|def-store|template-store|
-                   document-store|reporting-sync|ingest-gateway|wip-console)
+                   document-store|reporting-sync|ingest-gateway|mcp-server|wip-console|
+                   dnd-compendium|statement-manager|clintrial-explorer)
   --builder CMD    Container build tool: docker or podman (default: docker)
   -h, --help       Show this help
 
@@ -71,7 +72,7 @@ image_name() {
 # ── Python services that need wip-auth baked in ──────────────────
 PYTHON_AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
 # Python services without wip-auth
-PYTHON_PLAIN_SERVICES=(ingest-gateway)
+PYTHON_PLAIN_SERVICES=(ingest-gateway mcp-server)
 
 build_python_with_auth() {
     local svc="$1"
@@ -129,6 +130,123 @@ build_python_plain() {
     echo ""
 }
 
+build_dnd_compendium() {
+    local img
+    # DnD compendium is not a WIP service — use plain name
+    if [[ -n "$REGISTRY" ]]; then
+        img="${REGISTRY}/dnd-compendium:${TAG}"
+    else
+        img="dnd-compendium:${TAG}"
+    fi
+
+    echo "━━━ Building ${img} ━━━"
+
+    local app_dir="${PROJECT_ROOT}/../WIP-DnD/apps/dnd-compendium"
+    if [[ ! -d "$app_dir" ]]; then
+        echo "  ✗ DnD compendium not found at ${app_dir} — skipping"
+        return 0
+    fi
+
+    # Copy @wip/client and @wip/react tarballs into .docker-libs/
+    local dnd_libs="${app_dir}/../../libs"
+    local libs_dir="${app_dir}/.docker-libs"
+    mkdir -p "$libs_dir"
+    cp "${dnd_libs}/wip-client-0.1.0.tgz" "$libs_dir/"
+    cp "${dnd_libs}/wip-react-0.1.0.tgz" "$libs_dir/"
+
+    $BUILDER build \
+        --build-arg VITE_BASE_PATH=/apps/dnd/ \
+        -t "$img" \
+        "$app_dir"
+
+    # Clean up
+    rm -rf "$libs_dir"
+
+    if $PUSH; then
+        echo "  → Pushing ${img}"
+        $BUILDER push "$img"
+    fi
+    echo ""
+}
+
+build_statement_manager() {
+    local img
+    # Statement Manager is not a WIP service — use plain name
+    if [[ -n "$REGISTRY" ]]; then
+        img="${REGISTRY}/statement-manager:${TAG}"
+    else
+        img="statement-manager:${TAG}"
+    fi
+
+    echo "━━━ Building ${img} ━━━"
+
+    local app_dir="${PROJECT_ROOT}/../WIP-Constellations/apps/statement-manager"
+    if [[ ! -d "$app_dir" ]]; then
+        echo "  ✗ Statement Manager not found at ${app_dir} — skipping"
+        return 0
+    fi
+
+    # Pack @wip/client, @wip/react, and @wip/proxy into .docker-libs/
+    local libs_dir="${app_dir}/.docker-libs"
+    mkdir -p "$libs_dir"
+    (cd "${PROJECT_ROOT}/libs/wip-client" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-react" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-proxy" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+
+    $BUILDER build \
+        --build-arg VITE_BASE_PATH=/apps/finance/ \
+        -t "$img" \
+        "$app_dir"
+
+    # Clean up
+    rm -rf "$libs_dir"
+
+    if $PUSH; then
+        echo "  → Pushing ${img}"
+        $BUILDER push "$img"
+    fi
+    echo ""
+}
+
+build_clintrial_explorer() {
+    local img
+    # ClinTrial Explorer is not a WIP service — use plain name
+    if [[ -n "$REGISTRY" ]]; then
+        img="${REGISTRY}/clintrial-explorer:${TAG}"
+    else
+        img="clintrial-explorer:${TAG}"
+    fi
+
+    echo "━━━ Building ${img} ━━━"
+
+    local app_dir="${PROJECT_ROOT}/../WIP-ClinTrial/clintrial-explorer"
+    if [[ ! -d "$app_dir" ]]; then
+        echo "  ✗ ClinTrial Explorer not found at ${app_dir} — skipping"
+        return 0
+    fi
+
+    # Pack @wip/client, @wip/react, and @wip/proxy into .docker-libs/
+    local libs_dir="${app_dir}/.docker-libs"
+    mkdir -p "$libs_dir"
+    (cd "${PROJECT_ROOT}/libs/wip-client" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-react" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+    (cd "${PROJECT_ROOT}/libs/wip-proxy" && npm pack --pack-destination "$libs_dir" >/dev/null 2>&1)
+
+    $BUILDER build \
+        --build-arg VITE_BASE_PATH=/apps/clintrial/ \
+        -t "$img" \
+        "$app_dir"
+
+    # Clean up
+    rm -rf "$libs_dir"
+
+    if $PUSH; then
+        echo "  → Pushing ${img}"
+        $BUILDER push "$img"
+    fi
+    echo ""
+}
+
 build_console() {
     local img
     img="$(image_name "console")"
@@ -162,9 +280,12 @@ echo ""
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        wip-console|console)  build_console ;;
-        ingest-gateway)       build_python_plain "$ONLY_SERVICE" ;;
-        *)                    build_python_with_auth "$ONLY_SERVICE" ;;
+        wip-console|console)           build_console ;;
+        dnd-compendium)                build_dnd_compendium ;;
+        statement-manager)             build_statement_manager ;;
+        clintrial-explorer)            build_clintrial_explorer ;;
+        ingest-gateway|mcp-server)     build_python_plain "$ONLY_SERVICE" ;;
+        *)                             build_python_with_auth "$ONLY_SERVICE" ;;
     esac
 else
     for svc in "${PYTHON_AUTH_SERVICES[@]}"; do

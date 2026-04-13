@@ -41,6 +41,9 @@ A combination of multiple fields that together uniquely identify a document. Def
 ### Conditional Rule
 A [validation rule](#validation-rule) that applies only when certain conditions are met. Example: "Tax ID is required if country is Germany."
 
+### Constellation
+A deployable application built on top of WIP, using WIP's APIs for document storage, validation, and querying. Each constellation is a separate project that depends on a running WIP instance.
+
 ---
 
 ## D
@@ -124,6 +127,9 @@ A SHA-256 hash computed from the [identity fields](#identity-fields). Used to de
 2. Concatenate as `field1=value1|field2=value2|...`
 3. Hash with SHA-256
 
+### Ingest Gateway
+Async bulk document ingestion service (port 8006). Accepts document payloads via NATS JetStream for background processing by Document Store. Included in the `full` preset.
+
 ### Inactive (Status)
 Status of a deactivated entity. Inactive items are retained for historical reference resolution but excluded from normal queries. Previous document versions are automatically set to inactive when a new version is created.
 
@@ -154,11 +160,17 @@ For documents with multiple versions, the most recent active version. API respon
 
 ## M
 
+### MCP Server
+Model Context Protocol server providing 70+ tools and 5 resources for AI-assisted development. Runs via stdio (Claude Code) or SSE transport. Not proxied through Caddy — runs as a local process.
+
 ### Mandatory
 A field property indicating the field must be present in a document. Validation fails if a mandatory field is missing or null.
 
 ### Message Queue
 Asynchronous communication layer for events. WIP uses [NATS](#nats) with [JetStream](#jetstream).
+
+### Mutable Terminology
+A terminology whose terms can be modified or hard-deleted after creation. Immutable terminologies (the default) only allow term deprecation, not deletion.
 
 ### MongoDB
 The document store database. Stores documents, templates, terminologies, and terms as native JSON documents.
@@ -168,14 +180,7 @@ The document store database. Stores documents, templates, terminologies, and ter
 ## N
 
 ### Namespace
-A logical partition in the [Registry](#registry) that enables different ID formats. Default WIP namespaces all use UUID7:
-- `wip-terminologies`: UUID7
-- `wip-terms`: UUID7
-- `wip-templates`: UUID7
-- `wip-documents`: UUID7
-- `wip-files`: UUID7
-
-Custom namespaces can be configured with prefixed ID formats.
+A logical partition in the [Registry](#registry) for organizing entities. The default namespace is `wip`. Each entity within a namespace has an `entity_type` (terminologies, terms, templates, documents, files). The Registry uses the composite key `(namespace, entity_type)` for ID generation and lookup. The default `wip` namespace uses UUID7 for all entity types. Custom namespaces can configure per-entity-type ID algorithms (UUID7, prefixed, nanoid, etc.).
 
 ### NATS
 Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enabled. Handles event publishing between services.
@@ -194,11 +199,17 @@ A formal representation of knowledge as a set of concepts and typed [relationshi
 
 ## P
 
+### PoNIF
+Powerful, Non-Intuitive Feature. A WIP behavior that is correct by design but surprises new users. Six PoNIFs are documented in the `wip://ponifs` MCP resource.
+
 ### Podman
 Container runtime used by WIP. Compatible with Docker commands (`podman-compose`). Supports rootless containers on Linux.
 
 ### PostgreSQL
 The reporting database. Receives document data via [Reporting-Sync](#reporting-sync) for SQL-based querying and analytics.
+
+### Preset
+A named configuration profile that selects which compose modules to enable. Available presets: `headless` (API only), `core` (console), `analytics` (adds OIDC + reporting), `standard` (adds files), `full` (adds ingest).
 
 ### PrimeVue
 Vue.js component library used for [WIP Console](#wip-console). Provides DataTable, Dialog, and form components.
@@ -242,7 +253,7 @@ A field-level type hint that triggers format-specific validation and reporting b
 The `scripts/setup.sh` script that automates WIP deployment. Auto-detects platform, generates configuration, and starts all services.
 
 ### Status
-Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated`. Values for templates: `draft`, `active`, `inactive`.
+Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated` (with reason and optional replacement), `inactive` (soft-delete). Values for templates: `draft`, `active`, `inactive`.
 
 ### Sync
 The process of copying document data to PostgreSQL. Driven by NATS events (real-time) or batch API calls (recovery).

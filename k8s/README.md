@@ -216,6 +216,8 @@ kubectl exec -n wip deploy/wip-registry -- \
 | editor@wip.local | editor123 | wip-editors |
 | viewer@wip.local | viewer123 | wip-viewers |
 
+> **Warning:** These are development/test credentials only. For production deployments, configure unique static passwords or integrate with an external identity provider.
+
 ## Troubleshooting
 
 **Pods stuck in CrashLoopBackOff:**

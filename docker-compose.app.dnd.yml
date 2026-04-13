@@ -1,0 +1,33 @@
+services:
+  dnd-compendium:
+    image: ghcr.io/peterseb1969/dnd-compendium:v1.1.0
+    container_name: wip-dnd-compendium
+    labels:
+      wip.app: "true"
+      wip.app.name: "D&D Compendium"
+      wip.app.route: "/apps/dnd"
+      wip.app.port: "3012"
+    env_file: .env
+    environment:
+      WIP_BASE_URL: http://wip-caddy:8080
+      WIP_API_KEY: ${API_KEY}
+      APP_BASE_PATH: /apps/dnd
+      PORT: "3012"
+      SERVER_PORT: "3012"
+      WIP_NAMESPACE: dnd
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MCP_URL: http://wip-mcp-server:8007/sse
+      NODE_ENV: production
+    networks:
+      - wip-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3012/apps/dnd/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  wip-network:
+    external: true

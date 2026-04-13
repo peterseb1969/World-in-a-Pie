@@ -1,6 +1,6 @@
 """Tests for Pydantic data models."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from wip_toolkit.models import (
     ClosureInfo,
@@ -51,11 +51,11 @@ class TestManifest:
 
     def test_default_format_version(self):
         m = Manifest()
-        assert m.format_version == "1.1"
+        assert m.format_version == "2.0"
 
     def test_default_tool_version(self):
         m = Manifest()
-        assert m.tool_version == "0.1.0"
+        assert m.tool_version == "0.5.0"
 
     def test_default_namespace_empty(self):
         m = Manifest()
@@ -84,9 +84,9 @@ class TestManifest:
         assert m.closure.iterations == 0
 
     def test_exported_at_is_set_automatically(self):
-        before = datetime.now(timezone.utc)
+        before = datetime.now(UTC)
         m = Manifest()
-        after = datetime.now(timezone.utc)
+        after = datetime.now(UTC)
         assert before <= m.exported_at <= after
 
     def test_namespace_config_default_none(self):
@@ -125,8 +125,8 @@ class TestManifest:
 
     def test_manifest_with_closure_info(self):
         closure = ClosureInfo(
-            external_terminologies=["TERM-EXT-001"],
-            external_templates=["TPL-EXT-001", "TPL-EXT-002"],
+            external_terminologies=["TERM-EX0190b000-0000-7000-0000-000000000001"],
+            external_templates=["TPL-EX0190b000-0000-7000-0000-000000000001", "TPL-EX0190b000-0000-7000-0000-000000000002"],
             iterations=3,
             warnings=["Missing reference"],
         )
@@ -285,10 +285,10 @@ class TestClosureInfo:
 
     def test_custom_values(self):
         c = ClosureInfo(
-            external_terminologies=["TERM-001", "TERM-002"],
-            external_templates=["TPL-001"],
+            external_terminologies=["0190a000-0000-7000-0000-000000000001", "0190a000-0000-7000-0000-000000000002"],
+            external_templates=["0190c000-0000-7000-0000-000000000001"],
             iterations=5,
-            warnings=["Missing reference to TERM-003"],
+            warnings=["Missing reference to 0190a000-0000-7000-0000-000000000003"],
         )
         assert len(c.external_terminologies) == 2
         assert len(c.external_templates) == 1

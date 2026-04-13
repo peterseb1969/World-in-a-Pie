@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from wip_auth import require_api_key
+from wip_auth import check_namespace_permission, get_current_identity, require_api_key
 
 from ..models.replay import ReplayRequest, ReplaySessionResponse
 from ..services.replay_service import get_replay_service
@@ -20,6 +20,10 @@ async def start_replay(
     Replayed events go to a separate NATS stream (WIP_REPLAY_{session_id})
     with metadata.replay=true so consumers can distinguish them from live events.
     """
+    # Replay is admin-level — it republishes events and can trigger downstream side effects
+    identity = get_current_identity()
+    await check_namespace_permission(identity, request.filter.namespace, "admin")
+
     service = get_replay_service()
 
     try:

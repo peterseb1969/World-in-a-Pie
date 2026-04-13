@@ -18,7 +18,7 @@ class UserIdentity(BaseModel):
     username: str = Field(..., description="Human-readable name for display")
     email: str | None = Field(None, description="Email address (if available)")
     groups: list[str] = Field(default_factory=list, description="Group memberships for RBAC")
-    auth_method: Literal["jwt", "api_key", "none"] = Field(
+    auth_method: Literal["jwt", "api_key", "gateway_oidc", "none"] = Field(
         ..., description="How this identity was authenticated"
     )
 
@@ -37,7 +37,7 @@ class UserIdentity(BaseModel):
         """
         if self.auth_method == "api_key":
             return f"apikey:{self.username}"
-        elif self.auth_method == "jwt":
+        elif self.auth_method in ("jwt", "gateway_oidc"):
             return self.email or self.username or f"user:{self.user_id}"
         return "anonymous"
 

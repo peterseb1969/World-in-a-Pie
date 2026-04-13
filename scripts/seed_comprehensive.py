@@ -127,16 +127,18 @@ def _resolve_api_key() -> str:
 DEFAULT_API_KEY = _resolve_api_key()
 
 
-def get_service_urls(host: str = DEFAULT_HOST, via_proxy: bool = False) -> dict[str, str]:
+def get_service_urls(host: str = DEFAULT_HOST, via_proxy: bool = False, proxy_port: int = 8443) -> dict[str, str]:
     """Build service URLs for the given host.
 
     Args:
         host: The WIP host (e.g., localhost, wip-pi.local)
-        via_proxy: If True, route through Caddy proxy (https://<host>:8443)
+        via_proxy: If True, route through proxy (https://<host>:<port>)
                    If False, connect directly to service ports (http://<host>:800x)
+        proxy_port: Port for proxy mode (default 8443, use 443 for K8s Ingress)
     """
     if via_proxy:
-        base = f"https://{host}:8443"
+        port_suffix = f":{proxy_port}" if proxy_port != 443 else ""
+        base = f"https://{host}{port_suffix}"
         return {
             "registry": base,
             "def-store": base,
@@ -162,10 +164,10 @@ class ServiceClient:
         self.session.headers.update({"X-API-Key": api_key})
         self.session.verify = verify_ssl
 
-    def health_check(self) -> tuple[bool, str]:
+    def health_check(self, health_path: str = "/health") -> tuple[bool, str]:
         """Check if service is healthy. Returns (ok, status_message)."""
         try:
-            resp = self.session.get(f"{self.base_url}/health", timeout=5)
+            resp = self.session.get(f"{self.base_url}{health_path}", timeout=5)
             if resp.status_code == 200:
                 return True, "healthy"
             elif resp.status_code == 401:
@@ -186,19 +188,19 @@ class ServiceClient:
         resp.raise_for_status()
         return resp.json()
 
-    def post(self, path: str, data: dict | list) -> dict:
+    def post(self, path: str, data: dict | list, params: dict | None = None) -> dict:
         """HTTP POST request."""
         start = time.perf_counter()
-        resp = self.session.post(f"{self.base_url}{path}", json=data, timeout=60)
+        resp = self.session.post(f"{self.base_url}{path}", json=data, params=params, timeout=60)
         elapsed = (time.perf_counter() - start) * 1000
         self._record_call("POST", path, elapsed, resp.status_code)
         resp.raise_for_status()
         return resp.json()
 
-    def put(self, path: str, data: dict | list) -> dict:
+    def put(self, path: str, data: dict | list, params: dict | None = None) -> dict:
         """HTTP PUT request."""
         start = time.perf_counter()
-        resp = self.session.put(f"{self.base_url}{path}", json=data, timeout=30)
+        resp = self.session.put(f"{self.base_url}{path}", json=data, params=params, timeout=30)
         elapsed = (time.perf_counter() - start) * 1000
         self._record_call("PUT", path, elapsed, resp.status_code)
         resp.raise_for_status()
@@ -256,6 +258,7 @@ class WIPSeeder:
         api_key: str = DEFAULT_API_KEY,
         host: str = DEFAULT_HOST,
         via_proxy: bool = False,
+        proxy_port: int = 8443,
         urls: dict[str, str] = None,
         dry_run: bool = False,
         namespace: str = "wip",
@@ -265,7 +268,7 @@ class WIPSeeder:
         self.api_key = api_key
         self.host = host
         self.via_proxy = via_proxy
-        self.urls = urls or get_service_urls(host, via_proxy)
+        self.urls = urls or get_service_urls(host, via_proxy, proxy_port)
         self.dry_run = dry_run
         self.namespace = namespace
         self._custom_ns = namespace != "wip"
@@ -293,12 +296,20 @@ class WIPSeeder:
             "template-store": self.template_store,
             "document-store": self.document_store,
         }
+        # In proxy mode, /health on the base URL hits the Console catch-all.
+        # Use each service's API root instead (returns 200 or known response).
+        proxy_health_paths = {
+            "def-store": "/api/def-store/terminologies?page_size=1",
+            "template-store": "/api/template-store/templates?page_size=1",
+            "document-store": "/api/document-store/documents?page_size=1",
+        }
 
         all_healthy = True
         for service in services:
             if service in service_map:
                 client = service_map[service]
-                ok, status = client.health_check()
+                health_path = proxy_health_paths.get(service, "/health") if self.via_proxy else "/health"
+                ok, status = client.health_check(health_path)
                 print(f"  {service}: {status}")
                 if not ok:
                     all_healthy = False
@@ -433,6 +444,7 @@ class WIPSeeder:
                         bulk_result = self.def_store.post(
                             f"/api/def-store/terminologies/{terminology_id}/terms",
                             bulk_terms,
+                            params={"namespace": self.namespace},
                         )
 
                         for r in bulk_result.get("results", []):
@@ -464,6 +476,7 @@ class WIPSeeder:
                             result = self.def_store.post(
                                 f"/api/def-store/terminologies/{terminology_id}/terms",
                                 [term_data],
+                                params={"namespace": self.namespace},
                             )
                             self.created_term_ids[value][t["value"]] = result["results"][0]["id"]
                             stats["terms"] += 1
@@ -1059,7 +1072,14 @@ def main():
     parser.add_argument(
         "--via-proxy",
         action="store_true",
-        help="Route requests through Caddy proxy (https://<host>:8443) instead of direct ports"
+        help="Route requests through proxy (https://<host>:<port>) instead of direct ports"
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8443,
+        help="Proxy port (default: 8443, use 443 for K8s Ingress)"
     )
 
     parser.add_argument(
@@ -1165,6 +1185,7 @@ def main():
         api_key=args.api_key,
         host=args.host,
         via_proxy=args.via_proxy,
+        proxy_port=args.port,
         dry_run=args.dry_run,
         namespace=args.namespace,
         time_limit=args.time_limit,

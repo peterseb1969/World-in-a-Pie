@@ -4,118 +4,628 @@ import type {
   BulkResultItem,
   BulkResponse,
   CreateTerminologyRequest,
+  UpdateTerminologyRequest,
   CreateTermRequest,
+  UpdateTermRequest,
+  DeprecateTermRequest,
   CreateTemplateRequest,
+  UpdateTemplateRequest,
+  ActivateTemplateResponse,
   CreateDocumentRequest,
+  PatchDocumentRequest,
   FileUploadMetadata,
   FileEntity,
+  UpdateFileMetadataRequest,
+  CreateRelationshipRequest,
+  DeleteRelationshipRequest,
+  CreateNamespaceRequest,
+  UpdateNamespaceRequest,
+  Namespace,
+  AddSynonymRequest,
+  RemoveSynonymRequest,
+  MergeRequest,
 } from '@wip/client'
 import { useWipClient } from '../provider.js'
 import { wipKeys } from '../utils/keys.js'
 
+// ============================================================================
+// TERMINOLOGY HOOKS
+// ============================================================================
+
 export function useCreateTerminology(
   options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateTerminologyRequest>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
+    ...restOptions,
     mutationFn: (data: CreateTerminologyRequest) => client.defStore.createTerminology(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
   })
 }
 
-export function useCreateTerm(
-  terminologyId: string,
-  options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateTermRequest>, 'mutationFn'>,
+export function useUpdateTerminology(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; data: UpdateTerminologyRequest }>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (data: CreateTermRequest) => client.defStore.createTerm(terminologyId, data),
+    ...restOptions,
+    mutationFn: ({ id, data }: { id: string; data: UpdateTerminologyRequest }) =>
+      client.defStore.updateTerminology(id, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteTerminology(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (id: string) => client.defStore.deleteTerminology(id),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// TERM HOOKS
+// ============================================================================
+
+export function useCreateTerm(
+  terminologyId: string,
+  namespace: string,
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateTermRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: CreateTermRequest) => client.defStore.createTerm(terminologyId, data, { namespace }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
   })
 }
+
+export function useUpdateTerm(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { termId: string; data: UpdateTermRequest }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ termId, data }: { termId: string; data: UpdateTermRequest }) =>
+      client.defStore.updateTerm(termId, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeprecateTerm(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { termId: string; data: DeprecateTermRequest }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ termId, data }: { termId: string; data: DeprecateTermRequest }) =>
+      client.defStore.deprecateTerm(termId, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteTerm(
+  terminologyId: string,
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (termId: string) => client.defStore.deleteTerm(termId),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// TEMPLATE HOOKS
+// ============================================================================
 
 export function useCreateTemplate(
   options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateTemplateRequest>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
+    ...restOptions,
     mutationFn: (data: CreateTemplateRequest) => client.templates.createTemplate(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
   })
 }
+
+export function useUpdateTemplate(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; data: UpdateTemplateRequest }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, data }: { id: string; data: UpdateTemplateRequest }) =>
+      client.templates.updateTemplate(id, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteTemplate(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; updatedBy?: string; version?: number; force?: boolean; hardDelete?: boolean }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, ...opts }: { id: string; updatedBy?: string; version?: number; force?: boolean; hardDelete?: boolean }) =>
+      client.templates.deleteTemplate(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useActivateTemplate(
+  options?: Omit<UseMutationOptions<ActivateTemplateResponse, Error, { id: string; namespace: string; dry_run?: boolean }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, ...opts }: { id: string; namespace: string; dry_run?: boolean }) =>
+      client.templates.activateTemplate(id, opts),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// DOCUMENT HOOKS
+// ============================================================================
 
 export function useCreateDocument(
   options?: Omit<UseMutationOptions<BulkResultItem, Error, CreateDocumentRequest>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
+    ...restOptions,
     mutationFn: (data: CreateDocumentRequest) => client.documents.createDocument(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
   })
 }
 
 export function useCreateDocuments(
   options?: Omit<UseMutationOptions<BulkResponse, Error, CreateDocumentRequest[]>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
+    ...restOptions,
     mutationFn: (data: CreateDocumentRequest[]) => client.documents.createDocuments(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
   })
 }
 
-export function useUploadFile(
-  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata }>, 'mutationFn'>,
+/**
+ * Apply an RFC 7396 JSON Merge Patch to a document.
+ *
+ * Wraps `client.documents.updateDocument`. Throws `WipBulkItemError`
+ * (with `errorCode` populated) on per-item failure. Invalidates both
+ * the document detail and the documents list on success.
+ */
+export function useUpdateDocument(
+  options?: Omit<
+    UseMutationOptions<
+      BulkResultItem,
+      Error,
+      { documentId: string; patch: Record<string, unknown>; ifMatch?: number }
+    >,
+    'mutationFn'
+  >,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ file, filename, metadata }) => client.files.uploadFile(file, filename, metadata),
+    ...restOptions,
+    mutationFn: ({ documentId, patch, ifMatch }) =>
+      client.documents.updateDocument(documentId, patch, { ifMatch }),
     onSuccess: (...args) => {
-      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
-      options?.onSuccess?.(...args)
+      const variables = args[1]
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) })
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.versions(variables.documentId) })
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      onSuccess?.(...args)
     },
-    ...options,
+  })
+}
+
+/**
+ * Bulk variant of {@link useUpdateDocument}. Returns the raw `BulkResponse`
+ * so the caller can inspect per-item `error_code` values without per-item
+ * exceptions interrupting the batch.
+ */
+export function useUpdateDocuments(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, PatchDocumentRequest[]>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (items: PatchDocumentRequest[]) => client.documents.updateDocuments(items),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      onSuccess?.(...args)
+    },
   })
 }
 
 export function useDeleteDocument(
   options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; updatedBy?: string }>, 'mutationFn'>,
 ) {
+  const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, updatedBy }) => client.documents.deleteDocument(id, updatedBy),
+    ...restOptions,
+    mutationFn: ({ id, updatedBy }) => client.documents.deleteDocument(id, { updatedBy }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
-      options?.onSuccess?.(...args)
+      onSuccess?.(...args)
     },
-    ...options,
+  })
+}
+
+export function useArchiveDocument(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { id: string; archivedBy?: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ id, archivedBy }) => client.documents.archiveDocument(id, archivedBy),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// FILE HOOKS
+// ============================================================================
+
+export function useUploadFile(
+  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ file, filename, metadata }) => client.files.uploadFile(file, filename, metadata),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useUpdateFileMetadata(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, { fileId: string; data: UpdateFileMetadataRequest }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ fileId, data }: { fileId: string; data: UpdateFileMetadataRequest }) =>
+      client.files.updateMetadata(fileId, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteFile(
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (fileId: string) => client.files.deleteFile(fileId),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteFiles(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, string[]>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (fileIds: string[]) => client.files.deleteFiles(fileIds),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useHardDeleteFile(
+  options?: Omit<UseMutationOptions<void, Error, string>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (fileId: string) => client.files.hardDeleteFile(fileId),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// ONTOLOGY / RELATIONSHIP HOOKS
+// ============================================================================
+
+export function useCreateRelationships(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: CreateRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ items, namespace }: { items: CreateRelationshipRequest[]; namespace: string }) =>
+      client.defStore.createRelationships(items, namespace),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteRelationships(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: DeleteRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ items, namespace }: { items: DeleteRelationshipRequest[]; namespace: string }) =>
+      client.defStore.deleteRelationships(items, namespace),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// NAMESPACE HOOKS
+// ============================================================================
+
+export function useCreateNamespace(
+  options?: Omit<UseMutationOptions<Namespace, Error, CreateNamespaceRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: CreateNamespaceRequest) => client.registry.createNamespace(data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useUpdateNamespace(
+  options?: Omit<UseMutationOptions<Namespace, Error, { prefix: string; data: UpdateNamespaceRequest }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ prefix, data }: { prefix: string; data: UpdateNamespaceRequest }) =>
+      client.registry.updateNamespace(prefix, data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useArchiveNamespace(
+  options?: Omit<UseMutationOptions<Namespace, Error, { prefix: string; archivedBy?: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ prefix, archivedBy }: { prefix: string; archivedBy?: string }) =>
+      client.registry.archiveNamespace(prefix, archivedBy),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useRestoreNamespace(
+  options?: Omit<UseMutationOptions<Namespace, Error, { prefix: string; restoredBy?: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ prefix, restoredBy }: { prefix: string; restoredBy?: string }) =>
+      client.registry.restoreNamespace(prefix, restoredBy),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeleteNamespace(
+  options?: Omit<UseMutationOptions<void, Error, { prefix: string; deletedBy?: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ prefix, deletedBy }: { prefix: string; deletedBy?: string }) =>
+      client.registry.deleteNamespace(prefix, deletedBy),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+// ============================================================================
+// REGISTRY ENTRY HOOKS (synonyms, merge, deactivate)
+// ============================================================================
+
+export function useAddSynonym(
+  options?: Omit<UseMutationOptions<{ status: string; registry_id?: string; error?: string }, Error, AddSynonymRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: AddSynonymRequest) => client.registry.addSynonym(data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useRemoveSynonym(
+  options?: Omit<UseMutationOptions<{ status: string; registry_id?: string; error?: string }, Error, RemoveSynonymRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: RemoveSynonymRequest) => client.registry.removeSynonym(data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useMergeEntries(
+  options?: Omit<UseMutationOptions<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }, Error, MergeRequest>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: (data: MergeRequest) => client.registry.mergeEntries(data),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
+  })
+}
+
+export function useDeactivateEntry(
+  options?: Omit<UseMutationOptions<{ status: string }, Error, { entryId: string; updatedBy?: string }>, 'mutationFn'>,
+) {
+  const { onSuccess, ...restOptions } = options ?? {}
+  const client = useWipClient()
+  const queryClient = useQueryClient()
+  return useMutation({
+    ...restOptions,
+    mutationFn: ({ entryId, updatedBy }: { entryId: string; updatedBy?: string }) =>
+      client.registry.deactivateEntry(entryId, updatedBy),
+    onSuccess: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
+      onSuccess?.(...args)
+    },
   })
 }

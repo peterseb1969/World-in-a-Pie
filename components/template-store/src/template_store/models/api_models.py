@@ -43,7 +43,7 @@ class CreateTemplateRequest(StrictModel):
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
     )
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for the template"
     )
     extends: str | None = Field(
@@ -194,12 +194,20 @@ class BulkResultItem(BaseModel):
     """Result of a bulk operation for a single item."""
 
     index: int
-    status: str  # created, updated, deleted, skipped, error
+    status: str  # created, updated, unchanged, deleted, skipped, error
     id: str | None = None
     value: str | None = None
     version: int | None = None
     is_new_version: bool | None = None
     error: str | None = None
+    error_code: str | None = Field(
+        None,
+        description="Machine-readable error code (e.g. 'incompatible_schema')"
+    )
+    details: dict[str, Any] | None = Field(
+        None,
+        description="Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate)"
+    )
 
 
 class BulkResponse(BaseModel):
@@ -221,8 +229,9 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(None, description="Specific version to deactivate (default: latest)")
+    version: int | None = Field(None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
     force: bool = Field(default=False, description="Force deletion even if documents exist")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(None, description="User performing deletion")
 
 

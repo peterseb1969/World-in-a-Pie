@@ -2,6 +2,8 @@
 
 from fastapi import APIRouter, Depends
 
+from wip_auth import resolve_or_404
+
 from ..models.api_models import ValidationRequest, ValidationResponse
 from ..services.document_service import get_document_service
 from .auth import require_api_key
@@ -34,8 +36,13 @@ async def validate_document(
     _: str = Depends(require_api_key)
 ):
     """Validate document data without saving."""
+    request.template_id = await resolve_or_404(
+        request.template_id, "template", request.namespace, param_name="template_id"
+    )
+
     service = get_document_service()
     return await service.validate_document(
         template_id=request.template_id,
-        data=request.data
+        data=request.data,
+        namespace=request.namespace,
     )

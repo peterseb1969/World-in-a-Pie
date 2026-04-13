@@ -4,7 +4,13 @@ import math
 
 from fastapi import APIRouter, Body, Depends, Query
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_bulk_ids,
+    resolve_namespace_filter,
+    resolve_or_404,
+)
 
 from ..models.api_models import (
     BulkResponse,
@@ -31,7 +37,7 @@ router = APIRouter(prefix="/ontology", tags=["Ontology"])
 )
 async def create_relationships(
     items: list[CreateRelationshipRequest] = Body(...),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> BulkResponse:
     """
@@ -42,6 +48,10 @@ async def create_relationships(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
+
+    # Resolve term synonyms in bulk
+    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
+    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
 
     results = await OntologyService.create_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status == "created")
@@ -62,18 +72,21 @@ async def list_relationships(
     term_id: str = Query(..., description="Term ID to query relationships for"),
     direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
     relationship_type: str | None = Query(None, description="Filter by relationship type"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """List relationships for a term, with optional direction and type filtering."""
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
+
+    # Resolve term_id synonym
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     items, total = await OntologyService.list_relationships(
         term_id=term_id,
-        namespace=namespace,
+        ns_filter=ns_filter.query,
         direction=direction,
         relationship_type=relationship_type,
         page=page,
@@ -95,7 +108,7 @@ async def list_relationships(
 )
 async def delete_relationships(
     items: list[DeleteRelationshipRequest] = Body(...),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> BulkResponse:
     """
@@ -103,6 +116,10 @@ async def delete_relationships(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "write")
+
+    # Resolve term IDs in delete items
+    await resolve_bulk_ids(items, "source_term_id", "term", namespace)
+    await resolve_bulk_ids(items, "target_term_id", "term", namespace)
 
     results = await OntologyService.delete_relationships(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
@@ -120,26 +137,32 @@ async def delete_relationships(
     summary="List all relationships (for batch sync)"
 )
 async def list_all_relationships(
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     relationship_type: str | None = Query(None, description="Filter by type"),
     source_terminology_id: str | None = Query(None, description="Filter by source terminology ID"),
     status: str = Query("active", description="Filter by status"),
     page: int = Query(1, ge=1, description="Page number"),
-    page_size: int = Query(50, ge=1, le=100, description="Page size"),
+    page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     api_key: str = Depends(require_api_key),
 ) -> RelationshipListResponse:
     """
-    List all relationships in a namespace (paginated).
+    List all relationships (paginated).
 
     Unlike the per-term list endpoint, this returns ALL relationships,
     useful for batch sync and export operations. Use source_terminology_id
-    to filter to a specific terminology.
+    to filter to a specific terminology. Omit namespace for cross-namespace results.
     """
     identity = get_current_identity()
-    await check_namespace_permission(identity, namespace, "read")
+    ns_filter = await resolve_namespace_filter(identity, namespace)
+
+    # Resolve source_terminology_id synonym if provided
+    if source_terminology_id:
+        source_terminology_id = await resolve_or_404(
+            source_terminology_id, "terminology", namespace, param_name="source_terminology_id"
+        )
 
     items, total = await OntologyService.list_all_relationships(
-        namespace=namespace,
+        ns_filter=ns_filter.query,
         relationship_type=relationship_type,
         source_terminology_id=source_terminology_id,
         status=status,
@@ -167,7 +190,7 @@ async def list_all_relationships(
 async def get_ancestors(
     term_id: str,
     relationship_type: str = Query("is_a", description="Relationship type to traverse"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
     api_key: str = Depends(require_api_key),
 ) -> TraversalResponse:
@@ -179,6 +202,8 @@ async def get_ancestors(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_ancestors(
         term_id=term_id,
@@ -196,7 +221,7 @@ async def get_ancestors(
 async def get_descendants(
     term_id: str,
     relationship_type: str = Query("is_a", description="Relationship type to traverse"),
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     max_depth: int = Query(10, ge=1, le=50, description="Maximum traversal depth"),
     api_key: str = Depends(require_api_key),
 ) -> TraversalResponse:
@@ -207,6 +232,8 @@ async def get_descendants(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_descendants(
         term_id=term_id,
@@ -223,7 +250,7 @@ async def get_descendants(
 )
 async def get_parents(
     term_id: str,
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> list[RelationshipResponse]:
     """
@@ -233,6 +260,8 @@ async def get_parents(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_parents(term_id, namespace)
 
@@ -244,7 +273,7 @@ async def get_parents(
 )
 async def get_children(
     term_id: str,
-    namespace: str = Query("wip", description="Namespace"),
+    namespace: str = Query(..., description="Namespace"),
     api_key: str = Depends(require_api_key),
 ) -> list[RelationshipResponse]:
     """
@@ -254,5 +283,7 @@ async def get_children(
     """
     identity = get_current_identity()
     await check_namespace_permission(identity, namespace, "read")
+
+    term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
 
     return await OntologyService.get_children(term_id, namespace)

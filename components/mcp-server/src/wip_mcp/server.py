@@ -5,10 +5,12 @@ applications on top of WIP connects to this server to discover, create, and
 query WIP entities without constructing raw HTTP calls.
 
 Run with:  python -m wip_mcp.server          (stdio, for Claude Code / Cursor)
-           python -m wip_mcp.server --sse     (SSE, for remote clients)
+           python -m wip_mcp.server --http    (HTTP streamable, for K8s / remote)
+           python -m wip_mcp.server --sse     (SSE, legacy — deprecated in MCP spec)
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -75,7 +77,62 @@ unwrap the response and return the result directly. Bulk tools (create_documents
 create_templates_bulk, create_terminologies_bulk) return the full BulkResponse.
 
 CRITICAL: When using bulk tools, always check results[i].status — a 200 OK
-response can contain per-item errors. Statuses: created, updated, error, skipped.
+response can contain per-item errors. Statuses: created, updated, unchanged,
+error, skipped. Error items carry a machine-readable `error_code` in addition
+to a human `error` message — branch on the code, not the message string.
+
+## Partial Updates: update_document (PATCH)
+The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
+document and creates a new version on success. Use this instead of
+create_document when you want to change a subset of fields without rewriting
+the whole document.
+
+Semantics:
+- Objects deep-merge, arrays replace wholesale, null deletes a field
+- Empty patch or a no-op patch returns status "unchanged" (no new version)
+- Identity fields CANNOT be changed via PATCH — you get error_code
+  `identity_field_change`. To change identity, POST a new document.
+- `if_match=N` is optional per-item optimistic concurrency control: if the
+  current version != N, you get error_code `concurrency_conflict`.
+- template_version and identity_hash are preserved — the new version validates
+  against the template version recorded on the document, not the latest.
+
+Error codes from PATCH: `not_found`, `forbidden`, `archived`,
+`identity_field_change`, `concurrency_conflict`, `validation_failed`,
+`reference_violation`, `internal_error`.
+
+When to PATCH vs create_document:
+- Use update_document when the identity is unchanged and you're correcting or
+  enriching existing fields (e.g., adding a phone number, updating a status).
+- Use create_document when you have a full document payload OR the identity
+  may change (create_document is still an upsert — same identity = new version).
+
+## Idempotent Bootstrap (apps installing themselves)
+Two endpoints exist so an app can provision its namespace and templates against
+a fresh WIP instance and re-run the same script repeatedly without ugly
+GET → 404 → POST dances or silent schema drift.
+
+### Namespace upsert: PUT /api/registry/namespaces/{prefix}
+PUT is an upsert — creates the namespace on missing using platform defaults
+(isolation_mode='open', deletion_mode='retain', description='',
+allowed_external_refs=[]); updates supplied fields when existing. Always 200 OK.
+Idempotent: re-running with the same body is a no-op.
+
+### Template create with conflict validation: POST /templates?on_conflict=validate
+Adds a query parameter to control collision behavior on (namespace, value):
+- on_conflict='error' (default): collisions return per-item status='error',
+  preserving the existing behavior.
+- on_conflict='validate':
+  * identical schema → status='unchanged' (returns existing template_id/version)
+  * compatible schema → status='updated', is_new_version=true, version=N+1
+    (compatible = added optional field only — anything else is incompatible)
+  * incompatible schema → status='error', error_code='incompatible_schema',
+    details={added_required, removed, changed_type, made_required,
+    modified_existing, identity_changed}
+
+The narrow compatibility rule is intentional: silent guardrails are worse than
+loud ones. If the bootstrap script wants to evolve the template in a way the
+platform considers incompatible, it must explicitly bump the version itself.
 
 ## Querying Documents
 Two primary query tools:
@@ -145,6 +202,22 @@ Shared vocabularies (in "wip") are the common language — you need a grant to
 list or modify a namespace's data, but not to reference its terms.
 
 Reference validation runs at document creation, not template creation.
+
+### API Key Namespace Scoping
+Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
+namespace scoping that are not in `wip-admins` or `wip-services` get no access
+(all namespaces appear as 404).
+
+**Single-namespace keys** get automatic namespace derivation: when the caller
+omits the `namespace` parameter, WIP derives it from the key's single namespace.
+This means synonym resolution works without passing `namespace` on every request.
+
+**Multi-namespace keys** must provide `namespace` explicitly on every call.
+Omitting it means WIP cannot determine context for synonym resolution, and raw
+values pass through unresolved.
+
+This matters for apps: use a single-namespace key scoped to your dev namespace,
+and you can skip the `namespace` parameter on all API and MCP tool calls.
 
 ## Ontology Relationships
 Terms can be connected via typed relationships to model hierarchies and
@@ -474,6 +547,76 @@ If any of these feel natural, re-read this resource.
 """
 
 
+@mcp.resource("wip://query-assistant-prompt")
+async def get_query_assistant_prompt() -> str:
+    """Complete system prompt for a WIP query assistant.
+
+    Dynamic resource: calls describe_data_model() at read time to embed a
+    live data model catalog. Use this as the system prompt for any agent
+    that answers natural-language questions against WIP data.
+    """
+    # Build the live data model section
+    try:
+        data_model = await _build_data_model_markdown(namespace=None)
+    except Exception:
+        data_model = (
+            "**Data model unavailable.** Call the `describe_data_model` tool "
+            "at the start of your session to discover available templates and fields."
+        )
+
+    return f"""You are a WIP query assistant. You help users find and explore data stored in a WIP (World In a Pie) document store through natural language.
+
+## Your Capabilities
+
+You have access to **read-only** MCP tools connected to a WIP instance. You can:
+- Search across all documents (free text and structured queries)
+- List, filter, and retrieve documents by template
+- Look up terminologies and their terms
+- Run SQL queries against the reporting database for aggregations and analytics
+- Describe the data model to understand what's available
+
+You **cannot** create, modify, or delete anything. All tools are read-only.
+
+## How to Answer Questions
+
+1. **Always use tools.** Never guess or fabricate data — query WIP for accurate answers.
+2. **Call `describe_data_model` first** if you don't know what templates and fields are available.
+3. **Be concise.** Give the answer, not an essay.
+4. **Format nicely.** Use markdown: tables for comparisons, bold for key stats, headers for sections.
+5. **Cite specifics.** Include exact values from the data.
+
+## Query Strategy
+
+- Use `search` for broad text searches across all entity types.
+- Use `query_by_template` to list/filter documents of a specific template type.
+- Term field values are UPPERCASE (e.g., "BEAST", "EVOCATION").
+- Reference fields store entity IDs — use `get_document` to resolve them to full details.
+- For aggregations, cross-template JOINs, or analytics, use `run_report_query` with SQL.
+  - Table names: `doc_{{template_value}}` in lowercase (e.g., `doc_patient`, `doc_bank_transaction`).
+  - Use `list_report_tables` to discover available tables and columns.
+- Only return latest versions of documents unless the user asks about version history.
+
+## Available Data Model
+
+{data_model}
+
+## Response Style
+
+- For a single entity lookup: show its full details.
+- For comparisons: use a table.
+- For "what can do X" questions: list matching entities with key details.
+- For counts or statistics: use `run_report_query` with SQL.
+- Keep answers under 500 words unless the user asks for detailed analysis.
+
+## What NOT to Do
+
+- Don't guess. If the data isn't there, say so.
+- Don't invent entities, fields, or values that don't exist in the data model.
+- Don't attempt to modify data — you are read-only.
+- Don't expose internal IDs (template_id, document_id) unless the user asks for them.
+"""
+
+
 # ===================================================================
 # Tools — Discovery
 # ===================================================================
@@ -499,11 +642,153 @@ async def get_wip_status() -> str:
         return _error(e)
 
 
+async def _build_data_model_markdown(namespace: str | None = None) -> str:
+    """Build a markdown description of the data model. Raises on error."""
+    client = get_client()
+
+    # Fetch all active templates (fields are returned inline)
+    all_templates: list[dict] = []
+    page = 1
+    while True:
+        data = await client.list_templates(
+            namespace=namespace, status="active", latest_only=True,
+            page=page, page_size=100,
+        )
+        all_templates.extend(data.get("items", []))
+        if page >= data.get("pages", 1):
+            break
+        page += 1
+
+    # Fetch all active terminologies
+    all_terminologies: list[dict] = []
+    page = 1
+    while True:
+        data = await client.list_terminologies(
+            namespace=namespace, page=page, page_size=100,
+        )
+        items = data.get("items", [])
+        # Filter to active only (list_terminologies doesn't have status param)
+        all_terminologies.extend(t for t in items if t.get("status") == "active")
+        if page >= data.get("pages", 1):
+            break
+        page += 1
+
+    # Build markdown output
+    lines: list[str] = ["# WIP Data Model"]
+
+    if namespace:
+        lines.append(f"\nNamespace: **{namespace}**")
+
+    # --- Templates overview ---
+    lines.append(f"\n## Templates ({len(all_templates)})\n")
+    if all_templates:
+        lines.append("| Template | Label | Fields | Identity Fields | Namespace |")
+        lines.append("|----------|-------|--------|-----------------|-----------|")
+        for t in sorted(all_templates, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            label = t.get("label", "")
+            fields = t.get("fields", [])
+            identity = ", ".join(t.get("identity_fields", []))
+            ns = t.get("namespace", "")
+            lines.append(f"| {value} | {label} | {len(fields)} | {identity or '—'} | {ns} |")
+
+        # --- Fields per template ---
+        lines.append("\n## Fields by Template\n")
+        for t in sorted(all_templates, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            fields = t.get("fields", [])
+            if not fields:
+                continue
+            lines.append(f"### {value}\n")
+            lines.append("| Field | Type | Mandatory | Term Terminology | Description |")
+            lines.append("|-------|------|-----------|------------------|-------------|")
+            for f in fields:
+                name = f.get("name", "?")
+                ftype = f.get("field_type", "text")
+                mandatory = "yes" if f.get("mandatory") else ""
+                term_ref = f.get("term_terminology_id") or f.get("term_terminology_value") or ""
+                desc = (f.get("description") or "")[:60]
+                lines.append(f"| {name} | {ftype} | {mandatory} | {term_ref} | {desc} |")
+            lines.append("")
+    else:
+        lines.append("No active templates found.")
+
+    # --- Terminologies ---
+    lines.append(f"\n## Terminologies ({len(all_terminologies)})\n")
+    if all_terminologies:
+        lines.append("| Terminology | Label | Terms | Mutable | Namespace |")
+        lines.append("|-------------|-------|-------|---------|-----------|")
+        for t in sorted(all_terminologies, key=lambda x: x.get("value", "")):
+            value = t.get("value", "?")
+            label = t.get("label", "")
+            term_count = t.get("term_count", t.get("active_term_count", "?"))
+            mutable = "yes" if t.get("mutable") else ""
+            ns = t.get("namespace", "")
+            lines.append(f"| {value} | {label} | {term_count} | {mutable} | {ns} |")
+    else:
+        lines.append("No active terminologies found.")
+
+    # --- Query conventions ---
+    lines.append("\n## Query Conventions\n")
+    lines.append("- Use `query_by_template` to list/filter documents of a specific template.")
+    lines.append("- Use `search` for cross-template free-text search.")
+    lines.append("- Term field values are UPPERCASE (e.g., creature_type: \"BEAST\").")
+    lines.append("- Reference fields store entity IDs — use `get_document` to resolve.")
+    lines.append("- Use `run_report_query` for SQL aggregations, JOINs, and analytics.")
+    lines.append("- Table names in PostgreSQL: `doc_{template_value}` (lowercase).")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def describe_data_model(namespace: str | None = None) -> str:
+    """Describe the full data model: all active templates with fields, and terminologies.
+
+    Returns a markdown summary suitable for system prompt injection. Use this to
+    understand what data is available before querying. Covers templates (with all
+    fields, types, and constraints), terminologies, and query conventions.
+
+    Args:
+        namespace: Filter to a specific namespace. None = all namespaces.
+    """
+    try:
+        return await _build_data_model_markdown(namespace)
+    except Exception as e:
+        return _error(e)
+
+
 @mcp.tool()
 async def list_namespaces(include_archived: bool = False) -> str:
     """List all WIP namespaces. Namespaces scope all entities (terminologies, templates, documents)."""
     try:
         data = await get_client().list_namespaces(include_archived=include_archived)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def create_namespace(
+    prefix: str,
+    description: str = "",
+    isolation_mode: str = "open",
+    deletion_mode: str = "retain",
+) -> str:
+    """Create a new namespace. Namespaces scope all entities (terminologies, templates, documents).
+
+    Args:
+        prefix: Unique namespace prefix (e.g., 'finance', 'clintrial', 'dnd'). Lowercase, no spaces.
+        description: Human-readable description of the namespace's purpose.
+        isolation_mode: 'open' (default) allows cross-namespace term refs; 'strict' restricts to same namespace only.
+        deletion_mode: 'retain' (default, soft-delete only) or 'full' (allows hard-delete and namespace deletion).
+    """
+    try:
+        data = await get_client().create_namespace(
+            prefix=prefix,
+            description=description,
+            isolation_mode=isolation_mode,
+            deletion_mode=deletion_mode,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -543,6 +828,68 @@ async def delete_namespace(
 
 
 # ===================================================================
+# Tools — API Key Management
+# ===================================================================
+
+
+@mcp.tool()
+async def create_api_key(
+    name: str,
+    owner: str = "system",
+    groups: list[str] | None = None,
+    namespaces: list[str] | None = None,
+    description: str | None = None,
+    expires_at: str | None = None,
+) -> str:
+    """Create a runtime API key. Returns the plaintext key (shown once, never stored).
+
+    Args:
+        name: Unique name for the key (e.g., 'my-app')
+        owner: Owner identifier (default 'system')
+        groups: Authorization groups (e.g., ['wip-users']). Empty = no special privileges.
+        namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.
+        description: Human-readable description
+        expires_at: ISO 8601 expiry datetime (None = never expires)
+    """
+    try:
+        data = await get_client().create_api_key(
+            name=name,
+            owner=owner,
+            groups=groups or [],
+            namespaces=namespaces,
+            description=description,
+            expires_at=expires_at,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def list_api_keys() -> str:
+    """List all API keys (config-file + runtime). No hashes or plaintext exposed."""
+    try:
+        data = await get_client().list_api_keys()
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def revoke_api_key(name: str) -> str:
+    """Revoke (hard-delete) a runtime API key. Config-file keys cannot be revoked.
+
+    Args:
+        name: Name of the runtime key to revoke
+    """
+    try:
+        data = await get_client().revoke_api_key(name)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+# ===================================================================
 # Tools — Registry Entries & Synonyms
 # ===================================================================
 
@@ -570,7 +917,7 @@ async def lookup_entry(
     (lookup by key). Key lookup also searches synonyms.
 
     Args:
-        entry_id: Look up by entry ID (e.g., 'T-000042').
+        entry_id: Look up by entry ID or value code.
         namespace: Namespace for key lookup (e.g., 'wip').
         entity_type: Entity type for key lookup (e.g., 'terms').
         composite_key: Composite key dict for key lookup.
@@ -686,7 +1033,7 @@ async def list_terminologies(
 
 @mcp.tool()
 async def get_terminology(terminology_id: str) -> str:
-    """Get a terminology by its ID (e.g., 'T-xxxxxxxx')."""
+    """Get a terminology by ID or value (e.g., 'COUNTRY' or UUID)."""
     try:
         data = await get_client().get_terminology(terminology_id)
         return json.dumps(data, indent=2, default=str)
@@ -713,22 +1060,28 @@ async def get_terminology_by_value(value: str, namespace: str | None = None) -> 
 async def create_terminology(
     value: str,
     label: str,
-    namespace: str = "wip",
+    namespace: str | None = None,
     description: str | None = None,
+    mutable: bool = False,
 ) -> str:
     """Create a terminology (controlled vocabulary).
 
     Args:
         value: Unique code (e.g., 'COUNTRY', 'GENDER'). Convention: UPPER_SNAKE_CASE.
         label: Human-readable name (e.g., 'Country', 'Gender').
-        namespace: Namespace to create in. Default: 'wip'.
+        namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
+        mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
     """
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         kwargs = {}
         if description:
             kwargs["description"] = description
-        data = await get_client().create_terminology(
+        if mutable:
+            kwargs["mutable"] = True
+        data = await client.create_terminology(
             value=value, label=label, namespace=namespace, **kwargs
         )
         return json.dumps(data, indent=2, default=str)
@@ -745,10 +1098,12 @@ async def create_terminologies_bulk(items: list[dict], namespace: str | None = N
         namespace: Namespace for all items. Omit to use per-item namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for item in items:
-                item.setdefault("namespace", namespace)
-        data = await get_client().create_terminologies(items)
+                item.setdefault("namespace", ns)
+        data = await client.create_terminologies(items)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -759,13 +1114,15 @@ async def update_terminology(
     terminology_id: str,
     label: str | None = None,
     description: str | None = None,
+    mutable: bool | None = None,
 ) -> str:
-    """Update a terminology's label or description.
+    """Update a terminology's label, description, or mutability.
 
     Args:
-        terminology_id: ID of the terminology to update.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         label: New label (optional).
         description: New description (optional).
+        mutable: Set mutability (optional). Only allowed when term_count is 0.
     """
     try:
         updates = {}
@@ -773,8 +1130,10 @@ async def update_terminology(
             updates["label"] = label
         if description is not None:
             updates["description"] = description
+        if mutable is not None:
+            updates["mutable"] = mutable
         if not updates:
-            return "Error: Provide at least one field to update (label, description)."
+            return "Error: Provide at least one field to update (label, description, mutable)."
         data = await get_client().update_terminology(terminology_id, updates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -782,17 +1141,23 @@ async def update_terminology(
 
 
 @mcp.tool()
-async def delete_terminology(terminology_id: str, force: bool = False) -> str:
-    """Deactivate (soft-delete) a terminology.
+async def delete_terminology(
+    terminology_id: str, force: bool = False, hard_delete: bool = False,
+) -> str:
+    """Delete a terminology. Mutable terminologies are always hard-deleted.
+    Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
 
     Blocked if terms depend on it unless force=true.
 
     Args:
-        terminology_id: ID of the terminology to deactivate.
-        force: Force deactivation even if terms exist.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
+        force: Force deletion even if terms exist.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_terminology(terminology_id, force=force)
+        data = await get_client().delete_terminology(
+            terminology_id, force=force, hard_delete=hard_delete,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -805,7 +1170,7 @@ async def restore_terminology(
     """Restore a previously deactivated terminology back to active status.
 
     Args:
-        terminology_id: ID of the inactive terminology.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         restore_terms: Also reactivate its inactive terms (default: true).
     """
     try:
@@ -832,8 +1197,7 @@ async def list_terms(
     """List terms in a terminology. Use search to filter by value/label/alias.
 
     Args:
-        terminology_id: The terminology ID (e.g., 'T-xxxxxxxx') or use
-            get_terminology_by_value first to find the ID.
+        terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         search: Optional search string to filter terms.
     """
     try:
@@ -850,7 +1214,7 @@ async def list_terms(
 
 @mcp.tool()
 async def get_term(term_id: str) -> str:
-    """Get a term by its ID."""
+    """Get a term by ID, value (e.g., 'STATUS:approved'), or synonym."""
     try:
         data = await get_client().get_term(term_id)
         return json.dumps(data, indent=2, default=str)
@@ -866,7 +1230,7 @@ async def create_terms(
     """Create terms in a terminology.
 
     Args:
-        terminology_id: The terminology to add terms to.
+        terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
         terms: List of term objects. Each must have 'value' and 'label'.
             Optional: 'description', 'aliases' (list of strings).
 
@@ -886,11 +1250,16 @@ async def create_terms(
 
 
 @mcp.tool()
-async def validate_term_value(terminology_id: str, value: str) -> str:
-    """Validate whether a value exists in a terminology. Use to test term resolution."""
+async def validate_term_value(terminology: str, value: str) -> str:
+    """Validate whether a value exists in a terminology. Use to test term resolution.
+
+    Args:
+        terminology: Terminology ID (UUID) or value (e.g., 'COUNTRY', 'CT_AE_TERM_TEST').
+        value: The term value to validate.
+    """
     try:
         data = await get_client().validate_term(
-            terminology_id=terminology_id, value=value
+            terminology=terminology, value=value
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -908,7 +1277,7 @@ async def update_term(
     """Update a term's label, aliases, description, or sort order.
 
     Args:
-        term_id: ID of the term to update.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         label: New label (optional).
         aliases: New aliases list (optional). Replaces existing aliases.
         description: New description (optional).
@@ -933,14 +1302,18 @@ async def update_term(
 
 
 @mcp.tool()
-async def delete_term(term_id: str) -> str:
-    """Deactivate (soft-delete) a term. Sets status to inactive.
+async def delete_term(term_id: str, hard_delete: bool = False) -> str:
+    """Delete a term. Soft-delete (deactivate) by default.
+    Terms in mutable terminologies are always hard-deleted.
+    Set hard_delete=true to permanently remove from immutable terminologies
+    (requires namespace deletion_mode='full').
 
     Args:
-        term_id: ID of the term to deactivate.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
-        data = await get_client().delete_term(term_id)
+        data = await get_client().delete_term(term_id, hard_delete=hard_delete)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -959,9 +1332,9 @@ async def deprecate_term(
     has been replaced by a better term.
 
     Args:
-        term_id: ID of the term to deprecate.
-        reason: Reason for deprecation (e.g., 'Merged with TERM-002').
-        replaced_by_term_id: ID of the replacement term (optional).
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
+        reason: Reason for deprecation (e.g., 'Merged with COUNTRY').
+        replaced_by_term_id: Replacement term ID, value, or synonym (optional).
     """
     try:
         data = await get_client().deprecate_term(
@@ -989,7 +1362,7 @@ async def get_term_hierarchy(
     """Traverse ontology relationships for a term.
 
     Args:
-        term_id: The term to start from.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
         relationship_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
         max_depth: Max traversal depth for ancestors/descendants.
@@ -1031,14 +1404,16 @@ async def create_relationships(
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
+            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
+            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
             relationship_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
         create_relationships([{
-            "source_term_id": "T-001",
+            "source_term_id": "ALZHEIMERS_DISEASE",
             "relationship_type": "is_a",
-            "target_term_id": "T-002"
+            "target_term_id": "NEUROLOGY"
         }])
     """
     try:
@@ -1060,7 +1435,7 @@ async def list_relationships(
     """List ontology relationships for a specific term.
 
     Args:
-        term_id: The term to list relationships for.
+        term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
         relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
@@ -1082,22 +1457,29 @@ async def list_relationships(
 async def delete_relationships(
     relationships: list[dict],
     namespace: str | None = None,
+    hard_delete: bool = False,
 ) -> str:
     """Delete ontology relationships between terms.
 
     Args:
         relationships: List of {source_term_id, target_term_id, relationship_type}.
+            source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
+            target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
+            relationship_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
 
     Example:
         delete_relationships([{
-            "source_term_id": "T-001",
-            "target_term_id": "T-002",
+            "source_term_id": "ALZHEIMERS_DISEASE",
+            "target_term_id": "NEUROLOGY",
             "relationship_type": "is_a"
         }])
     """
     try:
-        data = await get_client().delete_relationships(relationships, namespace=namespace)
+        data = await get_client().delete_relationships(
+            relationships, namespace=namespace, hard_delete=hard_delete,
+        )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1144,7 +1526,7 @@ async def get_template(
     """Get a template by ID. Returns the resolved template (with inherited fields).
 
     Args:
-        template_id: Template ID (e.g., 'TPL-xxxxxxxx').
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         version: Specific version number. None = latest.
     """
     try:
@@ -1170,7 +1552,11 @@ async def get_template_by_value(value: str, namespace: str | None = None) -> str
 
 @mcp.tool()
 async def get_template_raw(template_id: str) -> str:
-    """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template."""
+    """Get a template WITHOUT inheritance resolution. Shows only fields defined directly on this template.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+    """
     try:
         data = await get_client().get_template_raw(template_id)
         return json.dumps(data, indent=2, default=str)
@@ -1230,11 +1616,16 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
         })
     """
     try:
-        if namespace:
-            template.setdefault("namespace", namespace)
-        data = await get_client().create_template(template)
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            template.setdefault("namespace", ns)
+        data = await client.create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
+        err = str(e)
+        if "already exists" in err:
+            return f"WIP error: {err}\n\nTo add or modify fields on an existing template, use update_template(template_id, {{\"fields\": [...]}}) instead. This creates a new version."
         return _error(e)
 
 
@@ -1249,10 +1640,47 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
         namespace: Namespace for all templates. Omit to use per-template namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for tpl in templates:
-                tpl.setdefault("namespace", namespace)
-        data = await get_client().create_templates(templates)
+                tpl.setdefault("namespace", ns)
+        data = await client.create_templates(templates)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def update_template(template_id: str, updates: dict) -> str:
+    """Update a template by creating a new version. Use this to add/remove/modify fields.
+
+    The template_id stays the same across versions — only the version number increments.
+    Existing documents are unaffected (they reference the version they were created with).
+    New documents will validate against the latest version by default.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        updates: Fields to change. Only include fields you want to modify:
+            - label: New display label
+            - description: New description
+            - fields: Complete field list (replaces all fields — include unchanged ones too)
+            - identity_fields: Updated identity fields
+            - extends: New parent template
+            - rules: Updated validation rules
+            - metadata: Updated metadata
+            - reporting: Updated reporting config
+
+    Example — add a field to an existing template:
+        1. get_template(template_id) to see current fields
+        2. update_template(template_id, {
+               "fields": [... existing fields ..., {"name": "new_field", "label": "New", "type": "string"}]
+           })
+
+    Returns version info: template_id, value, version (new), is_new_version, previous_version.
+    """
+    try:
+        data = await get_client().update_template(template_id, updates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1267,7 +1695,7 @@ async def activate_template(
     """Activate a draft template. Validates all references and cascades to referenced drafts.
 
     Args:
-        template_id: Template to activate.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Namespace scope.
         dry_run: If true, validate without activating.
     """
@@ -1285,20 +1713,24 @@ async def deactivate_template(
     template_id: str,
     version: int | None = None,
     force: bool = False,
+    hard_delete: bool = False,
 ) -> str:
-    """Deactivate (soft-delete) a template version.
+    """Delete a template version. Soft-delete (deactivate) by default.
+    Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
 
-    Sets the template status to 'inactive'. Blocked if other templates extend it.
-    If documents reference it, use force=true to deactivate anyway.
+    Blocked if other templates extend it.
+    If documents reference it, use force=true to delete anyway.
 
     Args:
-        template_id: Template to deactivate.
-        version: Specific version to deactivate (default: latest).
-        force: Force deactivation even if documents exist.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        version: Specific version (default: latest for soft-delete, all for hard-delete).
+        force: Force deletion even if documents exist.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
         data = await get_client().deactivate_template(
-            template_id=template_id, version=version, force=force
+            template_id=template_id, version=version, force=force,
+            hard_delete=hard_delete,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1307,7 +1739,11 @@ async def deactivate_template(
 
 @mcp.tool()
 async def get_template_dependencies(template_id: str) -> str:
-    """Show what depends on a template: child templates and documents."""
+    """Show what depends on a template: child templates and documents.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+    """
     try:
         data = await get_client().get_template_dependencies(template_id)
         return json.dumps(data, indent=2, default=str)
@@ -1328,7 +1764,7 @@ async def get_template_versions(
 
     Args:
         template_value: Template value code (e.g., 'PATIENT').
-        template_id: Template ID (e.g., 'TPL-xxx').
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Namespace to search in (only used with template_value). Omit for all namespaces.
     """
     try:
@@ -1352,7 +1788,7 @@ async def validate_template(template_id: str) -> str:
     active entities. Useful for draft templates before activation.
 
     Args:
-        template_id: Template ID to validate.
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
     """
     try:
         data = await get_client().validate_template(template_id)
@@ -1380,7 +1816,7 @@ async def list_documents(
 
     Args:
         template_value: Filter by template value code (e.g., 'PATIENT'). Most convenient filter.
-        template_id: Filter by template ID (alternative to template_value).
+        template_id: Filter by template ID, value code (e.g., 'PERSON'), or synonym.
         namespace: Filter by namespace.
         status: Filter by status.
         latest_only: Only return the latest version of each document.
@@ -1418,12 +1854,38 @@ async def get_document(document_id: str, version: int | None = None) -> str:
 
 
 @mcp.tool()
+async def validate_document(
+    template_id: str, data: dict, namespace: str | None = None
+) -> str:
+    """Validate document data against a template without saving.
+
+    Use this for pre-validation before submission, testing data against templates,
+    or computing an identity hash without creating a document.
+
+    Args:
+        template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
+        data: The field values to validate (a dict matching the template's fields).
+        namespace: Namespace scope.
+
+    Returns validation result with: valid (bool), errors (list), warnings (list),
+    identity_hash (if valid), and template_version used.
+    """
+    try:
+        data = await get_client().validate_document(
+            template_id=template_id, data=data, namespace=namespace
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def create_document(document: dict, namespace: str | None = None) -> str:
     """Create a document (an instance of a template).
 
     Args:
         document: Document data. Required:
-            - template_id: Which template this document uses.
+            - template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
             - template_version: Pin to a specific template version. Recommended —
               without it, WIP resolves "latest active" which may not be what you
               expect if multiple versions are active. See wip://conventions.
@@ -1452,9 +1914,11 @@ async def create_document(document: dict, namespace: str | None = None) -> str:
         })
     """
     try:
-        if namespace:
-            document.setdefault("namespace", namespace)
-        data = await get_client().create_document(document)
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            document.setdefault("namespace", ns)
+        data = await client.create_document(document)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1469,10 +1933,12 @@ async def create_documents_bulk(documents: list[dict], namespace: str | None = N
         namespace: Namespace for all documents. Omit to use per-document namespace or server default.
     """
     try:
-        if namespace:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
             for doc in documents:
-                doc.setdefault("namespace", namespace)
-        data = await get_client().create_documents(documents)
+                doc.setdefault("namespace", ns)
+        data = await client.create_documents(documents)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1484,7 +1950,7 @@ async def query_documents(filters: dict) -> str:
 
     Args:
         filters: Query body with these fields:
-            - template_id: Filter by template ID (required for field filters).
+            - template_id: Template ID, value code (e.g., 'PERSON'), or synonym (required for field filters).
             - namespace: Filter by namespace.
             - status: Filter by status ('active', 'inactive').
             - page, page_size: Pagination.
@@ -1530,6 +1996,78 @@ async def archive_document(document_id: str) -> str:
         return _error(e)
 
 
+@mcp.tool()
+async def update_document(
+    document_id: str,
+    patch: dict,
+    if_match: int | None = None,
+) -> str:
+    """Apply a partial update to a document via RFC 7396 JSON Merge Patch.
+
+    Creates a new version (N+1) of the document. The previous version becomes
+    inactive. NATS DOCUMENT_UPDATED is published — same event reporting-sync
+    consumes for new versions, so the reporting layer refreshes automatically.
+
+    Args:
+        document_id: Document ID (e.g. 'DOC-xxx') or registered synonym.
+        patch: JSON Merge Patch applied to the document's `data` field.
+            - Objects are deep-merged
+            - Arrays are REPLACED entirely (not merged element-wise)
+            - `null` values DELETE the corresponding key
+        if_match: Optional optimistic concurrency control. If supplied, the
+            patch fails with `concurrency_conflict` unless the current
+            version matches.
+
+    Restrictions:
+        - Cannot change identity fields (use create_document to create a new
+          document instead — error code `identity_field_change`).
+        - Cannot patch archived documents (unarchive first — `archived`).
+        - Soft-deleted / non-existent documents return `not_found`.
+        - The merged document must still validate against the template the
+          document was originally created with (PATCH does NOT migrate to a
+          newer template version).
+
+    Example — update one field:
+        update_document("DOC-123", {"score": 92})
+
+    Example — delete an optional field via null:
+        update_document("DOC-123", {"middle_name": None})
+
+    Example — concurrency-safe update:
+        update_document("DOC-123", {"status": "approved"}, if_match=4)
+    """
+    try:
+        data = await get_client().update_document(
+            document_id, patch, if_match=if_match,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_document(
+    document_id: str,
+    hard_delete: bool = False,
+    version: int | None = None,
+) -> str:
+    """Delete a document. Soft-delete (deactivate) by default.
+    Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
+
+    Args:
+        document_id: Document ID to delete.
+        hard_delete: Permanently remove (requires namespace deletion_mode='full').
+        version: Specific version to hard-delete (default: all versions). Ignored for soft-delete.
+    """
+    try:
+        data = await get_client().delete_document(
+            document_id, hard_delete=hard_delete, version=version,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Import/Export
 # ===================================================================
@@ -1544,7 +2082,7 @@ async def export_terminology(
     """Export a terminology with all its terms (and optionally relationships).
 
     Args:
-        terminology_id: Terminology ID to export.
+        terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         format: 'json' or 'csv'.
         include_relationships: Include ontology relationships in export.
     """
@@ -1748,7 +2286,7 @@ async def get_file_metadata(file_id: str) -> str:
 @mcp.tool()
 async def upload_file(
     file_path: str,
-    namespace: str = "wip",
+    namespace: str | None = None,
     description: str | None = None,
     tags: str | None = None,
     category: str | None = None,
@@ -1757,7 +2295,7 @@ async def upload_file(
 
     Args:
         file_path: Absolute path to the file on the local machine.
-        namespace: Namespace to store the file in.
+        namespace: Namespace to store the file in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of the file.
         tags: Optional comma-separated tags (e.g., 'receipt,2024,tax').
         category: Optional category (e.g., 'receipt', 'manual', 'report').
@@ -1765,6 +2303,8 @@ async def upload_file(
     import mimetypes
 
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         p = Path(file_path)
         if not p.exists():
             return f"Error: File not found: {file_path}"
@@ -1775,7 +2315,7 @@ async def upload_file(
         content_type = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
         tag_list = [t.strip() for t in tags.split(",")] if tags else None
 
-        data = await get_client().upload_file(
+        data = await client.upload_file(
             file_content=content,
             filename=p.name,
             content_type=content_type,
@@ -2008,6 +2548,46 @@ async def run_report_query(
         return _error(e)
 
 
+@mcp.tool()
+async def export_report_csv(
+    table: str | None = None,
+    sql: str | None = None,
+    params: list | None = None,
+) -> str:
+    """Export reporting data as CSV (streaming from PostgreSQL).
+
+    Two modes:
+    - Table mode: export an entire reporting table as CSV.
+    - Query mode: export a SQL query result as CSV.
+
+    Provide either `table` or `sql`, not both.
+
+    Args:
+        table: Table name to export (e.g., 'doc_patient', 'terminologies').
+            Only doc_* tables and metadata tables are allowed.
+        sql: SQL SELECT query. Must be read-only. Use for filtered/joined exports.
+        params: Optional parameter values for $1, $2, etc. in the SQL query.
+
+    Example:
+        export_report_csv(table="doc_patient")
+        export_report_csv(sql="SELECT name FROM doc_patient WHERE country = $1", params=["CH"])
+    """
+    if not table and not sql:
+        return "Error: provide either 'table' or 'sql'"
+    if table and sql:
+        return "Error: provide either 'table' or 'sql', not both"
+    try:
+        csv_content = await get_client().export_report_csv(
+            table=table, sql=sql, params=params
+        )
+        lines = csv_content.split("\n")
+        if len(lines) > 102:
+            return "\n".join(lines[:102]) + f"\n\n... truncated ({len(lines)} total lines)"
+        return csv_content
+    except Exception as e:
+        return _error(e)
+
+
 # ===================================================================
 # Tools — Import (CSV/XLSX)
 # ===================================================================
@@ -2032,28 +2612,29 @@ async def import_documents_csv(
         template_value: Template value code (e.g., 'PATIENT').
         column_mapping: Optional {csv_column: template_field} mapping.
             If omitted, auto-maps columns whose names match field names.
-        namespace: Namespace (default: 'wip').
+        namespace: Namespace. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         skip_errors: Skip rows that fail validation (default: true).
     """
     try:
+        client = get_client()
+        ns = client._ns(namespace)
         p = Path(file_path)
         if not p.exists():
             return f"Error: File not found: {file_path}"
 
         content = p.read_bytes()
-        ns = namespace or "wip"
 
         # If no mapping provided, auto-map by getting template fields
         if column_mapping is None:
             # Preview to get headers
-            preview = await get_client().preview_import(content, p.name)
+            preview = await client.preview_import(content, p.name)
             if "error" in preview:
                 return f"Error: {preview['error']}"
 
             headers = preview.get("headers", [])
 
             # Get template fields
-            tmpl = await get_client().get_template_by_value(value=template_value)
+            tmpl = await client.get_template_by_value(value=template_value)
             fields = tmpl.get("fields", [])
             field_names = {f["name"].lower(): f["name"] for f in fields}
 
@@ -2073,10 +2654,10 @@ async def import_documents_csv(
                 )
 
         # Resolve template_id
-        tmpl = await get_client().get_template_by_value(value=template_value)
+        tmpl = await client.get_template_by_value(value=template_value)
         template_id = tmpl.get("template_id")
 
-        result = await get_client().import_documents(
+        result = await client.import_documents(
             file_content=content,
             filename=p.name,
             template_id=template_id,
@@ -2098,7 +2679,7 @@ async def import_documents_csv(
 async def start_replay(
     template_value: str | None = None,
     template_id: str | None = None,
-    namespace: str = "wip",
+    namespace: str | None = None,
     throttle_ms: int = 10,
     batch_size: int = 100,
 ) -> str:
@@ -2109,19 +2690,21 @@ async def start_replay(
 
     Args:
         template_value: Replay documents for this template (optional, replays all if omitted).
-        template_id: Alternative to template_value — use the template ID directly.
-        namespace: Namespace to replay from.
+        template_id: Alternative to template_value — template ID, value code (e.g., 'PERSON'), or synonym.
+        namespace: Namespace to replay from. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         throttle_ms: Delay between events in ms (0-5000, default 10).
         batch_size: Documents per batch (10-1000, default 100).
     """
     try:
+        client = get_client()
+        namespace = client._ns(namespace)
         filter_config = {"namespace": namespace, "status": "active"}
         if template_value:
             filter_config["template_value"] = template_value
         if template_id:
             filter_config["template_id"] = template_id
 
-        data = await get_client().start_replay(
+        data = await client.start_replay(
             filter_config=filter_config,
             throttle_ms=throttle_ms,
             batch_size=batch_size,
@@ -2174,6 +2757,181 @@ async def resume_replay(session_id: str) -> str:
     """
     try:
         data = await get_client().resume_replay(session_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def start_backup(
+    namespace: str | None = None,
+    include_files: bool = False,
+    include_inactive: bool = False,
+    skip_documents: bool = False,
+    skip_closure: bool = False,
+    skip_synonyms: bool = False,
+    latest_only: bool = False,
+    template_prefixes: list[str] | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Start a backup of a namespace. Returns the initial BackupJobSnapshot.
+
+    Backups run in the background; poll get_backup_job to track progress until
+    status is 'complete' or 'failed', then download_backup_archive to fetch
+    the .zip.
+
+    WARNING — v1.0 limitation: include_files=true is unsafe on namespaces with
+    non-trivial file content (CASE-28: ArchiveWriter buffers all blob bytes in
+    RAM and will OOM the document-store container). Leave it false until
+    CASE-28 lands.
+
+    Args:
+        namespace: Source namespace (uses WIP_MCP_DEFAULT_NAMESPACE if unset).
+        include_files: Include file blobs in the archive (see WARNING above).
+        include_inactive: Include soft-deleted entities.
+        skip_documents: Skip the documents phase entirely (definitions only).
+        skip_closure: Skip the closure-table (relationships) phase.
+        skip_synonyms: Skip the synonyms phase.
+        latest_only: Export only the latest version of each entity.
+        template_prefixes: Optional template_id prefixes to filter documents.
+        dry_run: Walk the export without writing the archive.
+    """
+    try:
+        data = await get_client().start_backup(
+            namespace=namespace,
+            include_files=include_files,
+            include_inactive=include_inactive,
+            skip_documents=skip_documents,
+            skip_closure=skip_closure,
+            skip_synonyms=skip_synonyms,
+            latest_only=latest_only,
+            template_prefixes=template_prefixes,
+            dry_run=dry_run,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def start_restore(
+    namespace: str,
+    archive_path: str,
+    mode: str = "restore",
+    target_namespace: str | None = None,
+    register_synonyms: bool = False,
+    skip_documents: bool = False,
+    skip_files: bool = False,
+    batch_size: int = 50,
+    continue_on_error: bool = False,
+    dry_run: bool = False,
+) -> str:
+    """Restore a namespace from a local archive file. Returns the initial BackupJobSnapshot.
+
+    The archive at archive_path is uploaded as multipart and a restore job is
+    queued. Poll get_backup_job to track progress.
+
+    GOTCHA — restore mode semantics:
+    - mode='restore' writes back to the *source* namespace embedded in the
+      archive and IGNORES target_namespace. Use this only when restoring an
+      archive into the same namespace it came from.
+    - mode='fresh' generates new IDs and honors target_namespace. Use this for
+      round-trip into a new namespace.
+
+    Args:
+        namespace: URL-path namespace (the auth check target).
+        archive_path: Local filesystem path to the .zip archive to upload.
+        mode: 'restore' (preserve IDs) or 'fresh' (generate new IDs).
+        target_namespace: Override target namespace. Honored only in 'fresh' mode.
+        register_synonyms: Register original IDs as synonyms of new IDs (fresh mode).
+        skip_documents: Skip restoring documents (definitions only).
+        skip_files: Skip restoring file blobs.
+        batch_size: Restore batch size (1-500).
+        continue_on_error: Continue past per-item errors.
+        dry_run: Walk the import without applying changes.
+    """
+    try:
+        data = await get_client().start_restore(
+            namespace=namespace,
+            archive_path=archive_path,
+            mode=mode,
+            target_namespace=target_namespace,
+            register_synonyms=register_synonyms,
+            skip_documents=skip_documents,
+            skip_files=skip_files,
+            batch_size=batch_size,
+            continue_on_error=continue_on_error,
+            dry_run=dry_run,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def get_backup_job(job_id: str) -> str:
+    """Get the current state of a backup or restore job.
+
+    Returns a BackupJobSnapshot with status, phase, percent, message, and
+    archive_size (when complete). Poll this to track progress.
+    """
+    try:
+        data = await get_client().get_backup_job(job_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def list_backup_jobs(
+    namespace: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+) -> str:
+    """List recent backup/restore jobs, optionally filtered.
+
+    Args:
+        namespace: Filter by namespace.
+        status: Filter by status ('pending', 'running', 'complete', 'failed').
+        limit: Max jobs to return (1-500, default 50).
+    """
+    try:
+        data = await get_client().list_backup_jobs(
+            namespace=namespace, status=status, limit=limit
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def download_backup_archive(job_id: str, dest_path: str) -> str:
+    """Download a completed backup archive to a local file.
+
+    Streams the .zip from the document-store to dest_path. Job must be a
+    backup job in 'complete' status. Parent directories of dest_path are
+    created automatically.
+
+    Args:
+        job_id: The backup job ID.
+        dest_path: Local filesystem path to write the .zip to.
+    """
+    try:
+        data = await get_client().download_backup_archive(job_id, dest_path)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def delete_backup_job(job_id: str) -> str:
+    """Delete a backup or restore job and its archive file.
+
+    Cannot delete a running job. Removes the MongoDB record and the archive
+    file from disk.
+    """
+    try:
+        data = await get_client().delete_backup_job(job_id)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2262,18 +3020,117 @@ def _patch_tool_schemas():
 _patch_tool_schemas()
 
 
+# ---------------------------------------------------------------------------
+# Read-only mode: WIP_MCP_MODE=readonly removes all write tools
+# ---------------------------------------------------------------------------
+
+WRITE_TOOLS = frozenset({
+    # Terminologies
+    "create_terminology",
+    "create_terminologies_bulk",
+    "update_terminology",
+    "delete_terminology",
+    "restore_terminology",
+    # Terms
+    "create_terms",
+    "update_term",
+    "delete_term",
+    "deprecate_term",
+    # Relationships
+    "create_relationships",
+    "delete_relationships",
+    # Templates
+    "create_template",
+    "create_templates_bulk",
+    "update_template",
+    "activate_template",
+    "deactivate_template",
+    # Documents
+    "create_document",
+    "create_documents_bulk",
+    "update_document",
+    "archive_document",
+    "delete_document",
+    # Files
+    "upload_file",
+    "delete_file",
+    "hard_delete_file",
+    # Import
+    "import_terminology",
+    "import_documents_csv",
+    # Replay
+    "start_replay",
+    "cancel_replay",
+    "pause_replay",
+    "resume_replay",
+    # Backup / Restore
+    "start_backup",
+    "start_restore",
+    "delete_backup_job",
+    # Registry write ops
+    "add_synonym",
+    "remove_synonym",
+    "merge_entries",
+    # Namespace
+    "create_namespace",
+    "delete_namespace",
+})
+
+
+def _apply_read_only_mode():
+    """Remove write tools when WIP_MCP_MODE=readonly."""
+    mode = os.getenv("WIP_MCP_MODE", "").lower()
+    if mode != "readonly":
+        return
+
+    removed = []
+    for tool_name in WRITE_TOOLS:
+        try:
+            mcp._tool_manager.remove_tool(tool_name)
+            removed.append(tool_name)
+        except (KeyError, ValueError):
+            pass  # Tool not registered (shouldn't happen, but safe)
+
+    # Update server instructions to reflect read-only mode
+    mcp._mcp_server.instructions = (
+        "World In a Pie (WIP) — a universal template-driven document storage "
+        "system. This server is running in READ-ONLY mode. You can discover "
+        "WIP's data model, query data, search, and run reports, but you "
+        "CANNOT create, modify, or delete any entities. "
+        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
+        "part_of, etc.) for hierarchical data modeling — use "
+        "get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
+        "aggregations, cross-template JOINs, and analytics via run_report_query. "
+        "Read the wip://conventions and wip://data-model resources to "
+        "understand WIP's data model before querying."
+    )
+
+    print(
+        f"MCP read-only mode: removed {len(removed)} write tools, "
+        f"{len(mcp._tool_manager.list_tools())} tools available",
+        file=sys.stderr,
+    )
+
+
+_apply_read_only_mode()
+
+
 # ===================================================================
 # Entry point
 # ===================================================================
 
 
 def main():
-    transport = "sse" if "--sse" in sys.argv else "stdio"
+    if "--http" in sys.argv:
+        transport = "streamable-http"
+    elif "--sse" in sys.argv:
+        transport = "sse"
+    else:
+        transport = "stdio"
 
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        import os
         import uvicorn
         from starlette.requests import Request
         from starlette.responses import JSONResponse
@@ -2281,15 +3138,28 @@ def main():
         api_key = os.getenv("API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY")
         if not api_key:
             print(
-                "WARNING: MCP server running in SSE mode without API key protection.\n"
+                f"WARNING: MCP server running in {transport} mode without API key protection.\n"
                 "Anyone with network access will have full CRUD access via AI tools.\n"
-                "Set API_KEY environment variable for SSE transport.",
+                "Set API_KEY environment variable for network transports.",
                 file=sys.stderr,
             )
 
-        # Wrap the SSE app with API key auth middleware (M7)
-        starlette_app = mcp.sse_app()
+        # Configure allowed hosts for DNS rebinding protection
+        allowed_host = os.getenv("MCP_ALLOWED_HOST")
+        if allowed_host and mcp.settings.transport_security:
+            ts = mcp.settings.transport_security
+            ts.allowed_hosts.append(allowed_host)
+            ts.allowed_hosts.append(f"{allowed_host}:*")
+            ts.allowed_origins.append(f"https://{allowed_host}")
+            ts.allowed_origins.append(f"https://{allowed_host}:*")
 
+        # Create the transport-appropriate Starlette app
+        starlette_app = (
+            mcp.streamable_http_app() if transport == "streamable-http"
+            else mcp.sse_app()
+        )
+
+        # API key auth middleware (M7)
         if api_key:
             from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -2305,10 +3175,14 @@ def main():
 
             starlette_app.add_middleware(ApiKeyMiddleware)
 
+        # Allow port override via env var (default: FastMCP's 8000)
+        port = int(os.getenv("MCP_PORT", mcp.settings.port))
+        host = os.getenv("MCP_HOST", "0.0.0.0")
+
         config = uvicorn.Config(
             starlette_app,
-            host=mcp.settings.host,
-            port=mcp.settings.port,
+            host=host,
+            port=port,
             log_level=mcp.settings.log_level.lower(),
         )
         server = uvicorn.Server(config)

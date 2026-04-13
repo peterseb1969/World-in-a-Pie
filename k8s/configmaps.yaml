@@ -13,7 +13,7 @@ data:
   WIP_AUTH_JWT_AUDIENCE: "wip-console"
   # IMPORTANT: WIP_AUTH_JWT_ISSUER_URL must match the Dex issuer seen by browsers.
   # Replace WIP_HOSTNAME with your Ingress hostname (e.g. wip.example.com).
-  WIP_AUTH_JWT_ISSUER_URL: "https://WIP_HOSTNAME/dex"
+  WIP_AUTH_JWT_ISSUER_URL: "https://wip-kubi.local/dex"
   WIP_AUTH_JWT_JWKS_URI: "http://wip-dex:5556/dex/keys"
 
   # Service URLs (K8s DNS within the wip namespace)
@@ -24,8 +24,8 @@ data:
   NATS_URL: "nats://wip-nats:4222"
 
   # CORS — restrict to your deployment hostname in production
-  CORS_ORIGINS: "https://localhost:8443"
-  WIP_CORS_ORIGINS: "https://localhost:8443"
+  CORS_ORIGINS: "https://wip-kubi.local"
+  WIP_CORS_ORIGINS: "https://wip-kubi.local"
 
   # File storage
   WIP_FILE_STORAGE_ENABLED: "true"
@@ -53,7 +53,7 @@ metadata:
 data:
   config.yaml: |
     # IMPORTANT: Replace WIP_HOSTNAME below with your actual Ingress hostname
-    issuer: https://WIP_HOSTNAME/dex
+    issuer: https://wip-kubi.local/dex
 
     storage:
       type: sqlite3
@@ -72,7 +72,7 @@ data:
         name: WIP Console
         secretEnv: DEX_CLIENT_SECRET
         redirectURIs:
-          - https://WIP_HOSTNAME/auth/callback
+          - https://wip-kubi.local/auth/callback
 
     connectors: []
 
@@ -83,14 +83,20 @@ data:
         hash: "$2a$10$kyL3xczYvxM.q4HkR5GV3uStfdvGF0M8XaOjcIefPsA0ZymAEk832"
         username: admin
         userID: admin-001
+        groups:
+          - wip-admins
       - email: editor@wip.local
         hash: "$2a$10$LLUecNDEbi.Nr4f8GRp/a.MAoXECtKfaS1s46ujPd3K14hpja2BU."
         username: editor
         userID: editor-001
+        groups:
+          - wip-editors
       - email: viewer@wip.local
         hash: "$2a$10$Rh2i0EzOHeYNfp9mMaJinOaQxusS7Q8qO2/P9urmHF0xpah.W15rq"
         username: viewer
         userID: viewer-001
+        groups:
+          - wip-viewers
 
 ---
 # ── Console nginx.conf (SPA serving only — Ingress handles routing) ──

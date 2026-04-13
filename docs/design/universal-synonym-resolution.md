@@ -1,6 +1,6 @@
 # Universal Synonym Resolution
 
-**Status:** All phases implemented (2026-03-27). Phases 1-3: auto-synonym registration, resolve layer, API integration. Phase 4: import namespace rewriting in WIP-Toolkit. Phase 5: `backfill-synonyms` CLI command.
+**Status:** Partially implemented (2026-03-27, updated 2026-03-30). Phase 1 (auto-synonym registration): implemented in services. Phase 2 (resolve layer): `wip_auth/resolve.py` implemented. Phase 3 (service API integration): partial — API boundary resolution works, but **internal service resolution bypasses Registry** (see `synonym-resolution-gaps.md`). Phase 4 (import namespace rewriting): not implemented. Phase 5 (`backfill-synonyms` CLI): implemented. **Namespace-required propagation (2026-03-30):** namespace is now required across the full stack (backend services, `@wip/client`, WIP-Toolkit, Console UI, scripts) — no more `="wip"` defaults.
 **Dependency for:** Cross-instance restore (v1.1), dev→prod namespace workflow, MCP ergonomics
 
 ---
@@ -164,6 +164,8 @@ When using a synonym in an API call, the developer provides a string that the re
 
 Documents and files are not typically referenced by synonym string in API calls — they use canonical IDs or are found by search. Their synonyms exist for migration portability.
 
+**Where `<current>` namespace comes from:** The namespace for composite key construction is determined in order: (1) explicitly from the `namespace` query parameter, (2) implicitly from single-namespace API keys (when `namespace` is omitted, the server derives it from the key's sole namespace scope), (3) if neither source is available, resolution is skipped and the raw value passes through to downstream validation.
+
 ### Documents without identity fields
 
 Most documents don't have identity fields — they're one-off records that received a unique canonical ID from Registry at creation. These have no natural human-readable key. For migration portability, a random UUID7 is assigned as the `portable_id` component. This UUID is meaningless to humans but stable across export/import: it survives namespace rewriting (only the `ns` component changes) and maps to whatever new canonical ID the target Registry assigns.
@@ -188,8 +190,9 @@ Client sends request with ID "X"
   → Is "X" in canonical format? (matches entity prefix pattern, e.g., TPL-*, DOC-*, TERM-*)
     → Yes: proceed as today (zero overhead)
     → No: parse synonym string
+      → Determine namespace: from `namespace` parameter, or from single-namespace API key, or skip resolution (pass raw value through)
       → Contains ":"? → split into parent:child (term notation)
-      → Build composite key from endpoint context (entity type) + current namespace
+      → Build composite key from endpoint context (entity type) + determined namespace
       → Check resolution cache (TTL 5 min)
       → Cache miss: Registry lookup by composite_key_hash
         → Found: cache result, substitute canonical ID, proceed
@@ -210,14 +213,10 @@ async def resolve_entity_id(
 ) -> str:
     """Resolve a synonym or canonical ID to the canonical ID.
 
-    Returns raw_id unchanged if it's already canonical.
-    Raises EntityNotFound if synonym lookup fails.
+    Every ID goes through Registry — UUIDs as entry_id verification,
+    synonyms as composite_key resolution. No format-based bypass.
+    Raises EntityNotFound if lookup fails.
     """
-    if is_canonical_format(raw_id):
-        return raw_id
-
-    # Build the composite key for this entity type
-    composite_key = _build_composite_key(raw_id, entity_type, namespace)
     cache_key = f"{namespace}:{entity_type}:{raw_id}"
 
     # Check cache first
@@ -225,8 +224,11 @@ async def resolve_entity_id(
     if cached:
         return cached
 
-    # Registry lookup
-    canonical = await registry_client.resolve_synonym(composite_key)
+    # _looks_like_uuid determines routing only (entry_id vs composite_key)
+    payload = _build_resolve_payload(raw_id, entity_type, namespace)
+
+    # Registry lookup — both UUIDs and synonyms go through /resolve
+    canonical = await registry_client.resolve(payload)
     if not canonical:
         raise EntityNotFound(f"No entity found for identifier: {raw_id}")
 
@@ -265,18 +267,13 @@ async def resolve_entity_ids(
     namespace: str,
 ) -> dict[str, str]:
     """Batch resolve. Returns {raw_id: canonical_id} for all inputs."""
-    to_resolve = [rid for rid in raw_ids if not is_canonical_format(rid)]
-    if not to_resolve:
-        return {rid: rid for rid in raw_ids}
-
-    composite_keys = [
-        _build_composite_key(rid, entity_type, namespace)
-        for rid in to_resolve
+    # All IDs go through Registry — no format-based bypass
+    payloads = [
+        _build_resolve_payload(rid, entity_type, namespace)
+        for rid in raw_ids
     ]
-    resolved = await registry_client.batch_resolve_synonyms(composite_keys)
-    result = {rid: rid for rid in raw_ids}  # canonical IDs pass through
-    result.update(resolved)
-    return result
+    results = await registry_client.batch_resolve(payloads)
+    return dict(zip(raw_ids, results))
 ```
 
 ### Registry API additions
@@ -296,34 +293,34 @@ This is a read-only batch endpoint optimised for resolution. It does not create 
 ### The reference chain today (fragile)
 
 ```
-Terminology "STATUS" created       → TERM-000001 (canonical ID)
-Term "approved" created            → T-000042 (canonical ID)
-Template "PATIENT" created         → TPL-01abc (canonical ID)
-  field: status (terminology_ref: "TERM-000001")     ← breaks on migration
+Terminology "STATUS" created       → 019def01-... (canonical ID)
+Term "approved" created            → 019abc42-... (canonical ID)
+Template "PATIENT" created         → 019eee01-... (canonical ID)
+  field: status (terminology_ref: "019def01-...")     ← breaks on migration
 Document created against PATIENT
-  template_id: "TPL-01abc"                           ← breaks on migration
+  template_id: "019eee01-..."                        ← breaks on migration
   data.status: "approved"                            ← already portable (term value)
-  data.primary_doctor: "DOC-00089"                   ← breaks on migration
+  data.primary_doctor: "019ddd89-..."                ← breaks on migration
 ```
 
 ### The reference chain with auto-synonyms (portable)
 
 ```
-Terminology "STATUS" created       → TERM-000001
-  auto-synonym: {ns:"wip", type:"terminology", value:"STATUS"} → TERM-000001
+Terminology "STATUS" created       → 019def01-...
+  auto-synonym: {ns:"wip", type:"terminology", value:"STATUS"} → 019def01-...
 
-Term "approved" created            → T-000042
-  auto-synonym: {ns:"wip", type:"term", terminology:"STATUS", value:"approved"} → T-000042
+Term "approved" created            → 019abc42-...
+  auto-synonym: {ns:"wip", type:"term", terminology:"STATUS", value:"approved"} → 019abc42-...
 
-Template "PATIENT" created         → TPL-01abc
-  auto-synonym: {ns:"wip", type:"template", value:"PATIENT"} → TPL-01abc
+Template "PATIENT" created         → 019eee01-...
+  auto-synonym: {ns:"wip", type:"template", value:"PATIENT"} → 019eee01-...
   field: status (terminology_ref: "STATUS")          ← resolved via synonym at runtime
 
 Document created
   API call: create_document(template_id="PATIENT")   ← resolved via synonym
-  Stored: template_id: "TPL-01abc"                   ← canonical ID stored internally
+  Stored: template_id: "019eee01-..."                ← canonical ID stored internally
   data.status: "approved"                            ← term value, already portable
-  data.primary_doctor: "DOC-00089"                   ← canonical ID stored
+  data.primary_doctor: "019ddd89-..."                ← canonical ID stored
     (the referenced doc also has a portable_id synonym for migration)
 ```
 

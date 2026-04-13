@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipError } from '../errors.js'
 import type {
   IntegrityCheckResult,
   SearchResponse,
@@ -6,12 +7,19 @@ import type {
   TermDocumentsResponse,
   EntityReferencesResponse,
   ReferencedByResponse,
+  ReportQueryParams,
+  ReportQueryResult,
+  ReportTable,
+  ReportTableSchema,
+  SyncStatus,
 } from '../types/reporting.js'
 
 export class ReportingSyncService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/reporting-sync')
   }
+
+  // ── Health & Status ──
 
   async healthCheck(): Promise<boolean> {
     try {
@@ -22,6 +30,88 @@ export class ReportingSyncService extends BaseService {
       return false
     }
   }
+
+  async getSyncStatus(): Promise<SyncStatus> {
+    return this.get('/status')
+  }
+
+  // ── SQL Query Execution ──
+
+  /** Execute a read-only SQL query against the PostgreSQL reporting database */
+  async runQuery(
+    sql: string,
+    params?: unknown[],
+    options?: { timeout_seconds?: number; max_rows?: number },
+  ): Promise<ReportQueryResult> {
+    const body: ReportQueryParams = {
+      sql,
+      params: params || [],
+      ...options,
+    }
+    return this.post('/query', body)
+  }
+
+  // ── Sync Awareness ──
+
+  /**
+   * Wait for the reporting sync to catch up.
+   *
+   * Simple form — waits until at least one new event is processed:
+   *   await client.reporting.awaitSync()
+   *
+   * Query form — waits until a specific row exists in PostgreSQL:
+   *   await client.reporting.awaitSync({
+   *     query: "SELECT 1 FROM dnd_monster WHERE document_id = $1",
+   *     params: [docId],
+   *   })
+   */
+  async awaitSync(options?: {
+    /** SQL query that should return rows when sync is complete */
+    query?: string
+    /** Parameters for the SQL query */
+    params?: unknown[]
+    /** Timeout in milliseconds (default: 5000) */
+    timeout?: number
+    /** Poll interval in milliseconds (default: 200) */
+    interval?: number
+  }): Promise<void> {
+    const timeout = options?.timeout ?? 5000
+    const interval = options?.interval ?? 200
+    const deadline = Date.now() + timeout
+
+    if (options?.query) {
+      // Query-based: poll until the expected row(s) appear
+      while (Date.now() < deadline) {
+        const result = await this.runQuery(options.query, options.params, { max_rows: 1 })
+        if (result.row_count > 0) return
+        await new Promise((resolve) => setTimeout(resolve, interval))
+      }
+      throw new WipError('Sync timeout: expected data not found in PostgreSQL')
+    }
+
+    // Event-count based: wait until at least one new event processes
+    const before = await this.getSyncStatus()
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, interval))
+      const current = await this.getSyncStatus()
+      if (current.events_processed > before.events_processed) return
+    }
+    throw new WipError('Sync timeout: no new events processed')
+  }
+
+  // ── Table Introspection ──
+
+  /** List all PostgreSQL reporting tables */
+  async listTables(tableName?: string): Promise<{ tables: ReportTable[] }> {
+    return this.get('/tables', tableName ? { table_name: tableName } : undefined)
+  }
+
+  /** Get PostgreSQL schema for a template's reporting table */
+  async getTableSchema(templateValue: string): Promise<ReportTableSchema> {
+    return this.get(`/schema/${templateValue}`)
+  }
+
+  // ── Integrity ──
 
   async getIntegrityCheck(params?: {
     template_status?: string
@@ -34,9 +124,12 @@ export class ReportingSyncService extends BaseService {
     return this.get('/health/integrity', params)
   }
 
+  // ── Search & Activity ──
+
   async search(params: {
     query: string
     types?: string[]
+    namespace: string
     status?: string
     limit?: number
   }): Promise<SearchResponse> {
@@ -49,6 +142,8 @@ export class ReportingSyncService extends BaseService {
   }): Promise<ActivityResponse> {
     return this.get('/activity/recent', params)
   }
+
+  // ── References ──
 
   async getTermDocuments(termId: string, limit?: number): Promise<TermDocumentsResponse> {
     return this.get(`/references/term/${termId}/documents`, limit ? { limit } : undefined)

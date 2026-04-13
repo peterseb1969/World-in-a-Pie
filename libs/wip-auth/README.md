@@ -8,7 +8,7 @@ A pluggable authentication library for World In a Pie (WIP) services.
 - **Pluggable providers**: API keys, OIDC/JWT, or custom
 - **FastAPI integration**: Middleware and dependencies
 - **Backward compatible**: Works with existing `X-API-Key` authentication
-- **OIDC support**: Works with Authelia, Authentik, Zitadel, or any OIDC provider
+- **OIDC support**: Works with Dex (or any OIDC-compliant provider)
 
 ## Installation
 
@@ -134,7 +134,7 @@ WIP_AUTH_LEGACY_API_KEY=dev_master_key_for_testing
 ### `jwt_only` - User Authentication
 
 Only JWT/OIDC authentication via `Authorization: Bearer` header. Requires
-an OIDC provider like Authelia.
+an OIDC provider like Dex.
 
 ```bash
 WIP_AUTH_MODE=jwt_only

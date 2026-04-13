@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from wip_auth import check_namespace_permission, get_current_identity
+from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
 
 from ..services.import_export import ImportExportService
 from .auth import require_api_key
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/import-export", tags=["Import/Export"])
 )
 async def export_terminology(
     terminology_id: str,
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     format: str = Query("json", description="Export format: json, csv"),
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
@@ -32,6 +33,8 @@ async def export_terminology(
     Supports JSON and CSV formats. Use include_relationships=true to include
     ontology relationships (is_a, part_of, etc.) in JSON exports.
     """
+    terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
+
     try:
         language_list = languages.split(",") if languages else None
 
@@ -158,7 +161,7 @@ async def import_ontology(
     data: dict[str, Any] = Body(...),
     terminology_value: str | None = Query(None, description="WIP terminology value (e.g., HPO, GO). Auto-detected if not set."),
     terminology_label: str | None = Query(None, description="Display label. Auto-detected if not set."),
-    namespace: str = Query("wip", description="Target namespace"),
+    namespace: str = Query(..., description="Target namespace"),
     prefix_filter: str | None = Query(None, description="Only import nodes with this OBO prefix"),
     include_deprecated: bool = Query(False, description="Import deprecated/obsolete nodes"),
     max_synonyms: int = Query(10, description="Max aliases per term"),

@@ -179,7 +179,7 @@ LIMIT 20;
 
 ## Pre-built Dashboards
 
-Coming soon: Import pre-built dashboards from `dashboards/` directory.
+Not yet included. Create dashboards manually using the table views documented above.
 
 ```bash
 # Future: Import dashboard

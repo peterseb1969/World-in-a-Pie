@@ -263,13 +263,18 @@ async function doImport() {
 async function doWipImport() {
   if (!wipData.value) return
 
+  const ns = nsStore.currentNamespaceParam
+  if (!ns) {
+    throw new Error('Namespace is required for import. Please select a namespace (not "all").')
+  }
+
   // Apply overrides from common options
   const terminology = { ...wipData.value.terminology }
   if (commonOptions.value.terminology_value) terminology.value = commonOptions.value.terminology_value
   if (commonOptions.value.terminology_label) terminology.label = commonOptions.value.terminology_label
 
   const request: ImportTerminologyRequest = {
-    terminology,
+    terminology: { ...terminology, namespace: ns },
     terms: wipData.value.terms,
     relationships: wipData.value.relationships,
     options: {
@@ -300,7 +305,10 @@ async function doWipImport() {
 async function doOboImport() {
   if (!oboData.value) return
 
-  const namespace = nsStore.currentNamespaceParam || 'wip'
+  const namespace = nsStore.currentNamespaceParam
+  if (!namespace) {
+    throw new Error('Namespace is required for import. Please select a namespace (not "all").')
+  }
   const opts: Record<string, unknown> = {
     skip_duplicates: commonOptions.value.skip_duplicates,
     update_existing: commonOptions.value.update_existing,

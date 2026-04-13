@@ -208,9 +208,12 @@ async function onUpdated() {
         </template>
       </Column>
 
-      <Column field="status" header="Status" sortable style="width: 10%">
+      <Column field="status" header="Status" sortable style="width: 14%">
         <template #body="{ data }">
-          <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+          <div class="status-tags">
+            <Tag :value="data.status" :severity="getStatusSeverity(data.status)" />
+            <Tag v-if="data.mutable" value="mutable" severity="warn" />
+          </div>
         </template>
       </Column>
 
@@ -418,6 +421,12 @@ async function onUpdated() {
 
 .term-count {
   font-weight: 600;
+}
+
+.status-tags {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
 }
 
 .action-buttons {

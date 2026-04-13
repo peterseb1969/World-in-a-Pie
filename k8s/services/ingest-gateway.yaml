@@ -35,7 +35,7 @@ spec:
     spec:
       containers:
         - name: ingest-gateway
-          image: wip/ingest-gateway:latest
+          image: localhost:32000/wip-ingest-gateway:latest
           ports:
             - containerPort: 8006
           command: ["uvicorn", "ingest_gateway.main:app", "--host", "0.0.0.0", "--port", "8006"]

@@ -18,6 +18,7 @@ async def terminology_with_terms(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "AUDIT_TEST",
             "label": "Audit Test Terminology",
+            "namespace": "wip",
             "description": "Terminology for audit log testing"
         }]
     )
@@ -66,7 +67,7 @@ async def terminology_with_terms(client: AsyncClient, auth_headers: dict):
         "DELETE",
         "/api/def-store/terms",
         headers=auth_headers,
-        content=f'[{{"id": "{term2_id}"}}]'
+        json=[{"id": term2_id}]
     )
 
     return {
@@ -275,7 +276,8 @@ async def test_audit_log_pagination(
         headers=auth_headers,
         json=[{
             "value": "PAGINATION_TEST",
-            "label": "Pagination Test"
+            "label": "Pagination Test",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_resp.json()["results"][0]["id"]
@@ -341,7 +343,8 @@ async def test_audit_log_pagination_beyond_last_page(
         headers=auth_headers,
         json=[{
             "value": "BEYOND_PAGE",
-            "label": "Beyond Page Test"
+            "label": "Beyond Page Test",
+            "namespace": "wip"
         }]
     )
 
@@ -367,11 +370,11 @@ async def test_audit_log_pagination_beyond_last_page(
 async def test_audit_log_requires_authentication(client: AsyncClient):
     """Test that audit log endpoints require authentication."""
     # Term audit log
-    response = await client.get("/api/def-store/audit/terms/T-000001")
+    response = await client.get("/api/def-store/audit/terms/0190b000-0000-7000-0000-000000000001")
     assert response.status_code == 401
 
     # Terminology audit log
-    response = await client.get("/api/def-store/audit/terminologies/TERM-000001")
+    response = await client.get("/api/def-store/audit/terminologies/0190a000-0000-7000-0000-000000000001")
     assert response.status_code == 401
 
     # Recent audit log
@@ -394,7 +397,8 @@ async def test_audit_entry_has_complete_structure(
         headers=auth_headers,
         json=[{
             "value": "STRUCTURE_TEST",
-            "label": "Structure Test"
+            "label": "Structure Test",
+            "namespace": "wip"
         }]
     )
     terminology_id = create_resp.json()["results"][0]["id"]

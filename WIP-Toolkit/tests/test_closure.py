@@ -22,9 +22,9 @@ class TestScanTemplateReferences:
             sample_templates, known_terms, known_tpls,
         )
 
-        # TPL-000003 references TERM-000003, TERM-000004 which are NOT in known set
-        assert "TERM-000003" in ext_terms
-        assert "TERM-000004" in ext_terms
+        # 0190c000-0000-7000-0000-000000000003 references 0190a000-0000-7000-0000-000000000003, 0190a000-0000-7000-0000-000000000004 which are NOT in known set
+        assert "0190a000-0000-7000-0000-000000000003" in ext_terms
+        assert "0190a000-0000-7000-0000-000000000004" in ext_terms
         # All template refs should be in known set
         assert len(ext_tpls) == 0
 
@@ -199,15 +199,15 @@ class TestComputeClosureNoExternalRefs:
 
         client = MagicMock()
         terminologies = [
-            {"terminology_id": "TERM-001", "value": "COUNTRY"},
+            {"terminology_id": "0190a000-0000-7000-0000-000000000001", "value": "COUNTRY"},
         ]
-        terms = [{"term_id": "T-001"}]
+        terms = [{"term_id": "0190b000-0000-7000-0000-000000000001"}]
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": None,
                 "fields": [
-                    {"name": "country", "type": "term", "terminology_ref": "TERM-001"},
+                    {"name": "country", "type": "term", "terminology_ref": "0190a000-0000-7000-0000-000000000001"},
                 ],
             },
         ]
@@ -240,10 +240,10 @@ class TestComputeClosureExternalTerminology:
         mock_collector.fetch_terms.return_value = ext_terms
 
         client = MagicMock()
-        terminologies = [{"terminology_id": "TERM-001"}]
+        terminologies = [{"terminology_id": "0190a000-0000-7000-0000-000000000001"}]
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": None,
                 "fields": [
                     {"name": "ext", "type": "term", "terminology_ref": "TERM-EXT"},
@@ -270,7 +270,7 @@ class TestComputeClosureExternalTerminology:
         client = MagicMock()
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": None,
                 "fields": [
                     {"name": "ext", "type": "term", "terminology_ref": "TERM-MISSING"},
@@ -300,7 +300,7 @@ class TestComputeClosureExternalTemplate:
         client = MagicMock()
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": "TPL-EXT",
                 "fields": [],
             },
@@ -323,7 +323,7 @@ class TestComputeClosureExternalTemplate:
         client = MagicMock()
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": "TPL-GHOST",
                 "fields": [],
             },
@@ -345,7 +345,7 @@ class TestComputeClosureMultiIteration:
         mock_collector = MagicMock()
         MockCollector.return_value = mock_collector
 
-        # First iteration: TPL-001 references TPL-EXT which is external
+        # First iteration: 0190c000-0000-7000-0000-000000000001 references TPL-EXT which is external
         # Second iteration: TPL-EXT references TERM-EXT which is external
         ext_tpl = {
             "template_id": "TPL-EXT", "version": 1, "extends": None,
@@ -363,7 +363,7 @@ class TestComputeClosureMultiIteration:
         client = MagicMock()
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": "TPL-EXT",
                 "fields": [],
             },
@@ -409,7 +409,7 @@ class TestComputeClosureMaxIterations:
         client = MagicMock()
         templates = [
             {
-                "template_id": "TPL-001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "extends": "TPL-CHAIN-1",
                 "fields": [],
             },
@@ -430,10 +430,10 @@ class TestCheckDocumentReferences:
     """Test document external reference checking (warnings only)."""
 
     def test_no_external_refs_no_warnings(self):
-        known_template_ids = {"TPL-001", "TPL-002"}
+        known_template_ids = {"0190c000-0000-7000-0000-000000000001", "0190c000-0000-7000-0000-000000000002"}
         documents = [
-            {"document_id": "DOC-1", "template_id": "TPL-001", "references": []},
-            {"document_id": "DOC-2", "template_id": "TPL-002", "references": []},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "template_id": "0190c000-0000-7000-0000-000000000001", "references": []},
+            {"document_id": "0190d000-0000-7000-0000-000000000002", "template_id": "0190c000-0000-7000-0000-000000000002", "references": []},
         ]
         warnings: list[str] = []
 
@@ -442,9 +442,9 @@ class TestCheckDocumentReferences:
         assert warnings == []
 
     def test_external_template_id_warns(self):
-        known_template_ids = {"TPL-001"}
+        known_template_ids = {"0190c000-0000-7000-0000-000000000001"}
         documents = [
-            {"document_id": "DOC-1", "template_id": "TPL-EXTERNAL", "references": []},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "template_id": "TPL-EXTERNAL", "references": []},
         ]
         warnings: list[str] = []
 
@@ -455,15 +455,15 @@ class TestCheckDocumentReferences:
         assert "TPL-EXTERNAL" in warnings[0]
 
     def test_external_document_reference_warns(self):
-        known_template_ids = {"TPL-001"}
+        known_template_ids = {"0190c000-0000-7000-0000-000000000001"}
         documents = [
             {
-                "document_id": "DOC-1",
-                "template_id": "TPL-001",
+                "document_id": "0190d000-0000-7000-0000-000000000001",
+                "template_id": "0190c000-0000-7000-0000-000000000001",
                 "references": [
                     {
                         "field_path": "manager",
-                        "resolved": {"document_id": "DOC-EXTERNAL", "template_id": "TPL-001"},
+                        "resolved": {"document_id": "DOC-EXTERNAL", "template_id": "0190c000-0000-7000-0000-000000000001"},
                     },
                 ],
             },
@@ -478,15 +478,15 @@ class TestCheckDocumentReferences:
     def test_empty_documents_no_warnings(self):
         warnings: list[str] = []
 
-        _check_document_references([], {"TPL-001"}, None, warnings)
+        _check_document_references([], {"0190c000-0000-7000-0000-000000000001"}, None, warnings)
 
         assert warnings == []
 
     def test_document_with_none_references(self):
         """Documents with None references field do not crash."""
-        known_template_ids = {"TPL-001"}
+        known_template_ids = {"0190c000-0000-7000-0000-000000000001"}
         documents = [
-            {"document_id": "DOC-1", "template_id": "TPL-001", "references": None},
+            {"document_id": "0190d000-0000-7000-0000-000000000001", "template_id": "0190c000-0000-7000-0000-000000000001", "references": None},
         ]
         warnings: list[str] = []
 

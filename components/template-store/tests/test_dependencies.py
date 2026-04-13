@@ -38,6 +38,7 @@ async def _create_one_id(client: AsyncClient, auth_headers: dict, payload: dict)
 async def test_dependencies_no_dependents(client: AsyncClient, auth_headers: dict):
     """Test dependency check on a template with no dependents."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "NO_DEPS",
         "label": "No Dependencies",
         "fields": [
@@ -76,6 +77,7 @@ async def test_dependencies_nonexistent_template(client: AsyncClient, auth_heade
 async def test_dependencies_with_child_templates(client: AsyncClient, auth_headers: dict):
     """Test dependency check reports child templates that extend this one."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEP_PARENT",
         "label": "Dep Parent",
         "fields": [
@@ -85,6 +87,7 @@ async def test_dependencies_with_child_templates(client: AsyncClient, auth_heade
 
     # Create two children
     child1_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEP_CHILD_1",
         "label": "Dep Child 1",
         "extends": parent_id,
@@ -94,6 +97,7 @@ async def test_dependencies_with_child_templates(client: AsyncClient, auth_heade
     })
 
     child2_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEP_CHILD_2",
         "label": "Dep Child 2",
         "extends": parent_id,
@@ -129,12 +133,14 @@ async def test_dependencies_prevents_delete_with_children(
     """Test that delete is blocked when child templates exist,
     matching the behavior shown in the dependency check."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEL_BLOCK_PARENT",
         "label": "Delete Block Parent",
         "fields": [],
     })
 
     await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEL_BLOCK_CHILD",
         "label": "Delete Block Child",
         "extends": parent_id,
@@ -160,6 +166,7 @@ async def test_dependencies_allows_delete_without_children(
 ):
     """Test that delete succeeds when there are no child templates."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEL_OK",
         "label": "Delete OK",
         "fields": [],
@@ -198,6 +205,7 @@ async def test_dependencies_document_store_unavailable(
     include a warning about the Document Store being unreachable.
     """
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DS_UNAVAIL",
         "label": "DS Unavailable",
         "fields": [],
@@ -234,12 +242,14 @@ async def test_dependencies_document_store_unavailable_with_children(
     Should report both the child templates and the unknown document count.
     """
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DS_UNAVAIL_PARENT",
         "label": "DS Unavailable Parent",
         "fields": [],
     })
 
     await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DS_UNAVAIL_CHILD",
         "label": "DS Unavailable Child",
         "extends": parent_id,
@@ -273,12 +283,14 @@ async def test_dependencies_child_details_include_value_and_label(
 ):
     """Test that child template details include template_id, value, and label."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DETAIL_PARENT",
         "label": "Detail Parent",
         "fields": [],
     })
 
     child_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DETAIL_CHILD",
         "label": "Detail Child Label",
         "extends": parent_id,
@@ -305,6 +317,7 @@ async def test_dependencies_structure_with_no_children(client: AsyncClient, auth
     child templates. Document Store is unavailable in tests, so document_count
     is -1, but child-related fields should all be clean."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CLEAN_DEPS",
         "label": "Clean Dependencies",
         "fields": [],
@@ -333,12 +346,14 @@ async def test_dependencies_structure_with_no_children(client: AsyncClient, auth
 async def test_dependencies_with_deep_hierarchy(client: AsyncClient, auth_headers: dict):
     """Test dependency check only reports direct children, not grandchildren."""
     grandparent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEEP_GP",
         "label": "Deep Grandparent",
         "fields": [],
     })
 
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEEP_P",
         "label": "Deep Parent",
         "extends": grandparent_id,
@@ -346,6 +361,7 @@ async def test_dependencies_with_deep_hierarchy(client: AsyncClient, auth_header
     })
 
     await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEEP_C",
         "label": "Deep Child",
         "extends": parent_id,

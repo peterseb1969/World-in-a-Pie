@@ -37,12 +37,14 @@ export interface Document {
   document_id: string
   namespace: string
   template_id: string
+  template_value?: string
   template_version: number
   identity_hash: string
   version: number
   data: Record<string, unknown>
   term_references: TermReference[]
   references: Reference[]
+  file_references: Array<Record<string, unknown>>
   status: DocumentStatus
   created_at: string
   created_by: string | null
@@ -56,13 +58,25 @@ export interface Document {
 export interface CreateDocumentRequest {
   template_id: string
   template_version?: number
-  namespace?: string
+  document_id?: string
+  version?: number
+  namespace: string
   data: Record<string, unknown>
   created_by?: string
-  metadata?: {
-    source_system?: string
-    custom?: Record<string, unknown>
-  }
+  metadata?: Record<string, unknown>
+  synonyms?: Array<Record<string, unknown>>
+}
+
+export interface DocumentCreateResponse {
+  document_id: string
+  namespace: string
+  template_id: string
+  template_value?: string
+  identity_hash: string
+  version: number
+  is_new: boolean
+  previous_version?: number
+  warnings: string[]
 }
 
 export interface DocumentQueryParams {
@@ -76,7 +90,9 @@ export interface DocumentQueryParams {
   namespace?: string
 }
 
-export type DocumentListResponse = PaginatedResponse<Document>
+export interface DocumentListResponse extends PaginatedResponse<Document> {
+  next_cursor?: string
+}
 
 export type QueryFilterOperator = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'nin' | 'exists' | 'regex'
 
@@ -115,10 +131,35 @@ export interface DocumentValidationResponse {
   warnings: string[]
   identity_hash: string | null
   template_version: number | null
+  term_references?: Array<Record<string, unknown>>
+  references?: Array<Record<string, unknown>>
+  file_references?: Array<Record<string, unknown>>
+}
+
+/**
+ * Single item in a PATCH /documents bulk request.
+ *
+ * Applies an RFC 7396 JSON Merge Patch to the document's `data`. Identity fields
+ * cannot be changed (use POST to create a new document instead).
+ */
+export interface PatchDocumentRequest {
+  /** Canonical document_id (UUID) or registered synonym. Synonyms are resolved server-side. */
+  document_id: string
+  /**
+   * RFC 7396 JSON Merge Patch applied to the document's `data` field.
+   * Objects deep-merge, arrays replace, `null` deletes the key.
+   */
+  patch: Record<string, unknown>
+  /**
+   * Optional optimistic concurrency control. If supplied, the patch fails with
+   * `concurrency_conflict` unless the current document version matches.
+   */
+  if_match?: number
 }
 
 export interface ValidateDocumentRequest {
   template_id: string
+  namespace: string
   data: Record<string, unknown>
 }
 
@@ -163,4 +204,68 @@ export interface TableViewParams {
   page?: number
   page_size?: number
   max_cross_product?: number
+}
+
+// ---- Import ----
+
+export interface ImportPreviewResponse {
+  headers: string[]
+  rows: Record<string, unknown>[]
+  format: string
+  error?: string
+}
+
+export interface ImportDocumentsOptions {
+  template_id: string
+  column_mapping: Record<string, string>
+  namespace: string
+  skip_errors?: boolean
+}
+
+export interface ImportDocumentResult {
+  row: number
+  document_id: string
+  version: number
+  is_new: boolean
+}
+
+export interface ImportDocumentError {
+  row: number
+  error: string
+  data: Record<string, string>
+}
+
+export interface ImportDocumentsResponse {
+  total_rows: number
+  succeeded: number
+  failed: number
+  skipped: number
+  results: ImportDocumentResult[]
+  errors: ImportDocumentError[]
+}
+
+// ---- Replay ----
+
+export type ReplayStatus = 'pending' | 'running' | 'paused' | 'completed' | 'cancelled' | 'failed'
+
+export interface ReplayFilter {
+  template_id?: string
+  template_value?: string
+  namespace?: string
+  status?: string
+}
+
+export interface ReplayRequest {
+  filter?: ReplayFilter
+  throttle_ms?: number
+  batch_size?: number
+}
+
+export interface ReplaySessionResponse {
+  session_id: string
+  status: ReplayStatus
+  total_count: number
+  published: number
+  throttle_ms: number
+  message: string
 }

@@ -6,9 +6,10 @@ import json
 import shutil
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterator, TextIO
+from typing import Any, BinaryIO, Iterator, TextIO
 
 from .models import Manifest
 
@@ -20,15 +21,19 @@ TERMS_FILE = "terms.jsonl"
 TEMPLATES_FILE = "templates.jsonl"
 DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
+RELATIONSHIPS_FILE = "relationships.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
+REGISTRY_ENTRIES_FILE = "registry_entries.jsonl"
 BLOBS_DIR = "blobs/"
 
 ENTITY_FILES = {
     "terminologies": TERMINOLOGIES_FILE,
     "terms": TERMS_FILE,
+    "relationships": RELATIONSHIPS_FILE,
     "templates": TEMPLATES_FILE,
     "documents": DOCUMENTS_FILE,
     "files": FILES_FILE,
+    "registry_entries": REGISTRY_ENTRIES_FILE,
 }
 
 
@@ -36,15 +41,30 @@ class ArchiveWriter:
     """Writes entities to a ZIP archive using temp files for O(1) memory.
 
     Each entity type is appended as a JSONL line to a temp file on disk.
+    File blobs are streamed to a per-file tempfile under ``blobs/`` so peak
+    memory stays O(one chunk) regardless of total blob size (CASE-28).
     When write() is called, the temp files are streamed into the ZIP archive.
+
+    The temp directory location can be overridden via ``tmp_dir`` so a
+    server caller (e.g. document-store's /backup endpoint) can co-locate
+    scratch storage with the configured ``WIP_BACKUP_DIR`` instead of the
+    system default ``/tmp`` (CASE-29).
     """
 
-    def __init__(self, output_path: str | Path) -> None:
+    def __init__(
+        self,
+        output_path: str | Path,
+        tmp_dir: str | Path | None = None,
+    ) -> None:
         self.output_path = Path(output_path)
-        self._tmp_dir = tempfile.mkdtemp(prefix="wip-export-")
+        self._tmp_dir = tempfile.mkdtemp(
+            prefix="wip-export-",
+            dir=str(tmp_dir) if tmp_dir else None,
+        )
         self._handles: dict[str, TextIO] = {}
         self._counts: dict[str, int] = {name: 0 for name in ENTITY_FILES}
-        self._blob_data: dict[str, bytes] = {}
+        self._blobs_dir = Path(self._tmp_dir) / "blobs"
+        self._blobs_dir.mkdir()
 
     def _get_handle(self, entity_type: str) -> TextIO:
         """Get or create the temp file handle for an entity type."""
@@ -61,9 +81,27 @@ class ArchiveWriter:
         fh.write("\n")
         self._counts[entity_type] = self._counts.get(entity_type, 0) + 1
 
+    @contextmanager
+    def open_blob(self, file_id: str) -> Iterator[BinaryIO]:
+        """Open a binary file handle for streaming a blob to disk.
+
+        Preferred entry point for callers that already have a streaming
+        source (e.g. an HTTP download). Composes naturally with
+        :meth:`WIPClient.stream_to_file` so no full blob is ever held in
+        Python memory.
+        """
+        path = self._blobs_dir / file_id
+        with open(path, "wb") as fh:
+            yield fh
+
     def add_blob(self, file_id: str, data: bytes) -> None:
-        """Add binary file content to the archive."""
-        self._blob_data[file_id] = data
+        """Add binary file content to the archive (in-memory entry point).
+
+        Thin wrapper that writes ``data`` to the same per-file tempfile
+        as :meth:`open_blob`. Preserves the original public API for
+        existing callers and tests; new code should prefer ``open_blob``.
+        """
+        (self._blobs_dir / file_id).write_bytes(data)
 
     def entity_count(self, entity_type: str) -> int:
         """Return the number of entities added for a given type."""
@@ -96,9 +134,9 @@ class ArchiveWriter:
             if synonyms_path.exists() and synonyms_path.stat().st_size > 0:
                 zf.write(synonyms_path, SYNONYMS_FILE)
 
-            # Write blobs
-            for file_id, data in self._blob_data.items():
-                zf.writestr(f"{BLOBS_DIR}{file_id}", data)
+            # Write blobs (streamed from per-file tempfiles)
+            for blob_file in sorted(self._blobs_dir.iterdir()):
+                zf.write(blob_file, f"{BLOBS_DIR}{blob_file.name}")
 
         self._cleanup()
         return self.output_path

@@ -28,7 +28,8 @@ class RegistryClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        transport: Any | None = None,
     ):
         """
         Initialize the Registry client.
@@ -37,6 +38,7 @@ class RegistryClient:
             base_url: Registry API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
+            transport: Optional httpx transport (for in-process testing)
         """
         self.base_url = base_url or os.getenv(
             "REGISTRY_URL",
@@ -47,6 +49,7 @@ class RegistryClient:
             "dev_master_key_for_testing"
         )
         self.timeout = timeout
+        self._transport = transport
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -55,13 +58,21 @@ class RegistryClient:
             "Content-Type": "application/json"
         }
 
+    def _make_client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        """Create an httpx client, injecting transport when set."""
+        kwargs: dict[str, Any] = {"timeout": timeout or self.timeout}
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+            kwargs["base_url"] = self.base_url
+        return httpx.AsyncClient(**kwargs)
+
     async def generate_document_id(
         self,
         template_id: str,
+        namespace: str,
         identity_values: dict[str, Any] | None = None,
         has_identity_fields: bool = True,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
         """
@@ -88,7 +99,7 @@ class RegistryClient:
         Raises:
             RegistryError: If registration fails
         """
-        composite_key = {"namespace": namespace, "template_id": template_id} if has_identity_fields else {}
+        composite_key = {"ns": namespace, "template_id": template_id} if has_identity_fields else {}
 
         item: dict[str, Any] = {
             "namespace": namespace,
@@ -101,7 +112,7 @@ class RegistryClient:
         if entry_id:
             item["entry_id"] = entry_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -126,8 +137,8 @@ class RegistryClient:
     async def generate_document_ids_bulk(
         self,
         items: list[dict[str, Any]],
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Generate multiple document IDs from the Registry in a single call.
@@ -152,7 +163,7 @@ class RegistryClient:
             has_identity = item.get("has_identity_fields", True)
             if has_identity:
                 composite_key = {
-                    "namespace": namespace,
+                    "ns": namespace,
                     "template_id": item["template_id"],
                 }
                 identity_values = item.get("identity_values")
@@ -172,7 +183,7 @@ class RegistryClient:
                 entry["entry_id"] = item["entry_id"]
             registry_items.append(entry)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -219,7 +230,7 @@ class RegistryClient:
             for syn in synonyms
         ]
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
@@ -243,11 +254,11 @@ class RegistryClient:
         created_by: str | None = None,
     ) -> None:
         """
-        Register an auto-synonym for a document (best-effort).
+        Register an auto-synonym for a document.
 
         For documents with identity fields: composite key includes template + identity_hash.
         For documents without identity fields: composite key includes a portable UUID4.
-        Failure is logged but does not prevent document creation.
+        Failure raises and prevents document creation.
 
         Args:
             document_id: The document's canonical ID
@@ -256,6 +267,9 @@ class RegistryClient:
             identity_hash: Identity hash (for documents with identity fields)
             has_identity_fields: Whether the template has identity fields
             created_by: Creator identifier
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         if has_identity_fields and identity_hash:
             composite_key = {
@@ -272,7 +286,7 @@ class RegistryClient:
             }
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._make_client() as client:
                 response = await client.post(
                     f"{self.base_url}/api/registry/synonyms/add",
                     headers=self._get_headers(),
@@ -285,14 +299,15 @@ class RegistryClient:
                     }]
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        "Failed to register auto-synonym for document %s: %s",
-                        document_id, response.text
+                    raise RegistryError(
+                        f"Failed to register auto-synonym for document {document_id}: {response.text}"
                     )
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning(
-                "Failed to register auto-synonym for document %s: %s", document_id, e
-            )
+            raise RegistryError(
+                f"Failed to register auto-synonym for document {document_id}: {e}"
+            ) from e
 
     async def resolve_identifier(
         self,
@@ -320,7 +335,7 @@ class RegistryClient:
         if entity_type:
             lookup_item["entity_type"] = entity_type
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/lookup/by-id",
                 headers=self._get_headers(),
@@ -337,10 +352,42 @@ class RegistryClient:
 
             return None
 
+    async def hard_delete_entry(self, entry_id: str, updated_by: str | None = None) -> bool:
+        """Hard-delete a Registry entry. Returns True if deleted."""
+        async with self._make_client() as client:
+            response = await client.request(
+                "DELETE",
+                f"{self.base_url}/api/registry/entries",
+                headers=self._get_headers(),
+                json=[{
+                    "entry_id": entry_id,
+                    "hard_delete": True,
+                    "updated_by": updated_by,
+                }],
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to hard-delete entry {entry_id}: {response.status_code} - {response.text}"
+                )
+            data = response.json()
+            return data.get("succeeded", 0) > 0
+
+    async def get_namespace_deletion_mode(self, namespace: str) -> str:
+        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
+        async with self._make_client() as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}",
+                headers=self._get_headers(),
+            )
+            if response.status_code != 200:
+                logger.warning(f"Failed to fetch namespace {namespace}: {response.status_code}")
+                return "retain"
+            return response.json().get("deletion_mode", "retain")
+
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with self._make_client(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}/health")
                 return response.status_code == 200
         except Exception:
@@ -366,9 +413,10 @@ def get_registry_client() -> RegistryClient:
 
 def configure_registry_client(
     base_url: str | None = None,
-    api_key: str | None = None
+    api_key: str | None = None,
+    transport: Any | None = None,
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client
-    _client = RegistryClient(base_url=base_url, api_key=api_key)
+    _client = RegistryClient(base_url=base_url, api_key=api_key, transport=transport)
     return _client

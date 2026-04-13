@@ -19,7 +19,7 @@ class TermAuditLog(Document):
 
     # Namespace for multi-tenant isolation
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace of the term (e.g., wip, dev, prod)"
     )
 

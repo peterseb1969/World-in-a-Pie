@@ -39,7 +39,7 @@ class Term(Document):
 
     # Namespace for multi-tenant isolation
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation (e.g., wip, dev, prod)"
     )
 

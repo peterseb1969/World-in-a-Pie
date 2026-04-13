@@ -2,6 +2,7 @@
 
 # WIP shared libraries
 -e ../../libs/wip-auth
+-e ../../WIP-Toolkit
 
 # Web framework
 fastapi>=0.109.0,<0.120.0

@@ -70,7 +70,10 @@ class ReferenceValidator:
         if is_strict:
             return False
         else:
-            # Open mode: also allow 'wip' namespace
+            # POLICY RULE: open mode always permits references to the "wip"
+            # namespace. This is an intentional policy choice, not a default
+            # or fallback — "wip" is the shared platform namespace that all
+            # open-mode templates are allowed to reference.
             return target_ns == "wip"
 
     async def validate_template_references(

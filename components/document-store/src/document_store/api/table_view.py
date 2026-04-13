@@ -9,12 +9,14 @@ Use cases:
 - Reporting and data analysis
 """
 
-from enum import Enum
+from enum import StrEnum
 from itertools import product
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
+
+from wip_auth import check_namespace_permission, get_current_identity
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -27,7 +29,7 @@ router = APIRouter(prefix="/table", tags=["Table View"])
 # Models
 # ============================================================================
 
-class TableFormat(str, Enum):
+class TableFormat(StrEnum):
     """Output format for table view."""
     JSON = "json"
     CSV = "csv"
@@ -275,19 +277,29 @@ async def get_table_view(
 ):
     """Get flattened table view for a template."""
 
-    # Fetch template
+    # Fetch template (resolve synonym first)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(template_id)
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    # Use canonical template_id from resolved template
+    canonical_template_id = template.get("template_id", template_id)
+
+    # Check namespace permission
+    ns = template.get("namespace")
+    if not ns:
+        raise HTTPException(status_code=500, detail="Template response missing namespace")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, ns, "read")
+
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter
-    query_filter = {"template_id": template_id}
+    # Build query filter using canonical ID
+    query_filter = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
 
@@ -296,7 +308,7 @@ async def get_table_view(
 
     if total_documents == 0:
         return TableViewResponse(
-            template_id=template_id,
+            template_id=canonical_template_id,
             template_value=template.get("value", ""),
             template_label=template.get("label", ""),
             columns=columns,
@@ -334,7 +346,7 @@ async def get_table_view(
     pages = (total_documents + page_size - 1) // page_size
 
     return TableViewResponse(
-        template_id=template_id,
+        template_id=canonical_template_id,
         template_value=template.get("value", ""),
         template_label=template.get("label", ""),
         columns=columns,
@@ -379,19 +391,28 @@ async def export_table_csv(
     import csv
     import io
 
-    # Fetch template
+    # Fetch template (resolve synonym via template-store client)
     template_client = get_template_store_client()
     template = await template_client.get_template_resolved(template_id)
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
+    canonical_template_id = template.get("template_id", template_id)
+
+    # Check namespace permission
+    ns = template.get("namespace")
+    if not ns:
+        raise HTTPException(status_code=500, detail="Template response missing namespace")
+    identity = get_current_identity()
+    await check_namespace_permission(identity, ns, "read")
+
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter
-    query_filter = {"template_id": template_id}
+    # Build query filter using canonical ID
+    query_filter = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
 
@@ -420,10 +441,7 @@ async def export_table_csv(
     metadata_cols = ["_document_id", "_version", "_identity_hash", "_status", "_created_at", "_updated_at"]
     data_cols = [col.name for col in columns]
 
-    if include_metadata:
-        csv_columns = metadata_cols + data_cols
-    else:
-        csv_columns = data_cols
+    csv_columns = metadata_cols + data_cols if include_metadata else data_cols
 
     writer = csv.DictWriter(output, fieldnames=csv_columns, extrasaction='ignore')
     writer.writeheader()

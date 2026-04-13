@@ -6,7 +6,7 @@ import Button from 'primevue/button'
 import Select from 'primevue/select'
 import Tag from 'primevue/tag'
 import { useConfirm } from 'primevue/useconfirm'
-import { useUiStore } from '@/stores'
+import { useUiStore, useNamespaceStore } from '@/stores'
 import { defStoreClient } from '@/api/client'
 import type { Relationship } from '@/types'
 import TruncatedId from '@/components/common/TruncatedId.vue'
@@ -15,6 +15,7 @@ import RelationshipForm from './RelationshipForm.vue'
 const props = defineProps<{
   terminologyId: string
   termId?: string
+  namespace?: string
 }>()
 
 const emit = defineEmits<{
@@ -23,6 +24,7 @@ const emit = defineEmits<{
 
 const confirm = useConfirm()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 const relationships = ref<Relationship[]>([])
 const total = ref(0)
@@ -67,12 +69,14 @@ watch([directionFilter, typeFilter], () => {
 })
 
 async function loadRelationships() {
+  const ns = props.namespace ?? namespaceStore.currentNamespaceParam ?? 'wip'
   loading.value = true
   try {
     if (props.termId) {
       // Per-term relationships
       const data = await defStoreClient.listRelationships({
         term_id: props.termId,
+        namespace: ns,
         direction: directionFilter.value,
         relationship_type: typeFilter.value || undefined,
         page: currentPage.value + 1,
@@ -81,8 +85,10 @@ async function loadRelationships() {
       relationships.value = data.items
       total.value = data.total
     } else {
-      // All relationships for this terminology (use /all endpoint with filter)
+      // All relationships for this terminology
       const data = await defStoreClient.listAllRelationships({
+        namespace: ns,
+        source_terminology_id: props.terminologyId,
         page: currentPage.value + 1,
         page_size: rowsPerPage.value,
         relationship_type: typeFilter.value || undefined,

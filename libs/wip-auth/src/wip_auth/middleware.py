@@ -11,7 +11,7 @@ from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import JSONResponse, Response
 
-from .identity import clear_current_identity, set_current_identity
+from .identity import reset_current_identity, set_current_identity
 from .models import UserIdentity
 from .providers.base import AuthProvider
 
@@ -71,15 +71,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 # Unexpected error - re-raise
                 raise
 
-        # Store identity in context for route handlers
-        set_current_identity(identity)
+        # Store identity in context for route handlers.
+        # Use token-based save/restore so nested in-process calls
+        # (e.g., Registry via ASGITransport) don't wipe the outer identity.
+        token = set_current_identity(identity)
 
         try:
             response = await call_next(request)
             return response
         finally:
-            # Clean up context after request
-            clear_current_identity()
+            reset_current_identity(token)
 
 
 def create_auth_middleware(

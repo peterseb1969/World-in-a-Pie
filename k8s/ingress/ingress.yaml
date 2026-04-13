@@ -16,11 +16,11 @@ spec:
   tls:
     - hosts:
         # Replace with your hostname
-        - WIP_HOSTNAME
+        - wip-kubi.local
       secretName: wip-tls
   rules:
     # Replace with your hostname
-    - host: WIP_HOSTNAME
+    - host: wip-kubi.local
       http:
         paths:
           # ── Dex OIDC provider ─────────────────────────
@@ -80,6 +80,15 @@ spec:
                 name: wip-ingest-gateway
                 port:
                   number: 8006
+
+          # ── MCP Server (HTTP streamable transport) ─────
+          - path: /mcp
+            pathType: Prefix
+            backend:
+              service:
+                name: wip-mcp-server
+                port:
+                  number: 8007
 
           # ── Console (default / catch-all) ─────────────
           - path: /

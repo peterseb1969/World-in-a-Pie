@@ -14,6 +14,7 @@ SERVICE_PORTS = {
     "template-store": 8003,
     "document-store": 8004,
     "reporting-sync": 8005,
+    "ingest-gateway": 8006,
 }
 
 # API path prefixes per service
@@ -23,6 +24,7 @@ SERVICE_PREFIXES = {
     "template-store": "/api/template-store",
     "document-store": "/api/document-store",
     "reporting-sync": "/api/reporting-sync",
+    "ingest-gateway": "/api/ingest-gateway",
 }
 
 DEFAULT_DEV_API_KEY = "dev_master_key_for_testing"
@@ -38,6 +40,17 @@ class WIPConfig:
     api_key: str = ""
     verify_ssl: bool = True
     verbose: bool = False
+    # Per-request timeout in seconds. The default is tuned for interactive
+    # CLI use against small/medium namespaces; long-running operations
+    # (bulk export closure, bulk import) should raise this.
+    request_timeout_seconds: float = 60.0
+    # Optional per-service base URL override. When provided, these URLs
+    # are used verbatim (no host/port/proxy logic applied) and the
+    # service prefix from SERVICE_PREFIXES is still appended in
+    # ``service_url()``. Use this for in-container loopback where each
+    # service lives on a different hostname (e.g. wip-registry,
+    # wip-def-store) rather than a shared host with different ports.
+    service_urls: dict[str, str] | None = None
 
     # Computed service URLs
     _service_urls: dict[str, str] = field(default_factory=dict, repr=False)
@@ -45,7 +58,10 @@ class WIPConfig:
     def __post_init__(self) -> None:
         if not self.api_key:
             self.api_key = self._resolve_api_key()
-        self._service_urls = self._build_service_urls()
+        if self.service_urls is not None:
+            self._service_urls = dict(self.service_urls)
+        else:
+            self._service_urls = self._build_service_urls()
 
     def _resolve_api_key(self) -> str:
         """Resolve API key from environment or .env file."""

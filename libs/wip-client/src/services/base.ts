@@ -56,13 +56,27 @@ export abstract class BaseService {
     })
   }
 
+  protected stream(
+    method: string,
+    path: string,
+    options?: {
+      params?: Record<string, unknown>
+      signal?: AbortSignal
+      headers?: Record<string, string>
+    },
+  ): Promise<Response> {
+    return this.transport.stream(method, `${this.basePath}${path}`, options)
+  }
+
   protected bulkWrite(
     path: string,
     items: unknown[],
     method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+    params?: Record<string, unknown>,
   ): Promise<BulkResponse> {
     return this.transport.request<BulkResponse>(method, `${this.basePath}${path}`, {
       body: items,
+      params,
     })
   }
 
@@ -70,14 +84,17 @@ export abstract class BaseService {
     path: string,
     item: unknown,
     method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+    params?: Record<string, unknown>,
   ): Promise<BulkResultItem> {
-    const resp = await this.bulkWrite(path, [item], method)
+    const resp = await this.bulkWrite(path, [item], method, params)
     const result = resp.results[0]
     if (result.status === 'error') {
       throw new WipBulkItemError(
         result.error || 'Operation failed',
         result.index,
         result.status,
+        result.error_code,
+        result.details,
       )
     }
     return result

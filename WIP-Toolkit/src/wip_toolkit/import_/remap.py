@@ -158,6 +158,10 @@ class IDRemapper:
                 for fr in result["file_references"]
             ]
 
+        # Remap IDs embedded in data field values (file IDs, document IDs)
+        if result.get("data"):
+            result["data"] = self._remap_data_ids(result["data"])
+
         return result
 
     def _remap_term_reference(self, term_ref: dict[str, Any]) -> dict[str, Any]:
@@ -198,6 +202,19 @@ class IDRemapper:
             result["file_id"] = self.file_map.get(
                 result["file_id"], result["file_id"]
             )
+        return result
+
+    def _remap_data_ids(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Remap any known IDs (file, document, template, term) in data values."""
+        result = dict(data)
+        # Combined lookup across all maps for ID-shaped string values
+        all_maps = [self.file_map, self.document_map, self.template_map, self.term_map]
+        for key, value in result.items():
+            if isinstance(value, str):
+                for m in all_maps:
+                    if value in m:
+                        result[key] = m[value]
+                        break
         return result
 
     def all_synonym_pairs(self) -> list[tuple[str, str, str]]:

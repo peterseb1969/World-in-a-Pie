@@ -60,6 +60,9 @@ export interface FieldDefinition {
   array_file_config?: FileFieldConfig
   validation?: FieldValidation
   semantic_type?: SemanticType
+  include_subtypes?: boolean
+  inherited?: boolean
+  inherited_from?: string
   metadata: Record<string, unknown>
 }
 
@@ -142,7 +145,9 @@ export interface CreateTemplateRequest {
   value: string
   label: string
   description?: string
-  namespace?: string
+  template_id?: string
+  version?: number
+  namespace: string
   extends?: string
   extends_version?: number
   identity_fields?: string[]
@@ -151,6 +156,8 @@ export interface CreateTemplateRequest {
   metadata?: Partial<TemplateMetadata>
   reporting?: Partial<ReportingConfig>
   created_by?: string
+  validate_references?: boolean
+  status?: string
 }
 
 export interface UpdateTemplateRequest {
@@ -179,4 +186,47 @@ export interface ValidateTemplateResponse {
   template_id: string
   errors: Array<{ field: string; code: string; message: string }>
   warnings: Array<{ field: string; code: string; message: string }>
+  will_also_activate?: string[]
+}
+
+export interface TemplateUpdateResponse {
+  template_id: string
+  value: string
+  version: number
+  is_new_version: boolean
+  previous_version?: number
+}
+
+export interface ActivationDetail {
+  template_id: string
+  value: string
+  status: string
+}
+
+export interface ActivateTemplateResponse {
+  activated: string[]
+  activation_details: ActivationDetail[]
+  total_activated: number
+  errors: Array<{ field: string; code: string; message: string }>
+  warnings: Array<{ field: string; code: string; message: string }>
+}
+
+export interface CascadeResult {
+  value: string
+  old_template_id: string
+  new_template_id?: string
+  new_version?: number
+  status: string
+  error?: string
+}
+
+export interface CascadeResponse {
+  parent_template_id: string
+  parent_value: string
+  parent_version: number
+  total: number
+  updated: number
+  unchanged: number
+  failed: number
+  results: CascadeResult[]
 }

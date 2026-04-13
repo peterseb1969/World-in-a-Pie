@@ -27,23 +27,23 @@ WIP Instance
 
 ## Model Storage
 
-All MongoDB models store namespace as a field with default `"wip"`:
+All MongoDB models store namespace as a required field:
 
 ```python
 # Same pattern across all services
 namespace: str = Field(
-    default="wip",
+    ...,
     description="Namespace for data isolation (e.g., wip, dev, seed)"
 )
 ```
 
-| Service | Model | Field | Default |
-|---------|-------|-------|---------|
-| Def-Store | `Terminology` | `namespace` | `"wip"` |
-| Def-Store | `Term` | `namespace` | `"wip"` |
-| Template-Store | `Template` | `namespace` | `"wip"` |
-| Document-Store | `WIPDocument` | `namespace` | `"wip"` |
-| Document-Store | `FileMetadata` | `namespace` | `"wip"` |
+| Service | Model | Field | Required |
+|---------|-------|-------|----------|
+| Def-Store | `Terminology` | `namespace` | Yes |
+| Def-Store | `Term` | `namespace` | Yes |
+| Template-Store | `Template` | `namespace` | Yes |
+| Document-Store | `WIPDocument` | `namespace` | Yes |
+| Document-Store | `FileMetadata` | `namespace` | Yes |
 
 Namespace is also included in all API response models (`TerminologyResponse`, `TemplateResponse`, `DocumentResponse`, etc.).
 
@@ -67,20 +67,20 @@ curl -X POST http://localhost:8002/api/def-store/terminologies \
     "created_by": "seed_script"
   }'
 
-# Omit namespace → defaults to "wip"
+# Namespace is required on all writes — omitting it returns a validation error
 curl -X POST http://localhost:8002/api/def-store/terminologies \
-  -d '{"value": "GENDER", "label": "Gender", "created_by": "admin"}'
+  -d '{"value": "GENDER", "label": "Gender", "namespace": "wip", "created_by": "admin"}'
 ```
 
 The same pattern applies across all services:
 
 | Endpoint | Request Model | Namespace Field |
 |----------|--------------|-----------------|
-| `POST /api/def-store/terminologies` | `CreateTerminologyRequest` | `namespace: str = "wip"` |
+| `POST /api/def-store/terminologies` | `CreateTerminologyRequest` | `namespace: str` (required) |
 | `POST /api/def-store/terminologies/{id}/terms` | — | Inherited from parent terminology |
-| `POST /api/template-store/templates` | `CreateTemplateRequest` | `namespace: str = "wip"` |
-| `POST /api/document-store/documents` | `DocumentCreateRequest` | `namespace: str = "wip"` |
-| `POST /api/document-store/files` | `Form(default="wip")` | `namespace` form field |
+| `POST /api/template-store/templates` | `CreateTemplateRequest` | `namespace: str` (required) |
+| `POST /api/document-store/documents` | `DocumentCreateRequest` | `namespace: str` (required) |
+| `POST /api/document-store/files` | `Form(...)` | `namespace` form field (required) |
 
 **Terms inherit namespace from their terminology** — you don't specify namespace when creating terms.
 
@@ -136,7 +136,7 @@ When a service creates an entity, it calls the Registry with:
 The Registry uses these to:
 1. Look up the namespace's ID generation config for that entity type
 2. Generate a counter key: `"{namespace}:{entity_type}:{prefix}"` (e.g., `"seed:terminologies:TERM-"`)
-3. Atomically increment the counter and return the ID (e.g., `SEED-TERM-000001`)
+3. Atomically increment the counter and return the ID (e.g., `SEED-LOV-000001`)
 
 ### Namespace-Scoped ID Prefixes
 
@@ -144,14 +144,14 @@ Custom namespaces get modified ID prefixes to avoid collisions:
 
 | Namespace | Entity Type | ID Format |
 |-----------|-------------|-----------|
-| `wip` | terminologies | `TERM-000001` |
-| `wip` | terms | `T-000001` |
-| `wip` | templates | `TPL-000001` |
-| `seed` | terminologies | `SEED-TERM-000001` |
-| `seed` | terms | `SEED-T-000001` |
-| `seed` | templates | `SEED-TPL-000001` |
+| `wip` | terminologies | UUID7 (default) |
+| `wip` | terms | UUID7 (default) |
+| `wip` | templates | UUID7 (default) |
+| `wip` | documents | UUID7 (default) |
+| `wip` | files | UUID7 (default) |
+| custom | (any) | Configurable via `id_config` — UUID7, prefixed (e.g., `SEED-LOV-000001`), nanoid, pattern |
 
-Documents use UUID7 regardless of namespace (time-ordered, globally unique).
+The `wip` namespace uses UUID7 for all entity types. Custom namespaces can configure per-entity-type ID algorithms including prefixed IDs with custom prefixes and padding.
 
 ### Auto-Creation of Namespaces
 
@@ -246,8 +246,8 @@ Namespace provides basic data isolation today. The following features from the [
 |---------|--------|
 | Namespace group management API | Not started |
 | Namespace export/import | Not started |
-| Namespace archive/delete | Not started |
-| Per-namespace access control | Not started |
+| Namespace archive/delete | Implemented (see `docs/design/namespace-deletion.md`) |
+| Per-namespace access control | Implemented (Auth Phase 2, commit `0e548f3`) |
 | Cross-namespace reference validation | Not started |
 | CLI commands (`wip namespace list`, etc.) | Not started |
 | PostgreSQL reporting namespace column | Not started |

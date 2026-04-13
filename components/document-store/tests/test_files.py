@@ -2,41 +2,65 @@
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from beanie import init_beanie
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from document_store.main import app
 from document_store.models.document import Document
-from document_store.models.file import File, FileStatus, FileMetadata
-from document_store.api.auth import set_api_key
-from document_store.services.file_service import FileService, FileServiceError, get_file_service
-from document_store.services.registry_client import RegistryClient
+from document_store.models.file import File, FileMetadata, FileStatus
 
-# Re-use conftest helpers (use package-qualified import so it works
-# both when pytest auto-loads conftest and as a regular import)
+# Re-use conftest helpers — real Registry, no mock registry
 from tests.conftest import (
-    create_mock_registry_client,
-    create_mock_template_store_client,
     create_mock_def_store_client,
-    SAMPLE_TEMPLATES,
+    create_mock_template_store_client,
+    setup_registry_and_app,
 )
+from wip_auth.resolve import clear_resolution_cache, set_resolve_transport
+
+# Module-level registry transport — set by file_client fixture so _insert_file
+# can register files in Registry (resolution requires Registry entries).
+_registry_transport = None
 
 
 # ---------------------------------------------------------------------------
-# Helper: create a File document directly in MongoDB for test setup
+# Helper: create a File document in MongoDB + register in Registry
 # ---------------------------------------------------------------------------
+async def _register_file_in_registry(namespace: str, checksum: str) -> str:
+    """Register a file entry in Registry and return the UUID7 file_id.
+
+    Mirrors what FileService._generate_file_id does in production:
+    SHA-256 checksum as composite key (CASE-32), Registry assigns UUID7 ID.
+    """
+    api_key = os.environ["MASTER_API_KEY"]
+    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+
+    async with AsyncClient(transport=_registry_transport, base_url="http://registry") as client:
+        resp = await client.post(
+            "/api/registry/entries/register",
+            headers=headers,
+            json=[{
+                "namespace": namespace,
+                "entity_type": "files",
+                "composite_key": {"checksum": checksum},
+                "metadata": {"type": "file"},
+            }],
+        )
+        assert resp.status_code == 200, f"Register file failed: {resp.text}"
+        result = resp.json()["results"][0]
+        assert result["status"] in ("created", "already_exists"), f"Register file: {result}"
+        return result["registry_id"]
+
+
 async def _insert_file(
-    file_id: str = None,
     filename: str = "test.pdf",
     content_type: str = "application/pdf",
     size_bytes: int = 1024,
-    checksum: str = None,
+    checksum: str | None = None,
     status: FileStatus = FileStatus.ORPHAN,
     reference_count: int = 0,
     namespace: str = "wip",
@@ -47,13 +71,17 @@ async def _insert_file(
     uploaded_at: datetime | None = None,
     uploaded_by: str | None = None,
 ) -> File:
-    """Insert a File document directly into MongoDB and return it."""
-    if file_id is None:
-        file_id = f"FILE-{uuid.uuid4().hex[:8]}"
+    """Register a file in Registry and insert into MongoDB.
+
+    The file_id is a UUID7 assigned by Registry (same as production).
+    """
     if checksum is None:
         checksum = uuid.uuid4().hex * 2  # 64 hex chars, like sha256
     if uploaded_at is None:
-        uploaded_at = datetime.now(timezone.utc)
+        uploaded_at = datetime.now(UTC)
+
+    # Register in Registry — get UUID7 file_id (same as production)
+    file_id = await _register_file_in_registry(namespace, checksum)
 
     file_doc = File(
         namespace=namespace,
@@ -79,29 +107,21 @@ async def _insert_file(
 
 
 # ---------------------------------------------------------------------------
-# Fixture: async HTTP client with file storage enabled + mocked services
+# Fixture: async HTTP client with file storage enabled + real Registry
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="function")
 async def file_client():
-    """Create an async HTTP client with file storage enabled and mocked dependencies."""
+    """Create an async HTTP client with file storage enabled and real Registry."""
+    global _registry_transport
     mongo_client = AsyncIOMotorClient(os.environ["MONGO_URI"])
-    await init_beanie(
-        database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Document, File],
+    real_registry, _registry_transport = await setup_registry_and_app(
+        mongo_client, document_models=[Document, File]
     )
 
-    # Clean up data from previous test
-    await Document.delete_all()
+    # Also clean File collection (setup_registry_and_app cleans Document)
     await File.delete_all()
 
-    # Store client in app state (needed by health check)
-    app.state.mongodb_client = mongo_client
-
-    # Set API key
-    set_api_key(os.environ["API_KEY"])
-
-    # Create mock clients
-    mock_registry = create_mock_registry_client()
+    # Mock Template-Store and Def-Store (separate services)
     mock_template_store = create_mock_template_store_client()
     mock_def_store = create_mock_def_store_client()
 
@@ -119,20 +139,22 @@ async def file_client():
     # Mock NATS so publish calls don't fail
     mock_nats_publish = AsyncMock()
 
-    with patch('document_store.services.document_service.get_registry_client', return_value=mock_registry), \
-         patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.main.get_registry_client', return_value=mock_registry), \
-         patch('document_store.main.get_template_store_client', return_value=mock_template_store), \
-         patch('document_store.main.get_def_store_client', return_value=mock_def_store), \
-         patch('document_store.api.files.is_file_storage_enabled', return_value=True), \
-         patch('document_store.services.file_service.is_file_storage_enabled', return_value=True), \
-         patch('document_store.services.file_service.get_file_storage_client', return_value=mock_storage), \
-         patch('document_store.api.files.get_file_storage_client', return_value=mock_storage), \
-         patch('document_store.services.file_service.publish_file_event', mock_nats_publish):
-
+    with (
+        patch('document_store.services.document_service.get_registry_client', return_value=real_registry),
+        patch('document_store.services.document_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.document_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.services.validation_service.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.services.validation_service.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.main.get_registry_client', return_value=real_registry),
+        patch('document_store.main.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.main.get_def_store_client', return_value=mock_def_store),
+        patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
+        patch('document_store.api.files.is_file_storage_enabled', return_value=True),
+        patch('document_store.services.file_service.is_file_storage_enabled', return_value=True),
+        patch('document_store.services.file_service.get_file_storage_client', return_value=mock_storage),
+        patch('document_store.api.files.get_file_storage_client', return_value=mock_storage),
+        patch('document_store.services.file_service.publish_file_event', mock_nats_publish),
+    ):
         # Reset singleton so we get a fresh instance each test
         import document_store.services.file_service as fs_mod
         fs_mod._service = None
@@ -143,6 +165,11 @@ async def file_client():
 
         # Clean up singleton
         fs_mod._service = None
+
+    # Cleanup
+    _registry_transport = None
+    set_resolve_transport(None)
+    clear_resolution_cache()
 
 
 @pytest.fixture
@@ -161,6 +188,7 @@ async def test_list_files_empty(file_client: AsyncClient, auth_headers: dict):
     response = await file_client.get(
         "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -172,12 +200,13 @@ async def test_list_files_empty(file_client: AsyncClient, auth_headers: dict):
 @pytest.mark.asyncio
 async def test_list_files_with_data(file_client: AsyncClient, auth_headers: dict):
     """List files returns inserted files."""
-    await _insert_file(file_id="FILE-001", filename="doc1.pdf")
-    await _insert_file(file_id="FILE-002", filename="doc2.png", content_type="image/png")
+    await _insert_file(filename="doc1.pdf")
+    await _insert_file(filename="doc2.png", content_type="image/png")
 
     response = await file_client.get(
         "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -188,41 +217,44 @@ async def test_list_files_with_data(file_client: AsyncClient, auth_headers: dict
 @pytest.mark.asyncio
 async def test_list_files_filter_by_status(file_client: AsyncClient, auth_headers: dict):
     """List files filtered by status."""
-    await _insert_file(file_id="FILE-A", status=FileStatus.ORPHAN)
-    await _insert_file(file_id="FILE-B", status=FileStatus.ACTIVE, reference_count=1)
-    await _insert_file(file_id="FILE-C", status=FileStatus.INACTIVE)
+    file_a = await _insert_file(status=FileStatus.ORPHAN)
+    file_b = await _insert_file(status=FileStatus.ACTIVE, reference_count=1)
+    await _insert_file(status=FileStatus.INACTIVE)
 
     # Filter: orphan only
     response = await file_client.get(
-        "/api/document-store/files?status=orphan",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "status": "orphan"},
     )
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 1
-    assert data["items"][0]["file_id"] == "FILE-A"
+    assert data["items"][0]["file_id"] == file_a.file_id
 
     # Filter: active only
     response = await file_client.get(
-        "/api/document-store/files?status=active",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "status": "active"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 1
-    assert response.json()["items"][0]["file_id"] == "FILE-B"
+    assert response.json()["items"][0]["file_id"] == file_b.file_id
 
 
 @pytest.mark.asyncio
 async def test_list_files_filter_by_content_type(file_client: AsyncClient, auth_headers: dict):
     """List files filtered by content type (exact and wildcard)."""
-    await _insert_file(file_id="FILE-IMG1", content_type="image/png")
-    await _insert_file(file_id="FILE-IMG2", content_type="image/jpeg")
-    await _insert_file(file_id="FILE-PDF", content_type="application/pdf")
+    await _insert_file(content_type="image/png")
+    await _insert_file(content_type="image/jpeg")
+    await _insert_file(content_type="application/pdf")
 
     # Wildcard: image/*
     response = await file_client.get(
-        "/api/document-store/files?content_type=image/*",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "content_type": "image/*"},
     )
     assert response.status_code == 200
     data = response.json()
@@ -230,8 +262,9 @@ async def test_list_files_filter_by_content_type(file_client: AsyncClient, auth_
 
     # Exact: application/pdf
     response = await file_client.get(
-        "/api/document-store/files?content_type=application/pdf",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "content_type": "application/pdf"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 1
@@ -240,13 +273,14 @@ async def test_list_files_filter_by_content_type(file_client: AsyncClient, auth_
 @pytest.mark.asyncio
 async def test_list_files_filter_by_category(file_client: AsyncClient, auth_headers: dict):
     """List files filtered by category."""
-    await _insert_file(file_id="FILE-1", category="invoices")
-    await _insert_file(file_id="FILE-2", category="receipts")
-    await _insert_file(file_id="FILE-3", category="invoices")
+    await _insert_file(category="invoices")
+    await _insert_file(category="receipts")
+    await _insert_file(category="invoices")
 
     response = await file_client.get(
-        "/api/document-store/files?category=invoices",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "category": "invoices"},
     )
     assert response.status_code == 200
     assert response.json()["total"] == 2
@@ -255,29 +289,31 @@ async def test_list_files_filter_by_category(file_client: AsyncClient, auth_head
 @pytest.mark.asyncio
 async def test_list_files_filter_by_tags(file_client: AsyncClient, auth_headers: dict):
     """List files filtered by tags (all must match)."""
-    await _insert_file(file_id="FILE-1", tags=["urgent", "2024"])
-    await _insert_file(file_id="FILE-2", tags=["urgent"])
-    await _insert_file(file_id="FILE-3", tags=["2024"])
+    file_both = await _insert_file(tags=["urgent", "2024"])
+    await _insert_file(tags=["urgent"])
+    await _insert_file(tags=["2024"])
 
     response = await file_client.get(
-        "/api/document-store/files?tags=urgent,2024",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "tags": "urgent,2024"},
     )
     assert response.status_code == 200
-    # Only FILE-1 has BOTH tags
+    # Only the file with BOTH tags
     assert response.json()["total"] == 1
-    assert response.json()["items"][0]["file_id"] == "FILE-1"
+    assert response.json()["items"][0]["file_id"] == file_both.file_id
 
 
 @pytest.mark.asyncio
 async def test_list_files_pagination(file_client: AsyncClient, auth_headers: dict):
     """List files with pagination."""
-    for i in range(5):
-        await _insert_file(file_id=f"FILE-P{i:02d}")
+    for _ in range(5):
+        await _insert_file()
 
     response = await file_client.get(
-        "/api/document-store/files?page=1&page_size=2",
+        "/api/document-store/files",
         headers=auth_headers,
+        params={"namespace": "wip", "page": 1, "page_size": 2},
     )
     assert response.status_code == 200
     data = response.json()
@@ -295,8 +331,7 @@ async def test_list_files_pagination(file_client: AsyncClient, auth_headers: dic
 @pytest.mark.asyncio
 async def test_get_file_metadata(file_client: AsyncClient, auth_headers: dict):
     """Get file metadata by ID."""
-    await _insert_file(
-        file_id="FILE-META01",
+    file = await _insert_file(
         filename="report.pdf",
         content_type="application/pdf",
         size_bytes=4096,
@@ -306,12 +341,12 @@ async def test_get_file_metadata(file_client: AsyncClient, auth_headers: dict):
     )
 
     response = await file_client.get(
-        "/api/document-store/files/FILE-META01",
+        f"/api/document-store/files/{file.file_id}",
         headers=auth_headers,
     )
-    assert response.status_code == 200
+    assert response.status_code == 200, f"Response: {response.json()}"
     data = response.json()
-    assert data["file_id"] == "FILE-META01"
+    assert data["file_id"] == file.file_id
     assert data["filename"] == "report.pdf"
     assert data["content_type"] == "application/pdf"
     assert data["size_bytes"] == 4096
@@ -392,6 +427,7 @@ async def test_upload_empty_file(file_client: AsyncClient, auth_headers: dict):
         "/api/document-store/files",
         headers=auth_headers,
         files={"file": ("empty.txt", b"", "text/plain")},
+        data={"namespace": "wip"},
     )
     assert response.status_code == 400
     assert "Empty file" in response.json()["detail"]
@@ -404,13 +440,13 @@ async def test_upload_empty_file(file_client: AsyncClient, auth_headers: dict):
 @pytest.mark.asyncio
 async def test_update_file_metadata(file_client: AsyncClient, auth_headers: dict):
     """Update metadata for an existing file."""
-    await _insert_file(file_id="FILE-UPD01", description="Old description", tags=["old"])
+    file = await _insert_file(description="Old description", tags=["old"])
 
     response = await file_client.patch(
         "/api/document-store/files",
         headers=auth_headers,
         json=[{
-            "file_id": "FILE-UPD01",
+            "file_id": file.file_id,
             "description": "New description",
             "tags": ["new", "updated"],
             "category": "updated-category",
@@ -421,11 +457,11 @@ async def test_update_file_metadata(file_client: AsyncClient, auth_headers: dict
     assert bulk["total"] == 1
     assert bulk["succeeded"] == 1
     assert bulk["results"][0]["status"] == "updated"
-    assert bulk["results"][0]["id"] == "FILE-UPD01"
+    assert bulk["results"][0]["id"] == file.file_id
 
     # Verify the update took effect
     get_resp = await file_client.get(
-        "/api/document-store/files/FILE-UPD01",
+        f"/api/document-store/files/{file.file_id}",
         headers=auth_headers,
     )
     assert get_resp.status_code == 200
@@ -456,15 +492,15 @@ async def test_update_file_metadata_not_found(file_client: AsyncClient, auth_hea
 @pytest.mark.asyncio
 async def test_update_file_metadata_bulk(file_client: AsyncClient, auth_headers: dict):
     """Update metadata for multiple files in one call."""
-    await _insert_file(file_id="FILE-BU1")
-    await _insert_file(file_id="FILE-BU2")
+    file_a = await _insert_file()
+    file_b = await _insert_file()
 
     response = await file_client.patch(
         "/api/document-store/files",
         headers=auth_headers,
         json=[
-            {"file_id": "FILE-BU1", "description": "Updated 1"},
-            {"file_id": "FILE-BU2", "description": "Updated 2"},
+            {"file_id": file_a.file_id, "description": "Updated 1"},
+            {"file_id": file_b.file_id, "description": "Updated 2"},
         ],
     )
     assert response.status_code == 200
@@ -476,13 +512,13 @@ async def test_update_file_metadata_bulk(file_client: AsyncClient, auth_headers:
 @pytest.mark.asyncio
 async def test_update_inactive_file_metadata_fails(file_client: AsyncClient, auth_headers: dict):
     """Cannot update metadata on a deleted (inactive) file."""
-    await _insert_file(file_id="FILE-DEAD", status=FileStatus.INACTIVE)
+    file = await _insert_file(status=FileStatus.INACTIVE)
 
     response = await file_client.patch(
         "/api/document-store/files",
         headers=auth_headers,
         json=[{
-            "file_id": "FILE-DEAD",
+            "file_id": file.file_id,
             "description": "Should fail",
         }],
     )
@@ -499,13 +535,13 @@ async def test_update_inactive_file_metadata_fails(file_client: AsyncClient, aut
 @pytest.mark.asyncio
 async def test_delete_file(file_client: AsyncClient, auth_headers: dict):
     """Soft-delete a file sets status to inactive."""
-    await _insert_file(file_id="FILE-DEL01")
+    file = await _insert_file()
 
     response = await file_client.request(
         "DELETE",
         "/api/document-store/files",
         headers=auth_headers,
-        json=[{"id": "FILE-DEL01"}],
+        json=[{"id": file.file_id}],
     )
     assert response.status_code == 200
     bulk = response.json()
@@ -514,7 +550,7 @@ async def test_delete_file(file_client: AsyncClient, auth_headers: dict):
 
     # Verify the file is now inactive
     get_resp = await file_client.get(
-        "/api/document-store/files/FILE-DEL01",
+        f"/api/document-store/files/{file.file_id}",
         headers=auth_headers,
     )
     assert get_resp.status_code == 200
@@ -539,13 +575,13 @@ async def test_delete_file_not_found(file_client: AsyncClient, auth_headers: dic
 @pytest.mark.asyncio
 async def test_delete_referenced_file_without_force(file_client: AsyncClient, auth_headers: dict):
     """Delete a referenced file without force=true returns error."""
-    await _insert_file(file_id="FILE-REF01", status=FileStatus.ACTIVE, reference_count=2)
+    file = await _insert_file(status=FileStatus.ACTIVE, reference_count=2)
 
     response = await file_client.request(
         "DELETE",
         "/api/document-store/files",
         headers=auth_headers,
-        json=[{"id": "FILE-REF01", "force": False}],
+        json=[{"id": file.file_id, "force": False}],
     )
     assert response.status_code == 200
     bulk = response.json()
@@ -556,13 +592,13 @@ async def test_delete_referenced_file_without_force(file_client: AsyncClient, au
 @pytest.mark.asyncio
 async def test_delete_referenced_file_with_force(file_client: AsyncClient, auth_headers: dict):
     """Delete a referenced file with force=true succeeds."""
-    await _insert_file(file_id="FILE-REF02", status=FileStatus.ACTIVE, reference_count=2)
+    file = await _insert_file(status=FileStatus.ACTIVE, reference_count=2)
 
     response = await file_client.request(
         "DELETE",
         "/api/document-store/files",
         headers=auth_headers,
-        json=[{"id": "FILE-REF02", "force": True}],
+        json=[{"id": file.file_id, "force": True}],
     )
     assert response.status_code == 200
     bulk = response.json()
@@ -570,7 +606,7 @@ async def test_delete_referenced_file_with_force(file_client: AsyncClient, auth_
 
     # Verify inactive
     get_resp = await file_client.get(
-        "/api/document-store/files/FILE-REF02",
+        f"/api/document-store/files/{file.file_id}",
         headers=auth_headers,
     )
     assert get_resp.json()["status"] == "inactive"
@@ -579,13 +615,13 @@ async def test_delete_referenced_file_with_force(file_client: AsyncClient, auth_
 @pytest.mark.asyncio
 async def test_delete_already_inactive_file(file_client: AsyncClient, auth_headers: dict):
     """Deleting an already-inactive file is idempotent (succeeds)."""
-    await _insert_file(file_id="FILE-ALREADY", status=FileStatus.INACTIVE)
+    file = await _insert_file(status=FileStatus.INACTIVE)
 
     response = await file_client.request(
         "DELETE",
         "/api/document-store/files",
         headers=auth_headers,
-        json=[{"id": "FILE-ALREADY"}],
+        json=[{"id": file.file_id}],
     )
     assert response.status_code == 200
     bulk = response.json()
@@ -595,18 +631,18 @@ async def test_delete_already_inactive_file(file_client: AsyncClient, auth_heade
 @pytest.mark.asyncio
 async def test_delete_multiple_files(file_client: AsyncClient, auth_headers: dict):
     """Bulk delete multiple files in one call."""
-    await _insert_file(file_id="FILE-M1")
-    await _insert_file(file_id="FILE-M2")
-    await _insert_file(file_id="FILE-M3")
+    file_a = await _insert_file()
+    file_b = await _insert_file()
+    file_c = await _insert_file()
 
     response = await file_client.request(
         "DELETE",
         "/api/document-store/files",
         headers=auth_headers,
         json=[
-            {"id": "FILE-M1"},
-            {"id": "FILE-M2"},
-            {"id": "FILE-M3"},
+            {"id": file_a.file_id},
+            {"id": file_b.file_id},
+            {"id": file_c.file_id},
         ],
     )
     assert response.status_code == 200
@@ -622,10 +658,10 @@ async def test_delete_multiple_files(file_client: AsyncClient, auth_headers: dic
 @pytest.mark.asyncio
 async def test_list_orphan_files(file_client: AsyncClient, auth_headers: dict):
     """Find orphan files (status=orphan, not referenced)."""
-    await _insert_file(file_id="FILE-ORPHAN1", status=FileStatus.ORPHAN)
-    await _insert_file(file_id="FILE-ORPHAN2", status=FileStatus.ORPHAN)
-    await _insert_file(file_id="FILE-ACTIVE", status=FileStatus.ACTIVE, reference_count=1)
-    await _insert_file(file_id="FILE-INACTIVE", status=FileStatus.INACTIVE)
+    file_orphan1 = await _insert_file(status=FileStatus.ORPHAN)
+    file_orphan2 = await _insert_file(status=FileStatus.ORPHAN)
+    await _insert_file(status=FileStatus.ACTIVE, reference_count=1)
+    await _insert_file(status=FileStatus.INACTIVE)
 
     response = await file_client.get(
         "/api/document-store/files/orphans/list",
@@ -635,17 +671,17 @@ async def test_list_orphan_files(file_client: AsyncClient, auth_headers: dict):
     data = response.json()
     assert len(data) == 2
     orphan_ids = {item["file_id"] for item in data}
-    assert orphan_ids == {"FILE-ORPHAN1", "FILE-ORPHAN2"}
+    assert orphan_ids == {file_orphan1.file_id, file_orphan2.file_id}
 
 
 @pytest.mark.asyncio
 async def test_list_orphan_files_with_age_filter(file_client: AsyncClient, auth_headers: dict):
     """Find orphan files older than a given number of hours."""
-    old_time = datetime.now(timezone.utc) - timedelta(hours=48)
-    recent_time = datetime.now(timezone.utc) - timedelta(hours=1)
+    old_time = datetime.now(UTC) - timedelta(hours=48)
+    recent_time = datetime.now(UTC) - timedelta(hours=1)
 
-    await _insert_file(file_id="FILE-OLD", status=FileStatus.ORPHAN, uploaded_at=old_time)
-    await _insert_file(file_id="FILE-RECENT", status=FileStatus.ORPHAN, uploaded_at=recent_time)
+    file_old = await _insert_file(status=FileStatus.ORPHAN, uploaded_at=old_time)
+    await _insert_file(status=FileStatus.ORPHAN, uploaded_at=recent_time)
 
     response = await file_client.get(
         "/api/document-store/files/orphans/list?older_than_hours=24",
@@ -654,14 +690,14 @@ async def test_list_orphan_files_with_age_filter(file_client: AsyncClient, auth_
     assert response.status_code == 200
     data = response.json()
     assert len(data) == 1
-    assert data[0]["file_id"] == "FILE-OLD"
+    assert data[0]["file_id"] == file_old.file_id
 
 
 @pytest.mark.asyncio
 async def test_list_orphan_files_with_limit(file_client: AsyncClient, auth_headers: dict):
     """Orphan listing respects limit parameter."""
-    for i in range(5):
-        await _insert_file(file_id=f"FILE-ORP{i:02d}", status=FileStatus.ORPHAN)
+    for _ in range(5):
+        await _insert_file(status=FileStatus.ORPHAN)
 
     response = await file_client.get(
         "/api/document-store/files/orphans/list?limit=3",
@@ -678,21 +714,24 @@ async def test_list_orphan_files_with_limit(file_client: AsyncClient, auth_heade
 
 @pytest.mark.asyncio
 async def test_find_by_checksum(file_client: AsyncClient, auth_headers: dict):
-    """Find files by SHA-256 checksum (duplicate detection)."""
-    shared_checksum = "abc123def456" * 6  # fake but consistent
-    await _insert_file(file_id="FILE-DUP1", checksum=shared_checksum)
-    await _insert_file(file_id="FILE-DUP2", checksum=shared_checksum)
-    await _insert_file(file_id="FILE-UNIQUE", checksum="unique_checksum_value_0000000000")
+    """Find files by SHA-256 checksum.
+
+    Since CASE-32, the SHA-256 checksum is the Registry composite key for
+    files, so there is at most one File per (namespace, checksum). Uploading
+    the same bytes twice returns the same file_id.
+    """
+    target_checksum = "abc123def456" * 6  # fake but consistent
+    file = await _insert_file(checksum=target_checksum)
+    await _insert_file(checksum="unique_checksum_value_0000000000")
 
     response = await file_client.get(
-        f"/api/document-store/files/by-checksum/{shared_checksum}",
+        f"/api/document-store/files/by-checksum/{target_checksum}",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
-    assert len(data) == 2
-    found_ids = {item["file_id"] for item in data}
-    assert found_ids == {"FILE-DUP1", "FILE-DUP2"}
+    assert len(data) == 1
+    assert data[0]["file_id"] == file.file_id
 
 
 @pytest.mark.asyncio
@@ -714,8 +753,8 @@ async def test_find_by_checksum_no_match(file_client: AsyncClient, auth_headers:
 @pytest.mark.asyncio
 async def test_integrity_check_healthy(file_client: AsyncClient, auth_headers: dict):
     """Integrity check on a healthy system with no issues."""
-    await _insert_file(file_id="FILE-OK1", status=FileStatus.ACTIVE, reference_count=1)
-    await _insert_file(file_id="FILE-OK2", status=FileStatus.ACTIVE, reference_count=2)
+    await _insert_file(status=FileStatus.ACTIVE, reference_count=1)
+    await _insert_file(status=FileStatus.ACTIVE, reference_count=2)
 
     response = await file_client.get(
         "/api/document-store/files/health/integrity",
@@ -731,8 +770,8 @@ async def test_integrity_check_healthy(file_client: AsyncClient, auth_headers: d
 @pytest.mark.asyncio
 async def test_integrity_check_detects_orphans(file_client: AsyncClient, auth_headers: dict):
     """Integrity check detects orphan files older than 24 hours."""
-    old_time = datetime.now(timezone.utc) - timedelta(hours=48)
-    await _insert_file(file_id="FILE-ORPHAN-OLD", status=FileStatus.ORPHAN, uploaded_at=old_time)
+    old_time = datetime.now(UTC) - timedelta(hours=48)
+    file_orphan = await _insert_file(status=FileStatus.ORPHAN, uploaded_at=old_time)
 
     response = await file_client.get(
         "/api/document-store/files/health/integrity",
@@ -743,14 +782,13 @@ async def test_integrity_check_detects_orphans(file_client: AsyncClient, auth_he
     assert data["summary"]["orphan_file"] >= 1
     orphan_issues = [i for i in data["issues"] if i["type"] == "orphan_file"]
     assert len(orphan_issues) >= 1
-    assert orphan_issues[0]["file_id"] == "FILE-ORPHAN-OLD"
+    assert orphan_issues[0]["file_id"] == file_orphan.file_id
 
 
 @pytest.mark.asyncio
 async def test_integrity_check_detects_broken_references(file_client: AsyncClient, auth_headers: dict):
     """Integrity check detects inactive files still referenced by documents."""
     await _insert_file(
-        file_id="FILE-BROKEN",
         status=FileStatus.INACTIVE,
         reference_count=3,
     )
@@ -780,6 +818,7 @@ async def test_file_endpoints_503_when_storage_disabled(client: AsyncClient, aut
         response = await client.get(
             "/api/document-store/files",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert response.status_code == 503
         assert "not enabled" in response.json()["detail"].lower()
@@ -792,15 +831,15 @@ async def test_file_endpoints_503_when_storage_disabled(client: AsyncClient, aut
 @pytest.mark.asyncio
 async def test_get_download_url(file_client: AsyncClient, auth_headers: dict):
     """Get a pre-signed download URL for a file."""
-    await _insert_file(file_id="FILE-DL01", filename="download.pdf")
+    file = await _insert_file(filename="download.pdf")
 
     response = await file_client.get(
-        "/api/document-store/files/FILE-DL01/download",
+        f"/api/document-store/files/{file.file_id}/download",
         headers=auth_headers,
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["file_id"] == "FILE-DL01"
+    assert data["file_id"] == file.file_id
     assert data["filename"] == "download.pdf"
     assert "download_url" in data
     assert data["expires_in"] == 3600  # default
@@ -819,10 +858,10 @@ async def test_get_download_url_not_found(file_client: AsyncClient, auth_headers
 @pytest.mark.asyncio
 async def test_get_download_url_custom_expiry(file_client: AsyncClient, auth_headers: dict):
     """Download URL with custom expiry time."""
-    await _insert_file(file_id="FILE-DL02")
+    file = await _insert_file()
 
     response = await file_client.get(
-        "/api/document-store/files/FILE-DL02/download?expires_in=7200",
+        f"/api/document-store/files/{file.file_id}/download?expires_in=7200",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -836,10 +875,10 @@ async def test_get_download_url_custom_expiry(file_client: AsyncClient, auth_hea
 @pytest.mark.asyncio
 async def test_hard_delete_inactive_file(file_client: AsyncClient, auth_headers: dict):
     """Hard-delete an inactive file permanently removes it."""
-    await _insert_file(file_id="FILE-HARD01", status=FileStatus.INACTIVE)
+    file = await _insert_file(status=FileStatus.INACTIVE)
 
     response = await file_client.delete(
-        "/api/document-store/files/FILE-HARD01/hard",
+        f"/api/document-store/files/{file.file_id}/hard",
         headers=auth_headers,
     )
     assert response.status_code == 200
@@ -848,7 +887,7 @@ async def test_hard_delete_inactive_file(file_client: AsyncClient, auth_headers:
 
     # Verify it no longer exists
     get_resp = await file_client.get(
-        "/api/document-store/files/FILE-HARD01",
+        f"/api/document-store/files/{file.file_id}",
         headers=auth_headers,
     )
     assert get_resp.status_code == 404
@@ -857,10 +896,10 @@ async def test_hard_delete_inactive_file(file_client: AsyncClient, auth_headers:
 @pytest.mark.asyncio
 async def test_hard_delete_active_file_fails(file_client: AsyncClient, auth_headers: dict):
     """Hard-delete on an active file returns 400 (must soft-delete first)."""
-    await _insert_file(file_id="FILE-HARD02", status=FileStatus.ACTIVE, reference_count=1)
+    file = await _insert_file(status=FileStatus.ACTIVE, reference_count=1)
 
     response = await file_client.delete(
-        "/api/document-store/files/FILE-HARD02/hard",
+        f"/api/document-store/files/{file.file_id}/hard",
         headers=auth_headers,
     )
     assert response.status_code == 400
@@ -884,10 +923,10 @@ async def test_hard_delete_not_found(file_client: AsyncClient, auth_headers: dic
 @pytest.mark.asyncio
 async def test_get_file_documents_no_references(file_client: AsyncClient, auth_headers: dict):
     """List documents referencing a file when none exist."""
-    await _insert_file(file_id="FILE-NOREF")
+    file = await _insert_file()
 
     response = await file_client.get(
-        "/api/document-store/files/FILE-NOREF/documents",
+        f"/api/document-store/files/{file.file_id}/documents",
         headers=auth_headers,
     )
     assert response.status_code == 200

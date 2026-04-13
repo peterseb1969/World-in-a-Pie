@@ -21,17 +21,59 @@ from ..models.api_models import (
     DocumentResponse,
     DocumentVersionResponse,
     DocumentVersionSummary,
+    PatchDocumentItem,
     ValidationError,
     ValidationResponse,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .def_store_client import get_def_store_client
 from .file_storage_client import is_file_storage_enabled
+from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
 from .reference_validator import ReferenceValidationError, get_reference_validator
 from .registry_client import RegistryError, get_registry_client
 from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
+
+logger = logging.getLogger(__name__)
+
+
+class PatchError(Exception):
+    """Per-item error during PATCH /documents processing.
+
+    Carries a machine-readable code so the bulk endpoint can populate
+    BulkResultItem.error_code per design doc §"Per-item error codes".
+    """
+
+    def __init__(self, code: str, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{code}: {message}")
+
+
+def json_merge_patch(target: Any, patch: Any) -> Any:
+    """Apply a JSON Merge Patch (RFC 7396) to a target value.
+
+    - dict-on-dict: deep merge recursively
+    - dict-on-non-dict: replace target with empty dict, then merge
+    - any non-dict patch value (scalar, list, etc.): replaces target
+    - null patch value at any key: deletes that key from target
+
+    Returns a new value; the input target is not mutated at the top level.
+    """
+    if not isinstance(patch, dict):
+        return patch
+    if not isinstance(target, dict):
+        target = {}
+    result = dict(target)
+    for key, value in patch.items():
+        if value is None:
+            result.pop(key, None)
+        elif isinstance(value, dict):
+            result[key] = json_merge_patch(result.get(key), value)
+        else:
+            result[key] = value
+    return result
 
 
 class DocumentService:
@@ -97,7 +139,7 @@ class DocumentService:
     async def create_document(
         self,
         request: DocumentCreateRequest,
-        namespace: str = "wip",
+        namespace: str,
     ) -> tuple[DocumentCreateResponse, str | None]:
         """
         Create or update a document.
@@ -152,7 +194,9 @@ class DocumentService:
 
         # Every document goes through Registry — no exceptions.
         # For restore: entry_id=request.document_id tells Registry to use that exact ID.
+        # For upsert (document_id but no version): rely on composite_key dedup.
         # For normal: entry_id=None lets Registry generate one.
+        restore_entry_id = request.document_id if version_override is not None else None
         start = time.perf_counter()
         try:
             registry = get_registry_client()
@@ -162,7 +206,7 @@ class DocumentService:
                 has_identity_fields=has_identity_fields,
                 created_by=get_identity_string(),
                 namespace=namespace,
-                entry_id=request.document_id,
+                entry_id=restore_entry_id,
             )
         except RegistryError as e:
             return None, f"Failed to generate document ID: {e!s}"
@@ -189,9 +233,12 @@ class DocumentService:
             )
             timing["3_create_new"] = (time.perf_counter() - start) * 1000
         else:
-            # Existing identity — find current active version and create new version
+            # Existing identity — find current active version and create new version.
+            # Use document_id (from Registry) — NOT identity_hash. The Registry is
+            # the identity authority; local identity_hash lookups bypass it and can
+            # match documents from different templates (CASE-36).
             start = time.perf_counter()
-            existing = await self._find_active_by_identity(identity_hash, namespace=namespace)
+            existing = await self._find_active_by_document_id(document_id, namespace=namespace)
             if existing:
                 result = await self._create_new_version(
                     request, existing, validation_result,
@@ -215,7 +262,7 @@ class DocumentService:
         request: DocumentCreateRequest,
         validation_result: Any,
         document_id: str,
-        namespace: str = "wip",
+        namespace: str,
         synonyms: list[dict] | None = None,
         version_override: int | None = None,
     ) -> tuple[DocumentCreateResponse, str | None]:
@@ -265,17 +312,26 @@ class DocumentService:
             now=now,
         )
 
-        # Register auto-synonym for migration portability (best-effort, version 1 only)
+        # Register auto-synonym for migration portability (version 1 only)
+        # On failure, roll back the MongoDB document and re-raise
         if version == 1 and not version_override:
-            registry = get_registry_client()
-            await registry.register_auto_synonym(
-                document_id=document_id,
-                namespace=namespace,
-                template_value=validation_result.template_value or "",
-                identity_hash=validation_result.identity_hash,
-                has_identity_fields=bool(validation_result.identity_hash),
-                created_by=actor,
-            )
+            try:
+                registry = get_registry_client()
+                await registry.register_auto_synonym(
+                    document_id=document_id,
+                    namespace=namespace,
+                    template_value=validation_result.template_value or "",
+                    identity_hash=validation_result.identity_hash,
+                    has_identity_fields=bool(validation_result.identity_hash),
+                    created_by=actor,
+                )
+            except RegistryError:
+                logger.error(
+                    "Auto-synonym registration failed for document %s — rolling back",
+                    document_id,
+                )
+                await document.delete()
+                raise
 
         # Publish document created event
         await publish_document_event(
@@ -428,7 +484,7 @@ class DocumentService:
         existing: Document,
         validation_result: Any,
         document_id: str,
-        namespace: str = "wip"
+        namespace: str
     ) -> tuple[DocumentCreateResponse, str | None]:
         """Create a new version of an existing document with stable document_id."""
         # Check if data has actually changed
@@ -510,15 +566,20 @@ class DocumentService:
             warnings=validation_result.warnings
         ), None
 
-    async def _find_active_by_identity(
+    async def _find_active_by_document_id(
         self,
-        identity_hash: str,
-        namespace: str = "wip"
+        document_id: str,
+        namespace: str
     ) -> Document | None:
-        """Find the active document with the given identity hash within namespace."""
+        """Find the active version of a document by its canonical ID.
+
+        Uses the Registry-resolved document_id, not identity_hash. The
+        Registry is the identity authority — local identity_hash lookups
+        can match across templates and corrupt data (CASE-36).
+        """
         return await Document.find_one({
             "namespace": namespace,
-            "identity_hash": identity_hash,
+            "document_id": document_id,
             "status": DocumentStatus.ACTIVE.value
         })
 
@@ -534,6 +595,7 @@ class DocumentService:
         """Convert Document to event payload for NATS publishing."""
         return {
             "document_id": document.document_id,
+            "namespace": document.namespace,
             "template_id": document.template_id,
             "template_version": document.template_version,
             "template_value": document.template_value,
@@ -574,12 +636,23 @@ class DocumentService:
     async def get_document_by_identity(
         self,
         identity_hash: str,
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        namespace: str | None = None,
+        template_id: str | None = None,
     ) -> DocumentResponse | None:
-        """Get a document by identity hash."""
-        query = {"identity_hash": identity_hash}
+        """Get a document by identity hash.
+
+        Without namespace and template_id filters, identity_hash can match
+        documents across templates (CASE-36). Callers should always provide
+        both to avoid ambiguity.
+        """
+        query: dict[str, Any] = {"identity_hash": identity_hash}
         if not include_inactive:
             query["status"] = DocumentStatus.ACTIVE.value
+        if namespace:
+            query["namespace"] = namespace
+        if template_id:
+            query["template_id"] = template_id
 
         document = await Document.find_one(query)
         if not document:
@@ -593,10 +666,9 @@ class DocumentService:
         status: DocumentStatus | None = None,
         page: int = 1,
         page_size: int = 20,
-        namespace: str | None = None,
         latest_only: bool = False,
         cursor: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -610,10 +682,8 @@ class DocumentService:
         from bson import ObjectId
 
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if template_id:
             query["template_id"] = template_id
         if template_value:
@@ -761,10 +831,89 @@ class DocumentService:
     async def delete_document(
         self,
         document_id: str,
-        deleted_by: str | None = None  # Deprecated: uses authenticated identity
+        deleted_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
+        version: int | None = None,
     ) -> bool:
-        """Soft-delete a document (set latest active version to inactive)."""
-        # Find latest active version
+        """Delete a document. Soft-delete by default, hard-delete if requested
+        and namespace deletion_mode is 'full'.
+
+        Args:
+            document_id: Document to delete
+            deleted_by: Deprecated - uses authenticated identity
+            hard_delete: Permanently remove (requires namespace deletion_mode='full')
+            version: Specific version to hard-delete (None = all). Ignored for soft-delete.
+        """
+        # Use authenticated identity (not client-provided)
+        actor = get_identity_string()
+
+        if hard_delete:
+            # Find any version to get namespace
+            any_doc = await Document.find_one({"document_id": document_id})
+            if not any_doc:
+                return False
+
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(any_doc.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+
+            from .file_service import get_file_service
+            file_service = get_file_service()
+
+            if version is not None:
+                # Version-specific hard-delete
+                target = await Document.find_one({"document_id": document_id, "version": version})
+                if not target:
+                    return False
+
+                event_payload = self._document_to_event_payload(target)
+                event_payload["hard_delete"] = True
+                event_payload["version"] = version
+
+                # Decrement file ref counts and cleanup orphans
+                await self._update_file_reference_counts(target.file_references, delta=-1)
+                await self._hard_delete_orphaned_files(target.file_references, file_service)
+
+                await target.delete()
+
+                # Check if any versions remain
+                remaining = await Document.find({"document_id": document_id}).count()
+                if remaining == 0:
+                    try:
+                        await client.hard_delete_entry(document_id, updated_by=actor)
+                    except Exception as e:
+                        logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+            else:
+                # All versions hard-delete
+                all_versions = await Document.find({"document_id": document_id}).to_list()
+
+                event_payload = self._document_to_event_payload(any_doc)
+                event_payload["hard_delete"] = True
+
+                # Collect all file references across all versions
+                for doc in all_versions:
+                    await self._update_file_reference_counts(doc.file_references, delta=-1)
+                    await self._hard_delete_orphaned_files(doc.file_references, file_service)
+
+                await Document.find({"document_id": document_id}).delete()
+
+                try:
+                    await client.hard_delete_entry(document_id, updated_by=actor)
+                except Exception as e:
+                    logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+
+            # Publish document deleted event
+            await publish_document_event(
+                EventType.DOCUMENT_DELETED,
+                event_payload,
+                changed_by=actor,
+            )
+            return True
+
+        # SOFT DELETE path (existing behavior)
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
         ).sort([("version", -1)]).limit(1).to_list()
@@ -774,9 +923,6 @@ class DocumentService:
 
         if document.status == DocumentStatus.INACTIVE:
             return True  # Already inactive
-
-        # Use authenticated identity (not client-provided)
-        actor = get_identity_string()
 
         document.status = DocumentStatus.INACTIVE
         document.updated_at = datetime.now(UTC)
@@ -796,6 +942,29 @@ class DocumentService:
         )
 
         return True
+
+    async def _hard_delete_orphaned_files(self, file_references: list[dict[str, Any]], file_service) -> None:
+        """Hard-delete files that have reached reference_count=0 and are inactive."""
+        from ..models.file import File, FileStatus
+        from ..services.file_storage_client import is_file_storage_enabled
+
+        if not file_references or not is_file_storage_enabled():
+            return
+
+        for ref in file_references:
+            file_id = ref.get("file_id")
+            if not file_id:
+                continue
+            try:
+                file_doc = await File.find_one({"file_id": file_id})
+                if file_doc and file_doc.reference_count <= 0:
+                    # Set to inactive first if needed (hard_delete_file requires inactive)
+                    if file_doc.status != FileStatus.INACTIVE:
+                        file_doc.status = FileStatus.INACTIVE
+                        await file_doc.save()
+                    await file_service.hard_delete_file(file_id)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
 
     async def archive_document(
         self,
@@ -834,10 +1003,13 @@ class DocumentService:
 
     async def query_documents(
         self,
-        request: DocumentQueryRequest
+        request: DocumentQueryRequest,
+        ns_filter: dict | None = None,
     ) -> DocumentQueryResponse:
         """Query documents with complex filters."""
         query = self._build_query(request)
+        if ns_filter:
+            query.update(ns_filter)
 
         # Count total
         total = await Document.find(query).count()
@@ -908,7 +1080,7 @@ class DocumentService:
     async def bulk_create(
         self,
         items: list[DocumentCreateRequest],
-        namespace: str = "wip",
+        namespace: str,
         continue_on_error: bool = True,
     ) -> BulkResponse:
         """
@@ -1132,15 +1304,20 @@ class DocumentService:
             if reg_result.get("status") != "error":
                 vr.identity_hash = reg_result.get("identity_hash")
 
-        # Stage 3: Batch check for existing documents using registry-returned hashes
+        # Stage 3: Batch check for existing documents using Registry-resolved IDs.
+        # Uses document_id (from Registry), NOT identity_hash — local
+        # identity_hash lookups can match across templates (CASE-36).
         start = time.perf_counter()
-        identity_hashes = [vr[2].identity_hash for vr in validation_results if vr[2].identity_hash]
+        registry_doc_ids = [
+            r.get("registry_id") for r in registry_results
+            if r.get("status") == "already_exists" and r.get("registry_id")
+        ]
         existing_docs = await Document.find({
             "namespace": namespace,
-            "identity_hash": {"$in": identity_hashes},
+            "document_id": {"$in": registry_doc_ids},
             "status": DocumentStatus.ACTIVE.value
-        }).to_list() if identity_hashes else []
-        existing_by_hash = {doc.identity_hash: doc for doc in existing_docs}
+        }).to_list() if registry_doc_ids else []
+        existing_by_doc_id = {doc.document_id: doc for doc in existing_docs}
         timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
@@ -1169,11 +1346,9 @@ class DocumentService:
                 identity_hash = validation_result.identity_hash
                 is_new_from_registry = registry_result.get("status") == "created"
 
-                # For existing identity (Registry returned already_exists), check
-                # the live map (updated within this loop) instead of only the
-                # Stage 3 snapshot — this handles duplicate identity hashes in
-                # the same batch correctly.
-                existing = existing_by_hash.get(identity_hash) if not is_new_from_registry else None
+                # For existing identity (Registry returned already_exists), look
+                # up by document_id — NOT identity_hash (CASE-36).
+                existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
 
                 # Version override for restore/migration: if the request
                 # supplies both document_id and version, use them as-is.
@@ -1244,10 +1419,10 @@ class DocumentService:
                 new_version = document.version
                 is_new = new_version == 1
 
-                # Update existing_by_hash so subsequent items in this batch
-                # with the same identity hash see the correct latest version.
-                if identity_hash:
-                    existing_by_hash[identity_hash] = document
+                # Update existing_by_doc_id so subsequent items in this batch
+                # with the same document_id see the correct latest version.
+                if document_id:
+                    existing_by_doc_id[document_id] = document
 
                 # Defer NATS event — published concurrently after the loop
                 event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
@@ -1326,12 +1501,13 @@ class DocumentService:
     async def validate_document(
         self,
         template_id: str,
-        data: dict[str, Any]
+        data: dict[str, Any],
+        namespace: str,
     ) -> ValidationResponse:
         """Validate document without saving."""
         from .identity_service import IdentityService
 
-        result = await self.validation_service.validate(template_id, data)
+        result = await self.validation_service.validate(template_id, data, namespace=namespace)
 
         # Dry-run: compute identity_hash locally (no Registry side effects)
         identity_hash = None
@@ -1474,6 +1650,262 @@ class DocumentService:
                     logging.getLogger(__name__).warning(
                         f"Failed to update reference count for file {file_id}: {e}"
                     )
+
+
+    # ========================================================================
+    # PATCH /documents
+    # ========================================================================
+
+    async def bulk_patch(self, items: list[PatchDocumentItem]) -> BulkResponse:
+        """Apply JSON Merge Patches to a batch of documents.
+
+        Each item is processed independently. Errors are returned per-item
+        in the BulkResponse rather than aborting the batch (per the bulk-first
+        contract in docs/api-conventions.md).
+        """
+        results: list[BulkResultItem] = []
+        for index, item in enumerate(items):
+            try:
+                results.append(await self._patch_one(index, item))
+            except PatchError as exc:
+                results.append(BulkResultItem(
+                    index=index,
+                    status="error",
+                    document_id=item.document_id,
+                    error=exc.message,
+                    error_code=exc.code,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Unexpected error patching document %s", item.document_id,
+                )
+                results.append(BulkResultItem(
+                    index=index,
+                    status="error",
+                    document_id=item.document_id,
+                    error=f"Internal error: {exc}",
+                    error_code="internal_error",
+                ))
+
+        succeeded = sum(1 for r in results if r.status != "error")
+        failed = sum(1 for r in results if r.status == "error")
+        return BulkResponse(
+            results=results,
+            total=len(items),
+            succeeded=succeeded,
+            failed=failed,
+        )
+
+    async def _patch_one(
+        self,
+        index: int,
+        item: PatchDocumentItem,
+        max_retries: int = 3,
+    ) -> BulkResultItem:
+        """Apply a single PATCH item.
+
+        Implements the read–merge–validate–write loop with optimistic
+        concurrency. The unique index on (namespace, document_id, version)
+        guarantees version uniqueness; on a race, _insert_with_retry handles
+        the retry transparently.
+
+        Raises PatchError on per-item failures (caller wraps into BulkResultItem).
+        """
+        from pymongo.errors import DuplicateKeyError
+
+        # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
+        from wip_auth import (
+            get_current_identity,
+            permission_sufficient,
+            resolve_permission,
+        )
+
+        for attempt in range(max_retries):
+            # 1. Read latest version (regardless of status — we still need to
+            #    detect ARCHIVED/INACTIVE and return the right error code).
+            latest = await Document.find(
+                {"document_id": item.document_id}
+            ).sort([("version", -1)]).limit(1).to_list()
+
+            if not latest:
+                raise PatchError("not_found", "Document not found")
+
+            current = latest[0]
+
+            # Soft-deleted document — treat as not_found per design doc §11.
+            if current.status == DocumentStatus.INACTIVE:
+                raise PatchError("not_found", "Document not found")
+
+            # Archived — explicit error per design doc.
+            if current.status == DocumentStatus.ARCHIVED:
+                raise PatchError(
+                    "archived",
+                    "Document is archived; unarchive before patching",
+                )
+
+            # 2. Permission check on the document's namespace.
+            #    Use resolve_permission directly so we can produce a per-item
+            #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
+            identity = get_current_identity()
+            permission = await resolve_permission(identity, current.namespace)
+            if not permission_sufficient(permission, "write"):
+                raise PatchError(
+                    "forbidden",
+                    f"Requires write access to namespace '{current.namespace}'",
+                )
+
+            # 3. Optimistic concurrency control (per-item if_match).
+            if item.if_match is not None and current.version != item.if_match:
+                raise PatchError(
+                    "concurrency_conflict",
+                    f"Expected version {item.if_match}, current is {current.version}",
+                )
+
+            # 4. Apply RFC 7396 merge to current data.
+            merged_data = json_merge_patch(current.data, item.patch)
+
+            # 5. Re-validate the merged document against the SAME template
+            #    version the existing document was created with (design §13).
+            validation_result = await self.validation_service.validate(
+                current.template_id,
+                merged_data,
+                namespace=current.namespace,
+                template_version=current.template_version,
+            )
+            if not validation_result.valid:
+                raise PatchError(
+                    "validation_failed",
+                    self._format_validation_errors(validation_result.errors),
+                )
+
+            # 6. Identity-field invariant (design §3).
+            #    Compare resolved values via dot-path lookup so nested identity
+            #    fields (e.g. "address.city") are handled correctly.
+            for field_path in validation_result.identity_fields or []:
+                old_val = IdentityService._get_nested_value(current.data, field_path)
+                new_val = IdentityService._get_nested_value(merged_data, field_path)
+                if old_val != new_val:
+                    raise PatchError(
+                        "identity_field_change",
+                        f"Cannot patch identity field '{field_path}' "
+                        f"(use POST to create a new document instead)",
+                    )
+
+            # 7. No-op detection — if data + all 3 reference arrays are byte-equal
+            #    to the current version, return without bumping.
+            if not self._data_has_changed(
+                current,
+                merged_data,
+                validation_result.term_references,
+                validation_result.references,
+                validation_result.file_references,
+            ):
+                return BulkResultItem(
+                    index=index,
+                    status="unchanged",
+                    id=current.document_id,
+                    document_id=current.document_id,
+                    identity_hash=current.identity_hash,
+                    version=current.version,
+                    is_new=False,
+                    warnings=validation_result.warnings,
+                )
+
+            # 8. Cross-namespace reference validation (matches POST flow).
+            try:
+                validator = get_reference_validator()
+                await validator.validate_document_references(
+                    document_namespace=current.namespace,
+                    template_namespace=current.namespace,
+                    term_references=validation_result.term_references,
+                    file_references=validation_result.file_references,
+                )
+            except ReferenceValidationError as exc:
+                raise PatchError(
+                    "reference_violation",
+                    f"Cross-namespace reference violation: {exc.violations}",
+                ) from exc
+
+            # 9. Write new version. Mirror _create_new_version's flow:
+            #    deactivate the existing version, then insert v+1 via the
+            #    retry helper. The unique index serializes concurrent writers.
+            actor = get_identity_string()
+            now = datetime.now(UTC)
+
+            current.status = DocumentStatus.INACTIVE
+            current.updated_at = now
+            current.updated_by = actor
+            await current.save()
+
+            # Preserve metadata.custom from the existing version. Warnings come
+            # from the new validation (they describe the merged state).
+            new_metadata = DocumentMetadata(
+                source_system=current.metadata.source_system,
+                warnings=validation_result.warnings,
+                custom=dict(current.metadata.custom),
+            )
+
+            try:
+                new_doc = await self._insert_with_retry(
+                    namespace=current.namespace,
+                    document_id=current.document_id,
+                    template_id=current.template_id,
+                    template_version=current.template_version,
+                    template_value=current.template_value,
+                    identity_hash=current.identity_hash,  # invariant under PATCH
+                    version=current.version + 1,
+                    data=merged_data,
+                    term_references=validation_result.term_references,
+                    references=validation_result.references,
+                    file_references=validation_result.file_references,
+                    metadata=new_metadata,
+                    actor=actor,
+                    now=now,
+                )
+            except DuplicateKeyError:
+                # Lost the version race even after _insert_with_retry's internal
+                # retries. Try the whole read-merge-write cycle again.
+                if attempt >= max_retries - 1:
+                    raise PatchError(
+                        "concurrency_conflict",
+                        f"Failed after {max_retries} retries due to concurrent writers",
+                    ) from None
+                continue
+
+            # 10. NATS event — reuse DOCUMENT_UPDATED so reporting-sync needs
+            #     no changes (a PATCH is just a new version, semantically).
+            await publish_document_event(
+                EventType.DOCUMENT_UPDATED,
+                self._document_to_event_payload(new_doc),
+                changed_by=actor,
+            )
+
+            # 11. File reference counts: decrement the old version's refs,
+            #     increment the new ones. Same as _create_new_version.
+            await self._update_file_reference_counts(
+                current.file_references, delta=-1
+            )
+            await self._update_file_reference_counts(
+                validation_result.file_references, delta=1
+            )
+
+            return BulkResultItem(
+                index=index,
+                status="updated",
+                id=new_doc.document_id,
+                document_id=new_doc.document_id,
+                identity_hash=new_doc.identity_hash,
+                version=new_doc.version,
+                is_new=False,
+                warnings=validation_result.warnings,
+            )
+
+        # All retries exhausted — should be unreachable because the loop body
+        # either returns or raises, but defensive in case the loop falls through.
+        raise PatchError(
+            "concurrency_conflict",
+            f"Failed after {max_retries} retries due to concurrent writers",
+        )
 
 
 # Singleton instance

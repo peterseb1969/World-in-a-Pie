@@ -182,8 +182,37 @@ describe('FetchTransport', () => {
     )
   })
 
+  it('resolves relative baseUrl against window.location.origin', () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } })
+    const t = new FetchTransport({ baseUrl: '/wip', retry: { maxRetries: 0 } })
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
+    t.request('GET', '/api/document-store/documents')
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://localhost:5173/wip/api/document-store/documents',
+      expect.any(Object),
+    )
+  })
+
+  it('resolves relative baseUrl with query params', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } })
+    const t = new FetchTransport({ baseUrl: '/wip', retry: { maxRetries: 0 } })
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }))
+    await t.request('GET', '/api/document-store/documents', {
+      params: { namespace: 'test', status: 'active' },
+    })
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toContain('http://localhost:5173/wip/api/document-store/documents')
+    expect(url).toContain('namespace=test')
+    expect(url).toContain('status=active')
+  })
+
   it('throws clear error when baseUrl is empty in non-browser environment', () => {
     vi.stubGlobal('window', undefined)
     expect(() => new FetchTransport({ baseUrl: '' })).toThrow('baseUrl is required')
+  })
+
+  it('throws clear error when relative baseUrl used in non-browser environment', () => {
+    vi.stubGlobal('window', undefined)
+    expect(() => new FetchTransport({ baseUrl: '/wip' })).toThrow('relative baseUrl')
   })
 })

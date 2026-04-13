@@ -9,10 +9,11 @@ Responsibilities:
 - Preserve original JSON for complex queries
 """
 
+import contextlib
 import json
 import logging
 from datetime import date, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
 
@@ -81,7 +82,7 @@ class DocumentTransformer:
     """Transforms documents into flat row(s) for PostgreSQL."""
 
     # System column names that data fields should not conflict with
-    SYSTEM_COLUMNS = {
+    SYSTEM_COLUMNS: ClassVar[set[str]] = {
         "document_id", "namespace", "template_id",
         "template_version", "version", "status", "identity_hash",
         "created_at", "created_by", "updated_at", "updated_by",
@@ -92,7 +93,12 @@ class DocumentTransformer:
         self.config = config or ReportingConfig()
 
     def _safe_column_name(self, name: str) -> str:
-        """Return column name, prefixing with 'data_' if it conflicts with system columns."""
+        """Return safe PostgreSQL column name.
+
+        Dots become underscores (dots are table.column separators in SQL).
+        System column names get a 'data_' prefix to avoid conflicts.
+        """
+        name = name.replace(".", "_")
         if name in self.SYSTEM_COLUMNS:
             return f"data_{name}"
         return name
@@ -103,6 +109,7 @@ class DocumentTransformer:
         prefix: str = "",
         term_references: dict[str, Any] | None = None,
         flatten_nested: bool = False,
+        field_types: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Process object into columns, optionally flattening nested objects.
@@ -133,7 +140,8 @@ class DocumentTransformer:
                 if flatten_nested:
                     # Recursively flatten nested objects
                     nested = self._flatten_object(
-                        value, f"{full_key}_", term_refs.get(key, {}), flatten_nested=True
+                        value, f"{full_key}_", term_refs.get(key, {}), flatten_nested=True,
+                        field_types=field_types,
                     )
                     result.update(nested)
                 else:
@@ -143,15 +151,14 @@ class DocumentTransformer:
                 # Store arrays as JSON (row expansion handled separately)
                 result[safe_key] = json.dumps(value)
             else:
-                # Convert date/datetime strings to Python objects for PostgreSQL
-                if isinstance(value, str):
-                    # Check for date format (YYYY-MM-DD)
-                    if len(value) == 10 and value[4] == '-' and value[7] == '-':
+                # Convert date/datetime strings using declared field types
+                if isinstance(value, str) and field_types:
+                    ft = field_types.get(key)
+                    if ft == "date":
                         parsed_date = _parse_date(value)
                         if parsed_date:
                             value = parsed_date
-                    # Check for datetime format (longer string with T or space separator)
-                    elif len(value) > 10 and ('T' in value or (len(value) > 11 and value[10] == ' ')):
+                    elif ft == "datetime":
                         parsed_dt = _parse_datetime(value)
                         if parsed_dt:
                             value = parsed_dt
@@ -278,7 +285,7 @@ class DocumentTransformer:
     def transform(
         self,
         document: dict[str, Any],
-        template: dict[str, Any] | None = None,
+        template: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
         Transform a document into one or more flat rows.
@@ -294,7 +301,7 @@ class DocumentTransformer:
                 - term_references
                 - file_references
                 - created_at, created_by, updated_at, updated_by
-            template: Optional template definition for semantic type processing
+            template: Template definition (required for field type resolution)
 
         Returns:
             List of flat row dictionaries ready for PostgreSQL insert/upsert
@@ -302,20 +309,19 @@ class DocumentTransformer:
         data = document.get("data", {})
         term_references_list = document.get("term_references", [])
 
-        # Build semantic type map from template if provided
+        # Build field type map and semantic type map from template
+        field_types: dict[str, str] = {}
         semantic_types: dict[str, SemanticType] = {}
-        if template:
-            for field in template.get("fields", []):
-                if field.get("semantic_type"):
-                    try:
-                        semantic_types[field["name"]] = SemanticType(field["semantic_type"])
-                    except ValueError:
-                        pass  # Unknown semantic type, skip
+        for field in template.get("fields", []):
+            field_types[field["name"]] = field.get("type", "string")
+            if field.get("semantic_type"):
+                with contextlib.suppress(ValueError):
+                    semantic_types[field["name"]] = SemanticType(field["semantic_type"])
         file_references_list = document.get("file_references", [])
 
         # Convert array format to dict for compatibility with existing flattening logic
-        # Array format: [{"field_path": "gender", "term_id": "T-001"}, ...]
-        # Dict format: {"gender": "T-001", ...}
+        # Array format: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
+        # Dict format: {"gender": "019abc42-...", ...}
         term_references = {}
         for ref in term_references_list:
             field_path = ref.get("field_path", "")
@@ -348,7 +354,7 @@ class DocumentTransformer:
         # Base row with system columns
         base_row = {
             "document_id": document["document_id"],
-            "namespace": document.get("namespace", "wip"),
+            "namespace": document["namespace"],
             "template_id": document["template_id"],
             "template_version": document.get("template_version", 1),
             "version": document.get("version", 1),
@@ -366,7 +372,7 @@ class DocumentTransformer:
             })
 
         # Flatten the data
-        flattened_data = self._flatten_object(data, "", term_references)
+        flattened_data = self._flatten_object(data, "", term_references, field_types=field_types)
         base_row.update(flattened_data)
 
         # Process semantic types if template is provided

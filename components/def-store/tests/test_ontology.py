@@ -13,7 +13,7 @@ async def create_terminology(client, auth_headers, value="TEST_ONTOLOGY", label=
     """Create a terminology and return its ID."""
     resp = await client.post(
         f"{API}/terminologies",
-        json=[{"value": value, "label": label}],
+        json=[{"value": value, "label": label, "namespace": "wip"}],
         headers=auth_headers,
     )
     assert resp.status_code == 200
@@ -85,6 +85,7 @@ class TestCreateRelationships:
                 {"source_term_id": c, "target_term_id": b, "relationship_type": "is_a"},
             ],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -124,6 +125,7 @@ class TestCreateRelationships:
             f"{API}/ontology/relationships",
             json=[{"source_term_id": b, "target_term_id": a, "relationship_type": "is_a"}],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert del_resp.json()["results"][0]["status"] == "deleted"
 
@@ -131,6 +133,7 @@ class TestCreateRelationships:
         anc_resp = await client.get(
             f"{API}/ontology/terms/{b}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert anc_resp.json()["total"] == 0
 
@@ -144,6 +147,7 @@ class TestCreateRelationships:
         anc_resp2 = await client.get(
             f"{API}/ontology/terms/{b}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert anc_resp2.json()["total"] == 1
         assert anc_resp2.json()["nodes"][0]["term_id"] == a
@@ -176,6 +180,18 @@ class TestCreateRelationships:
         assert "same" in data["results"][0]["error"].lower()
 
     @pytest.mark.asyncio
+    async def test_create_invalid_relationship_type_fails(self, client, auth_headers):
+        """Unknown relationship types are rejected."""
+        tid = await create_terminology(client, auth_headers)
+        a = await create_term(client, auth_headers, tid, "A")
+        b = await create_term(client, auth_headers, tid, "B")
+
+        data = await create_relationship(client, auth_headers, a, b, "banana")
+        assert data["failed"] == 1
+        assert "Unknown relationship type" in data["results"][0]["error"]
+        assert "banana" in data["results"][0]["error"]
+
+    @pytest.mark.asyncio
     async def test_create_cross_terminology_relationship(self, client, auth_headers):
         tid1 = await create_terminology(client, auth_headers, "ANATOMY", "Anatomy")
         tid2 = await create_terminology(client, auth_headers, "CONDITIONS", "Conditions")
@@ -200,6 +216,7 @@ class TestCreateRelationships:
                 "metadata": {"source_ontology": "SNOMED-CT", "confidence": 1.0},
             }],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         assert resp.json()["succeeded"] == 1
@@ -217,7 +234,7 @@ class TestListRelationships:
 
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": b, "direction": "outgoing"},
+            params={"term_id": b, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -234,7 +251,7 @@ class TestListRelationships:
 
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": a, "direction": "incoming"},
+            params={"term_id": a, "direction": "incoming", "namespace": "wip"},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -254,7 +271,7 @@ class TestListRelationships:
         # Filter for is_a only
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": b, "direction": "outgoing", "relationship_type": "is_a"},
+            params={"term_id": b, "direction": "outgoing", "relationship_type": "is_a", "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()
@@ -263,9 +280,12 @@ class TestListRelationships:
 
     @pytest.mark.asyncio
     async def test_list_empty(self, client, auth_headers):
+        """List relationships for a valid term that has none → empty list."""
+        tid = await create_terminology(client, auth_headers)
+        term_id = await create_term(client, auth_headers, tid, "Lonely")
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": "NONEXISTENT"},
+            params={"term_id": term_id, "namespace": "wip"},
             headers=auth_headers,
         )
         assert resp.status_code == 200
@@ -287,6 +307,7 @@ class TestDeleteRelationships:
             f"{API}/ontology/relationships",
             json=[{"source_term_id": b, "target_term_id": a, "relationship_type": "is_a"}],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         assert resp.json()["results"][0]["status"] == "deleted"
@@ -294,7 +315,7 @@ class TestDeleteRelationships:
         # Verify it no longer appears in active list
         list_resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": b, "direction": "outgoing"},
+            params={"term_id": b, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
         assert list_resp.json()["total"] == 0
@@ -306,6 +327,7 @@ class TestDeleteRelationships:
             f"{API}/ontology/relationships",
             json=[{"source_term_id": "X", "target_term_id": "Y", "relationship_type": "is_a"}],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         assert resp.json()["results"][0]["status"] == "error"
@@ -331,6 +353,7 @@ class TestAncestors:
         resp = await client.get(
             f"{API}/ontology/terms/{a}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -359,6 +382,7 @@ class TestAncestors:
         resp = await client.get(
             f"{API}/ontology/terms/{a}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert data["total"] == 3
@@ -383,6 +407,7 @@ class TestAncestors:
         resp = await client.get(
             f"{API}/ontology/terms/{a}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -404,7 +429,7 @@ class TestAncestors:
 
         resp = await client.get(
             f"{API}/ontology/terms/{terms[0]}/ancestors",
-            params={"max_depth": 2},
+            params={"max_depth": 2, "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()
@@ -421,6 +446,7 @@ class TestAncestors:
         resp = await client.get(
             f"{API}/ontology/terms/{child}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert data["total"] == 1
@@ -437,6 +463,7 @@ class TestAncestors:
         resp = await client.get(
             f"{API}/ontology/terms/{child}/ancestors",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert data["nodes"][0]["value"] == "Lung Disease"
@@ -458,6 +485,7 @@ class TestDescendants:
         resp = await client.get(
             f"{API}/ontology/terms/{a}/descendants",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert data["total"] == 2
@@ -474,6 +502,7 @@ class TestDescendants:
         resp = await client.get(
             f"{API}/ontology/terms/{parent}/descendants",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert data["total"] == 1
@@ -496,6 +525,7 @@ class TestParentsChildren:
         resp = await client.get(
             f"{API}/ontology/terms/{c}/parents",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -515,6 +545,7 @@ class TestParentsChildren:
         resp = await client.get(
             f"{API}/ontology/terms/{gp}/children",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert len(data) == 1
@@ -533,6 +564,7 @@ class TestParentsChildren:
         resp = await client.get(
             f"{API}/ontology/terms/{child}/parents",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         data = resp.json()
         assert len(data) == 2
@@ -558,7 +590,7 @@ class TestRelationshipPagination:
         # Page 1, size 2
         resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": a, "page": 1, "page_size": 2},
+            params={"term_id": a, "page": 1, "page_size": 2, "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()
@@ -569,7 +601,7 @@ class TestRelationshipPagination:
         # Page 2, size 2
         resp2 = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": a, "page": 2, "page_size": 2},
+            params={"term_id": a, "page": 2, "page_size": 2, "namespace": "wip"},
             headers=auth_headers,
         )
         data2 = resp2.json()
@@ -592,6 +624,7 @@ class TestListAllRelationships:
         resp = await client.get(
             f"{API}/ontology/relationships/all",
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -609,7 +642,7 @@ class TestListAllRelationships:
 
         resp = await client.get(
             f"{API}/ontology/relationships/all",
-            params={"relationship_type": "part_of"},
+            params={"relationship_type": "part_of", "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()
@@ -628,7 +661,7 @@ class TestListAllRelationships:
 
         resp = await client.get(
             f"{API}/ontology/relationships/all",
-            params={"page_size": 1, "page": 1},
+            params={"page_size": 1, "page": 1, "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()
@@ -656,13 +689,14 @@ class TestMetadataRoundTrip:
                 "metadata": meta,
             }],
             headers=auth_headers,
+            params={"namespace": "wip"},
         )
         assert resp.json()["succeeded"] == 1
 
         # List and verify metadata
         list_resp = await client.get(
             f"{API}/ontology/relationships",
-            params={"term_id": b, "direction": "outgoing"},
+            params={"term_id": b, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
         data = list_resp.json()
@@ -686,7 +720,7 @@ class TestNonIsATraversal:
 
         resp = await client.get(
             f"{API}/ontology/terms/{heart}/ancestors",
-            params={"relationship_type": "part_of"},
+            params={"relationship_type": "part_of", "namespace": "wip"},
             headers=auth_headers,
         )
         data = resp.json()

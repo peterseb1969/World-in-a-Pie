@@ -49,7 +49,7 @@ class TestHealthEndpoint:
 
     @pytest.mark.asyncio
     async def test_healthy(self, client):
-        resp = await client.get("/health")
+        resp = await client.get("/api/ingest-gateway/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "healthy"
@@ -61,7 +61,7 @@ class TestHealthEndpoint:
     async def test_degraded_when_worker_stopped(self, client):
         state.worker.is_running = False
 
-        resp = await client.get("/health")
+        resp = await client.get("/api/ingest-gateway/health")
         data = resp.json()
         assert data["status"] == "degraded"
         assert data["nats_connected"] is True
@@ -71,7 +71,7 @@ class TestHealthEndpoint:
     async def test_unhealthy_when_nats_disconnected(self, client):
         state.nats_client.is_connected = False
 
-        resp = await client.get("/health")
+        resp = await client.get("/api/ingest-gateway/health")
         data = resp.json()
         assert data["status"] == "unhealthy"
         assert data["nats_connected"] is False
@@ -80,7 +80,7 @@ class TestHealthEndpoint:
     async def test_unhealthy_when_no_nats_client(self, client):
         state.nats_client = None
 
-        resp = await client.get("/health")
+        resp = await client.get("/api/ingest-gateway/health")
         data = resp.json()
         assert data["status"] == "unhealthy"
         assert data["nats_connected"] is False
@@ -90,7 +90,7 @@ class TestStatusEndpoint:
 
     @pytest.mark.asyncio
     async def test_status(self, client):
-        resp = await client.get("/status")
+        resp = await client.get("/api/ingest-gateway/status")
         assert resp.status_code == 200
         data = resp.json()
         assert data["running"] is True
@@ -103,7 +103,7 @@ class TestStatusEndpoint:
     async def test_status_no_worker(self, client):
         state.worker = None
 
-        resp = await client.get("/status")
+        resp = await client.get("/api/ingest-gateway/status")
         data = resp.json()
         assert data["running"] is False
         assert data["messages_processed"] == 0
@@ -114,7 +114,7 @@ class TestMetricsEndpoint:
 
     @pytest.mark.asyncio
     async def test_metrics(self, client):
-        resp = await client.get("/metrics")
+        resp = await client.get("/api/ingest-gateway/metrics")
         assert resp.status_code == 200
         data = resp.json()
         assert data["total_processed"] == 42
@@ -125,7 +125,7 @@ class TestMetricsEndpoint:
     async def test_metrics_no_worker(self, client):
         state.worker = None
 
-        resp = await client.get("/metrics")
+        resp = await client.get("/api/ingest-gateway/metrics")
         data = resp.json()
         assert data["total_processed"] == 0
         assert data["total_failed"] == 0
@@ -136,10 +136,10 @@ class TestRootEndpoint:
 
     @pytest.mark.asyncio
     async def test_root(self, client):
-        resp = await client.get("/")
+        resp = await client.get("/api/ingest-gateway/")
         assert resp.status_code == 200
         data = resp.json()
         assert data["service"] == "wip-ingest-gateway"
         assert "version" in data
-        assert data["health"] == "/health"
+        assert data["health"] == "/api/ingest-gateway/health"
         assert data["docs"] == "/docs"

@@ -119,10 +119,10 @@ def test_build_documents():
         {"Name": "Bob", "Email": "bob@test.com"},
     ]
     mapping = {"Name": "name", "Email": "email"}
-    docs = ImportService.build_documents(rows, "TPL-001", mapping, "wip")
+    docs = ImportService.build_documents(rows, "PERSON", mapping, "wip")
 
     assert len(docs) == 2
-    assert docs[0]["template_id"] == "TPL-001"
+    assert docs[0]["template_id"] == "PERSON"
     assert docs[0]["namespace"] == "wip"
     assert docs[0]["data"]["name"] == "Alice"
     assert docs[0]["data"]["email"] == "alice@test.com"
@@ -131,7 +131,7 @@ def test_build_documents():
 def test_build_documents_skips_empty_values():
     rows = [{"Name": "Alice", "Email": ""}]
     mapping = {"Name": "name", "Email": "email"}
-    docs = ImportService.build_documents(rows, "TPL-001", mapping, "wip")
+    docs = ImportService.build_documents(rows, "PERSON", mapping, "wip")
 
     assert "email" not in docs[0]["data"]  # empty string skipped
 
@@ -139,7 +139,7 @@ def test_build_documents_skips_empty_values():
 def test_build_documents_unmapped_columns_ignored():
     rows = [{"Name": "Alice", "Extra": "ignored"}]
     mapping = {"Name": "name"}  # Extra not in mapping
-    docs = ImportService.build_documents(rows, "TPL-001", mapping, "wip")
+    docs = ImportService.build_documents(rows, "PERSON", mapping, "wip")
 
     assert "Extra" not in docs[0]["data"]
     assert "extra" not in docs[0]["data"]

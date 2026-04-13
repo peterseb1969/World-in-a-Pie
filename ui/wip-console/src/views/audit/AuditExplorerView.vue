@@ -9,7 +9,7 @@ import Column from 'primevue/column'
 import Tag from 'primevue/tag'
 import ProgressSpinner from 'primevue/progressspinner'
 import Message from 'primevue/message'
-import { useAuthStore, useUiStore } from '@/stores'
+import { useAuthStore, useUiStore, useNamespaceStore } from '@/stores'
 import {
   reportingSyncClient,
   type SearchResult,
@@ -22,6 +22,7 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const uiStore = useUiStore()
+const namespaceStore = useNamespaceStore()
 
 // Search state
 const searchQuery = ref((route.query.q as string) || '')
@@ -59,6 +60,7 @@ async function performSearch() {
   try {
     const response = await reportingSyncClient.search({
       query: searchQuery.value.trim(),
+      namespace: namespaceStore.currentNamespaceParam,
       limit: 50
     })
     searchResults.value = response.results
@@ -195,6 +197,20 @@ function navigateToIncomingRef(ref: IncomingReference) {
   })
 }
 
+function navigateToEntityDetail(type: string, id: string) {
+  const routes: Record<string, string> = {
+    terminology: '/terminologies/',
+    term: '/terms/',
+    template: '/templates/',
+    document: '/documents/',
+    file: '/files/',
+  }
+  const prefix = routes[type]
+  if (prefix) {
+    router.push(prefix + id)
+  }
+}
+
 function getRefTypeLabel(refType: string): string {
   switch (refType) {
     case 'uses_template': return 'uses'
@@ -323,7 +339,12 @@ watch(
                   {{ inspectedEntity.entity_type }}
                 </Tag>
                 <h3 class="entity-title">
-                  {{ inspectedEntity.entity_label || inspectedEntity.entity_value || inspectedEntity.entity_id }}
+                  <a
+                    class="entity-detail-link"
+                    @click.prevent="navigateToEntityDetail(inspectedEntity.entity_type, inspectedEntity.entity_id)"
+                  >
+                    {{ inspectedEntity.entity_label || inspectedEntity.entity_value || inspectedEntity.entity_id }}
+                  </a>
                 </h3>
                 <Tag
                   v-if="inspectedEntity.entity_status"
@@ -595,9 +616,9 @@ watch(
             <div class="search-tips">
               <h4>Search Tips</h4>
               <ul>
-                <li>Search by value: <code>PERSON</code>, <code>T-000001</code></li>
+                <li>Search by value: <code>PERSON</code>, <code>COUNTRY</code></li>
                 <li>Search by label: <code>Salutation</code>, <code>Country</code></li>
-                <li>Search by ID: <code>TPL-000001</code></li>
+                <li>Search by UUID or value code</li>
               </ul>
             </div>
           </div>
@@ -715,6 +736,16 @@ watch(
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
+}
+
+.entity-detail-link {
+  color: var(--p-primary-color);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.entity-detail-link:hover {
+  text-decoration: underline;
 }
 
 .entity-meta {

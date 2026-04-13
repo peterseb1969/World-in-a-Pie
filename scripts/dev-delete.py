@@ -7,14 +7,14 @@ up Registry entries, MinIO blobs, and PostgreSQL rows so IDs can be re-used.
 
 Usage:
     # Dry run (default) — shows what would be deleted
-    python scripts/dev-delete.py T-0001a2b3 D-0004c5d6
+    python scripts/dev-delete.py 019abc01-def3-7abc-8def-123456789abc
 
-    # Actually delete
-    python scripts/dev-delete.py --force T-0001a2b3
+    # Actually delete (by UUID or value code)
+    python scripts/dev-delete.py --force 019abc01-def3-7abc-8def-123456789abc
 
     # Delete with full cascade (terminology → terms → relationships,
     # template → child templates → documents → files, etc.)
-    python scripts/dev-delete.py --cascade --force TERM-0001a2b3
+    python scripts/dev-delete.py --cascade --force COUNTRY
 
     # Delete entire namespace (cascade is implied)
     python scripts/dev-delete.py --namespace dnd --force
@@ -23,10 +23,10 @@ Usage:
     python scripts/dev-delete.py --prefix DND_ --type terminology --force
 
     # Delete by type when ID format is ambiguous
-    python scripts/dev-delete.py --type template --force TPL-0001a2b3
+    python scripts/dev-delete.py --type template --force PATIENT_RECORD
 
     # Custom MongoDB URI
-    python scripts/dev-delete.py --mongo-uri mongodb://localhost:27017/ --force T-0001a2b3
+    python scripts/dev-delete.py --mongo-uri mongodb://localhost:27017/ --force 019abc01-...
 
     # List all entities in a collection
     python scripts/dev-delete.py --list templates
@@ -428,7 +428,7 @@ def drop_pg_doc_table(pg_conn, template_value, force):
             print(f"  Dropped table {table_name}")
             # Also remove migration tracking
             cur.execute(
-                'DELETE FROM "_wip_schema_migrations" WHERE template_code = %s',
+                'DELETE FROM "_wip_schema_migrations" WHERE template_value = %s',
                 (template_value,),
             )
         cur.close()
@@ -978,6 +978,73 @@ def delete_namespace(client, namespace, force, s3, s3_bucket, pg_conn):
     print(f"\n  Namespace '{namespace}' deleted.")
 
 
+def delete_namespace_by_type(client, namespace, type_filter, force, s3, s3_bucket, pg_conn):
+    """Delete only entities of a specific type within a namespace."""
+    print(f"\n{'='*60}")
+    print(f"NAMESPACE: {namespace}  TYPE: {type_filter}")
+    print(f"{'='*60}")
+
+    info = ENTITY_MAP[type_filter]
+    coll = client[info["db"]][info["collection"]]
+    count = coll.count_documents({"namespace": namespace})
+
+    if count == 0:
+        print(f"  No {type_filter} entities in namespace '{namespace}'")
+        return
+
+    print("\n  Impact report:")
+    print(f"    {type_filter:20s} {count:>6}")
+
+    # Collect file info for MinIO cleanup if deleting files
+    minio_keys = []
+    if type_filter == "file" and s3:
+        _file_ids, minio_keys = collect_files_by_namespace(client, namespace)
+        if minio_keys:
+            print(f"\n  MinIO: {len(minio_keys)} file object(s) to delete")
+
+    # Collect template values for PG table drops if deleting documents
+    template_values = []
+    if type_filter == "document" and pg_conn:
+        tmpl_coll = client["wip_template_store"]["templates"]
+        template_values = tmpl_coll.distinct("value", {"namespace": namespace})
+        if template_values:
+            print(f"  PostgreSQL: {len(template_values)} doc_* table(s) to drop")
+
+    if not force:
+        return
+
+    # Collect IDs for registry cleanup
+    entity_ids = coll.distinct(info["id_field"], {"namespace": namespace})
+
+    result = coll.delete_many({"namespace": namespace})
+    print(f"  Deleted {result.deleted_count} from {info['collection']}")
+
+    # Registry cleanup for these entities
+    reg_coll = client["wip_registry"]["registry_entries"]
+    if entity_ids:
+        rr = reg_coll.delete_many({"entry_id": {"$in": entity_ids}})
+        if rr.deleted_count:
+            print(f"    Cleaned {rr.deleted_count} registry entries")
+
+    # PostgreSQL cleanup
+    if type_filter in PG_TABLE_MAP and PG_TABLE_MAP[type_filter] and pg_conn:
+        delete_pg_rows_bulk(
+            pg_conn, PG_TABLE_MAP[type_filter]["table"],
+            PG_TABLE_MAP[type_filter]["id_field"], entity_ids, True
+        )
+
+    # Drop PG doc_* tables for document deletion
+    if type_filter == "document":
+        for tv in template_values:
+            drop_pg_doc_table(pg_conn, tv, True)
+
+    # MinIO cleanup for file deletion
+    if type_filter == "file" and minio_keys:
+        delete_minio_objects(s3, s3_bucket, minio_keys, True)
+
+    print(f"\n  Deleted {count} {type_filter}(s) from namespace '{namespace}'.")
+
+
 # ── Prefix deletion ──────────────────────────────────────────────────────
 
 def delete_by_prefix(client, prefix, type_filter, cascade, force, s3, s3_bucket, pg_conn):
@@ -1176,7 +1243,10 @@ def main():
 
     # Namespace mode
     if args.namespace:
-        delete_namespace(client, args.namespace, args.force, s3, s3_bucket, pg_conn)
+        if args.type:
+            delete_namespace_by_type(client, args.namespace, args.type, args.force, s3, s3_bucket, pg_conn)
+        else:
+            delete_namespace(client, args.namespace, args.force, s3, s3_bucket, pg_conn)
         if not args.force:
             print(f"\n{'='*60}")
             print("DRY RUN complete. Re-run with --force to execute.")

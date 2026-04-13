@@ -102,13 +102,15 @@ jobs:
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
+          # Transport injection: component tests import registry.main in-process
+          pip install -r ../registry/requirements.txt
           pip install pytest pytest-asyncio httpx
 
       - name: Run tests
         working-directory: components/${{ matrix.component }}
         env:
           MONGO_URI: mongodb://localhost:27017/
-          PYTHONPATH: src
+          PYTHONPATH: src:../registry/src
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
@@ -139,7 +141,7 @@ jobs:
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
 
-  # Reporting-sync (no DB needed)
+  # Reporting-sync (unit tests + PostgreSQL integration tests)
   test-reporting-sync:
     runs-on: ubuntu-latest
     steps:
@@ -149,6 +151,27 @@ jobs:
         run: |
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Start PostgreSQL
+        run: |
+          docker start test-postgres 2>/dev/null || \
+            docker run -d --name test-postgres -p 5433:5432 \
+              -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test \
+              -e POSTGRES_DB=wip_test postgres:16
+          for i in $(seq 1 10); do
+            docker exec test-postgres pg_isready -U test && break
+            sleep 1
+          done
+
+      - name: Start NATS
+        run: |
+          docker start test-nats 2>/dev/null || \
+            docker run -d --name test-nats --restart unless-stopped \
+              -p 4223:4222 -p 8223:8222 nats:2 -js -m 8222
+          for i in $(seq 1 10); do
+            curl -s http://localhost:8223/healthz && break
+            sleep 1
+          done
 
       - name: Install dependencies
         working-directory: components/reporting-sync
@@ -161,6 +184,8 @@ jobs:
         working-directory: components/reporting-sync
         env:
           PYTHONPATH: src
+          POSTGRES_TEST_URI: postgresql://test:test@localhost:5433/wip_test
+          NATS_TEST_URL: nats://localhost:4223
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pytest tests/ -v --tb=short
@@ -202,12 +227,28 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
+      - name: Start MongoDB
+        run: |
+          docker start test-mongo 2>/dev/null || \
+            docker run -d --name test-mongo -p 27017:27017 mongo:7
+          for i in $(seq 1 10); do
+            docker exec test-mongo mongosh --quiet --eval "db.runCommand('ping')" && break
+            sleep 1
+          done
+
       - name: Install dependencies
         run: |
           . .venv/bin/activate
           pip install -e "libs/wip-auth[dev]"
+          # Transport injection: test_fastapi_helpers imports registry.main in-process
+          # Install registry deps but skip the editable wip-auth line (already installed above;
+          # the relative path in requirements.txt is for components/registry/ working dir)
+          grep -v '^\-e' components/registry/requirements.txt | pip install -r /dev/stdin
 
       - name: Run tests
+        env:
+          MONGO_URI: mongodb://localhost:27017/
+          PYTHONPATH: components/registry/src
         run: |
           . .venv/bin/activate
           pytest libs/wip-auth/tests/ -v --tb=short

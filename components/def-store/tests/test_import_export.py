@@ -15,6 +15,7 @@ async def populated_terminology(client: AsyncClient, auth_headers: dict):
         json=[{
             "value": "EXPORT_TEST",
             "label": "Export Test Terminology",
+            "namespace": "wip",
             "description": "For testing export functionality"
         }]
     )
@@ -91,7 +92,8 @@ async def test_export_all_terminologies(client: AsyncClient, auth_headers: dict)
             headers=auth_headers,
             json=[{
                 "value": f"EXPORT_ALL_{i}",
-                "label": f"Export All Test {i}"
+                "label": f"Export All Test {i}",
+                "namespace": "wip"
             }]
         )
 
@@ -113,6 +115,7 @@ async def test_import_terminology_json(client: AsyncClient, auth_headers: dict):
         "terminology": {
             "value": "IMPORTED",
             "label": "Imported Terminology",
+            "namespace": "wip",
             "description": "This was imported"
         },
         "terms": [
@@ -147,7 +150,8 @@ async def test_import_terminology_with_update(client: AsyncClient, auth_headers:
     import_data = {
         "terminology": {
             "value": "UPDATE_TEST",
-            "label": "Original Name"
+            "label": "Original Name",
+            "namespace": "wip"
         },
         "terms": [
             {"value": "value1", "label": "Value 1"}
@@ -180,7 +184,7 @@ async def test_import_terminology_with_update(client: AsyncClient, auth_headers:
 async def test_export_not_found(client: AsyncClient, auth_headers: dict):
     """Test exporting a non-existent terminology."""
     response = await client.get(
-        "/api/def-store/import-export/export/TERM-999999?format=json",
+        "/api/def-store/import-export/export/0190a000-0000-7000-0000-000999999999?format=json",
         headers=auth_headers
     )
 

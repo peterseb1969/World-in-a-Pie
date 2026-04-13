@@ -48,9 +48,14 @@ class SyncWorker:
         self.schema_manager = SchemaManager(postgres_pool)
         self._running = False
         self._template_cache: dict[str, dict[str, Any]] = {}
+        self._managed_tables: set[str] = set()
 
     async def _fetch_template(self, template_id: str) -> dict[str, Any] | None:
-        """Fetch template definition from Template Store."""
+        """Fetch template definition from Template Store.
+
+        Returns template dict on success, None if template definitively doesn't exist.
+        Raises on transient errors (connection, timeout) so the event gets retried.
+        """
         if template_id in self._template_cache:
             return self._template_cache[template_id]
 
@@ -65,14 +70,18 @@ class SyncWorker:
                     template = response.json()
                     self._template_cache[template_id] = template
                     return template
-                else:
-                    logger.error(
-                        f"Failed to fetch template {template_id}: {response.status_code}"
-                    )
+                elif response.status_code == 404:
+                    logger.warning(f"Template {template_id} not found (404)")
                     return None
-        except Exception as e:
-            logger.error(f"Error fetching template {template_id}: {e}")
-            return None
+                else:
+                    # 5xx, 401, etc. — transient, should retry
+                    raise RuntimeError(
+                        f"Template Store returned {response.status_code} for {template_id}"
+                    )
+        except httpx.ConnectError as e:
+            raise RuntimeError(f"Cannot connect to Template Store: {e}") from e
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"Template Store timeout for {template_id}: {e}") from e
 
     def _get_reporting_config(self, template: dict[str, Any]) -> ReportingConfig:
         """Extract reporting config from template."""
@@ -81,7 +90,7 @@ class SyncWorker:
 
     async def _process_document_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a document event (created, updated, deleted).
+        Process a document event (created, updated, deleted, archived).
 
         Returns True if successful, False otherwise.
         """
@@ -101,7 +110,7 @@ class SyncWorker:
         if not template:
             logger.warning(f"Template {template_id} not found, skipping document {document_id}")
             metrics.record_event_failed(None, None, "template_not_found", f"Template {template_id} not found")
-            return False
+            return True  # ACK — retrying won't help if template doesn't exist
 
         template_value = template.get("value", "unknown")
         config = self._get_reporting_config(template)
@@ -118,6 +127,10 @@ class SyncWorker:
             metrics.record_event_skipped(template_value, "table_creation_skipped")
             return True  # Sync disabled
 
+        if table_name not in self._managed_tables:
+            self._managed_tables.add(table_name)
+            self.status.tables_managed = len(self._managed_tables)
+
         # Transform document to rows (pass template for semantic type processing)
         transformer = DocumentTransformer(config)
         rows = transformer.transform(document, template)
@@ -125,17 +138,37 @@ class SyncWorker:
         # Determine sync strategy
         strategy = config.sync_strategy.value
 
-        # Handle delete events
-        if event_type == EventType.DOCUMENT_DELETED.value:
+        # Handle delete/archive events — both set the document as inactive in PG
+        if event_type in (EventType.DOCUMENT_DELETED.value, EventType.DOCUMENT_ARCHIVED.value):
+            if event_type == EventType.DOCUMENT_DELETED.value and document.get("hard_delete"):
+                # Hard-delete: remove rows from PostgreSQL
+                async with self.pool.acquire() as conn:
+                    target_version = document.get("version")
+                    if target_version is not None:
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE document_id = $1 AND version = $2',
+                            document_id, target_version,
+                        )
+                    else:
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE document_id = $1',
+                            document_id,
+                        )
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                metrics.record_event_processed(template_value, table_name, latency_ms)
+                logger.info(f"Hard-deleted document {document_id} from {table_name}")
+                return True
+
+            new_status = "archived" if event_type == EventType.DOCUMENT_ARCHIVED.value else "deleted"
             async with self.pool.acquire() as conn:
                 await conn.execute(
                     f'UPDATE "{table_name}" SET status = $1 WHERE document_id = $2',
-                    "deleted",
+                    new_status,
                     document_id,
                 )
             latency_ms = (time.perf_counter() - start_time) * 1000
             metrics.record_event_processed(template_value, table_name, latency_ms)
-            logger.info(f"Marked document {document_id} as deleted in {table_name}")
+            logger.info(f"Marked document {document_id} as {new_status} in {table_name}")
             return True
 
         # Insert/update rows
@@ -169,12 +202,16 @@ class SyncWorker:
 
     async def _process_template_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a template event (created, updated).
+        Process a template event (created, updated, activated, deleted/deactivated).
 
-        Creates or updates the PostgreSQL table schema.
+        Creates or updates the PostgreSQL table schema AND syncs template
+        metadata to the templates table (status tracking).
         """
+        start_time = time.perf_counter()
+        event_type = event_data.get("event_type")
         template = event_data.get("template", {})
         template_value = template.get("value")
+        template_id = template.get("template_id")
 
         if not template_value:
             logger.warning("Invalid template event: missing value")
@@ -189,11 +226,92 @@ class SyncWorker:
 
         if not config.sync_enabled:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
-            return True
+            # Still sync template metadata even if doc sync is disabled
+        else:
+            # Create or update document table
+            table_name = await self.schema_manager.ensure_table_for_template(template)
+            if table_name and table_name not in self._managed_tables:
+                self._managed_tables.add(table_name)
+                self.status.tables_managed = len(self._managed_tables)
+            logger.info(f"Ensured table {table_name} for template {template_value}")
 
-        # Create or update table
-        table_name = await self.schema_manager.ensure_table_for_template(template)
-        logger.info(f"Ensured table {table_name} for template {template_value}")
+        # Sync template metadata to templates table
+        if template_id:
+            namespace = template["namespace"]
+            meta_table = await self.schema_manager.ensure_templates_table()
+
+            try:
+                async with self.pool.acquire() as conn:
+                    if event_type == "template.deleted":
+                        if template.get("hard_delete"):
+                            # Hard-delete: remove from templates table
+                            target_version = template.get("version")
+                            if target_version is not None:
+                                await conn.execute(
+                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2 AND "version" = $3',
+                                    namespace, template_id, target_version,
+                                )
+                            else:
+                                await conn.execute(
+                                    f'DELETE FROM "{meta_table}" WHERE "namespace" = $1 AND "template_id" = $2',
+                                    namespace, template_id,
+                                )
+                        else:
+                            await conn.execute(
+                                f"""
+                                UPDATE "{meta_table}"
+                                SET "status" = 'inactive',
+                                    "updated_at" = NOW(),
+                                    "updated_by" = $3
+                                WHERE "namespace" = $1
+                                  AND "template_id" = $2
+                                """,
+                                namespace, template_id, event_data.get("changed_by"),
+                            )
+                    else:
+                        await conn.execute(
+                            f"""
+                            INSERT INTO "{meta_table}" (
+                                "template_id", "namespace", "value", "label",
+                                "description", "version", "status", "extends",
+                                "extends_version", "created_at", "created_by",
+                                "updated_at", "updated_by"
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                            ON CONFLICT ("namespace", "template_id")
+                            DO UPDATE SET
+                                "value" = EXCLUDED."value",
+                                "label" = EXCLUDED."label",
+                                "description" = EXCLUDED."description",
+                                "version" = EXCLUDED."version",
+                                "status" = EXCLUDED."status",
+                                "extends" = EXCLUDED."extends",
+                                "extends_version" = EXCLUDED."extends_version",
+                                "updated_at" = EXCLUDED."updated_at",
+                                "updated_by" = EXCLUDED."updated_by"
+                            """,
+                            template_id,
+                            namespace,
+                            template_value,
+                            template.get("label"),
+                            template.get("description"),
+                            template.get("version", 1),
+                            template.get("status", "active"),
+                            template.get("extends"),
+                            template.get("extends_version"),
+                            _parse_datetime(template.get("created_at")),
+                            template.get("created_by"),
+                            _parse_datetime(template.get("updated_at")),
+                            template.get("updated_by"),
+                        )
+
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                logger.info(
+                    f"Synced template {template_value} ({template_id}) "
+                    f"to {meta_table} ({latency_ms:.1f}ms)"
+                )
+            except Exception as e:
+                logger.error(f"Error syncing template metadata: {e}")
+                raise
 
         return True
 
@@ -207,7 +325,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         term_data = event_data.get("terminology", {})
 
-        namespace = term_data.get("namespace", "wip")
+        namespace = term_data["namespace"]
         terminology_id = term_data.get("terminology_id")
 
         if not terminology_id:
@@ -219,26 +337,34 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "terminology.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive',
-                            "updated_at" = NOW(),
-                            "updated_by" = $3
-                        WHERE "namespace" = $1
-                          AND "terminology_id" = $2
-                        """,
-                        namespace, terminology_id, event_data.get("changed_by"),
-                    )
+                    if term_data.get("hard_delete"):
+                        # Hard delete: remove from terminologies table
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "terminology_id" = $2',
+                            namespace, terminology_id,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive',
+                                "updated_at" = NOW(),
+                                "updated_by" = $3
+                            WHERE "namespace" = $1
+                              AND "terminology_id" = $2
+                            """,
+                            namespace, terminology_id, event_data.get("changed_by"),
+                        )
                 else:
                     await conn.execute(
                         f"""
                         INSERT INTO "{table_name}" (
                             "terminology_id", "namespace", "value", "label",
                             "description", "case_sensitive", "allow_multiple",
-                            "extensible", "status", "term_count",
+                            "extensible", "mutable", "status", "term_count",
                             "created_at", "created_by", "updated_at", "updated_by"
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                         ON CONFLICT ("namespace", "terminology_id")
                         DO UPDATE SET
                             "value" = EXCLUDED."value",
@@ -247,6 +373,7 @@ class SyncWorker:
                             "case_sensitive" = EXCLUDED."case_sensitive",
                             "allow_multiple" = EXCLUDED."allow_multiple",
                             "extensible" = EXCLUDED."extensible",
+                            "mutable" = EXCLUDED."mutable",
                             "status" = EXCLUDED."status",
                             "term_count" = EXCLUDED."term_count",
                             "updated_at" = EXCLUDED."updated_at",
@@ -260,6 +387,7 @@ class SyncWorker:
                         term_data.get("case_sensitive", False),
                         term_data.get("allow_multiple", False),
                         term_data.get("extensible", True),
+                        term_data.get("mutable", False),
                         term_data.get("status", "active"),
                         term_data.get("term_count", 0),
                         _parse_datetime(term_data.get("created_at")),
@@ -289,7 +417,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         term_data = event_data.get("term", {})
 
-        namespace = term_data.get("namespace", "wip")
+        namespace = term_data["namespace"]
         term_id = term_data.get("term_id")
 
         if not term_id:
@@ -301,17 +429,30 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive',
-                            "updated_at" = NOW(),
-                            "updated_by" = $3
-                        WHERE "namespace" = $1
-                          AND "term_id" = $2
-                        """,
-                        namespace, term_id, event_data.get("changed_by"),
-                    )
+                    if term_data.get("hard_delete"):
+                        # Hard delete: remove from terms and cascade relationships
+                        rel_table = await self.schema_manager.ensure_term_relationships_table()
+                        await conn.execute(
+                            f'DELETE FROM "{rel_table}" WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
+                            namespace, term_id,
+                        )
+                        await conn.execute(
+                            f'DELETE FROM "{table_name}" WHERE "namespace" = $1 AND "term_id" = $2',
+                            namespace, term_id,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive',
+                                "updated_at" = NOW(),
+                                "updated_by" = $3
+                            WHERE "namespace" = $1
+                              AND "term_id" = $2
+                            """,
+                            namespace, term_id, event_data.get("changed_by"),
+                        )
                 elif event_type == "term.deprecated":
                     await conn.execute(
                         f"""
@@ -395,7 +536,7 @@ class SyncWorker:
         event_type = event_data.get("event_type")
         rel = event_data.get("relationship", {})
 
-        namespace = rel.get("namespace", "wip")
+        namespace = rel["namespace"]
         source_term_id = rel.get("source_term_id")
         target_term_id = rel.get("target_term_id")
         relationship_type = rel.get("relationship_type")
@@ -410,17 +551,31 @@ class SyncWorker:
         try:
             async with self.pool.acquire() as conn:
                 if event_type == "relationship.deleted":
-                    await conn.execute(
-                        f"""
-                        UPDATE "{table_name}"
-                        SET "status" = 'inactive'
-                        WHERE "namespace" = $1
-                          AND "source_term_id" = $2
-                          AND "target_term_id" = $3
-                          AND "relationship_type" = $4
-                        """,
-                        namespace, source_term_id, target_term_id, relationship_type,
-                    )
+                    if rel.get("hard_delete"):
+                        # Hard delete: remove from table
+                        await conn.execute(
+                            f"""
+                            DELETE FROM "{table_name}"
+                            WHERE "namespace" = $1
+                              AND "source_term_id" = $2
+                              AND "target_term_id" = $3
+                              AND "relationship_type" = $4
+                            """,
+                            namespace, source_term_id, target_term_id, relationship_type,
+                        )
+                    else:
+                        # Soft delete (existing behavior)
+                        await conn.execute(
+                            f"""
+                            UPDATE "{table_name}"
+                            SET "status" = 'inactive'
+                            WHERE "namespace" = $1
+                              AND "source_term_id" = $2
+                              AND "target_term_id" = $3
+                              AND "relationship_type" = $4
+                            """,
+                            namespace, source_term_id, target_term_id, relationship_type,
+                        )
                 else:
                     # Upsert for create/reactivate
                     await conn.execute(

@@ -147,7 +147,7 @@ async def check_term_reference(
     Check if a term reference is valid.
 
     Args:
-        term_id: Term ID (e.g., 'T-000001')
+        term_id: Term ID (UUID or value code, e.g., '019abc42-...' or 'GENDER:Male')
         document: Document containing the reference
         field_path: Field path in the document
         issues: List to append issues to
@@ -185,7 +185,7 @@ def extract_term_ids(term_references: list[dict[str, Any]]) -> list[tuple[str, s
     """
     Extract all term IDs from a term_references array.
 
-    New array format: [{"field_path": "gender", "term_id": "T-001", ...}, ...]
+    New array format: [{"field_path": "gender", "term_id": "019abc42-...", ...}, ...]
 
     Returns:
         List of (field_path, term_id) tuples

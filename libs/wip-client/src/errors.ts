@@ -63,6 +63,8 @@ export class WipBulkItemError extends WipError {
     message: string,
     public readonly index: number,
     public readonly itemStatus: string,
+    public readonly errorCode?: string,
+    public readonly details?: Record<string, unknown>,
   ) {
     super(message, undefined, undefined)
     this.name = 'WipBulkItemError'

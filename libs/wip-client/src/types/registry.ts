@@ -4,8 +4,9 @@ export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
+  deletion_mode: 'retain' | 'full'
   allowed_external_refs: string[]
-  id_config: Record<string, unknown>
+  id_config: Record<string, IdAlgorithmConfig>
   status: 'active' | 'archived' | 'deleted'
   created_at: string
   created_by: string | null
@@ -17,24 +18,36 @@ export interface NamespaceStats {
   prefix: string
   description: string
   isolation_mode: string
+  deletion_mode: string
   status: string
   entity_counts: Record<string, number>
 }
 
 export interface IdAlgorithmConfig {
-  algorithm: 'uuid7' | 'prefixed' | 'nanoid'
+  algorithm: 'uuid7' | 'uuid4' | 'prefixed' | 'nanoid' | 'pattern' | 'any'
   prefix?: string
   pad?: number
   length?: number
+  pattern?: string
 }
 
 export interface CreateNamespaceRequest {
   prefix: string
   description?: string
   isolation_mode?: 'open' | 'strict'
+  deletion_mode?: 'retain' | 'full'
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>
   created_by?: string
+}
+
+export interface UpdateNamespaceRequest {
+  description?: string
+  isolation_mode?: 'open' | 'strict'
+  deletion_mode?: 'retain' | 'full'
+  allowed_external_refs?: string[]
+  id_config?: Record<string, IdAlgorithmConfig>
+  updated_by?: string
 }
 
 export interface RegistryEntry {
@@ -164,4 +177,111 @@ export interface MergeRequest {
   preferred_id: string
   deprecated_id: string
   updated_by?: string
+}
+
+// ---- Namespace Export/Import ----
+
+export interface ExportResponse {
+  export_id: string
+  prefix: string
+  download_url: string
+  stats: Record<string, number>
+}
+
+export interface ImportResponse {
+  prefix: string
+  mode: 'create' | 'merge' | 'replace'
+  stats: Record<string, number>
+  source_prefix: string | null
+}
+
+// ---- Grants ----
+
+export type GrantSubjectType = 'user' | 'api_key' | 'group'
+export type GrantPermission = 'read' | 'write' | 'admin'
+
+export interface Grant {
+  namespace: string
+  subject: string
+  subject_type: GrantSubjectType
+  permission: GrantPermission
+  granted_by: string
+  granted_at: string
+  expires_at: string | null
+}
+
+export interface CreateGrantRequest {
+  subject: string
+  subject_type?: GrantSubjectType
+  permission?: GrantPermission
+  expires_at?: string
+}
+
+export interface RevokeGrantRequest {
+  subject: string
+  subject_type?: GrantSubjectType
+}
+
+export interface GrantBulkResult {
+  index: number
+  status: 'created' | 'updated' | 'error'
+  subject: string
+  permission: string | null
+  error: string | null
+}
+
+export interface GrantBulkResponse {
+  results: GrantBulkResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
+export interface GrantRevokeResult {
+  index: number
+  status: 'revoked' | 'not_found'
+  subject: string
+}
+
+export interface GrantRevokeBulkResponse {
+  results: GrantRevokeResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
+// ---- API Keys ----
+
+export interface APIKeyInfo {
+  name: string
+  owner: string
+  groups: string[]
+  description: string | null
+  created_at: string
+  expires_at: string | null
+  enabled: boolean
+  namespaces: string[] | null
+  created_by: string
+  source: 'config' | 'runtime'
+}
+
+export interface CreateAPIKeyRequest {
+  name: string
+  owner?: string
+  groups?: string[]
+  namespaces?: string[] | null
+  description?: string
+  expires_at?: string
+}
+
+export interface CreateAPIKeyResponse extends APIKeyInfo {
+  plaintext_key: string
+}
+
+export interface UpdateAPIKeyRequest {
+  description?: string
+  groups?: string[]
+  namespaces?: string[] | null
+  expires_at?: string
+  enabled?: boolean
 }

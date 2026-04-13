@@ -15,8 +15,8 @@ describe('wipKeys', () => {
   })
 
   it('detail keys include entity id', () => {
-    const key = wipKeys.templates.detail('TPL-001')
-    expect(key).toContain('TPL-001')
+    const key = wipKeys.templates.detail('0190c000-0000-7000-0000-000000000001')
+    expect(key).toContain('0190c000-0000-7000-0000-000000000001')
   })
 
   it('all keys start with wip prefix', () => {

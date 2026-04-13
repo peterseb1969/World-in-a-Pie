@@ -4,7 +4,7 @@ Provides a request-scoped context for storing the current authenticated identity
 This allows middleware to set the identity and dependencies to access it.
 """
 
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,15 +25,33 @@ def get_current_identity() -> "UserIdentity | None":
     return _current_identity.get()
 
 
-def set_current_identity(identity: "UserIdentity | None") -> None:
+def set_current_identity(identity: "UserIdentity | None") -> "Token[UserIdentity | None]":
     """Set the authenticated identity for the current request.
 
     This should only be called by the auth middleware.
+    Returns a token that can be passed to reset_current_identity()
+    to restore the previous value (important for in-process transport
+    injection where nested middleware calls share the same ContextVar).
 
     Args:
         identity: The authenticated identity or None
+
+    Returns:
+        A ContextVar token for restoring the previous value
     """
-    _current_identity.set(identity)
+    return _current_identity.set(identity)
+
+
+def reset_current_identity(token: "Token[UserIdentity | None]") -> None:
+    """Reset identity to its previous value using a saved token.
+
+    This restores the ContextVar to whatever it was before the
+    corresponding set_current_identity() call. This is essential
+    for in-process transport injection where Registry and service
+    apps share the same ContextVar — without it, Registry's middleware
+    clears the service's identity.
+    """
+    _current_identity.reset(token)
 
 
 def clear_current_identity() -> None:

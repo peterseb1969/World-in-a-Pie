@@ -470,14 +470,60 @@ class TestUpdateNamespace:
         assert response.json()["allowed_external_refs"] == ["vendor1", "vendor2", "partner-ns"]
 
     @pytest.mark.asyncio
-    async def test_update_not_found(self, client: AsyncClient, auth_headers: dict):
-        """Test that updating a non-existent namespace returns 404."""
+    async def test_upsert_creates_when_missing(self, client: AsyncClient, auth_headers: dict):
+        """PUT on a missing namespace creates it (idempotent bootstrap)."""
         response = await client.put(
-            "/api/registry/namespaces/nonexistent",
-            json={"description": "Does not matter"},
+            "/api/registry/namespaces/upsert-missing",
+            json={
+                "description": "Created via upsert",
+                "isolation_mode": "strict",
+                "updated_by": "bootstrap-script",
+            },
             headers=auth_headers,
         )
-        assert response.status_code == 404
+        assert response.status_code == 200
+        data = response.json()
+        assert data["prefix"] == "upsert-missing"
+        assert data["description"] == "Created via upsert"
+        assert data["isolation_mode"] == "strict"
+        assert data["deletion_mode"] == "retain"  # default
+        assert data["allowed_external_refs"] == []  # default
+        assert data["created_by"] == "bootstrap-script"
+
+    @pytest.mark.asyncio
+    async def test_upsert_uses_defaults_for_missing_fields(self, client: AsyncClient, auth_headers: dict):
+        """PUT on a missing namespace with empty body creates with all defaults."""
+        response = await client.put(
+            "/api/registry/namespaces/upsert-defaults",
+            json={},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["prefix"] == "upsert-defaults"
+        assert data["description"] == ""
+        assert data["isolation_mode"] == "open"
+        assert data["deletion_mode"] == "retain"
+        assert data["allowed_external_refs"] == []
+
+    @pytest.mark.asyncio
+    async def test_upsert_is_idempotent(self, client: AsyncClient, auth_headers: dict):
+        """Calling PUT twice with the same body succeeds both times."""
+        body = {"description": "Idempotent", "isolation_mode": "strict"}
+        first = await client.put(
+            "/api/registry/namespaces/upsert-idempotent",
+            json=body,
+            headers=auth_headers,
+        )
+        assert first.status_code == 200
+        second = await client.put(
+            "/api/registry/namespaces/upsert-idempotent",
+            json=body,
+            headers=auth_headers,
+        )
+        assert second.status_code == 200
+        assert second.json()["description"] == "Idempotent"
+        assert second.json()["isolation_mode"] == "strict"
 
     @pytest.mark.asyncio
     async def test_update_preserves_other_fields(self, client: AsyncClient, auth_headers: dict):

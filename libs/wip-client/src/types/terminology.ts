@@ -17,6 +17,7 @@ export interface Terminology {
   case_sensitive: boolean
   allow_multiple: boolean
   extensible: boolean
+  mutable: boolean
   metadata: TerminologyMetadata
   status: 'active' | 'inactive'
   term_count: number
@@ -30,10 +31,11 @@ export interface CreateTerminologyRequest {
   value: string
   label: string
   description?: string
-  namespace?: string
+  namespace: string
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
+  mutable?: boolean
   metadata?: Partial<TerminologyMetadata>
   created_by?: string
 }
@@ -45,6 +47,7 @@ export interface UpdateTerminologyRequest {
   case_sensitive?: boolean
   allow_multiple?: boolean
   extensible?: boolean
+  mutable?: boolean
   metadata?: Partial<TerminologyMetadata>
   updated_by?: string
 }
@@ -148,6 +151,7 @@ export interface ValidateValueResponse {
   terminology_value: string
   value: string
   matched_term?: Term
+  matched_via?: 'value' | 'alias'
   suggestion?: Term
   error?: string
 }
@@ -161,4 +165,25 @@ export interface BulkValidateResponse {
   total: number
   valid_count: number
   invalid_count: number
+}
+
+// ---- Audit Log ----
+
+export interface AuditLogEntry {
+  term_id: string
+  terminology_id: string
+  action: 'created' | 'updated' | 'deprecated' | 'deleted'
+  changed_at: string
+  changed_by: string | null
+  changed_fields: string[]
+  previous_values: Record<string, unknown>
+  new_values: Record<string, unknown>
+  comment: string | null
+}
+
+export interface AuditLogResponse {
+  items: AuditLogEntry[]
+  total: number
+  page: number
+  page_size: number
 }

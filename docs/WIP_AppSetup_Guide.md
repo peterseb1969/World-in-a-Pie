@@ -25,7 +25,7 @@ claude          # Launch Claude Code
 /explore        # Start Phase 1
 ```
 
-**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 68 tools and 4 resources.
+**Verify MCP connection:** In Claude Code, run `/mcp` — you should see 70+ tools and 5 resources.
 
 ---
 
@@ -36,7 +36,9 @@ claude          # Launch Claude Code
 - [ ] WIP running (standard or full preset) on the target machine
 - [ ] Existing data model bootstrapped (if building an app that integrates with existing apps)
 - [ ] Some existing data present (the new app may need to reference it)
-- [ ] API key available (default dev key: `dev_master_key_for_testing`)
+- [ ] API key available — two keys serve different purposes:
+  - **MCP/admin key:** `dev_master_key_for_testing` (privileged, wip-admins group, used by MCP server for cross-namespace operations)
+  - **App runtime key:** namespace-scoped key for your app (see "API Key" section in the generated CLAUDE.md). Single-namespace keys enable automatic namespace derivation — no `namespace` parameter needed in app API calls.
 - [ ] All services healthy: `curl -k https://localhost:8443/api/registry/namespaces` (also check `/api/def-store/terminologies`, `/api/template-store/templates`, `/api/document-store/documents`)
 
 ### 2. Directory Structure
@@ -98,7 +100,7 @@ The helper script generates `.mcp.json` automatically with correct paths and API
 
 **API key:** Use the same key that's in WIP's `.env` file (`API_KEY=...`). For dev mode that's `dev_master_key_for_testing`. For production deployments, copy the actual key from `.env`. The helper script reads `.env` automatically and embeds the correct key.
 
-**Verify after first launch:** The Claude should see WIP tools (68 tools, 4 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
+**Verify after first launch:** The Claude should see WIP tools (69 tools, 4 resources) when it runs `/mcp`. If the tools aren't available, restart Claude Code — it spawns MCP servers on startup.
 
 ### 4. Copying Files from the WIP Repo
 
@@ -108,9 +110,9 @@ The helper script handles all copying automatically. For manual setup:
 WIP_REPO="/path/to/WorldInPie"
 APP_DIR="/path/to/my-new-app"
 
-# Slash commands (canonical source)
+# Slash commands (canonical source — note the app-builder/ subdirectory)
 mkdir -p "$APP_DIR/.claude/commands"
-cp "$WIP_REPO/docs/slash-commands/"*.md "$APP_DIR/.claude/commands/"
+cp "$WIP_REPO/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 
 # Reference docs
 mkdir -p "$APP_DIR/docs"
@@ -282,4 +284,4 @@ That's it. The script creates the directory, copies all files, generates `.mcp.j
 
 ---
 
-*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (69 MCP tools, 4 resources, 12 slash commands, rewritten reference docs).*
+*This document was created during the WIP Constellation experiment and updated March 2026 to reflect the information package overhaul (70+ MCP tools, 5 resources, 12 slash commands, rewritten reference docs).*

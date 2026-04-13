@@ -21,16 +21,18 @@ from ..models.api_models import (
 )
 from ..models.audit_log import TermAuditLog
 from ..models.term import Term
+from ..models.term_relationship import TermRelationship
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
     EventType as NatsEventType,
 )
 from .nats_client import (
+    publish_relationship_event,
     publish_term_event,
     publish_term_events_bulk,
     publish_terminology_event,
 )
-from .registry_client import get_registry_client
+from .registry_client import RegistryError, get_registry_client
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ class TerminologyService:
     @staticmethod
     async def create_terminology(
         request: CreateTerminologyRequest,
-        namespace: str = "wip"
+        namespace: str
     ) -> TerminologyResponse:
         """
         Create a new terminology.
@@ -82,6 +84,9 @@ class TerminologyService:
             entry_id=request.terminology_id,
         )
 
+        # mutable implies extensible
+        extensible = request.extensible or request.mutable
+
         # Create terminology document
         terminology = Terminology(
             namespace=namespace,
@@ -91,7 +96,8 @@ class TerminologyService:
             description=request.description,
             case_sensitive=request.case_sensitive,
             allow_multiple=request.allow_multiple,
-            extensible=request.extensible,
+            extensible=extensible,
+            mutable=request.mutable,
             metadata=request.metadata or TerminologyMetadata(),
             created_by=actor,
         )
@@ -102,18 +108,27 @@ class TerminologyService:
                 f"Terminology ID '{terminology_id}' already exists (collision across namespaces)"
             ) from e
 
-        # Register auto-synonym for human-readable resolution (best-effort)
-        await client.register_auto_synonym(
-            target_id=terminology_id,
-            namespace=namespace,
-            entity_type="terminologies",
-            composite_key={
-                "ns": namespace,
-                "type": "terminology",
-                "value": request.value,
-            },
-            created_by=actor,
-        )
+        # Register auto-synonym for human-readable resolution
+        # On failure, roll back the MongoDB document and re-raise
+        try:
+            await client.register_auto_synonym(
+                target_id=terminology_id,
+                namespace=namespace,
+                entity_type="terminologies",
+                composite_key={
+                    "ns": namespace,
+                    "type": "terminology",
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
+        except RegistryError:
+            logger.error(
+                "Auto-synonym registration failed for terminology %s — rolling back",
+                terminology_id,
+            )
+            await terminology.delete()
+            raise
 
         # Create audit log entry for terminology creation
         await TerminologyService._create_audit_log(
@@ -179,8 +194,7 @@ class TerminologyService:
         value: str | None = None,
         page: int = 1,
         page_size: int = 50,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TerminologyResponse], int]:
         """
         List terminologies with pagination.
@@ -190,16 +204,14 @@ class TerminologyService:
             value: Filter by exact value match
             page: Page number (1-indexed)
             page_size: Items per page
-            namespace: Namespace to query (None returns all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (terminologies, total_count)
         """
         query: dict = {}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
         if value:
@@ -282,6 +294,14 @@ class TerminologyService:
         _track("case_sensitive", terminology.case_sensitive, request.case_sensitive)
         _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
         _track("extensible", terminology.extensible, request.extensible)
+        _track("mutable", terminology.mutable, request.mutable)
+
+        # Reject mutable changes if terms exist
+        if request.mutable is not None and request.mutable != terminology.mutable:
+            if terminology.term_count > 0:
+                raise ValueError(
+                    "Cannot change mutable flag on terminology with existing terms"
+                )
 
         # Apply updates
         if request.value is not None:
@@ -296,6 +316,11 @@ class TerminologyService:
             terminology.allow_multiple = request.allow_multiple
         if request.extensible is not None:
             terminology.extensible = request.extensible
+        if request.mutable is not None:
+            terminology.mutable = request.mutable
+            # mutable implies extensible
+            if request.mutable:
+                terminology.extensible = True
         if request.metadata is not None:
             terminology.metadata = request.metadata
 
@@ -331,16 +356,19 @@ class TerminologyService:
     @staticmethod
     async def delete_terminology(
         terminology_id: str,
-        updated_by: str | None = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
     ) -> bool:
         """
-        Soft-delete a terminology (set status to inactive).
+        Delete a terminology. Hard-deletes if mutable OR if hard_delete=True
+        and namespace deletion_mode is 'full'. Soft-deletes otherwise.
 
-        Also deactivates all terms in the terminology.
+        Also deletes/deactivates all terms and relationships in the terminology.
 
         Args:
             terminology_id: Terminology to delete
             updated_by: Deprecated - uses authenticated identity
+            hard_delete: Force hard-delete (requires namespace deletion_mode='full')
 
         Returns:
             True if deleted, False if not found
@@ -352,25 +380,75 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Deactivate terminology
-        terminology.status = "inactive"
-        terminology.updated_at = datetime.now(UTC)
-        terminology.updated_by = actor
-        await terminology.save()
+        # Determine if we should hard-delete
+        should_hard_delete = terminology.mutable
+        if hard_delete and not should_hard_delete:
+            # Check namespace deletion_mode
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(terminology.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+            should_hard_delete = True
 
-        # Deactivate all terms
-        await Term.find({"terminology_id": terminology_id}).update_many({
-            "$set": {
-                "status": "inactive",
-                "updated_at": datetime.now(UTC),
-                "updated_by": actor
-            }
-        })
+        if should_hard_delete:
+            # HARD DELETE: remove terminology, all terms, and all relationships
+
+            # 1. Get all term IDs in this terminology
+            term_ids = [
+                t.term_id
+                for t in await Term.find({"terminology_id": terminology_id}).to_list()
+            ]
+
+            # 2. Delete all relationships involving these terms
+            if term_ids:
+                await TermRelationship.find({
+                    "$or": [
+                        {"source_term_id": {"$in": term_ids}},
+                        {"target_term_id": {"$in": term_ids}}
+                    ]
+                }).delete()
+
+            # 3. Hard-delete all terms
+            await Term.find({"terminology_id": terminology_id}).delete()
+
+            # 4. Capture event dict before deleting
+            event_dict = TerminologyService._terminology_to_event_dict(terminology)
+            event_dict["hard_delete"] = True
+
+            # 5. Hard-delete the terminology document
+            await terminology.delete()
+
+            # 6. Hard-delete Registry entries for terminology and its terms
+            client = get_registry_client()
+            try:
+                await client.hard_delete_entry(terminology_id, updated_by=actor)
+                for tid in term_ids:
+                    await client.hard_delete_entry(tid, updated_by=actor)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete Registry entries for terminology {terminology_id}: {e}")
+        else:
+            # SOFT DELETE: deactivate terminology and all terms (existing behavior)
+            terminology.status = "inactive"
+            terminology.updated_at = datetime.now(UTC)
+            terminology.updated_by = actor
+            await terminology.save()
+
+            await Term.find({"terminology_id": terminology_id}).update_many({
+                "$set": {
+                    "status": "inactive",
+                    "updated_at": datetime.now(UTC),
+                    "updated_by": actor
+                }
+            })
+
+            event_dict = TerminologyService._terminology_to_event_dict(terminology)
 
         # Publish NATS event
         await publish_terminology_event(
             NatsEventType.TERMINOLOGY_DELETED,
-            TerminologyService._terminology_to_event_dict(terminology),
+            event_dict,
             changed_by=actor,
         )
 
@@ -519,20 +597,29 @@ class TerminologyService:
                 f"Term ID '{term_id}' already exists (collision across namespaces)"
             ) from e
 
-        # Register auto-synonym for human-readable resolution (best-effort)
+        # Register auto-synonym for human-readable resolution
         # Uses "TERMINOLOGY_VALUE:TERM_VALUE" colon notation for resolution
-        await client.register_auto_synonym(
-            target_id=term_id,
-            namespace=namespace,
-            entity_type="terms",
-            composite_key={
-                "ns": namespace,
-                "type": "term",
-                "terminology": terminology.value,
-                "value": request.value,
-            },
-            created_by=actor,
-        )
+        # On failure, roll back the MongoDB document and re-raise
+        try:
+            await client.register_auto_synonym(
+                target_id=term_id,
+                namespace=namespace,
+                entity_type="terms",
+                composite_key={
+                    "ns": namespace,
+                    "type": "term",
+                    "terminology": terminology.value,
+                    "value": request.value,
+                },
+                created_by=actor,
+            )
+        except RegistryError:
+            logger.error(
+                "Auto-synonym registration failed for term %s — rolling back",
+                term_id,
+            )
+            await term.delete()
+            raise
 
         # Create audit log entry
         await TerminologyService._create_audit_log(
@@ -805,7 +892,7 @@ class TerminologyService:
                     changed_by=actor,
                 )
 
-            # Phase F3: Register auto-synonyms for created terms (best-effort)
+            # Phase F3: Register auto-synonyms for created terms
             synonym_items = [
                 {
                     "target_id": terms_to_insert[pos].term_id,
@@ -880,8 +967,7 @@ class TerminologyService:
         page: int = 1,
         page_size: int = 50,
         search: str | None = None,
-        namespace: str | None = None,
-        allowed_namespaces: list[str] | None = None,
+        ns_filter: dict | None = None,
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -892,16 +978,14 @@ class TerminologyService:
             page: Page number (1-based)
             page_size: Number of items per page
             search: Search string for value or aliases
-            namespace: Namespace to query (None = all)
+            ns_filter: Namespace filter dict from resolve_namespace_filter()
 
         Returns:
             Tuple of (list of terms, total count)
         """
         query: dict = {"terminology_id": terminology_id}
-        if namespace:
-            query["namespace"] = namespace
-        elif allowed_namespaces is not None:
-            query["namespace"] = {"$in": allowed_namespaces}
+        if ns_filter:
+            query.update(ns_filter)
         if status:
             query["status"] = status
 
@@ -1077,9 +1161,11 @@ class TerminologyService:
     @staticmethod
     async def delete_term(
         term_id: str,
-        updated_by: str | None = None  # Deprecated: uses authenticated identity
+        updated_by: str | None = None,  # Deprecated: uses authenticated identity
+        hard_delete: bool = False,
     ) -> bool:
-        """Soft-delete a term."""
+        """Delete a term. Hard-deletes if terminology is mutable OR if hard_delete=True
+        and namespace deletion_mode is 'full'. Soft-deletes otherwise."""
         term = await Term.find_one({"term_id": term_id})
         if not term:
             return False
@@ -1087,13 +1173,76 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        term.status = "inactive"
-        term.updated_at = datetime.now(UTC)
-        term.updated_by = actor
-        await term.save()
+        # Check if parent terminology is mutable
+        terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
+        should_hard_delete = bool(terminology and terminology.mutable)
+
+        if hard_delete and not should_hard_delete:
+            # Check namespace deletion_mode
+            client = get_registry_client()
+            deletion_mode = await client.get_namespace_deletion_mode(term.namespace)
+            if deletion_mode != "full":
+                raise ValueError(
+                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')"
+                )
+            should_hard_delete = True
+
+        if should_hard_delete:
+            # HARD DELETE: remove term and cascade relationships
+
+            # 1. Find and delete relationships involving this term
+            relationships = await TermRelationship.find({
+                "$or": [
+                    {"source_term_id": term_id},
+                    {"target_term_id": term_id}
+                ]
+            }).to_list()
+
+            if relationships:
+                # Publish relationship.deleted events before removing
+                for rel in relationships:
+                    await publish_relationship_event(
+                        NatsEventType.RELATIONSHIP_DELETED,
+                        {
+                            "namespace": rel.namespace,
+                            "source_term_id": rel.source_term_id,
+                            "target_term_id": rel.target_term_id,
+                            "relationship_type": rel.relationship_type,
+                            "hard_delete": True,
+                        },
+                        changed_by=actor,
+                    )
+
+                # Delete relationships from MongoDB
+                await TermRelationship.find({
+                    "$or": [
+                        {"source_term_id": term_id},
+                        {"target_term_id": term_id}
+                    ]
+                }).delete()
+
+            # 2. Capture event dict before deleting the document
+            event_dict = TerminologyService._term_to_event_dict(term)
+            event_dict["hard_delete"] = True
+
+            # 3. Hard-delete the term document
+            await term.delete()
+
+            # 4. Hard-delete Registry entry
+            client = get_registry_client()
+            try:
+                await client.hard_delete_entry(term_id, updated_by=actor)
+            except Exception as e:
+                logger.warning(f"Failed to hard-delete Registry entry for term {term_id}: {e}")
+        else:
+            # SOFT DELETE: set status to inactive (existing behavior)
+            term.status = "inactive"
+            term.updated_at = datetime.now(UTC)
+            term.updated_by = actor
+            await term.save()
+            event_dict = TerminologyService._term_to_event_dict(term)
 
         # Update terminology term count
-        terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
         if terminology:
             terminology.term_count = await Term.find({
                 "terminology_id": term.terminology_id,
@@ -1104,7 +1253,7 @@ class TerminologyService:
         # Publish NATS event
         await publish_term_event(
             NatsEventType.TERM_DELETED,
-            TerminologyService._term_to_event_dict(term),
+            event_dict,
             changed_by=actor,
         )
 
@@ -1198,6 +1347,7 @@ class TerminologyService:
             case_sensitive=t.case_sensitive,
             allow_multiple=t.allow_multiple,
             extensible=t.extensible,
+            mutable=t.mutable,
             metadata=t.metadata,
             status=t.status,
             term_count=t.term_count,
@@ -1244,6 +1394,7 @@ class TerminologyService:
             "case_sensitive": t.case_sensitive,
             "allow_multiple": t.allow_multiple,
             "extensible": t.extensible,
+            "mutable": t.mutable,
             "status": t.status,
             "term_count": t.term_count,
             "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -1280,12 +1431,12 @@ class TerminologyService:
         term_id: str,
         terminology_id: str,
         action: str,
+        namespace: str,
         changed_by: str | None = None,
         changed_fields: list[str] | None = None,
         previous_values: dict | None = None,
         new_values: dict | None = None,
         comment: str | None = None,
-        namespace: str = "wip"
     ):
         """Create an audit log entry for a term change."""
         audit_entry = TermAuditLog(

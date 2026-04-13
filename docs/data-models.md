@@ -58,7 +58,7 @@ class Terminology(BaseModel):
     """A controlled vocabulary containing related terms."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     terminology_id: str = Field(
@@ -145,7 +145,7 @@ class Term(BaseModel):
     """An individual concept within a terminology."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     term_id: str = Field(
@@ -330,7 +330,7 @@ class Template(BaseModel):
     """A schema definition that documents must conform to."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     template_id: str = Field(
@@ -687,7 +687,7 @@ class Document(BaseModel):
     """A validated document conforming to a template."""
 
     namespace: str = Field(
-        default="wip",
+        ...,
         description="Namespace for data isolation"
     )
     document_id: str = Field(
@@ -866,7 +866,7 @@ class IdAlgorithmConfig(BaseModel):
     )
     pad: int = Field(
         default=6,
-        description="Zero-padding width for 'prefixed' algorithm (e.g., TERM-000042)"
+        description="Zero-padding width for 'prefixed' algorithm (e.g., PROD-0042)"
     )
     length: int = Field(
         default=21,
@@ -945,7 +945,7 @@ Entity types omitted from `id_config` automatically default to UUID7. The availa
 |-----------|-------------|---------|
 | `uuid7` | Time-ordered UUID (default) | `019469a0-1234-7abc-8def-abcdef123456` |
 | `uuid4` | Random UUID | `550e8400-e29b-41d4-a716-446655440000` |
-| `prefixed` | Sequential with prefix | `TERM-000042` |
+| `prefixed` | Sequential with user-chosen prefix | `PROD-000042` |
 | `nanoid` | Compact random ID | `V1StGXR8_Z5jdHi6B-myT` |
 | `pattern` | Regex-validated external ID | (matches provided pattern) |
 | `any` | Accept any external ID | (no validation) |
@@ -1098,6 +1098,10 @@ hash = compute_identity_hash(data, identity_fields)
 # → "a1b2c3d4e5f6..."
 ```
 
+> **Note:** Two hash modes exist:
+> - **Strict** (default): Values are serialized as-is via `str(value)`. Used for standard identity hashing.
+> - **Normalized**: Values are stripped and lowercased before hashing. Used for case-insensitive matching. Must be explicitly requested.
+
 **Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 
 ---
@@ -1114,7 +1118,8 @@ class PaginatedResponse(BaseModel, Generic[T]):
     total: int
     page: int
     page_size: int
-    has_more: bool
+    pages: int  # ceil(total / page_size)
+    next_cursor: str | None = None  # optional cursor-based pagination
 ```
 
 ### Validation Result

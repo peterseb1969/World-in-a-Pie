@@ -20,7 +20,8 @@ class RegistryClient:
         self,
         base_url: str | None = None,
         api_key: str | None = None,
-        timeout: float = 10.0
+        timeout: float = 10.0,
+        transport: Any | None = None,
     ):
         """
         Initialize the Registry client.
@@ -29,6 +30,7 @@ class RegistryClient:
             base_url: Registry API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
+            transport: Optional httpx transport (for in-process testing)
         """
         self.base_url = base_url or os.getenv(
             "REGISTRY_URL",
@@ -39,6 +41,7 @@ class RegistryClient:
             "dev_master_key_for_testing"
         )
         self.timeout = timeout
+        self._transport = transport
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
@@ -47,10 +50,18 @@ class RegistryClient:
             "Content-Type": "application/json"
         }
 
+    def _make_client(self, timeout: float | None = None) -> httpx.AsyncClient:
+        """Create an httpx client, injecting transport when set."""
+        kwargs: dict[str, Any] = {"timeout": timeout or self.timeout}
+        if self._transport is not None:
+            kwargs["transport"] = self._transport
+            kwargs["base_url"] = self.base_url
+        return httpx.AsyncClient(**kwargs)
+
     async def register_template(
         self,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip",
         entry_id: str | None = None,
     ) -> str:
         """
@@ -80,7 +91,7 @@ class RegistryClient:
         if entry_id:
             item["entry_id"] = entry_id
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -103,8 +114,8 @@ class RegistryClient:
     async def register_templates_bulk(
         self,
         count: int,
+        namespace: str,
         created_by: str | None = None,
-        namespace: str = "wip"
     ) -> list[dict[str, Any]]:
         """
         Register multiple templates in the Registry.
@@ -133,7 +144,7 @@ class RegistryClient:
             for _ in range(count)
         ]
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -152,7 +163,7 @@ class RegistryClient:
         self,
         target_id: str,
         new_value: str,
-        namespace: str = "wip",
+        namespace: str,
         additional_fields: dict[str, Any] | None = None
     ) -> bool:
         """
@@ -172,11 +183,11 @@ class RegistryClient:
         Raises:
             RegistryError: If operation fails
         """
-        composite_key = {"value": new_value}
+        composite_key = {"ns": namespace, "value": new_value}
         if additional_fields:
             composite_key.update(additional_fields)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
@@ -207,19 +218,22 @@ class RegistryClient:
         created_by: str | None = None,
     ) -> None:
         """
-        Register an auto-synonym for a template (best-effort).
+        Register an auto-synonym for a template.
 
         Auto-synonyms enable human-readable resolution (e.g., "PATIENT" → template ID).
-        Failure is logged but does not prevent template creation.
+        Failure raises and prevents template creation.
 
         Args:
             target_id: The template's canonical ID
             namespace: Template namespace
             composite_key: Auto-synonym composite key
             created_by: Creator identifier
+
+        Raises:
+            RegistryError: If auto-synonym registration fails
         """
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._make_client() as client:
                 response = await client.post(
                     f"{self.base_url}/api/registry/synonyms/add",
                     headers=self._get_headers(),
@@ -232,17 +246,20 @@ class RegistryClient:
                     }]
                 )
                 if response.status_code != 200:
-                    logger.warning(
-                        "Failed to register auto-synonym for template %s: %s",
-                        target_id, response.text
+                    raise RegistryError(
+                        f"Failed to register auto-synonym for template {target_id}: {response.text}"
                     )
+        except RegistryError:
+            raise
         except Exception as e:
-            logger.warning("Failed to register auto-synonym for template %s: %s", target_id, e)
+            raise RegistryError(
+                f"Failed to register auto-synonym for template {target_id}: {e}"
+            ) from e
 
     async def lookup_by_value(
         self,
         value: str,
-        namespace: str = "wip",
+        namespace: str,
         additional_fields: dict[str, Any] | None = None
     ) -> str | None:
         """
@@ -256,11 +273,11 @@ class RegistryClient:
         Returns:
             Registry ID if found, None otherwise
         """
-        composite_key = {"value": value}
+        composite_key = {"ns": namespace, "value": value}
         if additional_fields:
             composite_key.update(additional_fields)
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/lookup/by-key",
                 headers=self._get_headers(),
@@ -281,10 +298,42 @@ class RegistryClient:
 
             return None
 
+    async def hard_delete_entry(self, entry_id: str, updated_by: str | None = None) -> bool:
+        """Hard-delete a Registry entry. Returns True if deleted."""
+        async with self._make_client() as client:
+            response = await client.request(
+                "DELETE",
+                f"{self.base_url}/api/registry/entries",
+                headers=self._get_headers(),
+                json=[{
+                    "entry_id": entry_id,
+                    "hard_delete": True,
+                    "updated_by": updated_by,
+                }],
+            )
+            if response.status_code != 200:
+                raise RegistryError(
+                    f"Failed to hard-delete entry {entry_id}: {response.status_code} - {response.text}"
+                )
+            data = response.json()
+            return data.get("succeeded", 0) > 0
+
+    async def get_namespace_deletion_mode(self, namespace: str) -> str:
+        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
+        async with self._make_client() as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}",
+                headers=self._get_headers(),
+            )
+            if response.status_code != 200:
+                logger.warning(f"Failed to fetch namespace {namespace}: {response.status_code}")
+                return "retain"
+            return response.json().get("deletion_mode", "retain")
+
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with self._make_client(timeout=5.0) as client:
                 response = await client.get(f"{self.base_url}/health")
                 return response.status_code == 200
         except Exception:
@@ -310,9 +359,10 @@ def get_registry_client() -> RegistryClient:
 
 def configure_registry_client(
     base_url: str | None = None,
-    api_key: str | None = None
+    api_key: str | None = None,
+    transport: Any | None = None,
 ) -> RegistryClient:
     """Configure and return the Registry client."""
     global _client
-    _client = RegistryClient(base_url=base_url, api_key=api_key)
+    _client = RegistryClient(base_url=base_url, api_key=api_key, transport=transport)
     return _client

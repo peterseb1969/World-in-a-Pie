@@ -355,14 +355,15 @@ Example file (`api-keys.json`):
       "key": "plaintext_key_here",
       "owner": "admin@wip.local",
       "groups": ["wip-admins"],
-      "description": "Admin console access"
+      "description": "Admin console — privileged, no namespace scope needed"
     },
     {
       "name": "etl-service",
       "key": "another_key_here",
       "owner": "system:etl",
       "groups": ["wip-editors"],
-      "description": "ETL pipeline service account"
+      "namespaces": ["production"],
+      "description": "ETL pipeline — scoped to production namespace"
     }
   ]
 }
@@ -377,10 +378,35 @@ Example file (`api-keys.json`):
 | `key_hash` | Yes* | Pre-hashed key (alternative to `key`) |
 | `owner` | No | Owner identifier (user or service) |
 | `groups` | No | Groups/roles for this key |
+| `namespaces` | Conditional | List of namespace prefixes this key can access. **Required for non-privileged keys** (see below). Omit for keys in `wip-admins` or `wip-services` groups. |
 | `description` | No | Human-readable description |
 | `enabled` | No | Whether key is active (default: true) |
 
 *Either `key` or `key_hash` is required.
+
+### Namespace Scoping (Enforced)
+
+Non-privileged API keys **must** include a `namespaces` field listing the namespace prefixes they can access. Keys without this field that are not in a privileged group (`wip-admins` or `wip-services`) will have **no access** to any namespace — all permission checks return "none".
+
+**Privileged groups** bypass namespace scoping:
+- `wip-admins` — superadmin, full access to all namespaces
+- `wip-services` — service-to-service accounts (e.g., reporting-sync, ingest-gateway)
+
+**Example — namespace-scoped app key:**
+```json
+{
+  "name": "my-app",
+  "key": "app_key_here",
+  "owner": "app@wip.local",
+  "groups": [],
+  "namespaces": ["wip", "clintrial"],
+  "description": "App key scoped to wip and clintrial namespaces"
+}
+```
+
+**Startup warning:** Keys missing `namespaces` that aren't in a privileged group trigger a warning at service startup. Check logs for `API key 'X' has no namespace scope`.
+
+See `docs/migration-unscoped-api-keys.md` for migration details.
 
 ### Identity Tracking
 
@@ -883,12 +909,12 @@ WIP_AUTH_LEGACY_API_KEY=<random-key>  # NOT the dev key
 | Cloud (internet-facing) | Caution | Reverse proxy, Authelia/Authentik, network isolation |
 | Enterprise/regulated | Needs more | mTLS, audit logging, per-service keys, SIEM integration |
 
-### Future Security Enhancements (Not Yet Implemented)
+### Future Security Enhancements
 
-1. **Per-service API keys** - Fully scoped keys with namespace restrictions
-2. **API key registry** - Database-backed key management with rotation
-3. **mTLS** - Certificate-based service-to-service authentication
-4. **Audit logging** - Record all authentication events to external system
+1. ~~**Per-service API keys** - Fully scoped keys with namespace restrictions~~ **Done** (2026-04-04) — namespace-scoped keys enforced, privileged group bypass for `wip-admins`/`wip-services`. See "Namespace Scoping" section above.
+2. **API key registry** - Database-backed key management with rotation (not yet implemented)
+3. **mTLS** - Certificate-based service-to-service authentication (not yet implemented)
+4. **Audit logging** - Record all authentication events to external system (not yet implemented)
 
 ---
 

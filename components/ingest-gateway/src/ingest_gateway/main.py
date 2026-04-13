@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import nats
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from nats.js import JetStreamContext
 
 from . import __version__
@@ -163,8 +163,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+router = APIRouter(prefix="/api/ingest-gateway")
 
-@app.get("/health", response_model=HealthResponse)
+
+@router.get("/health", response_model=HealthResponse)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
@@ -191,7 +193,7 @@ async def health_check() -> HealthResponse:
     )
 
 
-@app.get("/status", response_model=StatusResponse)
+@router.get("/status", response_model=StatusResponse)
 async def get_status() -> StatusResponse:
     """Get current worker status and statistics."""
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
@@ -206,7 +208,7 @@ async def get_status() -> StatusResponse:
     )
 
 
-@app.get("/metrics", response_model=MetricsResponse)
+@router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
     """Get detailed metrics."""
     uptime = time.time() - state.start_time if state.start_time > 0 else 0
@@ -227,17 +229,19 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@app.get("/")
+@router.get("/")
 async def root() -> dict[str, Any]:
     """Root endpoint with service info."""
     return {
         "service": settings.service_name,
         "version": __version__,
         "docs": "/docs",
-        "health": "/health",
-        "status": "/status",
-        "metrics": "/metrics",
+        "health": "/api/ingest-gateway/health",
+        "status": "/api/ingest-gateway/status",
+        "metrics": "/api/ingest-gateway/metrics",
     }
+
+app.include_router(router)
 
 
 if __name__ == "__main__":

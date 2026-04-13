@@ -8,17 +8,17 @@ class TestIDRemapper:
 
     def setup_method(self):
         self.remapper = IDRemapper()
-        self.remapper.add_terminology_mapping("TERM-000001", "TERM-NEW-001")
-        self.remapper.add_terminology_mapping("TERM-000002", "TERM-NEW-002")
-        self.remapper.add_term_mapping("T-000001", "T-NEW-001")
-        self.remapper.add_term_mapping("T-000003", "T-NEW-003")
-        self.remapper.add_template_mapping("TPL-000001", "TPL-NEW-001")
-        self.remapper.add_template_mapping("TPL-000002", "TPL-NEW-002")
+        self.remapper.add_terminology_mapping("0190a000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000001")
+        self.remapper.add_terminology_mapping("0190a000-0000-7000-0000-000000000002", "0190e000-0000-7000-0000-000000000002")
+        self.remapper.add_term_mapping("0190b000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000011")
+        self.remapper.add_term_mapping("0190b000-0000-7000-0000-000000000003", "0190e000-0000-7000-0000-000000000013")
+        self.remapper.add_template_mapping("0190c000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000021")
+        self.remapper.add_template_mapping("0190c000-0000-7000-0000-000000000002", "0190e000-0000-7000-0000-000000000022")
         self.remapper.add_document_mapping(
             "019abc00-0000-7000-8000-000000000001",
             "019def00-0000-7000-8000-000000000001",
         )
-        self.remapper.add_file_mapping("FILE-000001", "FILE-NEW-001")
+        self.remapper.add_file_mapping("FILE-000001", "0190e000-0000-7000-0000-000000000031")
 
     def test_total_mappings(self):
         assert self.remapper.total_mappings == 8
@@ -26,9 +26,9 @@ class TestIDRemapper:
     # --- Template remapping ---
 
     def test_remap_template_extends(self):
-        tpl = {"template_id": "TPL-X", "extends": "TPL-000001", "fields": []}
+        tpl = {"template_id": "TPL-X", "extends": "0190c000-0000-7000-0000-000000000001", "fields": []}
         result = self.remapper.remap_template(tpl)
-        assert result["extends"] == "TPL-NEW-001"
+        assert result["extends"] == "0190e000-0000-7000-0000-000000000021"
 
     def test_remap_template_extends_none(self):
         tpl = {"template_id": "TPL-X", "extends": None, "fields": []}
@@ -44,41 +44,41 @@ class TestIDRemapper:
         tpl = {
             "template_id": "TPL-X",
             "fields": [
-                {"name": "f1", "type": "term", "terminology_ref": "TERM-000001"},
+                {"name": "f1", "type": "term", "terminology_ref": "0190a000-0000-7000-0000-000000000001"},
             ],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["fields"][0]["terminology_ref"] == "TERM-NEW-001"
+        assert result["fields"][0]["terminology_ref"] == "0190e000-0000-7000-0000-000000000001"
 
     def test_remap_template_array_terminology_ref(self):
         tpl = {
             "template_id": "TPL-X",
             "fields": [
-                {"name": "f1", "type": "array", "array_terminology_ref": "TERM-000002"},
+                {"name": "f1", "type": "array", "array_terminology_ref": "0190a000-0000-7000-0000-000000000002"},
             ],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["fields"][0]["array_terminology_ref"] == "TERM-NEW-002"
+        assert result["fields"][0]["array_terminology_ref"] == "0190e000-0000-7000-0000-000000000002"
 
     def test_remap_template_template_ref(self):
         tpl = {
             "template_id": "TPL-X",
             "fields": [
-                {"name": "f1", "type": "object", "template_ref": "TPL-000002"},
+                {"name": "f1", "type": "object", "template_ref": "0190c000-0000-7000-0000-000000000002"},
             ],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["fields"][0]["template_ref"] == "TPL-NEW-002"
+        assert result["fields"][0]["template_ref"] == "0190e000-0000-7000-0000-000000000022"
 
     def test_remap_template_array_template_ref(self):
         tpl = {
             "template_id": "TPL-X",
             "fields": [
-                {"name": "f1", "type": "array", "array_template_ref": "TPL-000001"},
+                {"name": "f1", "type": "array", "array_template_ref": "0190c000-0000-7000-0000-000000000001"},
             ],
         }
         result = self.remapper.remap_template(tpl)
-        assert result["fields"][0]["array_template_ref"] == "TPL-NEW-001"
+        assert result["fields"][0]["array_template_ref"] == "0190e000-0000-7000-0000-000000000021"
 
     def test_remap_template_target_templates(self):
         tpl = {
@@ -87,13 +87,13 @@ class TestIDRemapper:
                 {
                     "name": "f1",
                     "type": "reference",
-                    "target_templates": ["TPL-000001", "TPL-000002", "TPL-UNKNOWN"],
+                    "target_templates": ["0190c000-0000-7000-0000-000000000001", "0190c000-0000-7000-0000-000000000002", "TPL-UNKNOWN"],
                 },
             ],
         }
         result = self.remapper.remap_template(tpl)
         assert result["fields"][0]["target_templates"] == [
-            "TPL-NEW-001", "TPL-NEW-002", "TPL-UNKNOWN",
+            "0190e000-0000-7000-0000-000000000021", "0190e000-0000-7000-0000-000000000022", "TPL-UNKNOWN",
         ]
 
     def test_remap_template_target_terminologies(self):
@@ -103,13 +103,13 @@ class TestIDRemapper:
                 {
                     "name": "f1",
                     "type": "reference",
-                    "target_terminologies": ["TERM-000001", "TERM-UNKNOWN"],
+                    "target_terminologies": ["0190a000-0000-7000-0000-000000000001", "TERM-UNKNOWN"],
                 },
             ],
         }
         result = self.remapper.remap_template(tpl)
         assert result["fields"][0]["target_terminologies"] == [
-            "TERM-NEW-001", "TERM-UNKNOWN",
+            "0190e000-0000-7000-0000-000000000001", "TERM-UNKNOWN",
         ]
 
     def test_remap_template_preserves_other_fields(self):
@@ -138,36 +138,36 @@ class TestIDRemapper:
     def test_remap_document_template_id(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {},
         }
         result = self.remapper.remap_document(doc)
-        assert result["template_id"] == "TPL-NEW-001"
+        assert result["template_id"] == "0190e000-0000-7000-0000-000000000021"
 
     def test_remap_document_term_references(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {},
             "term_references": [
-                {"field_path": "country", "term_id": "T-000001", "terminology_ref": "TERM-000001"},
+                {"field_path": "country", "term_id": "0190b000-0000-7000-0000-000000000001", "terminology_ref": "0190a000-0000-7000-0000-000000000001"},
             ],
         }
         result = self.remapper.remap_document(doc)
-        assert result["term_references"][0]["term_id"] == "T-NEW-001"
-        assert result["term_references"][0]["terminology_ref"] == "TERM-NEW-001"
+        assert result["term_references"][0]["term_id"] == "0190e000-0000-7000-0000-000000000011"
+        assert result["term_references"][0]["terminology_ref"] == "0190e000-0000-7000-0000-000000000001"
 
     def test_remap_document_references(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {},
             "references": [
                 {
                     "field_path": "manager",
                     "resolved": {
                         "document_id": "019abc00-0000-7000-8000-000000000001",
-                        "template_id": "TPL-000001",
+                        "template_id": "0190c000-0000-7000-0000-000000000001",
                         "identity_hash": "hash1",
                     },
                 },
@@ -176,20 +176,20 @@ class TestIDRemapper:
         result = self.remapper.remap_document(doc)
         resolved = result["references"][0]["resolved"]
         assert resolved["document_id"] == "019def00-0000-7000-8000-000000000001"
-        assert resolved["template_id"] == "TPL-NEW-001"
+        assert resolved["template_id"] == "0190e000-0000-7000-0000-000000000021"
         assert resolved["identity_hash"] == "hash1"  # Pass through
 
     def test_remap_document_file_references(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {},
             "file_references": [
                 {"field_path": "avatar", "file_id": "FILE-000001"},
             ],
         }
         result = self.remapper.remap_document(doc)
-        assert result["file_references"][0]["file_id"] == "FILE-NEW-001"
+        assert result["file_references"][0]["file_id"] == "0190e000-0000-7000-0000-000000000031"
 
     def test_remap_document_unknown_ids_passthrough(self):
         doc = {
@@ -221,7 +221,7 @@ class TestIDRemapper:
     def test_remap_document_preserves_data(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {"name": "John", "email": "john@example.com"},
             "version": 2,
             "identity_hash": "abc",
@@ -234,7 +234,7 @@ class TestIDRemapper:
     def test_remap_document_empty_refs(self):
         doc = {
             "document_id": "DOC-X",
-            "template_id": "TPL-000001",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
             "data": {},
             "term_references": [],
             "references": [],
@@ -251,7 +251,7 @@ class TestIDRemapper:
         pairs = self.remapper.all_synonym_pairs()
         assert len(pairs) == 8
         # Check one pair from each type
-        assert ("TERM-000001", "TERM-NEW-001", "terminologies") in pairs
-        assert ("T-000001", "T-NEW-001", "terms") in pairs
-        assert ("TPL-000001", "TPL-NEW-001", "templates") in pairs
-        assert ("FILE-000001", "FILE-NEW-001", "files") in pairs
+        assert ("0190a000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000001", "terminologies") in pairs
+        assert ("0190b000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000011", "terms") in pairs
+        assert ("0190c000-0000-7000-0000-000000000001", "0190e000-0000-7000-0000-000000000021", "templates") in pairs
+        assert ("FILE-000001", "0190e000-0000-7000-0000-000000000031", "files") in pairs

@@ -1,6 +1,6 @@
 # MCP Server Setup Guide
 
-How to run the WIP MCP server on different hosts. The MCP server provides 68 tools and 4 resources for AI-assisted development against a running WIP instance.
+How to run the WIP MCP server on different hosts. The MCP server provides 69 tools and 4 resources for AI-assisted development against a running WIP instance.
 
 ---
 
@@ -69,44 +69,26 @@ Expected: JSON response with `serverInfo.name: "wip"`.
 
 ---
 
-## Option 2: Remote via SSH (WIP on Pi, Claude Code on Mac)
+## Option 2: Remote via SSH (WIP on remote host, Claude Code on local machine)
 
-When WIP runs on a remote Pi but Claude Code runs on your Mac.
+When WIP runs on a remote host but Claude Code runs on your local machine.
 
-### Step 1 — Set up the Pi
+### Step 1 — Set up the remote host
 
-SSH into the Pi and create the MCP files:
+SSH into the host and create the MCP files:
 
 ```bash
-ssh peter@pi-poe-8gb.local
+ssh user@your-wip-host.local
 cd ~/World-in-a-Pie
-```
-
-Create `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "wip": {
-      "command": "/home/peter/World-in-a-Pie/.venv/bin/python",
-      "args": ["-m", "wip_mcp"],
-      "cwd": "/home/peter/World-in-a-Pie",
-      "env": {
-        "WIP_API_KEY": "dev_master_key_for_testing",
-        "PYTHONPATH": "/home/peter/World-in-a-Pie/components/mcp-server/src"
-      }
-    }
-  }
-}
 ```
 
 Create `start-wip-mcp.sh`:
 
 ```bash
 #!/bin/bash
-cd /home/peter/World-in-a-Pie
+cd /home/user/World-in-a-Pie
 PYTHONPATH=components/mcp-server/src \
-  WIP_API_KEY=dev_master_key_for_testing \
+  WIP_API_KEY=your_api_key_here \
   .venv/bin/python -m wip_mcp "$@"
 ```
 
@@ -114,7 +96,7 @@ PYTHONPATH=components/mcp-server/src \
 chmod +x start-wip-mcp.sh
 ```
 
-### Step 2 — Verify the MCP server works on the Pi
+### Step 2 — Verify the MCP server works on the remote host
 
 ```bash
 (echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}'; \
@@ -128,9 +110,9 @@ chmod +x start-wip-mcp.sh
 
 Expected: two JSON lines — initialize response, then status showing all 6 services healthy.
 
-### Step 3 — Configure Claude Code on your Mac to use the remote MCP server
+### Step 3 — Configure Claude Code on your local machine
 
-In your Mac project's `.mcp.json`, point to the Pi via SSH:
+In your local project's `.mcp.json`, point to the remote host via SSH:
 
 ```json
 {
@@ -138,21 +120,21 @@ In your Mac project's `.mcp.json`, point to the Pi via SSH:
     "wip": {
       "command": "ssh",
       "args": [
-        "peter@pi-poe-8gb.local",
-        "cd /home/peter/World-in-a-Pie && PYTHONPATH=components/mcp-server/src WIP_API_KEY=dev_master_key_for_testing .venv/bin/python -m wip_mcp"
+        "user@your-wip-host.local",
+        "cd /home/user/World-in-a-Pie && PYTHONPATH=components/mcp-server/src WIP_API_KEY=your_api_key_here .venv/bin/python -m wip_mcp"
       ]
     }
   }
 }
 ```
 
-This runs the MCP server on the Pi over SSH stdio — no extra ports needed. SSH handles the transport.
+This runs the MCP server on the remote host over SSH stdio — no extra ports needed. SSH handles the transport.
 
 **Requirements:**
-- SSH key-based auth to the Pi (no password prompts)
-- `ssh peter@pi-poe-8gb.local` must work without interaction
+- SSH key-based auth to the host (no password prompts)
+- `ssh user@your-wip-host.local` must work without interaction
 
-### Step 4 — Verify from Mac
+### Step 4 — Verify from local machine
 
 Open Claude Code in the project directory. The MCP tools should appear. Test with `get_wip_status` — it should report all services healthy.
 
@@ -194,6 +176,23 @@ Using `--network host` so the container can reach WIP services on localhost port
 
 ---
 
+## Automated Setup
+
+The `setup-backend-agent.sh` script generates `.mcp.json` for all three transport modes:
+
+```bash
+# Local stdio (default)
+./scripts/setup-backend-agent.sh
+
+# Remote via SSH
+./scripts/setup-backend-agent.sh --target ssh --host your-wip-host.local
+
+# HTTP/HTTPS transport
+./scripts/setup-backend-agent.sh --target http --host your-wip-host.local
+```
+
+---
+
 ## Troubleshooting
 
 ### "python-dotenv could not parse statement"
@@ -205,11 +204,11 @@ Harmless warning from `.env` parsing. The MCP server still works correctly. Caus
 The MCP server defaults to `http://localhost:800X` for all services. If services are on a different host, set the environment variables:
 
 ```bash
-export REGISTRY_URL=http://pi-poe-8gb.local:8001
-export DEF_STORE_URL=http://pi-poe-8gb.local:8002
-export TEMPLATE_STORE_URL=http://pi-poe-8gb.local:8003
-export DOCUMENT_STORE_URL=http://pi-poe-8gb.local:8004
-export REPORTING_SYNC_URL=http://pi-poe-8gb.local:8005
+export REGISTRY_URL=http://your-wip-host.local:8001
+export DEF_STORE_URL=http://your-wip-host.local:8002
+export TEMPLATE_STORE_URL=http://your-wip-host.local:8003
+export DOCUMENT_STORE_URL=http://your-wip-host.local:8004
+export REPORTING_SYNC_URL=http://your-wip-host.local:8005
 ```
 
 ### API key issues
@@ -224,24 +223,5 @@ For production, use a hashed key generated by `scripts/security/generate-api-key
 ### SSH connection drops
 
 If using SSH stdio mode and the connection drops, Claude Code will show the MCP server as disconnected. Ensure:
-- SSH `ServerAliveInterval 60` in `~/.ssh/config` for the Pi host
-- Pi has `loginctl enable-linger` for persistent user sessions
-
----
-
-## Verified Setup: Raspberry Pi 5 (pi-poe-8gb.local)
-
-Tested 2026-03-27 with the `full` preset (14 containers).
-
-| Item | Value |
-|------|-------|
-| Pi | Raspberry Pi 5, 8GB, SSD |
-| Hostname | `pi-poe-8gb.local` |
-| Project dir | `/home/peter/World-in-a-Pie` |
-| Python | 3.13.5 (`.venv/bin/python`) |
-| MCP version | 1.26.0 |
-| API key | `dev_master_key_for_testing` (dev mode) |
-| Services | All 6 healthy |
-| Claude Code | 2.1.85 (`/home/peter/.local/bin/claude`) |
-| MCP tools | 68 tools, 4 resources |
-| Transport | stdio (local, Claude Code on Pi) |
+- SSH `ServerAliveInterval 60` in `~/.ssh/config` for the remote host
+- Remote host has `loginctl enable-linger` for persistent user sessions (Linux)

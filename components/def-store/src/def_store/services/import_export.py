@@ -154,6 +154,7 @@ class ImportExportService:
                 "value": terminology.value,
                 "label": terminology.label,
                 "description": terminology.description,
+                "namespace": terminology.namespace,
                 "case_sensitive": terminology.case_sensitive,
                 "allow_multiple": terminology.allow_multiple,
                 "extensible": terminology.extensible,
@@ -317,14 +318,15 @@ class ImportExportService:
                 value=terminology_data["value"],
                 label=terminology_data["label"],
                 description=terminology_data.get("description"),
-                namespace=terminology_data.get("namespace", "wip"),
+                namespace=terminology_data["namespace"],
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
                 extensible=terminology_data.get("extensible", False),
                 metadata=TerminologyMetadata(**metadata) if metadata else None,
                 created_by=created_by
             )
-            terminology_response = await TerminologyService.create_terminology(create_req)
+            namespace = terminology_data["namespace"]
+            terminology_response = await TerminologyService.create_terminology(create_req, namespace)
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 
@@ -375,7 +377,7 @@ class ImportExportService:
         relationships_data = data.get("relationships", [])
         rel_result = None
         if relationships_data:
-            namespace = terminology_data.get("namespace", "wip")
+            namespace = terminology_data["namespace"]
             rel_result = await ImportExportService._import_relationships(
                 relationships_data,
                 terminology_id=terminology_id,
@@ -498,7 +500,7 @@ class ImportExportService:
                         source_term_id=src_id,
                         target_term_id=tgt_id,
                         relationship_type=rd["relationship_type"],
-                        metadata=rd.get("metadata"),
+                        metadata=rd.get("metadata") or {},
                     ))
 
             if rel_requests:
@@ -773,7 +775,7 @@ class ImportExportService:
         """
         t0 = time.perf_counter()
 
-        namespace = options.get("namespace", "wip")
+        namespace = options["namespace"]
         created_by = options.get("created_by")
         batch_size = options.get("batch_size", 1000)
         registry_batch_size = options.get("registry_batch_size", 50)
@@ -826,7 +828,7 @@ class ImportExportService:
                 ),
                 created_by=created_by,
             )
-            terminology_response = await TerminologyService.create_terminology(create_req)
+            terminology_response = await TerminologyService.create_terminology(create_req, namespace)
             terminology_id = terminology_response.terminology_id
             terminology_status = "created"
 

@@ -53,6 +53,7 @@ async def test_get_all_versions_by_value(client: AsyncClient, auth_headers: dict
     """Test GET /templates/by-value/{value}/versions returns all versions."""
     # Create a template
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "VERSIONED",
         "label": "Versioned Template v1",
         "fields": [
@@ -116,6 +117,7 @@ async def test_get_versions_not_found(client: AsyncClient, auth_headers: dict):
 async def test_get_specific_version_by_value(client: AsyncClient, auth_headers: dict):
     """Test GET /templates/by-value/{value}/versions/{version}."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "SPECIFIC_VER",
         "label": "Specific Version v1",
         "fields": [
@@ -160,6 +162,7 @@ async def test_get_specific_version_not_found(client: AsyncClient, auth_headers:
     """Test GET /templates/by-value/{value}/versions/{version} for
     non-existent version number."""
     await _create_one(client, auth_headers, {
+        "namespace": "wip",
         "value": "VER_404",
         "label": "Version 404",
         "fields": [],
@@ -185,6 +188,7 @@ async def test_multiple_active_versions(client: AsyncClient, auth_headers: dict)
     remains active. Both can be retrieved.
     """
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "MULTI_ACTIVE",
         "label": "Multi Active v1",
         "fields": [
@@ -230,6 +234,7 @@ async def test_multiple_active_versions(client: AsyncClient, auth_headers: dict)
 async def test_deactivate_specific_version(client: AsyncClient, auth_headers: dict):
     """Test deactivating a specific version while others remain active."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "DEACT_VER",
         "label": "Deactivate Version v1",
         "fields": [
@@ -278,6 +283,7 @@ async def test_deactivate_specific_version(client: AsyncClient, auth_headers: di
 async def test_create_child_with_extends_version(client: AsyncClient, auth_headers: dict):
     """Test creating a child template that pins to a specific parent version."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "PIN_PARENT",
         "label": "Pin Parent v1",
         "fields": [
@@ -296,6 +302,7 @@ async def test_create_child_with_extends_version(client: AsyncClient, auth_heade
 
     # Create child that pins to parent v1
     child_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "PIN_CHILD",
         "label": "Pin Child",
         "extends": parent_id,
@@ -326,6 +333,7 @@ async def test_pinned_version_inheritance_uses_correct_version(
     Resolved child should only inherit field_a from parent, not field_b.
     """
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "PINNED_RESOLVE_PARENT",
         "label": "Pinned Resolve Parent v1",
         "fields": [
@@ -344,6 +352,7 @@ async def test_pinned_version_inheritance_uses_correct_version(
 
     # Create child pinned to parent v1
     child_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "PINNED_RESOLVE_CHILD",
         "label": "Pinned Resolve Child",
         "extends": parent_id,
@@ -372,6 +381,7 @@ async def test_unpinned_inherits_latest_version(client: AsyncClient, auth_header
     """Test that without extends_version, the child inherits from the
     latest active parent version."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "UNPINNED_PARENT",
         "label": "Unpinned Parent v1",
         "fields": [
@@ -381,6 +391,7 @@ async def test_unpinned_inherits_latest_version(client: AsyncClient, auth_header
 
     # Create child without extends_version (unpinned)
     child_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "UNPINNED_CHILD",
         "label": "Unpinned Child",
         "extends": parent_id,
@@ -421,6 +432,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
     """Test POST /templates/{id}/cascade creates new child versions
     pointing to the updated parent."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_PARENT",
         "label": "Cascade Parent v1",
         "fields": [
@@ -430,6 +442,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
 
     # Create two children extending the parent
     child1_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_CHILD_1",
         "label": "Cascade Child 1",
         "extends": parent_id,
@@ -439,6 +452,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
     })
 
     child2_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_CHILD_2",
         "label": "Cascade Child 2",
         "extends": parent_id,
@@ -488,6 +502,7 @@ async def test_cascade_to_children(client: AsyncClient, auth_headers: dict):
 async def test_cascade_no_children(client: AsyncClient, auth_headers: dict):
     """Test cascade on a template with no children returns empty results."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "NO_CHILDREN",
         "label": "No Children",
         "fields": [],
@@ -521,6 +536,7 @@ async def test_cascade_already_pointing_to_latest(client: AsyncClient, auth_head
     """Test cascade when children already extend the target parent
     returns unchanged status."""
     parent_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_NOOP_PARENT",
         "label": "Cascade Noop Parent",
         "fields": [
@@ -530,6 +546,7 @@ async def test_cascade_already_pointing_to_latest(client: AsyncClient, auth_head
 
     # Create child extending the parent
     await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "CASCADE_NOOP_CHILD",
         "label": "Cascade Noop Child",
         "extends": parent_id,
@@ -559,6 +576,7 @@ async def test_update_preserves_template_id(client: AsyncClient, auth_headers: d
     """Test that updating a template creates a new version document with
     the same template_id (stable ID across versions)."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "STABLE_ID",
         "label": "Stable ID v1",
         "fields": [
@@ -582,6 +600,7 @@ async def test_update_preserves_template_id(client: AsyncClient, auth_headers: d
 async def test_no_change_update_returns_same_version(client: AsyncClient, auth_headers: dict):
     """Test that updating with identical data does not create a new version."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "NOOP_UPDATE",
         "label": "No Op Update",
         "fields": [
@@ -607,6 +626,7 @@ async def test_no_change_update_returns_same_version(client: AsyncClient, auth_h
 async def test_get_by_value_returns_latest(client: AsyncClient, auth_headers: dict):
     """Test GET /templates/by-value/{value} returns the latest version."""
     template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
         "value": "LATEST_BY_VALUE",
         "label": "Latest v1",
         "fields": [

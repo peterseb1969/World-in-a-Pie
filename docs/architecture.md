@@ -42,6 +42,7 @@ World In a Pie (WIP) follows a microservices architecture with clear separation 
 │   ├── /api/template-store/   → Template Store (:8003)                      │
 │   ├── /api/document-store/   → Document Store (:8004)                      │
 │   ├── /api/reporting-sync/   → Reporting Sync (:8005)                      │
+│   ├── /api/ingest-gateway/   → Ingest Gateway (:8006)                      │
 │   └── /dex/                  → Dex OIDC Provider (:5556)                   │
 │                                                                             │
 └───────────────────────────────────┬─────────────────────────────────────────┘
@@ -72,6 +73,14 @@ World In a Pie (WIP) follows a microservices architecture with clear separation 
 │   │  • Document transformation and sync                              │      │
 │   │  • Batch sync and recovery                                       │      │
 │   │  • Metrics and alerting                                          │      │
+│   └──────────────────────────────────────────────────────────────────┘      │
+│                                                                             │
+│   ┌──────────────────────────────────────────────────────────────────┐      │
+│   │              Ingest Gateway :8006          MCP Server (stdio)    │      │
+│   │                                                                  │      │
+│   │  • Async bulk ingestion via NATS           • 70+ tools           │      │
+│   │  • JetStream queue processing              • 5 resources         │      │
+│   │  • Delegates to Document Store             • AI-assisted dev     │      │
 │   └──────────────────────────────────────────────────────────────────┘      │
 │                                                                             │
 │   All services use wip-auth library for authentication + synonym resolution│
@@ -309,6 +318,10 @@ The Registry is a **standalone service** that provides ID generation and namespa
 │   │  • wip-files          │  Prefix: FILE-  │  For File Storage    │        │
 │   │  • default            │  UUID4          │  General use         │        │
 │   └────────────────────────────────────────────────────────────────┘        │
+│                                                                              │
+│   Note: These are logical partitions. The API uses namespace ("wip")        │
+│   + entity_type ("templates") as a composite key — the Registry              │
+│   combines them internally.                                                  │
 │                                                                              │
 │   ID GENERATION                                                              │
 │   ═════════════                                                             │
@@ -653,7 +666,7 @@ This is **not production-ready**. Podman Compose is the supported deployment met
 │   │   • MongoDB (no external port exposure in production)               │   │
 │   │   • PostgreSQL (no external port exposure in production)            │   │
 │   │   • NATS (internal message passing)                                 │   │
-│   │   • Dex (internal OIDC provider)                                    │   │
+│   │   • MinIO (binary file storage)                                     │   │
 │   │                                                                      │   │
 │   └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                              │
