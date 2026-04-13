@@ -71,7 +71,7 @@ Options:
   -h, --help           Show this help
 
 Services: registry, def-store, template-store, document-store,
-          reporting-sync, ingest-gateway, mcp-server, console
+          reporting-sync, ingest-gateway, mcp-server
 
 Examples:
   # Build all and push to Gitea (native arch only)
@@ -289,32 +289,8 @@ build_python_plain() {
     echo ""
 }
 
-build_console() {
-    local img
-    img="$(image_name "console")"
-
-    log_step "Building ${img}"
-
-    local console_args=(
-        --target production
-        --build-arg VITE_OIDC_AUTHORITY=/dex
-        --build-arg VITE_OIDC_CLIENT_ID=wip-console
-        --build-arg VITE_OIDC_CLIENT_SECRET=wip-console-secret
-        --build-arg VITE_OIDC_PROVIDER_NAME=Dex
-        --build-arg VITE_REPORTING_ENABLED=true
-        --build-arg VITE_FILES_ENABLED=true
-        --build-arg VITE_INGEST_ENABLED=true
-    )
-
-    if run_build "$img" "${PROJECT_ROOT}/ui/wip-console" "${console_args[@]}"; then
-        BUILT_IMAGES+=("$img")
-        log_info "  console: OK"
-    else
-        log_error "  console: BUILD FAILED"
-        FAILED+=("console")
-    fi
-    echo ""
-}
+### Vue Console removed — replaced by React Console app chunk.
+### Root URL redirects to /apps/rc/ via Caddyfile.
 
 # ── Production compose generation ────────────────────────────────
 #
@@ -340,9 +316,9 @@ generate_production_compose() {
 
     # Replace any existing registry/tag references with the current ones.
     # Matches patterns like: image: <anything>/<service>:<anything>
-    # for the 8 WIP service names + console.
+    # for the 7 WIP core service names.
     local tmp="${out}.tmp"
-    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server\|console):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
+    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
         "$out" > "$tmp" && mv "$tmp" "$out"
 
     log_info "Updated image tags to ${REGISTRY}/<service>:${TAG}"
@@ -369,8 +345,6 @@ START_TIME=$(date +%s)
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        console)
-            build_console ;;
         ingest-gateway|mcp-server)
             build_python_plain "$ONLY_SERVICE" ;;
         registry|def-store|template-store|document-store|reporting-sync)
@@ -386,7 +360,6 @@ else
     for svc in "${PLAIN_SERVICES[@]}"; do
         build_python_plain "$svc"
     done
-    build_console
 fi
 
 if $GENERATE_COMPOSE; then

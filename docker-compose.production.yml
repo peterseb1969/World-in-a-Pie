@@ -323,13 +323,6 @@ services:
       registry:
         condition: service_healthy
 
-  console:
-    image: gitea.local:3000/peter/console:v1.0-rc4
-    container_name: wip-console
-    networks:
-      - wip-network
-    restart: unless-stopped
-
 volumes:
   wip-mongo-data:
   wip-postgres-data:
