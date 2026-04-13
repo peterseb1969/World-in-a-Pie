@@ -161,14 +161,45 @@ curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop
 
 Then open `https://localhost:8443/apps/rc/` in a Windows browser (accept cert warning).
 
-## Reporting back
+## Build Report (2026-04-13)
 
-After completing the builds, update this file with:
-- Build times per image
-- Any issues encountered
-- Verification results
+**Machine:** Windows laptop, WSL2, podman 4.9.3, Node v18.19.1
+**Built by:** BE-YAC on WSL2
 
-Commit and push so BE-YAC on the Mac Mini can see the status.
+### Build results
+
+| Image | Build time | Image size | Push | Status |
+|-------|-----------|------------|------|--------|
+| `react-console:v1.0-rc4-amd64` | ~1m 30s | 235 MB | OK | Pushed to GHCR |
+| `clintrial-explorer:v1.0-rc4-amd64` | ~3m | 317 MB | OK | Pushed to GHCR |
+| `dnd-compendium:v1.0-rc4-amd64` | ~3m | 335 MB | OK | Pushed to GHCR |
+
+### Issues encountered
+
+1. **DnD Compendium — first build failed.** The downloaded zip was outdated (`wip-client-0.1.0`, `wip-proxy-0.1.0`, `wip-react-0.1.0` in `package.json`). The Dockerfile's `sed` rewrites the path prefix but not the version, so it looked for `/tmp/libs/wip-proxy-0.1.0.tgz` which didn't exist. Fixed by re-downloading the zip with updated `package.json` referencing current lib versions.
+
+2. **ClinTrial Explorer — first build failed.** Vite build error: `clsx` not resolved. `clsx` is listed in `package.json` but the `npm install --ignore-scripts` in the Dockerfile somehow didn't install it. A `--no-cache` rebuild succeeded — likely a transient npm resolution issue or stale podman build cache.
+
+3. **Manifest merge incomplete — arm64 missing.** The `podman manifest create --amend` + `manifest add` + `manifest push --all` workflow was executed, but the resulting manifests on GHCR only contain the amd64 variant. The `--amend` flag was expected to pull the existing arm64 manifest list from GHCR, but it appears podman created a fresh local manifest and only included what was in the local store. **The arm64 variants need to be re-added from the Mac Mini** where those images exist locally. The amd64 images are correctly on GHCR under the `-amd64` tags.
+
+### What's left
+
+The manifests need to be rebuilt on the Mac Mini (or any machine with both architectures available) to include both arm64 and amd64. The recommended approach:
+
+```bash
+# On Mac Mini (where arm64 images are local):
+# Pull the amd64 images, then create combined manifests
+
+for app in react-console clintrial-explorer dnd-compendium; do
+    podman pull ghcr.io/peterseb1969/${app}:v1.0-rc4-amd64
+    podman manifest create ghcr.io/peterseb1969/${app}:v1.0-rc4 \
+        ghcr.io/peterseb1969/${app}:v1.0-rc4-arm64 \
+        ghcr.io/peterseb1969/${app}:v1.0-rc4-amd64
+    podman manifest push --all ghcr.io/peterseb1969/${app}:v1.0-rc4
+done
+```
+
+This requires that the arm64 images are also tagged with `-arm64` suffix, or referenced by digest.
 
 ## Troubleshooting
 
