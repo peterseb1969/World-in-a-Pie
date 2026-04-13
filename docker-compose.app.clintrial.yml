@@ -4,7 +4,7 @@
 
 services:
   clintrial-explorer:
-    image: gitea.local:3000/peter/clintrial-explorer:v1.0-rc4
+    image: ghcr.io/peterseb1969/clintrial-explorer:v1.0-rc4
     container_name: wip-clintrial-explorer
     labels:
       wip.app: "true"

@@ -4,7 +4,7 @@
 
 services:
   react-console:
-    image: gitea.local:3000/peter/react-console:v1.0-rc4
+    image: ghcr.io/peterseb1969/react-console:v1.0-rc4
     container_name: wip-react-console
     labels:
       wip.app: "true"

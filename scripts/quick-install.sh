@@ -394,8 +394,7 @@ cat <<DONE
 ==========================================
   ${BOLD}WIP is (probably) up${NC}
 
-  Main console:       https://${HOSTNAME_ARG}:8443
-  React Console:      https://${HOSTNAME_ARG}:8443/apps/rc/
+  WIP Console:        https://${HOSTNAME_ARG}:8443/apps/rc/
   D&D Compendium:     https://${HOSTNAME_ARG}:8443/apps/dnd/
   ClinTrial Explorer: https://${HOSTNAME_ARG}:8443/apps/clintrial/
 
