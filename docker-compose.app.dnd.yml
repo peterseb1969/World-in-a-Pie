@@ -1,6 +1,6 @@
 services:
   dnd-compendium:
-    image: ghcr.io/peterseb1969/dnd-compendium:v1.0-rc4
+    image: ghcr.io/peterseb1969/dnd-compendium:v1.1.0
     container_name: wip-dnd-compendium
     labels:
       wip.app: "true"
