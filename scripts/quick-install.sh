@@ -182,7 +182,7 @@ log_info "Podman is functional"
 # ── Port conflict check ────────────────────────────────────────
 
 CONFLICT_PORTS=()
-for port in 8443 27017 5432 9000 9001 4222 8222 8001 8002 8003 8004 8005 8006; do
+for port in 8443; do
     if command -v lsof >/dev/null 2>&1 && lsof -ti:"$port" >/dev/null 2>&1; then
         CONFLICT_PORTS+=("$port")
     fi
