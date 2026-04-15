@@ -11,17 +11,12 @@ services:
       wip.app.name: "React Console"
       wip.app.route: "/apps/rc"
       wip.app.port: "3011"
-      wip.app.oidc: "true"
-      wip.app.oidc.client_id: "react-console"
-      wip.app.oidc.client_secret: "react-console-secret"
+      # OIDC is handled by the auth gateway — no per-app OIDC config needed.
     env_file: .env
     environment:
       WIP_BASE_URL: http://wip-caddy:8080
       WIP_API_KEY: ${API_KEY}
-      OIDC_ISSUER: https://${WIP_HOSTNAME:-localhost}:8443/dex
-      OIDC_INTERNAL_ISSUER: http://wip-dex:5556/dex
-      OIDC_CLIENT_ID: react-console
-      OIDC_CLIENT_SECRET: react-console-secret
+      # OIDC handled by gateway — identity arrives via X-WIP-User headers.
       PORT: "3011"
       APP_BASE_PATH: /apps/rc
       NATS_URL: nats://wip-nats:4222

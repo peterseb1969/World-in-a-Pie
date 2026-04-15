@@ -110,6 +110,7 @@ services:
       MASTER_API_KEY: ${API_KEY}
       WIP_AUTH_LEGACY_API_KEY: ${API_KEY}
       AUTH_ENABLED: "true"
+      WIP_AUTH_TRUST_PROXY_HEADERS: "true"
       REPORTING_SYNC_URL: http://wip-reporting-sync:8005
       DEF_STORE_URL: http://wip-def-store:8002
       TEMPLATE_STORE_URL: http://wip-template-store:8003
@@ -303,6 +304,32 @@ services:
     depends_on:
       registry:
         condition: service_healthy
+
+  auth-gateway:
+    image: ghcr.io/peterseb1969/auth-gateway:v1.1.0
+    container_name: wip-auth-gateway
+    env_file: .env
+    environment:
+      OIDC_ISSUER: https://${WIP_HOSTNAME:-localhost}:8443/dex
+      OIDC_INTERNAL_ISSUER: http://wip-dex:5556/dex
+      OIDC_CLIENT_ID: wip-gateway
+      OIDC_CLIENT_SECRET: ${WIP_GATEWAY_SECRET}
+      SESSION_SECRET: ${WIP_GATEWAY_SESSION_SECRET}
+      API_KEY: ${API_KEY}
+      WIP_HOSTNAME: ${WIP_HOSTNAME:-localhost}
+      CALLBACK_URL: https://${WIP_HOSTNAME:-localhost}:8443/auth/callback
+    networks:
+      - wip-network
+    restart: unless-stopped
+    depends_on:
+      dex:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4180/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
 
 volumes:
   wip-mongo-data:

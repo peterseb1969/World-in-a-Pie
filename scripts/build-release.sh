@@ -71,7 +71,7 @@ Options:
   -h, --help           Show this help
 
 Services: registry, def-store, template-store, document-store,
-          reporting-sync, ingest-gateway, mcp-server
+          reporting-sync, ingest-gateway, mcp-server, auth-gateway
 
 Examples:
   # Build all and push to Gitea (native arch only)
@@ -201,7 +201,7 @@ FAILED=()
 # document-store also needs wip-toolkit (backup engine imports it)
 AUTH_SERVICES=(registry def-store template-store document-store reporting-sync)
 TOOLKIT_SERVICES=(document-store)
-PLAIN_SERVICES=(ingest-gateway mcp-server)
+PLAIN_SERVICES=(ingest-gateway mcp-server auth-gateway)
 
 build_python_with_libs() {
     local svc="$1"
@@ -318,7 +318,7 @@ generate_production_compose() {
     # Matches patterns like: image: <anything>/<service>:<anything>
     # for the 7 WIP core service names.
     local tmp="${out}.tmp"
-    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
+    sed -E "s|image: [^ ]+/(registry\|def-store\|template-store\|document-store\|reporting-sync\|ingest-gateway\|mcp-server\|auth-gateway):[^ ]+|image: ${REGISTRY}/\1:${TAG}|g" \
         "$out" > "$tmp" && mv "$tmp" "$out"
 
     log_info "Updated image tags to ${REGISTRY}/<service>:${TAG}"
@@ -345,7 +345,7 @@ START_TIME=$(date +%s)
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        ingest-gateway|mcp-server)
+        ingest-gateway|mcp-server|auth-gateway)
             build_python_plain "$ONLY_SERVICE" ;;
         registry|def-store|template-store|document-store|reporting-sync)
             build_python_with_libs "$ONLY_SERVICE" ;;
