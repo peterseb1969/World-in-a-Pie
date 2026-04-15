@@ -173,6 +173,29 @@ DEXPASSWORDS
     echo -e "${GREEN}[OK]${NC} Dex user passwords generated and saved to .env"
 fi
 
+# ── Step 1c: Auth gateway secrets ──────────────────────────────
+#
+# The gateway needs a Dex client secret and a session signing key.
+
+EXISTING_GATEWAY_SECRET=$(grep '^WIP_GATEWAY_SECRET=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+
+if [[ -n "$EXISTING_GATEWAY_SECRET" ]]; then
+    echo -e "${GREEN}[OK]${NC} Auth gateway secrets loaded from .env"
+else
+    GATEWAY_SECRET=$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | head -c 24)
+    GATEWAY_SESSION_SECRET=$(head -c 32 /dev/urandom | base64 | tr -d '+/=' | head -c 32)
+
+    cat >> "$ENV_FILE" <<GATEWAYSECRETS
+
+# =============================================================================
+# AUTH GATEWAY (auto-generated — used by wip-auth-gateway service)
+# =============================================================================
+WIP_GATEWAY_SECRET=${GATEWAY_SECRET}
+WIP_GATEWAY_SESSION_SECRET=${GATEWAY_SESSION_SECRET}
+GATEWAYSECRETS
+    echo -e "${GREEN}[OK]${NC} Auth gateway secrets generated and saved to .env"
+fi
+
 # ── Step 2: Generate Caddy config ────────────────────────────────
 
 CADDY_DIR="${INSTALL_DIR}/config/caddy"
@@ -257,6 +280,10 @@ if [[ -n "$APP_ROUTES" ]]; then
                     echo "        redir ${route}/ permanent"
                     echo "    }"
                     echo "    handle ${route}/* {"
+                    echo "        forward_auth wip-auth-gateway:4180 {"
+                    echo "            uri /auth/verify"
+                    echo "            copy_headers X-WIP-User X-WIP-Groups X-API-Key"
+                    echo "        }"
                     echo "        reverse_proxy ${container}:${port}"
                     echo "    }"
                 done <<< "$APP_ROUTES"
@@ -298,7 +325,31 @@ awk \
         print
     }' "$DEX_TEMPLATE" > "$DEX_OUT"
 
-# Insert app OIDC clients into the staticClients section of Dex config
+# Always add the wip-gateway Dex client (for the auth gateway service).
+# Read the gateway secret from .env (generated in Step 1c).
+GATEWAY_SECRET=$(grep '^WIP_GATEWAY_SECRET=' "$ENV_FILE" | cut -d= -f2- || true)
+{
+    gateway_tmp="${DEX_OUT}.gateway"
+    cat > "$gateway_tmp" <<GATEWAYCLIENT
+  - id: wip-gateway
+    name: WIP Auth Gateway
+    secret: ${GATEWAY_SECRET}
+    redirectURIs:
+      - https://${HOSTNAME}:8443/auth/callback
+GATEWAYCLIENT
+
+    tmp="${DEX_OUT}.tmp"
+    while IFS= read -r line; do
+        if [[ "$line" == "connectors:"* ]]; then
+            cat "$gateway_tmp"
+            echo ""
+        fi
+        echo "$line"
+    done < "$DEX_OUT" > "$tmp" && mv "$tmp" "$DEX_OUT"
+    rm -f "$gateway_tmp"
+}
+
+# Insert per-app OIDC clients into the staticClients section of Dex config
 if [[ -n "$DEX_CLIENTS" ]]; then
     # Write client entries to a temp file
     clients_tmp="${DEX_OUT}.clients"
