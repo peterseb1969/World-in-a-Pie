@@ -107,6 +107,24 @@ async def callback(request: Request):
 
     try:
         user_info = await exchange_code(request)
+    except ValueError as exc:
+        # State mismatch is usually a multi-tab race: another tab completed
+        # login and overwrote this tab's oauth_state in the shared session.
+        # If the user is already authenticated (from the other tab), just
+        # redirect to the app instead of showing an error.
+        if "state" in str(exc).lower():
+            email = request.session.get("email")
+            if email and time.time() < request.session.get("exp", 0):
+                logger.info("Stale OIDC state but already authenticated as %s — redirecting", email)
+                return RedirectResponse(url=settings.default_redirect, status_code=302)
+            # Not authenticated — start fresh login
+            logger.info("Stale OIDC state, not authenticated — restarting login")
+            return RedirectResponse(url="/auth/login", status_code=302)
+        logger.error("OIDC callback failed: %s", exc)
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Authentication failed", "detail": str(exc)},
+        )
     except Exception as exc:
         logger.error("OIDC callback failed: %s", exc)
         return JSONResponse(
