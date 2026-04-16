@@ -16,6 +16,7 @@ from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, apply_compose
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
+from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import FileTree, render_compose
 from wip_deploy.secrets import ensure_secrets
@@ -562,6 +563,158 @@ def install(
             )
         )
     typer.echo(f"  https://{deployment.spec.network.hostname}:{deployment.spec.network.https_port}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# nuke
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def nuke(
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Install directory to tear down. Defaults to "
+                "~/.wip-deploy/<name>/ when --name is used."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str, _name_opt()] = "default",
+    remove_data: Annotated[
+        bool,
+        typer.Option(
+            "--remove-data",
+            help=(
+                "Remove named volumes (databases, file storage). Destructive."
+            ),
+        ),
+    ] = False,
+    remove_secrets: Annotated[
+        bool,
+        typer.Option(
+            "--remove-secrets",
+            help=(
+                "Remove the secret backend directory. Without this, re-installing "
+                "reuses the existing secrets."
+            ),
+        ),
+    ] = False,
+    secrets_location: Annotated[
+        Path | None,
+        typer.Option(
+            "--secrets-location",
+            help=(
+                "Override secrets directory. Default: "
+                "~/.wip-deploy/<name>/secrets/."
+            ),
+        ),
+    ] = None,
+    purge_all: Annotated[
+        bool,
+        typer.Option(
+            "--purge-all",
+            help=(
+                "Nuclear: remove every wip-* container, pod, and (with "
+                "--remove-data) volume on this host, regardless of compose "
+                "project. Use for cross-install cleanup (v1 leftovers)."
+            ),
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show what would be removed; don't actually remove anything.",
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("-y", "--yes", help="Skip confirmation prompt."),
+    ] = False,
+) -> None:
+    """Tear down a WIP install.
+
+    By default, runs `compose down` in the install dir (scoped teardown).
+    With `--purge-all`, removes every wip-* container/pod on the host.
+    """
+    if purge_all:
+        _nuke_purge_all(remove_data=remove_data, dry_run=dry_run, yes=yes)
+        return
+
+    target_dir = install_dir or _default_install_dir(name)
+    target_secrets = secrets_location or (
+        _default_install_dir(name) / "secrets" if remove_secrets else None
+    )
+
+    typer.echo(f"Install dir:   {target_dir}")
+    if remove_data:
+        typer.echo(typer.style("  + data volumes will be removed", fg=typer.colors.YELLOW))
+    if remove_secrets:
+        typer.echo(
+            typer.style(
+                f"  + secrets dir will be removed: {target_secrets}",
+                fg=typer.colors.YELLOW,
+            )
+        )
+    if not yes and not _confirm("Proceed with teardown?"):
+        raise typer.Exit(0)
+
+    try:
+        report = nuke_install_dir(
+            target_dir,
+            remove_data=remove_data,
+            secrets_location=target_secrets,
+            remove_secrets=remove_secrets,
+        )
+    except NukeError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    typer.echo(typer.style(f"✓ {report.summary()}", fg=typer.colors.GREEN))
+
+
+def _nuke_purge_all(*, remove_data: bool, dry_run: bool, yes: bool) -> None:
+    typer.echo(
+        typer.style("Purge-all scans for every wip-* resource on this host.", bold=True)
+    )
+    if remove_data:
+        typer.echo(
+            typer.style(
+                "  + named volumes will be removed — databases will be destroyed",
+                fg=typer.colors.YELLOW,
+            )
+        )
+    if dry_run:
+        typer.echo("  + dry-run: nothing will be removed")
+    if not yes and not dry_run and not _confirm("Continue?"):
+        raise typer.Exit(0)
+
+    try:
+        report = nuke_purge_all(remove_data=remove_data, dry_run=dry_run)
+    except NukeError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    if report.containers_removed:
+        typer.echo(f"  containers: {', '.join(report.containers_removed)}")
+    if report.pods_removed:
+        typer.echo(f"  pods:       {', '.join(report.pods_removed)}")
+    if report.volumes_removed:
+        typer.echo(f"  volumes:    {', '.join(report.volumes_removed)}")
+    typer.echo(
+        typer.style(
+            f"✓ {'dry-run: ' if dry_run else ''}{report.summary()}",
+            fg=typer.colors.GREEN,
+        )
+    )
+
+
+def _confirm(prompt: str) -> bool:
+    response = typer.prompt(f"{prompt} [y/N]", default="n", show_default=False)
+    return response.strip().lower() in ("y", "yes")
 
 
 # ────────────────────────────────────────────────────────────────────
