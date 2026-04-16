@@ -29,7 +29,7 @@ spec:
       # Document-store gracefully skips publish when NATS_URL is empty.
       - {name: NATS_URL, source: {from_component: nats}}
       # File storage — MinIO only present when files module active.
-      - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: images.files_enabled}}
+      - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
       - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}
       - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {literal: wip-minio-root}}
       - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: minio-password}}

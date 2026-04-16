@@ -20,8 +20,8 @@ spec:
   env:
     required:
       - {name: NATS_URL, source: {from_component: nats}}
-      - {name: POSTGRES_HOST, source: {from_component: postgres}}
-      - {name: POSTGRES_PORT, source: {literal: "5432"}}
+      - {name: POSTGRES_HOST, source: {from_component_host: postgres}}
+      - {name: POSTGRES_PORT, source: {from_component_port: postgres}}
       - {name: POSTGRES_DB, source: {literal: wip_reporting}}
       - {name: POSTGRES_USER, source: {literal: wip}}
       - {name: POSTGRES_PASSWORD, source: {from_secret: postgres-password}}

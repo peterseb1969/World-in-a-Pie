@@ -36,6 +36,13 @@ spec:
     endpoint: /apps/dnd/health
     start_period_seconds: 15
 
+  oidc_client:
+    # dnd validates tokens directly rather than relying solely on
+    # gateway-forwarded headers — useful for MCP tool calls that go
+    # straight to the app.
+    client_id: dnd
+    redirect_paths: [/auth/callback]
+
 app_metadata:
   display_name: D&D Compendium
   route_prefix: /apps/dnd

@@ -147,20 +147,24 @@ def _validate_depends_on_resolvable(
 def _validate_env_from_component_resolvable(
     components: list[Component], apps: list[App]
 ) -> list[ValidationError]:
-    """EnvSource.from_component must name a discovered component or app."""
+    """Every from_component* reference must name a discovered component."""
     all_names = {c.metadata.name for c in components} | {a.metadata.name for a in apps}
     errs: list[ValidationError] = []
     owners: list[Component | App] = [*components, *apps]
     for owner in owners:
         for env_var in [*owner.spec.env.required, *owner.spec.env.optional]:
-            ref = env_var.source.from_component
-            if ref is not None and ref not in all_names:
-                errs.append(
-                    ValidationError(
-                        f"{owner.metadata.name!r} env {env_var.name!r} references "
-                        f"unknown component {ref!r}"
+            for ref in (
+                env_var.source.from_component,
+                env_var.source.from_component_host,
+                env_var.source.from_component_port,
+            ):
+                if ref is not None and ref not in all_names:
+                    errs.append(
+                        ValidationError(
+                            f"{owner.metadata.name!r} env {env_var.name!r} "
+                            f"references unknown component {ref!r}"
+                        )
                     )
-                )
     return errs
 
 

@@ -27,28 +27,42 @@ from wip_deploy.spec._base import WIPModel
 class EnvSource(WIPModel):
     """Declarative source for an env var value.
 
-    Exactly one of the four fields must be set. Resolution happens in
-    `config_gen/env.py`, which is target-aware — e.g., `from_component`
-    resolves to a compose-DNS URL on the compose target and a
-    cluster-DNS URL on k8s.
+    Exactly one of the six fields must be set. Resolution happens in
+    `config_gen/env.py`, which is target-aware:
+
+      - `literal`:             constant string, used verbatim
+      - `from_spec`:            dotted path into a SpecContext (computed
+                                values derived from the Deployment)
+      - `from_secret`:          reference to a named secret; resolved
+                                later by the secret backend
+      - `from_component`:       full URL of another component (e.g.,
+                                `mongodb://wip-mongodb:27017/`)
+      - `from_component_host`:  DNS name of another component only
+                                (e.g., `wip-mongodb`)
+      - `from_component_port`:  port number of another component as string
     """
 
     literal: str | None = None
     from_spec: str | None = None
     from_secret: str | None = None
     from_component: str | None = None
+    from_component_host: str | None = None
+    from_component_port: str | None = None
 
     @model_validator(mode="after")
     def exactly_one_source(self) -> EnvSource:
-        set_fields = [
-            name
-            for name in ("literal", "from_spec", "from_secret", "from_component")
-            if getattr(self, name) is not None
-        ]
+        sources = (
+            "literal",
+            "from_spec",
+            "from_secret",
+            "from_component",
+            "from_component_host",
+            "from_component_port",
+        )
+        set_fields = [name for name in sources if getattr(self, name) is not None]
         if len(set_fields) != 1:
             raise ValueError(
-                f"EnvSource must set exactly one of "
-                f"(literal, from_spec, from_secret, from_component); "
+                f"EnvSource must set exactly one of {sources}; "
                 f"got: {set_fields or 'none'}"
             )
         return self
