@@ -180,13 +180,55 @@ class TestComposeYaml:
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """HTTP probes render via CMD-SHELL so podman-compose's shell
-        flattening doesn't break shell-metacharacter URLs."""
+        flattening doesn't break shell-metacharacter URLs. Default
+        `probe: auto` emits a shell-chained curl-or-wget so images with
+        either tool succeed."""
         doc = self._render_compose(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
         test = reg["healthcheck"]["test"]
         assert test[0] == "CMD-SHELL"
-        assert "curl -f" in test[1]
+        # Default `auto` probe: curl preferred, wget fallback.
+        assert "curl -fsS" in test[1]
+        assert "wget -qO-" in test[1]
         assert "http://localhost:8001/health" in test[1]
+
+    def test_healthcheck_probe_curl_forces_curl_only(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Explicit `probe: curl` emits a curl-only probe (no wget
+        fallback) — slightly smaller command for images known to
+        ship curl."""
+        # Override registry's probe to `curl`; render; assert.
+        for c in real_discovery.components:
+            if c.metadata.name == "registry" and c.spec.healthcheck:
+                c.spec.healthcheck.probe = "curl"
+        try:
+            doc = self._render_compose(tmp_path, real_discovery)
+            test = doc["services"]["registry"]["healthcheck"]["test"]
+            assert "curl -fsS" in test[1]
+            assert "wget" not in test[1]
+        finally:
+            for c in real_discovery.components:
+                if c.metadata.name == "registry" and c.spec.healthcheck:
+                    c.spec.healthcheck.probe = "auto"
+
+    def test_healthcheck_probe_wget_forces_wget_only(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Explicit `probe: wget` emits a wget-only probe — for images
+        that ship wget without curl (e.g., current v1.1.x apps)."""
+        for c in real_discovery.components:
+            if c.metadata.name == "registry" and c.spec.healthcheck:
+                c.spec.healthcheck.probe = "wget"
+        try:
+            doc = self._render_compose(tmp_path, real_discovery)
+            test = doc["services"]["registry"]["healthcheck"]["test"]
+            assert "wget -qO-" in test[1]
+            assert "curl" not in test[1]
+        finally:
+            for c in real_discovery.components:
+                if c.metadata.name == "registry" and c.spec.healthcheck:
+                    c.spec.healthcheck.probe = "auto"
 
     def test_healthcheck_command_emits_cmd_shell_quoted(
         self, tmp_path: Path, real_discovery: Discovery
@@ -253,6 +295,22 @@ class TestComposeYaml:
     ) -> None:
         doc = self._render_compose(tmp_path, real_discovery, apps=["dnd"])
         assert "dnd" in doc["services"]
+
+    def test_optional_from_secret_skipped_when_secret_not_collected(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """react-console's ANTHROPIC_API_KEY is optional + `from_secret:
+        anthropic-api-key`. When no anthropic-api-key is collected (the
+        user didn't supply one), the env var must be omitted — not
+        emitted as ${ANTHROPIC_API_KEY} → empty string."""
+        doc = self._render_compose(
+            tmp_path, real_discovery, apps=["react-console"]
+        )
+        rc = doc["services"]["react-console"]
+        env = rc.get("environment", {})
+        # The optional anthropic-api-key isn't collected by default, so
+        # the env var should not appear at all.
+        assert "ANTHROPIC_API_KEY" not in env
 
 
 # ────────────────────────────────────────────────────────────────────

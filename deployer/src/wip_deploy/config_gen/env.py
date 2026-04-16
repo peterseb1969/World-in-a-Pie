@@ -63,6 +63,18 @@ class InactiveComponentRef(LookupError):
     """
 
 
+class UncollectedSecretRef(LookupError):
+    """Raised when `from_secret` references a secret that wasn't
+    collected for this deployment.
+
+    Required env vars only collect secrets they actually need. Optional
+    env vars may point at secrets whose natural source (e.g. minio for
+    minio-root-password) is inactive — in that case the secret simply
+    isn't generated, and the optional env var should be omitted rather
+    than interpolating to empty string.
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedEnv:
     """A component's fully-resolved env, split by required vs optional.
@@ -154,6 +166,7 @@ def resolve_env_source(
     components_by_name: dict[str, Component],
     active_names: set[str],
     namespace: str,
+    collected_secrets: set[str] | None = None,
 ) -> EnvValue:
     """Resolve a single EnvSource to an EnvValue.
 
@@ -163,7 +176,12 @@ def resolve_env_source(
       - InactiveComponentRef if a `from_component*` target exists but
         is not active in this deployment (optional envs should skip;
         required envs should fail)
+      - UncollectedSecretRef if `from_secret` references a secret that
+        wasn't collected (same skip/fail semantics as component refs)
       - ValueError if a referenced component has no ports
+
+    When `collected_secrets` is None, `from_secret` always succeeds
+    (back-compat for callers that don't yet thread secrets through).
     """
     if source.literal is not None:
         return Literal(source.literal)
@@ -172,6 +190,11 @@ def resolve_env_source(
         return Literal(resolve_from_spec(source.from_spec, ctx))
 
     if source.from_secret is not None:
+        if collected_secrets is not None and source.from_secret not in collected_secrets:
+            raise UncollectedSecretRef(
+                f"from_secret references uncollected secret "
+                f"{source.from_secret!r}"
+            )
         return SecretRef(source.from_secret)
 
     if source.from_component is not None:
@@ -238,6 +261,7 @@ def resolve_component_env(
     ctx: SpecContext,
     components: list[Component],
     apps: list[App],
+    collected_secrets: set[str] | None = None,
 ) -> ResolvedEnv:
     """Resolve a single component's (or app's) entire env declaration.
 
@@ -245,6 +269,12 @@ def resolve_component_env(
     inactive are silently omitted — that's how WIP services toggle
     behavior (e.g. document-store publishes to NATS only when NATS
     is active). Required env vars with inactive targets raise.
+
+    `collected_secrets` names the secrets that will be present in the
+    deployment's secret backend. Optional env vars whose `from_secret`
+    name isn't collected are skipped (symmetric with from_component*);
+    required env vars with uncollected secrets raise. When None,
+    `from_secret` always succeeds (back-compat).
     """
     components_by_name: dict[str, Component] = {c.metadata.name: c for c in components}
     for a in apps:
@@ -277,8 +307,9 @@ def resolve_component_env(
                     components_by_name=components_by_name,
                     active_names=active_names,
                     namespace=namespace,
+                    collected_secrets=collected_secrets,
                 )
-            except InactiveComponentRef:
+            except (InactiveComponentRef, UncollectedSecretRef):
                 if skip_inactive:
                     continue
                 raise
@@ -295,20 +326,29 @@ def resolve_all_env(
     components: list[Component],
     apps: list[App],
     ctx: SpecContext,
+    collected_secrets: set[str] | None = None,
 ) -> dict[str, ResolvedEnv]:
     """Resolve env for every ACTIVE component + enabled app in the
     deployment. Inactive components are skipped entirely — they would
     fail resolution (required env vars referencing their own inactive
-    dependencies) and wouldn't be emitted to the compose file anyway."""
+    dependencies) and wouldn't be emitted to the compose file anyway.
+
+    `collected_secrets` gates optional `from_secret` references — see
+    `resolve_component_env` for details.
+    """
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
     out: dict[str, ResolvedEnv] = {}
     for c in components:
         if not is_component_active(c, deployment):
             continue
-        out[c.metadata.name] = resolve_component_env(c, deployment, ctx, components, apps)
+        out[c.metadata.name] = resolve_component_env(
+            c, deployment, ctx, components, apps, collected_secrets
+        )
     for a in apps:
         if a.metadata.name not in enabled_app_names:
             continue
-        out[a.metadata.name] = resolve_component_env(a, deployment, ctx, components, apps)
+        out[a.metadata.name] = resolve_component_env(
+            a, deployment, ctx, components, apps, collected_secrets
+        )
     return out

@@ -17,6 +17,8 @@ spec:
   ports:
     - {name: http, container_port: 8005}
 
+  command: [uvicorn, reporting_sync.main:app, --host, 0.0.0.0, --port, "8005"]
+
   env:
     required:
       - {name: NATS_URL, source: {from_component: nats}}

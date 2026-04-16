@@ -37,10 +37,13 @@ spec:
   # document-store is a hard start-order requirement.
   depends_on: [document-store]
 
-  # No healthcheck: the v1.1.0 image has no curl. Apps aren't
-  # depended on by other services, so a missing healthcheck has no
-  # startup-ordering impact. A probe-tool abstraction (wget fallback)
-  # can restore this in a later round.
+  # `probe: auto` emits a shell-chained curl-or-wget check. The v1.1.x
+  # react-console image ships wget but not curl; future images may add
+  # curl. Either way, auto works.
+  healthcheck:
+    endpoint: /apps/rc/health
+    probe: auto
+    start_period_seconds: 15
 
 app_metadata:
   display_name: React Console

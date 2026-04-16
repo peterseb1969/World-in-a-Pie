@@ -65,7 +65,15 @@ def render_compose(
         )
 
     ctx = make_spec_context(deployment, components)
-    resolved_env = resolve_all_env(deployment, components, apps, ctx)
+    # Passing the set of collected secret names enables activation-skip
+    # of optional `from_secret` refs whose secret wasn't generated — for
+    # example, an optional MinIO credential when MinIO itself is
+    # inactive. Without this, the render would emit `${VAR}` which
+    # compose then interpolates to empty string.
+    resolved_env = resolve_all_env(
+        deployment, components, apps, ctx,
+        collected_secrets=set(secrets.values.keys()),
+    )
 
     tree = FileTree()
 
@@ -322,52 +330,36 @@ def _command_for(owner: Component | App) -> list[str] | None:
 
     Priority:
       1. Explicit `spec.command` in the manifest — highest authority.
-      2. Apps use their image's default CMD (they're heterogeneous — Node,
-         Python, Go — so no heuristic applies).
-      3. Per-component name-based overrides (Dex, MinIO) — still in the
-         renderer for legacy reasons, will move to manifests over time.
-      4. uvicorn heuristic for WIP Python service components (matches the
-         v1.1.x published images' entry points).
-      5. None — use the image's default CMD.
+         Every Python-service component manifest specifies its own
+         uvicorn invocation; mcp-server pins `python -m wip_mcp --http`;
+         apps rely on the image's default CMD.
+      2. Image-specific overrides for Dex and MinIO — their upstream
+         images need custom CMDs that aren't naturally a manifest
+         concern (config-file path, console-address flag).
+      3. None — use the image's default CMD.
+
+    This is deliberately thin. The old uvicorn heuristic
+    (`uvicorn {name}.main:app`) was removed because (a) the module name
+    doesn't always equal the component name (mcp-server → wip_mcp), and
+    (b) a renderer should not guess entry points.
     """
     if owner.spec.command is not None:
         return list(owner.spec.command)
 
-    # Apps: no heuristic. They bake their own CMD (react-console is Node,
-    # dnd/clintrial are Node/Python variants — all different). Manifest
-    # overrides via spec.command if needed.
+    # Apps always use their image CMD.
     if isinstance(owner, App):
         return None
 
     name = owner.metadata.name
 
-    if name in ("mongodb", "postgres", "nats"):
-        return None
-
+    # Two image-level conventions that live here for pragmatic reasons.
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
-
     if name == "minio":
         return ["server", "/data", "--console-address", ":9001"]
 
-    http_port = next(
-        (p for p in owner.spec.ports if p.name == "http"), None
-    )
-    if http_port is None:
-        return None
-
-    if name in ("console", "auth-gateway"):
-        return None
-
-    module = name.replace("-", "_")
-    return [
-        "uvicorn",
-        f"{module}.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        str(http_port.container_port),
-    ]
+    # Everything else relies on the image's default CMD.
+    return None
 
 
 def _volumes_for(owner: Component | App) -> list[str]:
@@ -415,7 +407,7 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
         port = _resolve_check_port(owner, hc.port)
         assert hc.endpoint is not None  # enforced by HealthcheckSpec validator
         url = f"http://localhost:{port}{hc.endpoint}"
-        shell_cmd = f"curl -f {_shlex.quote(url)}"
+        shell_cmd = _http_probe_cmd(hc.probe, url)
 
     return {
         "test": ["CMD-SHELL", shell_cmd],
@@ -424,6 +416,26 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
         "retries": hc.retries,
         "start_period": f"{hc.start_period_seconds}s",
     }
+
+
+def _http_probe_cmd(probe: str, url: str) -> str:
+    """Build the shell-embedded HTTP probe for a healthcheck.
+
+    `auto` emits a chained `curl || wget` so the same manifest works
+    against images that ship either tool (v1.1.x app images ship wget
+    only; most WIP service images ship curl). `-f` / `-q -O -` make
+    the probe silent and exit non-zero on non-2xx.
+    """
+    import shlex as _shlex
+
+    q = _shlex.quote(url)
+    if probe == "curl":
+        return f"curl -fsS {q}"
+    if probe == "wget":
+        return f"wget -qO- {q}"
+    # auto: prefer curl, fall back to wget — works on any image that has
+    # either. Images with neither simply shouldn't declare an HTTP check.
+    return f"sh -c 'command -v curl >/dev/null 2>&1 && curl -fsS {q} || wget -qO- {q}'"
 
 
 def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:

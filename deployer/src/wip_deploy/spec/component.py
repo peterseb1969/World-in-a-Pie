@@ -134,6 +134,12 @@ class HealthcheckSpec(WIPModel):
     endpoint: str | None = Field(default=None, pattern=r"^/.*")
     port: str | None = None
     command: list[str] | None = None
+    # Probe tool for HTTP endpoint checks. `auto` emits a shell-chained
+    # `curl || wget` probe that works regardless of which is installed;
+    # required for images with wget-only (most Alpine-based apps).
+    # `curl` or `wget` forces one specifically (slightly smaller command).
+    # Irrelevant for `command`-style checks.
+    probe: Literal["curl", "wget", "auto"] = "auto"
     interval_seconds: int = Field(default=10, ge=1)
     timeout_seconds: int = Field(default=5, ge=1)
     retries: int = Field(default=3, ge=1)

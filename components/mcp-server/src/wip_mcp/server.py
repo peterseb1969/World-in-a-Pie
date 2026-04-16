@@ -3159,12 +3159,29 @@ def main():
             else mcp.sse_app()
         )
 
-        # API key auth middleware (M7)
+        # /health — unauthenticated liveness probe. Lets orchestrators
+        # (compose, k8s) check the server is up without needing to know
+        # the API key. Returns 200 OK as long as the uvicorn worker is
+        # serving requests. Registered BEFORE the auth middleware so the
+        # middleware's path-skip list can exempt it cleanly.
+        from starlette.routing import Route
+
+        async def health(_request: Request) -> JSONResponse:
+            return JSONResponse({"status": "ok", "service": "mcp-server"})
+
+        starlette_app.router.routes.append(Route("/health", health, methods=["GET"]))
+
+        # API key auth middleware (M7). Skips /health so orchestration
+        # probes don't need to carry credentials.
         if api_key:
             from starlette.middleware.base import BaseHTTPMiddleware
 
+            _UNAUTH_PATHS = {"/health"}
+
             class ApiKeyMiddleware(BaseHTTPMiddleware):
                 async def dispatch(self, request: Request, call_next):
+                    if request.url.path in _UNAUTH_PATHS:
+                        return await call_next(request)
                     key = request.headers.get("x-api-key") or request.query_params.get("api_key")
                     if not key or key != api_key:
                         return JSONResponse(

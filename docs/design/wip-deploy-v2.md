@@ -1030,42 +1030,37 @@ Coexistence is what produced the drift. v1.1 on the tag, v2 on the branch, delet
 
 ## Known limitations (surfaced during implementation)
 
-The compose install works end-to-end, but a few sharp edges are worth
-documenting rather than quietly papering over. Each is a legitimate
-follow-up, not a design flaw:
+The compose install works end-to-end. Several sharp edges that surfaced
+during implementation have since been resolved; one external and one
+scope-limit remain.
 
-1. **Healthcheck probe assumes `curl` is in the image.** Distroless
-   images (Dex) have no shell or probe binary at all — healthcheck
-   removed from the manifest. v1.1.0 app images (dnd, clintrial,
-   react-console) ship wget but not curl — app healthchecks also
-   removed. Consequence: `--wait` on install cannot observe those
-   services' health, so `compose up -d` returns before they're
-   actually ready. Low-risk because apps aren't on anyone's
-   `depends_on`. **Proper fix:** probe-tool abstraction in
-   `HealthcheckSpec` (wget fallback, or manifest-level tool hint).
+**Resolved:**
 
-2. **Optional `from_secret` does not activation-skip.** When a secret
-   is in `deployment.spec.secrets.backend` but wasn't collected
-   (because the consuming component is active but the secret's
-   natural source — e.g., minio — is inactive), the renderer still
-   emits `${VAR}` which compose substitutes to empty string. Services
-   receiving empty credentials can behave unpredictably. Works by
-   accident today because affected services tolerate empty values.
-   **Proper fix:** symmetric handling with `from_component` — skip
-   optional env vars whose secret wasn't collected.
+1. ✅ **Healthcheck probe tool.** `HealthcheckSpec.probe:
+   curl | wget | auto` (default `auto`) — auto emits
+   `sh -c 'command -v curl && curl -fsS URL || wget -qO- URL'`. Apps
+   now carry healthchecks regardless of which probe tool their image
+   ships. Dex remains without a healthcheck (distroless).
 
-3. **`uvicorn` command heuristic is fallback-prone.** The renderer
-   auto-generates `uvicorn {name}.main:app` when no `spec.command` is
-   set. Wrong for mcp-server (real module: `wip_mcp`), which crashed
-   until we added explicit `command` to its manifest. **Proper fix:**
-   remove the heuristic; require every component's manifest to
-   specify `command` explicitly (or rely on image CMD). The current
-   heuristic is latent-bug-prone.
+2. ✅ **Optional `from_secret` activation-skip.** `UncollectedSecretRef`
+   mirrors `InactiveComponentRef`. Optional env vars referencing an
+   uncollected secret are omitted rather than emitting `${VAR}` → empty
+   string.
 
-4. **External image bugs, not deployer issues:** (a) mcp-server v1.1.0
-   requires auth on `/health`, so its container stays in `unhealthy`
-   state under the gateway-forwarding healthcheck; (b) v1.1.0 app
-   images ship without curl. Both want image-level fixes.
+3. ✅ **`uvicorn` command heuristic removed.** Every Python service
+   manifest pins its own uvicorn invocation. Renderer keeps only
+   image-level overrides for Dex and MinIO (upstream CMD conventions).
+
+4a. ✅ **mcp-server `/health` auth.** Fixed in source: unauthenticated
+   `/health` Starlette route registered before the auth middleware;
+   the middleware exempts `/health` via a path-skip list.
+
+**Remaining:**
+
+4b. **v1.1.0 images with wget-only probes.** Not a deployer limitation
+    any more — the auto probe handles it — but worth noting that the
+    install today relies on the fallback. Future app image builds that
+    add curl will take the first branch transparently.
 
 5. **Compose local-build is intentionally unsupported.** v2's compose
    renderer requires pre-built images. Local source iteration is

@@ -28,7 +28,10 @@ spec:
 
   depends_on: [document-store]
 
-  # No healthcheck: image has no curl (same reason as react-console).
+  healthcheck:
+    endpoint: /health
+    probe: auto
+    start_period_seconds: 15
 
 app_metadata:
   display_name: ClinTrial Explorer

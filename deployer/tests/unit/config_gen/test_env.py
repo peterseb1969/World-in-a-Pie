@@ -78,6 +78,46 @@ class TestResolveEnvSource:
         )
         assert v == SecretRef("api-key")
 
+    def test_from_secret_skipped_when_collected_secrets_filter_excludes_it(
+        self,
+        compose_deployment: Deployment,
+        real_discovery: Discovery,
+        ctx_compose: SpecContext,
+    ) -> None:
+        """Optional `from_secret` to a secret that wasn't collected
+        raises UncollectedSecretRef so callers can skip the env var."""
+        from wip_deploy.config_gen.env import UncollectedSecretRef
+        by_name = {c.metadata.name: c for c in real_discovery.components}
+        with pytest.raises(UncollectedSecretRef):
+            resolve_env_source(
+                EnvSource(from_secret="anthropic-api-key"),
+                deployment=compose_deployment,
+                ctx=ctx_compose,
+                components_by_name=by_name,
+                active_names=set(by_name),
+                namespace="wip",
+                collected_secrets={"api-key"},  # anthropic-api-key not in set
+            )
+
+    def test_from_secret_passes_when_in_collected_secrets(
+        self,
+        compose_deployment: Deployment,
+        real_discovery: Discovery,
+        ctx_compose: SpecContext,
+    ) -> None:
+        """Secret in the collected set resolves normally."""
+        by_name = {c.metadata.name: c for c in real_discovery.components}
+        v = resolve_env_source(
+            EnvSource(from_secret="api-key"),
+            deployment=compose_deployment,
+            ctx=ctx_compose,
+            components_by_name=by_name,
+            active_names=set(by_name),
+            namespace="wip",
+            collected_secrets={"api-key"},
+        )
+        assert v == SecretRef("api-key")
+
 
 class TestFromComponentCompose:
     def test_mongodb_url_uses_mongodb_scheme(

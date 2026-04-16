@@ -16,6 +16,8 @@ spec:
   ports:
     - {name: http, container_port: 8003}
 
+  command: [uvicorn, template_store.main:app, --host, 0.0.0.0, --port, "8003"]
+
   env:
     required:
       - {name: MONGO_URI, source: {from_component: mongodb}}

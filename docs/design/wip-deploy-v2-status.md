@@ -43,31 +43,24 @@ Produces:
 
 ## Follow-up work (priority order)
 
-### Priority 1 — before step 7/8
+### Priority 1 — DONE
 
-1. **Probe-tool abstraction for healthchecks.**
-   Currently: renderer emits `curl -f <URL>` for HTTP checks, command-
-   style for `command`. Distroless/minimal images without curl force us
-   to drop the healthcheck entirely. Affected today: Dex, the three
-   apps (dnd/clintrial/react-console).
+1. **Probe-tool abstraction for healthchecks.** ✅ `HealthcheckSpec.probe:
+   curl | wget | auto` (default `auto`). `auto` emits a shell-chained
+   `curl -fsS || wget -qO-` so images with either tool work. Apps
+   (dnd/clintrial/react-console) have their healthchecks back. Dex
+   stays without a healthcheck (distroless, no shell).
 
-   **Proposed:** add `healthcheck.probe: curl | wget | auto` (default
-   `auto`). For `auto`, renderer emits a shell-chained probe:
-   `command -v curl >/dev/null && curl -f URL || wget -qO- URL`. For
-   explicit settings, use that tool directly. For images with neither,
-   manifest stays with no healthcheck (document per-component).
+2. **Optional `from_secret` activation-skip.** ✅ `UncollectedSecretRef`
+   mirrors `InactiveComponentRef`. Optional env vars whose `from_secret`
+   name isn't in the collected set are omitted rather than emitting
+   `${VAR}` → empty string. Example: react-console's `ANTHROPIC_API_KEY`
+   is absent from the env when the user didn't supply an Anthropic key.
 
-2. **Optional `from_secret` activation-skip.**
-   Mirror the `from_component*` treatment. If a secret isn't in
-   `ResolvedSecrets.values`, optional env vars referencing it via
-   `from_secret` should be omitted from the container env rather than
-   interpolating to empty string.
-
-3. **Remove the uvicorn command heuristic.**
-   Replace with: every Python-service component manifest specifies
-   `command` explicitly. Reduces one class of surprise. Migration is
-   mechanical — current manifests work either way once the explicit
-   `command` is added.
+3. **Remove the uvicorn command heuristic.** ✅ Every Python-service
+   component manifest now specifies `command` explicitly. Renderer's
+   only remaining name-based overrides are Dex (config-file path) and
+   MinIO (console-address flag). Apps always use their image CMD.
 
 ### Priority 2 — convenience
 
@@ -87,11 +80,15 @@ Produces:
 
 ### Priority 3 — external (image bugs)
 
-7. **mcp-server v1.1.0 `/health` auth.** Image should exempt
-   `/health` from API-key auth (matches the other WIP services).
-8. **App images ship curl (or wget).** dnd/clintrial/react-console
-   v1.1.0 don't have curl, which is what my healthcheck uses by
-   default. Fixable image-side OR via (1) above.
+7. **mcp-server `/health` auth.** ✅ Fixed in source: unauthenticated
+   `/health` Starlette route registered before `ApiKeyMiddleware`; the
+   middleware exempts `/health` via a path-skip list. Takes effect in
+   the next mcp-server image build (v1.2.0+). v1.1.0 images still
+   return 401 on `/health`.
+8. **App images ship curl (or wget).** ⚠️ Half-resolved by (1). The
+   probe-tool abstraction now emits a shell-chained curl-or-wget, so
+   any image with either tool works. Separately fixing the images to
+   ship curl is no longer required.
 
 ### Priority 4 — post-step 10
 
