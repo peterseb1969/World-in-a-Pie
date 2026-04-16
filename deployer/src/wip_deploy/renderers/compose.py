@@ -322,14 +322,22 @@ def _command_for(owner: Component | App) -> list[str] | None:
 
     Priority:
       1. Explicit `spec.command` in the manifest — highest authority.
-      2. Per-component name-based overrides (Dex, MinIO) — still in the
+      2. Apps use their image's default CMD (they're heterogeneous — Node,
+         Python, Go — so no heuristic applies).
+      3. Per-component name-based overrides (Dex, MinIO) — still in the
          renderer for legacy reasons, will move to manifests over time.
-      3. uvicorn heuristic for WIP Python services (matches the v1.1.x
-         published images' entry points).
-      4. None — use the image's default CMD.
+      4. uvicorn heuristic for WIP Python service components (matches the
+         v1.1.x published images' entry points).
+      5. None — use the image's default CMD.
     """
     if owner.spec.command is not None:
         return list(owner.spec.command)
+
+    # Apps: no heuristic. They bake their own CMD (react-console is Node,
+    # dnd/clintrial are Node/Python variants — all different). Manifest
+    # overrides via spec.command if needed.
+    if isinstance(owner, App):
+        return None
 
     name = owner.metadata.name
 

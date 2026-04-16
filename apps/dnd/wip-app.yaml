@@ -37,9 +37,7 @@ spec:
   # start-order requirement.
   depends_on: [document-store]
 
-  healthcheck:
-    endpoint: /apps/dnd/health
-    start_period_seconds: 15
+  # No healthcheck: image has no curl (same reason as react-console).
 
   oidc_client:
     # dnd validates tokens directly rather than relying solely on

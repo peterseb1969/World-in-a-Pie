@@ -23,6 +23,7 @@ from wip_deploy.spec.component import Component
 @dataclass(frozen=True)
 class CaddyConfig:
     hostname: str
+    https_port: int  # external HTTPS port Caddy binds to inside the container
     tls_mode: str  # "internal" | "letsencrypt" | "external"
     admin_email: str | None  # present for letsencrypt
     gateway_enabled: bool  # forward_auth blocks emitted iff True
@@ -53,6 +54,7 @@ def generate_caddy_config(
 
     return CaddyConfig(
         hostname=net.hostname,
+        https_port=net.https_port,
         tls_mode=net.tls,
         admin_email=None,  # populated by the renderer from spec when letsencrypt
         gateway_enabled=gateway_active and deployment.spec.auth.gateway,

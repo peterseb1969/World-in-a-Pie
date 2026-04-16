@@ -26,11 +26,14 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     out.write("    auto_https disable_redirects\n")
     out.write("}\n\n")
 
-    # Site block. localhost fallback for network installs so dev
-    # browsers hitting 127.0.0.1 still work.
-    host_line = cfg.hostname
-    if cfg.hostname != "localhost":
-        host_line = f"{cfg.hostname}, localhost"
+    # Site block. Explicit :port so Caddy binds where our compose port
+    # mapping expects (compose maps host:<https_port> → container:<https_port>).
+    # Without the :port, Caddy would default to 443 inside the container
+    # regardless of what the host-side mapping says.
+    if cfg.hostname == "localhost":
+        host_line = f"localhost:{cfg.https_port}"
+    else:
+        host_line = f"{cfg.hostname}:{cfg.https_port}, localhost:{cfg.https_port}"
 
     out.write(f"{host_line} {{\n")
     _write_tls(out, cfg)
