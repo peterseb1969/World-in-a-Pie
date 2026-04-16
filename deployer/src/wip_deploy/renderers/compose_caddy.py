@@ -14,6 +14,7 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
+from wip_deploy.config_gen.routing import ResolvedRoute
 
 
 def render_caddyfile(cfg: CaddyConfig) -> str:
@@ -72,8 +73,36 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             _write_catchall(out, route, cfg)
             break
 
-    out.write("}\n")
+    out.write("}\n\n")
+
+    # ── Internal :8080 listener — plain HTTP, no forward_auth ──────
+    # Container-to-container API traffic (e.g. react-console's SSR proxy
+    # reaching the WIP services). No TLS (internal network is trusted),
+    # no gateway auth (apps inject X-API-Key headers themselves using
+    # their WIP_API_KEY env). Only /api/* routes matter here — app
+    # routes and the console catch-all are browser-only.
+    _write_internal_block(out, cfg, sorted_routes)
+
     return out.getvalue()
+
+
+def _write_internal_block(
+    out: StringIO, cfg: CaddyConfig, sorted_routes: list[ResolvedRoute]
+) -> None:
+    out.write(":8080 {\n")
+    for route in sorted_routes:
+        if not route.path.startswith("/api/"):
+            continue
+        backend = f"wip-{route.backend_component}:{route.backend_port}"
+        out.write(f"    handle {route.path}/* {{\n")
+        if route.streaming:
+            out.write(f"        reverse_proxy {backend} {{\n")
+            out.write("            flush_interval -1\n")
+            out.write("        }\n")
+        else:
+            out.write(f"        reverse_proxy {backend}\n")
+        out.write("    }\n")
+    out.write("}\n")
 
 
 def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
