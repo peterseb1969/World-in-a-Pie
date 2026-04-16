@@ -1,0 +1,33 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: nats
+  category: infrastructure
+  description: |
+    NATS JetStream message queue. Carries document change events from
+    Document-Store to Reporting-Sync, and bulk ingestion streams from
+    Ingest-Gateway. Active when either reporting or ingest module is
+    enabled.
+
+spec:
+  image:
+    name: docker.io/library/nats
+    tag: "2"
+
+  ports:
+    - {name: nats, container_port: 4222}
+    - {name: monitor, container_port: 8222}
+
+  storage:
+    - {name: jetstream, mount_path: /data, size: 5Gi}
+
+  healthcheck:
+    endpoint: /healthz
+    port: monitor
+    interval_seconds: 10
+    timeout_seconds: 5
+    start_period_seconds: 10
+    retries: 3
+
+  activation:
+    requires_any_module: [reporting, ingest]

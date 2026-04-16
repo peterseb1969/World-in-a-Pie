@@ -1,0 +1,38 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: clintrial
+  category: optional
+  description: |
+    Clinical Trials explorer — demo app for WIP. Reads data from the
+    document-store and provides a search/explore UI.
+
+spec:
+  image:
+    name: clintrial-explorer
+
+  ports:
+    - {name: http, container_port: 3001}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_spec: network.internal_base_url}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/clintrial}}
+      - {name: VITE_BASE_PATH, source: {literal: /apps/clintrial}}
+      - {name: PORT, source: {literal: "3001"}}
+      - {name: NODE_ENV, source: {literal: production}}
+
+  routes:
+    - {path: /apps/clintrial, auth_required: true}
+
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /health
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: ClinTrial Explorer
+  route_prefix: /apps/clintrial
+  ui_only: false

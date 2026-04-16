@@ -1,0 +1,44 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: react-console
+  category: optional
+  description: |
+    React Console (RC Console) — reporting-focused frontend. Consumes
+    document/template/reporting APIs. Identity is delivered by the
+    auth-gateway via X-WIP-User headers; no per-app OIDC client.
+
+spec:
+  image:
+    name: react-console
+
+  ports:
+    - {name: http, container_port: 3011}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_spec: network.internal_base_url}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: PORT, source: {literal: "3011"}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/rc}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # askBar / NL-query feature uses Anthropic. Degrades gracefully
+      # when the key is unset.
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: NATS_URL, source: {from_component: nats}}
+      - {name: MONGO_URI, source: {from_component: mongodb}}
+
+  routes:
+    - {path: /apps/rc, auth_required: true}
+
+  depends_on: [document-store, reporting-sync]
+
+  healthcheck:
+    endpoint: /apps/rc/health
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: React Console
+  route_prefix: /apps/rc
+  ui_only: false

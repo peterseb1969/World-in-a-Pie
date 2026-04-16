@@ -103,11 +103,42 @@ class StorageSpec(WIPModel):
 
 
 class HealthcheckSpec(WIPModel):
-    endpoint: str = Field(pattern=r"^/.*")
+    """Healthcheck for a component.
+
+    Exactly one of `endpoint` (HTTP GET must return 2xx) or `command`
+    (executed inside the container; exit 0 = healthy) must be set.
+    Infrastructure components like mongodb/postgres use `command`;
+    WIP services use `endpoint`.
+
+    `port` names which Port to probe for HTTP checks. Default resolution
+    (in the renderer): the port named "http" if present, else the port
+    named "monitor", else the first declared port. Explicit `port` is
+    required only when both ambiguity and multiple HTTP-ish ports exist
+    (e.g., NATS with data on :4222 and monitoring on :8222).
+    """
+
+    endpoint: str | None = Field(default=None, pattern=r"^/.*")
+    port: str | None = None
+    command: list[str] | None = None
     interval_seconds: int = Field(default=10, ge=1)
     timeout_seconds: int = Field(default=5, ge=1)
     retries: int = Field(default=3, ge=1)
     start_period_seconds: int = Field(default=30, ge=0)
+
+    @model_validator(mode="after")
+    def exactly_one_check_type(self) -> HealthcheckSpec:
+        has_endpoint = self.endpoint is not None
+        has_command = self.command is not None
+        if has_endpoint == has_command:
+            raise ValueError(
+                "HealthcheckSpec must set exactly one of (endpoint, command); "
+                f"got endpoint={self.endpoint!r}, command={self.command!r}"
+            )
+        if self.command is not None and not self.command:
+            raise ValueError("HealthcheckSpec.command must not be empty")
+        if self.port is not None and self.endpoint is None:
+            raise ValueError("HealthcheckSpec.port only valid with endpoint check")
+        return self
 
 
 class ResourceSpec(WIPModel):
@@ -155,6 +186,38 @@ class ObservabilitySpec(WIPModel):
 
 
 # ────────────────────────────────────────────────────────────────────
+# Activation
+# ────────────────────────────────────────────────────────────────────
+
+
+class ActivationSpec(WIPModel):
+    """When an infrastructure component is active.
+
+    Components with `category=core` are always active. Components with
+    `category=optional` are active iff their name appears in
+    `deployment.spec.modules.optional`.
+
+    Components with `category=infrastructure` are active when:
+      - no `activation` block is present (always active), OR
+      - all set predicates evaluate to True.
+
+    Empty lists mean "no requirement on that dimension" (not "require
+    empty").
+    """
+
+    requires_any_module: list[str] = Field(default_factory=list)
+    """At least one of these optional modules must be active."""
+
+    requires_auth_mode: list[Literal["oidc", "api-key-only", "hybrid"]] = Field(
+        default_factory=list
+    )
+    """auth.mode must be one of these values."""
+
+    requires_auth_gateway: bool | None = None
+    """auth.gateway must equal this value. None = no requirement."""
+
+
+# ────────────────────────────────────────────────────────────────────
 # Image
 # ────────────────────────────────────────────────────────────────────
 
@@ -162,13 +225,24 @@ class ObservabilitySpec(WIPModel):
 class ImageRef(WIPModel):
     """Where the component's image comes from.
 
-    `build_context=None` means pre-built image only (infrastructure
-    components: mongo, postgres, dex, etc., or application images pulled
-    from a registry). `build_context=Path(...)` enables local builds
-    for compose/dev targets.
+    `name` forms:
+      - Short name (e.g. `document-store`): combined with
+        `spec.images.registry` → `{registry}/{name}:{tag_or_spec_tag}`.
+      - Fully-qualified (e.g. `docker.io/library/mongo`): used verbatim
+        plus `:{tag}`. The `/` character discriminates; renderers MUST
+        detect it rather than duplicating the check.
+
+    `tag=None` means "inherit `spec.images.tag`" — right for WIP services
+    which track the deployment-wide tag. Infrastructure components
+    (mongo, postgres, dex) pin their own tag to a specific upstream
+    version and must set this explicitly.
+
+    `build_context=None` means pre-built image only. `build_context=Path(...)`
+    enables local builds on compose/dev when `spec.images.registry` is None.
     """
 
     name: str = Field(min_length=1, pattern=r"^[a-z0-9][a-z0-9._/-]*$")
+    tag: str | None = None
     build_context: Path | None = None
     build_args: dict[str, str] = Field(default_factory=dict)
 
@@ -196,6 +270,7 @@ class ComponentSpec(WIPModel):
     oidc_client: OidcClientSpec | None = None
     post_install: list[PostInstallHook] = Field(default_factory=list)
     observability: ObservabilitySpec | None = None
+    activation: ActivationSpec | None = None
 
     @model_validator(mode="after")
     def unique_port_names(self) -> ComponentSpec:

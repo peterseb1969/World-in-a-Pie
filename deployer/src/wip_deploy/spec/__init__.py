@@ -11,6 +11,7 @@ validation errors at load time rather than silent misbehavior downstream.
 
 from wip_deploy.spec.app import App, AppMetadata
 from wip_deploy.spec.component import (
+    ActivationSpec,
     Component,
     ComponentMetadata,
     ComponentSpec,
@@ -66,6 +67,7 @@ __all__ = [
     "Component",
     "ComponentMetadata",
     "ComponentSpec",
+    "ActivationSpec",
     "ImageRef",
     "Port",
     "EnvSpec",

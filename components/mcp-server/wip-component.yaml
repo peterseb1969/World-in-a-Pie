@@ -1,0 +1,33 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: mcp-server
+  category: optional
+  description: |
+    Model Context Protocol server. Exposes 70+ tools and resources for
+    AI-assisted development against WIP. HTTP streamable transport on
+    /mcp.
+
+spec:
+  image:
+    name: mcp-server
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 8007}
+
+  env:
+    required:
+      - {name: REGISTRY_URL, source: {from_component: registry}}
+      - {name: DEF_STORE_URL, source: {from_component: def-store}}
+      - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
+      - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
+      - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+
+  routes:
+    - {path: /mcp, auth_required: true}
+
+  depends_on: [registry, def-store, template-store, document-store]
+
+  healthcheck:
+    endpoint: /health

@@ -1,0 +1,42 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: registry
+  category: core
+  description: |
+    ID & namespace authority. Source of truth for identity resolution
+    (canonical IDs, synonyms, human-readable values). Every other WIP
+    service resolves identifiers through the Registry.
+
+spec:
+  image:
+    name: registry
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 8001}
+
+  env:
+    required:
+      - {name: MONGO_URI, source: {from_component: mongodb}}
+      - {name: DATABASE_NAME, source: {literal: wip_registry}}
+      - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+      - {name: AUTH_ENABLED, source: {literal: "true"}}
+    optional:
+      - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
+
+  routes:
+    - {path: /api/registry, auth_required: true}
+
+  depends_on: [mongodb]
+
+  healthcheck:
+    endpoint: /health
+    start_period_seconds: 15
+
+  post_install:
+    - name: initialize-wip-namespaces
+      run: |
+        curl -sfX POST http://wip-registry:8001/api/registry/namespaces/initialize-wip \
+          -H "X-API-Key: ${MASTER_API_KEY}"
+      after: healthy

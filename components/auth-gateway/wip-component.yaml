@@ -1,0 +1,47 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: auth-gateway
+  category: infrastructure
+  description: |
+    OIDC authentication gateway (Theme 7). When auth.gateway=True, it
+    sits in the request path for auth-required routes: Caddy's
+    forward_auth (compose) or NGINX Ingress auth-url (k8s) consults it
+    to verify sessions, then injects X-WIP-User / X-WIP-Groups / X-API-Key
+    headers before the request reaches the backend service.
+
+spec:
+  image:
+    name: auth-gateway
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 4180}
+
+  env:
+    required:
+      # Public issuer (what browsers see) vs internal (what the gateway
+      # uses server-to-server). These differ in compose: public goes
+      # through Caddy TLS; internal talks to Dex on the container network.
+      - {name: OIDC_ISSUER, source: {from_spec: auth.issuer_url_public}}
+      - {name: OIDC_INTERNAL_ISSUER, source: {from_component: dex}}
+      - {name: OIDC_CLIENT_ID, source: {literal: wip-gateway}}
+      - {name: OIDC_CLIENT_SECRET, source: {from_secret: gateway-client-secret}}
+      - {name: SESSION_SECRET, source: {from_secret: gateway-session-secret}}
+      - {name: API_KEY, source: {from_secret: api-key}}
+      - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
+      - {name: CALLBACK_URL, source: {from_spec: auth.callback_url}}
+
+  depends_on: [dex]
+
+  healthcheck:
+    endpoint: /health
+    start_period_seconds: 10
+
+  oidc_client:
+    client_id: wip-gateway
+    redirect_paths: [/auth/callback]
+
+  activation:
+    # Only deployed when Theme 7 gateway is in the request path.
+    requires_auth_gateway: true

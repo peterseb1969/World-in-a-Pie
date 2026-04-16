@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 from wip_deploy.spec.deployment import Deployment
@@ -85,12 +86,16 @@ def _validate_oidc_clients_require_oidc(
     components: list[Component],
     apps: list[App],
 ) -> list[ValidationError]:
-    """Any component or enabled app with an oidc_client requires OIDC auth."""
+    """Any ACTIVE component or enabled app with an oidc_client requires
+    OIDC auth. Inactive components are ignored (they don't contribute to
+    this deployment)."""
     if deployment.spec.auth.mode in ("oidc", "hybrid"):
         return []
 
     errs: list[ValidationError] = []
     for comp in components:
+        if not is_component_active(comp, deployment):
+            continue
         if comp.spec.oidc_client is not None:
             errs.append(
                 ValidationError(
@@ -163,19 +168,13 @@ def _validate_oidc_client_ids_unique(
     components: list[Component], apps: list[App], deployment: Deployment
 ) -> list[ValidationError]:
     """Dex static client IDs must be unique across all active components/apps."""
-    enabled_optional = set(deployment.spec.modules.optional)
     enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
 
     client_ids: dict[str, str] = {}  # client_id -> owner_name
     errs: list[ValidationError] = []
 
-    def _active_component(c: Component) -> bool:
-        if c.metadata.category in ("core", "infrastructure"):
-            return True
-        return c.metadata.name in enabled_optional
-
     for comp in components:
-        if not _active_component(comp):
+        if not is_component_active(comp, deployment):
             continue
         if comp.spec.oidc_client is None:
             continue

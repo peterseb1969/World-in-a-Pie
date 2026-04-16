@@ -1,0 +1,42 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: dnd
+  category: optional
+  description: |
+    D&D Compendium — demo app for WIP. Stores campaigns, characters,
+    monsters, and spells as WIP documents. Uses the MCP server for
+    natural-language queries via Anthropic's API.
+
+spec:
+  image:
+    name: dnd-compendium
+
+  ports:
+    - {name: http, container_port: 3012}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_spec: network.internal_base_url}}
+      - {name: WIP_API_KEY, source: {from_secret: api-key}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
+      - {name: PORT, source: {literal: "3012"}}
+      - {name: WIP_NAMESPACE, source: {literal: dnd}}
+      - {name: MCP_URL, source: {from_component: mcp-server}}
+      - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+
+  routes:
+    - {path: /apps/dnd, auth_required: true}
+
+  depends_on: [document-store, mcp-server]
+
+  healthcheck:
+    endpoint: /apps/dnd/health
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: D&D Compendium
+  route_prefix: /apps/dnd
+  ui_only: false

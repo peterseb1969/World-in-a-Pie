@@ -1,0 +1,30 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: dex
+  category: infrastructure
+  description: |
+    OIDC identity provider. Issues tokens for wip-console, wip-gateway,
+    and per-app clients. Active when auth.mode is oidc or hybrid;
+    api-key-only deployments skip it.
+
+spec:
+  image:
+    name: ghcr.io/dexidp/dex
+    tag: v2.45.0
+
+  ports:
+    - {name: http, container_port: 5556}
+
+  storage:
+    - {name: db, mount_path: /data, size: 1Gi}
+
+  healthcheck:
+    endpoint: /dex/healthz
+    interval_seconds: 15
+    timeout_seconds: 5
+    start_period_seconds: 10
+    retries: 5
+
+  activation:
+    requires_auth_mode: [oidc, hybrid]

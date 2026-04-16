@@ -1,0 +1,44 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: minio
+  category: infrastructure
+  description: |
+    S3-compatible object storage for document file attachments.
+    Document-Store uses it when file storage is enabled. Active only
+    when the files module is active.
+
+spec:
+  image:
+    name: docker.io/minio/minio
+    tag: latest
+
+  ports:
+    - {name: s3, container_port: 9000}
+    - {name: console, container_port: 9001}
+
+  env:
+    required:
+      - {name: MINIO_ROOT_USER, source: {literal: wip-minio-root}}
+      - {name: MINIO_ROOT_PASSWORD, source: {from_secret: minio-password}}
+
+  storage:
+    - {name: data, mount_path: /data, size: 50Gi}
+
+  healthcheck:
+    endpoint: /minio/health/ready
+    port: s3
+    interval_seconds: 15
+    timeout_seconds: 5
+    start_period_seconds: 10
+    retries: 5
+
+  post_install:
+    - name: create-wip-attachments-bucket
+      run: |
+        mc alias set wip http://wip-minio:9000 "${MINIO_ROOT_USER}" "${MINIO_ROOT_PASSWORD}" &&
+        mc mb --ignore-existing wip/wip-attachments
+      after: healthy
+
+  activation:
+    requires_any_module: [files]

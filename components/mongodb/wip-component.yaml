@@ -1,0 +1,32 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: mongodb
+  category: infrastructure
+  description: |
+    MongoDB primary document store. Hosts per-service databases
+    (wip_registry, wip_def_store, wip_template_store, wip_document_store).
+    Always deployed — every WIP core service depends on it.
+
+spec:
+  image:
+    name: docker.io/library/mongo
+    tag: "7"
+
+  ports:
+    - {name: mongo, container_port: 27017}
+
+  env:
+    optional:
+      - {name: MONGO_INITDB_ROOT_USERNAME, source: {from_secret: mongo-user}}
+      - {name: MONGO_INITDB_ROOT_PASSWORD, source: {from_secret: mongo-password}}
+
+  storage:
+    - {name: data, mount_path: /data/db, size: 20Gi}
+
+  healthcheck:
+    command: ["mongosh", "--quiet", "--eval", "db.runCommand('ping').ok"]
+    interval_seconds: 30
+    timeout_seconds: 10
+    start_period_seconds: 15
+    retries: 5

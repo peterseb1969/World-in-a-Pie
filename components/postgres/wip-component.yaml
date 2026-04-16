@@ -1,0 +1,37 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: postgres
+  category: infrastructure
+  description: |
+    PostgreSQL reporting store. Receives synced document state from
+    MongoDB via Reporting-Sync, enables SQL aggregations and
+    cross-template JOINs. Active only when the reporting module is
+    enabled.
+
+spec:
+  image:
+    name: docker.io/library/postgres
+    tag: "16"
+
+  ports:
+    - {name: pg, container_port: 5432}
+
+  env:
+    required:
+      - {name: POSTGRES_DB, source: {literal: wip_reporting}}
+      - {name: POSTGRES_USER, source: {literal: wip}}
+      - {name: POSTGRES_PASSWORD, source: {from_secret: postgres-password}}
+
+  storage:
+    - {name: data, mount_path: /var/lib/postgresql/data, size: 20Gi}
+
+  healthcheck:
+    command: ["pg_isready", "-U", "wip"]
+    interval_seconds: 10
+    timeout_seconds: 5
+    start_period_seconds: 10
+    retries: 5
+
+  activation:
+    requires_any_module: [reporting]

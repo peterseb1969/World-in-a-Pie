@@ -1,0 +1,45 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: document-store
+  category: core
+  description: |
+    Document storage with template-based validation. Handles document
+    CRUD, versioning, term validation, file attachments, and CSV/XLSX
+    import. Publishes change events to NATS when reporting is active.
+
+spec:
+  image:
+    name: document-store
+    build_context: .
+
+  ports:
+    - {name: http, container_port: 8004}
+
+  env:
+    required:
+      - {name: MONGO_URI, source: {from_component: mongodb}}
+      - {name: DATABASE_NAME, source: {literal: wip_document_store}}
+      - {name: REGISTRY_URL, source: {from_component: registry}}
+      - {name: DEF_STORE_URL, source: {from_component: def-store}}
+      - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
+      - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+    optional:
+      # NATS is optional — only present when reporting or ingest module active.
+      # Document-store gracefully skips publish when NATS_URL is empty.
+      - {name: NATS_URL, source: {from_component: nats}}
+      # File storage — MinIO only present when files module active.
+      - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: images.files_enabled}}
+      - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}
+      - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {literal: wip-minio-root}}
+      - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: minio-password}}
+      - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}
+      - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
+
+  routes:
+    - {path: /api/document-store, auth_required: true, streaming: true}
+
+  depends_on: [mongodb, registry, def-store, template-store]
+
+  healthcheck:
+    endpoint: /health

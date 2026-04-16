@@ -217,11 +217,30 @@ components/document-store/
 └── pyproject.toml
 ```
 
-The deployer discovers manifests by walking `components/*/wip-component.yaml` and `apps/*/wip-app.yaml` from the repo root. The deployer package does not bundle manifests; they are always read live.
+The deployer discovers manifests by walking `components/*/wip-component.yaml`, `ui/*/wip-component.yaml`, and `apps/*/wip-app.yaml` from the repo root. The deployer package does not bundle manifests; they are always read live.
+
+The `ui/` path exists because `wip-console` is a UI component whose source lives under `ui/wip-console/`. Its manifest (`metadata.name: console`) lives alongside the source, not in `components/`.
 
 ### Infrastructure components are first-class
 
-MongoDB, Postgres, NATS, MinIO, Dex each get their own `components/<name>/wip-component.yaml`. They are components with `image.build_context: null` (pre-built images only). This unifies the model — no "service vs infrastructure" code path.
+MongoDB, Postgres, NATS, MinIO, Dex, Auth-Gateway each get their own `components/<name>/wip-component.yaml`. They are components with `image.build_context: null` (pre-built images only for mongodb/postgres/nats/minio/dex; auth-gateway builds from source). This unifies the model — no "service vs infrastructure" code path.
+
+### Activation rules
+
+| Category | Active when |
+|---|---|
+| `core` | Always (every deployment needs these) |
+| `optional` | Name appears in `deployment.spec.modules.optional` |
+| `infrastructure` without `activation` | Always (e.g., mongodb) |
+| `infrastructure` with `activation` | All `requires_*` predicates hold |
+
+Examples:
+- `postgres` has `requires_any_module: [reporting]` — active iff reporting module is active
+- `nats` has `requires_any_module: [reporting, ingest]` — active iff either module is active
+- `dex` has `requires_auth_mode: [oidc, hybrid]` — skipped in api-key-only deployments
+- `auth-gateway` has `requires_auth_gateway: true` — skipped unless Theme 7 gateway is in the request path
+
+The predicate is evaluated by `wip_deploy.spec.activation.is_component_active()`, which is the **single** source of truth. Renderers, validators, and config generators all consult this function rather than reimplementing the logic.
 
 ### Shape
 
@@ -248,10 +267,15 @@ class ComponentSpec(BaseModel):
     resources: ResourceSpec | None = None
     oidc_client: OidcClientSpec | None = None
     post_install: list[PostInstallHook] = []
-    observability: ObservabilitySpec | None = None    # reserved; unused in v2 initial
+    observability: ObservabilitySpec | None = None   # reserved; unused in v2 initial
+    activation: ActivationSpec | None = None         # conditional activation (infra only)
 
 class ImageRef(BaseModel):
-    name: str                              # e.g., "wip-document-store"
+    # Short name (e.g., "document-store") combines with spec.images.registry.
+    # Fully-qualified name (e.g., "docker.io/library/mongo") used verbatim.
+    # Discriminated by presence of "/" in name.
+    name: str
+    tag: str | None = None                 # per-component tag override; None = inherit spec.images.tag
     build_context: Path | None = None      # None = pre-built image only
     build_args: dict[str, str] = {}
 
@@ -287,11 +311,22 @@ class StorageSpec(BaseModel):
     access_mode: Literal["ReadWriteOnce", "ReadWriteMany"] = "ReadWriteOnce"
 
 class HealthcheckSpec(BaseModel):
-    endpoint: str                          # e.g., "/health"
+    # Exactly one of endpoint (HTTP GET 2xx) or command (exit 0) must be set.
+    # WIP services use endpoint; infra like mongodb/postgres use command.
+    endpoint: str | None = None            # e.g., "/health"
+    port: str | None = None                # port name for HTTP check; default "http"→"monitor"→first
+    command: list[str] | None = None       # e.g., ["mongosh", "--eval", "db.runCommand('ping')"]
     interval_seconds: int = 10
     timeout_seconds: int = 5
     retries: int = 3
     start_period_seconds: int = 30
+
+class ActivationSpec(BaseModel):
+    # Infrastructure-only. AND of every set field. Empty lists = no requirement.
+    # Omitted entirely → component is always active (e.g., mongodb).
+    requires_any_module: list[str] = []    # ≥1 of these in modules.optional
+    requires_auth_mode: list[str] = []     # auth.mode ∈ this list
+    requires_auth_gateway: bool | None = None
 
 class ResourceSpec(BaseModel):
     cpu_request: str | None = None         # e.g., "100m"
