@@ -60,10 +60,10 @@ class TestInfrastructureRequiresAnyModule:
         self, minimal_compose_deployment
     ) -> None:  # type: ignore[no-untyped-def]
         d = minimal_compose_deployment.model_copy(deep=True)
-        d.spec.modules.optional = ["reporting"]
+        d.spec.modules.optional = ["reporting-sync"]
         c = _comp(
             "postgres",
-            activation=ActivationSpec(requires_any_module=["reporting"]),
+            activation=ActivationSpec(requires_any_module=["reporting-sync"]),
         )
         assert is_component_active(c, d) is True
 
@@ -72,7 +72,7 @@ class TestInfrastructureRequiresAnyModule:
     ) -> None:  # type: ignore[no-untyped-def]
         c = _comp(
             "postgres",
-            activation=ActivationSpec(requires_any_module=["reporting"]),
+            activation=ActivationSpec(requires_any_module=["reporting-sync"]),
         )
         assert is_component_active(c, minimal_compose_deployment) is False
 
@@ -80,10 +80,12 @@ class TestInfrastructureRequiresAnyModule:
         self, minimal_compose_deployment
     ) -> None:  # type: ignore[no-untyped-def]
         d = minimal_compose_deployment.model_copy(deep=True)
-        d.spec.modules.optional = ["ingest"]
+        d.spec.modules.optional = ["ingest-gateway"]
         c = _comp(
             "nats",
-            activation=ActivationSpec(requires_any_module=["reporting", "ingest"]),
+            activation=ActivationSpec(
+                requires_any_module=["reporting-sync", "ingest-gateway"]
+            ),
         )
         assert is_component_active(c, d) is True
 
@@ -92,7 +94,9 @@ class TestInfrastructureRequiresAnyModule:
     ) -> None:  # type: ignore[no-untyped-def]
         c = _comp(
             "nats",
-            activation=ActivationSpec(requires_any_module=["reporting", "ingest"]),
+            activation=ActivationSpec(
+                requires_any_module=["reporting-sync", "ingest-gateway"]
+            ),
         )
         assert is_component_active(c, minimal_compose_deployment) is False
 
@@ -150,12 +154,11 @@ class TestInfrastructureCombinedPredicates:
     ) -> None:  # type: ignore[no-untyped-def]
         """Combined predicates are AND'd."""
         d = minimal_compose_deployment.model_copy(deep=True)
-        d.spec.modules.optional = ["reporting"]
-        # dex hypothetical: oidc AND gateway=true AND reporting active
+        d.spec.modules.optional = ["reporting-sync"]
         c = _comp(
             "hypothetical",
             activation=ActivationSpec(
-                requires_any_module=["reporting"],
+                requires_any_module=["reporting-sync"],
                 requires_auth_mode=["oidc"],
                 requires_auth_gateway=True,
             ),
@@ -166,11 +169,11 @@ class TestInfrastructureCombinedPredicates:
         self, minimal_compose_deployment
     ) -> None:  # type: ignore[no-untyped-def]
         d = minimal_compose_deployment.model_copy(deep=True)
-        # reporting NOT in optional — this should fail even though auth is oidc + gateway
+        # reporting-sync NOT in optional — predicate fails even though auth OK
         c = _comp(
             "hypothetical",
             activation=ActivationSpec(
-                requires_any_module=["reporting"],
+                requires_any_module=["reporting-sync"],
                 requires_auth_mode=["oidc"],
                 requires_auth_gateway=True,
             ),

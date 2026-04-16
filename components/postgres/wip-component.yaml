@@ -34,4 +34,4 @@ spec:
     retries: 5
 
   activation:
-    requires_any_module: [reporting]
+    requires_any_module: [reporting-sync]

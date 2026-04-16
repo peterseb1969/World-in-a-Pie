@@ -30,4 +30,4 @@ spec:
     retries: 3
 
   activation:
-    requires_any_module: [reporting, ingest]
+    requires_any_module: [reporting-sync, ingest-gateway]

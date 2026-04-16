@@ -57,10 +57,10 @@ def _make_app(
 class TestModulesExist:
     def test_known_optional_module_ok(self, minimal_compose_deployment: Deployment) -> None:
         d = minimal_compose_deployment.model_copy(deep=True)
-        d.spec.modules.optional = ["reporting"]
+        d.spec.modules.optional = ["reporting-sync"]
         report = validate_all(
             d,
-            [make_component("reporting", category="optional")],
+            [make_component("reporting-sync", category="optional")],
             [],
         )
         assert report.ok

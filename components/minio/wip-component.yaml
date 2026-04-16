@@ -2,11 +2,11 @@ api_version: wip.dev/v1
 kind: Component
 metadata:
   name: minio
-  category: infrastructure
+  category: optional
   description: |
     S3-compatible object storage for document file attachments.
-    Document-Store uses it when file storage is enabled. Active only
-    when the files module is active.
+    Document-Store enables file storage when minio is active. Toggle
+    via `--add minio`.
 
 spec:
   image:
@@ -40,5 +40,3 @@ spec:
         mc mb --ignore-existing wip/wip-attachments
       after: healthy
 
-  activation:
-    requires_any_module: [files]

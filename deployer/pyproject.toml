@@ -42,9 +42,20 @@ line-length = 100
 select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 ignore = ["E501"]  # line length handled by formatter
 
+[tool.ruff.lint.per-file-ignores]
+# Typer CLI signatures use `list[str] = []` for repeatable options; B006 is
+# not applicable here (typer creates a fresh list per invocation).
+"src/wip_deploy/cli.py" = ["B006"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+# Typer's Option() is typed as returning Any in its stubs; factory helpers
+# in cli.py can't improve on that without boilerplate casts.
+module = "wip_deploy.cli"
+warn_return_any = false
