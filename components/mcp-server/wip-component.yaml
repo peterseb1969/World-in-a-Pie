@@ -29,5 +29,11 @@ spec:
 
   depends_on: [registry, def-store, template-store, document-store]
 
+  # The image's module is `wip_mcp`, not `mcp_server` — the uvicorn
+  # heuristic in the renderer doesn't apply. This also switches to
+  # python -m entry because the MCP server uses an HTTP transport
+  # harness, not a bare uvicorn ASGI app.
+  command: [python, -m, wip_mcp, --http]
+
   healthcheck:
     endpoint: /health

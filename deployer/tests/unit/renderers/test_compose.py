@@ -176,24 +176,30 @@ class TestComposeYaml:
         assert "nats" in doc["services"]
         assert "reporting-sync" in doc["services"]
 
-    def test_healthcheck_http_emits_curl(
+    def test_healthcheck_http_emits_cmd_shell_with_curl(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
+        """HTTP probes render via CMD-SHELL so podman-compose's shell
+        flattening doesn't break shell-metacharacter URLs."""
         doc = self._render_compose(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
         test = reg["healthcheck"]["test"]
-        assert test[:3] == ["CMD", "curl", "-f"]
-        assert "http://localhost:8001/health" in test[-1]
+        assert test[0] == "CMD-SHELL"
+        assert "curl -f" in test[1]
+        assert "http://localhost:8001/health" in test[1]
 
-    def test_healthcheck_command_emits_directly(
+    def test_healthcheck_command_emits_cmd_shell_quoted(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
+        """Command probes render CMD-SHELL with shlex-joined args so
+        shell metacharacters (parens, quotes) are preserved."""
         doc = self._render_compose(tmp_path, real_discovery)
         mongo = doc["services"]["mongodb"]
         test = mongo["healthcheck"]["test"]
-        assert test[0] == "CMD"
-        # mongosh --quiet --eval "..." — verbatim from manifest
-        assert "mongosh" in test[1:]
+        assert test[0] == "CMD-SHELL"
+        # mongosh --quiet --eval '...' — parens-safe via shlex quoting
+        assert "mongosh" in test[1]
+        assert "db.runCommand" in test[1]
 
     def test_env_secrets_go_via_env_file(
         self, tmp_path: Path, real_discovery: Discovery
@@ -212,12 +218,22 @@ class TestComposeYaml:
         # DATABASE_NAME is a literal, not a secret
         assert reg["environment"]["DATABASE_NAME"] == "wip_registry"
 
-    def test_depends_on_uses_service_healthy(
+    def test_depends_on_uses_service_healthy_when_dep_has_healthcheck(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         doc = self._render_compose(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
+        # mongodb has a healthcheck → service_healthy
         assert reg["depends_on"]["mongodb"] == {"condition": "service_healthy"}
+
+    def test_depends_on_falls_back_to_service_started_for_no_healthcheck_dep(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Dex has no healthcheck (distroless). Depending on it must
+        use service_started, otherwise compose hangs forever."""
+        doc = self._render_compose(tmp_path, real_discovery)
+        gateway = doc["services"]["auth-gateway"]
+        assert gateway["depends_on"]["dex"] == {"condition": "service_started"}
 
     def test_network_declared(
         self, tmp_path: Path, real_discovery: Discovery
@@ -235,7 +251,14 @@ class TestComposeYaml:
     def test_apps_contribute_services(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        doc = self._render_compose(tmp_path, real_discovery, apps=["dnd"])
+        # dnd's manifest requires MCP_URL from_component: mcp-server →
+        # mcp-server must be active in the deployment.
+        doc = self._render_compose(
+            tmp_path,
+            real_discovery,
+            apps=["dnd"],
+            modules=["console", "mcp-server"],
+        )
         assert "dnd" in doc["services"]
 
 

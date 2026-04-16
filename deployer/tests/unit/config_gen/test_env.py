@@ -39,6 +39,7 @@ class TestResolveEnvSource:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("hello")
@@ -55,6 +56,7 @@ class TestResolveEnvSource:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("https://wip.local:8443/dex")
@@ -71,6 +73,7 @@ class TestResolveEnvSource:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == SecretRef("api-key")
@@ -89,6 +92,7 @@ class TestFromComponentCompose:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("mongodb://wip-mongodb:27017/")
@@ -105,6 +109,7 @@ class TestFromComponentCompose:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("postgresql://wip-postgres:5432/")
@@ -121,6 +126,7 @@ class TestFromComponentCompose:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("nats://wip-nats:4222")
@@ -137,6 +143,7 @@ class TestFromComponentCompose:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("http://wip-registry:8001")
@@ -155,6 +162,7 @@ class TestFromComponentK8s:
             deployment=k8s_deployment,
             ctx=ctx_k8s,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("mongodb://wip-mongodb.wip.svc.cluster.local:27017/")
@@ -171,6 +179,7 @@ class TestFromComponentK8s:
             deployment=k8s_deployment,
             ctx=ctx_k8s,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("http://wip-registry.wip.svc.cluster.local:8001")
@@ -189,6 +198,7 @@ class TestFromComponentHostAndPort:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("wip-postgres")
@@ -205,6 +215,7 @@ class TestFromComponentHostAndPort:
             deployment=k8s_deployment,
             ctx=ctx_k8s,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("wip-postgres.wip.svc.cluster.local")
@@ -221,6 +232,7 @@ class TestFromComponentHostAndPort:
             deployment=compose_deployment,
             ctx=ctx_compose,
             components_by_name=by_name,
+            active_names=set(by_name),
             namespace="wip",
         )
         assert v == Literal("5432")
@@ -240,6 +252,7 @@ class TestEnvResolutionErrors:
                 deployment=compose_deployment,
                 ctx=ctx_compose,
                 components_by_name=by_name,
+            active_names=set(by_name),
                 namespace="wip",
             )
 
@@ -263,6 +276,7 @@ class TestEnvResolutionErrors:
                 deployment=compose_deployment,
                 ctx=ctx_compose,
                 components_by_name={"portless": portless},
+                active_names={"portless"},
                 namespace="wip",
             )
 

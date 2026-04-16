@@ -113,11 +113,25 @@ def _render_compose_yaml(
 
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
+    # Pre-compute which active components/apps declare a healthcheck, so
+    # depends_on can use service_healthy only where applicable.
+    healthcheck_owners: set[str] = set()
+    for c in components:
+        if is_component_active(c, deployment) and c.spec.healthcheck is not None:
+            healthcheck_owners.add(c.metadata.name)
+    for a in apps:
+        if a.metadata.name in enabled_app_names and a.spec.healthcheck is not None:
+            healthcheck_owners.add(a.metadata.name)
+
     for c in components:
         if not is_component_active(c, deployment):
             continue
         services[c.metadata.name] = _service_block(
-            c, deployment, resolved_env[c.metadata.name], is_app=False
+            c,
+            deployment,
+            resolved_env[c.metadata.name],
+            is_app=False,
+            healthcheck_owners=healthcheck_owners,
         )
         _collect_volumes(c, volumes)
 
@@ -125,7 +139,11 @@ def _render_compose_yaml(
         if a.metadata.name not in enabled_app_names:
             continue
         services[a.metadata.name] = _service_block(
-            a, deployment, resolved_env[a.metadata.name], is_app=True
+            a,
+            deployment,
+            resolved_env[a.metadata.name],
+            is_app=True,
+            healthcheck_owners=healthcheck_owners,
         )
         _collect_volumes(a, volumes)
 
@@ -149,6 +167,7 @@ def _service_block(
     env: ResolvedEnv,
     *,
     is_app: bool,
+    healthcheck_owners: set[str],
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
         "container_name": _container_name(owner.metadata.name),
@@ -188,7 +207,7 @@ def _service_block(
     if hc is not None:
         block["healthcheck"] = hc
 
-    deps = _depends_on_block(owner, deployment)
+    deps = _depends_on_block(owner, deployment, healthcheck_owners=healthcheck_owners)
     if deps:
         block["depends_on"] = deps
 
@@ -285,38 +304,40 @@ def _environment_block(env: ResolvedEnv) -> dict[str, str]:
 
 
 def _command_for(owner: Component | App) -> list[str] | None:
-    """Explicit command for WIP services (the published image's CMD
-    isn't always what we want, and being explicit makes the compose
-    file self-documenting)."""
+    """Resolve the container command.
+
+    Priority:
+      1. Explicit `spec.command` in the manifest — highest authority.
+      2. Per-component name-based overrides (Dex, MinIO) — still in the
+         renderer for legacy reasons, will move to manifests over time.
+      3. uvicorn heuristic for WIP Python services (matches the v1.1.x
+         published images' entry points).
+      4. None — use the image's default CMD.
+    """
+    if owner.spec.command is not None:
+        return list(owner.spec.command)
+
     name = owner.metadata.name
 
-    # Infra components use the image's default command.
     if name in ("mongodb", "postgres", "nats"):
         return None
 
-    # Dex needs an explicit command.
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
 
-    # MinIO: command is set on its own manifest or here.
     if name == "minio":
         return ["server", "/data", "--console-address", ":9001"]
 
-    # WIP Python services: run uvicorn with their main app. Module name
-    # is the service's short name with hyphens → underscores.
     http_port = next(
         (p for p in owner.spec.ports if p.name == "http"), None
     )
     if http_port is None:
-        # e.g., auth-gateway (port name "http") — covered above; or nats
-        # with no http port — no command needed.
         return None
 
-    module = name.replace("-", "_")
-    # wip-console: just run nginx (default CMD). auth-gateway: default CMD.
     if name in ("console", "auth-gateway"):
         return None
 
+    module = name.replace("-", "_")
     return [
         "uvicorn",
         f"{module}.main:app",
@@ -353,21 +374,29 @@ def _collect_volumes(owner: Component | App, volumes: dict[str, Any]) -> None:
 
 
 def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
+    """Emit a compose healthcheck block.
+
+    Uses CMD-SHELL form rather than CMD. podman-compose flattens CMD
+    arrays through a shell anyway, breaking commands whose arguments
+    contain shell metacharacters (e.g. `db.runCommand('ping').ok`).
+    CMD-SHELL + shlex.join keeps everything quoted correctly regardless.
+    """
+    import shlex as _shlex
+
     hc = owner.spec.healthcheck
     if hc is None:
         return None
 
     if hc.command is not None:
-        test = ["CMD", *hc.command]
+        shell_cmd = _shlex.join(hc.command)
     else:
-        # HTTP check. Pick the port: explicit > "http" > first.
         port = _resolve_check_port(owner, hc.port)
         assert hc.endpoint is not None  # enforced by HealthcheckSpec validator
         url = f"http://localhost:{port}{hc.endpoint}"
-        test = ["CMD", "curl", "-f", url]
+        shell_cmd = f"curl -f {_shlex.quote(url)}"
 
     return {
-        "test": test,
+        "test": ["CMD-SHELL", shell_cmd],
         "interval": f"{hc.interval_seconds}s",
         "timeout": f"{hc.timeout_seconds}s",
         "retries": hc.retries,
@@ -394,16 +423,21 @@ def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:
 
 
 def _depends_on_block(
-    owner: Component | App, deployment: Deployment
+    owner: Component | App,
+    deployment: Deployment,
+    *,
+    healthcheck_owners: set[str],
 ) -> dict[str, Any]:
-    """Emit depends_on with service_healthy conditions for every active
-    dependency."""
+    """Emit depends_on. Use `service_healthy` only for deps that declare
+    a healthcheck; fall back to `service_started` for the rest. This
+    avoids compose hanging forever waiting on a dep that can never
+    become healthy (e.g. distroless Dex)."""
     out: dict[str, Any] = {}
     for dep_name in owner.spec.depends_on:
-        # We can only wait on deps that themselves declare a healthcheck.
-        # For the rest we fall back to service_started (starts-but-may-
-        # not-be-ready). This is target-equivalent to what v1 did.
-        out[dep_name] = {"condition": "service_healthy"}
+        condition = (
+            "service_healthy" if dep_name in healthcheck_owners else "service_started"
+        )
+        out[dep_name] = {"condition": condition}
     return out
 
 

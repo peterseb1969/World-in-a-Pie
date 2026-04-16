@@ -24,6 +24,7 @@ from typing import Literal as TypingLiteral
 
 from wip_deploy.config_gen.spec_context import SpecContext, resolve_from_spec
 from wip_deploy.spec import Deployment
+from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component, EnvSource, Port
 
@@ -50,6 +51,16 @@ class SecretRef:
 
 EnvValue = Literal | SecretRef
 EnvMap = dict[str, EnvValue]
+
+
+class InactiveComponentRef(LookupError):
+    """Raised when `from_component*` references a component that exists
+    in the repo but isn't active in this deployment.
+
+    Callers distinguish this from plain `KeyError` (unknown component):
+    optional env vars can silently skip on InactiveComponentRef, but
+    required env vars must propagate it as a hard error.
+    """
 
 
 @dataclass(frozen=True)
@@ -141,13 +152,18 @@ def resolve_env_source(
     deployment: Deployment,
     ctx: SpecContext,
     components_by_name: dict[str, Component],
+    active_names: set[str],
     namespace: str,
 ) -> EnvValue:
     """Resolve a single EnvSource to an EnvValue.
 
-    Raises KeyError if `from_spec` path doesn't resolve, or if a
-    `from_component*` references an unknown name. Raises ValueError if
-    a referenced component has no ports.
+    Raises:
+      - KeyError if a referenced name doesn't exist in the repo or
+        `from_spec` path doesn't resolve
+      - InactiveComponentRef if a `from_component*` target exists but
+        is not active in this deployment (optional envs should skip;
+        required envs should fail)
+      - ValueError if a referenced component has no ports
     """
     if source.literal is not None:
         return Literal(source.literal)
@@ -159,21 +175,20 @@ def resolve_env_source(
         return SecretRef(source.from_secret)
 
     if source.from_component is not None:
-        target_c = components_by_name.get(source.from_component)
-        if target_c is None:
-            raise KeyError(
-                f"from_component references unknown {source.from_component!r}"
-            )
+        target_c = _lookup_active_component(
+            source.from_component, components_by_name, active_names, "from_component"
+        )
         return Literal(
             _component_url(target_c, deployment.spec.target, namespace=namespace)
         )
 
     if source.from_component_host is not None:
-        if source.from_component_host not in components_by_name:
-            raise KeyError(
-                f"from_component_host references unknown "
-                f"{source.from_component_host!r}"
-            )
+        _lookup_active_component(
+            source.from_component_host,
+            components_by_name,
+            active_names,
+            "from_component_host",
+        )
         return Literal(
             _component_host(
                 source.from_component_host,
@@ -183,16 +198,35 @@ def resolve_env_source(
         )
 
     if source.from_component_port is not None:
-        target_c = components_by_name.get(source.from_component_port)
-        if target_c is None:
-            raise KeyError(
-                f"from_component_port references unknown "
-                f"{source.from_component_port!r}"
-            )
+        target_c = _lookup_active_component(
+            source.from_component_port,
+            components_by_name,
+            active_names,
+            "from_component_port",
+        )
         return Literal(str(_default_port(target_c).container_port))
 
     # spec.exactly_one_source makes this unreachable
     raise AssertionError(f"EnvSource has no source set: {source!r}")
+
+
+def _lookup_active_component(
+    name: str,
+    components_by_name: dict[str, Component],
+    active_names: set[str],
+    field: str,
+) -> Component:
+    """Look up a component by name, requiring it to be active. Raises
+    KeyError for unknown names; InactiveComponentRef for known-but-
+    inactive names."""
+    target = components_by_name.get(name)
+    if target is None:
+        raise KeyError(f"{field} references unknown {name!r}")
+    if name not in active_names:
+        raise InactiveComponentRef(
+            f"{field} references inactive component {name!r}"
+        )
+    return target
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -205,14 +239,26 @@ def resolve_component_env(
     components: list[Component],
     apps: list[App],
 ) -> ResolvedEnv:
-    """Resolve a single component's (or app's) entire env declaration."""
+    """Resolve a single component's (or app's) entire env declaration.
+
+    Optional env vars whose `from_component*` target exists but is
+    inactive are silently omitted — that's how WIP services toggle
+    behavior (e.g. document-store publishes to NATS only when NATS
+    is active). Required env vars with inactive targets raise.
+    """
     components_by_name: dict[str, Component] = {c.metadata.name: c for c in components}
-    # Apps can also be referenced from_component (e.g., inter-app URLs).
-    # Treat app components uniformly for URL resolution purposes — an App
-    # has the same ComponentSpec shape.
     for a in apps:
-        # Intentionally shadow the App as a Component-like for URL lookup.
         components_by_name.setdefault(a.metadata.name, a)  # type: ignore[arg-type]
+
+    # An optional env var pointing at an inactive from_component* is a
+    # deliberate "turn this integration off" signal — not an error.
+    active_names: set[str] = {
+        c.metadata.name for c in components if is_component_active(c, deployment)
+    }
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+    active_names.update(
+        a.metadata.name for a in apps if a.metadata.name in enabled_app_names
+    )
 
     namespace = (
         deployment.spec.platform.k8s.namespace
@@ -220,21 +266,27 @@ def resolve_component_env(
         else "wip"
     )
 
-    def _resolve(evars: list) -> EnvMap:  # type: ignore[type-arg]
+    def _resolve(evars: list, *, skip_inactive: bool) -> EnvMap:  # type: ignore[type-arg]
         out: EnvMap = {}
         for ev in evars:
-            out[ev.name] = resolve_env_source(
-                ev.source,
-                deployment=deployment,
-                ctx=ctx,
-                components_by_name=components_by_name,
-                namespace=namespace,
-            )
+            try:
+                out[ev.name] = resolve_env_source(
+                    ev.source,
+                    deployment=deployment,
+                    ctx=ctx,
+                    components_by_name=components_by_name,
+                    active_names=active_names,
+                    namespace=namespace,
+                )
+            except InactiveComponentRef:
+                if skip_inactive:
+                    continue
+                raise
         return out
 
     return ResolvedEnv(
-        required=_resolve(component.spec.env.required),
-        optional=_resolve(component.spec.env.optional),
+        required=_resolve(component.spec.env.required, skip_inactive=False),
+        optional=_resolve(component.spec.env.optional, skip_inactive=True),
     )
 
 
@@ -244,11 +296,19 @@ def resolve_all_env(
     apps: list[App],
     ctx: SpecContext,
 ) -> dict[str, ResolvedEnv]:
-    """Resolve env for every component + app in the deployment. Returned
-    dict is keyed by component/app name."""
+    """Resolve env for every ACTIVE component + enabled app in the
+    deployment. Inactive components are skipped entirely — they would
+    fail resolution (required env vars referencing their own inactive
+    dependencies) and wouldn't be emitted to the compose file anyway."""
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
     out: dict[str, ResolvedEnv] = {}
     for c in components:
+        if not is_component_active(c, deployment):
+            continue
         out[c.metadata.name] = resolve_component_env(c, deployment, ctx, components, apps)
     for a in apps:
+        if a.metadata.name not in enabled_app_names:
+            continue
         out[a.metadata.name] = resolve_component_env(a, deployment, ctx, components, apps)
     return out

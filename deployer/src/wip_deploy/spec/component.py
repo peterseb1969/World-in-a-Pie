@@ -285,6 +285,11 @@ class ComponentSpec(WIPModel):
     post_install: list[PostInstallHook] = Field(default_factory=list)
     observability: ObservabilitySpec | None = None
     activation: ActivationSpec | None = None
+    # Explicit entrypoint command. When set, overrides both the image's
+    # default CMD and the renderer's uvicorn heuristic. Use when an
+    # image's default CMD is wrong (e.g., mismatched port) or when the
+    # service uses a non-uvicorn entry point (e.g., `python -m wip_mcp`).
+    command: list[str] | None = None
 
     @model_validator(mode="after")
     def unique_port_names(self) -> ComponentSpec:

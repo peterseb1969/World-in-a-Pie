@@ -19,12 +19,9 @@ spec:
   storage:
     - {name: db, mount_path: /data, size: 1Gi}
 
-  healthcheck:
-    endpoint: /dex/healthz
-    interval_seconds: 15
-    timeout_seconds: 5
-    start_period_seconds: 10
-    retries: 5
+  # No healthcheck: Dex ships as a distroless image with no shell, curl,
+  # or wget — nothing inside the container can probe its HTTP /healthz.
+  # Dependents fall back to depends_on: service_started.
 
   activation:
     requires_auth_mode: [oidc, hybrid]
