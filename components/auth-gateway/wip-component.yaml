@@ -24,7 +24,11 @@ spec:
       # uses server-to-server). These differ in compose: public goes
       # through Caddy TLS; internal talks to Dex on the container network.
       - {name: OIDC_ISSUER, source: {from_spec: auth.issuer_url_public}}
-      - {name: OIDC_INTERNAL_ISSUER, source: {from_component: dex}}
+      # Must include the `/dex` path prefix since that's Dex's issuer
+      # string — `from_component: dex` gives only the base URL without
+      # it, and OIDC discovery appends `/.well-known/openid-configuration`
+      # directly to whatever the issuer is.
+      - {name: OIDC_INTERNAL_ISSUER, source: {from_spec: auth.issuer_url_internal}}
       - {name: OIDC_CLIENT_ID, source: {literal: wip-gateway}}
       # Must match the Dex generator's well-known name for the
       # wip-gateway static client (dex-client-<client_id>).
