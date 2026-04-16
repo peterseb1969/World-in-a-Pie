@@ -26,7 +26,9 @@ spec:
       - {name: OIDC_ISSUER, source: {from_spec: auth.issuer_url_public}}
       - {name: OIDC_INTERNAL_ISSUER, source: {from_component: dex}}
       - {name: OIDC_CLIENT_ID, source: {literal: wip-gateway}}
-      - {name: OIDC_CLIENT_SECRET, source: {from_secret: gateway-client-secret}}
+      # Must match the Dex generator's well-known name for the
+      # wip-gateway static client (dex-client-<client_id>).
+      - {name: OIDC_CLIENT_SECRET, source: {from_secret: dex-client-wip-gateway}}
       - {name: SESSION_SECRET, source: {from_secret: gateway-session-secret}}
       - {name: API_KEY, source: {from_secret: api-key}}
       - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
