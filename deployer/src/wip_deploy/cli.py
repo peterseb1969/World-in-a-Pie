@@ -13,11 +13,17 @@ import typer
 import yaml
 
 from wip_deploy import __version__
+from wip_deploy.apply import ApplyError, apply_compose
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.presets import PRESETS
+from wip_deploy.renderers import FileTree, render_compose
+from wip_deploy.secrets import ensure_secrets
+from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
+from wip_deploy.spec.app import App
+from wip_deploy.spec.component import Component
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -341,6 +347,224 @@ def show_spec(
 
 
 # ────────────────────────────────────────────────────────────────────
+# render
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def render(
+    preset: Annotated[str, _preset_opt()] = "standard",
+    target: Annotated[str, _target_opt()] = "compose",
+    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    tls: Annotated[str, _tls_opt()] = "internal",
+    https_port: Annotated[int, _https_port_opt()] = 8443,
+    http_port: Annotated[int, _http_port_opt()] = 8080,
+    data_dir: Annotated[Path | None, _data_dir_opt()] = None,
+    namespace: Annotated[str, _namespace_opt()] = "wip",
+    storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
+    ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    registry: Annotated[str | None, _registry_opt()] = None,
+    tag: Annotated[str, _tag_opt()] = "latest",
+    add: Annotated[list[str], _add_opt()] = [],
+    remove: Annotated[list[str], _remove_opt()] = [],
+    apps: Annotated[list[str], _app_opt()] = [],
+    auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
+    auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
+    secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
+    secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+    name: Annotated[str, _name_opt()] = "default",
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Where to write the rendered tree. Default: ~/.wip-deploy/<name>/",
+        ),
+    ] = None,
+) -> None:
+    """Render the deployment to a directory without applying.
+
+    Useful for inspection: look at the generated docker-compose.yaml,
+    Caddyfile, and Dex config before starting the stack.
+    """
+    deployment, components, apps_list = _assemble(
+        preset=preset,
+        target=target,
+        hostname=hostname,
+        tls=tls,
+        https_port=https_port,
+        http_port=http_port,
+        data_dir=data_dir,
+        namespace=namespace,
+        storage_class=storage_class,
+        ingress_class=ingress_class,
+        tls_secret_name=tls_secret_name,
+        dev_mode=dev_mode,
+        registry=registry,
+        tag=tag,
+        add=add,
+        remove=remove,
+        apps=apps,
+        auth_mode=auth_mode,
+        auth_gateway=auth_gateway,
+        secrets_backend=secrets_backend,
+        secrets_location=secrets_location,
+        repo_root=repo_root,
+        name=name,
+    )
+
+    _validate_or_exit(deployment, components, apps_list)
+    install_dir = output_dir or _default_install_dir(name)
+
+    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    tree = _render_tree(deployment, components, apps_list, secrets)
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+    tree.write(install_dir)
+
+    typer.echo(typer.style(f"✓ Rendered to {install_dir}", fg=typer.colors.GREEN))
+    for path in tree.paths():
+        typer.echo(f"  {path}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# install
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def install(
+    preset: Annotated[str, _preset_opt()] = "standard",
+    target: Annotated[str, _target_opt()] = "compose",
+    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    tls: Annotated[str, _tls_opt()] = "internal",
+    https_port: Annotated[int, _https_port_opt()] = 8443,
+    http_port: Annotated[int, _http_port_opt()] = 8080,
+    data_dir: Annotated[Path | None, _data_dir_opt()] = None,
+    namespace: Annotated[str, _namespace_opt()] = "wip",
+    storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
+    ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    registry: Annotated[str | None, _registry_opt()] = None,
+    tag: Annotated[str, _tag_opt()] = "latest",
+    add: Annotated[list[str], _add_opt()] = [],
+    remove: Annotated[list[str], _remove_opt()] = [],
+    apps: Annotated[list[str], _app_opt()] = [],
+    auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
+    auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
+    secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
+    secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+    name: Annotated[str, _name_opt()] = "default",
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Where to materialize the stack. Default: ~/.wip-deploy/<name>/",
+        ),
+    ] = None,
+    no_wait: Annotated[
+        bool,
+        typer.Option("--no-wait", help="Skip waiting for healthy."),
+    ] = False,
+    wait_timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--wait-timeout", help="Override spec.apply.timeout_seconds."
+        ),
+    ] = None,
+) -> None:
+    """Build → validate → render → apply. The end-to-end install verb.
+
+    Generates secrets on first run (persists to the secret backend);
+    re-runs pick up existing values and don't regenerate.
+    """
+    if target != "compose":
+        typer.echo(
+            f"error: install currently supports target=compose only (got {target!r})",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    deployment, components, apps_list = _assemble(
+        preset=preset,
+        target=target,
+        hostname=hostname,
+        tls=tls,
+        https_port=https_port,
+        http_port=http_port,
+        data_dir=data_dir,
+        namespace=namespace,
+        storage_class=storage_class,
+        ingress_class=ingress_class,
+        tls_secret_name=tls_secret_name,
+        dev_mode=dev_mode,
+        registry=registry,
+        tag=tag,
+        add=add,
+        remove=remove,
+        apps=apps,
+        auth_mode=auth_mode,
+        auth_gateway=auth_gateway,
+        secrets_backend=secrets_backend,
+        secrets_location=secrets_location,
+        repo_root=repo_root,
+        name=name,
+    )
+
+    _validate_or_exit(deployment, components, apps_list)
+
+    # Apply CLI flag overrides on top of spec.apply.
+    if no_wait:
+        deployment.spec.apply.wait = False
+    if wait_timeout is not None:
+        deployment.spec.apply.timeout_seconds = wait_timeout
+
+    target_dir = install_dir or _default_install_dir(name)
+
+    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    tree = _render_tree(deployment, components, apps_list, secrets)
+
+    typer.echo(f"Install dir: {target_dir}")
+    typer.echo(
+        f"Services:    {len([c for c in components if is_component_active(c, deployment)])} active, "
+        f"{len([a for a in apps_list if a.metadata.name in {ref.name for ref in deployment.spec.apps if ref.enabled}])} apps"
+    )
+    typer.echo("")
+
+    try:
+        result = apply_compose(
+            deployment=deployment,
+            components=components,
+            apps=apps_list,
+            tree=tree,
+            install_dir=target_dir,
+        )
+    except ApplyError as e:
+        typer.echo(
+            typer.style(f"✗ install failed: {e}", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        raise typer.Exit(1) from e
+
+    typer.echo("")
+    if result.healthy:
+        typer.echo(typer.style("✓ Install complete.", fg=typer.colors.GREEN, bold=True))
+    else:
+        typer.echo(
+            typer.style(
+                "⚠ Install finished, but not all services reached healthy",
+                fg=typer.colors.YELLOW,
+                bold=True,
+            )
+        )
+    typer.echo(f"  https://{deployment.spec.network.hostname}:{deployment.spec.network.https_port}")
+
+
+# ────────────────────────────────────────────────────────────────────
 # Internal glue
 # ────────────────────────────────────────────────────────────────────
 
@@ -438,6 +662,70 @@ def _assemble(
         raise typer.Exit(1)
 
     return deployment, discovery.components, discovery.apps
+
+
+def _validate_or_exit(
+    deployment: Deployment, components: list[Component], apps_list: list[App]
+) -> None:
+    report = validate_all(deployment, components, apps_list)
+    if not report.ok:
+        typer.echo(
+            typer.style(
+                f"✗ Validation failed ({len(report.errors)} error(s)):",
+                fg=typer.colors.RED,
+                bold=True,
+            ),
+            err=True,
+        )
+        for err in report.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(1)
+
+
+def _default_install_dir(name: str) -> Path:
+    """Default materialization directory — `~/.wip-deploy/<name>/`."""
+    return Path.home() / ".wip-deploy" / name
+
+
+def _ensure_secrets_via_spec(
+    deployment: Deployment,
+    components: list[Component],
+    apps_list: list[App],
+) -> ResolvedSecrets:
+    """Construct the secret backend from `spec.secrets` and run
+    `ensure_secrets`."""
+    spec = deployment.spec.secrets
+    if spec.backend != "file":
+        typer.echo(
+            f"error: only the file secret backend is implemented; "
+            f"got {spec.backend!r}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    location = spec.location
+    if location is None:
+        typer.echo("error: secrets.location is required for file backend", err=True)
+        raise typer.Exit(2)
+
+    backend = FileSecretBackend(Path(location))
+    return ensure_secrets(deployment, components, apps_list, backend)
+
+
+def _render_tree(
+    deployment: Deployment,
+    components: list[Component],
+    apps_list: list[App],
+    secrets: ResolvedSecrets,
+) -> FileTree:
+    """Dispatch to the right renderer for the deployment's target."""
+    if deployment.spec.target == "compose":
+        return render_compose(deployment, components, apps_list, secrets)
+    typer.echo(
+        f"error: renderer for target={deployment.spec.target!r} not implemented yet",
+        err=True,
+    )
+    raise typer.Exit(2)
 
 
 def main() -> None:
