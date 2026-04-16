@@ -22,15 +22,20 @@ spec:
       - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
       - {name: PORT, source: {literal: "3012"}}
       - {name: WIP_NAMESPACE, source: {literal: dnd}}
-      - {name: MCP_URL, source: {from_component: mcp-server}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
+      # MCP is a soft dep — dnd works without it, just no NL query.
+      # Env only set when mcp-server is active in the deployment.
+      - {name: MCP_URL, source: {from_component: mcp-server}}
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
 
   routes:
     - {path: /apps/dnd, auth_required: true}
 
-  depends_on: [document-store, mcp-server]
+  # mcp-server is a SOFT dependency — dnd's AI query feature degrades
+  # gracefully if MCP is unavailable. Only document-store is a hard
+  # start-order requirement.
+  depends_on: [document-store]
 
   healthcheck:
     endpoint: /apps/dnd/health

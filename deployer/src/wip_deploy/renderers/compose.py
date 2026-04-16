@@ -113,15 +113,21 @@ def _render_compose_yaml(
 
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
-    # Pre-compute which active components/apps declare a healthcheck, so
-    # depends_on can use service_healthy only where applicable.
+    # Pre-compute two sets: which active owners exist (for depends_on
+    # filtering) and which of those declare a healthcheck (for
+    # service_healthy vs service_started).
+    active_names: set[str] = set()
     healthcheck_owners: set[str] = set()
     for c in components:
-        if is_component_active(c, deployment) and c.spec.healthcheck is not None:
-            healthcheck_owners.add(c.metadata.name)
+        if is_component_active(c, deployment):
+            active_names.add(c.metadata.name)
+            if c.spec.healthcheck is not None:
+                healthcheck_owners.add(c.metadata.name)
     for a in apps:
-        if a.metadata.name in enabled_app_names and a.spec.healthcheck is not None:
-            healthcheck_owners.add(a.metadata.name)
+        if a.metadata.name in enabled_app_names:
+            active_names.add(a.metadata.name)
+            if a.spec.healthcheck is not None:
+                healthcheck_owners.add(a.metadata.name)
 
     for c in components:
         if not is_component_active(c, deployment):
@@ -132,6 +138,7 @@ def _render_compose_yaml(
             resolved_env[c.metadata.name],
             is_app=False,
             healthcheck_owners=healthcheck_owners,
+            active_names=active_names,
         )
         _collect_volumes(c, volumes)
 
@@ -144,6 +151,7 @@ def _render_compose_yaml(
             resolved_env[a.metadata.name],
             is_app=True,
             healthcheck_owners=healthcheck_owners,
+            active_names=active_names,
         )
         _collect_volumes(a, volumes)
 
@@ -168,6 +176,7 @@ def _service_block(
     *,
     is_app: bool,
     healthcheck_owners: set[str],
+    active_names: set[str],
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
         "container_name": _container_name(owner.metadata.name),
@@ -207,7 +216,12 @@ def _service_block(
     if hc is not None:
         block["healthcheck"] = hc
 
-    deps = _depends_on_block(owner, deployment, healthcheck_owners=healthcheck_owners)
+    deps = _depends_on_block(
+        owner,
+        deployment,
+        healthcheck_owners=healthcheck_owners,
+        active_names=active_names,
+    )
     if deps:
         block["depends_on"] = deps
 
@@ -427,13 +441,17 @@ def _depends_on_block(
     deployment: Deployment,
     *,
     healthcheck_owners: set[str],
+    active_names: set[str],
 ) -> dict[str, Any]:
-    """Emit depends_on. Use `service_healthy` only for deps that declare
-    a healthcheck; fall back to `service_started` for the rest. This
-    avoids compose hanging forever waiting on a dep that can never
-    become healthy (e.g. distroless Dex)."""
+    """Emit depends_on. Inactive deps are dropped entirely (compose
+    rejects references to services not defined in the file). Use
+    `service_healthy` only for deps that declare a healthcheck; fall
+    back to `service_started` for the rest — this avoids compose
+    hanging forever on distroless Dex and similar."""
     out: dict[str, Any] = {}
     for dep_name in owner.spec.depends_on:
+        if dep_name not in active_names:
+            continue
         condition = (
             "service_healthy" if dep_name in healthcheck_owners else "service_started"
         )

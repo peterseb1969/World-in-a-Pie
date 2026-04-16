@@ -32,7 +32,10 @@ spec:
   routes:
     - {path: /apps/rc, auth_required: true}
 
-  depends_on: [document-store, reporting-sync]
+  # reporting-sync is a SOFT dependency — react-console functions with
+  # reporting unavailable, just greys out the reporting tab. Only
+  # document-store is a hard start-order requirement.
+  depends_on: [document-store]
 
   healthcheck:
     endpoint: /apps/rc/health

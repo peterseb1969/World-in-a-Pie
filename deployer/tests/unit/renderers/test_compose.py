@@ -251,14 +251,7 @@ class TestComposeYaml:
     def test_apps_contribute_services(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        # dnd's manifest requires MCP_URL from_component: mcp-server →
-        # mcp-server must be active in the deployment.
-        doc = self._render_compose(
-            tmp_path,
-            real_discovery,
-            apps=["dnd"],
-            modules=["console", "mcp-server"],
-        )
+        doc = self._render_compose(tmp_path, real_discovery, apps=["dnd"])
         assert "dnd" in doc["services"]
 
 
