@@ -1,6 +1,7 @@
 # Install-Path Drift: `setup.sh` vs `quick-install.sh`
 
-**Status:** Documented; reconciliation designed in `wip-deploy-v2.md`
+**Status:** Compose target reconciled in v2 (see `wip-deploy-v2.md` +
+`wip-deploy-v2-status.md`). K8s + dev renderer pending.
 **Date:** 2026-04-16
 
 ## Summary

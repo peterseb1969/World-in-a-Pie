@@ -1,9 +1,13 @@
 # `wip-deploy` v2 — Design
 
-**Status:** Design approved; implementation pending
-**Date:** 2026-04-16
+**Status:** Steps 1–6 complete and verified end-to-end on compose target.
+Compose install produces a running stack; OIDC login + gateway auth flow
+work; browser reaches apps via Caddy. K8s + dev renderers pending.
+**Last updated:** 2026-04-16
 **Author:** Peter + BE-YAC
-**See also:** `install-path-drift.md` (the problem this solves)
+**See also:**
+- `install-path-drift.md` — the problem this solves (drift resolved for compose)
+- `wip-deploy-v2-status.md` — living status + follow-up work
 
 ## Context
 
@@ -269,6 +273,13 @@ class ComponentSpec(BaseModel):
     post_install: list[PostInstallHook] = []
     observability: ObservabilitySpec | None = None   # reserved; unused in v2 initial
     activation: ActivationSpec | None = None         # conditional activation (infra only)
+    command: list[str] | None = None                 # override image CMD and renderer heuristic
+
+# `depends_on` has hard-dep semantics only: list a name here only if this
+# component genuinely cannot start without it. Soft runtime features
+# (e.g. react-console's reporting tab, dnd's AI query) are NOT
+# depends_on — use optional env vars that skip silently when the target
+# component is inactive.
 
 class ImageRef(BaseModel):
     # Short name (e.g., "document-store") combines with spec.images.registry.
@@ -293,11 +304,25 @@ class EnvVar(BaseModel):
     source: EnvSource
 
 class EnvSource(BaseModel):
-    """Declarative value source. Target-aware resolution in config_gen/env.py."""
-    literal: str | None = None             # constant
-    from_spec: str | None = None           # dotted path into Deployment spec
-    from_secret: str | None = None         # named secret reference
-    from_component: str | None = None      # component name → target-specific URL
+    """Declarative value source. Target-aware resolution in config_gen/env.py.
+    Exactly one of the six fields must be set.
+
+    Activation-awareness (important for soft deps): when an OPTIONAL env
+    var's `from_component*` target is inactive in the deployment, the
+    resolver skips that env var entirely (raises InactiveComponentRef
+    which optional-resolution catches). REQUIRED env vars with inactive
+    targets raise hard — catch this at validation time, not render time.
+
+    Symmetric gap (known limitation): `from_secret` on an optional env
+    when the secret wasn't collected currently emits `${VAR}` → empty
+    string rather than skipping. See follow-up in wip-deploy-v2-status.
+    """
+    literal: str | None = None
+    from_spec: str | None = None              # dotted path into SpecContext
+    from_secret: str | None = None            # named secret reference
+    from_component: str | None = None         # full URL
+    from_component_host: str | None = None    # DNS name only
+    from_component_port: str | None = None    # port number as string
 
 class Route(BaseModel):
     path: str                              # e.g., "/api/document-store"
@@ -475,12 +500,16 @@ class Renderer(Protocol):
 
 **Compose renderer** (`renderers/compose.py`):
 
-- Emits `docker-compose.yaml` + `Caddyfile` + `.env` + optional config mount directories
-- Uses compose **profiles** for modules (`--profile reporting` enables the reporting module)
-- YAML anchors/aliases for repeated patterns
-- Caddyfile hand-built (Caddy syntax isn't YAML)
-- `apply` runs `podman-compose --env-file .env -f docker-compose.yaml up -d`
-- Wait logic: polls `docker compose ps --format json` for `health: healthy` on every service with a healthcheck
+- Emits `docker-compose.yaml` + `.env` (0600) + `config/caddy/Caddyfile` + `config/dex/config.yaml`
+- No compose profiles — module activation happens at render time (inactive components simply aren't emitted)
+- Caddyfile has **two site blocks**:
+  - `localhost:8443 { ... }` — external HTTPS with TLS + gateway `forward_auth` on auth-protected routes
+  - `:8080 { ... }` — internal HTTP, no TLS, no forward_auth — for container-to-container calls (e.g. react-console's SSR proxy at `http://wip-caddy:8080/api/*` with its own `X-API-Key` header)
+- `depends_on` is activation-aware: inactive deps are dropped (compose rejects references to services not in the file). Active deps with a healthcheck get `condition: service_healthy`; without, `service_started`.
+- **No local `build:` support in compose.** The renderer requires pre-built images (registry-pulled or loaded). Local source iteration belongs in the dev renderer (step 7).
+- `apply` runs `podman-compose --env-file .env -f docker-compose.yaml up -d`, then waits for healthy (unless `--no-wait`).
+
+**Caddyfile binding gotcha:** the site-block header is `localhost:8443` explicitly — without the `:8443` Caddy defaults to listening on container port 443, which the compose port mapping (`8443:8443`) doesn't reach.
 
 **K8s renderer** (`renderers/k8s.py`):
 
@@ -996,6 +1025,53 @@ Without them, the new architecture drifts the same way the old one did. They exi
 ### In-place replacement, no coexistence
 
 Coexistence is what produced the drift. v1.1 on the tag, v2 on the branch, delete + merge.
+
+---
+
+## Known limitations (surfaced during implementation)
+
+The compose install works end-to-end, but a few sharp edges are worth
+documenting rather than quietly papering over. Each is a legitimate
+follow-up, not a design flaw:
+
+1. **Healthcheck probe assumes `curl` is in the image.** Distroless
+   images (Dex) have no shell or probe binary at all — healthcheck
+   removed from the manifest. v1.1.0 app images (dnd, clintrial,
+   react-console) ship wget but not curl — app healthchecks also
+   removed. Consequence: `--wait` on install cannot observe those
+   services' health, so `compose up -d` returns before they're
+   actually ready. Low-risk because apps aren't on anyone's
+   `depends_on`. **Proper fix:** probe-tool abstraction in
+   `HealthcheckSpec` (wget fallback, or manifest-level tool hint).
+
+2. **Optional `from_secret` does not activation-skip.** When a secret
+   is in `deployment.spec.secrets.backend` but wasn't collected
+   (because the consuming component is active but the secret's
+   natural source — e.g., minio — is inactive), the renderer still
+   emits `${VAR}` which compose substitutes to empty string. Services
+   receiving empty credentials can behave unpredictably. Works by
+   accident today because affected services tolerate empty values.
+   **Proper fix:** symmetric handling with `from_component` — skip
+   optional env vars whose secret wasn't collected.
+
+3. **`uvicorn` command heuristic is fallback-prone.** The renderer
+   auto-generates `uvicorn {name}.main:app` when no `spec.command` is
+   set. Wrong for mcp-server (real module: `wip_mcp`), which crashed
+   until we added explicit `command` to its manifest. **Proper fix:**
+   remove the heuristic; require every component's manifest to
+   specify `command` explicitly (or rely on image CMD). The current
+   heuristic is latent-bug-prone.
+
+4. **External image bugs, not deployer issues:** (a) mcp-server v1.1.0
+   requires auth on `/health`, so its container stays in `unhealthy`
+   state under the gateway-forwarding healthcheck; (b) v1.1.0 app
+   images ship without curl. Both want image-level fixes.
+
+5. **Compose local-build is intentionally unsupported.** v2's compose
+   renderer requires pre-built images. Local source iteration is
+   step 7's dev renderer (Tilt). Running `wip-deploy install --target
+   compose` without `--registry` fails on image pull. Documented but
+   not error-guarded upfront.
 
 ---
 
