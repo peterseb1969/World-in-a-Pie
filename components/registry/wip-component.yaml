@@ -28,7 +28,7 @@ spec:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 
   routes:
-    - {path: /api/registry, auth_required: true}
+    - {path: /api/registry, auth_required: false}
 
   depends_on: [mongodb]
 

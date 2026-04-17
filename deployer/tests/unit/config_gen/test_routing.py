@@ -60,16 +60,27 @@ class TestAppRoutes:
 
 
 class TestAuthProtection:
-    def test_gateway_on_auth_required_route_is_protected(
+    def test_api_routes_are_not_gateway_protected(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
+        """API routes have auth_required=False — backend services handle
+        API-key auth themselves. The gateway only protects browser-facing
+        app routes."""
         routes = resolve_routes(
             compose_deployment, real_discovery.components, real_discovery.apps
         )
         api_registry = next(r for r in routes if r.path == "/api/registry")
-        # compose_deployment has gateway=True, registry's route has
-        # auth_required=True → protected
-        assert api_registry.auth_protected is True
+        assert api_registry.auth_protected is False
+
+    def test_app_routes_are_gateway_protected(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        from wip_deploy.spec import AppRef
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.apps = [AppRef(name="react-console")]
+        routes = resolve_routes(d, real_discovery.components, real_discovery.apps)
+        rc = next(r for r in routes if r.path == "/apps/rc")
+        assert rc.auth_protected is True
 
     def test_gateway_off_disables_all_protection(
         self, compose_deployment: Deployment, real_discovery: Discovery

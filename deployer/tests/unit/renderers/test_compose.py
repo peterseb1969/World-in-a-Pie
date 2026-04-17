@@ -370,19 +370,33 @@ class TestDexRender:
 
 
 class TestCaddyfile:
-    def test_forward_auth_for_gateway_protected_routes(
+    def test_api_routes_have_no_forward_auth(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
+        """API routes use API-key auth (service-level). No gateway
+        forward_auth — that's only for browser-facing app routes."""
         d = _minimal_compose()
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        # /api/registry is auth-protected in standard — should have forward_auth
         assert "/api/registry/*" in caddyfile
         registry_block_start = caddyfile.index("handle /api/registry/*")
         registry_block = caddyfile[registry_block_start : registry_block_start + 300]
-        assert "forward_auth wip-auth-gateway:4180" in registry_block
+        assert "forward_auth" not in registry_block
+
+    def test_app_routes_have_forward_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """App routes (/apps/*) are gateway-protected."""
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        rc_start = caddyfile.index("handle /apps/rc/*")
+        rc_block = caddyfile[rc_start : rc_start + 300]
+        assert "forward_auth wip-auth-gateway:4180" in rc_block
 
     def test_streaming_route_sets_flush_interval(
         self, tmp_path: Path, real_discovery: Discovery

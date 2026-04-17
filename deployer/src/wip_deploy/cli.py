@@ -18,7 +18,7 @@ from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
-from wip_deploy.renderers import FileTree, render_compose
+from wip_deploy.renderers import FileTree, render_compose, render_k8s
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -874,6 +874,8 @@ def _render_tree(
     """Dispatch to the right renderer for the deployment's target."""
     if deployment.spec.target == "compose":
         return render_compose(deployment, components, apps_list, secrets)
+    if deployment.spec.target == "k8s":
+        return render_k8s(deployment, components, apps_list, secrets)
     typer.echo(
         f"error: renderer for target={deployment.spec.target!r} not implemented yet",
         err=True,

@@ -90,13 +90,46 @@ Produces:
    any image with either tool works. Separately fixing the images to
    ship curl is no longer required.
 
-### Priority 4 — post-step 10
+### Priority 4 — k8s renderer quality-of-life (deferred from step 8 MVP)
 
-9. **Delete v1 surfaces** (step 12 in `wip-deploy-v2.md`): setup.sh,
-   quick-install.sh, setup-wip.sh, docker-compose/, docker-compose.
-   production.yml, components/\*/docker-compose\*.yml, k8s/. Rename
-   scripts/ → tools/. Rewrite quick-install.sh to the bootstrap form.
-10. Kill the default `auto_https disable_redirects` in Caddyfile for
+These are not blocking the first working k8s deploy but are tracked
+here so they don't fall through the cracks:
+
+9. **Kustomize overlays for presets.** MVP renders a flat directory of
+    active components; `kubectl apply -f` against it. A proper
+    `base/` + `overlays/<preset>/` structure with strategic merge
+    patches would allow toggling presets without re-rendering — matters
+    once a GitOps workflow exists. **Why deferred:** Peter hasn't asked
+    for GitOps; rendering only active components achieves the same end
+    today.
+
+10. **`k8s-secret` backend.** File backend generates secrets to disk,
+    then renders them inline into the k8s Secret yaml. A native k8s
+    backend would read/write secrets as k8s Secret objects via kubectl,
+    enabling `wip-deploy rotate-secrets` against a live cluster.
+    **Why deferred:** first deploy doesn't need rotation; file backend
+    covers bootstrap.
+
+11. **NetworkPolicies.** The hand-written v1 policies had a fundamental
+    bug (deny-all-default blocked cross-namespace ingress controller
+    traffic). Proper policies need the renderer to model the actual
+    communication graph from component manifests' `depends_on` +
+    `routes`. **Why deferred:** security hardening, not functional
+    requirement; cluster works without them.
+
+12. **`apply_k8s` with rollout-status wait.** Compose apply polls
+    `podman-compose ps` for health. k8s equivalent polls `kubectl
+    rollout status` per Deployment/StatefulSet. **Why deferred:** shell
+    plumbing; renderer's job is correct YAML; manual `kubectl apply`
+    works for now.
+
+### Priority 5 — post-step 10
+
+13. **Delete v1 surfaces** (step 12 in `wip-deploy-v2.md`): setup.sh,
+    quick-install.sh, setup-wip.sh, docker-compose/, docker-compose.
+    production.yml, components/\*/docker-compose\*.yml, k8s/. Rename
+    scripts/ → tools/. Rewrite quick-install.sh to the bootstrap form.
+14. Kill the default `auto_https disable_redirects` in Caddyfile for
     `letsencrypt` mode — currently hardcoded regardless of `tls`
     setting. Works but would confuse a future reader.
 

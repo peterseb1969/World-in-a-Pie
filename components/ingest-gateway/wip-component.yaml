@@ -29,7 +29,7 @@ spec:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 
   routes:
-    - {path: /api/ingest-gateway, auth_required: true}
+    - {path: /api/ingest-gateway, auth_required: false}
 
   depends_on: [nats, def-store, template-store, document-store]
 

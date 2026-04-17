@@ -39,7 +39,7 @@ spec:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
 
   routes:
-    - {path: /api/document-store, auth_required: true, streaming: true}
+    - {path: /api/document-store, auth_required: false, streaming: true}
 
   depends_on: [mongodb, registry, def-store, template-store]
 

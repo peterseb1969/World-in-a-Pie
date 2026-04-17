@@ -25,7 +25,7 @@ spec:
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
 
   routes:
-    - {path: /mcp, auth_required: true}
+    - {path: /mcp, auth_required: false}
 
   depends_on: [registry, def-store, template-store, document-store]
 
