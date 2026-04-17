@@ -1,9 +1,16 @@
-"""WIP Auth Gateway — Caddy forward_auth service for centralized OIDC.
+"""WIP Auth Gateway — centralized OIDC gateway called by Caddy/nginx.
 
-This service sits between Caddy and WIP apps. Caddy calls /auth/verify on
-every request to /apps/*. The gateway checks the session cookie and returns:
-  - 200 with X-WIP-User, X-WIP-Groups, X-API-Key headers (authenticated)
-  - 302 redirect to /auth/login (unauthenticated)
+Called by Caddy's forward_auth (compose) or nginx-ingress's auth-url
+(k8s) on every auth-protected request. The gateway checks the session
+cookie and returns:
+
+  - 200 with X-WIP-User / X-WIP-Groups / X-API-Key headers (authenticated)
+  - 401 with X-Auth-Redirect header naming the login URL (unauthenticated)
+
+The 401 response is the standard signal both Caddy and nginx know how
+to turn into a browser redirect to /auth/login:
+  - Caddy: `handle_response @401 { redir ... }` in the forward_auth block.
+  - nginx: `auth-signin` annotation on the Ingress.
 
 The OIDC flow (login → Dex → callback → session) is handled entirely by
 this service. Apps never touch OIDC — they read identity from headers.
@@ -45,12 +52,23 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# /auth/verify — called by Caddy forward_auth
+# /auth/verify — called by Caddy forward_auth / nginx auth-request
 # ---------------------------------------------------------------------------
 
 @app.get("/auth/verify")
 async def verify(request: Request):
-    """Check session cookie. Return 200 + identity headers or 302 to login."""
+    """Check session cookie.
+
+    Authenticated  → 200 with X-WIP-User / X-WIP-Groups / X-API-Key headers.
+    Unauthenticated → 401 with X-Auth-Redirect header pointing at /auth/login.
+
+    The 401 response is the standard signal both nginx's auth-request
+    module (via the `auth-signin` annotation) and Caddy's `forward_auth`
+    (via `handle_response @401 { redir ... }`) know how to turn into a
+    browser redirect. Keeping the gateway target-agnostic — it never
+    initiates a redirect itself — means renderers own the target-
+    specific UX and the gateway code stays uniform.
+    """
     session = request.session
     email = session.get("email")
     exp = session.get("exp", 0)
@@ -66,7 +84,9 @@ async def verify(request: Request):
             },
         )
 
-    # Not authenticated — build return URL from Caddy's forwarded headers.
+    # Not authenticated. Build the return URL from forwarded headers for
+    # the informational X-Auth-Redirect header — the renderer-side
+    # redirect will append its own `return_to`.
     original_uri = request.headers.get("X-Forwarded-Uri", "/")
     original_host = request.headers.get("X-Forwarded-Host", settings.wip_hostname)
     original_proto = request.headers.get("X-Forwarded-Proto", "https")
@@ -74,7 +94,10 @@ async def verify(request: Request):
 
     from urllib.parse import quote
     login_url = f"/auth/login?return_to={quote(return_to)}"
-    return RedirectResponse(url=login_url, status_code=302)
+    return Response(
+        status_code=401,
+        headers={"X-Auth-Redirect": login_url},
+    )
 
 
 # ---------------------------------------------------------------------------

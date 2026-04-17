@@ -16,6 +16,11 @@ spec:
   ports:
     - {name: http, container_port: 5556}
 
+  routes:
+    # Browser-facing OIDC endpoints (authorize, token, userinfo, keys,
+    # the hosted login page). Dex handles its own auth — no forward_auth.
+    - {path: /dex, auth_required: false}
+
   storage:
     - {name: db, mount_path: /data, size: 1Gi}
 

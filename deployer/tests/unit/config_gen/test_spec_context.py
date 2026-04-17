@@ -63,6 +63,21 @@ class TestSpecContextComputation:
         ctx = make_spec_context(d, real_discovery.components)
         assert ctx.network.cors_origins == "https://localhost:8443"
 
+    def test_k8s_target_omits_port_from_public_urls(
+        self, k8s_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        """K8s ingress terminates TLS on 443. Embedding `:8443` (the
+        compose convention) in OIDC redirect URIs points browsers at a
+        closed port — the flow dies with ERR_ADDRESS_UNREACHABLE."""
+        ctx = make_spec_context(k8s_deployment, real_discovery.components)
+        assert ctx.auth.issuer_url_public == "https://wip-kubi.local/dex"
+        assert ctx.auth.callback_url == (
+            "https://wip-kubi.local/auth/callback"
+        )
+        assert ctx.network.cors_origins == (
+            "https://wip-kubi.local,https://localhost"
+        )
+
 
 class TestResolveFromSpec:
     def _simple_ctx(self) -> SpecContext:

@@ -52,14 +52,14 @@ def compose_deployment() -> Deployment:
 @pytest.fixture
 def k8s_deployment() -> Deployment:
     """Typical k8s deployment — mirrors compose_deployment at a different
-    target."""
+    target. Uses 443/80 to match nginx-ingress's standard ports."""
     return Deployment(
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="k8s",
             modules={"optional": ["console"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
-            network=NetworkSpec(hostname="wip-kubi.local"),
+            network=NetworkSpec(hostname="wip-kubi.local", https_port=443, http_port=80),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(k8s=K8sPlatform()),
             secrets=SecretsSpec(backend="k8s-secret"),

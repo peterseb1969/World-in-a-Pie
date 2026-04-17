@@ -14,7 +14,6 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
-from wip_deploy.config_gen.routing import ResolvedRoute
 
 
 def render_caddyfile(cfg: CaddyConfig) -> str:
@@ -40,21 +39,10 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     _write_tls(out, cfg)
     out.write("\n")
 
-    # Dex proxy — always before /api routes so /dex/* doesn't fall
-    # through to the console handler.
-    if cfg.has_dex:
-        out.write("    handle /dex/* {\n")
-        out.write(f"        reverse_proxy {cfg.dex_service}:5556\n")
-        out.write("    }\n\n")
-
-    # Auth gateway's own endpoints (sign-in, callback). Only when the
-    # gateway is in the path.
-    if cfg.gateway_enabled:
-        out.write("    handle /auth/* {\n")
-        out.write(
-            f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port}\n"
-        )
-        out.write("    }\n\n")
+    # All browser-facing routes (/dex/*, /auth/*, /api/*, /apps/*, /)
+    # flow through the component manifest → _write_route pipeline. No
+    # renderer special-cases — both Caddy and nginx-ingress consume the
+    # same route list so they can't disagree about what's exposed.
 
     # Routes — sorted by path-depth descending so longer paths match first.
     # Caddy's handle matching is order-independent for non-overlapping
@@ -73,36 +61,14 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             _write_catchall(out, route, cfg)
             break
 
-    out.write("}\n\n")
+    out.write("}\n")
 
-    # ── Internal :8080 listener — plain HTTP, no forward_auth ──────
-    # Container-to-container API traffic (e.g. react-console's SSR proxy
-    # reaching the WIP services). No TLS (internal network is trusted),
-    # no gateway auth (apps inject X-API-Key headers themselves using
-    # their WIP_API_KEY env). Only /api/* routes matter here — app
-    # routes and the console catch-all are browser-only.
-    _write_internal_block(out, cfg, sorted_routes)
+    # Internal /api/* routing for SSR proxies used to live here as a
+    # second `:8080` site block. That's now owned by the wip-router
+    # component — its own Caddyfile is rendered by router_caddy.py
+    # and emitted by the top-level compose renderer.
 
     return out.getvalue()
-
-
-def _write_internal_block(
-    out: StringIO, cfg: CaddyConfig, sorted_routes: list[ResolvedRoute]
-) -> None:
-    out.write(":8080 {\n")
-    for route in sorted_routes:
-        if not route.path.startswith("/api/"):
-            continue
-        backend = f"wip-{route.backend_component}:{route.backend_port}"
-        out.write(f"    handle {route.path}/* {{\n")
-        if route.streaming:
-            out.write(f"        reverse_proxy {backend} {{\n")
-            out.write("            flush_interval -1\n")
-            out.write("        }\n")
-        else:
-            out.write(f"        reverse_proxy {backend}\n")
-        out.write("    }\n")
-    out.write("}\n")
 
 
 def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
@@ -120,13 +86,29 @@ def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
         out.write("    tls off\n")
 
 
+def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
+    """Emit the forward_auth block shared by routes and the catch-all.
+
+    The `@unauth status 401` + `handle_response` pair converts the
+    gateway's 401 (returned when the session is missing/expired) into a
+    302 redirect to /auth/login. Without this, Caddy would propagate
+    the 401 straight to the browser, which sees a bare "Unauthorized"
+    page instead of a login flow.
+    """
+    out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
+    out.write("            uri /auth/verify\n")
+    out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
+    out.write("            @unauth status 401\n")
+    out.write("            handle_response @unauth {\n")
+    out.write("                redir /auth/login?return_to={http.request.uri} 302\n")
+    out.write("            }\n")
+    out.write("        }\n")
+
+
 def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     out.write(f"    handle {route.path}/* {{\n")
     if route.auth_protected:
-        out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
-        out.write("            uri /auth/verify\n")
-        out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
-        out.write("        }\n")
+        _write_forward_auth(out, cfg)
     backend = f"wip-{route.backend_component}:{route.backend_port}"
     if route.streaming:
         out.write(f"        reverse_proxy {backend} {{\n")
@@ -140,10 +122,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
 def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     out.write("    handle {\n")
     if route.auth_protected:
-        out.write(f"        forward_auth {cfg.gateway_service}:{cfg.gateway_port} {{\n")
-        out.write("            uri /auth/verify\n")
-        out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
-        out.write("        }\n")
+        _write_forward_auth(out, cfg)
     out.write(
         f"        reverse_proxy wip-{route.backend_component}:{route.backend_port}\n"
     )

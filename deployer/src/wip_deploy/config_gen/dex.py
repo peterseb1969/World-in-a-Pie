@@ -79,8 +79,10 @@ def generate_dex_config(
 
 
 def _public_base(deployment: Deployment) -> str:
-    net = deployment.spec.network
-    return f"https://{net.hostname}:{net.https_port}"
+    """Public base URL. Delegates to spec_context's helper so Dex client
+    redirect_uris exactly match what the browser actually requests."""
+    from wip_deploy.config_gen.spec_context import _public_base as _spec_ctx_public_base
+    return _spec_ctx_public_base(deployment)
 
 
 def _issuer_url(deployment: Deployment) -> str:

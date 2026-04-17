@@ -41,8 +41,10 @@ class BuildInputs:
     target: str = "compose"
     hostname: str = "wip.local"
     tls: str = "internal"
-    https_port: int = 8443
-    http_port: int = 8080
+    # None → target-aware defaults: 443 for k8s (nginx-ingress LoadBalancer),
+    # 8443 for compose/dev (Caddy as non-root). Explicit ports pass through.
+    https_port: int | None = None
+    http_port: int | None = None
 
     # Compose platform
     compose_data_dir: Path | None = None
@@ -116,12 +118,16 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     spec_dict["target"] = inputs.target
     spec_dict["platform"] = _build_platform(inputs)
 
-    # Network
+    # Network. Target-aware port defaults when not explicitly set:
+    # k8s uses the LB's 443/80; compose/dev uses 8443/8080 so Caddy
+    # doesn't need privileged ports.
+    default_https = 443 if inputs.target == "k8s" else 8443
+    default_http = 80 if inputs.target == "k8s" else 8080
     spec_dict["network"] = {
         "hostname": inputs.hostname,
         "tls": inputs.tls,
-        "https_port": inputs.https_port,
-        "http_port": inputs.http_port,
+        "https_port": inputs.https_port if inputs.https_port is not None else default_https,
+        "http_port": inputs.http_port if inputs.http_port is not None else default_http,
     }
 
     # Images

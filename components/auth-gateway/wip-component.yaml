@@ -13,10 +13,19 @@ metadata:
 spec:
   image:
     name: auth-gateway
+    # Per-component tag override. The auth-gateway was added after the
+    # v1.1.0 release (Theme 7) and has its own cadence — using
+    # spec.images.tag would pin it to an unpublished version.
+    tag: v1.2.0
     build_context: .
 
   ports:
     - {name: http, container_port: 4180}
+
+  routes:
+    # Browser-facing /auth/* endpoints (login, callback, logout,
+    # userinfo). The gateway IS the auth — no forward_auth on these.
+    - {path: /auth, auth_required: false}
 
   env:
     required:

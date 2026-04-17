@@ -93,11 +93,14 @@ class TestIngress:
     def test_gateway_auth_url_when_enabled(
         self, k8s_deployment: Deployment, real_discovery: Discovery
     ) -> None:
+        """auth-url must include the auth-gateway's container port (4180).
+        Without the port, nginx defaults to :80 which nothing listens on —
+        requests sit until the 60s timeout, then return 500."""
         cfg = generate_ingress_config(
             k8s_deployment, real_discovery.components, real_discovery.apps
         )
         assert cfg.gateway_auth_url == (
-            "http://wip-auth-gateway.wip.svc.cluster.local/auth/verify"
+            "http://wip-auth-gateway.wip.svc.cluster.local:4180/auth/verify"
         )
 
     def test_gateway_auth_url_none_when_disabled(

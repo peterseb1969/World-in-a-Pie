@@ -78,25 +78,49 @@ def resolve_from_spec(path: str, ctx: SpecContext) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
+def _format_url(host: str, port: int, scheme: str = "https") -> str:
+    """Build a URL, omitting the port when it's the scheme's default.
+
+    Avoids emitting `:8443` when the browser expects the standard port
+    (compose/dev default) vs `:443` for k8s (LoadBalancer Service).
+    Browsers treat `https://host` and `https://host:443` as identical
+    origins, but OIDC redirect_uris must match exactly — so the convention
+    is to omit default ports.
+    """
+    defaults = {"https": 443, "http": 80}
+    if port == defaults.get(scheme):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _public_base(deployment: Deployment) -> str:
+    """Public base URL browsers hit. Uses `network.https_port` uniformly
+    across all targets — defaults differ (443 for k8s, 8443 for
+    compose/dev), and URL formatting strips the port when default."""
+    net = deployment.spec.network
+    return _format_url(net.hostname, net.https_port)
+
+
 def _compute_network(deployment: Deployment) -> SpecContextNetwork:
     net = deployment.spec.network
-    target = deployment.spec.target
 
-    # CORS origins: the external URL is always allowed; on network installs
-    # we also allow localhost so dev browsers hitting the same service via
-    # 127.0.0.1:port still work.
-    external = f"https://{net.hostname}:{net.https_port}"
+    # CORS origins: external URL always allowed; on network installs
+    # we also allow localhost so dev browsers hitting via 127.0.0.1
+    # still work.
+    external = _public_base(deployment)
     if net.hostname == "localhost":
         cors = external
     else:
-        cors = f"{external},https://localhost:{net.https_port}"
+        localhost_origin = _format_url("localhost", net.https_port)
+        cors = f"{external},{localhost_origin}"
 
-    # Internal base URL — what the gateway / apps use to reach the
-    # ingress from inside the network. Caddy (compose/dev) listens on
-    # 8080 HTTP internally; the k8s renderer overrides this when it
-    # wires the Ingress to an internal ClusterIP Service.
-    _ = target  # currently same value regardless; placeholder
-    internal_base = "http://wip-caddy:8080"
+    # Internal base URL — apps proxying API calls server-side point
+    # WIP_BASE_URL at the wip-router component. The concrete URL is
+    # resolved via `from_component: wip-router` in each app's env, so
+    # there's no target-specific string hardcoded here. This field
+    # remains for back-compat with the few callers that still use
+    # `from_spec: network.internal_base_url` — they should migrate.
+    internal_base = "http://wip-router:8080"
 
     return SpecContextNetwork(
         hostname=net.hostname,
@@ -106,8 +130,7 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
 
 
 def _compute_auth(deployment: Deployment) -> SpecContextAuth:
-    net = deployment.spec.network
-    public_base = f"https://{net.hostname}:{net.https_port}"
+    public_base = _public_base(deployment)
     return SpecContextAuth(
         issuer_url_public=f"{public_base}/dex",
         # Internal Dex is on port 5556 inside the network, in the Dex

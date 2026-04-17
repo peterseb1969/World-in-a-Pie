@@ -57,11 +57,22 @@ def generate_ingress_config(
         raise ValueError("k8s target requires platform.k8s")
 
     gateway_on = deployment.spec.auth.gateway
-    gateway_auth_url = (
-        f"http://wip-auth-gateway.{k8s.namespace}.svc.cluster.local/auth/verify"
-        if gateway_on
-        else None
-    )
+    gateway_auth_url: str | None = None
+    if gateway_on:
+        gw = next(
+            (c for c in components if c.metadata.name == "auth-gateway"), None
+        )
+        if gw is None or not gw.spec.ports:
+            raise ValueError(
+                "auth-gateway component missing or has no ports — "
+                "gateway mode needs its HTTP port to wire auth-url"
+            )
+        # Prefer the "http"-named port; fall back to the first declared port.
+        port = next((p for p in gw.spec.ports if p.name == "http"), gw.spec.ports[0])
+        gateway_auth_url = (
+            f"http://wip-auth-gateway.{k8s.namespace}.svc.cluster.local"
+            f":{port.container_port}/auth/verify"
+        )
 
     rules = [
         IngressRule(
