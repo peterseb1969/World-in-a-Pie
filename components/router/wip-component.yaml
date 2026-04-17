@@ -1,0 +1,40 @@
+api_version: wip.dev/v1
+kind: Component
+metadata:
+  name: router
+  category: infrastructure
+  description: |
+    Internal HTTP aggregator for apps that proxy API calls server-side.
+    Apps point `WIP_BASE_URL` at this service; the router reverse-
+    proxies /api/* to the correct backend (registry, def-store, etc.).
+
+    Replaces the compose-era hardcoded `http://wip-caddy:8080` — same
+    role, now an explicit Component visible to both compose and k8s
+    renderers.
+
+spec:
+  image:
+    # Fully-qualified upstream image. Without the `docker.io/library/`
+    # prefix, the renderer's short-name logic would prepend
+    # spec.images.registry (ghcr.io/peterseb1969/...) and the pull would
+    # fail. Caddy isn't published by WIP — it's an upstream dependency.
+    name: docker.io/library/caddy
+    tag: "2"
+
+  ports:
+    - {name: http, container_port: 8080}
+
+  # Caddy runs the generated Caddyfile from /etc/caddy/Caddyfile.
+  # Both renderers mount a config file at that path — compose via
+  # bind-mount, k8s via ConfigMap (see renderer-side special-case
+  # until config_files generalization lands).
+  command: [caddy, run, --config, /etc/caddy/Caddyfile, --adapter, caddyfile]
+
+  # The router has no `/` handler — Caddy returns 404 for unmatched
+  # paths. That's fine as a liveness signal (the listener is up), but
+  # the stock HTTP probe treats non-2xx as failure. Use a command-style
+  # probe that accepts any HTTP response code.
+  healthcheck:
+    command: ["sh", "-c", "curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -qE '^[0-9]{3}$'"]
+    start_period_seconds: 5
+

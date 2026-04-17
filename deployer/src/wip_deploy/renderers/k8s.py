@@ -38,8 +38,10 @@ from wip_deploy.config_gen import (
     resolve_all_env,
 )
 from wip_deploy.config_gen.env import Literal
+from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -226,6 +228,24 @@ def _render_configmaps(
             "data": {"config.yaml": dex_yaml},
         })
 
+    # wip-router Caddyfile
+    router_active = any(
+        c.metadata.name == "router" and is_component_active(c, deployment)
+        for c in components
+    )
+    if router_active:
+        router_cfg = generate_router_config(deployment, components, apps)
+        docs.append({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "wip-router-config",
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+            },
+            "data": {"Caddyfile": render_router_caddyfile(router_cfg)},
+        })
+
     return _dump_multi(docs)
 
 
@@ -309,7 +329,8 @@ def _render_component(
             "persistentVolumeClaim": {"claimName": pvc_name},
         })
 
-    # Dex needs its config mounted
+    # Config-file mounts for known components. Generalizing via
+    # `config_files` on the Component spec is a tracked follow-up.
     if name == "dex":
         volume_mounts.append({
             "name": "config",
@@ -319,6 +340,19 @@ def _render_component(
         volumes.append({
             "name": "config",
             "configMap": {"name": "wip-dex-config"},
+        })
+    elif name == "router":
+        # Caddy reads /etc/caddy/Caddyfile. Mount just that key via
+        # subPath so we don't replace the directory.
+        volume_mounts.append({
+            "name": "config",
+            "mountPath": "/etc/caddy/Caddyfile",
+            "subPath": "Caddyfile",
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "config",
+            "configMap": {"name": "wip-router-config"},
         })
 
     if volume_mounts:

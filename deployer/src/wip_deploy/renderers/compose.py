@@ -38,9 +38,11 @@ from wip_deploy.config_gen import (
 from wip_deploy.config_gen.env import (
     Literal,
 )
+from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -100,6 +102,19 @@ def render_compose(
         tree.add(
             "config/dex/config.yaml",
             render_dex_config(dex_cfg, secrets),
+        )
+
+    # wip-router Caddyfile — emitted whenever the router component is
+    # active (it's infrastructure, so effectively always).
+    router_active = any(
+        c.metadata.name == "router" and is_component_active(c, deployment)
+        for c in components
+    )
+    if router_active:
+        router_cfg = generate_router_config(deployment, components, apps)
+        tree.add(
+            "config/router/Caddyfile",
+            render_router_caddyfile(router_cfg),
         )
 
     return tree
@@ -370,9 +385,13 @@ def _volumes_for(owner: Component | App) -> list[str]:
         volume_name = f"wip-{owner.metadata.name}-{storage.name}"
         volumes.append(f"{volume_name}:{storage.mount_path}")
 
-    # Config-file bind mounts for known components.
+    # Config-file bind mounts for known components. This is a known
+    # special-case pattern; generalizing via `config_files` on the
+    # Component spec is a follow-up (see intent-audit memo).
     if owner.metadata.name == "dex":
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
+    elif owner.metadata.name == "router":
+        volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
 
     return volumes
 

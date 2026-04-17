@@ -89,6 +89,7 @@ class TestTreeShape:
             ".env",
             "config/caddy/Caddyfile",
             "config/dex/config.yaml",
+            "config/router/Caddyfile",
         }
 
     def test_api_key_only_omits_dex(
@@ -395,8 +396,25 @@ class TestCaddyfile:
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
         rc_start = caddyfile.index("handle /apps/rc/*")
-        rc_block = caddyfile[rc_start : rc_start + 300]
+        rc_block = caddyfile[rc_start : rc_start + 400]
         assert "forward_auth wip-auth-gateway:4180" in rc_block
+
+    def test_forward_auth_wraps_401_in_login_redirect(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Gateway returns 401 on unauthenticated requests. Caddy must
+        catch that and redirect the browser to /auth/login — otherwise
+        users see a bare 401 page instead of the login flow."""
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        rc_start = caddyfile.index("handle /apps/rc/*")
+        rc_block = caddyfile[rc_start : rc_start + 500]
+        assert "@unauth status 401" in rc_block
+        assert "handle_response @unauth" in rc_block
+        assert "redir /auth/login" in rc_block
 
     def test_streaming_route_sets_flush_interval(
         self, tmp_path: Path, real_discovery: Discovery

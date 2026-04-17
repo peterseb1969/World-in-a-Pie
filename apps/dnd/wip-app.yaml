@@ -17,7 +17,7 @@ spec:
 
   env:
     required:
-      - {name: WIP_BASE_URL, source: {from_spec: network.internal_base_url}}
+      - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
       - {name: PORT, source: {literal: "3012"}}
