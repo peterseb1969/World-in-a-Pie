@@ -65,14 +65,19 @@ Produces:
 
 ### Priority 2 — convenience
 
-4. **Pre-install port-conflict check.**
-   `wip-deploy install` should detect existing `wip-*` containers (not
-   from this install) and refuse-or-prompt. Avoids the confusing half-
-   install state when v1 and v2 collide.
+4. **Pre-install port-conflict check.** ✅ `preflight.py` runs before
+   compose/dev apply. `check_ports_free` probes the configured HTTPS +
+   HTTP ports (default 8443, 8080); if bound, aborts with a message
+   pointing at `wip-deploy nuke`. `check_no_stale_containers` warns
+   (non-fatal) when `wip-*` containers exist on the host but the
+   install directory has no `docker-compose.yaml` — typical "v1
+   leftovers colliding with a fresh v2 install" trap.
 
-5. **`wip-deploy status` verb.**
-   Read compose ps + health probes, print a table. Today users
-   fall back to `podman ps`.
+5. **`wip-deploy status` verb.** ✅ `wip-deploy status` prints a compact
+   table of services with state + health. Compose/dev path reads
+   `podman-compose ps`; k8s path (`--namespace <ns>`) reads
+   `kubectl get pods -o json`. Verified end-to-end against the live
+   `wip-stable` namespace — all 17 pods come back healthy.
 
 6. **Compose local-build error-guard.** ✅ Cross-cutting validator
    `_validate_images_resolvable` rejects `target=compose` or `target=k8s`

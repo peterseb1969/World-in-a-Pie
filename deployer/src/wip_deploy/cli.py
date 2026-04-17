@@ -531,6 +531,12 @@ def install(
 
     target_dir = install_dir or _default_install_dir(name)
 
+    # Preflight: catch port conflicts and stale containers before any work
+    # happens. Only applies to compose/dev targets that bind host ports;
+    # k8s installs happen inside the cluster.
+    if deployment.spec.target in ("compose", "dev"):
+        _run_preflight_or_exit(deployment, target_dir)
+
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
     tree = _render_tree(deployment, components, apps_list, secrets)
 
@@ -568,6 +574,68 @@ def install(
             )
         )
     typer.echo(f"  https://{deployment.spec.network.hostname}:{deployment.spec.network.https_port}")
+
+
+# ────────────────────────────────────────────────────────────────────
+# status
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def status(
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Install directory for compose/dev targets. Defaults to "
+                "~/.wip-deploy/<name>/ when --name is used."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str, _name_opt()] = "default",
+    namespace: Annotated[
+        str | None,
+        typer.Option(
+            "--namespace", "-n",
+            help=(
+                "Kubernetes namespace to query. When set, queries k8s "
+                "instead of compose. Requires kubectl to be configured "
+                "against the target cluster."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Print a compact table of deployed services and their health.
+
+    Compose/dev: reads `podman-compose ps` from the install directory.
+    K8s: reads `kubectl get pods` from the given namespace.
+    """
+    from wip_deploy.status import (
+        StatusError,
+        format_table,
+        read_compose_status,
+        read_k8s_status,
+    )
+
+    if namespace is not None:
+        try:
+            rows = read_k8s_status(namespace)
+        except StatusError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"Namespace: {namespace}")
+    else:
+        resolved_dir = install_dir or _default_install_dir(name)
+        try:
+            rows = read_compose_status(resolved_dir)
+        except StatusError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        typer.echo(f"Install dir: {resolved_dir}")
+
+    typer.echo("")
+    typer.echo(format_table(rows))
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -838,6 +906,34 @@ def _validate_or_exit(
         for err in report.errors:
             typer.echo(f"  - {err}", err=True)
         raise typer.Exit(1)
+
+
+def _run_preflight_or_exit(deployment: Deployment, install_dir: Path) -> None:
+    """Port + stale-container checks before compose/dev apply.
+
+    Fatal errors abort with exit 1. Warnings are printed but don't block
+    — the user can decide whether to proceed.
+    """
+    from wip_deploy.preflight import (
+        PreflightError,
+        check_no_stale_containers,
+        check_ports_free,
+    )
+
+    ports = [deployment.spec.network.https_port, deployment.spec.network.http_port]
+    try:
+        check_ports_free(ports)
+    except PreflightError as e:
+        typer.echo(
+            typer.style(f"✗ {e}", fg=typer.colors.RED, bold=True), err=True
+        )
+        raise typer.Exit(1) from e
+
+    warnings = check_no_stale_containers(install_dir)
+    for w in warnings:
+        typer.echo(
+            typer.style(f"⚠ {w.message}", fg=typer.colors.YELLOW), err=True
+        )
 
 
 def _default_install_dir(name: str) -> Path:
