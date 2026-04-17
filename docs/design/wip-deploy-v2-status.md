@@ -1,17 +1,18 @@
 # `wip-deploy` v2 — Implementation Status
 
-**Last updated:** 2026-04-16
+**Last updated:** 2026-04-17
 
 Living companion to `wip-deploy-v2.md`. Tracks what's built, what's
 verified, and what's on the follow-up list.
 
 ## Snapshot
 
-- **Scope complete:** steps 1–6 of the plan in `wip-deploy-v2.md`
+- **Scope complete:** steps 1–8 of the plan in `wip-deploy-v2.md`
   ("The right order" section).
-- **Target working:** compose. Full end-to-end verified on a real
-  machine.
-- **Target pending:** k8s (step 8), dev renderer (step 7).
+- **Targets working:** compose (verified end-to-end on real hardware),
+  k8s (MVP renderer lands YAML that kubectl apply consumes), dev
+  (simple mode with build contexts + source mounts + uvicorn --reload).
+- **Target pending:** dev Tilt mode (step 7 round 2).
 - **v1 surfaces:** still present, deletion is step 12.
 
 ## What's proven working (compose)
@@ -122,6 +123,20 @@ here so they don't fall through the cracks:
     rollout status` per Deployment/StatefulSet. **Why deferred:** shell
     plumbing; renderer's job is correct YAML; manual `kubectl apply`
     works for now.
+
+13. **Tilt mode for the dev renderer** (step 7 round 2). Simple mode
+    (build contexts + source mounts + uvicorn --reload) is landed and
+    works for Python iteration. Tilt mode requires a Tiltfile generator
+    with `live_update` semantics — fundamentally different output
+    format from compose. **Why deferred:** simple mode covers 80% of
+    the dev loop; Tilt is a non-trivial output surface in its own right.
+
+14. **Dev-mode app rebuilds.** Node apps (dnd, clintrial, react-console)
+    need image rebuilds on source change — source mounts don't cover
+    them since the build step produces bundled assets. Current MVP
+    relies on the user running `podman-compose build <app>` manually.
+    **Why deferred:** handled naturally by Tilt mode (13); dev iteration
+    on apps is also less common than on backend services.
 
 ### Priority 5 — post-step 10
 

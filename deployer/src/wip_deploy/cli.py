@@ -18,7 +18,12 @@ from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
-from wip_deploy.renderers import FileTree, render_compose, render_k8s
+from wip_deploy.renderers import (
+    FileTree,
+    render_compose,
+    render_dev_simple,
+    render_k8s,
+)
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
@@ -876,6 +881,24 @@ def _render_tree(
         return render_compose(deployment, components, apps_list, secrets)
     if deployment.spec.target == "k8s":
         return render_k8s(deployment, components, apps_list, secrets)
+    if deployment.spec.target == "dev":
+        dev_plat = deployment.spec.platform.dev
+        if dev_plat is None or dev_plat.mode != "simple":
+            typer.echo(
+                f"error: dev target requires mode='simple'; got "
+                f"{dev_plat.mode if dev_plat else None!r} "
+                f"(tilt mode is a follow-up)",
+                err=True,
+            )
+            raise typer.Exit(2)
+        try:
+            root = find_repo_root()
+        except FileNotFoundError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(1) from e
+        return render_dev_simple(
+            deployment, components, apps_list, secrets, repo_root=root,
+        )
     typer.echo(
         f"error: renderer for target={deployment.spec.target!r} not implemented yet",
         err=True,
