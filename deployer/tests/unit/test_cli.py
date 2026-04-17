@@ -23,6 +23,17 @@ def _invoke(*args: str) -> object:
     return runner.invoke(app, list(args))
 
 
+def _invoke_valid(*args: str) -> object:
+    """Like _invoke but injects --registry unless one is already passed.
+    Most validate tests want the image-resolvability happy path."""
+    arglist = list(args)
+    if "--registry" not in arglist and "--target" in arglist:
+        target_idx = arglist.index("--target")
+        if target_idx + 1 < len(arglist) and arglist[target_idx + 1] in ("compose", "k8s"):
+            arglist.extend(["--registry", "ghcr.io/test"])
+    return runner.invoke(app, arglist)
+
+
 # ────────────────────────────────────────────────────────────────────
 # validate
 # ────────────────────────────────────────────────────────────────────
@@ -30,7 +41,7 @@ def _invoke(*args: str) -> object:
 
 class TestValidateHappyPath:
     def test_standard_compose_succeeds(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "standard",
             "--target", "compose",
@@ -42,7 +53,7 @@ class TestValidateHappyPath:
         assert "console" in r.output  # active component
 
     def test_headless_compose_succeeds(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "headless",
             "--target", "compose",
@@ -52,7 +63,7 @@ class TestValidateHappyPath:
         assert r.exit_code == 0, r.output
 
     def test_full_compose_succeeds(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "full",
             "--target", "compose",
@@ -66,7 +77,7 @@ class TestValidateHappyPath:
         assert "nats" in r.output
 
     def test_k8s_target_succeeds(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "standard",
             "--target", "k8s",
@@ -78,7 +89,7 @@ class TestValidateHappyPath:
 
 class TestValidateActivationRules:
     def test_reporting_activates_postgres_and_nats(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "standard",
             "--add", "reporting-sync",
@@ -91,7 +102,7 @@ class TestValidateActivationRules:
         assert "nats" in r.output
 
     def test_standard_does_not_activate_postgres(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "standard",
             "--target", "compose",
@@ -106,7 +117,7 @@ class TestValidateActivationRules:
         assert "postgres" not in component_line
 
     def test_headless_does_not_activate_dex(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "headless",
             "--target", "compose",
@@ -123,7 +134,7 @@ class TestValidateActivationRules:
 
 class TestValidateAppsEnabling:
     def test_app_appears_in_enabled_apps(self) -> None:
-        r = _invoke(
+        r = _invoke_valid(
             "validate",
             "--preset", "standard",
             "--target", "compose",

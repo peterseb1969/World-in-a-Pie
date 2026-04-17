@@ -14,6 +14,7 @@ from wip_deploy.spec import (
     DeploymentMetadata,
     DeploymentSpec,
     ImageRef,
+    ImagesSpec,
     K8sPlatform,
     NetworkSpec,
     PlatformSpec,
@@ -25,13 +26,18 @@ from wip_deploy.spec import (
 @pytest.fixture
 def minimal_compose_deployment() -> Deployment:
     """A valid minimal compose deployment. Tests that need to tweak a
-    single field should copy this."""
+    single field should copy this.
+
+    Includes a registry so the image-resolvability validator passes —
+    fixture users who want to exercise the no-registry case should build
+    a Deployment directly."""
     return Deployment(
         metadata=DeploymentMetadata(name="test"),
         spec=DeploymentSpec(
             target="compose",
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(compose=ComposePlatform(data_dir="/tmp/data")),
             secrets=SecretsSpec(backend="file", location="/tmp/secrets"),
         ),
@@ -46,6 +52,7 @@ def minimal_k8s_deployment() -> Deployment:
             target="k8s",
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip-kubi.local"),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(k8s=K8sPlatform()),
             secrets=SecretsSpec(backend="k8s-secret"),
         ),

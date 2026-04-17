@@ -217,6 +217,57 @@ def _validate_oidc_client_ids_unique(
 # ────────────────────────────────────────────────────────────────────
 
 
+def _validate_images_resolvable(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> list[ValidationError]:
+    """For pull-based targets (compose, k8s), every active component with a
+    short-name image MUST have a registry set.
+
+    Short-name images (no `/` in `image.name`) are rewritten to
+    `{registry}/{name}:{tag}` at render time. Without a registry, the
+    compose file would contain bare tags like `registry:v2.0.0` which
+    fail to pull from Docker Hub. Catching this up front beats waiting
+    for a confusing `manifest unknown` from podman-compose.
+
+    The dev target builds from source via `build_context`, so this
+    guard doesn't apply there.
+    """
+    errors: list[ValidationError] = []
+    target = deployment.spec.target
+    if target not in ("compose", "k8s"):
+        return errors
+    if deployment.spec.images.registry is not None:
+        return errors
+
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+    owners: list[Component | App] = []
+    for c in components:
+        if is_component_active(c, deployment):
+            owners.append(c)
+    for a in apps:
+        if a.metadata.name in enabled_app_names:
+            owners.append(a)
+
+    unresolved: list[str] = []
+    for owner in owners:
+        if "/" not in owner.spec.image.name:
+            unresolved.append(owner.metadata.name)
+
+    if unresolved:
+        names = ", ".join(sorted(unresolved))
+        errors.append(ValidationError(
+            f"target={target!r} needs pre-built images, but no --registry "
+            f"was specified and these components use short-name images: "
+            f"{names}. Fix: pass --registry <host> (e.g. "
+            f"--registry ghcr.io/peterseb1969) to resolve them against a "
+            f"published registry, OR use --target dev --dev-mode simple "
+            f"to build from local source."
+        ))
+    return errors
+
+
 def validate_all(
     deployment: Deployment,
     components: list[Component],
@@ -235,4 +286,5 @@ def validate_all(
     report.errors.extend(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )
+    report.errors.extend(_validate_images_resolvable(deployment, components, apps))
     return report

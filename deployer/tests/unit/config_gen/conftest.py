@@ -15,6 +15,7 @@ from wip_deploy.spec import (
     Deployment,
     DeploymentMetadata,
     DeploymentSpec,
+    ImagesSpec,
     K8sPlatform,
     NetworkSpec,
     PlatformSpec,
@@ -41,6 +42,7 @@ def compose_deployment() -> Deployment:
             modules={"optional": ["console"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(compose=ComposePlatform(data_dir="/tmp/d")),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
         ),
@@ -58,6 +60,7 @@ def k8s_deployment() -> Deployment:
             modules={"optional": ["console"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip-kubi.local"),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(k8s=K8sPlatform()),
             secrets=SecretsSpec(backend="k8s-secret"),
         ),
@@ -81,6 +84,7 @@ def maximal_compose_deployment(real_discovery: Discovery) -> Deployment:
             apps=[AppRef(name=n) for n in app_names],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(compose=ComposePlatform(data_dir="/tmp/d")),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
         ),

@@ -332,3 +332,100 @@ class TestValidationReport:
         d.spec.apps = [AppRef(name="ghost2")]
         report = validate_all(d, [], [])
         assert len(report.errors) >= 2
+
+
+class TestImagesResolvable:
+    """Compose/k8s targets need a registry for short-name images. Dev
+    target builds from source so the guard doesn't apply.
+
+    Without this validator, users who forget `--registry` get a
+    confusing `manifest unknown` from podman-compose at apply time
+    instead of a clear error up front.
+    """
+
+    def test_compose_without_registry_fails(
+        self, minimal_compose_deployment: Deployment
+    ) -> None:
+        d = minimal_compose_deployment.model_copy(deep=True)
+        d.spec.images.registry = None
+        short = make_component(
+            "short-svc",
+            category="optional",
+            image=ImageRef(name="short-svc"),  # no "/"
+            ports=[Port(name="http", container_port=8000)],
+        )
+        d.spec.modules.optional = ["short-svc"]
+        report = validate_all(d, [short], [])
+        assert not report.ok
+        err_str = "\n".join(str(e) for e in report.errors)
+        assert "needs pre-built images" in err_str
+        assert "short-svc" in err_str
+        assert "--registry" in err_str
+        assert "--target dev" in err_str
+
+    def test_compose_with_registry_passes(
+        self, minimal_compose_deployment: Deployment
+    ) -> None:
+        d = minimal_compose_deployment.model_copy(deep=True)
+        # Fixture already sets images.registry = "ghcr.io/test"
+        assert d.spec.images.registry is not None
+        short = make_component(
+            "short-svc",
+            category="optional",
+            image=ImageRef(name="short-svc"),
+            ports=[Port(name="http", container_port=8000)],
+        )
+        d.spec.modules.optional = ["short-svc"]
+        report = validate_all(d, [short], [])
+        assert report.ok, [str(e) for e in report.errors]
+
+    def test_k8s_without_registry_fails(
+        self, minimal_k8s_deployment: Deployment
+    ) -> None:
+        d = minimal_k8s_deployment.model_copy(deep=True)
+        d.spec.images.registry = None
+        short = make_component(
+            "short-svc",
+            category="optional",
+            image=ImageRef(name="short-svc"),
+            ports=[Port(name="http", container_port=8000)],
+        )
+        d.spec.modules.optional = ["short-svc"]
+        report = validate_all(d, [short], [])
+        assert not report.ok
+        assert any("needs pre-built images" in str(e) for e in report.errors)
+
+    def test_fully_qualified_image_does_not_need_registry(
+        self, minimal_compose_deployment: Deployment
+    ) -> None:
+        """MongoDB, Postgres etc. have image.name like
+        'docker.io/library/mongo' — they never hit the registry-prefix
+        path."""
+        d = minimal_compose_deployment.model_copy(deep=True)
+        d.spec.images.registry = None
+        mongo_like = make_component(
+            "mongo-like",
+            category="optional",
+            image=ImageRef(name="docker.io/library/mongo", tag="7"),
+            ports=[Port(name="http", container_port=27017)],
+        )
+        d.spec.modules.optional = ["mongo-like"]
+        report = validate_all(d, [mongo_like], [])
+        assert report.ok, [str(e) for e in report.errors]
+
+    def test_inactive_short_name_component_not_flagged(
+        self, minimal_compose_deployment: Deployment
+    ) -> None:
+        """Only active components need resolvable images. An optional
+        component that isn't enabled shouldn't block the deployment."""
+        d = minimal_compose_deployment.model_copy(deep=True)
+        d.spec.images.registry = None
+        d.spec.modules.optional = []  # nothing active
+        short = make_component(
+            "unused-svc",
+            category="optional",
+            image=ImageRef(name="unused-svc"),
+            ports=[Port(name="http", container_port=8000)],
+        )
+        report = validate_all(d, [short], [])
+        assert report.ok, [str(e) for e in report.errors]

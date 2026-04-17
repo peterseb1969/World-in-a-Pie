@@ -74,10 +74,12 @@ Produces:
    Read compose ps + health probes, print a table. Today users
    fall back to `podman ps`.
 
-6. **Compose local-build error-guard.**
-   When `--target compose` runs without `--registry`, detect the
-   absence of pre-built images up front and emit a helpful error
-   referencing the dev renderer, rather than failing on `compose up`.
+6. **Compose local-build error-guard.** ✅ Cross-cutting validator
+   `_validate_images_resolvable` rejects `target=compose` or `target=k8s`
+   when `--registry` is missing AND any active component uses a
+   short-name image. Error message points at both fix paths: `--registry
+   <host>` for registry pulls, or `--target dev --dev-mode simple` for
+   local builds. Dev target is exempt — it builds from source.
 
 ### Priority 3 — external (image bugs)
 
