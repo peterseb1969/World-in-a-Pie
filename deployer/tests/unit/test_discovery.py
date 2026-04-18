@@ -41,8 +41,8 @@ class TestDiscoverReal:
         names = {c.metadata.name for c in result.components}
         assert "registry" in names
         assert "mongodb" in names
-        assert "console" in names  # from ui/wip-console/
         assert "auth-gateway" in names
+        assert "router" in names
         assert len(result.components) >= 14
 
         app_names = {a.metadata.name for a in result.apps}

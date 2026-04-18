@@ -51,9 +51,7 @@ APP_MANIFESTS = sorted(REPO_ROOT.glob("apps/*/wip-app.yaml"))
 def test_component_manifest_parses(manifest_path: Path) -> None:
     data = _load_yaml(manifest_path)
     component = Component.model_validate(data)
-    # Sanity: manifest name should match its directory name, unless the
-    # directory carries a different visible name (e.g. ui/wip-console/
-    # holds a component named "console").
+    # Sanity: manifest name should be non-empty.
     assert component.metadata.name, f"empty name in {manifest_path}"
 
 

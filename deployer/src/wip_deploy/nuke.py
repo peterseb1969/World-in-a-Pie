@@ -207,7 +207,6 @@ def _looks_like_wip_pod(name: str) -> bool:
         "ingest-gateway",
         "mcp-server",
         "auth-gateway",
-        "wip-console",
     }
     return any(name == f"pod_{svc}" for svc in known_services)
 

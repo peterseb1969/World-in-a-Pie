@@ -48,7 +48,7 @@ def _dev_deployment(
         metadata=DeploymentMetadata(name="dev-test"),
         spec=DeploymentSpec(
             target="dev",
-            modules={"optional": modules or ["console"]},  # type: ignore[arg-type]
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in (apps or [])],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="localhost"),
@@ -224,7 +224,7 @@ class TestHotReload:
         """mcp-server uses `python -m wip_mcp --http` — not uvicorn-based,
         so no --reload (python -m has its own semantics)."""
         doc = self._compose_doc(
-            tmp_path, real_discovery, modules=["console", "mcp-server"]
+            tmp_path, real_discovery, modules=["mcp-server"]
         )
         mcp = doc["services"]["mcp-server"]
         assert mcp["command"][0] == "python"
@@ -245,7 +245,7 @@ class TestTargetValidation:
             metadata=DeploymentMetadata(name="bad"),
             spec=DeploymentSpec(
                 target="compose",
-                modules={"optional": ["console"]},  # type: ignore[arg-type]
+                modules={"optional": ["mcp-server"]},  # type: ignore[arg-type]
                 apps=[],
                 auth=AuthSpec(mode="oidc", gateway=True),
                 network=NetworkSpec(hostname="localhost"),

@@ -7,7 +7,7 @@ Does not include file storage — add `--add files` if you need it.
 from typing import Any
 
 ANALYTICS: dict[str, Any] = {
-    "modules": {"optional": ["console", "reporting-sync", "mcp-server"]},
+    "modules": {"optional": ["reporting-sync", "mcp-server"]},
     "auth": {"mode": "oidc", "gateway": True},
     "apps": [],
 }

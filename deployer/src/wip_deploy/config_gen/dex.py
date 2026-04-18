@@ -162,7 +162,7 @@ def _client_entry(
     app_route_prefix: str | None = None,
 ) -> DexClientEntry:
     # For apps, prefix redirect paths with the app's route so callbacks
-    # land back at the app, not at the console.
+    # land back at the app, not at the gateway root.
     prefix = app_route_prefix or ""
     redirect_uris = [f"{issuer_base}{prefix}{p}" for p in redirect_paths]
     # OIDC client secrets live in the secret backend by a well-known name.

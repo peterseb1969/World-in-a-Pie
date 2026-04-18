@@ -48,7 +48,7 @@ def _minimal_compose(
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="compose",
-            modules={"optional": modules or ["console"]},  # type: ignore[arg-type]
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in (apps or [])],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
@@ -171,7 +171,7 @@ class TestComposeYaml:
     ) -> None:
         doc = self._render_compose(
             tmp_path, real_discovery,
-            modules=["console", "reporting-sync"],
+            modules=["reporting-sync"],
         )
         assert "postgres" in doc["services"]
         assert "nats" in doc["services"]
@@ -428,16 +428,6 @@ class TestCaddyfile:
         ds_start = caddyfile.index("handle /api/document-store/*")
         ds_block = caddyfile[ds_start : ds_start + 300]
         assert "flush_interval -1" in ds_block
-
-    def test_console_catchall_last(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        d = _minimal_compose()
-        s = _secrets(tmp_path, d, real_discovery)
-        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
-        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
-        assert "reverse_proxy wip-console:80" in caddyfile
-
 
 # ────────────────────────────────────────────────────────────────────
 # Target check

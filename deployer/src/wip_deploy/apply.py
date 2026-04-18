@@ -1,12 +1,27 @@
 """Apply a rendered tree against the target platform.
 
-For the compose target this is a small shell-out layer:
+Compose target (`apply_compose`):
 
   1. Write the FileTree under the install directory.
   2. Run `podman-compose up -d` (or docker compose fallback).
   3. Optionally wait for every service with a healthcheck to report
      `healthy` via `podman-compose ps`.
-  4. Run post-install hooks.
+  4. Run post-install hooks via `compose exec`.
+
+K8s target (`apply_k8s`):
+
+  1. Clean stale render output under the install directory (without
+     touching the secrets backend dir if it shares the path).
+  2. Write the FileTree under the install directory.
+  3. `kubectl apply -f <namespace.yaml>` (no prune — Namespace is cluster-
+     scoped and pruning could affect peer WIP namespaces).
+  4. `kubectl apply -R -f . --prune --selector=app.kubernetes.io/part-of=wip`
+     with an explicit allowlist of pruneable kinds (Deployments, Services,
+     ConfigMaps, Secrets, PVCs, StatefulSets, Ingresses). Prune removes
+     resources from the previous install that aren't in the current render.
+  5. Optionally wait for every workload's rollout to finish via
+     `kubectl rollout status`.
+  6. Run post-install hooks via `kubectl exec` against a ready pod.
 
 Errors surface as ApplyError with a human-readable message; the CLI
 translates to a non-zero exit code.
@@ -335,3 +350,307 @@ def _count_services(tree: FileTree) -> int:
     if not isinstance(services, dict):
         return 0
     return len(services)
+
+
+# ════════════════════════════════════════════════════════════════════
+# K8s apply
+# ════════════════════════════════════════════════════════════════════
+
+
+def apply_k8s(
+    *,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    tree: FileTree,
+    install_dir: Path,
+) -> ApplyResult:
+    """Materialize the tree and run `kubectl apply`.
+
+    Honors `deployment.spec.apply` — wait/timeout/on_timeout. Wait uses
+    `kubectl rollout status` per Deployment/StatefulSet. Post-install
+    hooks run via `kubectl exec` against a pod selected by the
+    component's `app.kubernetes.io/name` label.
+    """
+    if not shutil.which("kubectl"):
+        raise ApplyError("kubectl not on PATH")
+
+    k8s = deployment.spec.platform.k8s
+    if k8s is None:
+        raise ApplyError("k8s target requires platform.k8s")
+    ns = k8s.namespace
+
+    install_dir = Path(install_dir)
+    _clean_rendered_tree(install_dir)
+    tree.write(install_dir)
+
+    _kubectl_apply_tree(install_dir, ns)
+
+    up_count = _count_k8s_workloads(tree)
+
+    healthy = True
+    if deployment.spec.apply.wait:
+        healthy = _wait_k8s_rollout(
+            install_dir=install_dir,
+            ns=ns,
+            components=components,
+            apps=apps,
+            deployment=deployment,
+        )
+
+    if deployment.spec.apply.wait and not healthy:
+        behavior = deployment.spec.apply.on_timeout
+        if behavior == "fail":
+            raise ApplyError("apply timed out: not all workloads became ready")
+
+    _run_post_install_k8s(ns, components, apps, deployment)
+
+    return ApplyResult(install_dir=install_dir, services_up=up_count, healthy=healthy)
+
+
+# ────────────────────────────────────────────────────────────────────
+# kubectl apply
+# ────────────────────────────────────────────────────────────────────
+
+
+_PRUNE_ALLOWLIST = (
+    "core/v1/Secret",
+    "core/v1/ConfigMap",
+    "core/v1/Service",
+    "core/v1/PersistentVolumeClaim",
+    "apps/v1/Deployment",
+    "apps/v1/StatefulSet",
+    "networking.k8s.io/v1/Ingress",
+)
+
+
+def _clean_rendered_tree(install_dir: Path) -> None:
+    """Delete prior render outputs so orphans don't get re-applied.
+
+    Scope: top-level `*.yaml` files and the `services/` + `infrastructure/`
+    subdirs — exactly what the k8s renderer writes. Deliberately avoids
+    touching anything else (notably a `secrets/` backend directory that
+    may share the install_dir).
+    """
+    if not install_dir.exists():
+        return
+    for yaml_file in install_dir.glob("*.yaml"):
+        yaml_file.unlink()
+    for name in ("services", "infrastructure"):
+        sub = install_dir / name
+        if sub.is_dir():
+            shutil.rmtree(sub)
+
+
+def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
+    """Apply the rendered tree with prune.
+
+    Namespace applied first without prune (cluster-scoped — pruning could
+    delete a peer namespace sharing the same label). Then the full tree
+    applied with `--prune --selector=app.kubernetes.io/part-of=wip` scoped
+    to an explicit allowlist of kinds. The second apply re-targets the
+    namespace too (no-op update), but prune ignores it because Namespace
+    is not in the allowlist.
+    """
+    namespace_yaml = install_dir / "namespace.yaml"
+    if namespace_yaml.exists():
+        _kubectl_run(["apply", "-f", str(namespace_yaml)])
+
+    args = [
+        "apply",
+        "-n", ns,
+        "-R", "-f", str(install_dir),
+        "--prune",
+        "--selector=app.kubernetes.io/part-of=wip",
+    ]
+    for kind in _PRUNE_ALLOWLIST:
+        args.extend(["--prune-allowlist", kind])
+    _kubectl_run(args)
+
+
+def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Shell out to kubectl and raise ApplyError on non-zero exit."""
+    try:
+        return subprocess.run(
+            ["kubectl", *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise ApplyError(
+            f"kubectl {' '.join(args)} failed (exit {e.returncode}): {stderr}"
+        ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Rollout wait
+# ────────────────────────────────────────────────────────────────────
+
+
+def _wait_k8s_rollout(
+    *,
+    install_dir: Path,
+    ns: str,
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> bool:
+    """Poll every active workload via `kubectl rollout status`.
+
+    Returns True if all rollouts complete within the total timeout,
+    False on first timeout. Respects `spec.apply.timeout_seconds` as a
+    *total* budget across all workloads, not per-workload.
+    """
+    workloads = _expected_workloads(components, apps, deployment)
+    if not workloads:
+        return True
+
+    deadline = time.time() + deployment.spec.apply.timeout_seconds
+    for kind, name in workloads:
+        remaining = int(deadline - time.time())
+        if remaining <= 0:
+            return False
+        try:
+            subprocess.run(
+                [
+                    "kubectl", "rollout", "status",
+                    "-n", ns,
+                    f"{kind.lower()}/{name}",
+                    f"--timeout={remaining}s",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            return False
+    return True
+
+
+def _expected_workloads(
+    components: list[Component], apps: list[App], deployment: Deployment
+) -> list[tuple[str, str]]:
+    """List of `(kind, name)` pairs for every active workload.
+
+    Kind is StatefulSet when the component has storage, else Deployment
+    — matches the rendering logic in `renderers/k8s.py`.
+    """
+    out: list[tuple[str, str]] = []
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        kind = "StatefulSet" if c.spec.storage else "Deployment"
+        out.append((kind, f"wip-{c.metadata.name}"))
+
+    for a in apps:
+        if a.metadata.name not in enabled_app_names:
+            continue
+        kind = "StatefulSet" if a.spec.storage else "Deployment"
+        out.append((kind, f"wip-{a.metadata.name}"))
+
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────
+# Post-install hooks (k8s)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _run_post_install_k8s(
+    ns: str,
+    components: list[Component],
+    apps: list[App],
+    deployment: Deployment,
+) -> None:
+    """Run every active component's post-install hooks inside a running
+    pod via `kubectl exec`. Pod is selected by the
+    `app.kubernetes.io/name` label."""
+    enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
+
+    owners: list[tuple[str, list]] = []  # type: ignore[type-arg]
+    for c in components:
+        if is_component_active(c, deployment) and c.spec.post_install:
+            owners.append((c.metadata.name, c.spec.post_install))
+    for a in apps:
+        if a.metadata.name in enabled_app_names and a.spec.post_install:
+            owners.append((a.metadata.name, a.spec.post_install))
+
+    for owner_name, hooks in owners:
+        pod = _pod_for_component(ns, owner_name)
+        for hook in hooks:
+            try:
+                subprocess.run(
+                    [
+                        "kubectl", "exec", "-n", ns, pod,
+                        "--", "sh", "-c", hook.run,
+                    ],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                raise ApplyError(
+                    f"post-install hook {hook.name!r} on {owner_name!r} "
+                    f"failed (exit {e.returncode})"
+                ) from e
+
+
+def _pod_for_component(ns: str, component_name: str) -> str:
+    """Return the name of a Running pod for the given component.
+
+    Selects via the `app.kubernetes.io/name=<component>` label set by
+    the k8s renderer. Raises ApplyError if no running pod is found."""
+    try:
+        result = subprocess.run(
+            [
+                "kubectl", "get", "pod",
+                "-n", ns,
+                "-l", f"app.kubernetes.io/name={component_name}",
+                "--field-selector=status.phase=Running",
+                "-o", "jsonpath={.items[0].metadata.name}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        raise ApplyError(
+            f"could not find pod for component {component_name!r} in ns "
+            f"{ns!r}: {stderr}"
+        ) from e
+
+    pod = result.stdout.strip()
+    if not pod:
+        raise ApplyError(
+            f"no running pod found for component {component_name!r} in ns {ns!r}"
+        )
+    return pod
+
+
+# ────────────────────────────────────────────────────────────────────
+# K8s misc
+# ────────────────────────────────────────────────────────────────────
+
+
+def _count_k8s_workloads(tree: FileTree) -> int:
+    """Count Deployments + StatefulSets in the rendered tree.
+
+    Used only for the summary line in the CLI — a rough proxy for "how
+    many services did we bring up". Ignores Namespaces/Secrets/etc.
+    """
+    import yaml as _yaml
+
+    count = 0
+    for rel, entry in tree.files.items():
+        if rel.name in ("namespace.yaml", "secrets.yaml", "configmaps.yaml", "ingress.yaml"):
+            continue
+        try:
+            for doc in _yaml.safe_load_all(entry.content):
+                if isinstance(doc, dict) and doc.get("kind") in ("Deployment", "StatefulSet"):
+                    count += 1
+        except _yaml.YAMLError:
+            continue
+    return count

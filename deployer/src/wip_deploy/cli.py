@@ -13,7 +13,7 @@ import typer
 import yaml
 
 from wip_deploy import __version__
-from wip_deploy.apply import ApplyError, apply_compose
+from wip_deploy.apply import ApplyError, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
@@ -488,9 +488,10 @@ def install(
     Generates secrets on first run (persists to the secret backend);
     re-runs pick up existing values and don't regenerate.
     """
-    if target != "compose":
+    if target not in ("compose", "k8s"):
         typer.echo(
-            f"error: install currently supports target=compose only (got {target!r})",
+            f"error: install supports target=compose|k8s (got {target!r}); "
+            f"use `render` for target=dev",
             err=True,
         )
         raise typer.Exit(2)
@@ -547,8 +548,9 @@ def install(
     )
     typer.echo("")
 
+    apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     try:
-        result = apply_compose(
+        result = apply_fn(
             deployment=deployment,
             components=components,
             apps=apps_list,
@@ -573,7 +575,9 @@ def install(
                 bold=True,
             )
         )
-    typer.echo(f"  https://{deployment.spec.network.hostname}:{deployment.spec.network.https_port}")
+    scheme_port = deployment.spec.network.https_port
+    scheme_suffix = "" if scheme_port in (443,) else f":{scheme_port}"
+    typer.echo(f"  https://{deployment.spec.network.hostname}{scheme_suffix}")
 
 
 # ────────────────────────────────────────────────────────────────────

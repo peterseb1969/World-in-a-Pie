@@ -88,7 +88,7 @@ class TestRouterConfig:
         """/mcp is browser-facing via the main ingress, not aggregated
         through the router. No app currently needs SSR-proxied MCP."""
         d = compose_deployment.model_copy(deep=True)
-        d.spec.modules.optional = ["console", "mcp-server"]
+        d.spec.modules.optional = ["mcp-server"]
         cfg = generate_router_config(
             d, real_discovery.components, real_discovery.apps
         )

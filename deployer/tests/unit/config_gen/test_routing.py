@@ -91,18 +91,6 @@ class TestAuthProtection:
         routes = resolve_routes(d, real_discovery.components, real_discovery.apps)
         assert all(r.auth_protected is False for r in routes)
 
-    def test_console_root_is_not_auth_protected(
-        self, compose_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
-        routes = resolve_routes(
-            compose_deployment, real_discovery.components, real_discovery.apps
-        )
-        console_root = next((r for r in routes if r.backend_component == "console"), None)
-        assert console_root is not None
-        # Console route manifest has auth_required=False
-        assert console_root.auth_protected is False
-
-
 class TestBackendPortResolution:
     def test_api_routes_point_at_service_http_port(
         self, compose_deployment: Deployment, real_discovery: Discovery

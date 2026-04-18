@@ -73,17 +73,6 @@ class TestUsers:
 
 
 class TestClients:
-    def test_console_client_always_present(
-        self, compose_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
-        # Standard preset includes console → wip-console client should appear.
-        cfg = generate_dex_config(
-            compose_deployment, real_discovery.components, real_discovery.apps
-        )
-        assert cfg is not None
-        client_ids = {c.client_id for c in cfg.clients}
-        assert "wip-console" in client_ids
-
     def test_gateway_client_when_gateway_on(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:

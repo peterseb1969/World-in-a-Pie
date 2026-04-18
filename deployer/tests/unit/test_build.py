@@ -73,10 +73,10 @@ class TestAddRemove:
 
     def test_add_is_idempotent(self) -> None:
         d = build_deployment(
-            _minimal_compose_inputs(preset="standard", add=["console", "console"])
+            _minimal_compose_inputs(preset="standard", add=["mcp-server", "mcp-server"])
         )
-        # console already in standard; add should not duplicate
-        assert d.spec.modules.optional.count("console") == 1
+        # mcp-server already in standard; add should not duplicate
+        assert d.spec.modules.optional.count("mcp-server") == 1
 
 
 # ────────────────────────────────────────────────────────────────────

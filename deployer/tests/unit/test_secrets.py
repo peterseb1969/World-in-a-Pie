@@ -45,7 +45,7 @@ def _compose_deployment(
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="compose",
-            modules={"optional": modules or ["console"]},  # type: ignore[arg-type]
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in (apps or [])],
             auth=AuthSpec(
                 mode=auth_mode,  # type: ignore[arg-type]
@@ -83,9 +83,7 @@ class TestCollectRequiredSecrets:
         assert "dex-password-editor" in names
         assert "dex-password-viewer" in names
 
-        # Dex clients: wip-console (from console component's oidc_client)
-        assert "dex-client-wip-console" in names
-        # wip-gateway (from auth-gateway component's oidc_client)
+        # Dex clients: auth-gateway's wip-gateway client is the canonical one
         assert "dex-client-wip-gateway" in names
 
         # Gateway's session secret is its own
@@ -105,7 +103,7 @@ class TestCollectRequiredSecrets:
     def test_reporting_sync_active_pulls_postgres_password(
         self, real_discovery: Discovery
     ) -> None:
-        d = _compose_deployment(modules=["console", "reporting-sync"])
+        d = _compose_deployment(modules=["reporting-sync"])
         names = collect_required_secrets(
             d, real_discovery.components, real_discovery.apps
         )
@@ -234,7 +232,7 @@ class TestEnsureSecrets:
         )
 
         # Second install: add reporting-sync (introduces postgres-password)
-        d2 = _compose_deployment(modules=["console", "reporting-sync"])
+        d2 = _compose_deployment(modules=["reporting-sync"])
         r2 = ensure_secrets(
             d2, real_discovery.components, real_discovery.apps, FileSecretBackend(dir_)
         )

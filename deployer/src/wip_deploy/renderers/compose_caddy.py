@@ -55,7 +55,7 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             continue
         _write_route(out, route, cfg)
 
-    # Catch-all (typically the console) goes last.
+    # Catch-all route (path "/") goes last.
     for route in sorted_routes:
         if route.path == "/":
             _write_catchall(out, route, cfg)

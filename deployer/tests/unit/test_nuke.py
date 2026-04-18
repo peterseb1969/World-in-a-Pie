@@ -35,7 +35,7 @@ class TestPodClassification:
             "pod_registry",
             "pod_def-store",
             "pod_document-store",
-            "pod_wip-console",
+            "pod_auth-gateway",
         ],
     )
     def test_matches(self, name: str) -> None:

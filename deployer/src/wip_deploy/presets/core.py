@@ -1,13 +1,13 @@
-"""Core — minimal API + UI, no OIDC. API-key auth only.
+"""Core — minimal API, no OIDC. API-key auth only.
 
 Use when: local dev, demos, or trusted-network installs where OIDC is
-overkill. Console is present but unprotected — don't expose publicly.
+overkill. Apps (react-console, etc.) are opt-in via `--app`.
 """
 
 from typing import Any
 
 CORE: dict[str, Any] = {
-    "modules": {"optional": ["console", "mcp-server"]},
+    "modules": {"optional": ["mcp-server"]},
     "auth": {"mode": "api-key-only", "gateway": False, "users": []},
     "apps": [],
 }

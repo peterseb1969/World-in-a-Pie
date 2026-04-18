@@ -46,7 +46,7 @@ def _k8s_deployment(
         metadata=DeploymentMetadata(name="k8s-test"),
         spec=DeploymentSpec(
             target="k8s",
-            modules={"optional": modules or ["console"]},  # type: ignore[arg-type]
+            modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in (apps or [])],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip-kubi.local"),

@@ -50,7 +50,7 @@ class TestValidateHappyPath:
         )
         assert r.exit_code == 0, r.output
         assert "Deployment valid" in r.output
-        assert "console" in r.output  # active component
+        assert "mcp-server" in r.output  # active component
 
     def test_headless_compose_succeeds(self) -> None:
         r = _invoke_valid(

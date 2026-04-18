@@ -7,7 +7,6 @@ broken manifest shouldn't hide others.
 
 Search paths:
   - `components/*/wip-component.yaml` — backend services + infrastructure
-  - `ui/*/wip-component.yaml`         — UI components (e.g., wip-console)
   - `apps/*/wip-app.yaml`             — app manifests
 """
 
@@ -64,13 +63,12 @@ def discover(repo_root: Path) -> Discovery:
     on `Discovery.errors`."""
     result = Discovery()
 
-    for pattern in ("components/*/wip-component.yaml", "ui/*/wip-component.yaml"):
-        for path in sorted(repo_root.glob(pattern)):
-            component = _load_component(path)
-            if isinstance(component, DiscoveryError):
-                result.errors.append(component)
-            else:
-                result.components.append(component)
+    for path in sorted(repo_root.glob("components/*/wip-component.yaml")):
+        component = _load_component(path)
+        if isinstance(component, DiscoveryError):
+            result.errors.append(component)
+        else:
+            result.components.append(component)
 
     for path in sorted(repo_root.glob("apps/*/wip-app.yaml")):
         app = _load_app(path)

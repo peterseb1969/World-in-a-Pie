@@ -33,13 +33,13 @@ def real_discovery() -> Discovery:
 
 @pytest.fixture
 def compose_deployment() -> Deployment:
-    """Typical compose deployment — standard-preset-like (console + oidc
-    + gateway). No apps, no reporting/ingest/files."""
+    """Typical compose deployment — standard-preset-like (OIDC + gateway
+    + mcp-server). No apps, no reporting/ingest/files."""
     return Deployment(
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="compose",
-            modules={"optional": ["console"]},  # type: ignore[arg-type]
+            modules={"optional": ["mcp-server"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
@@ -57,7 +57,7 @@ def k8s_deployment() -> Deployment:
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="k8s",
-            modules={"optional": ["console"]},  # type: ignore[arg-type]
+            modules={"optional": ["mcp-server"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip-kubi.local", https_port=443, http_port=80),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
