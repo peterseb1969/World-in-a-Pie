@@ -29,7 +29,9 @@ spec:
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /health
+    # Express server mounts routes under the APP_BASE_PATH, so /health
+    # lives at /apps/clintrial/health. Probing raw /health returns 404.
+    endpoint: /apps/clintrial/health
     probe: auto
     start_period_seconds: 15
 

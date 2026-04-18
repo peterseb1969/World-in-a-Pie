@@ -18,6 +18,11 @@ spec:
     - {name: nats, container_port: 4222}
     - {name: monitor, container_port: 8222}
 
+  # `-js` enables JetStream (ingest-gateway + reporting-sync both use
+  # it). `-m 8222` exposes the monitor endpoint for healthchecks.
+  # Full argv (including binary) so k8s's `command:` replacement works.
+  command: [/nats-server, -js, -m, "8222"]
+
   storage:
     - {name: jetstream, mount_path: /data, size: 5Gi}
 

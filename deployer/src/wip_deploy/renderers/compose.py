@@ -371,7 +371,12 @@ def _command_for(owner: Component | App) -> list[str] | None:
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
     if name == "minio":
-        return ["server", "/data", "--console-address", ":9001"]
+        # Full argv including the binary — k8s `command` replaces the
+        # image ENTRYPOINT (minio), so without the binary name k8s
+        # tries to exec "server" (not found). Compose's `command:`
+        # normally appends to ENTRYPOINT, but it handles a full argv
+        # correctly too.
+        return ["minio", "server", "/data", "--console-address", ":9001"]
 
     # Everything else relies on the image's default CMD.
     return None

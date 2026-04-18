@@ -22,6 +22,9 @@ spec:
       - {name: POSTGRES_DB, source: {literal: wip_reporting}}
       - {name: POSTGRES_USER, source: {literal: wip}}
       - {name: POSTGRES_PASSWORD, source: {from_secret: postgres-password}}
+      # Subdir inside the mount — the raw mount root has a lost+found
+      # on k8s ext4 PVCs and initdb refuses to use a non-empty dir.
+      - {name: PGDATA, source: {literal: /var/lib/postgresql/data/pgdata}}
 
   storage:
     - {name: data, mount_path: /var/lib/postgresql/data, size: 20Gi}

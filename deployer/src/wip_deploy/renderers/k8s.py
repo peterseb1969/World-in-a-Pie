@@ -290,8 +290,10 @@ def _render_component(
 
     # Service
     if owner.spec.ports:
+        # k8s requires port `name` on multi-port Services (and recommends
+        # it on single-port too). Use the manifest's declared port name.
         svc_ports = [
-            {"port": p.container_port, "targetPort": p.container_port, "protocol": p.protocol}
+            {"name": p.name, "port": p.container_port, "targetPort": p.container_port, "protocol": p.protocol}
             for p in owner.spec.ports
         ]
         docs.append({
@@ -509,7 +511,8 @@ def _command_for(owner: Component | App) -> list[str] | None:
     if name == "dex":
         return ["dex", "serve", "/etc/dex/config.yaml"]
     if name == "minio":
-        return ["server", "/data", "--console-address", ":9001"]
+        # Full argv — k8s `command` replaces ENTRYPOINT (minio).
+        return ["minio", "server", "/data", "--console-address", ":9001"]
     return None
 
 
