@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
+from wip_auth.startup import retry_async
 
 from . import __version__
 from .batch_sync import BatchSyncService
@@ -228,16 +229,25 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.service_name} v{__version__}...")
 
     try:
-        # Connect to NATS
-        state.nats_client, state.jetstream = await connect_nats()
+        # Connect to NATS with retry — tolerates NATS not being ready yet
+        # on fresh k8s boot, node drain, pod reschedule.
+        state.nats_client, state.jetstream = await retry_async(
+            connect_nats,
+            retry_on=(ConnectionRefusedError, OSError, nats.errors.NoServersError),
+            description="NATS connect",
+        )
         state.sync_status.connected_to_nats = True
     except Exception as e:
         logger.error(f"Failed to connect to NATS: {e}")
         state.sync_status.connected_to_nats = False
 
     try:
-        # Connect to PostgreSQL
-        state.postgres_pool = await connect_postgres()
+        # Connect to PostgreSQL with retry — same reasoning as NATS above.
+        state.postgres_pool = await retry_async(
+            connect_postgres,
+            retry_on=(ConnectionRefusedError, OSError),
+            description="PostgreSQL connect",
+        )
         state.sync_status.connected_to_postgres = True
 
         # Initialize schema

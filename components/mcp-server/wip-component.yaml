@@ -14,7 +14,7 @@ spec:
     # Per-component tag override. The /health-exempt-from-auth fix
     # landed after v1.1.0; using spec.images.tag=v1.1.0 would pull the
     # old image with the broken /health endpoint.
-    tag: v1.2.1
+    tag: v1.2.3
     build_context: .
 
   ports:

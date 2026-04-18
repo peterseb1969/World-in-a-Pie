@@ -105,7 +105,9 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.service_name} v{__version__}...")
     state.start_time = time.time()
 
-    # Connect to NATS
+    # Connect to NATS. The NATS client library has its own built-in
+    # reconnect loop (configurable via max_reconnect_attempts), which
+    # handles NATS-not-ready-yet on k8s fresh boot.
     try:
         state.nats_client, state.jetstream = await connect_nats()
     except Exception as e:
