@@ -37,9 +37,12 @@ class IngressConfig:
     rules: list[IngressRule]
     # Annotations: gateway forward-auth URL (None iff gateway disabled)
     gateway_auth_url: str | None
-    # Additional annotations the renderer always adds (body size,
-    # proxy_buffering override for streaming routes is per-rule).
-    proxy_body_size: str = "100m"
+    # No body-size limit by default. nginx-ingress treats "0" as
+    # unlimited, matching Caddy's (compose) default. Real backups run
+    # into the multi-GB range; capping here would just surface a 413
+    # at the worst moment. Clusters that need a cap for DoS protection
+    # can override (K8sPlatform field — follow-up).
+    proxy_body_size: str = "0"
 
 
 def generate_ingress_config(

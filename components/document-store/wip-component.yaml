@@ -26,6 +26,12 @@ spec:
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+      # Outbound credentials for calls to registry + template-store +
+      # def-store (e.g., during document validation, term resolution,
+      # restore upserts).
+      - {name: REGISTRY_API_KEY, source: {from_secret: api-key}}
+      - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
+      - {name: DEF_STORE_API_KEY, source: {from_secret: api-key}}
     optional:
       # NATS is optional — only present when reporting or ingest module active.
       # Document-store gracefully skips publish when NATS_URL is empty.

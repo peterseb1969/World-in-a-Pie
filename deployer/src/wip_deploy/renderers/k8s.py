@@ -554,6 +554,11 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     base_annotations: dict[str, str] = {
         "nginx.ingress.kubernetes.io/ssl-redirect": "true",
         "nginx.ingress.kubernetes.io/proxy-body-size": cfg.proxy_body_size,
+        # Stock timeouts (60s) are fine for normal API calls but kill
+        # long uploads (restores, bulk ingest). 1 hour is what Caddy
+        # does by default via its idle_timeout; matching here.
+        "nginx.ingress.kubernetes.io/proxy-read-timeout": "3600",
+        "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
     }
 
     # Main ingress: auth gateway routes + API routes + Dex
