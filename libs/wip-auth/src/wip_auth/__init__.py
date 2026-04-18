@@ -79,6 +79,7 @@ from .resolve import (
 )
 from .key_sync import KeySyncService
 from .security import check_production_security
+from .startup import init_beanie_with_retry, retry_async
 
 __version__ = "0.4.0"
 
@@ -145,6 +146,9 @@ __all__ = [
     "KeySyncService",
     # Rate limiting
     "setup_rate_limiting",
+    # Startup retry helpers
+    "init_beanie_with_retry",
+    "retry_async",
 ]
 
 

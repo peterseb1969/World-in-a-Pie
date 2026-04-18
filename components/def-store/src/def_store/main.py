@@ -8,7 +8,6 @@ Provides controlled vocabulary management with import/export capabilities.
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -16,6 +15,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
     check_production_security,
+    init_beanie_with_retry,
+    retry_async,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -58,10 +59,12 @@ async def lifespan(app: FastAPI):
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
     client = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Terminology, Term, TermAuditLog, TermRelationship]
+        document_models=[Terminology, Term, TermAuditLog, TermRelationship],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 
@@ -75,12 +78,25 @@ async def lifespan(app: FastAPI):
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
 
-    # Check Registry health
+    # Wait for Registry to be healthy — the terminology bootstrap below
+    # depends on Registry being reachable. On k8s, Registry may still be
+    # coming up when def-store starts.
     registry_client = get_registry_client()
-    if await registry_client.health_check():
+
+    async def _verify_registry_ready() -> None:
+        if not await registry_client.health_check():
+            raise ConnectionError("Registry health check returned non-200")
+
+    try:
+        await retry_async(
+            _verify_registry_ready,
+            retry_on=(ConnectionError,),
+            description="Registry health check",
+        )
         print("Registry service is healthy.")
-    else:
-        print("WARNING: Registry service is not reachable. Some features may not work.")
+    except TimeoutError as e:
+        print(f"WARNING: Registry never became healthy: {e}")
+        print("Terminology bootstrap will likely fail.")
 
     # Configure NATS client (optional — for event publishing to reporting-sync)
     if settings.NATS_URL:

@@ -8,12 +8,18 @@ Provides composite key registration, synonym management, and cross-namespace sea
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth import APIKeyProvider, APIKeyRecord, check_production_security, setup_auth, setup_rate_limiting
+from wip_auth import (
+    APIKeyProvider,
+    APIKeyRecord,
+    check_production_security,
+    init_beanie_with_retry,
+    setup_auth,
+    setup_rate_limiting,
+)
 
 from .api import api_router
 from .api.api_keys import configure_api_key_management
@@ -51,10 +57,12 @@ async def lifespan(app: FastAPI):
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
     client = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 

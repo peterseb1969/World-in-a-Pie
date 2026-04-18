@@ -8,7 +8,6 @@ Validates documents against templates and manages document versioning.
 import os
 from contextlib import asynccontextmanager
 
-from beanie import init_beanie
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -16,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from wip_auth import (
     RejectUnknownQueryParamsMiddleware,
     check_production_security,
+    init_beanie_with_retry,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -83,10 +83,12 @@ async def lifespan(app: FastAPI):
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
     client = AsyncIOMotorClient(settings.MONGO_URI)
 
-    # Initialize Beanie ODM with document models
-    await init_beanie(
+    # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
+    # yet on fresh k8s boot, node drain, pod reschedule.
+    await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Document, File, BackupJob]
+        document_models=[Document, File, BackupJob],
+        description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
 
