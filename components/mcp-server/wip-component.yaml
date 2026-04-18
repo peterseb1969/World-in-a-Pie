@@ -13,8 +13,8 @@ spec:
     name: mcp-server
     # Per-component tag override. The /health-exempt-from-auth fix
     # landed after v1.1.0; using spec.images.tag=v1.1.0 would pull the
-    # old image with the broken /health endpoint. v1.2.0 has the fix.
-    tag: v1.2.0
+    # old image with the broken /health endpoint.
+    tag: v1.2.1
     build_context: .
 
   ports:

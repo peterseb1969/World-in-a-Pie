@@ -11,6 +11,10 @@ metadata:
 spec:
   image:
     name: react-console
+    # App lives in its own repo (WIP-ReactConsole). No code change for
+    # the backend v1.2.1 retry work, so pin to v1.2.0 rather than
+    # inheriting the deployment's --tag.
+    tag: v1.2.0
 
   ports:
     - {name: http, container_port: 3011}

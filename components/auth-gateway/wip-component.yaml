@@ -16,7 +16,7 @@ spec:
     # Per-component tag override. The auth-gateway was added after the
     # v1.1.0 release (Theme 7) and has its own cadence — using
     # spec.images.tag would pin it to an unpublished version.
-    tag: v1.2.0
+    tag: v1.2.1
     build_context: .
 
   ports:
