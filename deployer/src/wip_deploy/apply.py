@@ -256,10 +256,17 @@ def _supplement_health_from_inspect(
     if runtime is None:
         return
 
+    # Nil-safe template: when a container has no healthcheck
+    # (.State.Health is nil), emit an empty status instead of panicking.
+    # Without `{{with}}`, the Go-template engine errors out on
+    # `.State.Health.Status` over a nil base, which fails the whole
+    # batched command — we saw this in practice on Pi where wip-dex
+    # and wip-caddy have no healthchecks.
+    template = "{{.Name}}={{with .State.Health}}{{.Status}}{{end}}"
+
     try:
         result = subprocess.run(
-            [runtime, "inspect", "--format",
-             "{{.Name}}={{.State.Health.Status}}", *needs_fill],
+            [runtime, "inspect", "--format", template, *needs_fill],
             check=False,
             capture_output=True,
             text=True,
