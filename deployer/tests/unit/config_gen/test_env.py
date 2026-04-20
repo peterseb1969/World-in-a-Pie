@@ -351,6 +351,54 @@ class TestResolveComponentEnv:
         )
         assert env.required["MASTER_API_KEY"] == SecretRef("api-key")
 
+    def test_registry_has_reporting_sync_url_when_active(
+        self,
+        real_discovery: Discovery,
+        maximal_compose_deployment: Deployment,
+    ) -> None:
+        """CASE-59: Registry's namespace-delete cascade calls
+        reporting-sync via REPORTING_SYNC_URL. The env var must be set
+        when reporting-sync is active; absent otherwise."""
+        ctx = make_spec_context(
+            maximal_compose_deployment, real_discovery.components
+        )
+        reg = next(
+            c for c in real_discovery.components if c.metadata.name == "registry"
+        )
+        env = resolve_component_env(
+            reg,
+            maximal_compose_deployment,
+            ctx,
+            real_discovery.components,
+            real_discovery.apps,
+        )
+        assert env.optional["REPORTING_SYNC_URL"] == Literal(
+            "http://wip-reporting-sync:8005"
+        )
+
+    def test_registry_skips_reporting_sync_url_when_inactive(
+        self,
+        real_discovery: Discovery,
+        compose_deployment: Deployment,
+    ) -> None:
+        """Standard preset doesn't include reporting-sync. Registry's
+        optional REPORTING_SYNC_URL must silently drop out — no crash,
+        no empty literal."""
+        ctx = make_spec_context(
+            compose_deployment, real_discovery.components
+        )
+        reg = next(
+            c for c in real_discovery.components if c.metadata.name == "registry"
+        )
+        env = resolve_component_env(
+            reg,
+            compose_deployment,
+            ctx,
+            real_discovery.components,
+            real_discovery.apps,
+        )
+        assert "REPORTING_SYNC_URL" not in env.optional
+
     def test_real_reporting_sync_postgres_host_port(
         self,
         real_discovery: Discovery,
