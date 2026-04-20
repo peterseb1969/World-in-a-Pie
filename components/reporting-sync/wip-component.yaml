@@ -31,7 +31,15 @@ spec:
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
-      # Outbound credential for template-store calls.
+      # Outbound credential reporting-sync uses for ALL service-to-service
+      # HTTP calls (def-store, template-store, document-store). The
+      # batch_sync methods read this as settings.api_key. Without it,
+      # the config falls back to the dev default and every outbound call
+      # returns 401.
+      - {name: API_KEY, source: {from_secret: api-key}}
+      # Kept for legacy/explicit documentation; reporting-sync's code
+      # doesn't read this separately today but config sanity matches
+      # the pattern used by other services.
       - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
     optional:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
