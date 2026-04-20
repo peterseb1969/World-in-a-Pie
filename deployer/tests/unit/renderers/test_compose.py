@@ -193,7 +193,7 @@ class TestComposeYaml:
             modules=["reporting-sync"],  # activates nats + postgres
         )
         nats = doc["services"]["nats"]
-        assert nats["entrypoint"] == ["/nats-server"]
+        assert nats["entrypoint"] == ["nats-server"]
         assert nats["command"] == ["-js", "-m", "8222"]
 
         # MinIO too (full argv including the binary).

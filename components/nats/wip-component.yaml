@@ -27,8 +27,12 @@ spec:
 
   # `-js` enables JetStream (ingest-gateway + reporting-sync both use
   # it). `-m 8222` exposes the monitor endpoint for healthchecks.
-  # Full argv (including binary) so k8s's `command:` replacement works.
-  command: [/nats-server, -js, -m, "8222"]
+  # Full argv (including binary) so k8s's `command:` replacement works;
+  # `nats-server` (PATH-relative) works on nats:2-alpine (binary at
+  # /usr/local/bin/nats-server). The scratch nats:2 image had it at
+  # /nats-server but we switched away from scratch so the compose
+  # healthcheck can exec into the container.
+  command: [nats-server, -js, -m, "8222"]
 
   storage:
     - {name: jetstream, mount_path: /data, size: 5Gi}
