@@ -106,6 +106,20 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig) -> None:
 
 
 def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
+    # Bare-path redirect: /apps/rc (no trailing slash) must 301 to
+    # /apps/rc/, otherwise the bare path falls through the /apps/rc/*
+    # glob and 404s. CASE-49 / CASE-53 regression — the old setup-wip.sh
+    # emitted this per-route; the v2 port missed it.
+    #
+    # Important: Caddyfile's `redir` directive parses its first argument
+    # as a MATCHER when it starts with `/` (ambiguous grammar). Writing
+    # `redir /apps/rc/ permanent` makes Caddy compile `Location:
+    # "permanent"` with the matcher `/apps/rc/`. Using the `*` matcher
+    # explicitly disambiguates: match-all, destination is the path.
+    out.write(f"    handle {route.path} {{\n")
+    out.write(f"        redir * {route.path}/ permanent\n")
+    out.write("    }\n\n")
+
     out.write(f"    handle {route.path}/* {{\n")
     if route.auth_protected:
         _write_forward_auth(out, cfg)

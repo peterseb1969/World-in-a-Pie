@@ -443,6 +443,33 @@ class TestCaddyfile:
         assert "handle_response @unauth" in rc_block
         assert "redir /auth/login" in rc_block
 
+    def test_bare_path_redirects_to_trailing_slash(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-53 regression: every route must emit a bare-path handler
+        that 301s to the trailing-slash form. Without this, `/apps/rc`
+        (without slash) falls through Caddy's /apps/rc/* glob and 404s.
+        The old setup-wip.sh had this per-app; the v2 port missed it.
+        """
+        d = _minimal_compose(apps=["react-console"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # Apps — the symptom in the case. Note the `*` matcher before
+        # the destination: Caddyfile's `redir` parses a leading `/arg` as
+        # a matcher, not a destination, so `redir /apps/rc/ permanent`
+        # would silently produce Location: "permanent". The `*` matcher
+        # disambiguates match-all.
+        assert "handle /apps/rc {" in caddyfile
+        rc_bare = caddyfile[caddyfile.index("handle /apps/rc {"):]
+        assert "redir * /apps/rc/ permanent" in rc_bare[:120]
+
+        # API routes get the same treatment (consistency)
+        assert "handle /api/registry {" in caddyfile
+        api_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
+        assert "redir * /api/registry/ permanent" in api_bare[:120]
+
     def test_streaming_route_sets_flush_interval(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
