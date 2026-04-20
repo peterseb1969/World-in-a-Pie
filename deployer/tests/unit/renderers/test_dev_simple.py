@@ -88,12 +88,15 @@ class TestTreeShape:
             repo_root=REPO_ROOT,
         )
         paths = {str(p) for p in tree.paths()}
-        assert paths == {
+        # Core compose file set — materialized build-contexts/* paths
+        # live alongside but we don't enumerate them here (tests for
+        # the bake behavior are under TestBuildContext).
+        assert {
             "docker-compose.yaml",
             ".env",
             "config/caddy/Caddyfile",
             "config/dex/config.yaml",
-        }
+        } <= paths
 
     def test_env_file_is_0600(
         self, tmp_path: Path, real_discovery: Discovery
@@ -129,7 +132,10 @@ class TestBuildContext:
         doc = self._compose_doc(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
         assert "build" in reg
-        assert reg["build"]["context"].endswith("components/registry")
+        # Auth services now get a materialized per-component build
+        # context under ./build-contexts/<name>/ so wip-auth gets baked
+        # into the dev image (mirrors production build-release.sh).
+        assert reg["build"]["context"] == "./build-contexts/registry"
         # Still tags the image for tidy `podman images`
         assert reg["image"] == "registry:dev"
 
@@ -141,6 +147,44 @@ class TestBuildContext:
         mongo = doc["services"]["mongodb"]
         assert "build" not in mongo
         assert mongo["image"] == "docker.io/library/mongo:7"
+
+    def test_auth_service_build_context_bakes_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Services that import wip_auth need it baked into the dev
+        image. The materialized build context under
+        build-contexts/<name>/ contains the wip-auth source, and the
+        patched Dockerfile installs it."""
+        from wip_deploy.renderers import render_dev_simple
+        d = _dev_deployment(modules=["reporting-sync"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        paths = {str(p) for p in tree.paths()}
+        # wip-auth source materialized under the service's build context
+        assert "build-contexts/registry/wip-auth/pyproject.toml" in paths
+        # Dockerfile patched with wip-auth install
+        dockerfile = tree.files[Path("build-contexts/registry/Dockerfile")].content
+        assert "COPY wip-auth /tmp/wip-auth" in dockerfile
+        assert "pip install --no-cache-dir /tmp/wip-auth" in dockerfile
+
+    def test_document_store_bakes_wip_toolkit_in_addition(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """document-store uses wip-toolkit (BackupEngine) in addition
+        to wip-auth — both need to bake in."""
+        from wip_deploy.renderers import render_dev_simple
+        d = _dev_deployment(modules=["reporting-sync"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        dockerfile = tree.files[Path("build-contexts/document-store/Dockerfile")].content
+        assert "COPY wip-toolkit /tmp/wip-toolkit" in dockerfile
+        assert "pip install --no-cache-dir /tmp/wip-toolkit" in dockerfile
 
 
 # ────────────────────────────────────────────────────────────────────

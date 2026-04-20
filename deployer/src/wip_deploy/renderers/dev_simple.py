@@ -4,8 +4,12 @@ and live-reload where possible.
 For developers iterating on component source locally. Produces the same
 file set as the compose renderer but with three dev-friendly changes:
 
-  1. `build:` contexts from each component's `build_context` — no pulling
-     from a registry. Edits to a Dockerfile reflect in the next rebuild.
+  1. `build:` contexts materialized into the render tree at
+     build-contexts/<name>/ — no pulling from a registry. For the 5
+     Python services that use `wip_auth` the context is patched to
+     COPY + pip install `libs/wip-auth` (mirrors `build-release.sh`
+     for production). `document-store` additionally gets `WIP-Toolkit`
+     baked in.
   2. Source volume mounts (`./components/<name>/src:/app/src:ro`) for
      every component with a build_context — edits to Python source show
      up inside the container without a rebuild.
@@ -14,7 +18,8 @@ file set as the compose renderer but with three dev-friendly changes:
 
 Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
 treats them the same: they get build contexts but no hot reload. Tilt
-mode will handle incremental image builds properly; that's step 7 round 2.
+mode reserved for future incremental-build orchestration; not
+implemented today.
 
 Caddy, Dex, and the .env are rendered identically to compose — same
 auth flow, same internal TLS. Production fidelity by default; if a
@@ -56,6 +61,128 @@ from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 
 # ────────────────────────────────────────────────────────────────────
+# Build-context baking — match build-release.sh
+# ────────────────────────────────────────────────────────────────────
+
+# Services that import `wip_auth`. Their dev images need it baked in
+# (the Dockerfiles don't install it by default — production images are
+# patched by build-release.sh; dev gets the same treatment here).
+_AUTH_SERVICES: frozenset[str] = frozenset({
+    "registry", "def-store", "template-store", "document-store", "reporting-sync",
+})
+
+# Services that additionally import from WIP-Toolkit.
+_TOOLKIT_SERVICES: frozenset[str] = frozenset({"document-store"})
+
+# Directories/files to skip when copying a component tree into the
+# render output. Caches and test fixtures aren't needed in the build
+# context and can contain binaries that would break FileTree's
+# text-only storage.
+_SKIP_DIR_NAMES: frozenset[str] = frozenset({
+    "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache",
+    ".venv", "venv", "node_modules", ".git", "tests", "dist", "build",
+    ".egg-info",
+})
+_SKIP_SUFFIXES: frozenset[str] = frozenset({".pyc", ".pyo", ".pyd"})
+
+
+def _copy_tree_into(src: Path, tree: FileTree, prefix: str) -> None:
+    """Walk `src` and add every text file to `tree` under `prefix/...`.
+
+    Binary files are silently skipped (FileTree stores text only; our
+    Python services don't need binary assets in the build context).
+    """
+    if not src.is_dir():
+        return
+    for path in src.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(src).parts
+        if any(part in _SKIP_DIR_NAMES for part in parts):
+            continue
+        if path.suffix in _SKIP_SUFFIXES:
+            continue
+        try:
+            content = path.read_text()
+        except UnicodeDecodeError:
+            continue
+        rel = "/".join(parts)
+        tree.add(f"{prefix}/{rel}", content)
+
+
+def _patch_dockerfile_for_dev(content: str, *, bake_toolkit: bool) -> str:
+    """Insert wip-auth (and optionally wip-toolkit) installs into a
+    component's Dockerfile, right after the requirements install.
+
+    Mirrors the awk patch in `scripts/build-release.sh`. If the trigger
+    line isn't present (unusual — every Python component has it), the
+    Dockerfile is returned unchanged.
+    """
+    trigger = "RUN pip install --no-cache-dir -r requirements-docker.txt"
+    insert = [
+        "",
+        "# Install wip-auth library (dev-bake)",
+        "COPY wip-auth /tmp/wip-auth",
+        "RUN pip install --no-cache-dir /tmp/wip-auth && rm -rf /tmp/wip-auth",
+    ]
+    if bake_toolkit:
+        insert.extend([
+            "",
+            "# Install wip-toolkit library (dev-bake)",
+            "COPY wip-toolkit /tmp/wip-toolkit",
+            "RUN pip install --no-cache-dir /tmp/wip-toolkit && rm -rf /tmp/wip-toolkit",
+        ])
+    out_lines: list[str] = []
+    patched = False
+    for line in content.splitlines():
+        out_lines.append(line)
+        if not patched and line.strip() == trigger:
+            out_lines.extend(insert)
+            patched = True
+    return "\n".join(out_lines) + "\n"
+
+
+def _materialize_dev_build_context(
+    component: Component,
+    repo_root: Path,
+    tree: FileTree,
+) -> str | None:
+    """Copy a component's build inputs + wip-auth (+ wip-toolkit) into
+    the render tree under build-contexts/<name>/.
+
+    Returns the relative path the compose `build.context:` field should
+    point at, or None for components that have no build_context (use
+    the upstream image directly).
+    """
+    if component.spec.image.build_context is None:
+        return None
+
+    name = component.metadata.name
+    ctx_root = repo_root / "components" / name
+    if not ctx_root.is_dir():
+        return None
+
+    prefix = f"build-contexts/{name}"
+    _copy_tree_into(ctx_root, tree, prefix)
+
+    if name in _AUTH_SERVICES:
+        _copy_tree_into(repo_root / "libs" / "wip-auth", tree, f"{prefix}/wip-auth")
+    if name in _TOOLKIT_SERVICES:
+        _copy_tree_into(repo_root / "WIP-Toolkit", tree, f"{prefix}/wip-toolkit")
+
+    if name in _AUTH_SERVICES:
+        dockerfile_path = Path(f"{prefix}/Dockerfile")
+        if dockerfile_path in tree.files:
+            patched = _patch_dockerfile_for_dev(
+                tree.files[dockerfile_path].content,
+                bake_toolkit=(name in _TOOLKIT_SERVICES),
+            )
+            tree.add(str(dockerfile_path), patched)
+
+    return f"./{prefix}"
+
+
+# ────────────────────────────────────────────────────────────────────
 
 
 def render_dev_simple(
@@ -83,11 +210,24 @@ def render_dev_simple(
 
     tree = FileTree()
 
+    # Materialize a self-contained build context per Python service so
+    # wip-auth (and WIP-Toolkit for document-store) get baked in the
+    # image. Without this, services crash at import with
+    # `ModuleNotFoundError: No module named 'wip_auth'`.
+    build_context_paths: dict[str, str] = {}
+    for c in components:
+        if not is_component_active(c, deployment):
+            continue
+        ctx_path = _materialize_dev_build_context(c, repo_root, tree)
+        if ctx_path is not None:
+            build_context_paths[c.metadata.name] = ctx_path
+
     tree.add(
         "docker-compose.yaml",
         _render_dev_compose_yaml(
             deployment, components, apps, resolved_env, repo_root,
             source_mount=dev_plat.source_mount,
+            build_context_paths=build_context_paths,
         ),
     )
 
@@ -114,6 +254,7 @@ def _render_dev_compose_yaml(
     repo_root: Path,
     *,
     source_mount: bool,
+    build_context_paths: dict[str, str],
 ) -> str:
     """Same shape as compose's _render_compose_yaml but with build: blocks,
     source mounts, and uvicorn --reload."""
@@ -143,6 +284,7 @@ def _render_dev_compose_yaml(
             healthcheck_owners=healthcheck_owners,
             active_names=active_names,
             source_mount=source_mount,
+            build_context_paths=build_context_paths,
         )
         _collect_volumes(c, volumes)
 
@@ -154,6 +296,7 @@ def _render_dev_compose_yaml(
             healthcheck_owners=healthcheck_owners,
             active_names=active_names,
             source_mount=source_mount,
+            build_context_paths=build_context_paths,
         )
         _collect_volumes(a, volumes)
 
@@ -178,22 +321,31 @@ def _dev_service_block(
     healthcheck_owners: set[str],
     active_names: set[str],
     source_mount: bool,
+    build_context_paths: dict[str, str],
 ) -> dict[str, Any]:
     """Same as compose's _service_block but with dev-mode overrides."""
     block: dict[str, Any] = {"container_name": _container_name(owner.metadata.name)}
 
     # Dev: prefer build: over image: when a build_context is declared.
-    # The bare image ref stays as a fallback tag for infra components
-    # (mongo, postgres) which have build_context=None.
-    build_ctx = _resolve_build_context(owner, repo_root)
-    if build_ctx is not None:
-        block["build"] = {"context": str(build_ctx)}
+    # For Python components we use the materialized per-component build
+    # context under ./build-contexts/<name>/ (wip-auth baked in).
+    # For apps / other build-context components fall back to the
+    # component's own directory.
+    name = owner.metadata.name
+    if name in build_context_paths:
+        block["build"] = {"context": build_context_paths[name]}
         if owner.spec.image.build_args:
             block["build"]["args"] = dict(owner.spec.image.build_args)
-        # In dev we still tag the image — keeps `podman images` tidy.
         block["image"] = f"{owner.spec.image.name}:dev"
     else:
-        block["image"] = _image_ref(owner, deployment)
+        build_ctx = _resolve_build_context(owner, repo_root)
+        if build_ctx is not None:
+            block["build"] = {"context": str(build_ctx)}
+            if owner.spec.image.build_args:
+                block["build"]["args"] = dict(owner.spec.image.build_args)
+            block["image"] = f"{owner.spec.image.name}:dev"
+        else:
+            block["image"] = _image_ref(owner, deployment)
 
     environment = _environment_block(env)
     if environment:
