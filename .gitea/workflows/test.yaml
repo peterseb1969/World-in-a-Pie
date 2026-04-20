@@ -253,6 +253,28 @@ jobs:
           . .venv/bin/activate
           pytest libs/wip-auth/tests/ -v --tb=short
 
+  # Deployer (wip-deploy CLI) — pure unit tests, no DB or NATS needed
+  test-deployer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install deployer
+        run: |
+          . .venv/bin/activate
+          pip install -e deployer
+          pip install pytest pytest-asyncio
+
+      - name: Run tests
+        run: |
+          . .venv/bin/activate
+          pytest deployer/tests/unit/ -v --tb=short
+
   # WIP-Toolkit
   test-wip-toolkit:
     runs-on: ubuntu-latest
