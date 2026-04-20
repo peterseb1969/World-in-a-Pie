@@ -121,7 +121,10 @@ def _tls_secret_opt() -> typer.models.OptionInfo:
 
 
 def _dev_mode_opt() -> typer.models.OptionInfo:
-    return typer.Option("--dev-mode", help="Dev mode: tilt | simple.")
+    return typer.Option(
+        "--dev-mode",
+        help="Dev mode: simple (compose + source mounts + --reload) | tilt (reserved, not implemented).",
+    )
 
 
 def _registry_opt() -> typer.models.OptionInfo:
@@ -195,7 +198,7 @@ def validate(
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
-    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
     tag: Annotated[str, _tag_opt()] = "latest",
     add: Annotated[list[str], _add_opt()] = [],
@@ -295,7 +298,7 @@ def show_spec(
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
-    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
     tag: Annotated[str, _tag_opt()] = "latest",
     add: Annotated[list[str], _add_opt()] = [],
@@ -370,7 +373,7 @@ def render(
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
-    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
     tag: Annotated[str, _tag_opt()] = "latest",
     add: Annotated[list[str], _add_opt()] = [],
@@ -453,7 +456,7 @@ def install(
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
-    dev_mode: Annotated[str, _dev_mode_opt()] = "tilt",
+    dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
     tag: Annotated[str, _tag_opt()] = "latest",
     add: Annotated[list[str], _add_opt()] = [],
@@ -488,10 +491,9 @@ def install(
     Generates secrets on first run (persists to the secret backend);
     re-runs pick up existing values and don't regenerate.
     """
-    if target not in ("compose", "k8s"):
+    if target not in ("compose", "k8s", "dev"):
         typer.echo(
-            f"error: install supports target=compose|k8s (got {target!r}); "
-            f"use `render` for target=dev",
+            f"error: install supports target=compose|k8s|dev (got {target!r})",
             err=True,
         )
         raise typer.Exit(2)

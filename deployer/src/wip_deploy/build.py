@@ -57,7 +57,7 @@ class BuildInputs:
     k8s_tls_secret_name: str = "wip-tls"
 
     # Dev platform
-    dev_mode: str = "tilt"
+    dev_mode: str = "simple"
 
     # Images
     registry: str | None = None
