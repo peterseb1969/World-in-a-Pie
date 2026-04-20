@@ -12,7 +12,14 @@ metadata:
 spec:
   image:
     name: docker.io/library/nats
-    tag: "2"
+    # Alpine variant carries busybox (wget included) so compose's
+    # in-container healthcheck exec has something to probe with. The
+    # scratch-based nats:2 image has no shell/curl/wget — on compose
+    # the probe can't run and NATS is reported unhealthy, which cascades
+    # (reporting-sync + ingest-gateway block on depends_on: service_healthy).
+    # On k8s, probes use kubelet's httpGet (bypasses in-container tooling),
+    # so either tag works there.
+    tag: "2-alpine"
 
   ports:
     - {name: nats, container_port: 4222}
