@@ -69,6 +69,7 @@ class AppState:
     postgres_pool: asyncpg.Pool | None = None
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
+    initial_sync_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
     search_service: SearchService | None = None
     sync_status: SyncStatus = SyncStatus(
@@ -221,6 +222,49 @@ async def init_postgres_schema(pool: asyncpg.Pool) -> None:
         logger.info("PostgreSQL schema initialized")
 
 
+async def _initial_metadata_sync(batch_sync_service: BatchSyncService) -> None:
+    """Background: wait for def-store to be healthy, then batch-sync metadata.
+
+    `batch_sync_terminologies` and `batch_sync_terms` swallow connection
+    errors internally and return empty results — a single attempt against
+    a not-yet-ready def-store silently yields 0-row tables. Polling
+    def-store's /health first and only then calling the batch syncs
+    makes them succeed on the first attempt rather than silently fail.
+    """
+    async def _verify_def_store_ready() -> None:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.def_store_url}/health")
+            resp.raise_for_status()
+
+    try:
+        await retry_async(
+            _verify_def_store_ready,
+            retry_on=(
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.ReadTimeout,
+                httpx.HTTPStatusError,
+            ),
+            description="Def-Store health check (initial metadata sync)",
+        )
+        logger.info("Def-Store healthy, running initial metadata sync...")
+    except TimeoutError as e:
+        logger.error(f"Def-Store never became healthy: {e}")
+        logger.error(
+            "Initial metadata sync skipped; trigger POST /sync/terminologies "
+            "manually once def-store is reachable."
+        )
+        return
+
+    try:
+        t_result = await batch_sync_service.batch_sync_terminologies()
+        logger.info(f"Initial terminology sync: {t_result}")
+        t_result = await batch_sync_service.batch_sync_terms()
+        logger.info(f"Initial term sync: {t_result}")
+    except Exception as e:
+        logger.error(f"Initial terminology/term sync failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
@@ -269,15 +313,16 @@ async def lifespan(app: FastAPI):
         state.batch_sync_service = BatchSyncService(state.postgres_pool)
         logger.info("Batch sync service initialized")
 
-        # Run initial terminology and term sync
-        try:
-            logger.info("Running initial terminology batch sync...")
-            t_result = await state.batch_sync_service.batch_sync_terminologies()
-            logger.info(f"Initial terminology sync: {t_result}")
-            t_result = await state.batch_sync_service.batch_sync_terms()
-            logger.info(f"Initial term sync: {t_result}")
-        except Exception as e:
-            logger.error(f"Initial terminology/term sync failed: {e}")
+        # Initial metadata sync runs as a background task. Waits for
+        # def-store to be healthy before firing batch_sync_terminologies/
+        # batch_sync_terms, because those methods swallow connection
+        # errors internally — a single attempt against a not-yet-ready
+        # def-store silently yields empty tables. Backgrounded so it
+        # doesn't block the HTTP listener either.
+        state.initial_sync_task = asyncio.create_task(
+            _initial_metadata_sync(state.batch_sync_service)
+        )
+        logger.info("Initial metadata sync scheduled (background)")
 
     # Initialize search service (works with or without PostgreSQL)
     state.search_service = SearchService(state.postgres_pool)
@@ -320,6 +365,12 @@ async def lifespan(app: FastAPI):
         state.sync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await state.sync_task
+
+    # Cancel initial metadata sync task (if still running)
+    if state.initial_sync_task and not state.initial_sync_task.done():
+        state.initial_sync_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.initial_sync_task
 
     # Close connections
     if state.postgres_pool:

@@ -5,6 +5,8 @@ A terminology and ontology management service for the World In a Pie system.
 Provides controlled vocabulary management with import/export capabilities.
 """
 
+import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 
@@ -48,6 +50,51 @@ class Settings:
 settings = Settings()
 
 
+async def _bootstrap_system_terminologies() -> None:
+    """Background bootstrap of system terminologies.
+
+    Runs as a background task — waits for Registry to be healthy, then
+    creates the built-in system terminologies (_TIME_UNITS,
+    _ONTOLOGY_RELATIONSHIP_TYPES). Off the critical path so def-store's
+    HTTP listener doesn't block on Registry startup. If Registry never
+    becomes healthy, logs a warning and gives up; the terminologies can
+    be recreated by restarting def-store or hitting ensure_system_terminologies
+    via a future admin endpoint.
+    """
+    registry_client = get_registry_client()
+
+    async def _verify_registry_ready() -> None:
+        if not await registry_client.health_check():
+            raise ConnectionError("Registry health check returned non-200")
+
+    try:
+        await retry_async(
+            _verify_registry_ready,
+            retry_on=(ConnectionError,),
+            description="Registry health check (bootstrap)",
+        )
+        print("[bootstrap] Registry service is healthy.")
+    except TimeoutError as e:
+        print(f"[bootstrap] WARNING: Registry never became healthy: {e}")
+        print("[bootstrap] System terminologies not bootstrapped.")
+        return
+
+    print("[bootstrap] Ensuring system terminologies exist...")
+    try:
+        result = await ensure_system_terminologies()
+        if result["errors"]:
+            for err in result["errors"]:
+                print(f"[bootstrap]   WARNING: {err}")
+        print(
+            f"[bootstrap] System terminologies: {result['terminologies_created']} created, "
+            f"{result['terminologies_existed']} existed, "
+            f"{result['terms_created']} terms created, "
+            f"{result['terms_existed']} terms existed"
+        )
+    except Exception as e:
+        print(f"[bootstrap] WARNING: Failed to bootstrap system terminologies: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -71,32 +118,12 @@ async def lifespan(app: FastAPI):
     # Store client in app state
     app.state.mongodb_client = client
 
-    # Configure Registry client
+    # Configure Registry client (no network call — just stores URL/key).
     configure_registry_client(
         base_url=settings.REGISTRY_URL,
         api_key=settings.REGISTRY_API_KEY
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
-
-    # Wait for Registry to be healthy — the terminology bootstrap below
-    # depends on Registry being reachable. On k8s, Registry may still be
-    # coming up when def-store starts.
-    registry_client = get_registry_client()
-
-    async def _verify_registry_ready() -> None:
-        if not await registry_client.health_check():
-            raise ConnectionError("Registry health check returned non-200")
-
-    try:
-        await retry_async(
-            _verify_registry_ready,
-            retry_on=(ConnectionError,),
-            description="Registry health check",
-        )
-        print("Registry service is healthy.")
-    except TimeoutError as e:
-        print(f"WARNING: Registry never became healthy: {e}")
-        print("Terminology bootstrap will likely fail.")
 
     # Configure NATS client (optional — for event publishing to reporting-sync)
     if settings.NATS_URL:
@@ -105,20 +132,16 @@ async def lifespan(app: FastAPI):
     else:
         print("NATS URL not configured, event publishing disabled")
 
-    # Bootstrap system terminologies
-    print("Ensuring system terminologies exist...")
-    try:
-        result = await ensure_system_terminologies()
-        if result["errors"]:
-            for err in result["errors"]:
-                print(f"  WARNING: {err}")
-        print(f"System terminologies: {result['terminologies_created']} created, "
-              f"{result['terminologies_existed']} existed, "
-              f"{result['terms_created']} terms created, "
-              f"{result['terms_existed']} terms existed")
-    except Exception as e:
-        print(f"WARNING: Failed to bootstrap system terminologies: {e}")
-        print("System terminologies may need to be created manually.")
+    # Background bootstrap: wait for Registry to be healthy, then run
+    # ensure_system_terminologies. Off the critical path so the HTTP
+    # listener becomes Ready as soon as Mongo init completes. Callers
+    # (e.g., reporting-sync's startup metadata sync) can then reach
+    # def-store immediately; system-terminology creation catches up
+    # once Registry is available.
+    app.state.bootstrap_task = asyncio.create_task(
+        _bootstrap_system_terminologies()
+    )
+    print("System-terminology bootstrap scheduled (background).")
 
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
@@ -133,6 +156,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Def-Store Service...")
+
+    # Cancel the background bootstrap task if it's still running
+    bootstrap_task = getattr(app.state, "bootstrap_task", None)
+    if bootstrap_task and not bootstrap_task.done():
+        bootstrap_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await bootstrap_task
+
     if key_sync:
         await key_sync.stop()
     await close_nats_client()
