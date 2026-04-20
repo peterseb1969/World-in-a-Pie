@@ -102,6 +102,11 @@ class Route(WIPModel):
     path: str = Field(pattern=r"^/.*")
     auth_required: bool = True
     streaming: bool = False
+    # Strip the route's path prefix before forwarding to the backend.
+    # Caddy: `handle_path` (vs `handle`). NGINX Ingress: `rewrite-target: /`.
+    # Needed for backends that serve at the root and don't know about the
+    # public prefix — MinIO's S3 API is the canonical case.
+    strip_prefix: bool = False
 
 
 # ────────────────────────────────────────────────────────────────────

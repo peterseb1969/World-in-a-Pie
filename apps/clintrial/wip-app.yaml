@@ -16,6 +16,11 @@ spec:
 
   ports:
     - {name: http, container_port: 3001}
+    # Vite dev server (CASE-57). Used only when `wip-deploy install
+    # --target dev --app-source clintrial=<path>` is active; Caddy
+    # then routes /apps/clintrial/* to this port instead of :3001.
+    # Ignored on compose/k8s and on dev without the override.
+    - {name: dev, container_port: 5174}
 
   env:
     required:

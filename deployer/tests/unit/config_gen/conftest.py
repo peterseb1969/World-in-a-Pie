@@ -68,6 +68,30 @@ def k8s_deployment() -> Deployment:
 
 
 @pytest.fixture
+def maximal_k8s_deployment(real_discovery: Discovery) -> Deployment:
+    """K8s deployment with every optional module + every app active."""
+    optional = sorted(
+        c.metadata.name
+        for c in real_discovery.components
+        if c.metadata.category == "optional"
+    )
+    app_names = sorted(a.metadata.name for a in real_discovery.apps)
+    return Deployment(
+        metadata=DeploymentMetadata(name="maximal-k8s"),
+        spec=DeploymentSpec(
+            target="k8s",
+            modules={"optional": optional},  # type: ignore[arg-type]
+            apps=[AppRef(name=n) for n in app_names],
+            auth=AuthSpec(mode="oidc", gateway=True),
+            network=NetworkSpec(hostname="wip-kubi.local", https_port=443, http_port=80),
+            images=ImagesSpec(registry="ghcr.io/test", tag="test"),
+            platform=PlatformSpec(k8s=K8sPlatform()),
+            secrets=SecretsSpec(backend="k8s-secret"),
+        ),
+    )
+
+
+@pytest.fixture
 def maximal_compose_deployment(real_discovery: Discovery) -> Deployment:
     """Compose deployment with every optional module + every app active."""
     optional = sorted(

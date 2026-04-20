@@ -18,6 +18,13 @@ spec:
 
   ports:
     - {name: http, container_port: 3011}
+    # Vite dev server. When `wip-deploy install --target dev --app-source
+    # react-console=<path>` is used and the app's Dockerfile.dev runs
+    # `npm run dev`, the frontend lives here (not on :3011, which only
+    # serves the API/SSR in dev). Caddy routes /apps/rc/* to this port
+    # in that mode. Ignored on compose/k8s targets and on dev without
+    # the override (apps come up on :3011 from the prod image).
+    - {name: dev, container_port: 5174}
 
   env:
     required:

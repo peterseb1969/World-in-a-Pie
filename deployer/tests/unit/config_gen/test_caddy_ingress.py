@@ -178,6 +178,32 @@ class TestCrossTargetInvariants:
         assert caddy_ds.streaming is True
         assert ing_ds.streaming is True
 
+    def test_strip_prefix_flag_preserved_across_targets(
+        self,
+        maximal_compose_deployment: Deployment,
+        maximal_k8s_deployment: Deployment,
+        real_discovery: Discovery,
+    ) -> None:
+        """CASE-54: minio has strip_prefix=True on /minio so MinIO sees
+        the request at its root. Both targets must carry that through
+        (minio is an optional module, so we need the maximal deployments
+        to have it active)."""
+        caddy = generate_caddy_config(
+            maximal_compose_deployment, real_discovery.components, real_discovery.apps
+        )
+        ing = generate_ingress_config(
+            maximal_k8s_deployment, real_discovery.components, real_discovery.apps
+        )
+
+        caddy_minio = next(r for r in caddy.routes if r.path == "/minio")
+        ing_minio = next(r for r in ing.rules if r.path == "/minio")
+
+        assert caddy_minio.strip_prefix is True
+        assert ing_minio.strip_prefix is True
+        # Non-strip routes stay non-strip.
+        caddy_ds = next(r for r in caddy.routes if r.path == "/api/document-store")
+        assert caddy_ds.strip_prefix is False
+
     def test_inactive_components_absent_from_both_targets(
         self,
         compose_deployment: Deployment,

@@ -31,6 +31,12 @@ class SpecContextAuth:
 @dataclass(frozen=True)
 class SpecContextFeatures:
     files_enabled: str  # "true"/"false" — string for direct env injection
+    # Browser-reachable MinIO URL. document-store rewrites presigned URLs
+    # from the internal endpoint (http://wip-minio:9000) to this one
+    # before returning them to clients. Routed through Caddy/Ingress with
+    # prefix stripping — shared origin with the rest of the API, one cert,
+    # no mixed-content issues.
+    file_storage_public_endpoint: str
 
 
 @dataclass(frozen=True)
@@ -148,4 +154,7 @@ def _compute_features(
         (c for c in components if c.metadata.name == "minio"), None
     )
     files_on = minio is not None and is_component_active(minio, deployment)
-    return SpecContextFeatures(files_enabled="true" if files_on else "false")
+    return SpecContextFeatures(
+        files_enabled="true" if files_on else "false",
+        file_storage_public_endpoint=f"{_public_base(deployment)}/minio",
+    )

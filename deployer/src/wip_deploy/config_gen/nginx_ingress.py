@@ -26,6 +26,7 @@ class IngressRule:
     backend_port: int
     auth_protected: bool
     streaming: bool
+    strip_prefix: bool
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,7 @@ def generate_ingress_config(
             backend_port=r.backend_port,
             auth_protected=r.auth_protected,
             streaming=r.streaming,
+            strip_prefix=r.strip_prefix,
         )
         for r in resolve_routes(deployment, components, apps)
     ]

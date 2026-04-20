@@ -230,6 +230,7 @@ def render_dev_simple(
             deployment, components, apps, resolved_env, repo_root,
             source_mount=dev_plat.source_mount,
             build_context_paths=build_context_paths,
+            app_sources=dev_plat.app_sources,
         ),
     )
 
@@ -272,6 +273,7 @@ def _render_dev_compose_yaml(
     *,
     source_mount: bool,
     build_context_paths: dict[str, str],
+    app_sources: dict[str, Path],
 ) -> str:
     """Same shape as compose's _render_compose_yaml but with build: blocks,
     source mounts, and uvicorn --reload."""
@@ -302,6 +304,7 @@ def _render_dev_compose_yaml(
             active_names=active_names,
             source_mount=source_mount,
             build_context_paths=build_context_paths,
+            app_sources=app_sources,
         )
         _collect_volumes(c, volumes)
 
@@ -314,8 +317,15 @@ def _render_dev_compose_yaml(
             active_names=active_names,
             source_mount=source_mount,
             build_context_paths=build_context_paths,
+            app_sources=app_sources,
         )
         _collect_volumes(a, volumes)
+        # CASE-55: declare named volume for node_modules shadow so it
+        # persists across --force-recreate and is shared with `run`
+        # commands (needed to populate the volume via a one-off
+        # `npm ci` without it being discarded).
+        if a.metadata.name in app_sources:
+            volumes[f"{a.metadata.name}-node-modules"] = {}
 
     services["caddy"] = _caddy_service_block(deployment)
 
@@ -339,6 +349,7 @@ def _dev_service_block(
     active_names: set[str],
     source_mount: bool,
     build_context_paths: dict[str, str],
+    app_sources: dict[str, Path],
 ) -> dict[str, Any]:
     """Same as compose's _service_block but with dev-mode overrides."""
     block: dict[str, Any] = {"container_name": _container_name(owner.metadata.name)}
@@ -346,13 +357,28 @@ def _dev_service_block(
     # Dev: prefer build: over image: when a build_context is declared.
     # For Python components we use the materialized per-component build
     # context under ./build-contexts/<name>/ (wip-auth baked in).
-    # For apps / other build-context components fall back to the
-    # component's own directory.
+    # For apps with --app-source overrides we use the user-provided
+    # local path (the app's own repo). Other apps fall back to the
+    # registry image just like compose target.
     name = owner.metadata.name
     if name in build_context_paths:
         block["build"] = {"context": build_context_paths[name]}
         if owner.spec.image.build_args:
             block["build"]["args"] = dict(owner.spec.image.build_args)
+        block["image"] = f"{owner.spec.image.name}:dev"
+    elif isinstance(owner, App) and name in app_sources:
+        # CASE-55: app source override. Build the app's image locally
+        # from the user's checkout. Prefer Dockerfile.dev if the app
+        # provides one — that's where the app defines its own dev
+        # command (e.g., `npm run dev` for React/Vite with HMR),
+        # keeping renderer-side knowledge minimal.
+        app_path = app_sources[name]
+        build_cfg: dict[str, Any] = {"context": str(app_path)}
+        if (app_path / "Dockerfile.dev").is_file():
+            build_cfg["dockerfile"] = "Dockerfile.dev"
+        if owner.spec.image.build_args:
+            build_cfg["args"] = dict(owner.spec.image.build_args)
+        block["build"] = build_cfg
         block["image"] = f"{owner.spec.image.name}:dev"
     else:
         build_ctx = _resolve_build_context(owner, repo_root)
@@ -365,6 +391,24 @@ def _dev_service_block(
             block["image"] = _image_ref(owner, deployment)
 
     environment = _environment_block(env)
+    # CASE-55: apps with --app-source run in dev mode (npm run dev), so
+    # devDependencies (vite, concurrently, etc.) must be installed. The
+    # manifest's NODE_ENV=production literal is correct for prod images
+    # but wrong here — it makes `npm ci` skip devDeps, breaking the dev
+    # command. Override to development whenever --app-source is active.
+    #
+    # Also mirror APP_BASE_PATH → VITE_BASE_PATH so Vite's `base` and
+    # proxy-key prefixes match the Caddy-exposed path (e.g. /apps/rc).
+    # Prod images bake VITE_BASE_PATH via Dockerfile build ARG; the dev
+    # loop needs the same contract. Without this, Vite renders assets
+    # at bare paths (/@vite/client) instead of prefixed
+    # (/apps/rc/@vite/client) → 404 through Caddy. Only mirror when
+    # VITE_BASE_PATH isn't already set — respect an explicit override.
+    if isinstance(owner, App) and owner.metadata.name in app_sources:
+        environment["NODE_ENV"] = "development"
+        base_path = environment.get("APP_BASE_PATH")
+        if base_path and "VITE_BASE_PATH" not in environment:
+            environment["VITE_BASE_PATH"] = base_path
     if environment:
         block["environment"] = environment
 
@@ -384,7 +428,11 @@ def _dev_service_block(
 
     # Dev: mount source directories for build-context components so edits
     # show up inside the container without a rebuild.
-    volumes = _dev_volumes_for(owner, repo_root, enable_source_mount=source_mount)
+    volumes = _dev_volumes_for(
+        owner, repo_root,
+        enable_source_mount=source_mount,
+        app_sources=app_sources,
+    )
     if volumes:
         block["volumes"] = volumes
 
@@ -427,7 +475,11 @@ def _resolve_build_context(
 
 
 def _dev_volumes_for(
-    owner: Component | App, repo_root: Path, *, enable_source_mount: bool
+    owner: Component | App,
+    repo_root: Path,
+    *,
+    enable_source_mount: bool,
+    app_sources: dict[str, Path],
 ) -> list[str]:
     """Compose volumes list with dev-mode source mounts added.
 
@@ -459,6 +511,34 @@ def _dev_volumes_for(
             source = (repo_root / "components" / owner.metadata.name / "src").resolve()
             if source.exists():
                 volumes.append(f"{source}:/app/src:ro")
+
+    # CASE-55: app source-mount for --app-source overrides. Mount the
+    # entire app directory into /app (including package.json + src/ +
+    # node_modules if present). The container's dev command (defined by
+    # the app's Dockerfile.dev via `npm run dev` or equivalent) reads
+    # from /app and watches for changes. `rw` because dev servers often
+    # write build artifacts; read-only is too strict for most Node dev
+    # loops.
+    #
+    # Node_modules shadow: a NAMED volume `<name>-node-modules` at
+    # /app/node_modules shadows the host's node_modules directory.
+    # Without this, macOS darwin-arm64 binaries (esbuild native module,
+    # etc.) leak into the linux-arm64 container and fail to execute;
+    # worse, the container's first-run `npm install` would overwrite
+    # the host's node_modules with linux builds, breaking host-side
+    # `npm run dev`.
+    #
+    # Named (not anonymous): podman-compose's `run --rm` scopes
+    # anonymous volumes to the run-container, so a one-off install
+    # can't populate the service container's node_modules. A named
+    # volume is shared across all service invocations (up, run, exec)
+    # and persists across --force-recreate — so `podman-compose run
+    # --rm react-console npm ci` populates it once, then every
+    # subsequent start sees a populated node_modules.
+    if isinstance(owner, App) and owner.metadata.name in app_sources:
+        app_path = app_sources[owner.metadata.name]
+        volumes.append(f"{app_path}:/app:rw")
+        volumes.append(f"{owner.metadata.name}-node-modules:/app/node_modules")
 
     return volumes
 

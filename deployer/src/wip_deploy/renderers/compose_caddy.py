@@ -120,7 +120,13 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     out.write(f"        redir * {route.path}/ permanent\n")
     out.write("    }\n\n")
 
-    out.write(f"    handle {route.path}/* {{\n")
+    # `handle_path` strips the route's prefix before forwarding; `handle`
+    # preserves the full request path. MinIO's S3 API is the canonical
+    # strip_prefix case — it serves at the root and doesn't know about
+    # the public /minio prefix, and SigV2 presigned URLs encode the
+    # bucket+key path that must match what MinIO sees.
+    directive = "handle_path" if route.strip_prefix else "handle"
+    out.write(f"    {directive} {route.path}/* {{\n")
     if route.auth_protected:
         _write_forward_auth(out, cfg)
     backend = f"wip-{route.backend_component}:{route.backend_port}"

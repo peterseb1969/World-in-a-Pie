@@ -39,6 +39,12 @@ spec:
       # File storage — MinIO only present when files module active.
       - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
       - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}
+      # Browser-facing URL for presigned download links. Internal endpoint
+      # above is correct for server-side S3 PUTs; this one is what
+      # document-store rewrites into the URL before returning it to the
+      # caller. Resolved via Caddy/Ingress with /minio prefix stripping
+      # (CASE-54).
+      - {name: WIP_FILE_STORAGE_PUBLIC_ENDPOINT, source: {from_spec: features.file_storage_public_endpoint}}
       - {name: WIP_FILE_STORAGE_ACCESS_KEY, source: {literal: wip-minio-root}}
       - {name: WIP_FILE_STORAGE_SECRET_KEY, source: {from_secret: minio-password}}
       - {name: WIP_FILE_STORAGE_BUCKET, source: {literal: wip-attachments}}

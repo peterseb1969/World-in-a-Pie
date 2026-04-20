@@ -22,6 +22,17 @@ spec:
       - {name: MINIO_ROOT_USER, source: {literal: wip-minio-root}}
       - {name: MINIO_ROOT_PASSWORD, source: {from_secret: minio-password}}
 
+  # Browser-facing route for presigned download URLs. document-store
+  # signs URLs against the internal wip-minio:9000 endpoint and rewrites
+  # the host portion to whatever `features.file_storage_public_endpoint`
+  # resolves to (e.g., https://host:8443/minio). Caddy/Ingress strips
+  # the /minio prefix so MinIO sees the request at its root — required
+  # because SigV2 presigned URLs encode the bucket+key path that MinIO
+  # verifies against its own routing. auth_required=false because the
+  # presigned URL carries its own expiring signature.
+  routes:
+    - {path: /minio, auth_required: false, strip_prefix: true}
+
   storage:
     - {name: data, mount_path: /data, size: 50Gi}
 

@@ -166,6 +166,38 @@ class TestComposeYaml:
         assert "minio" not in doc["services"]
         assert "reporting-sync" not in doc["services"]
 
+    def test_minio_active_caddy_emits_handle_path_with_strip_prefix(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-54: MinIO's /minio route has strip_prefix=true so Caddy
+        must emit `handle_path` (prefix-stripping) instead of `handle`.
+        Presigned URL signatures are computed over the bucket+key path
+        at MinIO's root — the /minio public prefix has to be stripped
+        before MinIO verifies the sig."""
+        d = _minimal_compose(modules=["minio"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # The /minio/* block uses handle_path (strip), not handle.
+        assert "handle_path /minio/* {" in caddyfile
+        # And non-strip routes still use `handle /path/*`.
+        assert "handle /api/document-store/* {" in caddyfile
+
+    def test_minio_active_document_store_gets_public_endpoint_env(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-54: WIP_FILE_STORAGE_PUBLIC_ENDPOINT must be injected
+        into document-store's env, pointing at the public Caddy-routed
+        URL for MinIO so presigned-URL rewrites produce a reachable host."""
+        doc = self._render_compose(
+            tmp_path, real_discovery, modules=["minio"],
+        )
+        env = doc["services"]["document-store"]["environment"]
+        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"].endswith("/minio"), env
+        # Not the internal endpoint.
+        assert env["WIP_FILE_STORAGE_PUBLIC_ENDPOINT"] != env["WIP_FILE_STORAGE_ENDPOINT"]
+
     def test_reporting_active_pulls_in_postgres_and_nats(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

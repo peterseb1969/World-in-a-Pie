@@ -90,7 +90,10 @@ class TestResolveFromSpec:
                 issuer_url_internal="int",
                 callback_url="cb",
             ),
-            features=SpecContextFeatures(files_enabled="true"),
+            features=SpecContextFeatures(
+                files_enabled="true",
+                file_storage_public_endpoint="https://h/minio",
+            ),
         )
 
     def test_nested_path(self) -> None:

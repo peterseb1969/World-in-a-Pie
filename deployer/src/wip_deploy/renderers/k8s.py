@@ -544,10 +544,14 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     cfg: IngressConfig = ingress_cfg
     docs: list[dict[str, Any]] = []
 
-    # Classify rules
-    api_rules = [r for r in cfg.rules if not r.auth_protected and r.backend_service != "wip-auth-gateway"]
-    auth_gateway_rules = [r for r in cfg.rules if r.backend_service == "wip-auth-gateway"]
-    app_rules = [r for r in cfg.rules if r.auth_protected]
+    # Classify rules. strip_prefix rules need per-rule Ingresses because
+    # the rewrite-target annotation is per-Ingress and applying it across
+    # mixed paths would strip prefixes from routes that don't want it.
+    strip_rules = [r for r in cfg.rules if r.strip_prefix]
+    non_strip = [r for r in cfg.rules if not r.strip_prefix]
+    api_rules = [r for r in non_strip if not r.auth_protected and r.backend_service != "wip-auth-gateway"]
+    auth_gateway_rules = [r for r in non_strip if r.backend_service == "wip-auth-gateway"]
+    app_rules = [r for r in non_strip if r.auth_protected]
 
     tls_block = [{
         "hosts": [cfg.hostname],
@@ -630,6 +634,55 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 "rules": [{
                     "host": cfg.hostname,
                     "http": {"paths": [_ingress_path(r)]},
+                }],
+            },
+        })
+
+    # Per-rule ingresses for strip_prefix routes. Uses nginx-ingress's
+    # regex-path idiom (`/prefix(/|$)(.*)` → `rewrite-target: /$2`) so
+    # the backend sees the request as if it had hit the service at its
+    # root — needed for backends like MinIO whose SigV2 presigned URLs
+    # are computed over a path that doesn't include the public prefix.
+    for r in strip_rules:
+        strip_annotations = dict(base_annotations)
+        strip_annotations["nginx.ingress.kubernetes.io/use-regex"] = "true"
+        strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
+        if cfg.gateway_auth_url and r.auth_protected:
+            strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
+            strip_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
+                f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
+            )
+            strip_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
+                "X-WIP-User,X-WIP-Groups,X-API-Key"
+            )
+        if r.streaming:
+            strip_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
+
+        ingress_name = f"{r.backend_service.removeprefix('wip-')}-ingress"
+        docs.append({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "Ingress",
+            "metadata": {
+                "name": ingress_name,
+                "namespace": ns,
+                "labels": {_LABELS_PART_OF: "wip"},
+                "annotations": strip_annotations,
+            },
+            "spec": {
+                "ingressClassName": cfg.ingress_class,
+                "tls": tls_block,
+                "rules": [{
+                    "host": cfg.hostname,
+                    "http": {"paths": [{
+                        "path": f"{r.path}(/|$)(.*)",
+                        "pathType": "ImplementationSpecific",
+                        "backend": {
+                            "service": {
+                                "name": r.backend_service,
+                                "port": {"number": r.backend_port},
+                            },
+                        },
+                    }]},
                 }],
             },
         })
