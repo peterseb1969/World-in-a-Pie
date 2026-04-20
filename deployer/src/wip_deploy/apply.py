@@ -205,6 +205,12 @@ def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str]:
 
     podman-compose and docker compose both support `ps --format json` in
     modern versions, though the JSON shapes differ slightly. We normalize.
+
+    podman-compose ≤1.3.0 does not include a Health field in its JSON
+    (only State="running"/"exited"). For those cases we supplement with a
+    single `podman inspect` call per running container to fetch
+    `State.Health.Status`. Without this, `_wait_healthy` would loop until
+    timeout even when every service was actually healthy.
     """
     cmd = [
         *compose_cmd,
@@ -224,7 +230,67 @@ def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str]:
         # as "no statuses yet" and let the outer loop retry.
         return {}
 
-    return _parse_ps_output(result.stdout)
+    statuses = _parse_ps_output(result.stdout)
+    _supplement_health_from_inspect(statuses, compose_cmd)
+    return statuses
+
+
+def _supplement_health_from_inspect(
+    statuses: dict[str, str], compose_cmd: list[str]
+) -> None:
+    """Fill in missing health info from `<runtime> inspect`.
+
+    If a container's health is already a recognizable state (healthy /
+    unhealthy / starting) we leave it alone. Otherwise we query
+    `State.Health.Status` via a single batched `inspect` call. Any
+    container that has no healthcheck declared inspect returns an empty
+    string — we leave those as-is so callers that pass through
+    `_services_with_healthchecks` skip them anyway.
+    """
+    recognized = {"healthy", "unhealthy", "starting"}
+    needs_fill = [name for name, health in statuses.items() if health not in recognized]
+    if not needs_fill:
+        return
+
+    runtime = _inspect_runtime(compose_cmd)
+    if runtime is None:
+        return
+
+    try:
+        result = subprocess.run(
+            [runtime, "inspect", "--format",
+             "{{.Name}}={{.State.Health.Status}}", *needs_fill],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if "=" not in line:
+            continue
+        name, health = line.split("=", 1)
+        name = name.lstrip("/")
+        health = health.strip()
+        if health:
+            statuses[name] = health
+
+
+def _inspect_runtime(compose_cmd: list[str]) -> str | None:
+    """Pick the runtime binary matching the compose command.
+
+    podman-compose → podman inspect.
+    docker compose → docker inspect.
+    Returns None if neither is available on PATH.
+    """
+    if compose_cmd and compose_cmd[0] == "podman-compose" and shutil.which("podman"):
+        return "podman"
+    if compose_cmd and compose_cmd[0] == "docker" and shutil.which("docker"):
+        return "docker"
+    # Last-ditch fallback.
+    return shutil.which("podman") or shutil.which("docker")
 
 
 def _parse_ps_output(stdout: str) -> dict[str, str]:
