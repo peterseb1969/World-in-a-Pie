@@ -494,20 +494,20 @@ def _depends_on_block(
     healthcheck_owners: set[str],
     active_names: set[str],
 ) -> dict[str, Any]:
-    """Emit depends_on. Inactive deps are dropped entirely (compose
-    rejects references to services not defined in the file). Use
-    `service_healthy` only for deps that declare a healthcheck; fall
-    back to `service_started` for the rest — this avoids compose
-    hanging forever on distroless Dex and similar."""
-    out: dict[str, Any] = {}
-    for dep_name in owner.spec.depends_on:
-        if dep_name not in active_names:
-            continue
-        condition = (
-            "service_healthy" if dep_name in healthcheck_owners else "service_started"
-        )
-        out[dep_name] = {"condition": condition}
-    return out
+    """Parallel-start: emit no depends_on at all.
+
+    Historically we emitted depends_on with service_healthy gates to
+    serialize startup along the dependency chain — a belt that worked
+    but produced long cold-boot times and mirrored k8s less cleanly.
+    Services now carry startup retry for every real dependency
+    (Mongo/Postgres via init_beanie_with_retry / asyncpg pool retries,
+    NATS via nats-py's built-in reconnect + explicit retry_async,
+    cross-service HTTP via background-task patterns in def-store and
+    reporting-sync). With retry in place, the ordering gate is
+    redundant — compose containers can start in parallel, which
+    matches k8s behavior and cuts cold-boot time significantly.
+    """
+    return {}
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -289,22 +289,21 @@ class TestComposeYaml:
         # DATABASE_NAME is a literal, not a secret
         assert reg["environment"]["DATABASE_NAME"] == "wip_registry"
 
-    def test_depends_on_uses_service_healthy_when_dep_has_healthcheck(
+    def test_no_depends_on_emitted(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
+        """Parallel-start: compose containers start simultaneously and
+        services use their startup retry logic to handle dep races.
+        The renderer emits no depends_on blocks at all — earlier we
+        used depends_on: service_healthy to serialize, but that gate
+        is redundant now that every service retries its real
+        dependencies (Mongo, Postgres, NATS, cross-service HTTP).
+        """
         doc = self._render_compose(tmp_path, real_discovery)
-        reg = doc["services"]["registry"]
-        # mongodb has a healthcheck → service_healthy
-        assert reg["depends_on"]["mongodb"] == {"condition": "service_healthy"}
-
-    def test_depends_on_falls_back_to_service_started_for_no_healthcheck_dep(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        """Dex has no healthcheck (distroless). Depending on it must
-        use service_started, otherwise compose hangs forever."""
-        doc = self._render_compose(tmp_path, real_discovery)
-        gateway = doc["services"]["auth-gateway"]
-        assert gateway["depends_on"]["dex"] == {"condition": "service_started"}
+        for name, svc in doc["services"].items():
+            assert "depends_on" not in svc, (
+                f"Service {name!r} still has depends_on: {svc.get('depends_on')}"
+            )
 
     def test_network_declared(
         self, tmp_path: Path, real_discovery: Discovery
