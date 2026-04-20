@@ -52,8 +52,10 @@ from wip_deploy.renderers.compose import (
     _image_ref,
     _render_dotenv,
 )
+from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import render_dex_config
+from wip_deploy.renderers.router_caddy import render_router_caddyfile
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -239,6 +241,21 @@ def render_dev_simple(
     dex_cfg = generate_dex_config(deployment, components, apps)
     if dex_cfg is not None:
         tree.add("config/dex/config.yaml", render_dex_config(dex_cfg, secrets))
+
+    # wip-router Caddyfile — same as compose renderer. Without this,
+    # the wip-router container boots with the stock caddy image's
+    # default Caddyfile (listening on :80, serving static files) and
+    # every SSR-proxied API call through wip-router:8080 returns 502.
+    router_active = any(
+        c.metadata.name == "router" and is_component_active(c, deployment)
+        for c in components
+    )
+    if router_active:
+        router_cfg = generate_router_config(deployment, components, apps)
+        tree.add(
+            "config/router/Caddyfile",
+            render_router_caddyfile(router_cfg),
+        )
 
     return tree
 
@@ -428,6 +445,12 @@ def _dev_volumes_for(
     # Dex config bind mount — same as prod.
     if owner.metadata.name == "dex":
         volumes.append("./config/dex/config.yaml:/etc/dex/config.yaml:ro")
+
+    # Router config bind mount — same as prod. Without this, wip-router
+    # starts with the stock caddy default Caddyfile and all /api/* routing
+    # breaks (502 Bad Gateway from SSR-proxied app calls).
+    if owner.metadata.name == "router":
+        volumes.append("./config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
 
     # Dev-specific: source mount for Python services.
     if enable_source_mount and not isinstance(owner, App):

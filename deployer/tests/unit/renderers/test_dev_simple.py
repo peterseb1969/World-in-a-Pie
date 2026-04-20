@@ -170,6 +170,32 @@ class TestBuildContext:
         assert "COPY wip-auth /tmp/wip-auth" in dockerfile
         assert "pip install --no-cache-dir /tmp/wip-auth" in dockerfile
 
+    def test_router_caddyfile_rendered_and_mounted(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """wip-router needs its generated Caddyfile written to the tree
+        AND bind-mounted into the container. Without either, wip-router
+        boots with the stock caddy default Caddyfile (listens on :80,
+        serves static files) and every /api/* request returns 502.
+        """
+        from wip_deploy.renderers import render_dev_simple
+        d = _dev_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        paths = {str(p) for p in tree.paths()}
+        assert "config/router/Caddyfile" in paths
+
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        router = doc["services"]["router"]
+        mounts = router.get("volumes", [])
+        assert any(
+            m.endswith("config/router/Caddyfile:/etc/caddy/Caddyfile:ro")
+            for m in mounts
+        ), f"router has no Caddyfile mount: {mounts}"
+
     def test_document_store_bakes_wip_toolkit_in_addition(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
