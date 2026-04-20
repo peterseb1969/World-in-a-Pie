@@ -77,7 +77,13 @@ def apply_compose(
     tree.write(install_dir)
 
     compose_cmd = _detect_compose_cmd()
-    _run_up(install_dir, compose_cmd)
+    # Dev target uses local build contexts — always rebuild + recreate
+    # so Dockerfile edits and libs/wip-auth changes take effect on every
+    # install. Without --build, podman-compose reuses the cached image
+    # tag; without --force-recreate, it keeps the existing container
+    # even if the image was rebuilt. Both are footguns in dev mode.
+    force_build = deployment.spec.target == "dev"
+    _run_up(install_dir, compose_cmd, force_build=force_build)
 
     # Count the services in our rendered file to report a summary.
     up_count = _count_services(tree)
@@ -124,13 +130,20 @@ def _detect_compose_cmd() -> list[str]:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _run_up(install_dir: Path, compose_cmd: list[str]) -> None:
+def _run_up(
+    install_dir: Path,
+    compose_cmd: list[str],
+    *,
+    force_build: bool = False,
+) -> None:
     cmd = [
         *compose_cmd,
         "--env-file", ".env",
         "-f", "docker-compose.yaml",
         "up", "-d",
     ]
+    if force_build:
+        cmd.extend(["--build", "--force-recreate"])
     try:
         subprocess.run(
             cmd,
