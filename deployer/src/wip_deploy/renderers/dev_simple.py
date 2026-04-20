@@ -204,10 +204,14 @@ def _dev_service_block(
 
     # Dev: if the command is uvicorn-based, append --reload for hot reload.
     cmd = _command_for(owner)
-    if cmd is not None:
-        if cmd and cmd[0] == "uvicorn" and "--reload" not in cmd:
+    if cmd:
+        if cmd[0] == "uvicorn" and "--reload" not in cmd:
             cmd = [*cmd, "--reload"]
-        block["command"] = cmd
+        # See compose.py for the entrypoint/command split rationale:
+        # compose's `command:` only overrides CMD, so full argv needs to
+        # go to `entrypoint:` to replace the image's ENTRYPOINT.
+        block["entrypoint"] = [cmd[0]]
+        block["command"] = cmd[1:]
 
     # Dev: mount source directories for build-context components so edits
     # show up inside the container without a rebuild.

@@ -225,8 +225,15 @@ def _service_block(
         block["env_file"] = [".env"]
 
     command = _command_for(owner)
-    if command is not None:
-        block["command"] = command
+    if command:
+        # Compose `command:` only overrides CMD (not ENTRYPOINT), so a full
+        # argv like [/nats-server, -js, -m, "8222"] would be executed as
+        # `<ENTRYPOINT> /nats-server -js -m 8222` and fail (NATS logs
+        # "unrecognized command: /nats-server"). Split into entrypoint + args
+        # so the full argv replaces the image's ENTRYPOINT, matching k8s
+        # `command:` semantics exactly.
+        block["entrypoint"] = [command[0]]
+        block["command"] = command[1:]
 
     volumes = _volumes_for(owner)
     if volumes:
@@ -373,9 +380,9 @@ def _command_for(owner: Component | App) -> list[str] | None:
     if name == "minio":
         # Full argv including the binary — k8s `command` replaces the
         # image ENTRYPOINT (minio), so without the binary name k8s
-        # tries to exec "server" (not found). Compose's `command:`
-        # normally appends to ENTRYPOINT, but it handles a full argv
-        # correctly too.
+        # tries to exec "server" (not found). The caller splits this
+        # into entrypoint + command for compose, where `command:` only
+        # overrides CMD, so full argv would double up with ENTRYPOINT.
         return ["minio", "server", "/data", "--console-address", ":9001"]
 
     # Everything else relies on the image's default CMD.

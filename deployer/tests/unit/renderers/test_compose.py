@@ -177,6 +177,34 @@ class TestComposeYaml:
         assert "nats" in doc["services"]
         assert "reporting-sync" in doc["services"]
 
+    def test_full_argv_split_into_entrypoint_plus_command(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Components declare full argv (binary + args) in `spec.command`
+        so k8s's command-replaces-ENTRYPOINT semantics work. Compose's
+        `command:` only overrides CMD, so a full argv would execute as
+        `<ENTRYPOINT> <full argv>` — producing, e.g., NATS errors with
+        `unrecognized command: /nats-server`. The compose renderer splits
+        the declared argv into `entrypoint: [<binary>]` + `command: [args]`
+        to match k8s behavior exactly.
+        """
+        doc = self._render_compose(
+            tmp_path, real_discovery,
+            modules=["reporting-sync"],  # activates nats + postgres
+        )
+        nats = doc["services"]["nats"]
+        assert nats["entrypoint"] == ["/nats-server"]
+        assert nats["command"] == ["-js", "-m", "8222"]
+
+        # MinIO too (full argv including the binary).
+        doc2 = self._render_compose(
+            tmp_path, real_discovery,
+            modules=["reporting-sync", "minio"],
+        )
+        minio = doc2["services"]["minio"]
+        assert minio["entrypoint"] == ["minio"]
+        assert minio["command"] == ["server", "/data", "--console-address", ":9001"]
+
     def test_healthcheck_http_emits_cmd_shell_with_curl(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

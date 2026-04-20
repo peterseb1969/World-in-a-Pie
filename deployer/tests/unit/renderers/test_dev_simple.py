@@ -207,6 +207,8 @@ class TestHotReload:
     ) -> None:
         doc = self._compose_doc(tmp_path, real_discovery)
         reg = doc["services"]["registry"]
+        # entrypoint holds the binary, command holds args incl. --reload.
+        assert reg["entrypoint"] == ["uvicorn"]
         assert "--reload" in reg["command"]
 
     def test_non_uvicorn_command_unchanged(
@@ -215,7 +217,7 @@ class TestHotReload:
         """Dex runs `dex serve ...` — no --reload appended."""
         doc = self._compose_doc(tmp_path, real_discovery)
         dex = doc["services"]["dex"]
-        assert dex["command"][0] == "dex"
+        assert dex["entrypoint"] == ["dex"]
         assert "--reload" not in dex["command"]
 
     def test_mcp_server_python_module_unchanged(
@@ -227,7 +229,7 @@ class TestHotReload:
             tmp_path, real_discovery, modules=["mcp-server"]
         )
         mcp = doc["services"]["mcp-server"]
-        assert mcp["command"][0] == "python"
+        assert mcp["entrypoint"] == ["python"]
         assert "--reload" not in mcp["command"]
 
 
