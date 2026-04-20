@@ -26,7 +26,6 @@ from wip_deploy.renderers import FileTree, render_k8s
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend
 from wip_deploy.spec import (
-    AppRef,
     AuthSpec,
     Deployment,
     DeploymentMetadata,

@@ -40,6 +40,7 @@ from wip_deploy.config_gen import (
     make_spec_context,
     resolve_all_env,
 )
+from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
     _caddy_service_block,
@@ -52,7 +53,6 @@ from wip_deploy.renderers.compose import (
     _image_ref,
     _render_dotenv,
 )
-from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import render_dex_config
 from wip_deploy.renderers.router_caddy import render_router_caddyfile

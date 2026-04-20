@@ -155,7 +155,6 @@ class TestBuildContext:
         image. The materialized build context under
         build-contexts/<name>/ contains the wip-auth source, and the
         patched Dockerfile installs it."""
-        from wip_deploy.renderers import render_dev_simple
         d = _dev_deployment(modules=["reporting-sync"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
@@ -178,7 +177,6 @@ class TestBuildContext:
         boots with the stock caddy default Caddyfile (listens on :80,
         serves static files) and every /api/* request returns 502.
         """
-        from wip_deploy.renderers import render_dev_simple
         d = _dev_deployment()
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
@@ -201,7 +199,6 @@ class TestBuildContext:
     ) -> None:
         """document-store uses wip-toolkit (BackupEngine) in addition
         to wip-auth — both need to bake in."""
-        from wip_deploy.renderers import render_dev_simple
         d = _dev_deployment(modules=["reporting-sync"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
