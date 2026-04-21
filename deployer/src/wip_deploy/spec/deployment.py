@@ -179,6 +179,12 @@ class K8sPlatform(WIPModel):
 class DevPlatform(WIPModel):
     mode: Literal["tilt", "simple"] = "tilt"
     source_mount: bool = True
+    # CLI-provided map of app_name → local build-context path for
+    # hot-reload dev. Apps not in this dict use the registry image as
+    # usual. Populated from `--app-source NAME=PATH` (repeatable).
+    # CASE-55: lets app developers iterate against a full WIP stack
+    # without a push → rebuild → redeploy round-trip.
+    app_sources: dict[str, Path] = Field(default_factory=dict)
 
 
 class PlatformSpec(WIPModel):

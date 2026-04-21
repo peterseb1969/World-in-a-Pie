@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -261,3 +262,36 @@ class TestVersion:
         r = _invoke("--version")
         assert r.exit_code == 0
         assert "wip-deploy" in r.output
+
+
+class TestAppSourceFlag:
+    """CASE-55: --app-source NAME=PATH for hot-reload dev against a full WIP stack."""
+
+    def test_parse_single(self, tmp_path: Path) -> None:
+        from wip_deploy.cli import _parse_app_sources
+        result = _parse_app_sources([f"rc={tmp_path}"])
+        assert result == {"rc": tmp_path}
+
+    def test_parse_multiple(self, tmp_path: Path) -> None:
+        from wip_deploy.cli import _parse_app_sources
+        d1 = tmp_path / "app1"
+        d1.mkdir()
+        d2 = tmp_path / "app2"
+        d2.mkdir()
+        result = _parse_app_sources([f"a1={d1}", f"a2={d2}"])
+        assert result == {"a1": d1, "a2": d2}
+
+    def test_missing_equals_raises(self) -> None:
+        from wip_deploy.cli import _parse_app_sources
+        with pytest.raises(ValueError, match="missing '='"):
+            _parse_app_sources(["rc/path/with/no/equals"])
+
+    def test_empty_name_raises(self, tmp_path: Path) -> None:
+        from wip_deploy.cli import _parse_app_sources
+        with pytest.raises(ValueError, match="non-empty"):
+            _parse_app_sources([f"={tmp_path}"])
+
+    def test_nonexistent_path_raises(self) -> None:
+        from wip_deploy.cli import _parse_app_sources
+        with pytest.raises(ValueError, match="not a directory"):
+            _parse_app_sources(["rc=/definitely/not/a/real/path/xyz"])

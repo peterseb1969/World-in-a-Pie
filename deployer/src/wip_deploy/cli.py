@@ -147,6 +147,55 @@ def _app_opt() -> typer.models.OptionInfo:
     return typer.Option("--app", help="Enable an app by name (repeatable).")
 
 
+def _app_source_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--app-source",
+        help=(
+            "Dev-target only. Mount a local source checkout as the app's "
+            "build context instead of pulling the registry image. "
+            "Format: NAME=PATH. Repeatable. Example: "
+            "--app-source clintrial=/Users/peter/Development/WIP-ClinTrial. "
+            "If <PATH>/Dockerfile.dev exists, it's preferred over Dockerfile "
+            "so the app can define its own dev-mode command (e.g., `npm run dev`). "
+            "Ignored for target!=dev."
+        ),
+    )
+
+
+def _parse_app_sources_or_exit(raw: list[str]) -> dict[str, Path]:
+    """CLI-facing wrapper around `_parse_app_sources` that reports parse
+    errors via typer and exits 2 on failure."""
+    try:
+        return _parse_app_sources(raw)
+    except ValueError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _parse_app_sources(raw: list[str]) -> dict[str, Path]:
+    """Parse `--app-source NAME=PATH` entries. Raise ValueError on bad input."""
+    out: dict[str, Path] = {}
+    for entry in raw:
+        if "=" not in entry:
+            raise ValueError(
+                f"--app-source expects NAME=PATH, got {entry!r} (missing '=')"
+            )
+        name, path_str = entry.split("=", 1)
+        name = name.strip()
+        path_str = path_str.strip()
+        if not name or not path_str:
+            raise ValueError(
+                f"--app-source expects non-empty NAME and PATH, got {entry!r}"
+            )
+        path = Path(path_str).expanduser().resolve()
+        if not path.is_dir():
+            raise ValueError(
+                f"--app-source {name!r}: path {path!s} is not a directory"
+            )
+        out[name] = path
+    return out
+
+
 def _auth_mode_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--auth-mode", help="Override auth mode: oidc | api-key-only | hybrid."
@@ -204,6 +253,7 @@ def validate(
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
+    app_source: Annotated[list[str], _app_source_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -235,6 +285,7 @@ def validate(
         add=add,
         remove=remove,
         apps=apps,
+        app_sources=_parse_app_sources_or_exit(app_source),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -304,6 +355,7 @@ def show_spec(
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
+    app_source: Annotated[list[str], _app_source_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -337,6 +389,7 @@ def show_spec(
         add=add,
         remove=remove,
         apps=apps,
+        app_sources=_parse_app_sources_or_exit(app_source),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -379,6 +432,7 @@ def render(
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
+    app_source: Annotated[list[str], _app_source_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -416,6 +470,7 @@ def render(
         add=add,
         remove=remove,
         apps=apps,
+        app_sources=_parse_app_sources_or_exit(app_source),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -462,6 +517,7 @@ def install(
     add: Annotated[list[str], _add_opt()] = [],
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
+    app_source: Annotated[list[str], _app_source_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -516,6 +572,7 @@ def install(
         add=add,
         remove=remove,
         apps=apps,
+        app_sources=_parse_app_sources_or_exit(app_source),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -820,6 +877,7 @@ def _assemble(
     add: list[str],
     remove: list[str],
     apps: list[str],
+    app_sources: dict[str, Path],
     auth_mode: str | None,
     auth_gateway: bool | None,
     secrets_backend: str | None,
@@ -863,6 +921,7 @@ def _assemble(
         add=add,
         remove=remove,
         apps=apps,
+        app_sources=app_sources,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,

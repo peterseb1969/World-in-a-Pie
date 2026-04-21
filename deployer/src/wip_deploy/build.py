@@ -58,6 +58,10 @@ class BuildInputs:
 
     # Dev platform
     dev_mode: str = "simple"
+    # CASE-55: map of app_name → local build-context path for hot-reload dev.
+    # Populated from `--app-source NAME=PATH` (repeatable). Applies only to
+    # target=dev; ignored otherwise.
+    app_sources: dict[str, Path] = field(default_factory=dict)
 
     # Images
     registry: str | None = None
@@ -162,7 +166,10 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
             "tls_secret_name": inputs.k8s_tls_secret_name,
         }
     elif inputs.target == "dev":
-        block["dev"] = {"mode": inputs.dev_mode}
+        dev_block: dict[str, Any] = {"mode": inputs.dev_mode}
+        if inputs.app_sources:
+            dev_block["app_sources"] = dict(inputs.app_sources)
+        block["dev"] = dev_block
     else:
         raise ValueError(f"unknown target {inputs.target!r}")
     return block
