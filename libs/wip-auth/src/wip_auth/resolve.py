@@ -187,6 +187,8 @@ async def resolve_entity_id(
     entity_type: str,
     namespace: str,
     include_statuses: list[str] | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> str:
     """Resolve any identifier to its canonical ID via Registry.
 
@@ -197,6 +199,12 @@ async def resolve_entity_id(
         raw_id: The identifier (canonical ID or human-readable synonym)
         entity_type: Singular entity type: terminology, term, template, document
         namespace: Current namespace for resolution context
+        bypass_cache: When True, skip the cache read and always query
+            Registry. Intended for write paths (e.g., template creation)
+            where a resolved ID will be persisted as a reference: stale
+            cached IDs cannot be allowed to enter durable state. See
+            CASE-56. The fresh Registry result is still cached on return,
+            which self-heals any prior stale entry under the same key.
 
     Returns:
         The canonical entity ID
@@ -205,9 +213,10 @@ async def resolve_entity_id(
         EntityNotFoundError: If the identifier is not found in Registry
     """
     cache_key = f"{namespace}:{entity_type}:{raw_id}"
-    cached = _get_cached(cache_key)
-    if cached:
-        return cached
+    if not bypass_cache:
+        cached = _get_cached(cache_key)
+        if cached:
+            return cached
 
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
 
@@ -251,6 +260,8 @@ async def resolve_entity_ids(
     entity_type: str,
     namespace: str,
     include_statuses: list[str] | None = None,
+    *,
+    bypass_cache: bool = False,
 ) -> dict[str, str]:
     """Batch resolve multiple identifiers via Registry.
 
@@ -271,13 +282,20 @@ async def resolve_entity_ids(
     result: dict[str, str] = {}
     to_resolve: list[str] = []
 
+    # bypass_cache: caller is doing a write that will persist the resolved
+    # ID (e.g., template_service._normalize_field_references storing
+    # terminology_ref as a canonical UUID on a template field). A stale
+    # cache entry would bake a dead UUID into durable state — see CASE-56.
+    # Skip reads; writes still update the cache with the fresh Registry
+    # result below (self-heals any prior stale entry).
     for raw_id in raw_ids:
-        cache_key = f"{namespace}:{entity_type}:{raw_id}"
-        cached = _get_cached(cache_key)
-        if cached:
-            result[raw_id] = cached
-        else:
-            to_resolve.append(raw_id)
+        if not bypass_cache:
+            cache_key = f"{namespace}:{entity_type}:{raw_id}"
+            cached = _get_cached(cache_key)
+            if cached:
+                result[raw_id] = cached
+                continue
+        to_resolve.append(raw_id)
 
     if not to_resolve:
         return result

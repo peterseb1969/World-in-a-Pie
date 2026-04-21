@@ -225,6 +225,36 @@ class TestResolveEntityId:
         await resolve_entity_id(uuid, "template", "wip")
         assert len(httpx_mock.get_requests()) == 1
 
+    @pytest.mark.asyncio
+    async def test_bypass_cache_ignores_stale_entry(self, httpx_mock):
+        """CASE-56: on write paths, bypass_cache=True must ignore any
+        prior cached entry and always hit Registry for a fresh UUID.
+        The stale entry is overwritten by the fresh Registry result."""
+        # Seed cache with stale UUID via a first resolve
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/resolve",
+            json={"results": [{"status": "found", "entry_id": "stale-uuid"}]},
+        )
+        first = await resolve_entity_id("CT_STATUS", "terminology", "clintrial")
+        assert first == "stale-uuid"
+        # Registry returns fresh UUID on the next call (simulates
+        # delete+recreate during the cache TTL window)
+        httpx_mock.add_response(
+            url="http://localhost:8001/api/registry/entries/resolve",
+            json={"results": [{"status": "found", "entry_id": "fresh-uuid"}]},
+        )
+        fresh = await resolve_entity_id(
+            "CT_STATUS", "terminology", "clintrial", bypass_cache=True,
+        )
+        assert fresh == "fresh-uuid"
+        # Subsequent read-path call should now see the fresh UUID (cache
+        # self-healed — not stale anymore).
+        again = await resolve_entity_id("CT_STATUS", "terminology", "clintrial")
+        assert again == "fresh-uuid"
+        # Two HTTP requests total: one seed + one bypass. The third
+        # (read-path) hits the refreshed cache.
+        assert len(httpx_mock.get_requests()) == 2
+
 
 # ===========================================================================
 # resolve_entity_ids — batch resolution

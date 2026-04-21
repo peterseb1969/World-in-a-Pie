@@ -1964,15 +1964,23 @@ class TemplateService:
         resolved_templates: dict[str, str] = {}
         resolved_terminologies: dict[str, str] = {}
 
+        # CASE-56: this is a WRITE path — resolved IDs will be stored on
+        # the template as canonical references. If the wip-auth cache
+        # held a stale entry (e.g., from a bootstrap that ran before a
+        # namespace delete+recreate), reading from it here would bake a
+        # dead UUID into durable state. Bypass the cache on reads and let
+        # it self-heal with the fresh Registry result on write.
         if template_refs:
             resolved_templates = await resolve_entity_ids(
                 list(template_refs), "template", namespace,
                 include_statuses=include_statuses,
+                bypass_cache=True,
             )
         if terminology_refs:
             resolved_terminologies = await resolve_entity_ids(
                 list(terminology_refs), "terminology", namespace,
                 include_statuses=include_statuses,
+                bypass_cache=True,
             )
 
         # Merge known_templates into resolved map

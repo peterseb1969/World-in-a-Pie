@@ -17,7 +17,7 @@ from wip_deploy.config_gen.env import _default_port
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
-from wip_deploy.spec.component import Component, Route
+from wip_deploy.spec.component import Component, Port, Route
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ def _routes_for(
     ]
 
 
-def _pick_port(owner: Component | App, app_sources_with_dev_port: set[str]) -> object:
+def _pick_port(owner: Component | App, app_sources_with_dev_port: set[str]) -> Port:
     """Pick the port the Caddy route targets.
 
     In dev mode with `--app-source <name>=<path>` set, if the app's
