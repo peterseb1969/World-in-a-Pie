@@ -144,10 +144,35 @@ async def run_alert_check_loop() -> None:
             await asyncio.sleep(10)  # Back off on error
 
 
+# CASE-52: NATS client callbacks. Update sync_status on connection
+# lifecycle events so the /status endpoint reflects reality, not just
+# "did we connect at startup." Belt-and-suspenders: the status endpoint
+# also does a live is_connected check, so missed callbacks don't leave
+# a stale flag.
+async def _on_nats_disconnected() -> None:
+    logger.warning("NATS connection dropped")
+    state.sync_status.connected_to_nats = False
+
+
+async def _on_nats_reconnected() -> None:
+    logger.info("NATS connection re-established")
+    state.sync_status.connected_to_nats = True
+
+
+async def _on_nats_closed() -> None:
+    logger.warning("NATS connection closed")
+    state.sync_status.connected_to_nats = False
+
+
 async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
     """Connect to NATS and get JetStream context."""
     logger.info(f"Connecting to NATS at {settings.nats_url}...")
-    nc = await nats.connect(settings.nats_url)
+    nc = await nats.connect(
+        settings.nats_url,
+        disconnected_cb=_on_nats_disconnected,
+        reconnected_cb=_on_nats_reconnected,
+        closed_cb=_on_nats_closed,
+    )
     js = nc.jetstream()
 
     # Ensure the stream exists
@@ -435,8 +460,32 @@ async def health_check() -> HealthResponse:
 
 @router.get("/status", response_model=SyncStatus)
 async def get_sync_status() -> SyncStatus:
-    """Get current sync worker status."""
+    """Get current sync worker status.
+
+    CASE-52: refresh the connection flags from live state on every call.
+    The lifespan startup sets them once; NATS callbacks (if connected
+    to a client that fires them) update on disconnect/reconnect; this
+    endpoint is the final authority that a caller sees reality, not a
+    latched startup flag. Postgres is probed with a short-timeout
+    `SELECT 1` — asyncpg has no cheap liveness property.
+    """
+    state.sync_status.connected_to_nats = bool(
+        state.nats_client and state.nats_client.is_connected
+    )
+    state.sync_status.connected_to_postgres = await _postgres_live_check()
     return state.sync_status
+
+
+async def _postgres_live_check() -> bool:
+    """Probe the PostgreSQL pool with a 1-second-timeout SELECT 1."""
+    if not state.postgres_pool:
+        return False
+    try:
+        async with state.postgres_pool.acquire() as conn:
+            await asyncio.wait_for(conn.fetchval("SELECT 1"), timeout=1.0)
+        return True
+    except Exception:
+        return False
 
 
 # =============================================================================
