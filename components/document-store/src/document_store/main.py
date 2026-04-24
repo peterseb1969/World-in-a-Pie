@@ -352,6 +352,13 @@ async def health_check():
     }
 
 
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+app.add_api_route(
+    "/api/document-store/health", health_check, methods=["GET"], tags=["Health"]
+)
+
+
 # Ready check endpoint (for Kubernetes)
 @app.get("/ready", tags=["Health"])
 async def ready_check():

@@ -247,7 +247,16 @@ async def health_check():
                 "database": "disconnected",
                 "error": "database connection failed",
             }
-        )
+        ) from e
+
+
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it (Caddy only routes /api/registry/*; root /health
+# is unreachable from outside the container network). The root /health
+# above stays for direct container probes (podman/k8s health checks).
+app.add_api_route(
+    "/api/registry/health", health_check, methods=["GET"], tags=["Health"]
+)
 
 
 # Ready check endpoint (for Kubernetes)
@@ -261,5 +270,5 @@ async def ready_check():
     try:
         await app.state.mongodb_client.admin.command('ping')
         return {"ready": True}
-    except Exception:
-        raise HTTPException(status_code=503, detail={"ready": False})
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={"ready": False}) from e

@@ -458,6 +458,13 @@ async def health_check() -> HealthResponse:
     )
 
 
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+router.add_api_route(
+    "/health", health_check, methods=["GET"], response_model=HealthResponse,
+)
+
+
 @router.get("/status", response_model=SyncStatus)
 async def get_sync_status() -> SyncStatus:
     """Get current sync worker status.

@@ -261,6 +261,13 @@ async def health_check():
     }
 
 
+# Also expose /health under the api-prefix so external callers through
+# Caddy can reach it. Root /health stays for direct container probes.
+app.add_api_route(
+    "/api/template-store/health", health_check, methods=["GET"], tags=["Health"]
+)
+
+
 # Ready check endpoint (for Kubernetes)
 @app.get("/ready", tags=["Health"])
 async def ready_check():
@@ -272,14 +279,14 @@ async def ready_check():
     try:
         await app.state.mongodb_client.admin.command('ping')
         return {"ready": True}
-    except Exception:
-        raise HTTPException(status_code=503, detail={"ready": False})
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={"ready": False}) from e
 
 
 # Integrity check endpoint
 @app.get("/health/integrity", tags=["Health"], response_model=IntegrityCheckResult)
 async def integrity_check(
-    status: str = None,
+    status: str | None = None,
     limit: int = 1000
 ):
     """

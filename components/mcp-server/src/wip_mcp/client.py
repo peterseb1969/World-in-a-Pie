@@ -44,10 +44,19 @@ class WipClient:
     """Client for all WIP service APIs.
 
     All constructor arguments fall back to environment variables when
-    omitted: the `*_url` args to the corresponding `*_URL` var; `api_key`
-    to WIP_API_KEY / MASTER_API_KEY (via `_resolve_api_key`); `verify_tls`
-    to WIP_VERIFY_TLS (`false`/`0`/`no` disables — intended only for
-    local dev against a self-signed Caddy).
+    omitted:
+
+      - `*_url` args → the corresponding `*_URL` env var. Each URL is a
+        SERVICE BASE (e.g., http://wip-registry:8001 for direct service
+        access, or https://host:8443 when going through Caddy). The
+        client owns the `/api/<service>/...` path prefix and appends
+        it at call sites.
+      - `api_key` → `_resolve_api_key()`, which reads WIP_API_KEY, then
+        WIP_API_KEY_FILE (for key rotation without editing .mcp.json),
+        then falls back to the dev default.
+      - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
+        verification — intended for local dev against a self-signed
+        Caddy, never production.
     """
 
     def __init__(
@@ -112,8 +121,12 @@ class WipClient:
         return self._client
 
     async def close(self):
+        # httpx 0.27+ renamed AsyncClient.close() → aclose(). Earlier
+        # releases of this file called .close() and silently AttributeErrored
+        # on any caller that ran cleanup — it just didn't get exercised
+        # because most stdio/http invocations let the process exit instead.
         if self._client and not self._client.is_closed:
-            await self._client.close()
+            await self._client.aclose()
 
     # -- Low-level helpers --
 
@@ -1384,19 +1397,29 @@ class WipClient:
     # ========================================================
 
     async def check_health(self) -> dict[str, Any]:
-        """Check health of all WIP services."""
-        services = {
-            "registry": self.registry_url,
-            "def_store": self.def_store_url,
-            "template_store": self.template_store_url,
-            "document_store": self.document_store_url,
-            "reporting_sync": self.reporting_sync_url,
-        }
+        """Check health of all WIP services.
+
+        Uses each services api-prefixed health endpoint
+        (`/api/<service>/health`), not the service-local root `/health`.
+        The api-prefixed route is reachable both through Caddy
+        (external callers using root URLs like https://host:8443) and
+        directly to the service container (internal URLs like
+        http://wip-registry:8001 — the service mounts /health at both
+        paths). The root /health is reserved for container-lifecycle
+        probes (podman/k8s healthcheck) that connect by port.
+        """
+        services = [
+            ("registry", self.registry_url, "/api/registry/health"),
+            ("def_store", self.def_store_url, "/api/def-store/health"),
+            ("template_store", self.template_store_url, "/api/template-store/health"),
+            ("document_store", self.document_store_url, "/api/document-store/health"),
+            ("reporting_sync", self.reporting_sync_url, "/api/reporting-sync/health"),
+        ]
         results = {}
         client = await self._get_client()
-        for name, url in services.items():
+        for name, base, path in services:
             try:
-                resp = await client.get(f"{url}/health", timeout=5.0)
+                resp = await client.get(f"{base}{path}", timeout=5.0)
                 results[name] = {
                     "healthy": resp.status_code == 200,
                     "details": resp.json() if resp.status_code == 200 else None,
