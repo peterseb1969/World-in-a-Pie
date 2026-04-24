@@ -107,6 +107,15 @@ class Route(WIPModel):
     # Needed for backends that serve at the root and don't know about the
     # public prefix — MinIO's S3 API is the canonical case.
     strip_prefix: bool = False
+    # Emit a 301 from the bare path to the trailing-slash variant
+    # (Caddy only — nginx Ingress matches both via pathType=Prefix).
+    # Defaults True for SPA-friendly behavior (relative-URL resolution
+    # and cookie-path consistency depend on it). Backends with their
+    # own slash-canonicalization logic must opt out — MCP is the
+    # canonical case: its StreamableHTTP transport mounts at the bare
+    # path and redirects /mcp/ → /mcp, which loops with Caddy's
+    # redirect in the other direction.
+    redirect_bare_path: bool = True
 
 
 # ────────────────────────────────────────────────────────────────────

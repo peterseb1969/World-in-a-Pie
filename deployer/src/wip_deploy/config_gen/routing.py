@@ -35,6 +35,7 @@ class ResolvedRoute:
     auth_protected: bool
     streaming: bool
     strip_prefix: bool
+    redirect_bare_path: bool
 
 
 def resolve_routes(
@@ -115,4 +116,5 @@ def _resolve_one(
         auth_protected=route.auth_required and gateway_on,
         streaming=route.streaming,
         strip_prefix=route.strip_prefix,
+        redirect_bare_path=route.redirect_bare_path,
     )

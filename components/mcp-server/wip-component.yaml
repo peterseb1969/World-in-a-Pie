@@ -29,7 +29,11 @@ spec:
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
 
   routes:
-    - {path: /mcp, auth_required: false}
+    # redirect_bare_path=false: MCPs StreamableHTTP transport mounts
+    # at /mcp (no slash) and 307-redirects /mcp/ → /mcp. Caddys default
+    # bare-path redirect goes the other way, creating a loop. Backend
+    # handles slash canonicalization; Caddy must stay out.
+    - {path: /mcp, auth_required: false, redirect_bare_path: false}
 
   depends_on: [registry, def-store, template-store, document-store]
 

@@ -502,6 +502,31 @@ class TestCaddyfile:
         api_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
         assert "redir * /api/registry/ permanent" in api_bare[:120]
 
+    def test_route_with_redirect_bare_path_false_skips_redirect(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """MCP opt-out: its StreamableHTTP transport does its own slash
+        canonicalization (307s /mcp/ → /mcp). Caddys default bare-path
+        redirect goes the opposite way, creating an infinite loop.
+        mcp-servers manifest sets redirect_bare_path=false to skip it.
+        """
+        d = _minimal_compose(modules=["mcp-server"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # No bare-path redirect for /mcp
+        assert "handle /mcp {" not in caddyfile
+        # But /mcp/* is still handled (not deleted — just no redirect)
+        assert "handle /mcp/* {" in caddyfile
+        assert "reverse_proxy wip-mcp-server:8007" in caddyfile
+
+        # Other routes retain the default behavior — /api/registry
+        # still gets its redirect.
+        assert "handle /api/registry {" in caddyfile
+        registry_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
+        assert "redir * /api/registry/ permanent" in registry_bare[:120]
+
     def test_streaming_route_sets_flush_interval(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

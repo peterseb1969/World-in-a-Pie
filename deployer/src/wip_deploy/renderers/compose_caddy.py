@@ -111,14 +111,21 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     # glob and 404s. CASE-49 / CASE-53 regression — the old setup-wip.sh
     # emitted this per-route; the v2 port missed it.
     #
+    # Opted out per-route via `redirect_bare_path=false`. MCP's
+    # StreamableHTTP transport mounts at the bare path and redirects
+    # /mcp/ → /mcp itself, which loops with this redirect in the
+    # opposite direction. SPAs want the redirect (relative-URL
+    # resolution); backends with their own canonicalization don't.
+    #
     # Important: Caddyfile's `redir` directive parses its first argument
     # as a MATCHER when it starts with `/` (ambiguous grammar). Writing
     # `redir /apps/rc/ permanent` makes Caddy compile `Location:
     # "permanent"` with the matcher `/apps/rc/`. Using the `*` matcher
     # explicitly disambiguates: match-all, destination is the path.
-    out.write(f"    handle {route.path} {{\n")
-    out.write(f"        redir * {route.path}/ permanent\n")
-    out.write("    }\n\n")
+    if route.redirect_bare_path:
+        out.write(f"    handle {route.path} {{\n")
+        out.write(f"        redir * {route.path}/ permanent\n")
+        out.write("    }\n\n")
 
     # `handle_path` strips the route's prefix before forwarding; `handle`
     # preserves the full request path. MinIO's S3 API is the canonical
