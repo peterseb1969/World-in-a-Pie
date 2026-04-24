@@ -3,11 +3,11 @@
 #
 # Usage:
 #   # From the internet:
-#   curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/main/scripts/quick-install.sh \
 #     | bash -s -- --yes
 #
 #   # With a hostname other than localhost:
-#   curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/main/scripts/quick-install.sh \
 #     | bash -s -- --yes pi.local
 #
 #   # From a local checkout (smoke test — doesn't need network):
@@ -44,7 +44,7 @@ log_step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 # ── Defaults ─────────────────────────────────────────────────────
 
-DEFAULT_SOURCE="https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop"
+DEFAULT_SOURCE="https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/main"
 SOURCE="$DEFAULT_SOURCE"
 INSTALL_DIR="${HOME}/wip-demo"
 HOSTNAME_ARG=""
@@ -59,7 +59,7 @@ Fetch the WIP install kit and bring up a WIP instance.
 
 Options:
   --source URL|PATH   Source for install files. URL for curl, absolute path
-                      for local copy. Default: GitHub raw, develop branch.
+                      for local copy. Default: GitHub raw, main branch.
   --install-dir PATH  Install directory. Default: ~/wip-demo
   --no-start          Don't run start-wip.sh after setup (just prepare files)
   --yes, -y           Skip confirmation prompts (required when piped from curl)
@@ -75,7 +75,7 @@ Environment:
 
 Examples:
   # Piped from curl (use --yes, no interactive prompts)
-  curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \\
+  curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/main/scripts/quick-install.sh \\
     | bash -s -- --yes
 
   # With a LAN hostname
@@ -84,7 +84,7 @@ Examples:
   # With the Anthropic key for NL query (export first — env prefix on curl
   # does NOT propagate to bash)
   export ANTHROPIC_API_KEY=sk-ant-...
-  curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/develop/scripts/quick-install.sh \\
+  curl -fsSL https://raw.githubusercontent.com/peterseb1969/World-in-a-Pie/main/scripts/quick-install.sh \\
     | bash -s -- --yes pi-poe-8gb.local
 
   # Smoke test from a local checkout
