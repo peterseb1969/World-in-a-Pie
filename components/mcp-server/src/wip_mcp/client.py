@@ -71,6 +71,13 @@ class WipClient:
         self.api_key = api_key or _resolve_api_key()
         self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
+        # TLS verification toggle. Defaults True (secure). Set
+        # WIP_VERIFY_TLS=false (or 0/no) to disable — needed when running
+        # stdio MCP locally against wip-dev-local through Caddys
+        # self-signed cert. Production / federated deployments with real
+        # certs should never set this.
+        self._verify_tls = os.getenv("WIP_VERIFY_TLS", "true").strip().lower() \
+            not in ("false", "0", "no")
         self._client: httpx.AsyncClient | None = None
 
     def _ns(self, namespace: str | None) -> str:
@@ -92,7 +99,9 @@ class WipClient:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                headers=self._headers, timeout=self.timeout
+                headers=self._headers,
+                timeout=self.timeout,
+                verify=self._verify_tls,
             )
         return self._client
 
