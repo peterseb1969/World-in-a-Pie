@@ -41,7 +41,14 @@ def _resolve_api_key() -> str:
 
 
 class WipClient:
-    """Client for all WIP service APIs."""
+    """Client for all WIP service APIs.
+
+    All constructor arguments fall back to environment variables when
+    omitted: the `*_url` args to the corresponding `*_URL` var; `api_key`
+    to WIP_API_KEY / MASTER_API_KEY (via `_resolve_api_key`); `verify_tls`
+    to WIP_VERIFY_TLS (`false`/`0`/`no` disables — intended only for
+    local dev against a self-signed Caddy).
+    """
 
     def __init__(
         self,
@@ -52,6 +59,7 @@ class WipClient:
         reporting_sync_url: str | None = None,
         api_key: str | None = None,
         timeout: float = 30.0,
+        verify_tls: bool | None = None,
     ):
         self.registry_url = registry_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
@@ -71,13 +79,11 @@ class WipClient:
         self.api_key = api_key or _resolve_api_key()
         self.default_namespace = os.getenv("WIP_MCP_DEFAULT_NAMESPACE")
         self.timeout = timeout
-        # TLS verification toggle. Defaults True (secure). Set
-        # WIP_VERIFY_TLS=false (or 0/no) to disable — needed when running
-        # stdio MCP locally against wip-dev-local through Caddys
-        # self-signed cert. Production / federated deployments with real
-        # certs should never set this.
-        self._verify_tls = os.getenv("WIP_VERIFY_TLS", "true").strip().lower() \
-            not in ("false", "0", "no")
+        self._verify_tls = (
+            verify_tls if verify_tls is not None
+            else os.getenv("WIP_VERIFY_TLS", "true").strip().lower()
+                 not in ("false", "0", "no")
+        )
         self._client: httpx.AsyncClient | None = None
 
     def _ns(self, namespace: str | None) -> str:
