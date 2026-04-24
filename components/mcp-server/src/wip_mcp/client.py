@@ -57,6 +57,13 @@ class WipClient:
       - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
         verification — intended for local dev against a self-signed
         Caddy, never production.
+
+    Additional env var read directly (no constructor arg):
+
+      - `WIP_MCP_DEFAULT_NAMESPACE` → when set, tool calls omitting an
+        explicit `namespace` argument resolve to this value. Lets an
+        app-scoped MCP deployment default to its own namespace without
+        per-call overrides.
     """
 
     def __init__(
