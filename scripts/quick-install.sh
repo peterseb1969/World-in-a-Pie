@@ -142,14 +142,17 @@ if ! command -v podman >/dev/null 2>&1; then
     MISSING+=("podman — install from https://podman.io/docs/installation")
 fi
 
-if ! command -v podman-compose >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
-    MISSING+=("podman-compose (pip install podman-compose) or docker")
+# Linux: podman-compose from apt is the expected path. macOS: we'll
+# install it into the venv below since Homebrew's podman doesn't ship
+# compose. Either way, `docker` compose is an accepted substitute.
+if [[ "$(uname)" != "Darwin" ]] \
+    && ! command -v podman-compose >/dev/null 2>&1 \
+    && ! command -v docker >/dev/null 2>&1; then
+    MISSING+=("podman-compose (apt install podman-compose) or docker")
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
     MISSING+=("python3")
-elif ! python3 -c "import bcrypt" >/dev/null 2>&1; then
-    MISSING+=("python3 bcrypt module (pip3 install bcrypt)")
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
@@ -166,6 +169,60 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
     exit 1
 fi
 log_info "Dependency commands found"
+
+# ── Python venv: auto-install bcrypt (+ podman-compose on macOS) ──
+#
+# Modern distros refuse `pip install` into the system python (PEP 668
+# "externally-managed-environment"). We create a venv at ~/.wip-venv
+# on demand and install what we need there. If the system python
+# already has bcrypt (e.g. user set things up manually, or distro
+# ships python3-bcrypt), the venv is skipped entirely.
+#
+# Opt-out / override: set VENV_DIR=/custom/path before running.
+
+VENV_DIR="${VENV_DIR:-$HOME/.wip-venv}"
+need_venv=false
+
+if ! python3 -c "import bcrypt" >/dev/null 2>&1; then
+    need_venv=true
+fi
+if [[ "$(uname)" == "Darwin" ]] && ! command -v podman-compose >/dev/null 2>&1; then
+    need_venv=true
+fi
+
+if $need_venv; then
+    if [[ ! -d "$VENV_DIR" ]]; then
+        log_step "Creating Python venv at ${VENV_DIR}"
+        if ! python3 -m venv "$VENV_DIR" 2>/dev/null; then
+            log_error "Failed to create venv at ${VENV_DIR}."
+            log_error "On Debian/Ubuntu this usually means python3-venv isn't installed:"
+            log_error "  sudo apt install python3-venv"
+            exit 1
+        fi
+    fi
+    pkgs=()
+    if ! "$VENV_DIR/bin/python3" -c "import bcrypt" >/dev/null 2>&1; then
+        pkgs+=("bcrypt")
+    fi
+    if [[ "$(uname)" == "Darwin" ]] \
+        && ! command -v podman-compose >/dev/null 2>&1 \
+        && ! [[ -x "$VENV_DIR/bin/podman-compose" ]]; then
+        pkgs+=("podman-compose")
+    fi
+    if [[ ${#pkgs[@]} -gt 0 ]]; then
+        log_step "Installing into venv: ${pkgs[*]}"
+        if ! "$VENV_DIR/bin/pip" install --quiet --upgrade "${pkgs[@]}"; then
+            log_error "pip install failed. Check network or venv state; you can"
+            log_error "delete ${VENV_DIR} and re-run to start fresh."
+            exit 1
+        fi
+    fi
+    # Prepend venv bin to PATH for the rest of this script (including
+    # the setup-wip.sh invocation). python3 and podman-compose will
+    # resolve to the venv-installed versions.
+    export PATH="$VENV_DIR/bin:$PATH"
+    log_info "Using Python venv at ${VENV_DIR}"
+fi
 
 # Podman must be functional (machine started on macOS, daemon on Linux).
 if ! podman info >/dev/null 2>&1; then
