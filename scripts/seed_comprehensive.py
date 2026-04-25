@@ -1311,42 +1311,92 @@ class WIPSeeder:
             _check("reporting: doc_order_contains source/target_ref_id populated", False, str(e)[:120])
 
         # 5. Negative case: archived endpoint should reject with archived_relationship_endpoint.
+        # Uses a per-run unique fixture (timestamp-suffixed employee_id) so
+        # the EMPLOYEE_MANAGES identity_hash never collides with edges from
+        # prior runs — that collision returns status='skipped' without
+        # re-running relationship validation, and the test would pass for
+        # the wrong reason.
         em_template_id = self.created_templates.get("EMPLOYEE_MANAGES")
+        emp_template_id = self.created_templates.get("EMPLOYEE")
         employees = self._docs_by_template.get("EMPLOYEE", [])
-        if em_template_id and len(employees) >= 2:
-            archive_target = employees[-1]
+        if em_template_id and emp_template_id and len(employees) >= 1:
             try:
-                # Archive one employee via the bulk archive endpoint.
-                self.document_store.post(
-                    "/api/document-store/documents/archive",
-                    [{"id": archive_target, "archived_by": "seed_script_negative_check"}],
-                )
-                # Try to create an EMPLOYEE_MANAGES edge that points at that
-                # archived employee. Expected: per-item error with
-                # `archived_relationship_endpoint` prefix.
-                manager_id = employees[0]
-                result = self.document_store.post(
+                # Step A: create a one-off EMPLOYEE for this test run.
+                # employee_id must match ^EMP-\d{6}$ — pack the timestamp
+                # into 6 digits, prefixed with 9 to stay above the seed's
+                # normal 100000-base range.
+                run_tag = int(time.time())
+                fixture_emp_id = f"EMP-9{run_tag % 100000:05d}"
+                fixture_emp = {
+                    "employee_id": fixture_emp_id,
+                    "first_name": "Neg",
+                    "last_name": "Case",
+                    "email": f"neg.case.{run_tag}@example.com",
+                    "birth_date": "1990-01-01",
+                    "hire_date": "2020-01-01",
+                    "department": "Human Resources",
+                    "job_title": "QA Fixture",
+                    "employment_type": "Full-time",
+                    "salary": {"currency": "USD", "amount": 1.0},
+                }
+                fixture_resp = self.document_store.post(
                     "/api/document-store/documents",
                     [{
-                        "template_id": em_template_id,
+                        "template_id": emp_template_id,
                         "namespace": self.namespace,
-                        "data": {
-                            "source_ref": manager_id,
-                            "target_ref": archive_target,
-                            "since": "2025-01-01",
-                            "reporting_type": "direct",
-                        },
-                        "created_by": "seed_script_negative_check",
+                        "data": fixture_emp,
+                        "created_by": "seed_script_negative_check_fixture",
                     }],
                 )
-                r = result.get("results", [{}])[0]
-                err_str = r.get("error", "") or ""
-                rejected = r.get("status") == "error" and "archived_relationship_endpoint" in err_str
-                _check(
-                    "negative: archived_relationship_endpoint enforced",
-                    rejected,
-                    f"got status={r.get('status')} error={err_str[:120]}",
-                )
+                fixture_r = fixture_resp.get("results", [{}])[0]
+                archive_target = fixture_r.get("document_id")
+                if not archive_target:
+                    _check(
+                        "negative: archived_relationship_endpoint enforced",
+                        False,
+                        f"setup failure — fixture employee create returned status={fixture_r.get('status')} error={(fixture_r.get('error') or '')[:120]}",
+                    )
+                else:
+                    # Step B: archive the fixture employee.
+                    arch_result = self.document_store.post(
+                        "/api/document-store/documents/archive",
+                        [{"id": archive_target, "archived_by": "seed_script_negative_check"}],
+                        params=self._ns_params(),
+                    )
+                    arch_r = arch_result.get("results", [{}])[0]
+                    if arch_r.get("status") not in ("archived", "deleted", "updated", "unchanged"):
+                        _check(
+                            "negative: archived_relationship_endpoint enforced",
+                            False,
+                            f"setup failure — archive call returned status={arch_r.get('status')} error={(arch_r.get('error') or '')[:120]}",
+                        )
+                    else:
+                        # Step C: try to create an EMPLOYEE_MANAGES edge
+                        # pointing at the freshly-archived fixture employee.
+                        # Expected: per-item error with `archived_relationship_endpoint` prefix.
+                        manager_id = employees[0]
+                        result = self.document_store.post(
+                            "/api/document-store/documents",
+                            [{
+                                "template_id": em_template_id,
+                                "namespace": self.namespace,
+                                "data": {
+                                    "source_ref": manager_id,
+                                    "target_ref": archive_target,
+                                    "since": "2025-01-01",
+                                    "reporting_type": "direct",
+                                },
+                                "created_by": "seed_script_negative_check",
+                            }],
+                        )
+                        r = result.get("results", [{}])[0]
+                        err_str = r.get("error", "") or ""
+                        rejected = r.get("status") == "error" and "archived_relationship_endpoint" in err_str
+                        _check(
+                            "negative: archived_relationship_endpoint enforced",
+                            rejected,
+                            f"got status={r.get('status')} error={err_str[:120]}",
+                        )
             except Exception as e:
                 _check("negative: archived_relationship_endpoint enforced", False, str(e)[:120])
 
