@@ -551,22 +551,31 @@ Trap: You see a template with two `reference_type: document` fields and assume
       didn't declare appear in the reporting table.
 Rule: Always check `template.usage` before reasoning about a template's
       lifecycle. `usage` is immutable after creation — to change it, create a
-      new template.
+      new template. See also PoNIF #8 — relationship templates can ALSO opt
+      out of versioning entirely via `versioned: false`, an exception to
+      PoNIF #2.
 
 ## 8. `versioned: false` — Updates Overwrite In Place
-Convention: every write to a WIP document creates a new version, document_id
-stable, full audit trail preserved. Templates can opt out via `versioned: false`:
-documents under that template stay at version=1 forever, updates overwrite the
-existing payload, the previous data is gone. Used for relationship templates
-where the edge identity matters but its history doesn't (e.g. "monster has spell").
+Direct exception to PoNIF #2. PoNIF #2 says every update creates a new
+version. That's the default and applies to entity templates. Templates with
+`usage: relationship` (see PoNIF #7) can declare `versioned: false` at
+creation; documents under such a template stay at version=1 forever, updates
+overwrite the existing payload, the previous data is gone. Used for
+relationship templates where the edge identity matters but its history
+doesn't (e.g. "monster has spell"). The flag is immutable after template
+creation.
 
 Trap: You write code that loads `version=N-1` to compute a diff between
       versions, or assumes `get_document_versions(id)` returns more than one
       row. On a `versioned: false` template both fail silently — diff is
-      against nothing, version list has one entry.
+      against nothing, version list has one entry. Worse: code that
+      internalised PoNIF #2 ("update always creates a new version") will
+      apply that rule universally and be blindsided.
 Rule: Check `template.versioned` (defaults to true) before assuming version
       history exists. If you need history on an edge type, build it on a
-      template with `versioned: true`. `versioned` is immutable after creation.
+      template with `versioned: true`. Currently only available on
+      `usage: relationship` templates; if/when it expands to entity
+      templates, this rule applies there too.
 
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
