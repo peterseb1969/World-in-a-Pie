@@ -832,6 +832,7 @@ class WIPSeeder:
                 # Fetch current template to get its fields
                 current = self.template_store.get(
                     f"/api/template-store/templates/{template_id}",
+                    params=self._ns_params(),
                 )
 
                 # Build updated field list (current fields + new field)
@@ -861,6 +862,7 @@ class WIPSeeder:
                         "fields": updated_fields,
                         "updated_by": "seed_script",
                     }],
+                    params=self._ns_params(),
                 )
 
                 r = result["results"][0]
@@ -1296,16 +1298,23 @@ class WIPSeeder:
             # the relationship-document phase.
             time.sleep(2.0)
             rs_client = ServiceClient(self.urls["document-store"], self.api_key, verify_ssl=False)
+            # Filter on namespace — doc_order_contains is one global table
+            # with rows from every namespace. Without the filter the test
+            # would pass on any namespace's data, which is a false positive
+            # for the current run.
             rq = rs_client.post(
                 "/api/reporting-sync/query",
-                {"sql": "SELECT source_ref_id, target_ref_id FROM doc_order_contains LIMIT 5"},
+                {
+                    "sql": "SELECT source_ref_id, target_ref_id FROM doc_order_contains WHERE namespace = $1 LIMIT 5",
+                    "params": [self.namespace],
+                },
             )
             rows = rq.get("rows", [])
             non_null = sum(1 for r in rows if r.get("source_ref_id") and r.get("target_ref_id"))
             _check(
                 "reporting: doc_order_contains source/target_ref_id populated",
                 non_null > 0,
-                f"{non_null}/{len(rows)} rows populated",
+                f"{non_null}/{len(rows)} rows in namespace={self.namespace}",
             )
         except Exception as e:
             _check("reporting: doc_order_contains source/target_ref_id populated", False, str(e)[:120])
@@ -1469,7 +1478,10 @@ class WIPSeeder:
             for doc_id in self.created_documents[:50]:
                 start = time.perf_counter()
                 try:
-                    self.document_store.get(f"/api/document-store/documents/{doc_id}")
+                    self.document_store.get(
+                        f"/api/document-store/documents/{doc_id}",
+                        params=self._ns_params(),
+                    )
                     elapsed = (time.perf_counter() - start) * 1000
                     read_result.times_ms.append(elapsed)
                 except Exception:
@@ -1556,7 +1568,10 @@ class WIPSeeder:
 
                 start = time.perf_counter()
                 try:
-                    self.template_store.get(f"/api/template-store/templates/{template_id}")
+                    self.template_store.get(
+                        f"/api/template-store/templates/{template_id}",
+                        params=self._ns_params(),
+                    )
                     elapsed = (time.perf_counter() - start) * 1000
                     resolution_result.times_ms.append(elapsed)
                 except Exception:
