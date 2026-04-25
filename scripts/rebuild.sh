@@ -49,11 +49,12 @@ SERVICE_DEFS=(
     "document-store:wip-document-store:8004:components/document-store"
     "reporting-sync:wip-reporting-sync:8005:components/reporting-sync"
     "ingest-gateway:wip-ingest-gateway:8006:components/ingest-gateway:/api/ingest-gateway/health"
+    "mcp-server:wip-mcp-server:8006:components/mcp-server"
     "console:wip-console:0:ui/wip-console"
 )
 
 # Rebuild order (same as startup order)
-SERVICE_ORDER=(registry def-store template-store document-store reporting-sync ingest-gateway console)
+SERVICE_ORDER=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server console)
 
 # Services that use wip-auth (bind-mounted, but may cache .pyc)
 LIBS_SERVICES=(registry def-store template-store document-store reporting-sync ingest-gateway)
@@ -101,7 +102,7 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Services:"
             echo "  registry, def-store, template-store, document-store,"
-            echo "  reporting-sync, ingest-gateway, console"
+            echo "  reporting-sync, ingest-gateway, mcp-server, console"
             echo ""
             echo "Options:"
             echo "  --all       Rebuild everything including infrastructure"
