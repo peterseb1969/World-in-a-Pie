@@ -22,6 +22,8 @@ from ..models.api_models import (
     DocumentVersionResponse,
     DocumentVersionSummary,
     PatchDocumentItem,
+    TraverseNode,
+    TraverseResponse,
     ValidationError,
     ValidationResponse,
 )
@@ -878,6 +880,248 @@ class DocumentService:
         if not document:
             return None
         return await self._to_response(document)
+
+    # =========================================================================
+    # PHASE 4 — RELATIONSHIP QUERY APIS
+    # =========================================================================
+
+    async def _resolve_relationship_template_ids(
+        self,
+        template_values: list[str],
+        namespace: str,
+    ) -> list[str]:
+        """Resolve a list of template values (or already-resolved IDs) to
+        template IDs via the template-store client. Used by /traverse and
+        /relationships when a `template` / `types` filter is supplied.
+        Unknown values are silently dropped (the resulting IN-filter is
+        the intersection)."""
+        if not template_values:
+            return []
+        client = get_template_store_client()
+        out: list[str] = []
+        for value in template_values:
+            try:
+                tpl = await client.get_template(template_id=value)
+                if tpl is None:
+                    tpl = await client.get_template(template_value=value)
+                if tpl and tpl.get("template_id"):
+                    out.append(tpl["template_id"])
+            except Exception:
+                continue
+        return out
+
+    async def find_relationships(
+        self,
+        document_id: str,
+        *,
+        direction: str = "both",
+        template_filter: list[str] | None = None,
+        namespace: str | None = None,
+        active_only: bool = True,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> DocumentListResponse:
+        """Return relationship documents that point at (incoming) or from
+        (outgoing) the given document.
+
+        Backed by the (template_id, data.source_ref) and
+        (template_id, data.target_ref) Mongo indexes that Phase 2's
+        DocumentService._ensure_relationship_indexes laid down. Only
+        relationship templates have data.source_ref / data.target_ref
+        fields, so a query on those keys naturally filters to
+        relationship documents.
+        """
+        if direction not in ("incoming", "outgoing", "both"):
+            raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
+
+        query: dict[str, Any] = {}
+        if namespace:
+            query["namespace"] = namespace
+        if active_only:
+            query["status"] = DocumentStatus.ACTIVE.value
+
+        if direction == "outgoing":
+            query["data.source_ref"] = document_id
+        elif direction == "incoming":
+            query["data.target_ref"] = document_id
+        else:
+            query["$or"] = [
+                {"data.source_ref": document_id},
+                {"data.target_ref": document_id},
+            ]
+
+        if template_filter:
+            template_ids = await self._resolve_relationship_template_ids(
+                template_filter, namespace or "wip",
+            )
+            if not template_ids:
+                # Filter resolved to nothing — return empty page
+                return DocumentListResponse(
+                    items=[], total=0, page=page, page_size=page_size, pages=0,
+                )
+            query["template_id"] = {"$in": template_ids}
+
+        total = await Document.find(query).count()
+        skip = (page - 1) * page_size
+        documents = await Document.find(query).sort(
+            [("created_at", -1)]
+        ).skip(skip).limit(page_size).to_list()
+        items = await self._batch_to_responses(documents)
+        pages = math.ceil(total / page_size) if total else 0
+        return DocumentListResponse(
+            items=items, total=total, page=page, page_size=page_size, pages=pages,
+        )
+
+    async def traverse_relationships(
+        self,
+        document_id: str,
+        *,
+        depth: int = 1,
+        types_filter: list[str] | None = None,
+        direction: str = "outgoing",
+        namespace: str | None = None,
+        max_nodes: int = 1000,
+    ) -> TraverseResponse:
+        """N-hop BFS expansion from a seed document, walking through
+        relationship documents.
+
+        At each hop we find relationship docs touching the current
+        frontier (via data.source_ref for outgoing, data.target_ref for
+        incoming), then add the *other* endpoint document_ids of those
+        relationship docs to the next frontier. Visited docs are
+        skipped — cycles terminate naturally. Capped at depth=10 and
+        max_nodes (default 1000) to keep the cost bounded.
+
+        Returns nodes only (a flat list with depth + path). Edges are
+        implicit in `path` and `via_relationship`. Callers wanting the
+        edges as well can issue follow-up /relationships queries on the
+        seed.
+        """
+        if direction not in ("incoming", "outgoing", "both"):
+            raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
+        if depth < 1 or depth > 10:
+            raise ValueError("depth must be between 1 and 10")
+
+        # Seed doc must exist; namespace defaults to its namespace if not given.
+        seed = await Document.find_one({"document_id": document_id})
+        if seed is None:
+            raise ValueError(f"Document not found: {document_id}")
+        ns = namespace or seed.namespace
+
+        type_filter_ids: list[str] = []
+        if types_filter:
+            type_filter_ids = await self._resolve_relationship_template_ids(types_filter, ns)
+            if not type_filter_ids:
+                # Filter resolved to nothing — empty traversal.
+                return TraverseResponse(
+                    seed_document_id=document_id,
+                    direction=direction,
+                    depth=depth,
+                    types_filter=list(types_filter),
+                    nodes=[],
+                    total_nodes=0,
+                    truncated=False,
+                )
+
+        visited: set[str] = {document_id}
+        path_by_id: dict[str, list[str]] = {document_id: []}
+        nodes: list[TraverseNode] = []
+        frontier: set[str] = {document_id}
+        truncated = False
+
+        for current_depth in range(1, depth + 1):
+            if not frontier:
+                break
+
+            # Build the per-hop query: relationship docs whose source/target
+            # references one of the frontier doc_ids.
+            base: dict[str, Any] = {
+                "namespace": ns,
+                "status": DocumentStatus.ACTIVE.value,
+            }
+            if type_filter_ids:
+                base["template_id"] = {"$in": type_filter_ids}
+
+            hop_query: dict[str, Any]
+            if direction == "outgoing":
+                hop_query = {**base, "data.source_ref": {"$in": list(frontier)}}
+            elif direction == "incoming":
+                hop_query = {**base, "data.target_ref": {"$in": list(frontier)}}
+            else:
+                hop_query = {
+                    **base,
+                    "$or": [
+                        {"data.source_ref": {"$in": list(frontier)}},
+                        {"data.target_ref": {"$in": list(frontier)}},
+                    ],
+                }
+
+            rel_docs = await Document.find(hop_query).to_list()
+            next_frontier: set[str] = set()
+
+            for rel in rel_docs:
+                rel_data = rel.data or {}
+                src_ref = rel_data.get("source_ref")
+                tgt_ref = rel_data.get("target_ref")
+                # Determine which endpoint(s) of this rel are NEW nodes.
+                # For "both", a rel touched by frontier could be reached
+                # via either endpoint; report all not-yet-visited ones.
+                candidates: list[tuple[str, str]] = []
+                # (other_endpoint_doc_id, parent_doc_id_in_frontier)
+                if direction in ("outgoing", "both") and src_ref in frontier and tgt_ref:
+                    candidates.append((tgt_ref, src_ref))
+                if direction in ("incoming", "both") and tgt_ref in frontier and src_ref:
+                    candidates.append((src_ref, tgt_ref))
+
+                for other_id, parent_id in candidates:
+                    if other_id in visited:
+                        continue
+                    if len(nodes) >= max_nodes:
+                        truncated = True
+                        break
+                    visited.add(other_id)
+                    new_path = [*path_by_id[parent_id], other_id]
+                    path_by_id[other_id] = new_path
+                    next_frontier.add(other_id)
+                    # Look up the document to get its template + namespace.
+                    other_doc = await Document.find_one({"document_id": other_id})
+                    if other_doc is None:
+                        # Reference pointed at something missing — record
+                        # what we know and skip.
+                        nodes.append(TraverseNode(
+                            document_id=other_id,
+                            template_id="",
+                            template_value=None,
+                            namespace=ns,
+                            depth=current_depth,
+                            via_relationship=rel.document_id,
+                            path=new_path,
+                        ))
+                        continue
+                    nodes.append(TraverseNode(
+                        document_id=other_doc.document_id,
+                        template_id=other_doc.template_id,
+                        template_value=other_doc.template_value,
+                        namespace=other_doc.namespace,
+                        depth=current_depth,
+                        via_relationship=rel.document_id,
+                        path=new_path,
+                    ))
+                if truncated:
+                    break
+            if truncated:
+                break
+            frontier = next_frontier
+
+        return TraverseResponse(
+            seed_document_id=document_id,
+            direction=direction,
+            depth=depth,
+            types_filter=list(types_filter) if types_filter else [],
+            nodes=nodes,
+            total_nodes=len(nodes),
+            truncated=truncated,
+        )
 
     async def list_documents(
         self,

@@ -24,6 +24,7 @@ from ..models.api_models import (
     DocumentResponse,
     DocumentVersionResponse,
     PatchDocumentItem,
+    TraverseResponse,
 )
 from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
@@ -299,6 +300,103 @@ async def get_latest_document(
     await check_namespace_permission(identity, document.namespace, "read")
 
     return document
+
+
+@router.get(
+    "/{document_id}/relationships",
+    response_model=DocumentListResponse,
+    summary="List relationship documents touching this document",
+    description="""
+Return relationship documents (templates with usage='relationship')
+that point at (incoming) or from (outgoing) the given document.
+
+Backed by Mongo indexes on (template_id, data.source_ref) and
+(template_id, data.target_ref) created lazily on first relationship-
+document write.
+""",
+)
+async def get_document_relationships(
+    document_id: str,
+    direction: str = Query("both", description="incoming | outgoing | both"),
+    template: str | None = Query(
+        None, description="Comma-separated relationship template values to include (default: all)"),
+    namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
+    active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=500),
+    _: str = Depends(require_api_key),
+):
+    """List relationships incident to a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
+    service = get_document_service()
+    seed = await service.get_document(document_id)
+    if not seed:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, seed.namespace, "read")
+
+    template_filter = [t.strip() for t in template.split(",")] if template else None
+    try:
+        return await service.find_relationships(
+            document_id=document_id,
+            direction=direction,
+            template_filter=template_filter,
+            namespace=namespace or seed.namespace,
+            active_only=active_only,
+            page=page,
+            page_size=page_size,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get(
+    "/{document_id}/traverse",
+    response_model=TraverseResponse,
+    summary="N-hop relationship traversal from a document",
+    description="""
+BFS expansion through relationship documents from a seed document.
+At each hop, finds relationship documents touching the current
+frontier and adds the *other* endpoint document_ids to the next
+frontier. Visited docs are skipped (cycles terminate).
+
+Capped at depth=10 and max_nodes=1000 (safety bounds). When a cap
+fires, the response sets truncated=true.
+""",
+)
+async def traverse_document_relationships(
+    document_id: str,
+    depth: int = Query(1, ge=1, le=10, description="Number of relationship hops"),
+    types: str | None = Query(
+        None, description="Comma-separated relationship template values to traverse (default: all)"),
+    direction: str = Query("outgoing", description="outgoing | incoming | both"),
+    namespace: str | None = Query(None, description="Namespace; default = the seed document's namespace"),
+    _: str = Depends(require_api_key),
+):
+    """Traverse relationship graph from a document."""
+    document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
+
+    service = get_document_service()
+    seed = await service.get_document(document_id)
+    if not seed:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    identity = get_current_identity()
+    await check_namespace_permission(identity, seed.namespace, "read")
+
+    types_filter = [t.strip() for t in types.split(",")] if types else None
+    try:
+        return await service.traverse_relationships(
+            document_id=document_id,
+            depth=depth,
+            types_filter=types_filter,
+            direction=direction,
+            namespace=namespace or seed.namespace,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @router.delete(

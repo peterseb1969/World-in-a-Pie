@@ -151,6 +151,54 @@ class DocumentListResponse(BaseModel):
 
 
 # ============================================================================
+# Phase 4 — Document-relationship query APIs
+# ============================================================================
+
+class TraverseNode(BaseModel):
+    """One node in a relationship traversal result.
+
+    Each node is a document discovered during BFS expansion from the
+    starting document. `depth` is the number of relationship-document
+    hops away from the start (depth=0 is the start itself).
+    `path` is the chain of document_ids visited to reach this node,
+    starting from the seed doc and excluding it (so a depth-1 node has
+    a 1-element path containing only itself).
+    """
+
+    document_id: str
+    template_id: str
+    template_value: str | None = None
+    namespace: str
+    depth: int = Field(..., ge=0, le=10)
+    via_relationship: str | None = Field(
+        None,
+        description="document_id of the relationship document that was traversed to reach this node (None for the seed)."
+    )
+    path: list[str] = Field(
+        default_factory=list,
+        description="Chain of document_ids from seed (exclusive) to this node (inclusive)."
+    )
+
+
+class TraverseResponse(BaseModel):
+    """Response for the /documents/{id}/traverse endpoint."""
+
+    seed_document_id: str
+    direction: str  # "outgoing" | "incoming" | "both"
+    depth: int
+    types_filter: list[str] = Field(
+        default_factory=list,
+        description="Relationship template values used to constrain traversal; empty = all relationship templates."
+    )
+    nodes: list[TraverseNode]
+    total_nodes: int
+    truncated: bool = Field(
+        False,
+        description="True if a depth-cap or expansion-cap stopped traversal before exhausting reachable nodes."
+    )
+
+
+# ============================================================================
 # Document Versions
 # ============================================================================
 
