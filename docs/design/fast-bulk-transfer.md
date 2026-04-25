@@ -59,7 +59,7 @@ The archive should include all externally-referenced entities as read-only refer
 - **Terminologies** referenced by template fields (`terminology_ref`, `target_terminologies`, `array_terminology_ref`)
 - **All terms** belonging to those terminologies (needed for document validation and value-based resolution)
 - **Templates** referenced by template fields (`template_ref`, `target_templates`, `extends`)
-- **Relationship types** from `_ONTOLOGY_RELATIONSHIP_TYPES` used in ontology relationships
+- **Relation types** from `_ONTOLOGY_RELATIONSHIP_TYPES` used in ontology relations
 
 The closure logic already identifies these — `manifest.closure.external_terminologies` and `manifest.closure.external_templates` list them. The change is: **include the actual data, not just the IDs**.
 
@@ -96,7 +96,7 @@ For each external dependency in archive:
 | External terminology doesn't exist at all | Error unless `--create-dependencies` |
 | External template exists, different version | Use target's latest active version UUID |
 | External template doesn't exist | Error unless `--create-dependencies` |
-| Cascading: external terminology has relationships to another external | Include transitively (closure already handles depth) |
+| Cascading: external terminology has relations to another external | Include transitively (closure already handles depth) |
 
 ---
 
@@ -142,7 +142,7 @@ This is the one part that can't be shortcut — the Registry needs explicit syno
 6. Bulk-insert into MongoDB (insert_many, ordered=False)
    - Terminologies → wip_def_store.terminologies
    - Terms → wip_def_store.terms
-   - Relationships → wip_def_store.term_relationships
+   - Relations → wip_def_store.term_relations
    - Templates → wip_template_store.templates
    - Documents → wip_document_store.documents
    - Files (metadata) → wip_document_store.files

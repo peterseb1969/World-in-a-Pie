@@ -162,7 +162,7 @@ additions called out):
 ├── templates.jsonl           # Template documents
 ├── documents.jsonl           # Document documents
 ├── files.jsonl               # File metadata (not blob bytes)
-├── term_relationships.jsonl  # def-store term_relationships collection
+├── term_relations.jsonl  # def-store term_relations collection
 ├── registry_entries.jsonl    # Registry entries for this namespace
 ├── registry_externals.jsonl  # NEW: one-hop external refs (see below)
 └── blobs/
@@ -194,7 +194,7 @@ The manifest grows metadata about the source install:
     "templates":      8,
     "documents": 228286,
     "files":       2189,
-    "term_relationships": 0,
+    "term_relations": 0,
     "registry_entries":  228666
   }
 }
@@ -238,7 +238,7 @@ Replaces the current closure-walk-via-service-APIs with direct reads.
 ### Phase 1 — Collection dumps
 
 For each target collection (`terminologies`, `terms`, `templates`,
-`documents`, `files`, `term_relationships`):
+`documents`, `files`, `term_relations`):
 
 ```python
 cursor = collection.find({"namespace": ns, "status": {"$ne": "deleted"}})
@@ -353,7 +353,7 @@ key) is a prerequisite for.
 **Procedure:**
 
 1. **Pass 1 — insert as draft.** Walk the dump in dependency order
-   (terminologies → terms → templates → documents → files → relationships).
+   (terminologies → terms → templates → documents → files → relations).
    For each entity, call the owning service's create-API with:
    - `status: "draft"` (skips reference validation)
    - The entity's stored fields, minus any reference fields — or with
@@ -544,7 +544,7 @@ Registry global state.
 
 ---
 
-## Relationship to CASE-23 Phase 3
+## Relation to CASE-23 Phase 3
 
 CASE-23 Phase 3 established the REST backup/restore endpoints wrapping
 the toolkit. That work:

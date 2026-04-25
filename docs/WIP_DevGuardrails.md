@@ -119,7 +119,7 @@ Importantly, the WIP Console would be one of the apps listed on the portal — n
 > **Priority: High — needed before any user-facing UI**
 > Without a shared UI convention, every app the AI builds will make independent choices about framework, components, and visual style. The result: an ecosystem that looks like it was built by ten different teams. These constraints ensure visual and behavioural consistency across all constellation apps.
 
-## Relationship to the WIP Console stack
+## Relation to the WIP Console stack
 
 The WIP Console — itself built by Claude — uses a different frontend stack: Vue 3 with PrimeVue, Pinia for state management, and the same Vite build tool. This is a deliberate divergence, not an inconsistency.
 

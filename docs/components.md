@@ -968,7 +968,7 @@ Provides 73 tools and 5 resources for AI-assisted development. Used by YAC agent
 | `wip://ponifs` | Six non-intuitive behaviours |
 | `wip://query-assistant-prompt` | Query assistant prompt |
 
-Tools span all WIP domains: namespaces, registry, terminologies, terms, ontology relationships, templates, documents, files, reporting, search, replay, and import/export. Use MCP resource discovery for the full tool listing.
+Tools span all WIP domains: namespaces, registry, terminologies, terms, ontology relations, templates, documents, files, reporting, search, replay, and import/export. Use MCP resource discovery for the full tool listing.
 
 ---
 

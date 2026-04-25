@@ -50,7 +50,7 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
-| Relationships | `create_relationships`, `delete_relationships` |
+| Relations | `create_relations`, `delete_relations` |
 | Templates | `create_template`, `create_templates_bulk`, `activate_template`, `deactivate_template` |
 | Documents | `create_document`, `create_documents_bulk`, `archive_document` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
@@ -241,7 +241,7 @@ Five resources provide baseline context to the AI without tool calls:
 | Resource URI | Description |
 |---|---|
 | `wip://conventions` | Bulk-first API patterns, identity hashing, versioning, pagination, querying |
-| `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relationships |
+| `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relations |
 | `wip://development-guide` | The 4-phase development process with guidance per phase |
 | `wip://ponifs` | Powerful, Non-Intuitive Features — 6 WIP behaviours that violate conventional expectations, plus the Compactheimer's Warning for AI assistants |
 | `wip://query-assistant-prompt` | Query assistant prompt for SQL reporting |
@@ -294,14 +294,14 @@ Five resources provide baseline context to the AI without tool calls:
 | `delete_term(id)` | Deactivate (soft-delete) a term. |
 | `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
 
-### Ontology / Relationships (4 tools)
+### Ontology / Relations (4 tools)
 
 | Tool | Description |
 |------|-------------|
-| `get_term_hierarchy(term_id, direction)` | Traverse relationships: `children`, `parents`, `ancestors`, `descendants`. Optional `relationship_type` filter. |
-| `list_relationships(term_id, direction?, relationship_type?)` | List relationships for a term. Direction: `outgoing`, `incoming`, or `both`. |
-| `create_relationships(relationships)` | Create typed relationships (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
-| `delete_relationships(relationships)` | Delete relationships. Each item: `{source_term_id, target_term_id, relationship_type}`. |
+| `get_term_hierarchy(term_id, direction)` | Traverse relations: `children`, `parents`, `ancestors`, `descendants`. Optional `relation_type` filter. |
+| `list_relations(term_id, direction?, relation_type?)` | List relations for a term. Direction: `outgoing`, `incoming`, or `both`. |
+| `create_relations(relations)` | Create typed relations (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
+| `delete_relations(relations)` | Delete relations. Each item: `{source_term_id, target_term_id, relation_type}`. |
 
 ### Templates (12 tools)
 
@@ -344,7 +344,7 @@ Five resources provide baseline context to the AI without tool calls:
 
 | Tool | Description |
 |------|-------------|
-| `export_terminology(id)` | Export terminology with terms and optional relationships. JSON or CSV. |
+| `export_terminology(id)` | Export terminology with terms and optional relations. JSON or CSV. |
 | `import_terminology(data)` | Import terminology from JSON. Supports `skip_duplicates` and `update_existing`. |
 
 ### Search (2 tools)
@@ -430,7 +430,7 @@ The MCP server is designed around a 4-phase process for building applications on
 | Phase | Purpose | Key MCP Tools |
 |-------|---------|---------------|
 | **1. Explore** | Discover existing data model | `get_wip_status`, `list_namespaces`, `list_terminologies`, `list_templates` |
-| **2. Design** | Plan terminologies, templates, relationships | `get_terminology_by_value`, `get_template_by_value`, `get_template_dependencies` |
+| **2. Design** | Plan terminologies, templates, relations | `get_terminology_by_value`, `get_template_by_value`, `get_template_dependencies` |
 | **3. Implement** | Create data model in WIP | `create_terminology`, `create_terms`, `create_template`, `activate_template`, `create_document`, `import_documents_csv` |
 | **4. Build App** | Build frontend (uses @wip/client, not MCP) | MCP used for debugging and `query_by_template`, `run_report_query` |
 

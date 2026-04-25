@@ -24,29 +24,34 @@ Each session stays within the scope budget.
 
 ---
 
-## Phase 0 — Rename term-ontology API (prerequisite)
+## Phase 0 — Rename term-ontology API (prerequisite) — **DONE**
 
-**Why first.** Clears the naming collision so "relationship" can mean document-to-document unambiguously in every subsequent commit. Also low-risk and contained — good warm-up.
+Completed in commit `2eeb872` (2026-04-25). Cleared the naming collision so "relationship" can mean document-to-document unambiguously in every subsequent phase.
 
-**Changes:**
+**Changes shipped:**
 
 | What | Where |
 |---|---|
 | API handler | `components/def-store/src/def_store/api/ontology.py` — `create_relationships` → `create_term_relations` |
-| Service method | `components/def-store/src/def_store/services/ontology_service.py` — `create_relationships` → `create_term_relations` |
+| Service method | `components/def-store/src/def_store/services/ontology_service.py` — `create_relationships` → `create_term_relations` (and `list_*`, `delete_*`, `list_all_*`) |
 | Model class | `components/def-store/src/def_store/models/term_relationship.py` → `term_relation.py`, `TermRelationship` → `TermRelation` |
-| Mongo collection | `term_relationships` → `term_relations` (migration script needed) |
-| MCP tools | `mcp__wip__create_relationships` / `list_relationships` / `delete_relationships` → `*_term_relations` (in `components/mcp-server/src/wip_mcp/server.py` and `client.py`) |
-| Import/export | `components/def-store/src/def_store/services/import_export.py` — three call sites |
-| Docs | `docs/mcp-server.md`, `docs/data-models.md`, any CLAUDE.md / playbook references |
+| API model classes | `Create/DeleteRelationshipRequest` → `Create/DeleteTermRelationRequest`; `RelationshipResponse` → `TermRelationResponse`; `RelationshipListResponse` → `TermRelationListResponse` |
+| Mongo collection | `term_relationships` → `term_relations` |
+| HTTP routes | `/ontology/relationships` → `/ontology/term-relations` |
+| NATS subject + event types | `wip.relationships.>` → `wip.term_relations.>`; `RELATIONSHIP_CREATED/DELETED` → `TERM_RELATION_CREATED/DELETED` |
+| MCP tools | `mcp__wip__create_relationships` / `list_relationships` / `delete_relationships` → `*_term_relations` (server.py, client.py, tools.yaml) |
+| Cross-component | reporting-sync (Postgres table `term_relations`, NATS consumer), document-store backup (`term_relations` archive entity), registry namespace deletion, WIP-Toolkit (archive entity, EntityCounts field, helper functions), scripts/dev-delete.py, scripts/import_obo_graph.py, scripts/test_ontology_e2e.py |
 
-**Tests.** Unit + contract tests per commit c10f5dc pattern. The renames are mechanical; contract tests verify the new names work and the old names are gone.
+**Migration.** *None.* Per "no backward compatibility" guidance, fresh-instance restart is the recovery path. Old Mongo collections / Postgres tables / NATS subjects from a prior run will not be picked up by the new code; deploy a clean instance.
 
-**Migration.** One-shot script that renames the Mongo collection in each namespaced DB. Idempotent (skip if already `term_relations`). Runs at service startup if needed.
+**Preserved (intentionally not renamed):**
 
-**Estimate:** 2 commits, **0.5–1 day.** Straightforward search-and-replace + tests + migration script.
+- The system-terminology data identifier `_ONTOLOGY_RELATIONSHIP_TYPES`. Apps' `_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json` extension files match against this value; renaming would break those without coordination across app repos. The constant in `system_terminologies.py` is `TERM_RELATION_TYPES_TERMINOLOGY_VALUE` but its value remains `"_ONTOLOGY_RELATIONSHIP_TYPES"`.
+- The MCP-server `_generated_schemas.py` is regenerated separately via `scripts/update-schemas.sh` (after rebuilding def-store).
 
-**Risks:** Any external caller relying on the old MCP names. Peter confirmed the app/doc surface is all Peter-owned, so the blast radius is local. No deprecation window.
+**Tests.** Existing def-store, mcp-server, and reporting-sync tests updated to use the new names. New contract tests in `components/mcp-server/tests/test_client_contracts.py` (`test_term_relations_tool_names_replaced_old_ones`, `test_term_relations_url_path_uses_kebab_form`) pin the rename and assert the old names are gone — regression guard against pattern-matched re-introduction.
+
+**Actual scope:** ~50 files / ~1100 lines changed. Larger than the 2-commit estimate; the cross-component reach (reporting-sync, document-store backup, registry, toolkit, scripts) was understated in the original plan.
 
 ---
 

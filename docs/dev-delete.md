@@ -17,7 +17,7 @@ python scripts/dev-delete.py 019abc01-def3-7abc-8def-123456789abc
 # Actually delete
 python scripts/dev-delete.py --force 019abc01-def3-7abc-8def-123456789abc
 
-# Delete with full cascade (terminology -> terms -> relationships,
+# Delete with full cascade (terminology -> terms -> relations,
 # template -> child templates -> documents -> files)
 python scripts/dev-delete.py --cascade --force COUNTRY
 

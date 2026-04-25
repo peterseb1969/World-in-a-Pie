@@ -270,7 +270,7 @@ Once these are in place, the swap is straightforward. The remaining side effects
 
 ---
 
-## Relationship to Fast Bulk Transfer
+## Relation to Fast Bulk Transfer
 
 This analysis was prompted by the fast bulk transfer design, but the gaps identified here are **WIP consistency issues**, not import/export issues. The resolution layer should work correctly for normal operations first:
 

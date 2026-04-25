@@ -73,8 +73,8 @@ data_model:
       source: data-model/templates/ct_organization.yaml
       on_conflict: validate
 
-  relationships:
-    - source: data-model/relationships/condition_hierarchy.yaml
+  relations:
+    - source: data-model/relations/condition_hierarchy.yaml
 
 resources:
   cpu: "0.5"
@@ -205,7 +205,7 @@ A WIP service (or part of App Manager) that reads the manifest's `data_model` se
 
 - **Terminologies:** Create with terms. If exists: compare term lists, add missing, warn on conflicts.
 - **Templates:** Create with `on_conflict=validate`. Compatible changes (added optional fields) auto-version. Incompatible changes (removed fields, changed types) block the install with a diff.
-- **Relationships:** Create ontology relationships from the manifest.
+- **Relations:** Create ontology relations from the manifest.
 
 This replaces:
 - Manual `createTerminology` / `createTemplate` calls from app code

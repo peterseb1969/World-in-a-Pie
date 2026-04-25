@@ -712,4 +712,4 @@ With the new reference system, the Study Plan templates would be updated:
 }
 ```
 
-This makes the relationships explicit, validated, and navigable.
+This makes the relations explicit, validated, and navigable.

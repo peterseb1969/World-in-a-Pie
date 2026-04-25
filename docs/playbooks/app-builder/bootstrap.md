@@ -9,9 +9,9 @@ Reads declarative seed files from `data-model/` in the constellation repo and cr
 ## API gotchas (read before bootstrapping)
 
 1. **`create_terms` requires terminology UUID**, not value. After creating a terminology, use the returned UUID (or list terminologies to get it) for `create_terms(terminology_id, terms)`.
-2. **`create_relationships` requires `TERMINOLOGY:TERM_VALUE` format** (e.g., `CT_DRUG_CLASS:CHECKPOINT_INHIBITOR`). Bare term values fail with "not found in namespace". The seed files already use this format in their `ontology.relationships` arrays — pass `source`/`target` directly as `source_term_id`/`target_term_id`.
+2. **`create_relations` requires `TERMINOLOGY:TERM_VALUE` format** (e.g., `CT_DRUG_CLASS:CHECKPOINT_INHIBITOR`). Bare term values fail with "not found in namespace". The seed files already use this format in their `ontology.relations` arrays — pass `source`/`target` directly as `source_term_id`/`target_term_id`.
 3. **Cross-namespace terminology refs in templates** need the terminology UUID, not the value. COUNTRY lives in the `wip` namespace; when creating templates in your app's namespace, look up COUNTRY's UUID first and use it for `terminology_ref`.
-4. **Custom relationship types** (like `targets`) must exist in `_ONTOLOGY_RELATIONSHIP_TYPES` before creating relationships that use them. Process `_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json` first.
+4. **Custom relation types** (like `targets`) must exist in `_ONTOLOGY_RELATIONSHIP_TYPES` before creating relations that use them. Process `_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json` first.
 5. **Namespace must exist** before creating terminologies in it. Create with `create_namespace`.
 6. **Pass namespace explicitly** on `create_terminology` calls — do not rely on implicit derivation during bootstrap, as the namespace may not be the API key's default.
 
@@ -49,7 +49,7 @@ data-model/
 }
 ```
 
-Terminologies with ontology relationships include an `ontology` block:
+Terminologies with ontology relations include an `ontology` block:
 
 ```json
 {
@@ -57,7 +57,7 @@ Terminologies with ontology relationships include an `ontology` block:
   "label": "Drug Classes",
   "terms": [ ... ],
   "ontology": {
-    "relationships": [
+    "relations": [
       {
         "source": "CT_DRUG_CLASS:CHECKPOINT_INHIBITOR",
         "target": "CT_MOLECULE:PEMBROLIZUMAB",
@@ -110,7 +110,7 @@ If the app's namespace (e.g., `clintrial`, `finance`) doesn't exist, create it w
 For files matching `data-model/terminologies/_*_EXT.json`:
 - These extend system terminologies (e.g., adding `targets`/`targeted_by` to `_ONTOLOGY_RELATIONSHIP_TYPES`)
 - Look up the system terminology UUID, then `create_terms` with the extension terms
-- **Must run before step 4** (relationship creation depends on these types)
+- **Must run before step 4** (relation creation depends on these types)
 
 ### 3. Create terminologies and terms
 For each file in `data-model/terminologies/` (excluding `_*_EXT.json` files):
@@ -120,9 +120,9 @@ For each file in `data-model/terminologies/` (excluding `_*_EXT.json` files):
 - Create all terms: `create_terms(terminology_uuid, terms)` — use the UUID from the create response, not the value
 - For terminologies with `"mutable": true`, pass `mutable=true` to `create_terminology`
 
-### 4. Create ontology relationships
-For each terminology file that has an `ontology.relationships` array:
-- Pass each relationship to `create_relationships` using the `source`/`target` fields directly as `source_term_id`/`target_term_id` (they're already in `TERMINOLOGY:TERM_VALUE` format)
+### 4. Create ontology relations
+For each terminology file that has an `ontology.relations` array:
+- Pass each relation to `create_relations` using the `source`/`target` fields directly as `source_term_id`/`target_term_id` (they're already in `TERMINOLOGY:TERM_VALUE` format)
 - Pass the app's namespace
 - Process terminologies that are only targets (e.g., CT_DRUG_CLASS) before terminologies that reference them (e.g., CT_MOLECULE)
 
@@ -143,7 +143,7 @@ If `data-model/seed-data/` exists and the user confirms:
 Report:
 - Terminologies: created / skipped / failed
 - Terms: total created
-- Ontology relationships: created / failed
+- Ontology relations: created / failed
 - Templates: created / skipped / failed
 - Seed documents: created / skipped (if applicable)
 - Any warnings or conflicts

@@ -159,11 +159,11 @@ These are in addition to the existing document tools — `list_relationships` (t
 
 ### Name-clash resolution
 
-Current state: `components/def-store/src/def_store/api/ontology.py:38` defines `create_relationships` for term-ontology edges (is_a, part_of). This collides with the document-level meaning introduced here.
+Term-ontology edges (is_a, part_of) used to live under the name "relationship" — `create_relationships` in def-store's API, `TermRelationship` model, `term_relationships` Mongo collection. That name collided with the document-level meaning introduced here.
 
-**Rename** (breaking change, Peter-owned surface):
+**Rename — completed in Phase 0** (no backward compat; fresh-instance restart is the recovery path):
 
-| Old | New |
+| Old (pre-Phase 0) | New |
 |---|---|
 | `create_relationships` (def-store API) | `create_term_relations` |
 | `mcp__wip__create_relationships` (MCP tool) | `mcp__wip__create_term_relations` |
@@ -172,9 +172,14 @@ Current state: `components/def-store/src/def_store/api/ontology.py:38` defines `
 | `get_term_hierarchy` | unchanged |
 | Module `components/def-store/src/def_store/models/term_relationship.py` | `term_relation.py` |
 | Class `TermRelationship` | `TermRelation` |
-| Mongo collection `term_relationships` | `term_relations` (migration required — see implementation doc) |
+| Mongo collection `term_relationships` | `term_relations` |
+| HTTP path `/api/def-store/ontology/relationships` | `/api/def-store/ontology/term-relations` |
+| NATS subject `wip.relationships.>` | `wip.term_relations.>` |
+| NATS event types `RELATIONSHIP_CREATED/DELETED` | `TERM_RELATION_CREATED/DELETED` |
 
 After the rename, the word "relationship" in WIP consistently means "document-to-document typed edge." The word "relation" is for ontology edges between terms (OBO-style).
+
+The system-terminology data identifier `_ONTOLOGY_RELATIONSHIP_TYPES` was **not** renamed: apps' `_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json` extension files match against this value, and renaming it would silently break those apps. The constant in `system_terminologies.py` is `TERM_RELATION_TYPES_TERMINOLOGY_VALUE` but its value remains `"_ONTOLOGY_RELATIONSHIP_TYPES"`.
 
 ### Postgres reporting (optional, archetype-gated)
 

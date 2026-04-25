@@ -2,9 +2,9 @@
 
 ## The Idea
 
-World In a Pie is a generic, domain-agnostic storage and reporting engine. Most of its documented use cases lean toward the serious — clinical trial data, B2B catalog reconciliation, legal document management. But the architecture makes no distinction between a regulatory submission and a hobbit. The primitives — terminologies, templates, versioned documents, typed ontology relationships, Registry synonyms — are exactly what a complex fictional universe demands.
+World In a Pie is a generic, domain-agnostic storage and reporting engine. Most of its documented use cases lean toward the serious — clinical trial data, B2B catalog reconciliation, legal document management. But the architecture makes no distinction between a regulatory submission and a hobbit. The primitives — terminologies, templates, versioned documents, typed ontology relations, Registry synonyms — are exactly what a complex fictional universe demands.
 
-This document explores using WIP to track characters, relationships, bloodlines, factions, places, and events across fictional works. It works equally well for published universes like Tolkien's Middle-earth or George R.R. Martin's Westeros, and for original fiction being actively written. The MCP server integration with Claude closes the loop — turning the structured data into a queryable, conversational continuity assistant.
+This document explores using WIP to track characters, relations, bloodlines, factions, places, and events across fictional works. It works equally well for published universes like Tolkien's Middle-earth or George R.R. Martin's Westeros, and for original fiction being actively written. The MCP server integration with Claude closes the loop — turning the structured data into a queryable, conversational continuity assistant.
 
 ---
 
@@ -16,8 +16,8 @@ The naive approach — a wiki, a spreadsheet, a folder of notes — breaks down 
 - **Disputed facts**: two sources disagree about a character's parentage, the date of an event, or the outcome of a battle
 - **Cross-work continuity**: a character appears in works by different authors, or the same author returns to a character decades later
 - **Version history**: a character changes — is resurrected, renamed, transformed — and earlier references need to remain valid
-- **Relationship complexity**: bloodlines, alliances, enmities, and mentorships form a dense graph that changes over time
-- **Scale**: a universe like LOTR or GoT has hundreds of named characters, thousands of relationships, and decades of in-universe timeline
+- **Relation complexity**: bloodlines, alliances, enmities, and mentorships form a dense graph that changes over time
+- **Scale**: a universe like LOTR or GoT has hundreds of named characters, thousands of relations, and decades of in-universe timeline
 
 WIP solves all of these as a natural consequence of its core architecture. None of it requires special-casing for fiction.
 
@@ -44,7 +44,7 @@ Gandalf is known by at least six names across different cultures, languages, and
 
 Without synonym management, you end up with eight Gandalfs. Queries for "all scenes featuring Gandalf" miss every scene where he is called Mithrandir. Cross-references from Elvish texts to Common Tongue texts break. The bibliography of a serious Tolkien scholar becomes incomprehensible.
 
-In WIP, there is one canonical CHARACTER document for Gandalf. Every name above is a registered synonym. Any reference to any of these names resolves to the same entity. A query for "all relationships involving this character" returns the complete picture regardless of which name the source used.
+In WIP, there is one canonical CHARACTER document for Gandalf. Every name above is a registered synonym. Any reference to any of these names resolves to the same entity. A query for "all relations involving this character" returns the complete picture regardless of which name the source used.
 
 ### Aragorn — Synonyms with Temporal Metadata
 
@@ -90,11 +90,11 @@ Both claims coexist as versioned documents. Queries can filter by confidence, by
 
 ---
 
-## The Ontology Layer — Typed Relationships
+## The Ontology Layer — Typed Relations
 
-Simple document references are not enough for a fictional universe. The *type* of relationship carries meaning that changes what queries are possible and what conclusions are valid.
+Simple document references are not enough for a fictional universe. The *type* of relation carries meaning that changes what queries are possible and what conclusions are valid.
 
-### Core Relationship Types
+### Core Relation Types
 
 ```
 # Blood and family
@@ -141,14 +141,14 @@ FACTION --[vassal_of]--> FACTION
 FACTION --[enemy_of]--> FACTION
 ```
 
-### Why Typed Relationships Matter
+### Why Typed Relations Matter
 
 Consider these two statements about the same pair of characters:
 
 - Boromir *is the brother of* Faramir
 - Boromir *died before* Faramir became Steward
 
-The first is a `sibling_of` relationship. The second is an `EVENT --[preceded_by]--> EVENT` chain with character involvement. They are fundamentally different kinds of assertions requiring different query patterns. A system that stores both as generic "links" cannot distinguish them. WIP's typed ontology relationships can.
+The first is a `sibling_of` relation. The second is an `EVENT --[preceded_by]--> EVENT` chain with character involvement. They are fundamentally different kinds of assertions requiring different query patterns. A system that stores both as generic "links" cannot distinguish them. WIP's typed ontology relations can.
 
 The traversal query capability means you can ask: "give me all characters descended from Númenórean kings" — and the system walks the `descended_from` graph across multiple generations, returning Aragorn, Boromir, Faramir, Denethor, and the full lineage, without you having to know how many generations deep it goes.
 
@@ -185,7 +185,7 @@ This is WIP's versioning behaviour applied without modification to a fictional m
 
 Tolkien's own works span decades of publication and in-universe centuries of timeline. Bilbo Baggins appears in The Hobbit as a middle-aged hobbit on an adventure, and in LOTR as a very old hobbit at his eleventy-first birthday party, and again briefly in the appendices.
 
-These are not different characters. They are the same entity at different points in time, appearing in different works. WIP handles this with a single canonical CHARACTER document for Bilbo, with work appearances tracked as relationships:
+These are not different characters. They are the same entity at different points in time, appearing in different works. WIP handles this with a single canonical CHARACTER document for Bilbo, with work appearances tracked as relations:
 
 ```
 CHARACTER --[appears_in {chapters: [...], timeline_period: "TA 2941"}]--> THE_HOBBIT
@@ -198,7 +198,7 @@ Queries for "all of Bilbo's appearances across Tolkien's works" return the compl
 
 The richer problem is characters who appear in works by different authors — authorised sequels, expanded universe novels, fan fiction treated as canonical within a particular reading community, or deliberate crossovers.
 
-Frodo appearing in a derivative work by another author, or Sherlock Holmes appearing in one of the hundreds of continuation novels by different writers, requires establishing a relationship between the canonical entity (defined in the original work's namespace) and the derivative appearance.
+Frodo appearing in a derivative work by another author, or Sherlock Holmes appearing in one of the hundreds of continuation novels by different writers, requires establishing a relation between the canonical entity (defined in the original work's namespace) and the derivative appearance.
 
 In WIP:
 
@@ -216,23 +216,23 @@ This also handles the Sherlock Holmes universe, where the canonical Conan Doyle 
 
 ---
 
-## The GoT Blood Relationship Graph
+## The GoT Blood Relation Graph
 
-Game of Thrones is a torture test for any relationship tracking system. The Targaryen family tree alone features:
+Game of Thrones is a torture test for any relation tracking system. The Targaryen family tree alone features:
 
 - Multi-generational incestuous marriages (uncle-niece, cousin-cousin, sibling-sibling in historical cases)
 - Disputed parentage (most famously Jon Snow, but also questions around several others)
 - Characters who don't know their own identity
-- Retroactive reveals that recontextualise earlier relationships
+- Retroactive reveals that recontextualise earlier relations
 - Parallel claims to the same title by multiple characters simultaneously
 
-The polyhierarchy traversal in WIP's ontology means you can ask: "list all living characters with a valid claim to the Iron Throne, ranked by primogeniture" — and the system walks the `descended_from` and `heir_to` graph, applies the `killed` relationships to exclude dead claimants, and returns the result.
+The polyhierarchy traversal in WIP's ontology means you can ask: "list all living characters with a valid claim to the Iron Throne, ranked by primogeniture" — and the system walks the `descended_from` and `heir_to` graph, applies the `killed` relations to exclude dead claimants, and returns the result.
 
 The disputed parentage pattern (described above for Jon Snow) applies to any contested claim. Each claim is a document with a source, a confidence level, and a validity period. The database does not need to pick a winner — it stores all claims and lets the query decide which to surface.
 
 ### The Frey Problem — Scale
 
-House Frey has, canonically, over one hundred living members at the time of the Red Wedding. Tracking all of them, their relationships to Walder Frey, their sub-family branches, and their fates after the Red Wedding is the kind of scale problem that breaks a spreadsheet. WIP's bulk import APIs, combined with a well-designed template for `NOBLE_HOUSE_MEMBER` with identity fields `[house, given_name, generation]`, handles this as a data loading exercise. The ontology traversal then answers questions like "how many of Walder Frey's direct grandchildren survived the Red Wedding?" without manual counting.
+House Frey has, canonically, over one hundred living members at the time of the Red Wedding. Tracking all of them, their relations to Walder Frey, their sub-family branches, and their fates after the Red Wedding is the kind of scale problem that breaks a spreadsheet. WIP's bulk import APIs, combined with a well-designed template for `NOBLE_HOUSE_MEMBER` with identity fields `[house, given_name, generation]`, handles this as a data loading exercise. The ontology traversal then answers questions like "how many of Walder Frey's direct grandchildren survived the Red Wedding?" without manual counting.
 
 ---
 
@@ -258,7 +258,7 @@ The writer maintains their world-building as WIP documents *as they write*, not 
 
 - Each new character introduced becomes a CHARACTER document
 - Each scene becomes an EVENT document with characters present, location, and timeline position
-- Each relationship established becomes an ontology entry
+- Each relation established becomes an ontology entry
 - Each piece of backstory revealed becomes a LORE document with the chapter it appears in as provenance
 
 The templates enforce consistency — you cannot create a CHARACTER without specifying identity fields, so you never end up with two characters who are subtly the same person under different names.
@@ -309,7 +309,7 @@ Every fan group has that moment. Someone makes a claim. Someone else disputes it
 >
 > **Fan B:** That is completely wrong, what about—
 >
-> **WIP + Claude:** *[already querying the `allied_with` and `friendship` ontology relationships across races]* Actually, Círdan the Shipwright maintained close friendships with multiple Maia across the First Age, and the relationship between the Edain and the Elves of Beleriand during the Wars of Beleriand produced several documented cross-species bonds that predate Legolas and Gimli by thousands of years. That said, Legolas and Gimli are unique in one specific sense — they're the only documented case of a Dwarf and Elf forming a bond of genuine personal affection rather than political alliance. Fan B, you were right but for the wrong reasons.
+> **WIP + Claude:** *[already querying the `allied_with` and `friendship` ontology relations across races]* Actually, Círdan the Shipwright maintained close friendships with multiple Maia across the First Age, and the relation between the Edain and the Elves of Beleriand during the Wars of Beleriand produced several documented cross-species bonds that predate Legolas and Gimli by thousands of years. That said, Legolas and Gimli are unique in one specific sense — they're the only documented case of a Dwarf and Elf forming a bond of genuine personal affection rather than political alliance. Fan B, you were right but for the wrong reasons.
 
 Both fans are now annoyed and delighted simultaneously. This is the correct outcome.
 
@@ -319,7 +319,7 @@ Both fans are now annoyed and delighted simultaneously. This is the correct outc
 
 This is where WIP + Claude becomes genuinely dangerous for an event organiser's schedule.
 
-Because WIP holds the complete structured universe — every character, every relationship, every event, every location, every date — Claude can generate trivia questions at any difficulty level, on demand, with verified answers and source citations. Not from training data. From the actual WIP documents.
+Because WIP holds the complete structured universe — every character, every relation, every event, every location, every date — Claude can generate trivia questions at any difficulty level, on demand, with verified answers and source citations. Not from training data. From the actual WIP documents.
 
 **Easy tier:**
 > *"What is the name of Bilbo Baggins' home in the Shire?"*
@@ -352,7 +352,7 @@ A host at a Tolkien convention could run this for hours. They would have to phys
 This is where WIP's architecture clicks into place for an entirely different creative use case — and it's almost embarrassingly well suited for it.
 
 A Dungeons & Dragons campaign is, structurally, exactly the fictional universe problem. You have:
-- A cast of player characters and NPCs with relationships, histories, and secrets
+- A cast of player characters and NPCs with relations, histories, and secrets
 - A world with places, factions, and power structures
 - A timeline of events that accumulates session by session
 - Lore that the GM knows and the players are discovering
@@ -383,7 +383,7 @@ The world-canonical namespace is the GM's world bible. Each campaign gets its ow
 
 > *"My players just asked whether the blacksmith in Millhaven has any connection to the Thieves' Guild. I didn't plan this. What does WIP know about the blacksmith?"*
 
-Claude queries the NPC document for the blacksmith, traverses their `member_of`, `allied_with`, and `knows` relationships, and surfaces everything the GM has previously recorded — including a note from three sessions ago that the blacksmith's brother owed a debt to a Guild fence.
+Claude queries the NPC document for the blacksmith, traverses their `member_of`, `allied_with`, and `knows` relations, and surfaces everything the GM has previously recorded — including a note from three sessions ago that the blacksmith's brother owed a debt to a Guild fence.
 
 The GM didn't remember that note. WIP did. The session just got a lot more interesting.
 
@@ -395,7 +395,7 @@ Claude queries PLACE documents, EVENT documents referencing that location, and L
 
 After each session, the GM (or a player, if they're that organised) adds documents:
 - New NPCs introduced
-- Relationships established or broken
+- Relations established or broken
 - Events that occurred
 - Secrets revealed to the players
 - Consequences pending
@@ -428,7 +428,7 @@ The players lose their minds. The GM looks like a genius who planned this all al
 
 The most exciting version of all of this is not a single fan or a single GM using WIP privately. It's a community building a shared WIP instance together.
 
-The dedication required to populate a complete WIP instance for the full Tolkien legendarium — every character from the Silmarillion, every relationship in the appendices, every event in Unfinished Tales — is exactly the kind of project that fan communities organise around. They would argue about the correct ontology for Maia versus Valar. They would debate which parentage claims deserve `confidence: confirmed` versus `confidence: disputed`. They would submit pull requests to the terminology definitions.
+The dedication required to populate a complete WIP instance for the full Tolkien legendarium — every character from the Silmarillion, every relation in the appendices, every event in Unfinished Tales — is exactly the kind of project that fan communities organise around. They would argue about the correct ontology for Maia versus Valar. They would debate which parentage claims deserve `confidence: confirmed` versus `confidence: disputed`. They would submit pull requests to the terminology definitions.
 
 And then they would all query it through Claude, at conventions and in Discord servers and at 2am during rewatches.
 
@@ -446,7 +446,7 @@ UNIVERSE
 WORK
   identity: [universe_id, title]
   fields: author, publication_year, timeline_period, canonical: bool
-  relationships: set_in (PLACE), part_of (UNIVERSE)
+  relations: set_in (PLACE), part_of (UNIVERSE)
 
 CHARACTER
   identity: [universe_id, canonical_name]
@@ -477,7 +477,7 @@ PARENTAGE_CLAIM
   identity: [universe_id, subject_id, claimed_parent_id, claim_type]
   fields: source, confidence, valid_from, valid_until, notes
 
-Ontology relationship types:
+Ontology relation types:
   parent_of, sibling_of, married_to, descended_from,
   mentor_of, sworn_to, betrayed, killed_by, killed,
   reincarnation_of, same_entity_as, alter_ego_of,
@@ -495,11 +495,11 @@ This question deserves a direct answer.
 
 **Versus a wiki (Fandom, Obsidian, Notion):**
 
-Wikis are unstructured. You cannot enforce that every character has an identity field, that every relationship is typed, or that disputed claims are stored as claims rather than facts. Queries require full-text search, not graph traversal. Cross-wiki integration is manual copy-paste. Versioning is at the page level, not the entity level.
+Wikis are unstructured. You cannot enforce that every character has an identity field, that every relation is typed, or that disputed claims are stored as claims rather than facts. Queries require full-text search, not graph traversal. Cross-wiki integration is manual copy-paste. Versioning is at the page level, not the entity level.
 
 **Versus a dedicated graph database (Neo4j):**
 
-A graph database handles the relationship traversal excellently but has no native concept of controlled vocabularies, document versioning, identity management across external sources, or the synonym mechanism. You would need to build all of that on top of it. WIP gives you the graph traversal through its ontology layer and everything else as part of the foundation.
+A graph database handles the relation traversal excellently but has no native concept of controlled vocabularies, document versioning, identity management across external sources, or the synonym mechanism. You would need to build all of that on top of it. WIP gives you the graph traversal through its ontology layer and everything else as part of the foundation.
 
 **Versus a spreadsheet:**
 
@@ -521,7 +521,7 @@ No comment necessary.
 
 WIP is not just a tool for cataloguing existing universes. For a writer building an original world from scratch, WIP enforces the world-building discipline that separates a coherent, internally consistent universe from a collection of good ideas that contradict each other by book three.
 
-The forced structure is the feature. You cannot add a character without thinking about their identity fields. You cannot establish a relationship without typing it. You cannot record a disputed fact without sourcing it. The world-building happens in WIP first, and the manuscript draws from it — rather than the world-building being reconstructed after the fact from a manuscript that has already accumulated contradictions.
+The forced structure is the feature. You cannot add a character without thinking about their identity fields. You cannot establish a relation without typing it. You cannot record a disputed fact without sourcing it. The world-building happens in WIP first, and the manuscript draws from it — rather than the world-building being reconstructed after the fact from a manuscript that has already accumulated contradictions.
 
 Combined with Claude as a conversational query interface via MCP, the writer has something that has never existed before: a continuity-aware creative assistant that knows their world as well as they do, can be asked any question about it, and answers from structured data rather than from the probabilistic approximations of a language model's training.
 
@@ -529,4 +529,4 @@ The world lives in WIP. Claude is the librarian.
 
 ---
 
-*This document emerged from a conversation exploring non-obvious use cases for World In a Pie's generic architecture. The fictional universe domain exercises the Registry synonym mechanism, ontology typed relationships, document versioning, cross-namespace queries, and MCP integration simultaneously — making it one of the most complete demonstrations of WIP's full capability stack, despite being the most playful.*
+*This document emerged from a conversation exploring non-obvious use cases for World In a Pie's generic architecture. The fictional universe domain exercises the Registry synonym mechanism, ontology typed relations, document versioning, cross-namespace queries, and MCP integration simultaneously — making it one of the most complete demonstrations of WIP's full capability stack, despite being the most playful.*

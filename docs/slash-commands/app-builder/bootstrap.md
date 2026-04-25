@@ -20,12 +20,12 @@ If any prerequisite fails, report it and stop.
 
 1. **Namespace must exist first** — create with `create_namespace` before any terminologies or templates
 2. **`create_terms` needs terminology UUID**, not value — use the UUID from the create response
-3. **`create_relationships` needs `TERMINOLOGY:TERM_VALUE` format** — bare term values fail
+3. **`create_relations` needs `TERMINOLOGY:TERM_VALUE` format** — bare term values fail
 4. **Cross-namespace terminology refs** (e.g., COUNTRY in `wip`) need UUID lookup, not value
-5. **System terminology extensions** (`_*_EXT.json`) must be processed before ontology relationships
+5. **System terminology extensions** (`_*_EXT.json`) must be processed before ontology relations
 
 ### Procedure
 
-If pre-flight passes and prerequisites are met, you MUST Read `docs/playbooks/bootstrap.md` before creating any entities. The playbook contains the seed file formats, the 7-step bootstrap procedure (namespace creation, system extensions, terminologies, ontology relationships, templates, seed data, summary), idempotency rules, and the full API gotchas list. Do not guess the file formats or step ordering from memory.
+If pre-flight passes and prerequisites are met, you MUST Read `docs/playbooks/bootstrap.md` before creating any entities. The playbook contains the seed file formats, the 7-step bootstrap procedure (namespace creation, system extensions, terminologies, ontology relations, templates, seed data, summary), idempotency rules, and the full API gotchas list. Do not guess the file formats or step ordering from memory.
 
 Then execute the playbook against the current `data-model/` directory.

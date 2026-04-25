@@ -52,7 +52,7 @@ A deployable application built on top of WIP, using WIP's APIs for document stor
 The action of marking an entity as [inactive](#inactive-status). In WIP, nothing is ever truly deleted—only deactivated. This preserves audit trails and enables reference resolution. Exception: files support hard-delete to reclaim MinIO storage.
 
 ### Def-Store
-The service managing [terminologies](#terminology), [terms](#term), and [ontology relationships](#relationship). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.
+The service managing [terminologies](#terminology), [terms](#term), and [ontology relations](#relation). Provides controlled vocabularies that [templates](#template) reference for term-type fields. Supports OBO Graph JSON import for standard ontologies. API: `http://localhost:8002/api/def-store/`.
 
 ### Dex
 The OIDC provider used in WIP for user authentication. Lightweight (~30MB RAM), works over HTTP, and supports static user configuration via YAML. Provides JWT tokens for authenticated users.
@@ -193,7 +193,7 @@ Lightweight message queue used by WIP. ~30MB RAM footprint with JetStream enable
 OpenID Connect. The authentication protocol used by [Dex](#dex). Provides secure user login with JWT tokens.
 
 ### Ontology
-A formal representation of knowledge as a set of concepts and typed [relationships](#relationship). In WIP, ontologies are represented using [terminologies](#terminology) (for concepts/terms) and [relationships](#relationship) (for typed edges like `is_a`, `part_of`). Standard ontologies can be imported from OBO Graph JSON format. Relationship types are validated against the `_ONTOLOGY_RELATIONSHIP_TYPES` system terminology.
+A formal representation of knowledge as a set of concepts and typed [relations](#relation). In WIP, ontologies are represented using [terminologies](#terminology) (for concepts/terms) and [relations](#relation) (for typed edges like `is_a`, `part_of`). Standard ontologies can be imported from OBO Graph JSON format. Relation types are validated against the `_ONTOLOGY_RELATIONSHIP_TYPES` system terminology.
 
 ---
 
@@ -233,7 +233,7 @@ Role-Based Access Control. Authorization based on [groups](#groups) from JWT tok
 ### Registry
 Service providing ID generation and namespace management. Maps [composite keys](#composite-key) to standardized IDs. Must be initialized before other services. API: `http://localhost:8001/api/registry/`.
 
-### Relationship
+### Relation
 A typed, directed edge between two [terms](#term), optionally across [terminologies](#terminology). Used for ontology structure (e.g., `is_a`, `part_of`, `regulates`). Stored in Def-Store and synced to PostgreSQL for reporting.
 
 ### Reporting Layer

@@ -34,7 +34,7 @@ This is the user's validation checkpoint. If you missed a template or loaded wro
 - `export_table_csv` — dump data for local processing when results are too large for context.
 - `search` — full-text search across all entity types.
 - `list_*`, `get_*` — read any entity.
-- `list_relationships`, `get_term_hierarchy` — ontology queries.
+- `list_relations`, `get_term_hierarchy` — ontology queries.
 
 **When to use which:**
 - Single entity or filtered list → `query_by_template`

@@ -19,7 +19,7 @@ Perform each of the following as concrete tool calls:
 
 - `Read` `docs/Vision.md` — the theses and design principles that drive every architecture decision. Every design principle in CLAUDE.md §3 traces back here. If any future work feels like it might drift toward a specific use case at the expense of WIP's generic engine, this document is the correction mechanism.
 - `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions will cause silent failures against these.
-- `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relationships).
+- `ReadMcpResourceTool server=wip uri=wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relations).
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache TTL, namespace/authorization rules.
 
 After each call, output one line confirming the source was loaded. Do not summarise the content at this step — the content is now in context where it belongs; let the subsequent work use it.

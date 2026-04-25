@@ -109,18 +109,18 @@ Apps had no user authentication — anyone on the network could use them. Phase 
 
 ### Mutable Terminologies (2026-03-29)
 
-`mutable: true` flag on terminologies for user-editable controlled vocabularies. Mutable terminologies allow real term deletion (with relationship cascade) while using the full terminology infrastructure — ontology relationships, reporting-sync, MCP tools, ontology browser.
+`mutable: true` flag on terminologies for user-editable controlled vocabularies. Mutable terminologies allow real term deletion (with relation cascade) while using the full terminology infrastructure — ontology relations, reporting-sync, MCP tools, ontology browser.
 
 **Why:** Apps that need user-defined picklists, tags, or classifications previously had to reinvent terminology semantics using documents. The ClinTrial app exposed this.
 
-**Scope:** `mutable` defaults to `false` — zero impact on existing terminologies. Term delete becomes hard-delete + relationship cascade for mutable terms.
+**Scope:** `mutable` defaults to `false` — zero impact on existing terminologies. Term delete becomes hard-delete + relation cascade for mutable terms.
 
 - Implemented: Def-Store, Reporting-Sync, WIP-Toolkit, @wip/client, Console UI
 - Design: `docs/design/mutable-terminologies.md`
 
 ### Hard Delete for All Entity Types (2026-03-30)
 
-When a namespace has `deletion_mode: "full"`, any entity type can be hard-deleted via `hard_delete: bool` on DeleteItem. Covers documents, templates, terminologies, terms, and relationships. Version-specific hard-delete supported for documents and templates. Registry entries cleaned up when last version is removed. Reporting-sync handles hard-delete events with `DELETE FROM` instead of `UPDATE status`.
+When a namespace has `deletion_mode: "full"`, any entity type can be hard-deleted via `hard_delete: bool` on DeleteItem. Covers documents, templates, terminologies, terms, and relations. Version-specific hard-delete supported for documents and templates. Registry entries cleaned up when last version is removed. Reporting-sync handles hard-delete events with `DELETE FROM` instead of `UPDATE status`.
 
 - All services, MCP tools, @wip/client, Console. 43 tests.
 - Discovered: 2026-03-30 during ClinTrial import testing
@@ -174,7 +174,7 @@ Coverage: tool listing, resource listing, readonly mode, API key accept/reject, 
 - Windows/WSL platform support — auto-detection, named volume overlays
 - Binary file storage (MinIO) — full CRUD, UI, reference tracking, orphan detection
 - Semantic types — 7 types (email, url, lat/lon, percentage, duration, geo_point)
-- Ontology support — OBO Graph JSON import, typed relationships, traversal
+- Ontology support — OBO Graph JSON import, typed relations, traversal
 - Template draft mode — draft status, cascading activation
 - MCP server — 70+ tools, 5 resources, stdio + SSE + HTTP streamable transport
 - @wip/client + @wip/react — TypeScript client and React hooks

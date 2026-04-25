@@ -13,8 +13,8 @@ Phase 1 must be complete. You must have:
    - What are the entities?
    - What makes each entity unique (identity fields)?
    - What fields have controlled/repeating values (terminology candidates)?
-   - **Are any vocabularies hierarchical?** (e.g., species taxonomy, disease classification, org chart, product categories, geographic containment) — these need ontology relationships (is_a, part_of, etc.) alongside the flat term list.
-   - Are there relationships between entities?
+   - **Are any vocabularies hierarchical?** (e.g., species taxonomy, disease classification, org chart, product categories, geographic containment) — these need ontology relations (is_a, part_of, etc.) alongside the flat term list.
+   - Are there relations between entities?
    - Do external systems have their own IDs (synonym candidates)?
 3. If the user provides sample data (CSV, JSON, spreadsheet), analyze it:
    - Identify columns and data types
@@ -32,7 +32,7 @@ Phase 1 must be complete. You must have:
    - Value (unique code), label, description
    - Initial terms with aliases
    - Whether it already exists in WIP (reuse) or needs to be created (new)
-   - **Ontology relationships** (if hierarchical): which terms are parents/children, what relationship type (is_a, part_of, has_part, etc.). Show the hierarchy tree.
+   - **Ontology relations** (if hierarchical): which terms are parents/children, what relation type (is_a, part_of, has_part, etc.). Show the hierarchy tree.
 
    For each template:
    - Value (unique code), label, description

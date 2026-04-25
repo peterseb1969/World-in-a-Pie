@@ -43,7 +43,7 @@ This is the foundation of the Home Management constellation — a structured inv
 
 - For smart devices: firmware version, connectivity protocol (WiFi, Zigbee, Z-Wave, Bluetooth), and integration status
 
-- The registry supports hierarchical relationships: a kitchen contains an oven, which contains a light bulb; a network rack contains a switch, which has 24 ports
+- The registry supports hierarchical relations: a kitchen contains an oven, which contains a light bulb; a network rack contains a switch, which has 24 ports
 
 ### Data model
 

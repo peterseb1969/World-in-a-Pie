@@ -18,9 +18,9 @@ For each terminology in the approved data model:
 - Create the terminology: `create_terminology(value, label, description)`
 - Create all terms: `create_terms(terminology_id, [{value, label, aliases, description}, ...])`
 - Verify: `list_terms(terminology_id)` — confirm all terms are present
-- **If the data model specifies ontology relationships** (hierarchical terminologies):
-  - Create relationships: `create_relationships([{source_term_id, target_term_id, relationship_type}, ...])`
-  - Relationship types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
+- **If the data model specifies ontology relations** (hierarchical terminologies):
+  - Create relations: `create_relations([{source_term_id, target_term_id, relation_type}, ...])`
+  - Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
   - Verify: `get_term_hierarchy(term_id, direction="children")` — confirm the hierarchy is correct
   - For bulk ontology loading, use `import_terminology` with OBO Graph JSON format
 - Log: record the terminology ID and value

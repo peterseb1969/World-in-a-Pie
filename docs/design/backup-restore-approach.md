@@ -65,12 +65,12 @@ re-solved:
 
 - Manifest schema + versioning
 - Archive layout and streaming read/write
-- Dependency-aware ordering (terminologies → terms → relationships →
+- Dependency-aware ordering (terminologies → terms → relations →
   templates → template activation → files → documents → synonyms)
 - Fresh mode: Registry ID remapping, synonym registration, template
   activation ordering
 - Restore mode: skip-if-exists semantics, conflict resolution
-- Relationship re-creation after target terms exist
+- Relation re-creation after target terms exist
 - File blob re-upload against a fresh object store
 - Dry-run support
 - `continue_on_error` semantics
@@ -98,7 +98,7 @@ async clients; stream archive contents via chunked `StreamingResponse`.
 ### What it costs
 - **Re-implement the list above** — manifest, archive layout,
   dependency ordering, fresh vs restore modes, ID remapping,
-  relationships, template activation, file re-upload, dry-run,
+  relations, template activation, file re-upload, dry-run,
   per-entity accounting. Estimate: ~1500–2000 LOC of new code plus an
   equivalent volume of tests. Most of it is not hard individually;
   the cost is discovering the edge cases `restore.py` already

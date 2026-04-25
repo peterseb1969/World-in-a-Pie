@@ -423,9 +423,9 @@ Constellation
 
 4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But if an attacker compromises an API key, they can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (see `docs/security/key-rotation.md`).
 
-## Relationship to Existing Designs
+## Relation to Existing Designs
 
-| Document | Relationship |
+| Document | Relation |
 |----------|-------------|
 | `app-gateway.md` | Phase 1 here is independent of gateway routing. Gateway (Phases 2-3 there) is needed for multi-app sub-path routing, not for auth. |
 | `namespace-authorization.md` | Phase 2 here = that entire document. Already designed in detail. |

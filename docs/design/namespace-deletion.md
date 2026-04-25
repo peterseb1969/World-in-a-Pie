@@ -78,7 +78,7 @@ Returns a full impact report without making any changes:
     "templates": 5,
     "terminologies": 2,
     "terms": 87,
-    "term_relationships": 12,
+    "term_relations": 12,
     "term_audit_log": 340,
     "registry_entries": 1527,
     "id_counters": 5,
@@ -181,7 +181,7 @@ The journal is a MongoDB document in a dedicated `namespace_deletions` collectio
     {
       "order": 6,
       "store": "mongodb",
-      "collection": "term_relationships",
+      "collection": "term_relations",
       "filter": {"namespace": "dev_herbs"},
       "status": "pending"
     },
@@ -244,7 +244,7 @@ The journal is a MongoDB document in a dedicated `namespace_deletions` collectio
 2. **Files (metadata)** — MongoDB `files` collection, now safe to remove.
 3. **Documents** — largest collection, biggest space reclaim.
 4. **Templates** — must come after documents (no functional dependency, but logical).
-5. **Terms, term_relationships, term_audit_log** — must come before terminologies.
+5. **Terms, term_relations, term_audit_log** — must come before terminologies.
 6. **Terminologies** — after terms are gone.
 7. **PostgreSQL rows** — `DELETE FROM doc_* WHERE namespace = 'dev_herbs'`. Tables are shared across namespaces (rows have a `namespace` column), so we delete rows, not drop tables. Reporting-sync also has `_wip_terminologies` and `_wip_terms` tables with namespace-scoped rows.
 8. **Registry entries, ID counters** — frees identity hashes so the same data can be re-imported elsewhere.
@@ -310,7 +310,7 @@ Completed journals are never deleted. They serve as the audit trail:
     "templates": 5,
     "terminologies": 2,
     "terms": 87,
-    "term_relationships": 12,
+    "term_relations": 12,
     "term_audit_log": 340,
     "registry_entries": 1527,
     "id_counters": 5,
@@ -345,7 +345,7 @@ All MongoDB collections that contain namespace-scoped data, and therefore need a
 | `templates` | Template-Store | `namespace` | |
 | `terminologies` | Def-Store | `namespace` | |
 | `terms` | Def-Store | `namespace` | |
-| `term_relationships` | Def-Store | `namespace` | |
+| `term_relations` | Def-Store | `namespace` | |
 | `term_audit_log` | Def-Store | `namespace` | |
 | `registry_entries` | Registry | `namespace` | |
 | `id_counters` | Registry | `namespace` | |
@@ -359,7 +359,7 @@ All MongoDB collections that contain namespace-scoped data, and therefore need a
 | `doc_*` | Document data per template |
 | `_wip_terminologies` | Terminology sync |
 | `_wip_terms` | Term sync |
-| `_wip_term_relationships` | Relationship sync |
+| `_wip_term_relations` | Relation sync |
 | `_wip_sync_status` | Sync status rows for this namespace |
 
 **MinIO:**

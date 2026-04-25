@@ -240,7 +240,7 @@ OIDC session mode is required before any app serves sensitive data. API key inje
 - `app-manifest.json` — declarative registration
 - `VITE_BASE_PATH` still needed for sub-path deployments, but handled by the app skeleton template
 
-## Relationship to Existing Infrastructure
+## Relation to Existing Infrastructure
 
 | Component | Current Role | Change |
 |-----------|-------------|--------|

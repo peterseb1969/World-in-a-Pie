@@ -51,7 +51,7 @@ Critically, WIP does not prescribe the constellation model. WIP is a generic pla
 > **The claim**
 > A well-structured platform like WIP, combined with a well-defined development process, can make agentic AI coding viable for real applications — because the platform constrains the AI’s degrees of freedom to exactly the decisions where human judgment matters most.
 
-AI-assisted code generation is advancing rapidly. Large language models can write functions, build APIs, generate UIs, and wire services together. But building a real application is more than writing code. It requires hundreds of design decisions about data storage, validation, relationships, naming, versioning, error handling, and migration. An AI making all of these decisions autonomously, from scratch, will produce something that works initially and decays rapidly — because there is no structural discipline forcing consistency.
+AI-assisted code generation is advancing rapidly. Large language models can write functions, build APIs, generate UIs, and wire services together. But building a real application is more than writing code. It requires hundreds of design decisions about data storage, validation, relations, naming, versioning, error handling, and migration. An AI making all of these decisions autonomously, from scratch, will produce something that works initially and decays rapidly — because there is no structural discipline forcing consistency.
 
 WIP changes this equation fundamentally. It is not just a database. It is an opinionated infrastructure layer that enforces a set of practices:
 

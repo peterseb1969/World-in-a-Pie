@@ -48,7 +48,7 @@ WIP has two layers controlling cross-namespace access:
 | **Isolation mode** | What can reference what | `isolation_mode` + `allowed_external_refs` on namespace |
 | **Authorization** | Who can read/write | Grants on namespace (user, group, API key) |
 
-These are independent. Isolation mode governs data relationships. Authorization governs user access.
+These are independent. Isolation mode governs data relations. Authorization governs user access.
 
 ### Isolation Modes
 

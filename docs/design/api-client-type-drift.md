@@ -138,6 +138,6 @@ libs/wip-client/src/types/
   template.ts    ── Template, FieldDefinition, activation, cascade
   document.ts    ── Document, validation, table view, query
   file.ts        ── FileEntity, upload, integrity
-  ontology.ts    ── Relationship, traversal
+  ontology.ts    ── Relation, traversal
   reporting.ts   ── Sync, metrics, alerts, batch sync, search, integrity, CSV export
 ```
