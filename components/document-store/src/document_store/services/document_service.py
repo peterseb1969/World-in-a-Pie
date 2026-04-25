@@ -469,7 +469,7 @@ class DocumentService:
         # Publish document created event
         await publish_document_event(
             EventType.DOCUMENT_CREATED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -703,7 +703,7 @@ class DocumentService:
         # Publish document updated event
         await publish_document_event(
             EventType.DOCUMENT_UPDATED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -768,7 +768,7 @@ class DocumentService:
         # version stays at its prior value.
         await publish_document_event(
             EventType.DOCUMENT_UPDATED,
-            self._document_to_event_payload(existing),
+            await self._document_to_event_payload(existing),
             changed_by=actor,
         )
 
@@ -813,9 +813,29 @@ class DocumentService:
         messages = [e.get("message", "Validation error") for e in errors]
         return "; ".join(messages)
 
-    def _document_to_event_payload(self, document: Document) -> dict[str, Any]:
-        """Convert Document to event payload for NATS publishing."""
-        return {
+    async def _document_to_event_payload(self, document: Document) -> dict[str, Any]:
+        """Convert Document to event payload for NATS publishing.
+
+        For relationship-template documents the payload is enriched
+        (Phase 6, see docs/design/document-relationships.md) so external
+        subscribers (Snowflake, BigQuery, …) can rebuild the edge
+        without an extra round-trip:
+
+          - top-level `template_usage` mirrors the template's usage flag
+          - `data.source_ref_resolved` / `data.target_ref_resolved` carry
+            the canonical document_id of each endpoint
+          - `data.source_template_value` / `data.target_template_value`
+            carry the endpoint template's value code (e.g. "EXPERIMENT")
+
+        Resolved values come from the document's own `references` array
+        (populated by validation_service at write time) — no extra DB
+        hit is needed beyond a single template-store fetch (cached) to
+        learn the template's `usage` flag.
+        """
+        # Build the base payload first; copy data so we don't mutate the
+        # underlying Document.
+        base_data = dict(document.data) if document.data else {}
+        payload: dict[str, Any] = {
             "document_id": document.document_id,
             "namespace": document.namespace,
             "template_id": document.template_id,
@@ -823,16 +843,50 @@ class DocumentService:
             "template_value": document.template_value,
             "identity_hash": document.identity_hash,
             "version": document.version,
-            "data": document.data,
+            "data": base_data,
             "term_references": document.term_references,
             "references": document.references,
             "file_references": document.file_references,
-            "status": document.status.value if hasattr(document.status, 'value') else document.status,
+            "status": document.status.value if hasattr(document.status, "value") else document.status,
             "created_at": document.created_at.isoformat() if document.created_at else None,
             "created_by": document.created_by,
             "updated_at": document.updated_at.isoformat() if document.updated_at else None,
             "updated_by": document.updated_by,
         }
+
+        # Phase 6 — enrich for relationship templates.
+        try:
+            template = await get_template_store_client().get_template(
+                template_id=document.template_id,
+                version=document.template_version,
+            )
+        except Exception:
+            template = None
+
+        usage = (template or {}).get("usage", "entity")
+        if usage != "relationship":
+            return payload
+
+        payload["template_usage"] = usage
+        # Pull resolved endpoint info from the references array. Each
+        # entry has shape:
+        #   {"field_path", "reference_type", "lookup_value",
+        #    "version_strategy", "resolved": {document_id, namespace,
+        #    template_value, status, ...}}
+        refs_by_field = {
+            r.get("field_path"): (r.get("resolved") or {})
+            for r in (document.references or [])
+            if r.get("reference_type") == "document"
+        }
+        for field_name in ("source_ref", "target_ref"):
+            resolved = refs_by_field.get(field_name) or {}
+            doc_id = resolved.get("document_id")
+            tpl_value = resolved.get("template_value")
+            if doc_id is not None:
+                base_data[f"{field_name}_resolved"] = doc_id
+            if tpl_value is not None:
+                base_data[f"{field_name.replace('_ref', '_template_value')}"] = tpl_value
+        return payload
 
     async def get_document(
         self,
@@ -1333,7 +1387,7 @@ class DocumentService:
                 if not target:
                     return False
 
-                event_payload = self._document_to_event_payload(target)
+                event_payload = await self._document_to_event_payload(target)
                 event_payload["hard_delete"] = True
                 event_payload["version"] = version
 
@@ -1354,7 +1408,7 @@ class DocumentService:
                 # All versions hard-delete
                 all_versions = await Document.find({"document_id": document_id}).to_list()
 
-                event_payload = self._document_to_event_payload(any_doc)
+                event_payload = await self._document_to_event_payload(any_doc)
                 event_payload["hard_delete"] = True
 
                 # Collect all file references across all versions
@@ -1396,7 +1450,7 @@ class DocumentService:
         # Publish document deleted event
         await publish_document_event(
             EventType.DOCUMENT_DELETED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -1454,7 +1508,7 @@ class DocumentService:
         # Publish document archived event
         await publish_document_event(
             EventType.DOCUMENT_ARCHIVED,
-            self._document_to_event_payload(document),
+            await self._document_to_event_payload(document),
             changed_by=actor
         )
 
@@ -1892,7 +1946,7 @@ class DocumentService:
                 event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
                 pending_events.append((
                     event_type,
-                    self._document_to_event_payload(document),
+                    await self._document_to_event_payload(document),
                 ))
 
                 # Update file reference counts
@@ -2315,7 +2369,7 @@ class DocumentService:
 
                 await publish_document_event(
                     EventType.DOCUMENT_UPDATED,
-                    self._document_to_event_payload(current),
+                    await self._document_to_event_payload(current),
                     changed_by=actor,
                 )
                 await self._update_file_reference_counts(previous_file_refs, delta=-1)
@@ -2377,7 +2431,7 @@ class DocumentService:
             #     no changes (a PATCH is just a new version, semantically).
             await publish_document_event(
                 EventType.DOCUMENT_UPDATED,
-                self._document_to_event_payload(new_doc),
+                await self._document_to_event_payload(new_doc),
                 changed_by=actor,
             )
 
