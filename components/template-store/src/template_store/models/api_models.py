@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .field import FieldDefinition
 from .rule import ValidationRule
-from .template import ReportingConfig, TemplateMetadata
+from .template import ReportingConfig, TemplateMetadata, TemplateUsage
 
 
 class StrictModel(BaseModel):
@@ -57,6 +57,22 @@ class CreateTemplateRequest(StrictModel):
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key"
+    )
+    usage: TemplateUsage = Field(
+        default=TemplateUsage.ENTITY,
+        description="Usage class: entity (default), reference, or relationship. Immutable after creation."
+    )
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (required when usage=relationship; ignored otherwise)"
+    )
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (required when usage=relationship; ignored otherwise)"
+    )
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
     )
     fields: list[FieldDefinition] = Field(
         default_factory=list,
@@ -149,6 +165,10 @@ class TemplateResponse(BaseModel):
     extends: str | None = None
     extends_version: int | None = None
     identity_fields: list[str] = []
+    usage: TemplateUsage = TemplateUsage.ENTITY
+    source_templates: list[str] = []
+    target_templates: list[str] = []
+    versioned: bool = True
     fields: list[FieldDefinition] = []
     rules: list[ValidationRule] = []
     metadata: TemplateMetadata

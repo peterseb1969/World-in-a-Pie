@@ -23,7 +23,8 @@ from ..models.api_models import (
     ValidationError,
     ValidationWarning,
 )
-from ..models.template import Template, TemplateMetadata
+from ..models.field import ReferenceType
+from ..models.template import Template, TemplateMetadata, TemplateUsage
 from .def_store_client import DefStoreError, get_def_store_client
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
@@ -35,6 +36,74 @@ logger = logging.getLogger(__name__)
 
 class TemplateService:
     """Service for managing templates."""
+
+    # =========================================================================
+    # RELATIONSHIP-TEMPLATE STRUCTURAL VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    def _validate_relationship_template_shape(request: CreateTemplateRequest) -> None:
+        """Enforce structural constraints on relationship templates.
+
+        A relationship template must declare:
+          - non-empty source_templates and target_templates (at the
+            template level)
+          - a source_ref and target_ref reference field with
+            reference_type=document
+          - the source_ref / target_ref field-level target_templates
+            must equal the template-level lists (same set, order
+            insensitive)
+
+        For non-relationship templates (entity, reference), the
+        template-level source_templates / target_templates must be
+        empty — they only mean something when usage=relationship.
+
+        Raises ValueError on violation.
+        """
+        usage = request.usage if request.usage is not None else TemplateUsage.ENTITY
+
+        if usage != TemplateUsage.RELATIONSHIP:
+            if request.source_templates or request.target_templates:
+                raise ValueError(
+                    "source_templates and target_templates may only be set "
+                    f"when usage='relationship' (got usage='{usage.value}')"
+                )
+            return
+
+        # usage == relationship from here on.
+        if not request.source_templates:
+            raise ValueError(
+                "Relationship templates require a non-empty source_templates list"
+            )
+        if not request.target_templates:
+            raise ValueError(
+                "Relationship templates require a non-empty target_templates list"
+            )
+
+        fields_by_name = {f.name: f for f in request.fields}
+
+        for endpoint, expected in (
+            ("source_ref", request.source_templates),
+            ("target_ref", request.target_templates),
+        ):
+            field = fields_by_name.get(endpoint)
+            if field is None:
+                raise ValueError(
+                    f"Relationship templates require a '{endpoint}' reference field "
+                    f"(missing in fields list)"
+                )
+            if field.reference_type != ReferenceType.DOCUMENT:
+                raise ValueError(
+                    f"Relationship template field '{endpoint}' must have "
+                    f"reference_type='document' (got '{field.reference_type}')"
+                )
+            field_targets = field.target_templates or []
+            if set(field_targets) != set(expected):
+                raise ValueError(
+                    f"Relationship template field '{endpoint}.target_templates' "
+                    f"must match template-level {endpoint.replace('_ref', '_templates')}: "
+                    f"expected {sorted(expected)}, got {sorted(field_targets)}"
+                )
 
     # =========================================================================
     # TEMPLATE CRUD OPERATIONS
@@ -67,6 +136,10 @@ class TemplateService:
         is_draft = request.status == "draft"
         if request.status is not None and request.status not in ("active", "draft"):
             raise ValueError(f"Invalid status '{request.status}': must be 'active' or 'draft'")
+
+        # Structural validation for relationship templates (purely
+        # declarative — runs even in draft mode, no DB calls).
+        TemplateService._validate_relationship_template_shape(request)
 
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
@@ -144,6 +217,10 @@ class TemplateService:
             extends=request.extends,
             extends_version=request.extends_version,
             identity_fields=request.identity_fields,
+            usage=request.usage,
+            source_templates=request.source_templates,
+            target_templates=request.target_templates,
+            versioned=request.versioned,
             fields=request.fields,
             rules=request.rules,
             metadata=request.metadata or TemplateMetadata(),
@@ -656,7 +733,9 @@ class TemplateService:
                 raise ValueError(str(e)) from e
 
         # Stable ID: reuse original template_id (no Registry call for updates)
-        # Create new template document for this version
+        # Create new template document for this version. usage,
+        # versioned, source_templates, and target_templates are
+        # immutable after creation — preserve from original.
         new_template = Template(
             namespace=original.namespace,
             template_id=original.template_id,
@@ -667,6 +746,10 @@ class TemplateService:
             extends=extends_value if extends_value else None,
             extends_version=request.extends_version if request.extends_version is not None else original.extends_version,
             identity_fields=request.identity_fields if request.identity_fields is not None else original.identity_fields,
+            usage=original.usage,
+            source_templates=original.source_templates,
+            target_templates=original.target_templates,
+            versioned=original.versioned,
             fields=new_fields,
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
@@ -1003,6 +1086,18 @@ class TemplateService:
             req_status = template_req.status or "active"
             is_draft = req_status == "draft"
 
+            # Structural validation for relationship templates
+            try:
+                TemplateService._validate_relationship_template_shape(template_req)
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
+
             # Normalize field references to canonical IDs — skip for drafts
             if not is_draft:
                 try:
@@ -1028,6 +1123,10 @@ class TemplateService:
                 extends=template_req.extends,
                 extends_version=template_req.extends_version,
                 identity_fields=template_req.identity_fields,
+                usage=template_req.usage,
+                source_templates=template_req.source_templates,
+                target_templates=template_req.target_templates,
+                versioned=template_req.versioned,
                 fields=template_req.fields,
                 rules=template_req.rules,
                 metadata=template_req.metadata or TemplateMetadata(),

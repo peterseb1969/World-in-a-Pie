@@ -1,6 +1,7 @@
 """Template model for the Template Store service."""
 
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 from beanie import Document
@@ -9,6 +10,22 @@ from pymongo import IndexModel
 
 from .field import FieldDefinition
 from .rule import ValidationRule
+
+
+class TemplateUsage(str, Enum):
+    """How a template's documents are intended to be used.
+
+    - entity (default): full document lifecycle, the v1.x behaviour.
+    - reference: lightweight controlled-vocabulary documents (LOV).
+      Reserved for a future phase; currently behaves like entity.
+    - relationship: typed, property-carrying edge between two
+      documents. Requires source_templates / target_templates to be set
+      and a source_ref / target_ref reference field on the template.
+      See docs/design/document-relationships.md.
+    """
+    ENTITY = "entity"
+    REFERENCE = "reference"
+    RELATIONSHIP = "relationship"
 
 
 class ReportingConfig(BaseModel):
@@ -125,6 +142,39 @@ class Template(Document):
     identity_fields: list[str] = Field(
         default_factory=list,
         description="Fields that form the composite identity key for documents"
+    )
+
+    # Usage annotation — controls validation, query APIs, and reporting
+    # shape. Default 'entity' = v1.x behaviour. 'relationship' enables
+    # the document-relationship feature (requires source_templates,
+    # target_templates, and source_ref/target_ref reference fields).
+    # Immutable after creation.
+    usage: TemplateUsage = Field(
+        default=TemplateUsage.ENTITY,
+        description="Usage class: entity (default), reference, or relationship"
+    )
+
+    # Relationship templates only — list of template values allowed as
+    # the source endpoint of an edge. Empty for non-relationship templates.
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (relationship only)"
+    )
+
+    # Relationship templates only — list of template values allowed as
+    # the target endpoint of an edge.
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (relationship only)"
+    )
+
+    # Whether updates create new versions (true) or overwrite in place
+    # (false). Default true matches v1.x behaviour. Immutable after
+    # creation — flipping mid-life would silently reshape an existing
+    # template's lifecycle.
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
     )
 
     # Schema definition

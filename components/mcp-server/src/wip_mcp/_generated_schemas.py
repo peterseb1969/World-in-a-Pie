@@ -339,6 +339,89 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                             'composite '
                                                                                             'identity '
                                                                                             'key'},
+                                                         'usage': {'type': 'string',
+                                                                   'enum': ['entity',
+                                                                            'reference',
+                                                                            'relationship'],
+                                                                   'description': 'How a '
+                                                                                  "template's "
+                                                                                  'documents are '
+                                                                                  'intended to be '
+                                                                                  'used.\n'
+                                                                                  '\n'
+                                                                                  '- entity '
+                                                                                  '(default): full '
+                                                                                  'document '
+                                                                                  'lifecycle, the '
+                                                                                  'v1.x '
+                                                                                  'behaviour.\n'
+                                                                                  '- reference: '
+                                                                                  'lightweight '
+                                                                                  'controlled-vocabulary '
+                                                                                  'documents '
+                                                                                  '(LOV).\n'
+                                                                                  '  Reserved for '
+                                                                                  'a future phase; '
+                                                                                  'currently '
+                                                                                  'behaves like '
+                                                                                  'entity.\n'
+                                                                                  '- relationship: '
+                                                                                  'typed, '
+                                                                                  'property-carrying '
+                                                                                  'edge between '
+                                                                                  'two\n'
+                                                                                  '  documents. '
+                                                                                  'Requires '
+                                                                                  'source_templates '
+                                                                                  '/ '
+                                                                                  'target_templates '
+                                                                                  'to be set\n'
+                                                                                  '  and a '
+                                                                                  'source_ref / '
+                                                                                  'target_ref '
+                                                                                  'reference field '
+                                                                                  'on the '
+                                                                                  'template.\n'
+                                                                                  '  See '
+                                                                                  'docs/design/document-relationships.md.'},
+                                                         'source_templates': {'items': {'type': 'string'},
+                                                                              'type': 'array',
+                                                                              'description': 'Template '
+                                                                                             'values '
+                                                                                             'allowed '
+                                                                                             'as '
+                                                                                             'edge '
+                                                                                             'source '
+                                                                                             '(required '
+                                                                                             'when '
+                                                                                             'usage=relationship; '
+                                                                                             'ignored '
+                                                                                             'otherwise)'},
+                                                         'target_templates': {'items': {'type': 'string'},
+                                                                              'type': 'array',
+                                                                              'description': 'Template '
+                                                                                             'values '
+                                                                                             'allowed '
+                                                                                             'as '
+                                                                                             'edge '
+                                                                                             'target '
+                                                                                             '(required '
+                                                                                             'when '
+                                                                                             'usage=relationship; '
+                                                                                             'ignored '
+                                                                                             'otherwise)'},
+                                                         'versioned': {'type': 'boolean',
+                                                                       'description': 'True = '
+                                                                                      'updates '
+                                                                                      'create new '
+                                                                                      'versions; '
+                                                                                      'False = '
+                                                                                      'overwrite '
+                                                                                      'in place. '
+                                                                                      'Immutable '
+                                                                                      'after '
+                                                                                      'creation.',
+                                                                       'default': True},
                                                          'fields': {'items': {'properties': {'name': {'type': 'string',
                                                                                                       'description': 'Field '
                                                                                                                      'name '
@@ -1307,6 +1390,18 @@ namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
+usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
+
+- entity (default): full document lifecycle, the v1.x behaviour.
+- reference: lightweight controlled-vocabulary documents (LOV).
+  Reserved for a future phase; currently behaves like entity.
+- relationship: typed, property-carrying edge between two
+  documents. Requires source_templates / target_templates to be set
+  and a source_ref / target_ref reference field on the template.
+  See docs/design/document-relationships.md.
+source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
+target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
     name (string, REQUIRED): Field name (used in data)
@@ -1406,6 +1501,18 @@ namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
+usage (enum): One of: entity, reference, relationship. How a template's documents are intended to be used.
+
+- entity (default): full document lifecycle, the v1.x behaviour.
+- reference: lightweight controlled-vocabulary documents (LOV).
+  Reserved for a future phase; currently behaves like entity.
+- relationship: typed, property-carrying edge between two
+  documents. Requires source_templates / target_templates to be set
+  and a source_ref / target_ref reference field on the template.
+  See docs/design/document-relationships.md.
+source_templates (array of string): Template values allowed as edge source (required when usage=relationship; ignored otherwise)
+target_templates (array of string): Template values allowed as edge target (required when usage=relationship; ignored otherwise)
+versioned (boolean, default: true): True = updates create new versions; False = overwrite in place. Immutable after creation.
 fields (array of object): Field definitions
   Each item:
     name (string, REQUIRED): Field name (used in data)
