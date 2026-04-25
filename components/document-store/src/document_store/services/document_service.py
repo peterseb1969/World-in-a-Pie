@@ -135,6 +135,115 @@ class DocumentService:
 
     def __init__(self):
         self.validation_service = ValidationService()
+        # Tracks which (namespace, template_id) pairs have already had
+        # relationship-template Mongo indexes ensured this process — saves
+        # an idempotent ensure_index call on every subsequent write.
+        # Cleared on process restart; ensure_index is itself idempotent.
+        self._relationship_indexes_ensured: set[tuple[str, str]] = set()
+
+    # =========================================================================
+    # PHASE 2 — RELATIONSHIP-TEMPLATE WRITE-TIME VALIDATION
+    # =========================================================================
+
+    async def _validate_relationship_constraints(
+        self,
+        template: dict[str, Any],
+        validation_result: Any,
+        namespace: str,
+    ) -> str | None:
+        """Enforce relationship-document constraints beyond reference resolution.
+
+        Phase 2 layer on top of the standard reference validation (which
+        already verifies source_ref / target_ref resolve and point at an
+        allowed template family). For relationship templates we also
+        require:
+
+          - the referenced source/target documents are in the SAME
+            namespace as the relationship document (cross-namespace
+            relationships rejected — see design doc, deferred to v2+);
+          - the referenced documents are NOT archived (active or
+            inactive is OK; archived means hard-removed semantically).
+
+        Returns None on success, or an error message string on failure.
+        Pre-condition: validation_result.references already contains the
+        resolved source_ref / target_ref entries (validation_service
+        runs before this).
+        """
+        if template.get("usage") != "relationship":
+            return None
+
+        refs_by_field = {
+            r.get("field_path"): r for r in validation_result.references
+            if r.get("reference_type") == "document"
+        }
+
+        for field in ("source_ref", "target_ref"):
+            ref = refs_by_field.get(field)
+            if ref is None:
+                # Should have been caught by template-store at template
+                # create time, but defend anyway.
+                return f"Relationship template requires field '{field}' (missing in resolved references)"
+            resolved = ref.get("resolved") or {}
+            ref_namespace = resolved.get("namespace")
+            ref_status = resolved.get("status")
+
+            if ref_namespace and ref_namespace != namespace:
+                # Distinct error code per design doc.
+                return (
+                    f"cross_namespace_relationship: '{field}' points to a document in "
+                    f"namespace '{ref_namespace}' but the relationship document is in "
+                    f"namespace '{namespace}'. Cross-namespace relationships are not "
+                    f"supported in v2."
+                )
+
+            if ref_status == "archived":
+                return (
+                    f"archived_relationship_endpoint: '{field}' points to an archived "
+                    f"document ({resolved.get('document_id')}). Endpoints of a "
+                    f"relationship must be active or inactive, not archived."
+                )
+
+        return None
+
+    async def _ensure_relationship_indexes(
+        self,
+        template_id: str,
+        namespace: str,
+    ) -> None:
+        """Idempotently create Mongo indexes on data.source_ref / data.target_ref
+        for a relationship template. Lazy: runs on first relationship-document
+        write per (namespace, template_id), then cached in-process.
+
+        These indexes power the Phase-4 query APIs (/documents/{id}/relationships,
+        /traverse). Adding them now keeps that phase's commit small.
+        """
+        cache_key = (namespace, template_id)
+        if cache_key in self._relationship_indexes_ensured:
+            return
+
+        try:
+            collection = Document.get_motor_collection()
+            await collection.create_index(
+                [("template_id", 1), ("data.source_ref", 1)],
+                name="rel_template_source_ref_idx",
+                background=True,
+            )
+            await collection.create_index(
+                [("template_id", 1), ("data.target_ref", 1)],
+                name="rel_template_target_ref_idx",
+                background=True,
+            )
+            self._relationship_indexes_ensured.add(cache_key)
+            logger.info(
+                "Ensured relationship indexes for template %s in namespace %s",
+                template_id, namespace,
+            )
+        except Exception as e:
+            # log + continue; missing index slows queries but writes still work
+            logger.warning(
+                "Failed to ensure relationship indexes for template %s: %s",
+                template_id, e,
+            )
 
     async def create_document(
         self,
@@ -185,6 +294,28 @@ class DocumentService:
             )
         except ReferenceValidationError as e:
             return None, f"Cross-namespace reference violation: {e.violations}"
+
+        # Phase-2 relationship-template constraints. The standard
+        # validation_service already verified source_ref / target_ref
+        # resolve and point at allowed templates; here we enforce the
+        # extra rules that only apply when usage=relationship
+        # (same namespace, not archived).
+        try:
+            template = await get_template_store_client().get_template(
+                template_id=request.template_id,
+                version=request.template_version,
+            )
+        except Exception:
+            # template fetch failures fall back to skipping the extra check;
+            # standard validation_service already ran
+            template = None
+        if template and template.get("usage") == "relationship":
+            rel_error = await self._validate_relationship_constraints(
+                template, validation_result, namespace,
+            )
+            if rel_error:
+                return None, rel_error
+            await self._ensure_relationship_indexes(request.template_id, namespace)
 
         # Determine if template has identity fields
         has_identity_fields = bool(validation_result.identity_fields)

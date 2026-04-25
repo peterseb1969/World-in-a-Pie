@@ -182,6 +182,60 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # --- Phase-2 relationship-template fixtures ---
+    {
+        "legacy_key": "TPL-EXPERIMENT",
+        "value": "EXPERIMENT",
+        "label": "Experiment",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["experiment_id"],
+        "fields": [
+            {"name": "experiment_id", "label": "Experiment ID", "type": "string", "mandatory": True},
+            {"name": "name", "label": "Name", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-MOLECULE",
+        "value": "MOLECULE",
+        "label": "Molecule",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["molecule_id"],
+        "fields": [
+            {"name": "molecule_id", "label": "Molecule ID", "type": "string", "mandatory": True},
+            {"name": "name", "label": "Name", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-EXPERIMENT-INPUT",
+        "value": "EXPERIMENT_INPUT",
+        "label": "Experiment Input",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["EXPERIMENT"],
+        "target_templates": ["MOLECULE"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["EXPERIMENT"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["MOLECULE"],
+                "mandatory": True,
+            },
+            {"name": "role", "label": "Role", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.
@@ -269,6 +323,12 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
             "identity_fields": tdef["identity_fields"],
             "fields": tdef["fields"],
             "rules": tdef["rules"],
+            # Phase-1 fields — pass through with sensible defaults so legacy
+            # template defs (which omit them) still produce valid mock data.
+            "usage": tdef.get("usage", "entity"),
+            "source_templates": tdef.get("source_templates", []),
+            "target_templates": tdef.get("target_templates", []),
+            "versioned": tdef.get("versioned", True),
         }
         # Key by canonical UUID7 (for lookups after resolution)
         templates[real_id] = template_data

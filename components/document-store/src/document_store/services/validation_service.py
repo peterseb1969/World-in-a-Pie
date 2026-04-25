@@ -1571,37 +1571,43 @@ class ValidationService:
         """Verify referenced document's template and build the resolved result."""
         from ..models.document import DocumentStatus
 
+        # Always look up the template so we can include template_value in
+        # the resolved dict — Phase-2 relationship validation needs it.
+        doc_template: dict[str, Any] | None = None
+        try:
+            client = get_template_store_client()
+            doc_template = await client.get_template(doc.template_id)
+        except TemplateStoreError:
+            doc_template = None
+
         # Verify template matches target_templates
         if target_templates:
-            try:
-                client = get_template_store_client()
-                doc_template = await client.get_template(doc.template_id)
-                if doc_template:
-                    if version_strategy == "pinned":
-                        # Exact template_id match
-                        if doc.template_id not in target_templates:
-                            result.add_error(
-                                code="invalid_reference_template",
-                                message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
-                                field=field_path
-                            )
-                            return None
-                    else:
-                        # latest: resolve stored IDs to family codes, match by code
-                        allowed_codes = set()
-                        for tpl_id in target_templates:
-                            tpl = await client.get_template(template_id=tpl_id)
-                            if tpl:
-                                allowed_codes.add(tpl.get("value"))
-                        if doc_template.get("value") not in allowed_codes:
-                            result.add_error(
-                                code="invalid_reference_template",
-                                message=f"Referenced document uses template '{doc_template.get('value')}', expected family of {list(allowed_codes)}",
-                                field=field_path
-                            )
-                            return None
-            except TemplateStoreError:
+            if doc_template is None:
                 result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
+            else:
+                if version_strategy == "pinned":
+                    # Exact template_id match
+                    if doc.template_id not in target_templates:
+                        result.add_error(
+                            code="invalid_reference_template",
+                            message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
+                            field=field_path
+                        )
+                        return None
+                else:
+                    # latest: resolve stored IDs to family codes, match by code
+                    allowed_codes = set()
+                    for tpl_id in target_templates:
+                        tpl = await client.get_template(template_id=tpl_id)
+                        if tpl:
+                            allowed_codes.add(tpl.get("value"))
+                    if doc_template.get("value") not in allowed_codes:
+                        result.add_error(
+                            code="invalid_reference_template",
+                            message=f"Referenced document uses template '{doc_template.get('value')}', expected family of {list(allowed_codes)}",
+                            field=field_path
+                        )
+                        return None
 
         # Check if document is inactive (warning only)
         if doc.status != DocumentStatus.ACTIVE:
@@ -1611,7 +1617,10 @@ class ValidationService:
             "document_id": doc.document_id,
             "identity_hash": doc.identity_hash,
             "template_id": doc.template_id,
-            "version": doc.version
+            "template_value": doc_template.get("value") if doc_template else None,
+            "version": doc.version,
+            "namespace": doc.namespace,
+            "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         }
 
     async def _lookup_by_business_key(
