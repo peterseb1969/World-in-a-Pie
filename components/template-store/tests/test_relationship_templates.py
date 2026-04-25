@@ -38,6 +38,26 @@ def _entity_template(value: str = "PERSON") -> dict:
     }
 
 
+async def _ensure_endpoint_templates(
+    client: AsyncClient,
+    auth_headers: dict,
+    *values: str,
+) -> None:
+    """Create entity templates that a relationship template will reference.
+
+    The platform's existing reference-field validation (Phase 0) resolves
+    `target_templates` against the Registry at template-create time, so
+    EXPERIMENT and MOLECULE must exist before a relationship template
+    that points at them can be created. Phase 1 doesn't change that.
+    """
+    for value in values:
+        result = await _post_template(client, auth_headers, _entity_template(value))
+        # 'created' is the happy path; 'error' with "already exists" is fine
+        # if a previous test in the same DB created it.
+        if result["status"] == "error" and "already exists" not in (result.get("error") or ""):
+            raise AssertionError(f"Failed to create endpoint template {value}: {result}")
+
+
 def _relationship_template(
     *,
     value: str = "EXPERIMENT_INPUT",
@@ -142,6 +162,7 @@ async def test_create_relationship_template_happy_path(
     client: AsyncClient, auth_headers: dict,
 ):
     """Valid relationship template round-trips with all new fields preserved."""
+    await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
     payload = _relationship_template(
         extra_fields=[
             {"name": "role", "type": "string", "label": "Role"},
@@ -168,6 +189,7 @@ async def test_relationship_template_with_versioned_false(
     client: AsyncClient, auth_headers: dict,
 ):
     """`versioned: false` is honoured at create time."""
+    await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
     payload = _relationship_template(value="LATEST_ONLY_REL")
     payload["versioned"] = False
     result = await _post_template(client, auth_headers, payload)
@@ -265,6 +287,7 @@ async def test_usage_and_versioned_preserved_across_update(
     """Updating a relationship template (which creates a new version)
     must preserve usage / versioned / source_templates / target_templates
     from the original — they are immutable after creation."""
+    await _ensure_endpoint_templates(client, auth_headers, "EXPERIMENT", "MOLECULE")
     payload = _relationship_template(value="REL_IMMUT")
     payload["versioned"] = False
     create_result = await _post_template(client, auth_headers, payload)
