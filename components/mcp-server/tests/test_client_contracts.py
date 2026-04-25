@@ -57,6 +57,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 import wip_mcp.client as client_module
 import wip_mcp.server as server_module
 from wip_mcp.client import WipClient, _resolve_api_key
@@ -436,4 +437,32 @@ def test_term_relations_url_path_uses_kebab_form() -> None:
     )
     assert "/ontology/relationships" not in source, (
         "client.py still references the old /ontology/relationships path"
+    )
+
+
+# =========================================================================
+# Test I — Phase 5 document-relationship MCP tools exist
+# =========================================================================
+#
+# Phase 5 added two MCP wrappers over the Phase-4 document-store endpoints:
+# get_document_relationships and traverse_documents. These tests pin the
+# names and confirm the URL paths land on the expected document-store
+# routes (regression guard against future renames or accidental drift).
+
+
+def test_document_relationship_tools_exist() -> None:
+    """Both Phase-5 tools must be registered on server and client."""
+    for name in ("get_document_relationships", "traverse_documents"):
+        assert hasattr(server_module, name), f"server.py missing tool: {name}"
+        assert hasattr(WipClient, name), f"WipClient missing method: {name}"
+
+
+def test_document_relationship_url_paths_match_phase4_routes() -> None:
+    """Client methods must call the document-store routes Phase 4 added."""
+    source = _CLIENT_SOURCE_PATH.read_text()
+    assert "/api/document-store/documents/{document_id}/relationships" in source, (
+        "client.py must reference /api/document-store/documents/{document_id}/relationships"
+    )
+    assert "/api/document-store/documents/{document_id}/traverse" in source, (
+        "client.py must reference /api/document-store/documents/{document_id}/traverse"
     )

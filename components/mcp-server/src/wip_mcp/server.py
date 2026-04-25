@@ -1967,6 +1967,99 @@ async def query_documents(filters: dict) -> str:
 
 
 @mcp.tool()
+async def get_document_relationships(
+    document_id: str,
+    direction: str = "both",
+    template: str | None = None,
+    namespace: str | None = None,
+    active_only: bool = True,
+    page: int = 1,
+    page_size: int = 50,
+) -> str:
+    """List relationship documents touching a document (Phase-4 query API).
+
+    Returns relationship documents (templates declared with usage='relationship')
+    that point at (incoming) or from (outgoing) the given document. The
+    Mongo collection is indexed on data.source_ref / data.target_ref so
+    these queries are O(matches), not O(documents).
+
+    Args:
+        document_id: Seed document ID (or any synonym/value the Registry resolves).
+        direction: 'incoming', 'outgoing', or 'both' (default 'both').
+        template: Comma-separated relationship template values to include
+            (default: all relationship templates).
+        namespace: Override; defaults to the seed document's namespace.
+        active_only: Exclude inactive/archived rel docs (default True).
+        page, page_size: Pagination (default 1 / 50).
+
+    Example:
+        # All experiments referencing a molecule:
+        get_document_relationships(molecule_id, direction="incoming",
+                                   template="EXPERIMENT_INPUT")
+    """
+    try:
+        data = await get_client().get_document_relationships(
+            document_id=document_id,
+            direction=direction,
+            template=template,
+            namespace=namespace,
+            active_only=active_only,
+            page=page,
+            page_size=page_size,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
+async def traverse_documents(
+    document_id: str,
+    depth: int = 1,
+    types: str | None = None,
+    direction: str = "outgoing",
+    namespace: str | None = None,
+) -> str:
+    """N-hop graph traversal from a document via relationship documents.
+
+    BFS expansion through relationship templates. At each hop, follows
+    rel docs touching the current frontier and adds the *other* endpoint
+    document_ids to the next frontier. Visited docs are skipped (cycles
+    terminate). Capped at depth=10 and max 1000 nodes — sets
+    truncated=true if a cap fires.
+
+    Returns a flat list of nodes with depth, path (chain of doc_ids
+    from seed exclusive to node inclusive), and via_relationship (the
+    rel doc traversed to reach each node). Edges are implicit; call
+    get_document_relationships on individual nodes for explicit edge data.
+
+    Args:
+        document_id: Seed document ID (or any resolvable identifier).
+        depth: Number of relationship hops, 1..10 (default 1).
+        types: Comma-separated rel template values to constrain the
+            traversal (default: all relationship templates).
+        direction: 'outgoing', 'incoming', or 'both' (default 'outgoing').
+        namespace: Override; defaults to the seed document's namespace.
+
+    Example:
+        # Two-hop lineage of an experiment, only via EXPERIMENT_INPUT edges:
+        traverse_documents(exp_id, depth=2, direction="outgoing",
+                          types="EXPERIMENT_INPUT")
+    """
+    try:
+        data = await get_client().traverse_documents(
+            document_id=document_id,
+            depth=depth,
+            types=types,
+            direction=direction,
+            namespace=namespace,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_document_versions(document_id: str) -> str:
     """List all versions of a document.
 

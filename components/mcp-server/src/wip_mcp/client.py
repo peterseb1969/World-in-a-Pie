@@ -835,6 +835,44 @@ class WipClient:
             version=version,
         )
 
+    async def get_document_relationships(
+        self,
+        document_id: str,
+        direction: str = "both",
+        template: str | None = None,
+        namespace: str | None = None,
+        active_only: bool = True,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/documents/{document_id}/relationships",
+            direction=direction,
+            template=template,
+            namespace=namespace,
+            active_only=active_only,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def traverse_documents(
+        self,
+        document_id: str,
+        depth: int = 1,
+        types: str | None = None,
+        direction: str = "outgoing",
+        namespace: str | None = None,
+    ) -> dict:
+        return await self._get(
+            self.document_store_url,
+            f"/api/document-store/documents/{document_id}/traverse",
+            depth=depth,
+            types=types,
+            direction=direction,
+            namespace=namespace,
+        )
+
     async def create_document(self, document: dict) -> dict:
         resp = await self._post(
             self.document_store_url,
