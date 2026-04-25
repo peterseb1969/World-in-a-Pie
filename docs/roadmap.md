@@ -237,7 +237,7 @@ Discovered during Pi deployment. No automated fix yet. Options: (a) `setup-wip.s
 
 ### Reporting-Sync: File Event Handling Gap
 
-**Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relationship.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
+**Audit note (2026-04-09):** Reporting-sync's `worker._process_message` routes `document.*`, `template.*`, `terminology.*`, `term.*`, and `relation.*` events — each with explicit deleted / hard_deleted / deprecated branches. **`file.*` events are not handled at all** — they fall into the "Unknown event type" branch and are silently acked.
 
 Concrete consequences:
 
@@ -285,6 +285,33 @@ Caddy or NGINX `/apps/{name}/*` routing, portal landing page. Not needed to inst
 
 - Design: `docs/design/app-gateway.md`
 
+### Development Workflow Against WIP — Define in Detail
+
+CASE-55 starts unblocking the dev loop: `wip-deploy install --target dev --app-source <name>=<path>` will let app developers hot-iterate a single app against a full WIP stack. That's a foot-in-the-door fix; the broader workflow story is undefined.
+
+Questions that need a spec before they bite us:
+
+- **Adding an app to a running WIP instance.** Today: rerun `wip-deploy install` — works, but the compose-up restarts touched services. What's the zero-downtime path for "install app X while WIP is live"? Does it need to be zero-downtime, or is a rolling restart acceptable?
+- **Removing an app from a running instance.** The `--prune` plumbing in `apply_k8s` already supports it; compose doesn't. Data retention: archive the app's namespace or delete it? Defaults vs. opt-in?
+- **Updating an app's image without redeploying the stack.** `wip-deploy install --app clintrial --image-tag v1.3.0` equivalent — replace just that container, leave everything else alone.
+- **Multiple apps iterating concurrently** (rc + clintrial + dnd, all source-mounted). Resource cost on a dev machine, port conflicts, auth flow working across all three at once.
+- **Relation to the pluggable-apps vision** (`docs/design/pluggable-apps.md`). That design makes apps managed entities *inside* WIP (App Manager service + dynamic Caddy routing). Partial overlap with the "add/remove app from running instance" question above. Decide whether the CLI path and the App Manager path converge or diverge.
+
+This is a "write a design doc before the next round of implementation" item, not a code task. Sequencing-wise, the CLI `--app-source` flag ships first (small, unblocks immediate dev); the broader workflow spec then informs what comes next.
+
+- Related designs: `docs/design/pluggable-apps.md`, `docs/design/distributable-app-format.md`, `docs/design/app-gateway.md`
+- Related cases: CASE-55 (dev target app hot-reload), CASE-25 (bootstrapping API gaps)
+
+### OpenAPI Schema Refresh — Cleaner Path Through Caddy
+
+`scripts/update-schemas.sh` was updated (2026-04-25) to fetch via `podman exec` because wip-deploy v2 no longer publishes service ports to the host. Works, but a cleaner long-term fix is to **route `/openapi.json` per service through Caddy at e.g. `/api/<svc>/openapi.json`**. Then the script becomes a plain `curl` again, no container runtime knowledge needed, and any external client (a docs site, a TypeScript SDK generator, a third-party tool) can pull the live spec without `podman exec`.
+
+Scope: a small deployer change to add the route in `deployer/src/wip_deploy/config_gen/caddy.py` (or wherever the per-service routing lives), plus reverting `update-schemas.sh` to URL mode. Same direction as `/api/<svc>/health` — the api-prefix is the public surface, anything else is implementation detail.
+
+Optional: the same refactor lets the MCP-server generator regen schemas during CI/dev without needing the wip stack on the same host.
+
+- Related: commit `8d8cddf` (seed script v1.3 has the same shape — assumed direct ports, switched to a different access pattern); CASE-60 (api-prefixed `/health` requires API key — same access-pattern family of cleanups).
+
 ---
 
 ## Medium-Term
@@ -326,9 +353,9 @@ Ultra-lightweight variant for Pi Zero and embedded systems. Concept only.
 
 - Design: `docs/design/wip-nano.md`
 
-### Domain-Specific Ontology Relationships
+### Domain-Specific Ontology Relations
 
-Namespace-scoped relationship type terminologies. Likely overkill — the extensible global terminology works fine — but worth considering for multi-domain instances.
+Namespace-scoped relation type terminologies. Likely overkill — the extensible global terminology works fine — but worth considering for multi-domain instances.
 
 ### Metabase Pre-Built Dashboards
 
