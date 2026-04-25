@@ -1806,7 +1806,7 @@ class DocumentService:
                     error=exc.message,
                     error_code=exc.code,
                 ))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception(
                     "Unexpected error patching document %s", item.document_id,
                 )
@@ -1835,7 +1835,7 @@ class DocumentService:
     ) -> BulkResultItem:
         """Apply a single PATCH item.
 
-        Implements the read–merge–validate–write loop with optimistic
+        Implements the read-merge-validate-write loop with optimistic
         concurrency. The unique index on (namespace, document_id, version)
         guarantees version uniqueness; on a race, _insert_with_retry handles
         the retry transparently.

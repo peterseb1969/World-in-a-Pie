@@ -1,10 +1,11 @@
 """Validation service for document validation against templates."""
 
+import contextlib
 import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
@@ -85,7 +86,7 @@ class ValidationService:
     """
 
     # Type validators mapping field type to validation function
-    TYPE_VALIDATORS = {
+    TYPE_VALIDATORS: ClassVar[dict[str, str]] = {
         "string": "_validate_string",
         "number": "_validate_number",
         "integer": "_validate_integer",
@@ -100,7 +101,7 @@ class ValidationService:
     }
 
     # Semantic type validators (called after base type validation)
-    SEMANTIC_VALIDATORS = {
+    SEMANTIC_VALIDATORS: ClassVar[dict[str, str]] = {
         "email": "_validate_semantic_email",
         "url": "_validate_semantic_url",
         "latitude": "_validate_semantic_latitude",
@@ -114,7 +115,7 @@ class ValidationService:
     TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
 
     # Class-level timing statistics
-    _timing_stats: dict[str, list[float]] = {}
+    _timing_stats: ClassVar[dict[str, list[float]]] = {}
     _validation_count: int = 0
 
     @classmethod
@@ -565,7 +566,7 @@ class ValidationService:
             # Try ISO format
             for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%fZ"]:
                 try:
-                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z") + ("" if "." in value else ""), fmt.rstrip("Z"))
+                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z"), fmt.rstrip("Z"))
                     return
                 except ValueError:
                     continue
@@ -1845,19 +1846,22 @@ class ValidationService:
                     "value": value
                 })
 
-            elif field_type == "array" and field.get("array_item_type") == "reference":
+            elif (
+                field_type == "array"
+                and field.get("array_item_type") == "reference"
+                and isinstance(value, list)
+            ):
                 # Array of references
-                if isinstance(value, list):
-                    for i, item in enumerate(value):
-                        ref_values.append({
-                            "field_path": f"{full_path}[{i}]",
-                            "reference_type": field.get("reference_type"),
-                            "target_templates": field.get("target_templates", []),
-                            "include_subtypes": field.get("include_subtypes", False),
-                            "target_terminologies": field.get("target_terminologies", []),
-                            "version_strategy": field.get("version_strategy", "latest"),
-                            "value": item
-                        })
+                for i, item in enumerate(value):
+                    ref_values.append({
+                        "field_path": f"{full_path}[{i}]",
+                        "reference_type": field.get("reference_type"),
+                        "target_templates": field.get("target_templates", []),
+                        "include_subtypes": field.get("include_subtypes", False),
+                        "target_terminologies": field.get("target_terminologies", []),
+                        "version_strategy": field.get("version_strategy", "latest"),
+                        "value": item
+                    })
 
         return ref_values
 
@@ -1897,15 +1901,11 @@ class ValidationService:
             return actual, expected
         # If one is numeric and the other is a string, try to coerce the string
         if isinstance(actual, (int, float)) and isinstance(expected, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 expected = type(actual)(expected)
-            except (ValueError, TypeError):
-                pass
         elif isinstance(expected, (int, float)) and isinstance(actual, str):
-            try:
+            with contextlib.suppress(ValueError, TypeError):
                 actual = type(expected)(actual)
-            except (ValueError, TypeError):
-                pass
         return actual, expected
 
     def _check_condition(
@@ -2025,17 +2025,16 @@ class ValidationService:
         target_value = IdentityService._get_nested_value(data, target_field)
 
         # If target field has value, check that dependency conditions are met
-        if target_value is not None:
-            if not self._check_conditions(data, conditions):
-                # Find missing dependency
-                for condition in conditions:
-                    if not self._check_condition(data, condition):
-                        result.add_error(
-                            code="dependency",
-                            message=rule.get("error_message") or f"Field '{target_field}' requires '{condition['field']}' to be set",
-                            field=target_field
-                        )
-                        break
+        if target_value is not None and not self._check_conditions(data, conditions):
+            # Find missing dependency
+            for condition in conditions:
+                if not self._check_condition(data, condition):
+                    result.add_error(
+                        code="dependency",
+                        message=rule.get("error_message") or f"Field '{target_field}' requires '{condition['field']}' to be set",
+                        field=target_field
+                    )
+                    break
 
     def _compute_identity(
         self,
