@@ -371,8 +371,27 @@ class DocumentTransformer:
                 "updated_by": document.get("updated_by"),
             })
 
+        # Phase 6/7 — relationship templates carry extra resolution
+        # metadata in event-payload data (source_ref_resolved,
+        # target_ref_resolved, source_template_value, target_template_value).
+        # These are NOT template fields — they're event enrichment — so
+        # exclude them from the flatten step or the row will end up with
+        # columns the table doesn't have.
+        is_relationship = template.get("usage") == "relationship"
+        flatten_input = data
+        if is_relationship:
+            flatten_input = {
+                k: v for k, v in data.items()
+                if k not in (
+                    "source_ref_resolved", "target_ref_resolved",
+                    "source_template_value", "target_template_value",
+                )
+            }
+
         # Flatten the data
-        flattened_data = self._flatten_object(data, "", term_references, field_types=field_types)
+        flattened_data = self._flatten_object(
+            flatten_input, "", term_references, field_types=field_types,
+        )
         base_row.update(flattened_data)
 
         # Process semantic types if template is provided
@@ -403,6 +422,21 @@ class DocumentTransformer:
         base_row["data_json"] = json.dumps(data)
         base_row["term_references_json"] = json.dumps(term_references_list)
         base_row["file_references_json"] = json.dumps(file_references_list)
+
+        # Phase 7 — relationship templates carry source_ref_id and
+        # target_ref_id columns populated from the Phase-6 enriched
+        # event payload (data.source_ref_resolved / data.target_ref_resolved).
+        # Fall back to the raw refs for resilience: if the producer was
+        # pre-Phase-6, the resolved keys won't exist, but the columns
+        # are still useful for JOINs against documents whose document_id
+        # equals the source_ref / target_ref value.
+        if is_relationship:
+            base_row["source_ref_id"] = (
+                data.get("source_ref_resolved") or data.get("source_ref")
+            )
+            base_row["target_ref_id"] = (
+                data.get("target_ref_resolved") or data.get("target_ref")
+            )
 
         # Expand arrays if configured
         rows = self._expand_arrays(base_row, data, term_references)

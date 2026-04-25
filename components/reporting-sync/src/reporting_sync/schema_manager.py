@@ -163,8 +163,16 @@ class SchemaManager:
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
+        usage: str = "entity",
     ) -> str:
-        """Generate CREATE TABLE statement for a template."""
+        """Generate CREATE TABLE statement for a template.
+
+        For templates with usage='relationship', adds source_ref_id and
+        target_ref_id columns + indexes so SQL JOINs against the endpoint
+        document tables work cleanly. The columns are populated by the
+        transformer from the Phase-6 enriched event payload
+        (data.source_ref_resolved / data.target_ref_resolved).
+        """
         table_name = self.get_table_name(template_value, config)
         include_metadata = config.include_metadata if config else True
         strategy = config.sync_strategy if config else SyncStrategy.LATEST_ONLY
@@ -222,6 +230,16 @@ class SchemaManager:
             ("file_references_json", "JSONB"),
         ])
 
+        # Phase 7 — relationship templates get explicit canonical-id columns
+        # for the two endpoints. JOIN like:
+        #   doc_experiment_input rel
+        #     JOIN doc_experiment e ON e.identity_hash = rel.source_ref_id
+        if usage == "relationship":
+            columns.extend([
+                ("source_ref_id", "TEXT"),
+                ("target_ref_id", "TEXT"),
+            ])
+
         # Build the DDL
         column_defs = ",\n    ".join(f'"{name}" {col_type}' for name, col_type in columns)
 
@@ -249,6 +267,13 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(na
 -- Partial unique index for active documents by identity within namespace
 CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
 ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
+"""
+
+        if usage == "relationship":
+            ddl += f"""
+-- Relationship endpoint indexes (Phase 7) for SQL JOINs against doc_<endpoint>
+CREATE INDEX IF NOT EXISTS "{table_name}_source_ref_id_idx" ON "{table_name}"(source_ref_id);
+CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(target_ref_id);
 """
         return ddl.strip()
 
@@ -285,10 +310,11 @@ ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
+        usage: str = "entity",
     ) -> str:
         """Create a table for a template."""
         ddl = self.generate_create_table_ddl(
-            template_value, template_version, fields, config
+            template_value, template_version, fields, config, usage=usage,
         )
         table_name = self.get_table_name(template_value, config)
 
@@ -318,6 +344,7 @@ ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
         template_version: int,
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
+        usage: str = "entity",
     ) -> list[str]:
         """
         Update table schema if template has new fields.
@@ -328,13 +355,30 @@ ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
         table_name = self.get_table_name(template_value, config)
 
         if not await self.table_exists(table_name):
-            await self.create_table(template_value, template_version, fields, config)
+            await self.create_table(template_value, template_version, fields, config, usage=usage)
             return [f"Created table {table_name}"]
 
         existing_columns = await self.get_existing_columns(table_name)
         migrations = []
 
         async with self.pool.acquire() as conn:
+            # Phase 7 — relationship templates need source_ref_id / target_ref_id
+            # columns + indexes. Add them lazily when missing so legacy
+            # relationship templates that pre-date Phase 7 catch up on next
+            # event. Index creation is idempotent.
+            if usage == "relationship":
+                for col in ("source_ref_id", "target_ref_id"):
+                    if col not in existing_columns:
+                        alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN "{col}" TEXT'
+                        await conn.execute(alter_sql)
+                        migrations.append(alter_sql)
+                        idx_sql = (
+                            f'CREATE INDEX IF NOT EXISTS '
+                            f'"{table_name}_{col}_idx" ON "{table_name}"({col})'
+                        )
+                        await conn.execute(idx_sql)
+                        migrations.append(idx_sql)
+
             for field in fields:
                 field_columns = self._generate_column_ddl(field, config=config)
                 # Check if the base field name conflicts
@@ -621,13 +665,15 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
 
         table_name = self.get_table_name(template_value, config)
 
+        usage = template.get("usage", "entity")
+
         if await self.table_exists(table_name):
             migrations = await self.update_table_schema(
-                template_value, template_version, fields, config
+                template_value, template_version, fields, config, usage=usage,
             )
             if migrations:
                 logger.info(f"Updated table {table_name} with {len(migrations)} new columns")
         else:
-            await self.create_table(template_value, template_version, fields, config)
+            await self.create_table(template_value, template_version, fields, config, usage=usage)
 
         return table_name

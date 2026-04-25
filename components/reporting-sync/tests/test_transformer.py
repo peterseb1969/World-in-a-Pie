@@ -345,6 +345,85 @@ class TestDocumentTransformer:
         assert values == ["doc-123", 1, "active", "John"]
 
 
+class TestRelationshipTemplateRow:
+    """Phase 7 — relationship templates produce source_ref_id /
+    target_ref_id row keys derived from the Phase-6 enriched payload."""
+
+    def _rel_template(self):
+        return {
+            "usage": "relationship",
+            "fields": [
+                {"name": "source_ref", "type": "reference", "label": "Source"},
+                {"name": "target_ref", "type": "reference", "label": "Target"},
+                {"name": "role", "type": "string", "label": "Role"},
+            ],
+        }
+
+    def _rel_doc(self, *, with_resolved: bool):
+        data = {
+            "source_ref": "src-id",
+            "target_ref": "tgt-id",
+            "role": "input",
+        }
+        if with_resolved:
+            data["source_ref_resolved"] = "src-doc-id"
+            data["target_ref_resolved"] = "tgt-doc-id"
+        return {
+            "document_id": "rel-1",
+            "template_id": "tpl-rel",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "hash-rel",
+            "namespace": "wip",
+            "data": data,
+            "term_references": [],
+            "file_references": [],
+        }
+
+    def test_resolved_endpoints_populate_id_columns(self):
+        """When the producer (Phase 6) supplied source_ref_resolved /
+        target_ref_resolved, the row carries those as source_ref_id /
+        target_ref_id."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(self._rel_doc(with_resolved=True), self._rel_template())
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["source_ref_id"] == "src-doc-id"
+        assert row["target_ref_id"] == "tgt-doc-id"
+
+    def test_falls_back_to_raw_refs_when_no_resolved(self):
+        """A pre-Phase-6 producer didn't enrich the payload; we still
+        populate the id columns from the raw refs so JOINs work for
+        documents whose document_id matches the raw ref."""
+        transformer = DocumentTransformer()
+        rows = transformer.transform(self._rel_doc(with_resolved=False), self._rel_template())
+        row = rows[0]
+        assert row["source_ref_id"] == "src-id"
+        assert row["target_ref_id"] == "tgt-id"
+
+    def test_entity_template_does_not_get_endpoint_columns(self):
+        transformer = DocumentTransformer()
+        template = {
+            "fields": [{"name": "name", "type": "string", "label": "Name"}],
+        }
+        document = {
+            "document_id": "p-1",
+            "template_id": "tpl-person",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "h",
+            "namespace": "wip",
+            "data": {"name": "Alice"},
+            "term_references": [],
+            "file_references": [],
+        }
+        row = transformer.transform(document, template)[0]
+        assert "source_ref_id" not in row
+        assert "target_ref_id" not in row
+
+
 class TestSchemaManagerDDL:
     """Tests for SchemaManager DDL generation."""
 

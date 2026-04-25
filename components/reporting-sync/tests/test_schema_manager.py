@@ -761,3 +761,57 @@ class TestCreateTableDDLMixedFields:
 
         # Verify CREATE TABLE syntax
         assert 'CREATE TABLE IF NOT EXISTS "doc_person"' in ddl
+
+
+# =========================================================================
+# Phase 7 — Relationship-template DDL adds source_ref_id / target_ref_id
+# =========================================================================
+
+
+class TestRelationshipTemplateDDL:
+    """Tests that relationship templates (usage='relationship') get the
+    canonical-id columns and indexes Phase 7 added."""
+
+    def _make_sm(self):
+        return SchemaManager(MagicMock())
+
+    def test_relationship_template_ddl_adds_endpoint_columns(self):
+        sm = self._make_sm()
+        fields = [
+            TemplateField(name="source_ref", type=FieldType.REFERENCE),
+            TemplateField(name="target_ref", type=FieldType.REFERENCE),
+            TemplateField(name="role", type=FieldType.STRING),
+        ]
+        ddl = sm.generate_create_table_ddl(
+            "experiment_input", 1, fields, usage="relationship",
+        )
+        assert '"source_ref_id" TEXT' in ddl
+        assert '"target_ref_id" TEXT' in ddl
+
+    def test_relationship_template_ddl_adds_endpoint_indexes(self):
+        sm = self._make_sm()
+        fields = [
+            TemplateField(name="source_ref", type=FieldType.REFERENCE),
+            TemplateField(name="target_ref", type=FieldType.REFERENCE),
+        ]
+        ddl = sm.generate_create_table_ddl(
+            "experiment_input", 1, fields, usage="relationship",
+        )
+        assert "doc_experiment_input_source_ref_id_idx" in ddl
+        assert "doc_experiment_input_target_ref_id_idx" in ddl
+
+    def test_entity_template_ddl_does_not_add_endpoint_columns(self):
+        """Default usage='entity' must not add the relationship columns."""
+        sm = self._make_sm()
+        fields = [TemplateField(name="name", type=FieldType.STRING)]
+        ddl = sm.generate_create_table_ddl("person", 1, fields)
+        assert '"source_ref_id"' not in ddl
+        assert '"target_ref_id"' not in ddl
+        assert "_source_ref_id_idx" not in ddl
+
+    def test_explicit_entity_usage_does_not_add_endpoint_columns(self):
+        sm = self._make_sm()
+        fields = [TemplateField(name="name", type=FieldType.STRING)]
+        ddl = sm.generate_create_table_ddl("person", 1, fields, usage="entity")
+        assert '"source_ref_id"' not in ddl
+        assert '"target_ref_id"' not in ddl
