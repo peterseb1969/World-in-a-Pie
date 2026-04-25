@@ -4,7 +4,7 @@ Regenerate with: python -m scripts.generate_schemas [--fetch]
 """
 
 
-TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'properties': {'source_term_id': {'type': 'string',
+TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'properties': {'source_term_id': {'type': 'string',
                                                                            'description': 'The '
                                                                                           'subject '
                                                                                           'term '
@@ -14,13 +14,13 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                           'object '
                                                                                           'term '
                                                                                           'ID'},
-                                                        'relationship_type': {'type': 'string',
-                                                                              'description': 'Relationship '
-                                                                                             'type '
-                                                                                             'value '
-                                                                                             '(e.g., '
-                                                                                             "'is_a', "
-                                                                                             "'part_of')"},
+                                                        'relation_type': {'type': 'string',
+                                                                          'description': 'Relation '
+                                                                                         'type '
+                                                                                         'value '
+                                                                                         '(e.g., '
+                                                                                         "'is_a', "
+                                                                                         "'part_of')"},
                                                         'metadata': {'additionalProperties': True,
                                                                      'type': 'object',
                                                                      'description': 'Provenance, '
@@ -31,18 +31,24 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                       'system '
                                                                                       'creating '
                                                                                       'this '
-                                                                                      'relationship'}},
+                                                                                      'relation'}},
                                          'additionalProperties': False,
                                          'type': 'object',
                                          'required': ['source_term_id',
                                                       'target_term_id',
-                                                      'relationship_type'],
-                                         'description': 'Request to create a typed relationship '
+                                                      'relation_type'],
+                                         'description': 'Request to create a typed relation '
                                                         'between two terms.'},
  'def-store#CreateTermRequest': {'properties': {'value': {'type': 'string',
                                                           'description': 'The value stored in '
                                                                          'documents (unique within '
                                                                          'terminology)'},
+                                                'term_id': {'type': 'string',
+                                                            'description': 'Pre-assigned term ID '
+                                                                           '(for restore/migration '
+                                                                           '— Registry uses as-is '
+                                                                           'instead of '
+                                                                           'generating)'},
                                                 'aliases': {'items': {'type': 'string'},
                                                             'type': 'array',
                                                             'description': 'Alternative values '
@@ -107,6 +113,18 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                        'description': {'type': 'string',
                                                                        'description': 'Detailed '
                                                                                       'description'},
+                                                       'terminology_id': {'type': 'string',
+                                                                          'description': 'Pre-assigned '
+                                                                                         'terminology '
+                                                                                         'ID (for '
+                                                                                         'restore/migration '
+                                                                                         '— '
+                                                                                         'Registry '
+                                                                                         'uses '
+                                                                                         'as-is '
+                                                                                         'instead '
+                                                                                         'of '
+                                                                                         'generating)'},
                                                        'namespace': {'type': 'string',
                                                                      'description': 'Namespace for '
                                                                                     'the '
@@ -132,6 +150,15 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'terms at '
                                                                                      'runtime',
                                                                       'default': False},
+                                                       'mutable': {'type': 'boolean',
+                                                                   'description': 'Whether terms '
+                                                                                  'can be '
+                                                                                  'hard-deleted '
+                                                                                  '(vs '
+                                                                                  'deprecated). '
+                                                                                  'Implies '
+                                                                                  'extensible=True.',
+                                                                   'default': False},
                                                        'metadata': {'properties': {'source': {'type': 'string',
                                                                                               'description': 'Source '
                                                                                                              'of '
@@ -177,7 +204,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'terminology'}},
                                         'additionalProperties': False,
                                         'type': 'object',
-                                        'required': ['value', 'label'],
+                                        'required': ['value', 'label', 'namespace'],
                                         'description': 'Request to create a new terminology.'},
  'document-store#DocumentCreateRequest': {'properties': {'template_id': {'type': 'string',
                                                                          'description': 'Template '
@@ -248,7 +275,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                      'Registry'}},
                                           'additionalProperties': False,
                                           'type': 'object',
-                                          'required': ['template_id', 'data'],
+                                          'required': ['template_id', 'namespace', 'data'],
                                           'description': 'Request to create or update a document.'},
  'template-store#CreateTemplateRequest': {'properties': {'value': {'type': 'string',
                                                                    'description': 'Human-readable '
@@ -909,7 +936,7 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateRelationshipRequest': {'proper
                                                                                    'validation)'}},
                                           'additionalProperties': False,
                                           'type': 'object',
-                                          'required': ['value', 'label'],
+                                          'required': ['value', 'label', 'namespace'],
                                           'description': 'Request to create a new template.'},
  'template-store#FieldDefinition': {'properties': {'name': {'type': 'string',
                                                             'description': 'Field name (used in '
@@ -1242,7 +1269,7 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string): Namespace for the document
+namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
@@ -1256,23 +1283,11 @@ template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
 document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
-namespace (string): Namespace for the document
+namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content
 created_by (string): User or system creating this document
 metadata (object): Custom metadata
 synonyms (array of object): Optional synonym composite keys to register for this document in the Registry""",
-    'create_relationships': """Create ontology relationships between terms.
-
-Relationship types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
-Use source_term_id (subject) and target_term_id (object).
-Example: "Lung cancer" --is_a--> "Cancer"
-
-Fields (from OpenAPI — these are the exact field names):
-source_term_id (string, REQUIRED): The subject term ID
-target_term_id (string, REQUIRED): The object term ID
-relationship_type (string, REQUIRED): Relationship type value (e.g., 'is_a', 'part_of')
-metadata (object): Provenance, confidence, OWL axioms
-created_by (string): User or system creating this relationship""",
     'create_template': """Create a template (document schema).
 
 IMPORTANT field naming:
@@ -1288,7 +1303,7 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string): Namespace for the template
+namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
@@ -1387,7 +1402,7 @@ label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
-namespace (string): Namespace for the template
+namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version (None = always use latest active parent version)
 identity_fields (array of string): Fields that form the composite identity key
@@ -1475,6 +1490,18 @@ FieldDefinition fields:
   inherited (boolean): Whether this field is inherited from a parent template (set during resolution)
   inherited_from (string): Template ID of the parent template this field was inherited from
   metadata (object): Additional field metadata""",
+    'create_term_relations': """Create ontology term-relations between terms.
+
+Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+Use source_term_id (subject) and target_term_id (object).
+Example: "Lung cancer" --is_a--> "Cancer"
+
+Fields (from OpenAPI — these are the exact field names):
+source_term_id (string, REQUIRED): The subject term ID
+target_term_id (string, REQUIRED): The object term ID
+relation_type (string, REQUIRED): Relation type value (e.g., 'is_a', 'part_of')
+metadata (object): Provenance, confidence, OWL axioms
+created_by (string): User or system creating this relation""",
     'create_terminologies_bulk': """Create multiple terminologies at once.
 
 Each item follows the same schema as create_terminology.
@@ -1483,10 +1510,12 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string): Namespace for the terminology
+terminology_id (string): Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)
+namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification
@@ -1503,10 +1532,12 @@ Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): Human-readable value (e.g., 'DOC_STATUS')
 label (string, REQUIRED): Display label
 description (string): Detailed description
-namespace (string): Namespace for the terminology
+terminology_id (string): Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)
+namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
 extensible (boolean, default: false): Whether users can add new terms at runtime
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
   source_url (string): URL to the source specification
@@ -1522,6 +1553,7 @@ Optional: aliases (list of strings), label, description, sort_order.
 
 Fields (from OpenAPI — these are the exact field names):
 value (string, REQUIRED): The value stored in documents (unique within terminology)
+term_id (string): Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)
 aliases (array of string): Alternative values that resolve to this term (e.g., ['MR.', 'mr'])
 label (string): Display label for UI. Defaults to value if not provided.
 description (string): Detailed description
@@ -1549,7 +1581,7 @@ Term fields: use human-readable values in the CSV.""",
 The import format matches the export format from export_terminology.""",
     'list_report_tables': """List available PostgreSQL reporting tables and their schemas.
 
-Returns doc_* tables (one per template) plus terminologies, terms, term_relationships.
+Returns doc_* tables (one per template) plus terminologies, terms, term_relations.
 Use this before run_report_query to understand available tables and columns.""",
     'query_by_template': """Query documents by template value with easy field filtering.
 
