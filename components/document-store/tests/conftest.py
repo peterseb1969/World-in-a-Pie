@@ -236,6 +236,24 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # --- Phase-3 versioned=false fixture ---
+    # An entity template with versioned=False to exercise the
+    # overwrite-in-place lifecycle without the extra relationship-template
+    # plumbing. Same machinery — the branch is on template.versioned alone.
+    {
+        "legacy_key": "TPL-LATEST-ONLY-NOTE",
+        "value": "LATEST_ONLY_NOTE",
+        "label": "Latest-only Note",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["note_id"],
+        "versioned": False,
+        "fields": [
+            {"name": "note_id", "label": "Note ID", "type": "string", "mandatory": True},
+            {"name": "body", "label": "Body", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.

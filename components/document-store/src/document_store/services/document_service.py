@@ -609,6 +609,19 @@ class DocumentService:
                 else:
                     version += 1
 
+    async def _is_template_versioned(self, template_id: str) -> bool:
+        """Read template.versioned. Defaults to True (legacy v1.x behaviour)
+        on any fetch failure so a degraded template-store never silently
+        flips a template to overwrite-in-place semantics."""
+        try:
+            template = await get_template_store_client().get_template(template_id=template_id)
+        except Exception:
+            return True
+        if not template:
+            return True
+        # Field is optional in stored documents from before Phase 1; default True.
+        return bool(template.get("versioned", True))
+
     async def _create_new_version(
         self,
         request: DocumentCreateRequest,
@@ -617,7 +630,12 @@ class DocumentService:
         document_id: str,
         namespace: str
     ) -> tuple[DocumentCreateResponse, str | None]:
-        """Create a new version of an existing document with stable document_id."""
+        """Create a new version of an existing document with stable document_id.
+
+        For templates with versioned=False, overwrites the existing
+        document in place instead of creating a new version. Same
+        document_id, same version number, just newer data/timestamps.
+        """
         # Check if data has actually changed
         if not self._data_has_changed(
             existing,
@@ -638,6 +656,12 @@ class DocumentService:
                 previous_version=None,  # No previous version because nothing changed
                 warnings=validation_result.warnings
             ), None
+
+        # Phase 3: templates with versioned=false overwrite in place.
+        if not await self._is_template_versioned(request.template_id):
+            return await self._overwrite_in_place(
+                request, existing, validation_result, namespace,
+            )
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -695,6 +719,71 @@ class DocumentService:
             is_new=False,
             previous_version=existing.version,
             warnings=validation_result.warnings
+        ), None
+
+    async def _overwrite_in_place(
+        self,
+        request: DocumentCreateRequest,
+        existing: Document,
+        validation_result: Any,
+        namespace: str,
+    ) -> tuple[DocumentCreateResponse, str | None]:
+        """Phase-3 overwrite: update the existing document's data and
+        references without creating a new version. Used when the
+        template has versioned=False (e.g., latest-only relationship
+        edges). Same document_id, same version number, fresh
+        updated_at / updated_by. File reference counts are adjusted
+        for the delta the same way _create_new_version does.
+
+        Race note: there is no per-item if_match on the POST upsert
+        path, so concurrent overwrites of the same versioned=False
+        document race. Use the PATCH endpoint (which honours if_match)
+        for serialised updates. Documented in design doc and
+        docs/api-conventions.md.
+        """
+        actor = get_identity_string()
+        now = datetime.now(UTC)
+
+        previous_file_refs = list(existing.file_references)
+
+        existing.data = request.data
+        existing.term_references = validation_result.term_references
+        existing.references = validation_result.references
+        existing.file_references = validation_result.file_references
+        existing.template_version = validation_result.template_version or existing.template_version
+        existing.template_value = validation_result.template_value or existing.template_value
+        existing.metadata = DocumentMetadata(
+            warnings=validation_result.warnings,
+            custom=request.metadata or {},
+        )
+        existing.updated_at = now
+        existing.updated_by = actor
+        await existing.save()
+
+        # Publish an updated event so downstream (reporting-sync, NATS
+        # subscribers) sees the change. Same event type / payload as
+        # _create_new_version — the only observable difference is the
+        # version stays at its prior value.
+        await publish_document_event(
+            EventType.DOCUMENT_UPDATED,
+            self._document_to_event_payload(existing),
+            changed_by=actor,
+        )
+
+        # File-ref counts: subtract the old set, add the new set.
+        await self._update_file_reference_counts(previous_file_refs, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+        return DocumentCreateResponse(
+            document_id=existing.document_id,
+            namespace=namespace,
+            template_id=existing.template_id,
+            template_value=existing.template_value,
+            identity_hash=existing.identity_hash,
+            version=existing.version,
+            is_new=False,
+            previous_version=None,  # No new version created
+            warnings=validation_result.warnings,
         ), None
 
     async def _find_active_by_document_id(
@@ -1957,12 +2046,49 @@ class DocumentService:
                     f"Cross-namespace reference violation: {exc.violations}",
                 ) from exc
 
-            # 9. Write new version. Mirror _create_new_version's flow:
-            #    deactivate the existing version, then insert v+1 via the
-            #    retry helper. The unique index serializes concurrent writers.
+            # 9. Write. Phase-3 branch: templates with versioned=False
+            #    overwrite the existing document in place. Same
+            #    document_id, same version, fresh data + updated_at.
+            #    if_match (step 3) gives serialised concurrency for
+            #    this path — recommended.
             actor = get_identity_string()
             now = datetime.now(UTC)
 
+            if not await self._is_template_versioned(current.template_id):
+                previous_file_refs = list(current.file_references)
+                current.data = merged_data
+                current.term_references = validation_result.term_references
+                current.references = validation_result.references
+                current.file_references = validation_result.file_references
+                current.metadata = DocumentMetadata(
+                    source_system=current.metadata.source_system,
+                    warnings=validation_result.warnings,
+                    custom=dict(current.metadata.custom),
+                )
+                current.updated_at = now
+                current.updated_by = actor
+                await current.save()
+
+                await publish_document_event(
+                    EventType.DOCUMENT_UPDATED,
+                    self._document_to_event_payload(current),
+                    changed_by=actor,
+                )
+                await self._update_file_reference_counts(previous_file_refs, delta=-1)
+                await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+                return BulkResultItem(
+                    index=index,
+                    status="updated",
+                    id=current.document_id,
+                    document_id=current.document_id,
+                    identity_hash=current.identity_hash,
+                    version=current.version,
+                    is_new=False,
+                    warnings=validation_result.warnings,
+                )
+
+            # versioned=True: existing flow — deactivate current, insert v+1.
             current.status = DocumentStatus.INACTIVE
             current.updated_at = now
             current.updated_by = actor
