@@ -164,4 +164,4 @@ async def test_versioned_true_still_creates_new_versions(
     second = await _create_doc(client, auth_headers, "PERSON", updated)
     assert second["document_id"] == doc_id
     assert second["version"] == 2, second
-    assert second["previous_version"] == 1
+    assert second["is_new"] is False
