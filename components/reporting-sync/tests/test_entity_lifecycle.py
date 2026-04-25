@@ -568,7 +568,7 @@ class TestRelationLifecycle:
 
         # --- Step 1: Create ---
         await _publish_and_process(worker, js, sub, "wip.term_relations", [
-            make_event("term_relation.created", "relation", rel_payload),
+            make_event("term_relation.created", "term_relation", rel_payload),
         ])
 
         async with pg_pool.acquire() as conn:
@@ -583,7 +583,7 @@ class TestRelationLifecycle:
 
         # --- Step 2: Soft-delete ---
         await _publish_and_process(worker, js, sub, "wip.term_relations", [
-            make_event("term_relation.deleted", "relation", {
+            make_event("term_relation.deleted", "term_relation", {
                 "namespace": "test",
                 "source_term_id": "TERM-LC-A",
                 "target_term_id": "TERM-LC-B",
@@ -601,7 +601,7 @@ class TestRelationLifecycle:
 
         # --- Step 3: Recreate (upsert back to active) ---
         await _publish_and_process(worker, js, sub, "wip.term_relations", [
-            make_event("term_relation.created", "relation", rel_payload),
+            make_event("term_relation.created", "term_relation", rel_payload),
         ])
 
         async with pg_pool.acquire() as conn:
@@ -614,7 +614,7 @@ class TestRelationLifecycle:
 
         # --- Step 4: Hard-delete ---
         await _publish_and_process(worker, js, sub, "wip.term_relations", [
-            make_event("term_relation.deleted", "relation", {
+            make_event("term_relation.deleted", "term_relation", {
                 "namespace": "test",
                 "source_term_id": "TERM-LC-A",
                 "target_term_id": "TERM-LC-B",

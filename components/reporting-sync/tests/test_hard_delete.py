@@ -402,7 +402,7 @@ class TestRelationHardDelete:
         _, conn = mock_pool
         event = {
             "event_type": "term_relation.deleted",
-            "relation": {
+            "term_relation": {
                 "namespace": "wip",
                 "source_term_id": "0190b000-0000-7000-0000-000000000001",
                 "target_term_id": "0190b000-0000-7000-0000-000000000002",
@@ -428,7 +428,7 @@ class TestRelationHardDelete:
         _, conn = mock_pool
         event = {
             "event_type": "term_relation.deleted",
-            "relation": {
+            "term_relation": {
                 "namespace": "wip",
                 "source_term_id": "0190b000-0000-7000-0000-000000000003",
                 "target_term_id": "0190b000-0000-7000-0000-000000000004",

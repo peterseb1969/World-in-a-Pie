@@ -720,7 +720,7 @@ class BatchSyncService:
         page_size: int = 100,
     ) -> dict:
         """
-        Batch sync all term term_relations from Def-Store to PostgreSQL.
+        Batch sync all term-relations from Def-Store to PostgreSQL.
 
         Uses the /ontology/term-relations/all endpoint for efficient pagination
         across all term_relations (no per-term iteration needed).

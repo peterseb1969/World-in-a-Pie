@@ -497,14 +497,14 @@ async def test_batch_terms_route(http_client: AsyncClient, mock_batch_service):
 
 
 @pytest.mark.asyncio
-async def test_batch_relations_route(http_client: AsyncClient, mock_batch_service):
-    """POST /sync/batch/relations hits the relation handler, not {template_value}."""
+async def test_batch_term_relations_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/term_relations hits the term-relation handler, not {template_value}."""
     mock_batch_service.batch_sync_term_relations = AsyncMock(
         return_value={"synced": 99, "failed": 0, "total": 99}
     )
 
     async with http_client:
-        resp = await http_client.post("/api/reporting-sync/sync/batch/relations?namespace=wip")
+        resp = await http_client.post("/api/reporting-sync/sync/batch/term_relations?namespace=wip")
 
     assert resp.status_code == 200
     data = resp.json()

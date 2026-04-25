@@ -729,9 +729,9 @@ async def trigger_term_relation_sync(
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
-    Batch sync all term term_relations from Def-Store to PostgreSQL.
+    Batch sync all term-relations from Def-Store to PostgreSQL.
 
-    Fetches all active term_relations via the Def-Store ontology API
+    Fetches all active term-relations via the Def-Store ontology API
     and upserts them into the term_relations table.
 
     Args:

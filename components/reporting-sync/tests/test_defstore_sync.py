@@ -427,7 +427,7 @@ class TestRelationEvents:
             "created_by": "admin",
         }
         rel.update(overrides)
-        return {"event_type": event_type, "relation": rel}
+        return {"event_type": event_type, "term_relation": rel}
 
     @pytest.mark.asyncio
     async def test_create_event_upserts(self, worker, mock_pool):

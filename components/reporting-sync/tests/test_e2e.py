@@ -493,7 +493,7 @@ class TestRelationEventPipeline:
         status = SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True)
         worker = SyncWorker(nc, js, pg_pool, status)
 
-        event = make_event("term_relation.created", "relation", {
+        event = make_event("term_relation.created", "term_relation", {
             "namespace": "test",
             "source_term_id": "TERM-A",
             "target_term_id": "TERM-B",
@@ -532,7 +532,7 @@ class TestRelationEventPipeline:
         worker = SyncWorker(nc, js, pg_pool, status)
 
         # Create
-        create_event = make_event("term_relation.created", "relation", {
+        create_event = make_event("term_relation.created", "term_relation", {
             "namespace": "test",
             "source_term_id": "TERM-HD-A",
             "target_term_id": "TERM-HD-B",
@@ -548,7 +548,7 @@ class TestRelationEventPipeline:
         await js.publish("wip.term_relations", create_event)
 
         # Hard delete
-        delete_event = make_event("term_relation.deleted", "relation", {
+        delete_event = make_event("term_relation.deleted", "term_relation", {
             "namespace": "test",
             "source_term_id": "TERM-HD-A",
             "target_term_id": "TERM-HD-B",
@@ -578,7 +578,7 @@ class TestRelationEventPipeline:
         worker = SyncWorker(nc, js, pg_pool, status)
 
         # Create
-        create_event = make_event("term_relation.created", "relation", {
+        create_event = make_event("term_relation.created", "term_relation", {
             "namespace": "test",
             "source_term_id": "TERM-X",
             "target_term_id": "TERM-Y",
@@ -589,7 +589,7 @@ class TestRelationEventPipeline:
         await js.publish("wip.term_relations", create_event)
 
         # Delete
-        delete_event = make_event("term_relation.deleted", "relation", {
+        delete_event = make_event("term_relation.deleted", "term_relation", {
             "namespace": "test",
             "source_term_id": "TERM-X",
             "target_term_id": "TERM-Y",
