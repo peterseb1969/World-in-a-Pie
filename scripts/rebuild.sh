@@ -42,6 +42,9 @@ SERVICES=()
 # Indexed arrays: same order, access by position
 # Format: name:container:health_port:compose_dir[:health_path]
 # health_path defaults to /health if omitted
+# Note: auth-gateway intentionally NOT listed. It's a wip-deploy-v2-only
+# component with no standalone components/auth-gateway/docker-compose.yml,
+# so rebuild.sh has no way to drive it. Rebuild auth-gateway via wip-deploy.
 SERVICE_DEFS=(
     "registry:wip-registry:8001:components/registry"
     "def-store:wip-def-store:8002:components/def-store"
@@ -50,14 +53,13 @@ SERVICE_DEFS=(
     "reporting-sync:wip-reporting-sync:8005:components/reporting-sync"
     "ingest-gateway:wip-ingest-gateway:8006:components/ingest-gateway:/api/ingest-gateway/health"
     "mcp-server:wip-mcp-server:8006:components/mcp-server"
-    "console:wip-console:0:ui/wip-console"
 )
 
 # Rebuild order (same as startup order)
-SERVICE_ORDER=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server console)
+SERVICE_ORDER=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server)
 
 # Services that use wip-auth (bind-mounted, but may cache .pyc)
-LIBS_SERVICES=(registry def-store template-store document-store reporting-sync ingest-gateway)
+LIBS_SERVICES=(registry def-store template-store document-store reporting-sync)
 
 # Infrastructure compose files (only rebuilt with --all)
 INFRA_COMPOSE=(
@@ -102,7 +104,10 @@ while [[ $# -gt 0 ]]; do
             echo ""
             echo "Services:"
             echo "  registry, def-store, template-store, document-store,"
-            echo "  reporting-sync, ingest-gateway, mcp-server, console"
+            echo "  reporting-sync, ingest-gateway, mcp-server"
+            echo ""
+            echo "  Not listed (no standalone compose): auth-gateway."
+            echo "  Rebuild via wip-deploy."
             echo ""
             echo "Options:"
             echo "  --all       Rebuild everything including infrastructure"
