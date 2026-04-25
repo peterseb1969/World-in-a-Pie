@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
-
 API = "/api/template-store"
 
 

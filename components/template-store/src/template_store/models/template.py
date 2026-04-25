@@ -1,8 +1,8 @@
 """Template model for the Template Store service."""
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from beanie import Document
 from pydantic import BaseModel, Field
@@ -12,7 +12,7 @@ from .field import FieldDefinition
 from .rule import ValidationRule
 
 
-class TemplateUsage(str, Enum):
+class TemplateUsage(StrEnum):
     """How a template's documents are intended to be used.
 
     - entity (default): full document lifecycle, the v1.x behaviour.
@@ -223,7 +223,7 @@ class Template(Document):
 
     class Settings:
         name = "templates"
-        indexes = [
+        indexes: ClassVar[list[IndexModel]] = [
             # Unique (template_id, version) within namespace — stable ID across versions
             IndexModel([("namespace", 1), ("template_id", 1), ("version", 1)], unique=True, name="ns_template_id_version_unique_idx"),
             # Unique value+version within namespace
