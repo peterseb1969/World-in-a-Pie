@@ -10,7 +10,18 @@ This command relies ONLY on durable artifacts — files on disk, git history, WI
 
 ### Steps
 
-#### 1. Check git state
+#### 1. Reload baseline context (mandatory)
+
+Compaction wipes prior reads. The same baseline that `/setup` enforces at session start must be reloaded here as concrete tool calls — do not substitute "I remember from training" for actually running the reads:
+
+- `Read` `docs/Vision.md` — the theses; without them, drift toward use-case-specific solutions becomes invisible.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six PoNIFs. Conventional assumptions cause silent failures against these.
+- `ReadMcpResourceTool server=wip uri=wip://data-model` — what entities exist in WIP and how they're shaped.
+- `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
+
+Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
+
+#### 2. Check git state
 ```
 git log --oneline -20    # What was committed recently?
 git status               # Any uncommitted work?
@@ -19,7 +30,7 @@ git diff --stat          # What's changed but not committed?
 
 Uncommitted changes are the most fragile state — they survived compaction only because they're on disk, but they haven't been saved to git yet. Note them carefully.
 
-#### 2. Identify the active component
+#### 3. Identify the active component
 From git log and uncommitted changes, determine which component or library was being worked on. Look at file paths in recent commits and diffs:
 - `components/registry/` → Registry service
 - `components/def-store/` → Def-Store service
@@ -34,13 +45,13 @@ From git log and uncommitted changes, determine which component or library was b
 - `ui/wip-console/` → Vue 3 Console UI
 - `scripts/` → Setup/tooling scripts
 
-#### 3. Check roadmap for priorities
+#### 4. Check roadmap for priorities
 Read `docs/roadmap.md` to understand current priorities and what was likely being worked on.
 
-#### 4. Check for design documents
+#### 5. Check for design documents
 If recent commits reference a feature, check `docs/design/` for the relevant design document. This gives context on intent and scope.
 
-#### 5. Report to user
+#### 6. Report to user
 Present a concise recovery summary:
 
 ```

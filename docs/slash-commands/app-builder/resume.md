@@ -10,7 +10,18 @@ This command relies ONLY on durable artifacts — files on disk, git history, WI
 
 ### Steps
 
-#### 1. Check durable documentation
+#### 1. Reload baseline context (mandatory)
+
+Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as concrete tool calls — do not substitute "I remember from training" for actually running the reads:
+
+- `ReadMcpResourceTool server=wip uri=wip://development-guide` — the four-phase process for building on WIP. **Golden Rule: Never modify WIP. Only consume its APIs.** This is the single most important boundary for an APP-YAC; reload it.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six PoNIFs. Conventional assumptions cause silent failures.
+- `ReadMcpResourceTool server=wip uri=wip://data-model` — entity shapes in WIP.
+- `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
+
+Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
+
+#### 2. Check durable documentation
 Read the app's documentation files (if they exist):
 - `README.md` — what this app does
 - `ARCHITECTURE.md` — how it's structured, key decisions
@@ -20,7 +31,7 @@ Read the app's documentation files (if they exist):
 
 If none of these exist, you're likely in early phases (before Phase 4).
 
-#### 2. Check git state
+#### 3. Check git state
 ```
 git log --oneline -20    # What was committed recently?
 git status               # Any uncommitted work?
@@ -29,20 +40,20 @@ git diff --stat          # What's changed but not committed?
 
 Uncommitted changes are the most fragile state — they survived compaction only because they're on disk, but they haven't been saved to git yet. Note them carefully.
 
-#### 3. Check WIP state
+#### 4. Check WIP state
 Run the same checks as `/wip-status`:
 - `get_wip_status` — are services healthy?
 - `list_terminologies` — what vocabularies exist?
 - `list_templates` — what document schemas exist?
 - `query_by_template(template_value)` for each active template — how many documents?
 
-#### 4. Check seed files
+#### 5. Check seed files
 If `data-model/` exists:
 - Compare seed files against WIP state
 - If they match: Phases 2-3 are complete
 - If WIP has entities not in seed files: either Phase 3 was done without export, or work is in progress
 
-#### 5. Determine current phase
+#### 6. Determine current phase
 Use the evidence to determine where you are:
 
 | Evidence | Phase |
@@ -53,14 +64,14 @@ Use the evidence to determine where you are:
 | App scaffold exists in `src/` | Phase 4 (Application Layer) in progress |
 | App has multiple committed features, tests pass | Phase 4 complete, now in `/improve` mode |
 
-#### 6. Reconstruct task state
+#### 7. Reconstruct task state
 Based on all of the above, determine:
 - What phase you're in
 - What's been completed (committed work, data in WIP)
 - What's in progress (uncommitted changes)
 - What's next (the logical next step in the current phase)
 
-#### 7. Report to user
+#### 8. Report to user
 Present a concise recovery summary:
 
 ```
