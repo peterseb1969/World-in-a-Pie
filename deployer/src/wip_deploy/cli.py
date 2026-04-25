@@ -702,6 +702,92 @@ def status(
 
 
 # ────────────────────────────────────────────────────────────────────
+# rebuild
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def rebuild(
+    services: Annotated[
+        list[str],
+        typer.Argument(
+            help=(
+                "One or more service names to rebuild (matches keys under "
+                "`services:` in the rendered docker-compose.yaml). At least "
+                "one is required."
+            ),
+        ),
+    ],
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Compose install directory. Defaults to "
+                "~/.wip-deploy/<name>/."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str, _name_opt()] = "default",
+    no_wait: Annotated[
+        bool,
+        typer.Option(
+            "--no-wait",
+            help="Don't poll for healthy after rebuild.",
+        ),
+    ] = False,
+    wait_timeout: Annotated[
+        int,
+        typer.Option(
+            "--wait-timeout",
+            help="Seconds to wait for healthy (default 120).",
+        ),
+    ] = 120,
+) -> None:
+    """Rebuild and recreate one or more services in an existing install.
+
+    Compose/dev only. Reads the rendered docker-compose.yaml under the
+    install directory (no spec, no render — the install must already
+    exist) and runs `compose up -d --build --force-recreate <svc>...`
+    for the requested services. Polls `compose ps` until each service
+    with a healthcheck reports healthy unless `--no-wait` is set.
+
+    For Dockerfile or requirements.txt edits — bind-mounted source is
+    already live without a rebuild; just `podman restart wip-<svc>`.
+
+    Examples:
+
+      wip-deploy rebuild mcp-server
+      wip-deploy rebuild registry def-store --name wip-dev-local
+    """
+    from wip_deploy.apply import ApplyError, rebuild_compose_services
+
+    target_dir = install_dir or _default_install_dir(name)
+
+    if not services:
+        typer.echo("error: at least one service name is required", err=True)
+        raise typer.Exit(2)
+
+    try:
+        rebuild_compose_services(
+            install_dir=target_dir,
+            services=list(services),
+            wait=not no_wait,
+            timeout_seconds=wait_timeout,
+        )
+    except ApplyError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    rebuilt = ", ".join(services)
+    typer.echo(
+        typer.style(
+            f"✓ Rebuilt {rebuilt}", fg=typer.colors.GREEN, bold=True
+        )
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
 # nuke
 # ────────────────────────────────────────────────────────────────────
 

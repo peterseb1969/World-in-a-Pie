@@ -135,6 +135,7 @@ def _run_up(
     compose_cmd: list[str],
     *,
     force_build: bool = False,
+    services: list[str] | None = None,
 ) -> None:
     cmd = [
         *compose_cmd,
@@ -144,6 +145,8 @@ def _run_up(
     ]
     if force_build:
         cmd.extend(["--build", "--force-recreate"])
+    if services:
+        cmd.extend(services)
     try:
         subprocess.run(
             cmd,
@@ -154,6 +157,114 @@ def _run_up(
         raise ApplyError(
             f"{compose_cmd[0]} up failed (exit {e.returncode})"
         ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Per-service rebuild
+# ────────────────────────────────────────────────────────────────────
+
+
+def rebuild_compose_services(
+    *,
+    install_dir: Path,
+    services: list[str],
+    wait: bool = True,
+    timeout_seconds: int = 120,
+) -> None:
+    """Rebuild + recreate one or more services in an existing compose install.
+
+    Reads ``<install_dir>/docker-compose.yaml`` (no spec, no render — the
+    install must already exist) and runs ``compose up -d --build
+    --force-recreate <svc>...`` for the requested services. Optionally
+    polls ``compose ps`` until each service with a healthcheck reports
+    healthy.
+
+    This is the per-service equivalent of ``apply_compose``'s ``_run_up``
+    — useful when you've changed a single component's source/Dockerfile
+    and want to rebuild that container without re-running the full
+    install over every service.
+
+    Raises ApplyError if the install directory or compose file is
+    missing, if any requested service is not in the compose, or if
+    ``compose up`` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    available = _services_in_compose(compose_file)
+    unknown = [s for s in services if s not in available]
+    if unknown:
+        raise ApplyError(
+            "unknown service(s): "
+            + ", ".join(unknown)
+            + ". Available: "
+            + ", ".join(sorted(available))
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    _run_up(install_dir, compose_cmd, force_build=True, services=services)
+
+    if not wait:
+        return
+
+    expected = {f"wip-{s}" for s in services if _service_has_healthcheck(compose_file, s)}
+    if not expected:
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        statuses = _compose_ps(install_dir, compose_cmd)
+        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
+        if not unhealthy:
+            return
+        time.sleep(2)
+
+    # Don't raise — caller decides what to do. Surface unhealthy names
+    # in the message for the CLI to print.
+    raise ApplyError(
+        "health check timed out for: "
+        + ", ".join(sorted(n for n in expected if _compose_ps(install_dir, compose_cmd).get(n) != "healthy"))
+    )
+
+
+def _services_in_compose(compose_file: Path) -> set[str]:
+    """Read the service keys from a rendered docker-compose.yaml."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError) as e:
+        raise ApplyError(f"could not parse {compose_file}: {e}") from e
+    if not isinstance(data, dict):
+        return set()
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return set()
+    return {str(k) for k in services}
+
+
+def _service_has_healthcheck(compose_file: Path, service: str) -> bool:
+    """Return True if the named service declares a healthcheck."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return False
+    svc = services.get(service)
+    if not isinstance(svc, dict):
+        return False
+    return "healthcheck" in svc
 
 
 # ────────────────────────────────────────────────────────────────────

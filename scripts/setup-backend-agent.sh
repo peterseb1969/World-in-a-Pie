@@ -477,24 +477,21 @@ The architecture is **spec → config_gen → per-target renderers.** The spec (
 
 ---
 
-## 7. Operational Restart — `scripts/rebuild.sh`
+## 7. Operational Restart — picking the right tool
 
-Python modules installed editable (`pip install -e`) into a container's venv are baked into the image at build time. **Code changes on disk do not propagate to running containers until the image is rebuilt.** This is the #1 cause of "I shipped the fix — why doesn't it work?" after a commit.
+Code changes on disk reach running containers through one of three paths, each cheap to slow. Pick the smallest one that covers your edit.
 
-```bash
-bash scripts/rebuild.sh                        # Rebuild all component services
-bash scripts/rebuild.sh mcp-server             # Rebuild one service
-bash scripts/rebuild.sh registry def-store     # Rebuild several
-bash scripts/rebuild.sh --libs                 # Rebuild all services importing wip-auth (after libs/wip-auth/ changes)
-bash scripts/rebuild.sh --all                  # Include infrastructure (mongo, postgres, nats, caddy, dex)
-bash scripts/rebuild.sh --no-cache             # Force full rebuild; ignore layer cache
-```
+**Source-only edit, dev mode (the common case)** — `podman restart wip-<svc>`. wip-deploy v2 dev mode bind-mounts every backend service's `src/` into the container read-only. A restart re-imports the modules and picks up the new code in ~3 s. No rebuild needed.
 
-When to use: after editing component source, after editing `libs/wip-auth/` (with `--libs`), after pulling a commit that changed service code. Do **not** use for `.env` or config-only changes — those need `podman-compose down && up -d` to recreate containers, not rebuild the image.
+**Dockerfile or `requirements.txt` edit** — `wip-deploy rebuild <svc>`. Reads the rendered `~/.wip-deploy/<name>/docker-compose.yaml` and runs `compose up -d --build --force-recreate <svc>` for that service only. Polls for healthy by default; pass `--no-wait` to skip. Multiple services: `wip-deploy rebuild registry def-store`.
+
+**Spec or component-manifest edit** (`wip-component.yaml`, presets, secrets, network) — `wip-deploy install --target dev`. Renders the full stack and reapplies. Slower but correct when the deployment shape changes.
+
+**Never** use the per-component `components/<svc>/docker-compose.yml` files directly — they're vestigial standalone composes from the pre-wip-deploy-v2 era and conflict with the wip-deploy-managed containers.
 
 Canonical sequence for "I just shipped a fix, verify it works":
-1. `bash scripts/rebuild.sh <component>` — rebuild the image with the new code
-2. `/wip-status` — confirm the service is healthy after restart
+1. `podman restart wip-<svc>` — or `wip-deploy rebuild <svc>` if Dockerfile/requirements changed
+2. `/wip-status` — confirm the service is healthy
 3. **Run the actual code path the fix touches** — not just the health endpoint. See §4.2.
 
 ---
