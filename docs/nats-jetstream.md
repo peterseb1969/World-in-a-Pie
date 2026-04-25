@@ -297,6 +297,59 @@ All events follow this structure:
 | `wip.templates.created` | `template.created` | New template created |
 | `wip.templates.updated` | `template.updated` | Template updated |
 
+### Relationship Documents — Enriched Payload
+
+Documents whose template has `usage: "relationship"` (see [`docs/design/document-relationships.md`](design/document-relationships.md)) carry an enriched event payload so external subscribers (Snowflake, BigQuery, custom ETL) can rebuild edges without round-tripping back to WIP.
+
+The envelope (`event_id`, `event_type`, `timestamp`, `source`, `document`) is unchanged. Three additions appear inside `document` for relationship documents only:
+
+| Field | Location | Meaning |
+|---|---|---|
+| `template_usage` | top-level of `document` | mirrors the template's `usage` flag — always `"relationship"` here. Subscribers can route on this without inspecting the template. |
+| `data.source_ref_resolved` | inside `data` | canonical `document_id` of the source endpoint (resolved through Registry, never a synonym). |
+| `data.target_ref_resolved` | inside `data` | canonical `document_id` of the target endpoint. |
+| `data.source_template_value` | inside `data` | template `value` of the source endpoint (e.g., `"EXPERIMENT"`) — saves a template-store lookup. |
+| `data.target_template_value` | inside `data` | template `value` of the target endpoint (e.g., `"MOLECULE"`). |
+
+The original `data.source_ref` / `data.target_ref` (whatever the writer submitted — could be a synonym or a canonical ID) stay alongside the resolved fields.
+
+**Example (`document.created` for an EXPERIMENT_INPUT):**
+
+```json
+{
+  "event_id": "evt-019c20d4-...",
+  "event_type": "document.created",
+  "timestamp": "2026-04-25T14:30:00.000Z",
+  "source": "document-store",
+  "document": {
+    "document_id": "019c20d4-...",
+    "namespace": "lab-journal",
+    "template_id": "TPL-...",
+    "template_value": "EXPERIMENT_INPUT",
+    "template_version": 1,
+    "template_usage": "relationship",
+    "version": 1,
+    "status": "active",
+    "data": {
+      "source_ref": "experiment-42",
+      "source_ref_resolved": "019c20d4-aaaa-...",
+      "source_template_value": "EXPERIMENT",
+      "target_ref": "bevacizumab",
+      "target_ref_resolved": "019c20d4-bbbb-...",
+      "target_template_value": "MOLECULE",
+      "role": "catalyst",
+      "quantity": "50µg",
+      "concentration": "10mg/mL",
+      "lot_number": "LOT-2026-0412"
+    }
+  }
+}
+```
+
+Non-relationship documents (`usage: "entity"` — the default) emit the standard payload with no extra fields. **Subscribers must ignore unknown fields** — the envelope is forward-compatible and other usage classes may grow their own enrichments.
+
+When the document-store can't reach template-store at publish time (degraded state, transient failure), the enrichment is skipped and a `WARNING` is logged (`Phase-6 enrichment skipped: get_template(...) raised ...`). The event still publishes with the standard payload — subscribers handling relationship templates should treat `template_usage` as optional and fall back to looking up the template by `template_id` + `template_version` if it's missing.
+
 ### Authentication
 
 > **Development:** No authentication required (open access on localhost).

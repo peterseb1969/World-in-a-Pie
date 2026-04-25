@@ -2,7 +2,9 @@
 
 ## Status
 
-**Speculative — ready to implement.** Derived from Theme 8 of the [v2 design seeds](../../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-v2-design-seeds.md#theme-8-template-usage-annotations-apr-14). Decisions recorded in that file's "Decisions (2026-04-25)" section close all outstanding Theme-8 questions.
+**Implemented as of 2026-04-25** (Phases 0–7 of the implementation plan, commits `2eeb872`..`bb15ee9`). Phase 8 (archetype gating) deferred until Theme 11 lands. Phase 9 (this documentation pass) ships alongside the implementation.
+
+Derived from Theme 8 of the [v2 design seeds](../../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-v2-design-seeds.md#theme-8-template-usage-annotations-apr-14). Decisions recorded in that file's "Decisions (2026-04-25)" section close all outstanding Theme-8 questions.
 
 Companion: [`document-relationships-implementation.md`](document-relationships-implementation.md) — decomposition, sequencing, effort estimates.
 

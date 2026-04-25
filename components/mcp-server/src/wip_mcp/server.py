@@ -535,6 +535,39 @@ Trap: You update a template and immediately create a document — it validates
       against the OLD version from cache.
 Rule: Pass explicit template_version, or wait 5 seconds after template changes.
 
+## 7. Template Usage — Annotation Changes Lifecycle, Not Shape
+Every template carries a `usage` annotation: 'entity' (default), 'reference',
+or 'relationship'. A `usage: relationship` template *looks* like an ordinary
+template with two reference fields (`source_ref`, `target_ref`), but
+document-store treats its writes differently — extra cross-namespace and
+not-archived validation, lazy Mongo indexes on data.source_ref / data.target_ref,
+two new query endpoints (/relationships, /traverse), and reporting-sync
+auto-provisions `source_ref_id` / `target_ref_id` columns on the table.
+
+Trap: You see a template with two `reference_type: document` fields and assume
+      it's just an entity template with foreign keys. You build code that ignores
+      the relationship contract — and then a `cross_namespace_relationship`
+      error fires on a write you thought was a plain document, or columns you
+      didn't declare appear in the reporting table.
+Rule: Always check `template.usage` before reasoning about a template's
+      lifecycle. `usage` is immutable after creation — to change it, create a
+      new template.
+
+## 8. `versioned: false` — Updates Overwrite In Place
+Convention: every write to a WIP document creates a new version, document_id
+stable, full audit trail preserved. Templates can opt out via `versioned: false`:
+documents under that template stay at version=1 forever, updates overwrite the
+existing payload, the previous data is gone. Used for relationship templates
+where the edge identity matters but its history doesn't (e.g. "monster has spell").
+
+Trap: You write code that loads `version=N-1` to compute a diff between
+      versions, or assumes `get_document_versions(id)` returns more than one
+      row. On a `versioned: false` template both fail silently — diff is
+      against nothing, version list has one entry.
+Rule: Check `template.versioned` (defaults to true) before assuming version
+      history exists. If you need history on an edge type, build it on a
+      template with `versioned: true`. `versioned` is immutable after creation.
+
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
 lost these warnings and reverted to conventional assumptions. Signs of drift:
@@ -542,6 +575,10 @@ lost these warnings and reverted to conventional assumptions. Signs of drift:
 - Adding timestamps or run-specific data to documents
 - Treating inactive entities as deleted
 - Not checking per-item results in bulk operations
+- Treating a template with two `reference_type: document` fields as an entity
+  template (it might be a `usage: relationship` template with a stricter contract)
+- Assuming every document update creates a new version (a `versioned: false`
+  template overwrites in place)
 
 If any of these feel natural, re-read this resource.
 """

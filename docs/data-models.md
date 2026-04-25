@@ -355,6 +355,22 @@ class Template(BaseModel):
     status: Literal["draft", "active", "inactive"] = Field(
         default="active"
     )
+    usage: Literal["entity", "reference", "relationship"] = Field(
+        default="entity",
+        description="Usage class — controls validation, query APIs, reporting shape. Immutable after creation."
+    )
+    source_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge source (usage='relationship' only). Immutable after creation."
+    )
+    target_templates: list[str] = Field(
+        default_factory=list,
+        description="Template values allowed as edge target (usage='relationship' only). Immutable after creation."
+    )
+    versioned: bool = Field(
+        default=True,
+        description="True = updates create new versions; False = overwrite in place. Immutable after creation."
+    )
     extends: str | None = Field(
         None,
         description="Parent template_id for inheritance"
@@ -661,6 +677,47 @@ class RuleCondition(BaseModel):
   "created_by": "apikey:legacy"
 }
 ```
+
+### Template Usage Annotation
+
+`usage` is a top-level enum on every template that selects one of three lifecycles:
+
+| `usage` | Meaning | Status |
+|---|---|---|
+| `entity` (default) | Full document lifecycle — what every v1.x template does today. | Shipping |
+| `reference` | Reserved for lightweight LOV documents. Currently behaves like `entity`. | Placeholder |
+| `relationship` | Typed, property-carrying edge between two documents. Enables write-time validation, query APIs, and reporting columns. | Shipping |
+
+**The annotation changes behaviour, not structure.** A relationship template is still a normal template stored in template-store; its documents are still normal MongoDB documents. What changes is what document-store enforces on write, what extra endpoints are reachable, and what columns reporting-sync provisions.
+
+#### Relationship templates (`usage: "relationship"`)
+
+A relationship template MUST declare:
+
+- `source_templates: list[str]` — non-empty list of template values allowed as the source endpoint
+- `target_templates: list[str]` — non-empty list of template values allowed as the target endpoint
+- A reference field named **exactly** `source_ref` (`reference_type: "document"`, `target_templates` matching the template-level list)
+- A reference field named **exactly** `target_ref` (same shape, against the target list)
+
+The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, lazy Mongo indexes (`(template_id, data.source_ref)` and `…target_ref`), and reporting-sync (`source_ref_id` / `target_ref_id` columns) all key on those names. Template-store enforces the shape on every create.
+
+Documents under a relationship template additionally enforce:
+
+- `source_ref` and `target_ref` resolve to documents in templates listed in `source_templates` / `target_templates`
+- Both endpoints live in the same namespace as the relationship document (`cross_namespace_relationship` error otherwise — deferred to post-v2)
+- Neither endpoint is `archived` (`archived_relationship_endpoint` error otherwise)
+
+See `docs/api-conventions.md` for the API surface (the `/relationships` and `/traverse` endpoints) and `docs/design/document-relationships.md` for the design rationale.
+
+#### `versioned: false` lifecycle
+
+`versioned: true` (default) — updates create new versions, full audit trail preserved.
+
+`versioned: false` — updates overwrite the existing document in place; documents stay at `version: 1` forever. The document_id is stable across writes; the previous payload is gone. Useful for relationship templates where the edge identity matters but its history doesn't.
+
+#### Immutability
+
+`usage`, `source_templates`, `target_templates`, and `versioned` are set at template creation and cannot be changed after — flipping them mid-life would silently reshape every existing document's lifecycle (e.g., `versioned: true → false` would orphan version history; `usage: "entity" → "relationship"` would skip validation that was supposed to gate the writes). To change them, create a new template (with a new value); migrate documents explicitly if needed.
 
 ### Template Versioning
 

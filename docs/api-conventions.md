@@ -164,6 +164,78 @@ Codes defined by `PATCH /documents`:
 
 ---
 
+## Relationship Templates
+
+Templates carry a `usage` annotation (`entity` (default), `reference`, `relationship`). Setting `usage: "relationship"` enables the document-relationships feature: cross-document edges with their own properties, validated and queryable through dedicated endpoints. The full design lives at [`docs/design/document-relationships.md`](design/document-relationships.md).
+
+### Template-creation constraints
+
+When `usage == "relationship"`, template-store rejects the create unless **all** of the following hold (each violation surfaces as a per-item bulk error):
+
+1. `source_templates: list[str]` is non-empty — template values allowed as the source endpoint.
+2. `target_templates: list[str]` is non-empty — template values allowed as the target endpoint.
+3. The template declares two reference fields named **exactly** `source_ref` and `target_ref` with `reference_type: "document"` and a `target_templates` list that matches the corresponding template-level list.
+
+The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, Mongo indexes, and reporting-sync all key on those names. Template-store validates the shape on every create.
+
+`source_templates`, `target_templates`, `usage`, and `versioned` are **immutable** after creation. To change them, create a new template (with a new value).
+
+### Document-write validation
+
+On `create_document` (or `update_document`) against a `usage: "relationship"` template, document-store runs two extra checks after standard validation:
+
+| `error_code` (prefix on the error message) | When |
+|---|---|
+| `cross_namespace_relationship` | `source_ref` or `target_ref` resolves to a document in a different namespace than the relationship document. Cross-namespace relationships are deferred to post-v2. |
+| `archived_relationship_endpoint` | `source_ref` or `target_ref` resolves to a document with `status == "archived"`. Endpoints must be active or inactive. |
+
+These codes are returned as the prefix on the per-item `error` string (not as machine-readable `error_code` fields). Branch on the prefix when the distinction matters.
+
+Standard validation (template constraints, type checks, term resolution, reference resolution via Registry) runs first; the relationship-specific checks fire only after the references have resolved.
+
+### `versioned: false` lifecycle
+
+Set `versioned: false` on a relationship template to make updates **overwrite in place** instead of creating new versions. Documents under such a template stay at `version: 1` forever; the document_id is stable, but no history is preserved.
+
+This is the right shape for relationships where the edge identity matters but its history doesn't (e.g., "monster has spell" in a bestiary). Concurrency on the in-place path is governed by the existing `if_match` token — strongly recommended for high-write workloads.
+
+`versioned` defaults to `true` (standard versioning) and is immutable after template creation.
+
+### Query endpoints
+
+Two GET endpoints expose the relationship graph from a seed document. Both require `read` permission on the seed's namespace.
+
+#### `GET /api/document-store/documents/{id}/relationships`
+
+Returns relationship documents pointing at or from `{id}`. Backed by lazy Mongo indexes on `(template_id, data.source_ref)` and `(template_id, data.target_ref)`.
+
+| Query parameter | Values | Default |
+|---|---|---|
+| `direction` | `incoming` \| `outgoing` \| `both` | `both` |
+| `template` | comma-separated relationship template values | all relationship templates |
+| `namespace` | namespace prefix | the seed document's namespace |
+| `active_only` | `true` \| `false` | `true` |
+| `page`, `page_size` | standard pagination | 1, 50 (max 500) |
+
+Response: `DocumentListResponse` (same shape as `list_documents`). Endpoints are not auto-resolved — caller follows refs.
+
+#### `GET /api/document-store/documents/{id}/traverse`
+
+BFS expansion through relationship documents from `{id}`. At each hop, finds relationship documents touching the current frontier and adds the *other* endpoint document_ids to the next frontier. Visited documents are skipped (cycles terminate).
+
+| Query parameter | Values | Default |
+|---|---|---|
+| `depth` | 1..**10** (hard cap) | 1 |
+| `types` | comma-separated relationship template values | all |
+| `direction` | `outgoing` \| `incoming` \| `both` | `outgoing` |
+| `namespace` | namespace prefix | the seed document's namespace |
+
+**Safety bounds:** `depth` is capped at 10 by FastAPI request validation; the response also fires a `truncated: true` flag if the BFS hits the internal `max_nodes=1000` ceiling. Anything deeper or wider is an analytical query that belongs in the Postgres reporting layer (`run_report_query`).
+
+The MongoDB-only invariant holds: both endpoints work with reporting-sync stopped. Postgres `source_ref_id` / `target_ref_id` columns (added by reporting-sync for relationship templates) are an analytics convenience, not a functional dependency.
+
+---
+
 ## Idempotent Bootstrap
 
 App bootstrap scripts need to provision a namespace and a set of templates against any WIP instance and re-run cleanly. Two endpoints support this directly so callers don't have to fake idempotency with `GET → 404 → POST` dances.

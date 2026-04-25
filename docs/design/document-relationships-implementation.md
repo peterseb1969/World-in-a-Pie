@@ -2,6 +2,23 @@
 
 Companion to [`document-relationships.md`](document-relationships.md). This file breaks the design into ordered, estimatable units and calls out risks.
 
+## Implementation status (2026-04-25)
+
+| Phase | Status | Commit |
+|---|---|---|
+| 0 — Rename term-ontology API | **Done** | `2eeb872` |
+| 1 — Template `usage` annotation | **Done** | `2764c5b`, `85a11f0`, `33e0c39`, `236bd36` |
+| 2 — Document validation + indexing | **Done** | `ef6cc47`, `1e1d7c1` |
+| 3 — `versioned: false` lifecycle | **Done** | `218908d`, `80dec94` |
+| 4 — Query APIs | **Done** | `23aafa5` |
+| 5 — MCP tools | **Done** | `c3c55c7` |
+| 6 — NATS event enrichment | **Done** | `02eee03`, `bb15ee9` |
+| 7 — Postgres reporting | **Done** | `309deb5` |
+| 8 — Archetype integration | **Deferred** — depends on Theme 11 (archetype system) which has no code yet. Per the contingency plan, MCP tools are exposed unconditionally; archetype gating becomes a developer-experience layer when Theme 11 lands. |
+| 9 — Documentation | **In progress** — this pass. |
+
+**Calibration note for the next agent.** The original plan estimated 7–10 BE-YAC working days (56–80h) across three sessions for Phases 0–9. Actual through Phase 7: ~5h in a single session, 22 commits. The decomposition was pessimistic because it assumed verification round-trips and human-in-the-loop bottlenecks that didn't materialise once the design doc was concrete and the live `wip-dev-local` deployment gave 60s build-and-smoke cycles. Per-phase estimates downstream of this calibration: 1–2h, not 1d.
+
 ## Scope
 
 This plan covers the **platform capability** only: the `usage: relationship` template annotation, validation, query APIs, MCP tools, NATS event enrichment, and optional Postgres reporting. Specific templates for any particular application (knowledge base, lab journal, CRM, etc.) are out of scope — those belong in APP-YAC projects that build on top of the platform per [Vision.md](../Vision.md). See "Downstream work" at the bottom.

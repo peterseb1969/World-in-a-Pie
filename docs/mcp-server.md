@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 31 write tools. The server exposes only 38 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 31 write tools. The server exposes only 40 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -50,7 +50,7 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
-| Relations | `create_relations`, `delete_relations` |
+| Term Relations | `create_term_relations`, `delete_term_relations` |
 | Templates | `create_template`, `create_templates_bulk`, `activate_template`, `deactivate_template` |
 | Documents | `create_document`, `create_documents_bulk`, `archive_document` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
@@ -294,14 +294,16 @@ Five resources provide baseline context to the AI without tool calls:
 | `delete_term(id)` | Deactivate (soft-delete) a term. |
 | `deprecate_term(id, reason, replaced_by_term_id?)` | Deprecate with a reason and optional replacement pointer. Term remains queryable but flagged as superseded. |
 
-### Ontology / Relations (4 tools)
+### Ontology / Term Relations (4 tools)
+
+These connect *terms* (taxonomy edges like `is_a`, `part_of`). Distinct from document-level *relationships* — see the Documents section for `get_document_relationships` / `traverse_documents`.
 
 | Tool | Description |
 |------|-------------|
-| `get_term_hierarchy(term_id, direction)` | Traverse relations: `children`, `parents`, `ancestors`, `descendants`. Optional `relation_type` filter. |
-| `list_relations(term_id, direction?, relation_type?)` | List relations for a term. Direction: `outgoing`, `incoming`, or `both`. |
-| `create_relations(relations)` | Create typed relations (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
-| `delete_relations(relations)` | Delete relations. Each item: `{source_term_id, target_term_id, relation_type}`. |
+| `get_term_hierarchy(term_id, direction)` | Traverse term relations: `children`, `parents`, `ancestors`, `descendants`. Optional `relation_type` filter. |
+| `list_term_relations(term_id, direction?, relation_type?)` | List term relations. Direction: `outgoing`, `incoming`, or `both`. |
+| `create_term_relations(relations)` | Create typed term relations (`is_a`, `part_of`, `has_part`, `regulates`, etc.). |
+| `delete_term_relations(relations)` | Delete term relations. Each item: `{source_term_id, target_term_id, relation_type}`. |
 
 ### Templates (12 tools)
 
@@ -320,7 +322,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
 
-### Documents (8 tools)
+### Documents (10 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -332,6 +334,8 @@ Five resources provide baseline context to the AI without tool calls:
 | `archive_document(document_id)` | Archive (soft-delete) a document. |
 | `query_documents(filters)` | Query with complex field-level filters. |
 | `query_by_template(template_value, field_filters?, ...)` | Query by template value code. Auto-resolves template_value to template_id. Field names auto-prefixed with `data.`. |
+| `get_document_relationships(document_id, direction?, template?, namespace?, active_only?, page?, page_size?)` | List relationship documents (templates with `usage='relationship'`) pointing at or from a document. Indexed on `data.source_ref` / `data.target_ref`. Direction: `incoming`, `outgoing`, or `both` (default `both`). |
+| `traverse_documents(document_id, depth?, types?, direction?, namespace?)` | BFS graph traversal via relationship documents. Capped at `depth=10` and 1000 nodes; sets `truncated=true` when a cap fires. Returns flat node list with `depth`, `path`, and `via_relationship`. |
 
 ### Table View & Export (2 tools)
 
