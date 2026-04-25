@@ -366,7 +366,13 @@ def create_mock_template_store_client():
     """
     mock_client = AsyncMock(spec=TemplateStoreClient)
 
-    async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True):
+    async def mock_get_template(template_id=None, template_value=None, resolve_inheritance=True, version=None):
+        # `version` accepted to match the real client signature
+        # (template_store_client.TemplateStoreClient.get_template); we
+        # ignore it here because SAMPLE_TEMPLATES holds one version per
+        # template. Phase-6 enrichment in document_service calls with
+        # version= so silently dropping it would lose the enrichment
+        # payload (test caught this).
         if template_id and template_id in SAMPLE_TEMPLATES:
             return SAMPLE_TEMPLATES[template_id]
         # Also try looking up by value

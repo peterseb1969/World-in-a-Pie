@@ -860,7 +860,15 @@ class DocumentService:
                 template_id=document.template_id,
                 version=document.template_version,
             )
-        except Exception:
+        except Exception as exc:
+            # Log loudly so a degraded template-store (or a test mock that
+            # doesn't match the real signature) doesn't silently drop the
+            # enrichment for relationship docs. Production behaviour stays
+            # safe — a missed enrichment is better than a missed event.
+            logger.warning(
+                "Phase-6 enrichment skipped: get_template(%s) raised %s",
+                document.template_id, exc,
+            )
             template = None
 
         usage = (template or {}).get("usage", "entity")
