@@ -73,11 +73,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-import json
 import time
 from pathlib import Path
 from typing import Any
-from datetime import datetime
 
 import requests
 import urllib3
@@ -88,7 +86,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Add seed-data module to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "components"))
 
-from seed_data import terminologies, templates, documents, generators, performance
+from seed_data import documents, performance, templates, terminologies  # noqa: E402  (sys.path mutated above)
 
 
 def field_name_to_label(name: str) -> str:
@@ -259,7 +257,7 @@ class ServiceClient:
         except Exception as e:
             return False, f"ERROR ({e})"
 
-    def get(self, path: str, params: dict = None) -> dict:
+    def get(self, path: str, params: dict | None = None) -> dict:
         """HTTP GET request."""
         start = time.perf_counter()
         resp = self.session.get(f"{self.base_url}{path}", params=params, timeout=30)
@@ -338,7 +336,7 @@ class WIPSeeder:
         api_key: str = "",
         host: str = DEFAULT_HOST,
         proxy_port: int = 8443,
-        urls: dict[str, str] = None,
+        urls: dict[str, str] | None = None,
         dry_run: bool = False,
         namespace: str = "wip",
         time_limit: float | None = None,
@@ -367,6 +365,9 @@ class WIPSeeder:
         # Track created resources
         self.created_terminologies: dict[str, str] = {}  # value -> id
         self.created_templates: dict[str, str] = {}  # value -> id
+        # Per-template document_id list, populated during seed_documents.
+        # Used by seed_relationship_documents to pick endpoint refs.
+        self._docs_by_template: dict[str, list[str]] = {}
         self.created_term_ids: dict[str, dict[str, str]] = {}  # terminology_value -> {term_value -> term_id}
         self.created_documents: list[str] = []
 
@@ -638,6 +639,17 @@ class WIPSeeder:
                     "created_by": "seed_script"
                 }
 
+                # Forward relationship-template metadata when present.
+                # Immutable after create; safe to omit for entity templates.
+                if template_def.get("usage") and template_def["usage"] != "entity":
+                    create_data["usage"] = template_def["usage"]
+                if template_def.get("source_templates"):
+                    create_data["source_templates"] = template_def["source_templates"]
+                if template_def.get("target_templates"):
+                    create_data["target_templates"] = template_def["target_templates"]
+                if "versioned" in template_def and template_def["versioned"] is not True:
+                    create_data["versioned"] = template_def["versioned"]
+
                 if extends_id:
                     create_data["extends"] = extends_id
 
@@ -737,6 +749,7 @@ class WIPSeeder:
                     for r in result.get("results", []):
                         if r.get("document_id"):
                             self.created_documents.append(r["document_id"])
+                            self._docs_by_template.setdefault(template_value, []).append(r["document_id"])
                             stats["documents"] += 1
                             stats["by_template"][template_value]["created"] += 1
                         else:
@@ -972,6 +985,373 @@ class WIPSeeder:
 
         return stats
 
+    def seed_relationship_documents(self) -> dict[str, int]:
+        """Seed relationship documents (usage='relationship' templates).
+
+        Picks endpoint document_ids from self._docs_by_template (populated
+        by seed_documents) and posts edges for each profile-defined count.
+        Skipped if no entity documents have been created yet.
+        """
+        stats = {"documents": 0, "errors": 0, "by_template": {}, "skipped": []}
+
+        print("\nSeeding relationship documents...")
+        rel_counts = documents.get_relationship_counts(self.profile)
+
+        # Edge generators — produce a list of (data) dicts given lists of
+        # source/target document_ids and a count. Each edge picks a
+        # random source/target pair plus type-appropriate edge properties.
+        def _gen_employee_manages(sources: list[str], targets: list[str], n: int) -> list[dict]:
+            import random
+            from datetime import date, timedelta
+            edges = []
+            seen = set()
+            attempts = 0
+            # Distinct (manager, report) pairs; allow self-loops to exercise
+            # the design doc's open question on relationship-to-self.
+            while len(edges) < n and attempts < n * 10:
+                attempts += 1
+                src = random.choice(sources)
+                tgt = random.choice(targets)
+                if (src, tgt) in seen:
+                    continue
+                seen.add((src, tgt))
+                edges.append({
+                    "source_ref": src,
+                    "target_ref": tgt,
+                    "since": (date.today() - timedelta(days=random.randint(30, 1825))).isoformat(),
+                    "reporting_type": random.choice(["direct", "dotted_line"]),
+                })
+            return edges
+
+        def _gen_order_contains(sources: list[str], targets: list[str], n: int) -> list[dict]:
+            import random
+            edges = []
+            seen = set()
+            attempts = 0
+            while len(edges) < n and attempts < n * 10:
+                attempts += 1
+                src = random.choice(sources)
+                tgt = random.choice(targets)
+                if (src, tgt) in seen:
+                    continue
+                seen.add((src, tgt))
+                edges.append({
+                    "source_ref": src,
+                    "target_ref": tgt,
+                    "quantity": random.randint(1, 25),
+                    "unit_price": round(random.uniform(5.0, 500.0), 2),
+                })
+            return edges
+
+        edge_generators = {
+            "EMPLOYEE_MANAGES": ("EMPLOYEE", "EMPLOYEE", _gen_employee_manages),
+            "ORDER_CONTAINS": ("ORDER", "PRODUCT", _gen_order_contains),
+        }
+
+        for rel_value, count in rel_counts.items():
+            template_id = self.created_templates.get(rel_value)
+            if not template_id:
+                print(f"  {rel_value}: SKIPPED (template not found — was the template phase run?)")
+                stats["skipped"].append(rel_value)
+                continue
+
+            spec = edge_generators.get(rel_value)
+            if not spec:
+                print(f"  {rel_value}: SKIPPED (no edge generator defined)")
+                stats["skipped"].append(rel_value)
+                continue
+
+            src_template, tgt_template, gen_fn = spec
+            sources = self._docs_by_template.get(src_template, [])
+            targets = self._docs_by_template.get(tgt_template, [])
+            if not sources or not targets:
+                print(f"  {rel_value}: SKIPPED (need {src_template} + {tgt_template} entity docs first; have {len(sources)}/{len(targets)})")
+                stats["skipped"].append(rel_value)
+                continue
+
+            stats["by_template"][rel_value] = {"created": 0, "errors": 0}
+
+            if self.dry_run:
+                print(f"  [DRY-RUN] Would create {count} {rel_value} edges from {len(sources)} sources / {len(targets)} targets")
+                stats["documents"] += count
+                continue
+
+            edges = gen_fn(sources, targets, count)
+            if len(edges) < count:
+                print(f"  {rel_value}: only {len(edges)}/{count} unique pairs available")
+
+            batch_size = 50
+            for i in range(0, len(edges), batch_size):
+                batch = edges[i:i + batch_size]
+                batch_data = [
+                    {"template_id": template_id, "namespace": self.namespace, "data": data, "created_by": "seed_script"}
+                    for data in batch
+                ]
+                try:
+                    result = self.document_store.post(
+                        "/api/document-store/documents",
+                        batch_data,
+                    )
+                    for r in result.get("results", []):
+                        if r.get("document_id"):
+                            self.created_documents.append(r["document_id"])
+                            self._docs_by_template.setdefault(rel_value, []).append(r["document_id"])
+                            stats["documents"] += 1
+                            stats["by_template"][rel_value]["created"] += 1
+                        else:
+                            stats["errors"] += 1
+                            stats["by_template"][rel_value]["errors"] += 1
+                            err = (r.get("error") or "")[:120]
+                            if err:
+                                print(f"  {rel_value}: per-item error — {err}")
+                except requests.HTTPError as e:
+                    detail = ""
+                    try:
+                        body = e.response.json()
+                        detail = str(body.get("detail", ""))[:200]
+                    except Exception:
+                        pass
+                    print(f"  {rel_value}: batch error — {e} {detail}")
+                    stats["errors"] += len(batch)
+                    stats["by_template"][rel_value]["errors"] += len(batch)
+                except Exception as e:
+                    print(f"  {rel_value}: batch error — {e}")
+                    stats["errors"] += len(batch)
+                    stats["by_template"][rel_value]["errors"] += len(batch)
+
+            s = stats["by_template"][rel_value]
+            print(f"  {rel_value}: {s['created']} created, {s['errors']} errors")
+
+        return stats
+
+    def seed_term_relations(self) -> dict[str, int]:
+        """Seed ontology term-relations on the DEPARTMENT terminology.
+
+        Mirrors DEPARTMENT.parent_value chain as is_a edges. Exercises the
+        Phase-0-renamed /api/def-store/ontology/term-relations surface
+        (CASE-61). Idempotent — skipped per-edge if it already exists.
+        """
+        stats = {"relations_created": 0, "errors": 0, "skipped": 0}
+
+        print("\nSeeding ontology term-relations (DEPARTMENT is_a chain)...")
+
+        dept_id = self.created_terminologies.get("DEPARTMENT")
+        if not dept_id:
+            print("  SKIPPED (DEPARTMENT terminology not found)")
+            return stats
+
+        if self.dry_run:
+            print("  [DRY-RUN] Would create is_a edges for DEPARTMENT children")
+            stats["relations_created"] = 8  # rough count from terminologies.py
+            return stats
+
+        # Fetch terms in DEPARTMENT to map value -> term_id
+        try:
+            resp = self.def_store.get(
+                f"/api/def-store/terminologies/{dept_id}/terms",
+                params=self._ns_params(page_size=200),
+            )
+            terms_by_value = {t["value"]: t["term_id"] for t in resp.get("items", [])}
+        except Exception as e:
+            print(f"  ERROR fetching DEPARTMENT terms: {e}")
+            stats["errors"] += 1
+            return stats
+
+        # Build is_a edges: child -> parent based on parent_value in seed defs.
+        from seed_data import terminologies as term_module
+        dept_def = term_module.get_terminology_by_value("DEPARTMENT")
+        edges: list[dict[str, str]] = []
+        for term_def in dept_def.get("terms", []):
+            parent_value = term_def.get("parent_value")
+            if not parent_value:
+                continue
+            child_id = terms_by_value.get(term_def["value"])
+            parent_id = terms_by_value.get(parent_value)
+            if child_id and parent_id:
+                edges.append({
+                    "source_term_id": child_id,
+                    "target_term_id": parent_id,
+                    "relation_type": "is_a",
+                })
+
+        if not edges:
+            print("  SKIPPED (no DEPARTMENT parent chain — terms may not be seeded yet)")
+            return stats
+
+        try:
+            result = self.def_store.post(
+                "/api/def-store/ontology/term-relations",
+                edges,
+                params=self._ns_params(),
+            )
+            for r in result.get("results", []):
+                status_str = r.get("status", "")
+                if status_str == "created":
+                    stats["relations_created"] += 1
+                elif status_str in ("unchanged", "skipped"):
+                    stats["skipped"] += 1
+                else:
+                    stats["errors"] += 1
+                    err = (r.get("error") or "")[:120]
+                    if err:
+                        print(f"  per-item error: {err}")
+            print(f"  Term-relations: {stats['relations_created']} created, {stats['skipped']} skipped, {stats['errors']} errors")
+        except Exception as e:
+            print(f"  ERROR: {e}")
+            stats["errors"] = len(edges)
+
+        return stats
+
+    def verify_relationships(self) -> dict[str, Any]:
+        """Smoke-test the new relationship query paths against seeded data.
+
+        Touches each Phase-4..7 code path with at least one assertion so a
+        regression in any of them surfaces in routine seeding output.
+        """
+        results: dict[str, Any] = {"checks": [], "errors": 0}
+
+        print("\nVerifying relationship APIs...")
+
+        if self.dry_run:
+            print("  [DRY-RUN] Would call /relationships, /traverse, get_document_versions, run_report_query")
+            return results
+
+        def _check(name: str, ok: bool, detail: str = "") -> None:
+            mark = "OK" if ok else "FAIL"
+            print(f"  [{mark}] {name}{(' — ' + detail) if detail else ''}")
+            results["checks"].append({"name": name, "ok": ok, "detail": detail})
+            if not ok:
+                results["errors"] += 1
+
+        # 1. /relationships on a manager (any EMPLOYEE that appears as source_ref)
+        managers = self._docs_by_template.get("EMPLOYEE", [])
+        if managers:
+            sample_mgr = managers[0]
+            try:
+                resp = self.document_store.get(
+                    f"/api/document-store/documents/{sample_mgr}/relationships",
+                    params={"namespace": self.namespace, "direction": "outgoing", "page_size": 10},
+                )
+                count = len(resp.get("items", []))
+                _check("get /relationships?direction=outgoing", True, f"{count} edges from sample employee")
+            except Exception as e:
+                _check("get /relationships?direction=outgoing", False, str(e)[:120])
+
+        # 2. /traverse with depth=2 on the same manager
+        if managers:
+            try:
+                resp = self.document_store.get(
+                    f"/api/document-store/documents/{managers[0]}/traverse",
+                    params={"namespace": self.namespace, "depth": 2, "direction": "outgoing"},
+                )
+                node_count = len(resp.get("nodes", []))
+                truncated = resp.get("truncated", False)
+                _check("get /traverse?depth=2", True, f"{node_count} nodes (truncated={truncated})")
+            except Exception as e:
+                _check("get /traverse?depth=2", False, str(e)[:120])
+
+        # 3. versioned=false: update an ORDER_CONTAINS doc twice and assert version stays at 1.
+        order_contains_docs = self._docs_by_template.get("ORDER_CONTAINS", [])
+        oc_template_id = self.created_templates.get("ORDER_CONTAINS")
+        if order_contains_docs and oc_template_id:
+            sample_oc = order_contains_docs[0]
+            try:
+                # Fetch current document to get source/target refs (re-post replaces in place).
+                current = self.document_store.get(
+                    f"/api/document-store/documents/{sample_oc}",
+                    params={"namespace": self.namespace},
+                )
+                cur_data = current.get("data", {})
+                # Re-post the same identity with a different unit_price twice.
+                for new_price in (99.99, 199.99):
+                    self.document_store.post(
+                        "/api/document-store/documents",
+                        [{
+                            "template_id": oc_template_id,
+                            "namespace": self.namespace,
+                            "data": {**cur_data, "unit_price": new_price},
+                            "created_by": "seed_script_versioned_false_check",
+                        }],
+                    )
+                # Now verify only one version exists.
+                versions = self.document_store.get(
+                    f"/api/document-store/documents/{sample_oc}/versions",
+                    params={"namespace": self.namespace},
+                )
+                vlist = versions.get("versions") or []
+                cur_version = versions.get("current_version", -1)
+                _check(
+                    "versioned=false (ORDER_CONTAINS): 1 version after 2 updates",
+                    len(vlist) == 1 and cur_version == 1,
+                    f"got versions={len(vlist)} current_version={cur_version}",
+                )
+            except Exception as e:
+                _check("versioned=false (ORDER_CONTAINS): 1 version after 2 updates", False, str(e)[:120])
+
+        # 4. Reporting: source_ref_id / target_ref_id columns populated on
+        # the relationship template's table. All services share the same
+        # Caddy URL — reuse the document-store client's base URL.
+        try:
+            # Give reporting-sync a moment to consume the NATS events from
+            # the relationship-document phase.
+            time.sleep(2.0)
+            rs_client = ServiceClient(self.urls["document-store"], self.api_key, verify_ssl=False)
+            rq = rs_client.post(
+                "/api/reporting-sync/query",
+                {"sql": "SELECT source_ref_id, target_ref_id FROM doc_order_contains LIMIT 5"},
+            )
+            rows = rq.get("rows", [])
+            non_null = sum(1 for r in rows if r.get("source_ref_id") and r.get("target_ref_id"))
+            _check(
+                "reporting: doc_order_contains source/target_ref_id populated",
+                non_null > 0,
+                f"{non_null}/{len(rows)} rows populated",
+            )
+        except Exception as e:
+            _check("reporting: doc_order_contains source/target_ref_id populated", False, str(e)[:120])
+
+        # 5. Negative case: archived endpoint should reject with archived_relationship_endpoint.
+        em_template_id = self.created_templates.get("EMPLOYEE_MANAGES")
+        employees = self._docs_by_template.get("EMPLOYEE", [])
+        if em_template_id and len(employees) >= 2:
+            archive_target = employees[-1]
+            try:
+                # Archive one employee via the bulk archive endpoint.
+                self.document_store.post(
+                    "/api/document-store/documents/archive",
+                    [{"id": archive_target, "archived_by": "seed_script_negative_check"}],
+                )
+                # Try to create an EMPLOYEE_MANAGES edge that points at that
+                # archived employee. Expected: per-item error with
+                # `archived_relationship_endpoint` prefix.
+                manager_id = employees[0]
+                result = self.document_store.post(
+                    "/api/document-store/documents",
+                    [{
+                        "template_id": em_template_id,
+                        "namespace": self.namespace,
+                        "data": {
+                            "source_ref": manager_id,
+                            "target_ref": archive_target,
+                            "since": "2025-01-01",
+                            "reporting_type": "direct",
+                        },
+                        "created_by": "seed_script_negative_check",
+                    }],
+                )
+                r = result.get("results", [{}])[0]
+                err_str = r.get("error", "") or ""
+                rejected = r.get("status") == "error" and "archived_relationship_endpoint" in err_str
+                _check(
+                    "negative: archived_relationship_endpoint enforced",
+                    rejected,
+                    f"got status={r.get('status')} error={err_str[:120]}",
+                )
+            except Exception as e:
+                _check("negative: archived_relationship_endpoint enforced", False, str(e)[:120])
+
+        return results
+
     def run_benchmarks(self) -> performance.BenchmarkReport:
         """Run performance benchmarks."""
         print("\nRunning performance benchmarks...")
@@ -995,7 +1375,6 @@ class WIPSeeder:
 
         # Benchmark document operations
         print("  Benchmarking document creation...")
-        doc_count = min(100, len(documents.generate_documents_for_template("PERSON", 100)))
 
         # Get a template_id for testing
         template_id = self.created_templates.get("PERSON")
@@ -1357,6 +1736,22 @@ def main():
         total_stats["documents"] = stats
         print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
+    # Seed relationship documents — needs entity documents to exist first.
+    # Runs even under time-limit since this is the only path that exercises
+    # the document-relationship feature.
+    if "document-store" in services:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_relationship_documents()
+        total_stats["relationship_documents"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
+    # Seed term-relations (CASE-61 — Phase-0 rename surface coverage).
+    if "def-store" in services and not args.skip_terminologies:
+        phase_start = time.perf_counter()
+        stats = seeder.seed_term_relations()
+        total_stats["term_relations"] = stats
+        print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
     # Seed template versions and versioning tests (skip when time-limited — not useful for perf tests)
     if not args.time_limit:
         if "template-store" in services and not args.skip_templates:
@@ -1369,6 +1764,14 @@ def main():
             phase_start = time.perf_counter()
             stats = seeder.seed_versioning_tests()
             total_stats["versioning_tests"] = stats
+            print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
+
+        # Verify the relationship query/reporting paths against seeded data.
+        # Skip under --time-limit (not useful for perf benchmarks).
+        if "document-store" in services:
+            phase_start = time.perf_counter()
+            stats = seeder.verify_relationships()
+            total_stats["relationship_verification"] = stats
             print(f"  Phase time: {(time.perf_counter() - phase_start) * 1000:.0f}ms")
 
     elapsed = time.time() - start_time
@@ -1396,9 +1799,24 @@ def main():
         time_note = " (time limit reached)" if s.get("time_limited") else ""
         print(f"Documents: {s['documents']} created, {s['errors']} errors{time_note}")
 
+    if "relationship_documents" in total_stats:
+        s = total_stats["relationship_documents"]
+        skipped_note = f", {len(s['skipped'])} skipped" if s.get("skipped") else ""
+        print(f"Relationship documents: {s['documents']} created, {s['errors']} errors{skipped_note}")
+
+    if "term_relations" in total_stats:
+        s = total_stats["term_relations"]
+        print(f"Term relations: {s['relations_created']} created, {s['skipped']} skipped, {s['errors']} errors")
+
     if "versioning_tests" in total_stats:
         s = total_stats["versioning_tests"]
         print(f"Versioning tests: {s['versions_created']} document versions created, {s['errors']} errors")
+
+    if "relationship_verification" in total_stats:
+        s = total_stats["relationship_verification"]
+        passed = sum(1 for c in s.get("checks", []) if c["ok"])
+        total_checks = len(s.get("checks", []))
+        print(f"Relationship verification: {passed}/{total_checks} checks passed, {s['errors']} errors")
 
     # Per-service HTTP timing reports
     seeder.def_store.print_timing_report("Def-Store")

@@ -46,7 +46,18 @@ def get_template_definitions() -> list[dict[str, Any]]:
         ARRAY_HEAVY,
         # Append-only (no identity_fields)
         EVENT_LOG,
+        # Relationship templates (usage='relationship')
+        # Endpoints must already exist before edges are written, so these
+        # are seeded by the post-document relationship phase, not the main
+        # document seeder. They appear here so template-store creates them.
+        EMPLOYEE_MANAGES,
+        ORDER_CONTAINS,
     ]
+
+
+def get_relationship_templates() -> list[dict[str, Any]]:
+    """Return relationship templates (usage='relationship') only."""
+    return [t for t in get_template_definitions() if t.get("usage") == "relationship"]
 
 
 def get_template_by_value(value: str) -> dict[str, Any] | None:
@@ -969,6 +980,82 @@ EVENT_LOG = {
         {"name": "entity_ref", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
         {"name": "details", "type": "string", "mandatory": False, "validation": {"max_length": 10000}},
         {"name": "title", "type": "string", "mandatory": False, "validation": {"max_length": 200}},
+    ],
+    "rules": []
+}
+
+
+# =============================================================================
+# RELATIONSHIP TEMPLATES (usage='relationship')
+# =============================================================================
+# See docs/design/document-relationships.md for the contract:
+#   - usage: "relationship"
+#   - source_templates / target_templates: non-empty lists at template level
+#   - source_ref / target_ref: mandatory document reference fields whose
+#     target_templates match the template-level lists
+#
+# Both templates exercise the validation, query, and reporting paths
+# introduced in commits 2eeb872..bb15ee9.
+
+EMPLOYEE_MANAGES = {
+    "value": "EMPLOYEE_MANAGES",
+    "label": "Employee Manages",
+    "description": "Reporting edge between two EMPLOYEE documents. Self-referencing source/target — exercises the design doc's open question on relationship-to-self. versioned=true (default).",
+    "usage": "relationship",
+    "source_templates": ["EMPLOYEE"],
+    "target_templates": ["EMPLOYEE"],
+    "identity_fields": ["source_ref", "target_ref"],
+    "fields": [
+        {
+            "name": "source_ref",
+            "label": "Manager",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["EMPLOYEE"],
+            "mandatory": True,
+        },
+        {
+            "name": "target_ref",
+            "label": "Direct Report",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["EMPLOYEE"],
+            "mandatory": True,
+        },
+        {"name": "since", "label": "Since", "type": "date", "mandatory": False},
+        {"name": "reporting_type", "label": "Reporting Type", "type": "term", "terminology_ref": "REPORTING_TYPE", "mandatory": False},
+    ],
+    "rules": []
+}
+
+ORDER_CONTAINS = {
+    "value": "ORDER_CONTAINS",
+    "label": "Order Contains Product",
+    "description": "Line-item edge between an ORDER and a PRODUCT. versioned=false — line-item updates overwrite in place; no version history.",
+    "usage": "relationship",
+    "versioned": False,
+    "source_templates": ["ORDER"],
+    "target_templates": ["PRODUCT"],
+    "identity_fields": ["source_ref", "target_ref"],
+    "fields": [
+        {
+            "name": "source_ref",
+            "label": "Order",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["ORDER"],
+            "mandatory": True,
+        },
+        {
+            "name": "target_ref",
+            "label": "Product",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["PRODUCT"],
+            "mandatory": True,
+        },
+        {"name": "quantity", "label": "Quantity", "type": "integer", "mandatory": True, "validation": {"minimum": 1, "maximum": 1000}},
+        {"name": "unit_price", "label": "Unit Price", "type": "number", "mandatory": False, "validation": {"minimum": 0}},
     ],
     "rules": []
 }
