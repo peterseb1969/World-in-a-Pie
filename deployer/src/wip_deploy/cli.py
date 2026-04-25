@@ -824,6 +824,18 @@ def nuke(
             ),
         ),
     ] = False,
+    remove_images: Annotated[
+        bool,
+        typer.Option(
+            "--remove-images",
+            help=(
+                "Remove every image referenced by the compose's "
+                "services.*.image entries (or, with --purge-all, every "
+                "wip-* image on the host). Frees disk; forces the next "
+                "install to re-pull or re-build."
+            ),
+        ),
+    ] = False,
     secrets_location: Annotated[
         Path | None,
         typer.Option(
@@ -839,9 +851,10 @@ def nuke(
         typer.Option(
             "--purge-all",
             help=(
-                "Nuclear: remove every wip-* container, pod, and (with "
-                "--remove-data) volume on this host, regardless of compose "
-                "project. Use for cross-install cleanup (v1 leftovers)."
+                "Nuclear: remove every wip-* container, pod, network, and "
+                "(with --remove-data) volume on this host, regardless of "
+                "compose project. Use for cross-install cleanup (v1 "
+                "leftovers)."
             ),
         ),
     ] = False,
@@ -863,7 +876,12 @@ def nuke(
     With `--purge-all`, removes every wip-* container/pod on the host.
     """
     if purge_all:
-        _nuke_purge_all(remove_data=remove_data, dry_run=dry_run, yes=yes)
+        _nuke_purge_all(
+            remove_data=remove_data,
+            remove_images=remove_images,
+            dry_run=dry_run,
+            yes=yes,
+        )
         return
 
     target_dir = install_dir or _default_install_dir(name)
@@ -874,6 +892,8 @@ def nuke(
     typer.echo(f"Install dir:   {target_dir}")
     if remove_data:
         typer.echo(typer.style("  + data volumes will be removed", fg=typer.colors.YELLOW))
+    if remove_images:
+        typer.echo(typer.style("  + images will be removed (next install re-pulls/builds)", fg=typer.colors.YELLOW))
     if remove_secrets:
         typer.echo(
             typer.style(
@@ -890,6 +910,7 @@ def nuke(
             remove_data=remove_data,
             secrets_location=target_secrets,
             remove_secrets=remove_secrets,
+            remove_images=remove_images,
         )
     except NukeError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
@@ -898,7 +919,9 @@ def nuke(
     typer.echo(typer.style(f"✓ {report.summary()}", fg=typer.colors.GREEN))
 
 
-def _nuke_purge_all(*, remove_data: bool, dry_run: bool, yes: bool) -> None:
+def _nuke_purge_all(
+    *, remove_data: bool, remove_images: bool, dry_run: bool, yes: bool
+) -> None:
     typer.echo(
         typer.style("Purge-all scans for every wip-* resource on this host.", bold=True)
     )
@@ -909,13 +932,24 @@ def _nuke_purge_all(*, remove_data: bool, dry_run: bool, yes: bool) -> None:
                 fg=typer.colors.YELLOW,
             )
         )
+    if remove_images:
+        typer.echo(
+            typer.style(
+                "  + every wip-* image on this host will be removed",
+                fg=typer.colors.YELLOW,
+            )
+        )
     if dry_run:
         typer.echo("  + dry-run: nothing will be removed")
     if not yes and not dry_run and not _confirm("Continue?"):
         raise typer.Exit(0)
 
     try:
-        report = nuke_purge_all(remove_data=remove_data, dry_run=dry_run)
+        report = nuke_purge_all(
+            remove_data=remove_data,
+            remove_images=remove_images,
+            dry_run=dry_run,
+        )
     except NukeError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
@@ -926,6 +960,10 @@ def _nuke_purge_all(*, remove_data: bool, dry_run: bool, yes: bool) -> None:
         typer.echo(f"  pods:       {', '.join(report.pods_removed)}")
     if report.volumes_removed:
         typer.echo(f"  volumes:    {', '.join(report.volumes_removed)}")
+    if report.networks_removed:
+        typer.echo(f"  networks:   {', '.join(report.networks_removed)}")
+    if report.images_removed:
+        typer.echo(f"  images:     {', '.join(report.images_removed)}")
     typer.echo(
         typer.style(
             f"✓ {'dry-run: ' if dry_run else ''}{report.summary()}",

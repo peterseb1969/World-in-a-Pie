@@ -13,8 +13,11 @@ import pytest
 
 from wip_deploy.nuke import (
     NukeError,
+    _images_in_compose,
+    _looks_like_wip_image,
     _looks_like_wip_pod,
     _looks_like_wip_volume,
+    _networks_in_compose,
     nuke_install_dir,
     nuke_purge_all,
 )
@@ -266,7 +269,275 @@ class TestPurgeAll:
 
         nuke_purge_all(remove_data=False)
 
-        # ps, pod scanned; volume not
+        # ps, pod, network scanned; volume not (no --remove-data)
         assert "ps" in queried
         assert "pod" in queried
+        assert "network" in queried
         assert "volume" not in queried
+
+
+# ────────────────────────────────────────────────────────────────────
+# Image classification + parsing
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestImageClassification:
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "wip-registry:dev",
+            "registry:dev",
+            "def-store:latest",
+            "mcp-server:dev",
+            "auth-gateway:1.2.3",
+            "ghcr.io/peterseb1969/wip-registry:v1.1.0",
+            "ghcr.io/peterseb1969/registry:v1.1.0",
+            "localhost/mcp-server:dev",
+            "docker.io/some-org/wip-foo:latest",
+        ],
+    )
+    def test_matches(self, image: str) -> None:
+        assert _looks_like_wip_image(image) is True
+
+    @pytest.mark.parametrize(
+        "image",
+        [
+            "mongo:7.0",
+            "postgres:16",
+            "minio/minio:latest",
+            "ghcr.io/random/totally-unrelated:1.0",
+            "alpine:3.19",
+        ],
+    )
+    def test_does_not_match(self, image: str) -> None:
+        assert _looks_like_wip_image(image) is False
+
+
+class TestImagesInCompose:
+    def test_collects_unique_image_values(self, tmp_path: Path) -> None:
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text(
+            """
+services:
+  registry:
+    image: registry:dev
+  def-store:
+    image: def-store:dev
+  mcp-server:
+    image: mcp-server:dev
+  also-mcp:
+    image: mcp-server:dev
+"""
+        )
+        images = _images_in_compose(compose)
+        assert images == ["registry:dev", "def-store:dev", "mcp-server:dev"]
+
+    def test_skips_services_without_image(self, tmp_path: Path) -> None:
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text(
+            """
+services:
+  built-locally:
+    build: ./components/foo
+  with-image:
+    image: registry:dev
+"""
+        )
+        assert _images_in_compose(compose) == ["registry:dev"]
+
+    def test_returns_empty_for_malformed(self, tmp_path: Path) -> None:
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("not: [valid yaml structure")
+        assert _images_in_compose(compose) == []
+
+
+class TestNetworksInCompose:
+    def test_uses_explicit_name_override(self, tmp_path: Path) -> None:
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text(
+            """
+services: {}
+networks:
+  default-key:
+    name: wip-network
+  other:
+    driver: bridge
+"""
+        )
+        networks = _networks_in_compose(compose)
+        # default-key has a name override → wip-network. other has no
+        # override → uses the key.
+        assert "wip-network" in networks
+        assert "other" in networks
+
+
+# ────────────────────────────────────────────────────────────────────
+# remove_images integration via nuke_install_dir
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNukeInstallDirRemoveImages:
+    def _make_install_dir_with_images(
+        self, tmp_path: Path, images: list[str]
+    ) -> Path:
+        d = tmp_path / "install"
+        d.mkdir()
+        services = "\n".join(
+            f"  svc{i}:\n    image: {img}" for i, img in enumerate(images)
+        )
+        (d / "docker-compose.yaml").write_text(
+            f"services:\n{services}\nnetworks:\n  wip-network:\n    name: wip-network\n"
+        )
+        return d
+
+    def test_remove_images_calls_rmi_for_each(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rmi_calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):  # type: ignore[no-untyped-def]
+            import subprocess
+            if "rmi" in cmd:
+                rmi_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, returncode=0)
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir_with_images(
+            tmp_path, ["registry:dev", "mcp-server:dev"]
+        )
+        report = nuke_install_dir(install, remove_images=True)
+
+        assert sorted(report.images_removed) == ["mcp-server:dev", "registry:dev"]
+        # Exactly one rmi call per image.
+        assert len(rmi_calls) == 2
+
+    def test_remove_images_off_skips_rmi(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rmi_calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):  # type: ignore[no-untyped-def]
+            import subprocess
+            if "rmi" in cmd:
+                rmi_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir_with_images(tmp_path, ["registry:dev"])
+        report = nuke_install_dir(install, remove_images=False)
+
+        assert report.images_removed == []
+        assert rmi_calls == []
+
+    def test_network_sweep_attempts_each_declared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        net_calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):  # type: ignore[no-untyped-def]
+            import subprocess
+            if "network" in cmd and "rm" in cmd:
+                net_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir_with_images(tmp_path, ["registry:dev"])
+        report = nuke_install_dir(install)
+
+        # The compose declares one network (wip-network) — sweep tries to
+        # remove it. Whether it succeeds depends on returncode=0 above.
+        assert net_calls and net_calls[0][-1] == "wip-network"
+        assert report.networks_removed == ["wip-network"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# purge-all with images + networks
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPurgeAllImagesNetworks:
+    def test_remove_images_collects_wip_images(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_ls_names(args):  # type: ignore[no-untyped-def]
+            if args[0] == "ps":
+                return []
+            if args[0] == "pod":
+                return []
+            if args[0] == "network":
+                return ["wip-network", "bridge", "host"]
+            if args[0] == "images":
+                return [
+                    "registry:dev",
+                    "mcp-server:dev",
+                    "ghcr.io/peterseb1969/wip-registry:v1",
+                    "mongo:7.0",
+                    "postgres:16",
+                ]
+            return []
+
+        rmi_calls: list[list[str]] = []
+        net_calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):  # type: ignore[no-untyped-def]
+            import subprocess
+            if "rmi" in cmd:
+                rmi_calls.append(cmd)
+            if "network" in cmd and "rm" in cmd:
+                net_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", fake_ls_names)
+        monkeypatch.setattr("wip_deploy.nuke._podman", lambda args: None)
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        report = nuke_purge_all(remove_images=True)
+
+        # All three wip-* images filtered in, mongo/postgres filtered out.
+        assert sorted(report.images_removed) == [
+            "ghcr.io/peterseb1969/wip-registry:v1",
+            "mcp-server:dev",
+            "registry:dev",
+        ]
+        assert len(rmi_calls) == 3
+        # Networks: only wip-network filtered in (bridge + host filtered out).
+        assert report.networks_removed == ["wip-network"]
+        assert len(net_calls) == 1
+
+    def test_dry_run_does_not_invoke_rmi(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_ls_names(args):  # type: ignore[no-untyped-def]
+            if args[0] == "images":
+                return ["registry:dev", "mongo:7.0"]
+            if args[0] == "network":
+                return ["wip-network"]
+            return []
+
+        rmi_calls: list[list[str]] = []
+
+        def fake_run(cmd, cwd=None, check=False, capture_output=False, text=False):  # type: ignore[no-untyped-def]
+            import subprocess
+            if "rmi" in cmd:
+                rmi_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", fake_ls_names)
+        monkeypatch.setattr("wip_deploy.nuke._podman", lambda args: None)
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        report = nuke_purge_all(remove_images=True, dry_run=True)
+
+        # Reported but not actually removed.
+        assert report.images_removed == ["registry:dev"]
+        assert report.networks_removed == ["wip-network"]
+        assert rmi_calls == []
