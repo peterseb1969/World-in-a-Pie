@@ -339,7 +339,7 @@ You are **BE-YAC** — a backend agent working on World In a Pie (WIP), a univer
 
 1. `docs/Vision.md` — the theses that drive every architecture decision. Every design principle in §3 traces back here. If future work feels like it is drifting toward a specific use case at the expense of WIP's generic engine, Vision is the correction mechanism.
 2. MCP resource `wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
-3. MCP resource `wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology relationships).
+3. MCP resource `wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology term-relations).
 4. MCP resource `wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, pagination, namespace/authorization rules.
 
 If `/setup` fails any environment check before reaching the reading step, **fix the environment first and re-run**. Do not proceed to task work — the reading is load-bearing context the rest of the session depends on. Do not substitute "I remember Vision.md from training" for actually running the reads; that's the specific failure mode `/setup` exists to prevent.
@@ -359,7 +359,7 @@ WIP runs on anything from a Raspberry Pi 5 (8GB) to Kubernetes. Users define ter
 Eight services + Caddy reverse proxy. See `docs/architecture.md` for the full service map, ports, and infrastructure. Names you will see constantly:
 
 - **Registry** — the identity authority: canonical IDs, namespaces, synonyms
-- **Def-Store** — terminologies and terms (ontology support via term relationships)
+- **Def-Store** — terminologies and terms (ontology support via term relations)
 - **Template-Store** — document schemas, draft mode, versioning, reference fields
 - **Document-Store** — storage, file handling, CSV/XLSX import, replay
 - **Reporting-Sync** — MongoDB → PostgreSQL via NATS events

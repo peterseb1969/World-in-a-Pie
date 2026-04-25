@@ -194,11 +194,11 @@ class TestExportSynonymResolution:
 class TestOntologySynonymResolution:
     """Test synonym resolution on ontology endpoints."""
 
-    async def test_list_relationships_resolves_term_id(self, client, auth_headers):
-        """GET /ontology/relationships?term_id=synonym should resolve."""
+    async def test_list_relations_resolves_term_id(self, client, auth_headers):
+        """GET /ontology/term-relations?term_id=synonym should resolve."""
         with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
             resp = await client.get(
-                "/api/def-store/ontology/relationships"
+                "/api/def-store/ontology/term-relations"
                 "?term_id=STATUS:approved&namespace=test-ns",
                 headers=auth_headers,
             )
@@ -222,31 +222,31 @@ class TestOntologySynonymResolution:
             )
         assert resp.status_code in (200, 404)
 
-    async def test_create_relationships_resolves_term_ids(self, client, auth_headers):
-        """POST /ontology/relationships should resolve source and target term IDs."""
+    async def test_create_relations_resolves_term_ids(self, client, auth_headers):
+        """POST /ontology/term-relations should resolve source and target term IDs."""
         with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
             resp = await client.post(
-                "/api/def-store/ontology/relationships?namespace=test-ns",
+                "/api/def-store/ontology/term-relations?namespace=test-ns",
                 headers=auth_headers,
                 json=[{
                     "source_term_id": "STATUS:approved",
                     "target_term_id": "STATUS:rejected",
-                    "relationship_type": "related_to",
+                    "relation_type": "related_to",
                 }],
             )
         # 200 with per-item error is acceptable, 500 is not
         assert resp.status_code == 200, f"Unexpected: {resp.status_code}"
 
-    async def test_unresolvable_term_in_relationships_logged_not_500(self, client, auth_headers):
+    async def test_unresolvable_term_in_relations_logged_not_500(self, client, auth_headers):
         """Unresolvable term IDs in bulk should not cause 500."""
         with patch("wip_auth.fastapi_helpers.resolve_entity_id", side_effect=mock_resolve):
             resp = await client.post(
-                "/api/def-store/ontology/relationships?namespace=test-ns",
+                "/api/def-store/ontology/term-relations?namespace=test-ns",
                 headers=auth_headers,
                 json=[{
                     "source_term_id": "BADTERM",
                     "target_term_id": "STATUS:approved",
-                    "relationship_type": "is_a",
+                    "relation_type": "is_a",
                 }],
             )
         # bulk_resolve logs failures but doesn't raise — per-item error expected

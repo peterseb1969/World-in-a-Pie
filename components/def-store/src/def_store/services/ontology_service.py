@@ -1,4 +1,4 @@
-"""Ontology service for managing term relationships and traversal."""
+"""Ontology service for managing term relations and traversal."""
 
 import logging
 from collections import deque
@@ -9,41 +9,41 @@ from pymongo.errors import DuplicateKeyError
 from ..api.auth import get_identity_string
 from ..models.api_models import (
     BulkResultItem,
-    CreateRelationshipRequest,
-    DeleteRelationshipRequest,
-    RelationshipResponse,
+    CreateTermRelationRequest,
+    DeleteTermRelationRequest,
+    TermRelationResponse,
     TraversalNode,
     TraversalResponse,
 )
 from ..models.term import Term
-from ..models.term_relationship import TermRelationship
+from ..models.term_relation import TermRelation
 from .nats_client import EventType as NatsEventType
-from .nats_client import publish_relationship_event
+from .nats_client import publish_term_relation_event
 from .registry_client import get_registry_client
 
 logger = logging.getLogger(__name__)
 
 
 class OntologyService:
-    """Service for managing ontology relationships and traversal queries."""
+    """Service for managing ontology relations and traversal queries."""
 
-    # Cache for relationship type values (populated on first use)
-    _relationship_types: dict[str, str] | None = None
+    # Cache for relation type values (populated on first use)
+    _relation_types: dict[str, str] | None = None
 
     # =========================================================================
     # RELATIONSHIP TYPE VALIDATION
     # =========================================================================
 
     @classmethod
-    async def get_valid_relationship_types(cls) -> dict[str, str]:
+    async def get_valid_relation_types(cls) -> dict[str, str]:
         """
-        Load and cache valid relationship types from _ONTOLOGY_RELATIONSHIP_TYPES.
+        Load and cache valid relation types from _ONTOLOGY_RELATIONSHIP_TYPES.
 
         Returns:
             Dict mapping term value → term label (e.g. {"is_a": "Is a"}).
         """
-        if cls._relationship_types is not None:
-            return cls._relationship_types
+        if cls._relation_types is not None:
+            return cls._relation_types
 
         from ..models.terminology import Terminology
 
@@ -61,35 +61,35 @@ class OntologyService:
         }):
             types[term.value] = term.label or term.value
 
-        cls._relationship_types = types
-        logger.info(f"Loaded {len(types)} valid relationship types")
-        return cls._relationship_types
+        cls._relation_types = types
+        logger.info(f"Loaded {len(types)} valid relation types")
+        return cls._relation_types
 
     @classmethod
-    def invalidate_relationship_type_cache(cls) -> None:
+    def invalidate_relation_type_cache(cls) -> None:
         """Invalidate the cache so next call reloads from DB."""
-        cls._relationship_types = None
+        cls._relation_types = None
 
     # =========================================================================
     # RELATIONSHIP CRUD
     # =========================================================================
 
     @staticmethod
-    async def create_relationships(
+    async def create_term_relations(
         namespace: str,
-        items: list[CreateRelationshipRequest],
+        items: list[CreateTermRelationRequest],
     ) -> list[BulkResultItem]:
         """
-        Bulk create relationships between terms.
+        Bulk create relations between terms.
 
-        Validates that source and target terms exist and relationship_type
+        Validates that source and target terms exist and relation_type
         is a valid value from _ONTOLOGY_RELATIONSHIP_TYPES.
         """
         actor = get_identity_string()
         results: list[BulkResultItem] = []
 
-        # Load valid relationship types
-        valid_types = await OntologyService.get_valid_relationship_types()
+        # Load valid relation types
+        valid_types = await OntologyService.get_valid_relation_types()
 
         # Pre-fetch all referenced term IDs for validation
         all_term_ids = set()
@@ -106,21 +106,21 @@ class OntologyService:
 
         for i, item in enumerate(items):
             try:
-                # Validate relationship type
+                # Validate relation type
                 if not valid_types:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error="Cannot validate relationship type: "
+                        error="Cannot validate relation type: "
                               "_ONTOLOGY_RELATIONSHIP_TYPES terminology not found. "
                               "Restart def-store to bootstrap system terminologies."
                     ))
                     continue
-                if item.relationship_type not in valid_types:
+                if item.relation_type not in valid_types:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error=f"Unknown relationship type '{item.relationship_type}'. "
+                        error=f"Unknown relation type '{item.relation_type}'. "
                               f"Valid types: {', '.join(sorted(valid_types.keys()))}"
                     ))
                     continue
@@ -154,13 +154,13 @@ class OntologyService:
                     ))
                     continue
 
-                # Create relationship
-                rel = TermRelationship(
+                # Create relation
+                rel = TermRelation(
                     namespace=namespace,
                     source_term_id=item.source_term_id,
                     target_term_id=item.target_term_id,
-                    relationship_type=item.relationship_type,
-                    relationship_value=item.relationship_type,  # Store value for display
+                    relation_type=item.relation_type,
+                    relation_value=item.relation_type,  # Store value for display
                     source_terminology_id=source_term.terminology_id,
                     target_terminology_id=target_term.terminology_id,
                     metadata=item.metadata,
@@ -174,17 +174,17 @@ class OntologyService:
                 results.append(BulkResultItem(
                     index=i,
                     status="created",
-                    value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                    value=f"{item.source_term_id} --{item.relation_type}--> {item.target_term_id}"
                 ))
 
                 # Publish event to NATS
-                await publish_relationship_event(
-                    NatsEventType.RELATIONSHIP_CREATED,
+                await publish_term_relation_event(
+                    NatsEventType.TERM_RELATION_CREATED,
                     {
                         "namespace": namespace,
                         "source_term_id": item.source_term_id,
                         "target_term_id": item.target_term_id,
-                        "relationship_type": item.relationship_type,
+                        "relation_type": item.relation_type,
                         "source_terminology_id": source_term.terminology_id,
                         "target_terminology_id": target_term.terminology_id,
                         "source_term_value": source_term.value,
@@ -197,12 +197,12 @@ class OntologyService:
                 )
 
             except DuplicateKeyError:
-                # Check if the existing relationship is inactive (soft-deleted) — re-activate it
-                existing = await TermRelationship.find_one({
+                # Check if the existing relation is inactive (soft-deleted) — re-activate it
+                existing = await TermRelation.find_one({
                     "namespace": namespace,
                     "source_term_id": item.source_term_id,
                     "target_term_id": item.target_term_id,
-                    "relationship_type": item.relationship_type,
+                    "relation_type": item.relation_type,
                     "status": "inactive",
                 })
                 if existing:
@@ -211,17 +211,17 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="created",
-                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id} (reactivated)"
+                        value=f"{item.source_term_id} --{item.relation_type}--> {item.target_term_id} (reactivated)"
                     ))
 
                     # Publish reactivation as a create event
-                    await publish_relationship_event(
-                        NatsEventType.RELATIONSHIP_CREATED,
+                    await publish_term_relation_event(
+                        NatsEventType.TERM_RELATION_CREATED,
                         {
                             "namespace": namespace,
                             "source_term_id": item.source_term_id,
                             "target_term_id": item.target_term_id,
-                            "relationship_type": item.relationship_type,
+                            "relation_type": item.relation_type,
                             "source_terminology_id": existing.source_terminology_id,
                             "target_terminology_id": existing.target_terminology_id,
                             "metadata": existing.metadata or {},
@@ -234,10 +234,10 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="skipped",
-                        error=f"Relationship already exists: {item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                        error=f"Relation already exists: {item.source_term_id} --{item.relation_type}--> {item.target_term_id}"
                     ))
             except Exception as e:
-                logger.error(f"Error creating relationship at index {i}: {e}")
+                logger.error(f"Error creating relation at index {i}: {e}")
                 results.append(BulkResultItem(
                     index=i,
                     status="error",
@@ -247,11 +247,11 @@ class OntologyService:
         return results
 
     @staticmethod
-    async def delete_relationships(
+    async def delete_term_relations(
         namespace: str,
-        items: list[DeleteRelationshipRequest],
+        items: list[DeleteTermRelationRequest],
     ) -> list[BulkResultItem]:
-        """Bulk delete relationships. Hard-deletes if requested and namespace allows it."""
+        """Bulk delete relations. Hard-deletes if requested and namespace allows it."""
         results: list[BulkResultItem] = []
 
         # Pre-check deletion_mode if any items request hard-delete
@@ -270,18 +270,18 @@ class OntologyService:
                     ))
                     continue
 
-                rel = await TermRelationship.find_one({
+                rel = await TermRelation.find_one({
                     "namespace": namespace,
                     "source_term_id": item.source_term_id,
                     "target_term_id": item.target_term_id,
-                    "relationship_type": item.relationship_type,
+                    "relation_type": item.relation_type,
                 })
 
                 if not rel:
                     results.append(BulkResultItem(
                         index=i,
                         status="error",
-                        error="Relationship not found"
+                        error="Relation not found"
                     ))
                     continue
 
@@ -289,7 +289,7 @@ class OntologyService:
                     "namespace": namespace,
                     "source_term_id": item.source_term_id,
                     "target_term_id": item.target_term_id,
-                    "relationship_type": item.relationship_type,
+                    "relation_type": item.relation_type,
                     "source_terminology_id": rel.source_terminology_id,
                     "target_terminology_id": rel.target_terminology_id,
                 }
@@ -302,7 +302,7 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="deleted",
-                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                        value=f"{item.source_term_id} --{item.relation_type}--> {item.target_term_id}"
                     ))
                 else:
                     # SOFT DELETE: set status to inactive
@@ -321,17 +321,17 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="deleted",
-                        value=f"{item.source_term_id} --{item.relationship_type}--> {item.target_term_id}"
+                        value=f"{item.source_term_id} --{item.relation_type}--> {item.target_term_id}"
                     ))
 
                 # Publish delete event to NATS
-                await publish_relationship_event(
-                    NatsEventType.RELATIONSHIP_DELETED,
+                await publish_term_relation_event(
+                    NatsEventType.TERM_RELATION_DELETED,
                     event_data,
                 )
 
             except Exception as e:
-                logger.error(f"Error deleting relationship at index {i}: {e}")
+                logger.error(f"Error deleting relation at index {i}: {e}")
                 results.append(BulkResultItem(
                     index=i,
                     status="error",
@@ -341,16 +341,16 @@ class OntologyService:
         return results
 
     @staticmethod
-    async def list_relationships(
+    async def list_term_relations(
         term_id: str,
         ns_filter: dict | None = None,
         direction: str = "outgoing",
-        relationship_type: str | None = None,
+        relation_type: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
-    ) -> tuple[list[RelationshipResponse], int]:
-        """List relationships for a term with pagination."""
+    ) -> tuple[list[TermRelationResponse], int]:
+        """List relations for a term with pagination."""
         query: dict = {"status": status}
         if ns_filter:
             query.update(ns_filter)
@@ -365,28 +365,28 @@ class OntologyService:
                 {"target_term_id": term_id},
             ]
 
-        if relationship_type:
-            query["relationship_type"] = relationship_type
+        if relation_type:
+            query["relation_type"] = relation_type
 
-        total = await TermRelationship.find(query).count()
+        total = await TermRelation.find(query).count()
         skip = (page - 1) * page_size
 
-        rels = await TermRelationship.find(query).skip(skip).limit(page_size).to_list()
+        rels = await TermRelation.find(query).skip(skip).limit(page_size).to_list()
 
         term_lookup = await OntologyService._build_term_lookup(rels)
-        items = [OntologyService._to_relationship_response(r, term_lookup) for r in rels]
+        items = [OntologyService._to_term_relation_response(r, term_lookup) for r in rels]
         return items, total
 
     @staticmethod
-    async def list_all_relationships(
+    async def list_all_term_relations(
         ns_filter: dict | None = None,
-        relationship_type: str | None = None,
+        relation_type: str | None = None,
         source_terminology_id: str | None = None,
         status: str = "active",
         page: int = 1,
         page_size: int = 50,
-    ) -> tuple[list[RelationshipResponse], int]:
-        """List all relationships with pagination (cross-namespace when filter allows)."""
+    ) -> tuple[list[TermRelationResponse], int]:
+        """List all relations with pagination (cross-namespace when filter allows)."""
         query: dict = {"status": status}
         if ns_filter:
             query.update(ns_filter)
@@ -394,16 +394,16 @@ class OntologyService:
         if source_terminology_id:
             query["source_terminology_id"] = source_terminology_id
 
-        if relationship_type:
-            query["relationship_type"] = relationship_type
+        if relation_type:
+            query["relation_type"] = relation_type
 
-        total = await TermRelationship.find(query).count()
+        total = await TermRelation.find(query).count()
         skip = (page - 1) * page_size
 
-        rels = await TermRelationship.find(query).skip(skip).limit(page_size).to_list()
+        rels = await TermRelation.find(query).skip(skip).limit(page_size).to_list()
 
         term_lookup = await OntologyService._build_term_lookup(rels)
-        items = [OntologyService._to_relationship_response(r, term_lookup) for r in rels]
+        items = [OntologyService._to_term_relation_response(r, term_lookup) for r in rels]
         return items, total
 
     # =========================================================================
@@ -414,11 +414,11 @@ class OntologyService:
     async def get_ancestors(
         term_id: str,
         namespace: str,
-        relationship_type: str = "is_a",
+        relation_type: str = "is_a",
         max_depth: int = 10,
     ) -> TraversalResponse:
         """
-        BFS traversal upward — follow outgoing relationships of the given type.
+        BFS traversal upward — follow outgoing relations of the given type.
 
         For is_a, also includes parent_term_id links for backward compatibility.
         """
@@ -426,7 +426,7 @@ class OntologyService:
         return await OntologyService._traverse(
             start_term_id=term_id,
             namespace=namespace,
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             direction="ancestors",
             max_depth=max_depth,
         )
@@ -435,11 +435,11 @@ class OntologyService:
     async def get_descendants(
         term_id: str,
         namespace: str,
-        relationship_type: str = "is_a",
+        relation_type: str = "is_a",
         max_depth: int = 10,
     ) -> TraversalResponse:
         """
-        BFS traversal downward — follow incoming relationships of the given type.
+        BFS traversal downward — follow incoming relations of the given type.
 
         For is_a, also includes children via parent_term_id.
         """
@@ -447,7 +447,7 @@ class OntologyService:
         return await OntologyService._traverse(
             start_term_id=term_id,
             namespace=namespace,
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             direction="descendants",
             max_depth=max_depth,
         )
@@ -456,32 +456,32 @@ class OntologyService:
     async def get_parents(
         term_id: str,
         namespace: str,
-    ) -> list[RelationshipResponse]:
-        """Direct parents only: outgoing is_a relationships + parent_term_id."""
-        results: list[RelationshipResponse] = []
+    ) -> list[TermRelationResponse]:
+        """Direct parents only: outgoing is_a relations + parent_term_id."""
+        results: list[TermRelationResponse] = []
         seen_targets: set[str] = set()
 
-        # From TermRelationship (is_a outgoing)
-        rels = await TermRelationship.find({
+        # From TermRelation (is_a outgoing)
+        rels = await TermRelation.find({
             "namespace": namespace,
             "source_term_id": term_id,
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "status": "active",
         }).to_list()
 
         for r in rels:
-            results.append(OntologyService._to_relationship_response(r))
+            results.append(OntologyService._to_term_relation_response(r))
             seen_targets.add(r.target_term_id)
 
         # From parent_term_id (backward compatibility)
         term = await Term.find_one({"namespace": namespace, "term_id": term_id})
         if term and term.parent_term_id and term.parent_term_id not in seen_targets:
-            results.append(RelationshipResponse(
+            results.append(TermRelationResponse(
                 namespace=namespace,
                 source_term_id=term_id,
                 target_term_id=term.parent_term_id,
-                relationship_type="is_a",
-                relationship_value="is_a (parent_term_id)",
+                relation_type="is_a",
+                relation_value="is_a (parent_term_id)",
                 source_terminology_id=term.terminology_id,
                 status="active",
                 created_at=term.created_at,
@@ -493,21 +493,21 @@ class OntologyService:
     async def get_children(
         term_id: str,
         namespace: str,
-    ) -> list[RelationshipResponse]:
-        """Direct children only: incoming is_a relationships + children via parent_term_id."""
-        results: list[RelationshipResponse] = []
+    ) -> list[TermRelationResponse]:
+        """Direct children only: incoming is_a relations + children via parent_term_id."""
+        results: list[TermRelationResponse] = []
         seen_sources: set[str] = set()
 
-        # From TermRelationship (is_a incoming)
-        rels = await TermRelationship.find({
+        # From TermRelation (is_a incoming)
+        rels = await TermRelation.find({
             "namespace": namespace,
             "target_term_id": term_id,
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "status": "active",
         }).to_list()
 
         for r in rels:
-            results.append(OntologyService._to_relationship_response(r))
+            results.append(OntologyService._to_term_relation_response(r))
             seen_sources.add(r.source_term_id)
 
         # From parent_term_id (backward compatibility)
@@ -519,12 +519,12 @@ class OntologyService:
 
         for child in children:
             if child.term_id not in seen_sources:
-                results.append(RelationshipResponse(
+                results.append(TermRelationResponse(
                     namespace=namespace,
                     source_term_id=child.term_id,
                     target_term_id=term_id,
-                    relationship_type="is_a",
-                    relationship_value="is_a (parent_term_id)",
+                    relation_type="is_a",
+                    relation_value="is_a (parent_term_id)",
                     source_terminology_id=child.terminology_id,
                     status="active",
                     created_at=child.created_at,
@@ -540,15 +540,15 @@ class OntologyService:
     async def _traverse(
         start_term_id: str,
         namespace: str,
-        relationship_type: str,
+        relation_type: str,
         direction: str,
         max_depth: int,
     ) -> TraversalResponse:
         """
         Generic BFS traversal.
 
-        For ancestors: follow source→target (outgoing relationships).
-        For descendants: follow target→source (incoming relationships).
+        For ancestors: follow source→target (outgoing relations).
+        For descendants: follow target→source (incoming relations).
         """
         visited: set[str] = {start_term_id}
         frontier: deque[tuple[str, int, list[str]]] = deque()
@@ -557,7 +557,7 @@ class OntologyService:
 
         nodes: list[TraversalNode] = []
         max_depth_reached = False
-        use_parent_term_id = (relationship_type == "is_a")
+        use_parent_term_id = (relation_type == "is_a")
 
         while frontier:
             current_id, depth, path = frontier.popleft()
@@ -571,10 +571,10 @@ class OntologyService:
 
             if direction == "ancestors":
                 # Outgoing: current is source, targets are ancestors
-                rels = await TermRelationship.find({
+                rels = await TermRelation.find({
                     "namespace": namespace,
                     "source_term_id": current_id,
-                    "relationship_type": relationship_type,
+                    "relation_type": relation_type,
                     "status": "active",
                 }).to_list()
                 for r in rels:
@@ -591,10 +591,10 @@ class OntologyService:
 
             else:  # descendants
                 # Incoming: current is target, sources are descendants
-                rels = await TermRelationship.find({
+                rels = await TermRelation.find({
                     "namespace": namespace,
                     "target_term_id": current_id,
-                    "relationship_type": relationship_type,
+                    "relation_type": relation_type,
                     "status": "active",
                 }).to_list()
                 for r in rels:
@@ -640,7 +640,7 @@ class OntologyService:
 
         return TraversalResponse(
             term_id=start_term_id,
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             direction=direction,
             nodes=nodes,
             total=len(nodes),
@@ -648,11 +648,11 @@ class OntologyService:
         )
 
     @staticmethod
-    def _to_relationship_response(
-        rel: TermRelationship,
+    def _to_term_relation_response(
+        rel: TermRelation,
         term_lookup: dict[str, Term] | None = None,
-    ) -> RelationshipResponse:
-        """Convert a TermRelationship document to an API response."""
+    ) -> TermRelationResponse:
+        """Convert a TermRelation document to an API response."""
         source_term_value = None
         source_term_label = None
         target_term_value = None
@@ -668,12 +668,12 @@ class OntologyService:
                 target_term_value = tgt.value
                 target_term_label = tgt.label
 
-        return RelationshipResponse(
+        return TermRelationResponse(
             namespace=rel.namespace,
             source_term_id=rel.source_term_id,
             target_term_id=rel.target_term_id,
-            relationship_type=rel.relationship_type,
-            relationship_value=rel.relationship_value,
+            relation_type=rel.relation_type,
+            relation_value=rel.relation_value,
             source_terminology_id=rel.source_terminology_id,
             target_terminology_id=rel.target_terminology_id,
             source_term_value=source_term_value,
@@ -687,8 +687,8 @@ class OntologyService:
         )
 
     @staticmethod
-    async def _build_term_lookup(rels: list[TermRelationship]) -> dict[str, Term]:
-        """Batch-fetch term documents for all term IDs referenced in relationships."""
+    async def _build_term_lookup(rels: list[TermRelation]) -> dict[str, Term]:
+        """Batch-fetch term documents for all term IDs referenced in relations."""
         term_ids = set()
         for r in rels:
             term_ids.add(r.source_term_id)

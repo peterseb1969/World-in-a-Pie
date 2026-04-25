@@ -3,7 +3,7 @@
 End-to-end ontology test for World In a Pie.
 
 Tests the full lifecycle:
-1. Create a hand-crafted mini medical ontology with polyhierarchy and typed relationships
+1. Create a hand-crafted mini medical ontology with polyhierarchy and typed relations
 2. Import ICD-10-GM from testdata/ as a real-world terminology with hierarchy
 3. Import HPO (~20k terms, ~24k is_a edges, polyhierarchy, synonyms)
 4. Create templates that reference ontology terms
@@ -131,7 +131,7 @@ def test_mini_ontology():
       - ANATOMY: Heart, Lung, Aorta, Left Ventricle, ...
       - CONDITIONS: Pneumonia, Viral Pneumonia, Heart Failure, ...
 
-    Relationships:
+    Relations:
       - Viral Pneumonia is_a Pneumonia
       - Viral Pneumonia is_a Viral Respiratory Infection  (polyhierarchy!)
       - Heart part_of Circulatory System
@@ -225,10 +225,10 @@ def test_mini_ontology():
 
     print(f"\n  Created {len(term_ids)} entities total")
 
-    # --- Create relationships ---
-    print("\n--- Creating relationships (including polyhierarchy) ---")
+    # --- Create relations ---
+    print("\n--- Creating relations (including polyhierarchy) ---")
 
-    relationships = [
+    relations = [
         # CONDITIONS hierarchy — with polyhierarchy
         ("Respiratory Disease", "Disease", "is_a"),
         ("Cardiac Disease", "Disease", "is_a"),
@@ -254,17 +254,17 @@ def test_mini_ontology():
         {
             "source_term_id": term_ids[src],
             "target_term_id": term_ids[tgt],
-            "relationship_type": rel_type,
+            "relation_type": rel_type,
         }
-        for src, tgt, rel_type in relationships
+        for src, tgt, rel_type in relations
     ]
 
-    resp = req("post", f"{DEF_STORE}/ontology/relationships",
+    resp = req("post", f"{DEF_STORE}/ontology/term-relations",
                 json=rel_requests, params={"namespace": NAMESPACE})
     data = resp.json()
     rel_ok = sum(1 for r in data.get("results", []) if r.get("status") in ("created", "skipped"))
-    check(f"Relationships: {rel_ok}/{len(relationships)} OK",
-          rel_ok == len(relationships),
+    check(f"Relations: {rel_ok}/{len(relations)} OK",
+          rel_ok == len(relations),
           f"total={data.get('total')}, results={[(r.get('status'), (r.get('error') or '')[:50]) for r in data.get('results',[])]}")
 
     # --- Test traversal: ancestors ---
@@ -314,7 +314,7 @@ def test_mini_ontology():
 
     lv_id = term_ids["Left Ventricle"]
     resp = req("get", f"{DEF_STORE}/ontology/terms/{lv_id}/ancestors",
-                params={"namespace": NAMESPACE, "relationship_type": "part_of"})
+                params={"namespace": NAMESPACE, "relation_type": "part_of"})
     data = resp.json()
 
     check("Left Ventricle part_of Heart",
@@ -333,13 +333,13 @@ def test_mini_ontology():
           parent_ids == {term_ids["Pneumonia"], term_ids["Viral Respiratory Infection"]})
 
     # --- Test listing with filters ---
-    print("\n--- Testing relationship listing ---")
+    print("\n--- Testing relation listing ---")
 
-    resp = req("get", f"{DEF_STORE}/ontology/relationships",
+    resp = req("get", f"{DEF_STORE}/ontology/term-relations",
                 params={"term_id": term_ids["Pneumonia"], "direction": "outgoing",
                          "namespace": NAMESPACE})
     data = resp.json()
-    rel_types = {r["relationship_type"] for r in data["items"]}
+    rel_types = {r["relation_type"] for r in data["items"]}
     check("Pneumonia has outgoing is_a and finding_site",
           rel_types == {"is_a", "finding_site"},
           f"got {rel_types}")
@@ -428,27 +428,27 @@ def test_mini_ontology():
                       "site" in term_refs and term_refs["site"]["term_id"] == term_ids["Lung"],
                       f"term_refs={json.dumps(term_refs.get('site', {}))[:200]}")
 
-    # --- Delete a relationship and verify ---
-    print("\n--- Testing relationship deletion ---")
+    # --- Delete a relation and verify ---
+    print("\n--- Testing relation deletion ---")
 
-    # Ensure the relationship exists before deleting (may have been deleted in a previous run)
-    req("post", f"{DEF_STORE}/ontology/relationships",
+    # Ensure the relation exists before deleting (may have been deleted in a previous run)
+    req("post", f"{DEF_STORE}/ontology/term-relations",
         json=[{
             "source_term_id": term_ids["Viral Pneumonia"],
             "target_term_id": term_ids["Viral Respiratory Infection"],
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
         }],
         params={"namespace": NAMESPACE})
 
-    resp = req("delete", f"{DEF_STORE}/ontology/relationships",
+    resp = req("delete", f"{DEF_STORE}/ontology/term-relations",
                 json=[{
                     "source_term_id": term_ids["Viral Pneumonia"],
                     "target_term_id": term_ids["Viral Respiratory Infection"],
-                    "relationship_type": "is_a",
+                    "relation_type": "is_a",
                 }],
                 params={"namespace": NAMESPACE})
     del_data = resp.json()
-    check("Relationship deleted", del_data["results"][0]["status"] == "deleted")
+    check("Relation deleted", del_data["results"][0]["status"] == "deleted")
 
     # Verify ancestors changed (no longer goes through Viral Respiratory Infection)
     resp = req("get", f"{DEF_STORE}/ontology/terms/{vp_id}/ancestors",
@@ -479,7 +479,7 @@ def test_icd10_import():
     Creates:
       - One terminology: ICD-10-GM
       - Terms for chapters, groups, and codes
-      - is_a relationships: code → group → chapter
+      - is_a relations: code → group → chapter
     """
     print("\n" + "=" * 60)
     print("TEST 2: ICD-10-GM Import")
@@ -621,8 +621,8 @@ def test_icd10_import():
     t_terms = time.time() - t0
     print(f"\n  Total terms created: {len(chapter_ids) + len(group_ids) + total_created} in {t_terms:.1f}s")
 
-    # --- Create hierarchy relationships ---
-    print("\n--- Creating hierarchy relationships ---")
+    # --- Create hierarchy relations ---
+    print("\n--- Creating hierarchy relations ---")
     t1 = time.time()
 
     # Group is_a Chapter
@@ -633,13 +633,13 @@ def test_icd10_import():
             group_rels.append({
                 "source_term_id": group_ids[gk],
                 "target_term_id": chapter_ids[ch_key],
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
             })
 
     if group_rels:
         for i in range(0, len(group_rels), 500):
             batch = group_rels[i:i + 500]
-            resp = req("post", f"{DEF_STORE}/ontology/relationships",
+            resp = req("post", f"{DEF_STORE}/ontology/term-relations",
                         json=batch, params={"namespace": NAMESPACE})
             data = resp.json()
             print(f"  Group→Chapter batch: {data.get('succeeded', 0)}/{data.get('total', 0)}")
@@ -651,13 +651,13 @@ def test_icd10_import():
             code_rels.append({
                 "source_term_id": code_ids[code],
                 "target_term_id": group_ids[gk],
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
             })
 
     if code_rels:
         for i in range(0, len(code_rels), 500):
             batch = code_rels[i:i + 500]
-            resp = req("post", f"{DEF_STORE}/ontology/relationships",
+            resp = req("post", f"{DEF_STORE}/ontology/term-relations",
                         json=batch, params={"namespace": NAMESPACE},
                         timeout=60)
             data = resp.json()
@@ -665,7 +665,7 @@ def test_icd10_import():
 
     t_rels = time.time() - t1
     total_rels = len(group_rels) + len(code_rels)
-    print(f"\n  Total relationships: {total_rels} in {t_rels:.1f}s")
+    print(f"\n  Total relations: {total_rels} in {t_rels:.1f}s")
 
     # --- Verify traversal ---
     print("\n--- Verifying traversal ---")
@@ -743,7 +743,7 @@ def test_icd10_import():
     total_time = time.time() - t0
     print(f"\n  ICD-10-GM import complete: {total_time:.1f}s total")
     print(f"  Terms: {len(chapter_ids) + len(group_ids) + total_created}")
-    print(f"  Relationships: {total_rels}")
+    print(f"  Relations: {total_rels}")
 
 
 # ===========================================================================
@@ -769,7 +769,7 @@ def test_hpo_import():
 
     This test exercises:
       1. Large-scale term import (~20k terms in batches)
-      2. Large-scale relationship import (~24k edges in batches)
+      2. Large-scale relation import (~24k edges in batches)
       3. Polyhierarchy traversal (multiple parents per concept)
       4. Synonym import as term aliases
     """
@@ -856,7 +856,7 @@ def test_hpo_import():
             synonym_count += len(item["aliases"])
         term_items.append(item)
 
-    # Map value → term_id for relationship creation
+    # Map value → term_id for relation creation
     value_to_term_id: dict[str, str] = {}
     total_ok = 0
 
@@ -909,8 +909,8 @@ def test_hpo_import():
         if tid:
             uri_to_term_id[uri] = tid
 
-    # --- Import relationships in batches ---
-    print(f"\n--- Importing {len(edges)} is_a relationships (batched) ---")
+    # --- Import relations in batches ---
+    print(f"\n--- Importing {len(edges)} is_a relations (batched) ---")
     t2 = time.time()
 
     REL_BATCH = 500
@@ -923,7 +923,7 @@ def test_hpo_import():
             rel_items.append({
                 "source_term_id": src_id,
                 "target_term_id": tgt_id,
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
             })
         else:
             skipped_edges += 1
@@ -934,7 +934,7 @@ def test_hpo_import():
     total_rel_ok = 0
     for i in range(0, len(rel_items), REL_BATCH):
         batch = rel_items[i:i + REL_BATCH]
-        resp = req("post", f"{DEF_STORE}/ontology/relationships",
+        resp = req("post", f"{DEF_STORE}/ontology/term-relations",
                    json=batch, params={"namespace": NAMESPACE},
                    timeout=120)
         data = resp.json()
@@ -946,7 +946,7 @@ def test_hpo_import():
         print(f"  Batch {batch_num}/{total_batches}: {batch_ok}/{len(batch)} OK")
 
     t_rels = time.time() - t2
-    check(f"Imported {total_rel_ok}/{len(rel_items)} relationships in {t_rels:.1f}s",
+    check(f"Imported {total_rel_ok}/{len(rel_items)} relations in {t_rels:.1f}s",
           total_rel_ok == len(rel_items),
           f"got {total_rel_ok}")
 
@@ -1042,7 +1042,7 @@ def test_hpo_import():
     total_time = time.time() - t0
     print(f"\n  HPO import complete: {total_time:.1f}s total")
     print(f"  Terms: {len(value_to_term_id)}")
-    print(f"  Relationships: {total_rel_ok}")
+    print(f"  Relations: {total_rel_ok}")
     print(f"  Aliases (synonyms): {synonym_count}")
 
 

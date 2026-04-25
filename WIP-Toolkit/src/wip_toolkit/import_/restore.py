@@ -86,17 +86,17 @@ def restore_import(
     ))
     _create_terms(client, target_namespace, terms, batch_size, stats, continue_on_error, term_id_map)
 
-    # Step 2b: Create relationships (after terms exist)
-    relationships = list(reader.read_entities("relationships"))
-    if relationships:
-        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships")
+    # Step 2b: Create term_relations (after terms exist)
+    term_relations = list(reader.read_entities("term_relations"))
+    if term_relations:
+        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating term_relations")
         _emit(progress_callback, ProgressEvent(
-            phase="phase_relationships",
-            message=f"Creating {len(relationships)} relationships",
+            phase="phase_term_relations",
+            message=f"Creating {len(term_relations)} term_relations",
             percent=30.0,
-            total=len(relationships),
+            total=len(term_relations),
         ))
-        _create_relationships(client, target_namespace, relationships, batch_size, stats, continue_on_error)
+        _create_term_relations(client, target_namespace, term_relations, batch_size, stats, continue_on_error)
 
     # Step 3: Create templates as drafts with ID pass-through
     # Remap terminology_ref fields to new IDs
@@ -321,35 +321,35 @@ def _create_terms(
     )
 
 
-def _create_relationships(
+def _create_term_relations(
     client: WIPClient,
     namespace: str,
-    relationships: list[dict],
+    term_relations: list[dict],
     batch_size: int,
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Create relationships via Def-Store ontology API."""
-    from .fresh import _ensure_relationship_types
-    _ensure_relationship_types(client, namespace, relationships, stats)
+    """Create term_relations via Def-Store ontology API."""
+    from .fresh import _ensure_relation_types
+    _ensure_relation_types(client, namespace, term_relations, stats)
     created = 0
     failed = 0
     skipped = 0
 
-    for i in range(0, len(relationships), batch_size):
-        batch = relationships[i:i + batch_size]
+    for i in range(0, len(term_relations), batch_size):
+        batch = term_relations[i:i + batch_size]
         payloads = []
         for r in batch:
             payloads.append({
                 "source_term_id": r["source_term_id"],
                 "target_term_id": r["target_term_id"],
-                "relationship_type": r["relationship_type"],
+                "relation_type": r["relation_type"],
                 "metadata": r.get("metadata") or {},
             })
 
         try:
             result = client.post(
-                "def-store", "/ontology/relationships",
+                "def-store", "/ontology/term-relations",
                 json=payloads,
                 params={"namespace": namespace},
             )
@@ -362,13 +362,13 @@ def _create_relationships(
                     failed += 1
         except WIPClientError as e:
             failed += len(batch)
-            stats.errors.append(f"Failed to create relationship batch at index {i}: {e}")
+            stats.errors.append(f"Failed to create term_relation batch at index {i}: {e}")
             if not continue_on_error:
                 raise
 
-    stats.created.relationships = created
-    stats.failed.relationships = failed
-    stats.skipped.relationships = skipped
+    stats.created.term_relations = created
+    stats.failed.term_relations = failed
+    stats.skipped.term_relations = skipped
     msg = f"  Created {created}"
     if skipped:
         msg += f", skipped {skipped}"
@@ -872,8 +872,8 @@ def _preview(
     counts = manifest.counts
     console.print(f"  Terminologies:  {counts.terminologies}")
     console.print(f"  Terms:          {counts.terms}")
-    if counts.relationships:
-        console.print(f"  Relationships:  {counts.relationships}")
+    if counts.term_relations:
+        console.print(f"  TermRelations:  {counts.term_relations}")
     console.print(f"  Templates:      {counts.templates}")
     if not skip_documents:
         console.print(f"  Documents:     {counts.documents}")

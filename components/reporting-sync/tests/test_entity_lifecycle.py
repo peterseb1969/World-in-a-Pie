@@ -541,13 +541,13 @@ class TestTemplateLifecycle:
 
 
 # =============================================================================
-# Relationship lifecycle: create → soft-delete → recreate → hard-delete
+# Relation lifecycle: create → soft-delete → recreate → hard-delete
 # =============================================================================
 
 
 @requires_e2e
-class TestRelationshipLifecycle:
-    """Relationship: create → soft-delete → recreate → hard-delete."""
+class TestRelationLifecycle:
+    """Relation: create → soft-delete → recreate → hard-delete."""
 
     async def test_full_lifecycle(self, pg_pool, nats_client):
         worker, js, sub = await _make_worker(pg_pool, nats_client)
@@ -556,7 +556,7 @@ class TestRelationshipLifecycle:
             "namespace": "test",
             "source_term_id": "TERM-LC-A",
             "target_term_id": "TERM-LC-B",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "source_term_value": "Cat",
             "target_term_value": "Animal",
             "source_terminology_id": "VOCAB-1",
@@ -567,65 +567,65 @@ class TestRelationshipLifecycle:
         }
 
         # --- Step 1: Create ---
-        await _publish_and_process(worker, js, sub, "wip.relationships", [
-            make_event("relationship.created", "relationship", rel_payload),
+        await _publish_and_process(worker, js, sub, "wip.term_relations", [
+            make_event("term_relation.created", "relation", rel_payload),
         ])
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT * FROM term_relationships
+                """SELECT * FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-LC-A", "TERM-LC-B", "test",
             )
             assert row is not None
-            assert row["relationship_type"] == "is_a"
+            assert row["relation_type"] == "is_a"
             assert row["status"] == "active"
 
         # --- Step 2: Soft-delete ---
-        await _publish_and_process(worker, js, sub, "wip.relationships", [
-            make_event("relationship.deleted", "relationship", {
+        await _publish_and_process(worker, js, sub, "wip.term_relations", [
+            make_event("term_relation.deleted", "relation", {
                 "namespace": "test",
                 "source_term_id": "TERM-LC-A",
                 "target_term_id": "TERM-LC-B",
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
             }),
         ])
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT status FROM term_relationships
+                """SELECT status FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-LC-A", "TERM-LC-B", "test",
             )
             assert row["status"] == "inactive"
 
         # --- Step 3: Recreate (upsert back to active) ---
-        await _publish_and_process(worker, js, sub, "wip.relationships", [
-            make_event("relationship.created", "relationship", rel_payload),
+        await _publish_and_process(worker, js, sub, "wip.term_relations", [
+            make_event("term_relation.created", "relation", rel_payload),
         ])
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT status FROM term_relationships
+                """SELECT status FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-LC-A", "TERM-LC-B", "test",
             )
             assert row["status"] == "active"
 
         # --- Step 4: Hard-delete ---
-        await _publish_and_process(worker, js, sub, "wip.relationships", [
-            make_event("relationship.deleted", "relationship", {
+        await _publish_and_process(worker, js, sub, "wip.term_relations", [
+            make_event("term_relation.deleted", "relation", {
                 "namespace": "test",
                 "source_term_id": "TERM-LC-A",
                 "target_term_id": "TERM-LC-B",
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
                 "hard_delete": True,
             }),
         ])
 
         async with pg_pool.acquire() as conn:
             count = await conn.fetchval(
-                """SELECT COUNT(*) FROM term_relationships
+                """SELECT COUNT(*) FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-LC-A", "TERM-LC-B", "test",
             )

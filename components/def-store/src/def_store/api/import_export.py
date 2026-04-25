@@ -23,15 +23,15 @@ async def export_terminology(
     format: str = Query("json", description="Export format: json, csv"),
     include_metadata: bool = Query(True, description="Include metadata"),
     include_inactive: bool = Query(False, description="Include inactive terms"),
-    include_relationships: bool = Query(False, description="Include ontology relationships"),
+    include_relations: bool = Query(False, description="Include ontology relations"),
     languages: str | None = Query(None, description="Comma-separated language codes"),
     api_key: str = Depends(require_api_key)
 ):
     """
     Export a terminology with all its terms.
 
-    Supports JSON and CSV formats. Use include_relationships=true to include
-    ontology relationships (is_a, part_of, etc.) in JSON exports.
+    Supports JSON and CSV formats. Use include_relations=true to include
+    ontology relations (is_a, part_of, etc.) in JSON exports.
     """
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
 
@@ -43,7 +43,7 @@ async def export_terminology(
             format=format,
             include_metadata=include_metadata,
             include_inactive=include_inactive,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
             languages=language_list
         )
 
@@ -167,7 +167,7 @@ async def import_ontology(
     max_synonyms: int = Query(10, description="Max aliases per term"),
     batch_size: int = Query(1000, description="Terms per MongoDB batch"),
     registry_batch_size: int = Query(50, description="Terms per registry HTTP call"),
-    relationship_batch_size: int = Query(500, description="Relationships per batch"),
+    relation_batch_size: int = Query(500, description="Relations per batch"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
@@ -177,7 +177,7 @@ async def import_ontology(
     Import an OBO Graph JSON ontology (HP, GO, CHEBI, etc.).
 
     Accepts standard OBO Graph JSON format with `graphs[0].nodes[]` and
-    `graphs[0].edges[]`. Parses nodes into terms and edges into relationships.
+    `graphs[0].edges[]`. Parses nodes into terms and edges into relations.
 
     Auto-detects the ontology prefix and metadata from the graph structure.
     For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
@@ -198,7 +198,7 @@ async def import_ontology(
             "max_synonyms": max_synonyms,
             "batch_size": batch_size,
             "registry_batch_size": registry_batch_size,
-            "relationship_batch_size": relationship_batch_size,
+            "relation_batch_size": relation_batch_size,
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
             "created_by": created_by,

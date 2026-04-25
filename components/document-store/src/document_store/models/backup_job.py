@@ -203,7 +203,7 @@ class BackupRequest(BaseModel):
         False, description="Skip the documents phase entirely"
     )
     skip_closure: bool = Field(
-        False, description="Skip the closure-table (relationships) phase"
+        False, description="Skip the closure-table (term-relations) phase"
     )
     skip_synonyms: bool = Field(
         False, description="Skip the synonyms phase"

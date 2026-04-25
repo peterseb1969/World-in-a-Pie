@@ -28,7 +28,7 @@ class EntityCounts(BaseModel):
     """Counts of each entity type in the archive."""
     terminologies: int = 0
     terms: int = 0
-    relationships: int = 0
+    term_relations: int = 0
     templates: int = 0
     documents: int = 0
     files: int = 0
@@ -37,7 +37,7 @@ class EntityCounts(BaseModel):
     @property
     def total(self) -> int:
         return (
-            self.terminologies + self.terms + self.relationships
+            self.terminologies + self.terms + self.term_relations
             + self.templates + self.documents + self.files
             + self.registry_entries
         )

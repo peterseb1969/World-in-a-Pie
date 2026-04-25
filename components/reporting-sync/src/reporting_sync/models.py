@@ -46,9 +46,9 @@ class EventType(StrEnum):
     TERM_DEPRECATED = "term.deprecated"
     TERM_DELETED = "term.deleted"
 
-    # Relationship events (from def-store)
-    RELATIONSHIP_CREATED = "relationship.created"
-    RELATIONSHIP_DELETED = "relationship.deleted"
+    # Term-relation events (from def-store)
+    TERM_RELATION_CREATED = "term_relation.created"
+    TERM_RELATION_DELETED = "term_relation.deleted"
 
 
 class SyncStrategy(StrEnum):

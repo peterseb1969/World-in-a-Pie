@@ -31,8 +31,8 @@ mcp = FastMCP(
         "WIP uses a bulk-first API: all write operations accept arrays and "
         "return per-item results. This MCP server handles the bulk envelope "
         "for you — single-item calls return the unwrapped result directly. "
-        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
-        "part_of, etc.) for hierarchical data modeling — use create_relationships "
+        "KEY CAPABILITIES: (1) Terms support ontology relations (is_a, "
+        "part_of, etc.) for hierarchical data modeling — use create_term_relations "
         "and get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
         "aggregations, cross-template JOINs, and analytics via run_report_query. "
         "IMPORTANT: Before creating any templates or documents, read the "
@@ -219,24 +219,24 @@ values pass through unresolved.
 This matters for apps: use a single-namespace key scoped to your dev namespace,
 and you can skip the `namespace` parameter on all API and MCP tool calls.
 
-## Ontology Relationships
-Terms can be connected via typed relationships to model hierarchies and
+## Ontology Relations
+Terms can be connected via typed relations to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,
-part-of-whole relationships, and any domain with inherent structure.
+part-of-whole relations, and any domain with inherent structure.
 
-Available relationship types: is_a, part_of, has_part, regulates,
+Available relation types: is_a, part_of, has_part, regulates,
 positively_regulates, negatively_regulates. Custom types can be added via the
 _ONTOLOGY_RELATIONSHIP_TYPES terminology.
 
 Key tools:
-- create_relationships — connect terms (e.g., "Cat is_a Animal")
-- list_relationships — see connections for a term
+- create_term_relations — connect terms (e.g., "Cat is_a Animal")
+- list_term_relations — see connections for a term
 - get_term_hierarchy — traverse ancestors, descendants, parents, children
 - import_terminology with OBO Graph JSON — bulk-load entire ontologies
 
 When to use: If a terminology has natural parent-child or part-whole structure
 (species taxonomy, disease classification, org hierarchy, geographic containment),
-model it with ontology relationships rather than flat term lists.
+model it with ontology relations rather than flat term lists.
 
 ## Reporting & Aggregation (PostgreSQL)
 WIP syncs document data to PostgreSQL tables (one per template: doc_*).
@@ -274,7 +274,7 @@ A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE)
 ## Terms
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 - Fields: value (unique within terminology), label, aliases, description
-- Terms can have ontology relationships (see Ontology section below)
+- Terms can have ontology relations (see Ontology section below)
 - Documents store both the original value AND the resolved term_id
 - Inactive terms are rejected in new documents (enforced by validation)
 
@@ -361,12 +361,12 @@ Key operations:
 
 This enables cross-system integration without mapping tables.
 
-## Ontology Relationships
-Terms can be connected via typed relationships:
+## Ontology Relations
+Terms can be connected via typed relations:
 - Types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates
-- Fields: source_term_id, target_term_id, relationship_type
+- Fields: source_term_id, target_term_id, relation_type
 - Supports traversal: ancestors, descendants, parents, children
-- Supports OBO Graph JSON import for bulk relationship loading
+- Supports OBO Graph JSON import for bulk relation loading
 """
 
 
@@ -397,13 +397,13 @@ Do NOT recreate terminologies or templates that already exist. Reuse them.
 Map your domain onto WIP primitives:
 
 1. Identify controlled vocabularies → terminologies (value + label + aliases)
-2. Identify hierarchical vocabularies → terminologies WITH ontology relationships
+2. Identify hierarchical vocabularies → terminologies WITH ontology relations
    Ask: "Are any of these vocabularies hierarchical? Do terms have parent-child
-   or part-of-whole relationships?" Examples: species taxonomy, disease
+   or part-of-whole relations?" Examples: species taxonomy, disease
    classification, org hierarchy, geographic containment, product categories.
-   If yes, plan ontology relationships (is_a, part_of, etc.) alongside terms.
+   If yes, plan ontology relations (is_a, part_of, etc.) alongside terms.
 3. Identify document types → templates with typed fields
-4. Define relationships between templates (references, inheritance)
+4. Define relations between templates (references, inheritance)
 5. Define identity_fields for deduplication — choose carefully:
    - Too few → unrelated entities collide into one document
    - Too many → corrections create duplicates instead of versions
@@ -427,8 +427,8 @@ Create the data model in WIP using MCP tools:
 1. Create terminologies: create_terminology(value, label, description)
    Populate with terms: create_terms(terminology_id, terms)
    Verify: list_terms(terminology_id)
-   If hierarchical: create_relationships([{source_term_id, target_term_id,
-   relationship_type}]) — e.g., "Cat is_a Animal". Verify: get_term_hierarchy.
+   If hierarchical: create_term_relations([{source_term_id, target_term_id,
+   relation_type}]) — e.g., "Cat is_a Animal". Verify: get_term_hierarchy.
 2. Create templates: create_template(template) — use draft mode for
    circular dependencies, then activate_template (all-or-nothing validation)
    Verify: get_template_fields(template_value)
@@ -458,7 +458,7 @@ MCP tools remain useful for debugging and data queries:
 - Identity hashing: define identity_fields so duplicate submissions update, not duplicate
 - Draft mode: create templates with status: "draft" to handle circular deps
 - Registry synonyms: register external IDs for cross-system lookups
-- Ontology relationships: connect terms hierarchically (is_a, part_of) for taxonomies
+- Ontology relations: connect terms hierarchically (is_a, part_of) for taxonomies
 - SQL aggregation: use run_report_query for GROUP BY, COUNT, JOINs across templates
 
 Detailed step-by-step procedures for each phase are in the slash commands:
@@ -1347,7 +1347,7 @@ async def deprecate_term(
 
 
 # ===================================================================
-# Tools — Ontology (Relationships)
+# Tools — Ontology (Relations)
 # ===================================================================
 
 
@@ -1355,16 +1355,16 @@ async def deprecate_term(
 async def get_term_hierarchy(
     term_id: str,
     direction: str = "children",
-    relationship_type: str | None = None,
+    relation_type: str | None = None,
     max_depth: int = 10,
     namespace: str | None = None,
 ) -> str:
-    """Traverse ontology relationships for a term.
+    """Traverse ontology relations for a term.
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: One of 'children', 'parents', 'ancestors', 'descendants'.
-        relationship_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
+        relation_type: Filter by type (is_a, part_of, has_part, etc.). None = all.
         max_depth: Max traversal depth for ancestors/descendants.
         namespace: Namespace to query in. Omit to use server default.
     """
@@ -1377,14 +1377,14 @@ async def get_term_hierarchy(
         elif direction == "ancestors":
             data = await client.get_term_ancestors(
                 term_id,
-                relationship_type=relationship_type,
+                relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
             )
         elif direction == "descendants":
             data = await client.get_term_descendants(
                 term_id,
-                relationship_type=relationship_type,
+                relation_type=relation_type,
                 max_depth=max_depth,
                 namespace=namespace,
             )
@@ -1396,56 +1396,56 @@ async def get_term_hierarchy(
 
 
 @mcp.tool()
-async def create_relationships(
-    relationships: list[dict],
+async def create_term_relations(
+    term_relations: list[dict],
     namespace: str | None = None,
 ) -> str:
-    """Create ontology relationships between terms.
+    """Create ontology relations between terms.
 
     Args:
-        relationships: List of {source_term_id, target_term_id, relationship_type}.
+        relations: List of {source_term_id, target_term_id, relation_type}.
             source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
             target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
-            relationship_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+            relation_type: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
         namespace: Namespace to create in. Omit to use server default.
 
     Example:
-        create_relationships([{
+        create_term_relations([{
             "source_term_id": "ALZHEIMERS_DISEASE",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "target_term_id": "NEUROLOGY"
         }])
     """
     try:
-        data = await get_client().create_relationships(relationships, namespace=namespace)
+        data = await get_client().create_term_relations(term_relations, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
 
 
 @mcp.tool()
-async def list_relationships(
+async def list_term_relations(
     term_id: str,
     direction: str = "outgoing",
-    relationship_type: str | None = None,
+    relation_type: str | None = None,
     namespace: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> str:
-    """List ontology relationships for a specific term.
+    """List ontology relations for a specific term.
 
     Args:
         term_id: Term ID, value (e.g., 'STATUS:approved'), or synonym.
         direction: 'outgoing' (this term is source), 'incoming' (this term is target), or 'both'.
-        relationship_type: Filter by type (is_a, part_of, etc.). None = all types.
+        relation_type: Filter by type (is_a, part_of, etc.). None = all types.
         namespace: Namespace to query in. Omit to use server default.
         page: Page number.
         page_size: Results per page (max 100).
     """
     try:
-        data = await get_client().list_relationships(
+        data = await get_client().list_term_relations(
             term_id=term_id, direction=direction,
-            relationship_type=relationship_type, namespace=namespace,
+            relation_type=relation_type, namespace=namespace,
             page=page, page_size=page_size,
         )
         return json.dumps(data, indent=2, default=str)
@@ -1454,31 +1454,31 @@ async def list_relationships(
 
 
 @mcp.tool()
-async def delete_relationships(
-    relationships: list[dict],
+async def delete_term_relations(
+    term_relations: list[dict],
     namespace: str | None = None,
     hard_delete: bool = False,
 ) -> str:
-    """Delete ontology relationships between terms.
+    """Delete ontology relations between terms.
 
     Args:
-        relationships: List of {source_term_id, target_term_id, relationship_type}.
+        relations: List of {source_term_id, target_term_id, relation_type}.
             source_term_id: Term ID, value (e.g., 'ALZHEIMERS_DISEASE'), or synonym.
             target_term_id: Term ID, value (e.g., 'NEUROLOGY'), or synonym.
-            relationship_type: is_a, part_of, has_part, etc.
+            relation_type: is_a, part_of, has_part, etc.
         namespace: Namespace to delete from. Omit to use server default.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
 
     Example:
-        delete_relationships([{
+        delete_term_relations([{
             "source_term_id": "ALZHEIMERS_DISEASE",
             "target_term_id": "NEUROLOGY",
-            "relationship_type": "is_a"
+            "relation_type": "is_a"
         }])
     """
     try:
-        data = await get_client().delete_relationships(
-            relationships, namespace=namespace, hard_delete=hard_delete,
+        data = await get_client().delete_term_relations(
+            term_relations, namespace=namespace, hard_delete=hard_delete,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2077,20 +2077,20 @@ async def delete_document(
 async def export_terminology(
     terminology_id: str,
     format: str = "json",
-    include_relationships: bool = True,
+    include_relations: bool = True,
 ) -> str:
-    """Export a terminology with all its terms (and optionally relationships).
+    """Export a terminology with all its terms (and optionally relations).
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         format: 'json' or 'csv'.
-        include_relationships: Include ontology relationships in export.
+        include_relations: Include ontology relations in export.
     """
     try:
         data = await get_client().export_terminology(
             terminology_id=terminology_id,
             format=format,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2790,7 +2790,7 @@ async def start_backup(
         include_files: Include file blobs in the archive (see WARNING above).
         include_inactive: Include soft-deleted entities.
         skip_documents: Skip the documents phase entirely (definitions only).
-        skip_closure: Skip the closure-table (relationships) phase.
+        skip_closure: Skip the closure-table (relations) phase.
         skip_synonyms: Skip the synonyms phase.
         latest_only: Export only the latest version of each entity.
         template_prefixes: Optional template_id prefixes to filter documents.
@@ -3036,9 +3036,9 @@ WRITE_TOOLS = frozenset({
     "update_term",
     "delete_term",
     "deprecate_term",
-    # Relationships
-    "create_relationships",
-    "delete_relationships",
+    # Relations
+    "create_term_relations",
+    "delete_term_relations",
     # Templates
     "create_template",
     "create_templates_bulk",
@@ -3097,7 +3097,7 @@ def _apply_read_only_mode():
         "system. This server is running in READ-ONLY mode. You can discover "
         "WIP's data model, query data, search, and run reports, but you "
         "CANNOT create, modify, or delete any entities. "
-        "KEY CAPABILITIES: (1) Terms support ontology relationships (is_a, "
+        "KEY CAPABILITIES: (1) Terms support ontology relations (is_a, "
         "part_of, etc.) for hierarchical data modeling — use "
         "get_term_hierarchy. (2) A PostgreSQL reporting layer enables SQL "
         "aggregations, cross-template JOINs, and analytics via run_report_query. "

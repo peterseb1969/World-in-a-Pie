@@ -41,13 +41,13 @@ tools:
       Optional: aliases (list of strings), label, description, sort_order.
 
   # -- Ontology --
-  create_relationships:
-    description: "Create ontology relationships between terms."
-    openapi_schema: "def-store#CreateRelationshipRequest"
-    param_name: "relationships"
+  create_term_relations:
+    description: "Create ontology term-relations between terms."
+    openapi_schema: "def-store#CreateTermRelationRequest"
+    param_name: "term_relations"
     param_type: list
     notes: |
-      Relationship types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
+      Relation types: is_a, part_of, has_part, regulates, positively_regulates, negatively_regulates.
       Use source_term_id (subject) and target_term_id (object).
       Example: "Lung cancer" --is_a--> "Cancer"
 
@@ -142,7 +142,7 @@ tools:
     openapi_schema: null
     param_name: null
     notes: |
-      Returns doc_* tables (one per template) plus terminologies, terms, term_relationships.
+      Returns doc_* tables (one per template) plus terminologies, terms, term_relations.
       Use this before run_report_query to understand available tables and columns.
 
   run_report_query:

@@ -388,3 +388,52 @@ async def test_list_namespaces_tool_returns_namespace_data() -> None:
     parsed = _json.loads(result) if isinstance(result, str) else result
     assert len(parsed) == 2
     assert {ns["prefix"] for ns in parsed} == {"wip", "demo"}
+
+
+# =========================================================================
+# Test H — term-relations rename: old names are gone, new names exist
+# =========================================================================
+#
+# The Phase-0 rename of the def-store ontology API moved
+# `create_relationships` / `list_relationships` / `delete_relationships` to
+# `*_term_relations` to avoid future collision with document-relationship
+# tools. This test pins the new names and asserts the old ones are absent —
+# so a future agent who pattern-matches "create_relationships" from training
+# data and re-introduces it gets a hard fail instead of a half-renamed surface.
+
+
+def test_term_relations_tool_names_replaced_old_ones() -> None:
+    """The renamed term-relation tools exist on server + client; the old
+    names do not. Regression guard for the Phase-0 rename."""
+    new_names = ("create_term_relations", "list_term_relations",
+                 "delete_term_relations")
+    old_names = ("create_relationships", "list_relationships",
+                 "delete_relationships")
+
+    for name in new_names:
+        assert hasattr(server_module, name), (
+            f"server.py missing renamed tool: {name}"
+        )
+        assert hasattr(WipClient, name), (
+            f"WipClient missing renamed method: {name}"
+        )
+
+    for name in old_names:
+        assert not hasattr(server_module, name), (
+            f"server.py still defines old tool name: {name}"
+        )
+        assert not hasattr(WipClient, name), (
+            f"WipClient still defines old method name: {name}"
+        )
+
+
+def test_term_relations_url_path_uses_kebab_form() -> None:
+    """The HTTP path written into client methods must be the new
+    `/ontology/term-relations` form, not the old `/ontology/relationships`."""
+    source = _CLIENT_SOURCE_PATH.read_text()
+    assert "/ontology/term-relations" in source, (
+        "client.py must reference /ontology/term-relations"
+    )
+    assert "/ontology/relationships" not in source, (
+        "client.py still references the old /ontology/relationships path"
+    )

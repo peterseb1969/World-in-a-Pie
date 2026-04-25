@@ -53,13 +53,13 @@ class EntityCollector:
         console.print(f"  Fetched {len(all_terms)} terms across {len(terminologies)} terminologies")
         return all_terms
 
-    def fetch_relationships(self, terminology_id: str) -> list[dict[str, Any]]:
-        """Fetch all relationships for a terminology (paginated)."""
+    def fetch_term_relations(self, terminology_id: str) -> list[dict[str, Any]]:
+        """Fetch all term-relations for a terminology (paginated)."""
         items: list[dict[str, Any]] = []
         page = 1
         while True:
             data = self.client.get(
-                "def-store", "/ontology/relationships/all",
+                "def-store", "/ontology/term-relations/all",
                 params={
                     "namespace": self.namespace,
                     "source_terminology_id": terminology_id,
@@ -75,15 +75,15 @@ class EntityCollector:
             page += 1
         return items
 
-    def fetch_all_relationships(self, terminologies: list[dict]) -> list[dict[str, Any]]:
-        """Fetch relationships for all terminologies."""
+    def fetch_all_term_relations(self, terminologies: list[dict]) -> list[dict[str, Any]]:
+        """Fetch term-relations for all terminologies."""
         all_rels: list[dict[str, Any]] = []
         for t in terminologies:
             tid = t["terminology_id"]
-            rels = self.fetch_relationships(tid)
+            rels = self.fetch_term_relations(tid)
             all_rels.extend(rels)
         if all_rels:
-            console.print(f"  Fetched {len(all_rels)} relationships across {len(terminologies)} terminologies")
+            console.print(f"  Fetched {len(all_rels)} term-relations across {len(terminologies)} terminologies")
         return all_rels
 
     # --- Template-Store ---

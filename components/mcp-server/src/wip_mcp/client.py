@@ -572,70 +572,70 @@ class WipClient:
         )
 
     async def get_term_ancestors(
-        self, term_id: str, relationship_type: str | None = None,
+        self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
         )
 
     async def get_term_descendants(
-        self, term_id: str, relationship_type: str | None = None,
+        self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
     ) -> list[dict]:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/descendants",
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             max_depth=max_depth,
             namespace=namespace,
         )
 
-    async def create_relationships(
-        self, relationships: list[dict], namespace: str | None = None,
+    async def create_term_relations(
+        self, term_relations: list[dict], namespace: str | None = None,
     ) -> dict:
         resp = await self._post(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
-            json=relationships,
+            "/api/def-store/ontology/term-relations",
+            json=term_relations,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
-    async def delete_relationships(
-        self, relationships: list[dict], namespace: str | None = None,
+    async def delete_term_relations(
+        self, term_relations: list[dict], namespace: str | None = None,
         hard_delete: bool = False,
     ) -> dict:
-        items = relationships
+        items = term_relations
         if hard_delete:
-            items = [{**r, "hard_delete": True} for r in relationships]
+            items = [{**r, "hard_delete": True} for r in term_relations]
         resp = await self._delete(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
+            "/api/def-store/ontology/term-relations",
             json=items,
             namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
-    async def list_relationships(
+    async def list_term_relations(
         self,
         term_id: str,
         direction: str = "outgoing",
-        relationship_type: str | None = None,
+        relation_type: str | None = None,
         namespace: str | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> dict:
         return await self._get(
             self.def_store_url,
-            "/api/def-store/ontology/relationships",
+            "/api/def-store/ontology/term-relations",
             term_id=term_id,
             direction=direction,
-            relationship_type=relationship_type,
+            relation_type=relation_type,
             namespace=namespace,
             page=page,
             page_size=page_size,
@@ -649,13 +649,13 @@ class WipClient:
         self,
         terminology_id: str,
         format: str = "json",
-        include_relationships: bool = True,
+        include_relations: bool = True,
     ) -> dict:
         return await self._get(
             self.def_store_url,
             f"/api/def-store/import-export/export/{terminology_id}",
             format=format,
-            include_relationships=include_relationships,
+            include_relations=include_relations,
         )
 
     async def import_terminology(

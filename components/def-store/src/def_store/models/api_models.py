@@ -466,11 +466,11 @@ class AuditLogResponse(BaseModel):
 
 
 # =============================================================================
-# ONTOLOGY / RELATIONSHIP MODELS
+# ONTOLOGY / TERM-RELATION MODELS
 # =============================================================================
 
-class CreateRelationshipRequest(StrictModel):
-    """Request to create a typed relationship between two terms."""
+class CreateTermRelationRequest(StrictModel):
+    """Request to create a typed relation between two terms."""
 
     source_term_id: str = Field(
         ...,
@@ -480,9 +480,9 @@ class CreateRelationshipRequest(StrictModel):
         ...,
         description="The object term ID"
     )
-    relationship_type: str = Field(
+    relation_type: str = Field(
         ...,
-        description="Relationship type value (e.g., 'is_a', 'part_of')"
+        description="Relation type value (e.g., 'is_a', 'part_of')"
     )
     metadata: dict[str, Any] = Field(
         default_factory=dict,
@@ -490,27 +490,27 @@ class CreateRelationshipRequest(StrictModel):
     )
     created_by: str | None = Field(
         None,
-        description="User or system creating this relationship"
+        description="User or system creating this relation"
     )
 
 
-class DeleteRelationshipRequest(StrictModel):
-    """Request to delete a specific relationship."""
+class DeleteTermRelationRequest(StrictModel):
+    """Request to delete a specific term relation."""
 
     source_term_id: str = Field(..., description="The subject term ID")
     target_term_id: str = Field(..., description="The object term ID")
-    relationship_type: str = Field(..., description="Relationship type value")
+    relation_type: str = Field(..., description="Relation type value")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
 
 
-class RelationshipResponse(BaseModel):
-    """Response containing a single relationship."""
+class TermRelationResponse(BaseModel):
+    """Response containing a single term relation."""
 
     namespace: str
     source_term_id: str
     target_term_id: str
-    relationship_type: str
-    relationship_value: str | None = None
+    relation_type: str
+    relation_value: str | None = None
     source_terminology_id: str | None = None
     target_terminology_id: str | None = None
     source_term_value: str | None = None
@@ -523,10 +523,10 @@ class RelationshipResponse(BaseModel):
     created_by: str | None = None
 
 
-class RelationshipListResponse(BaseModel):
-    """Response for listing relationships."""
+class TermRelationListResponse(BaseModel):
+    """Response for listing term relations."""
 
-    items: list[RelationshipResponse]
+    items: list[TermRelationResponse]
     total: int
     page: int = 1
     page_size: int = 50
@@ -547,7 +547,7 @@ class TraversalResponse(BaseModel):
     """Response for ancestor/descendant traversal queries."""
 
     term_id: str
-    relationship_type: str
+    relation_type: str
     direction: str  # "ancestors" or "descendants"
     nodes: list[TraversalNode]
     total: int

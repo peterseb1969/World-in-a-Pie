@@ -27,7 +27,7 @@ from wip_auth import (
 from .api import api_router
 from .models.audit_log import TermAuditLog
 from .models.term import Term
-from .models.term_relationship import TermRelationship
+from .models.term_relation import TermRelation
 from .models.terminology import Terminology
 from .services.nats_client import close_nats_client, configure_nats_client
 from .services.registry_client import configure_registry_client, get_registry_client
@@ -110,7 +110,7 @@ async def lifespan(app: FastAPI):
     # yet on fresh k8s boot, node drain, pod reschedule.
     await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Terminology, Term, TermAuditLog, TermRelationship],
+        document_models=[Terminology, Term, TermAuditLog, TermRelation],
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
@@ -186,7 +186,7 @@ The Def-Store service manages controlled vocabularies (terminologies) for the WI
 - **Validation API**: Validate values against terminologies
 - **Import/Export**: JSON and CSV support for bulk operations
 - **Multi-language**: Translation support for internationalization
-- **Hierarchical Terms**: Support for parent-child relationships
+- **Hierarchical Terms**: Support for parent-child relations
 - **Namespace Isolation**: Multi-tenant data isolation
 
 ### Authentication

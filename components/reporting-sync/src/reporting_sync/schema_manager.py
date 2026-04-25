@@ -512,17 +512,17 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_parent_idx"
         logger.info(f"Created {table_name} table")
         return table_name
 
-    async def ensure_term_relationships_table(self) -> str:
+    async def ensure_term_relations_table(self) -> str:
         """
-        Ensure the term_relationships table exists in PostgreSQL.
+        Ensure the term_relations table exists in PostgreSQL.
 
         This is a fixed-schema table (not template-driven) for syncing
-        ontology relationships from the Def-Store.
+        ontology term-relations from the Def-Store.
 
         Returns:
-            Table name ('term_relationships')
+            Table name ('term_relations')
         """
-        table_name = "term_relationships"
+        table_name = "term_relations"
 
         if await self.table_exists(table_name):
             return table_name
@@ -532,7 +532,7 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
     "namespace" VARCHAR(255) NOT NULL DEFAULT 'wip',
     "source_term_id" TEXT NOT NULL,
     "target_term_id" TEXT NOT NULL,
-    "relationship_type" TEXT NOT NULL,
+    "relation_type" TEXT NOT NULL,
     "source_term_value" TEXT,
     "target_term_value" TEXT,
     "source_terminology_id" TEXT,
@@ -541,14 +541,14 @@ CREATE TABLE IF NOT EXISTS "{table_name}" (
     "status" VARCHAR(20) NOT NULL DEFAULT 'active',
     "created_at" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     "created_by" TEXT,
-    PRIMARY KEY ("namespace", "source_term_id", "target_term_id", "relationship_type")
+    PRIMARY KEY ("namespace", "source_term_id", "target_term_id", "relation_type")
 );
 
 -- Indexes for efficient traversal queries
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_type_idx"
-  ON "{table_name}"("namespace", "source_term_id", "relationship_type");
+  ON "{table_name}"("namespace", "source_term_id", "relation_type");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_type_idx"
-  ON "{table_name}"("namespace", "target_term_id", "relationship_type");
+  ON "{table_name}"("namespace", "target_term_id", "relation_type");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_status_idx"
   ON "{table_name}"("namespace", "status");
 CREATE INDEX IF NOT EXISTS "{table_name}_ns_source_terminology_idx"

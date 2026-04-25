@@ -714,21 +714,21 @@ class BatchSyncService:
         logger.info(f"Term batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
-    async def batch_sync_relationships(
+    async def batch_sync_term_relations(
         self,
         namespace: str,
         page_size: int = 100,
     ) -> dict:
         """
-        Batch sync all term relationships from Def-Store to PostgreSQL.
+        Batch sync all term term_relations from Def-Store to PostgreSQL.
 
-        Uses the /ontology/relationships/all endpoint for efficient pagination
-        across all relationships (no per-term iteration needed).
+        Uses the /ontology/term-relations/all endpoint for efficient pagination
+        across all term_relations (no per-term iteration needed).
 
         Returns:
             Dict with sync results (synced, failed, total)
         """
-        table_name = await self.schema_manager.ensure_term_relationships_table()
+        table_name = await self.schema_manager.ensure_term_relations_table()
         synced = 0
         failed = 0
 
@@ -738,7 +738,7 @@ class BatchSyncService:
 
                 while True:
                     resp = await client.get(
-                        f"{settings.def_store_url}/api/def-store/ontology/relationships/all",
+                        f"{settings.def_store_url}/api/def-store/ontology/term-relations/all",
                         params={
                             "namespace": namespace,
                             "page": page,
@@ -747,7 +747,7 @@ class BatchSyncService:
                         headers={"X-API-Key": settings.api_key},
                     )
                     if resp.status_code != 200:
-                        logger.error(f"Failed to list relationships: {resp.status_code}")
+                        logger.error(f"Failed to list term_relations: {resp.status_code}")
                         break
 
                     data = resp.json()
@@ -763,11 +763,11 @@ class BatchSyncService:
                                     f"""
                                     INSERT INTO "{table_name}" (
                                         "namespace", "source_term_id", "target_term_id",
-                                        "relationship_type", "source_term_value", "target_term_value",
+                                        "relation_type", "source_term_value", "target_term_value",
                                         "source_terminology_id", "target_terminology_id",
                                         "metadata", "status", "created_at", "created_by"
                                     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                                    ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                                    ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relation_type")
                                     DO UPDATE SET
                                         "status" = EXCLUDED."status",
                                         "source_term_value" = EXCLUDED."source_term_value",
@@ -777,7 +777,7 @@ class BatchSyncService:
                                     rel.get("namespace", namespace),
                                     rel["source_term_id"],
                                     rel["target_term_id"],
-                                    rel["relationship_type"],
+                                    rel["relation_type"],
                                     rel.get("source_term_value"),
                                     rel.get("target_term_value"),
                                     rel.get("source_terminology_id"),
@@ -789,7 +789,7 @@ class BatchSyncService:
                                 )
                                 synced += 1
                             except Exception as e:
-                                logger.error(f"Error syncing relationship: {e}")
+                                logger.error(f"Error syncing term_relation: {e}")
                                 failed += 1
 
                     if page >= data.get("pages", 1):
@@ -798,9 +798,9 @@ class BatchSyncService:
                     await asyncio.sleep(0.05)  # Small delay between pages
 
         except Exception as e:
-            logger.error(f"Batch relationship sync error: {e}", exc_info=True)
+            logger.error(f"Batch term_relation sync error: {e}", exc_info=True)
 
-        logger.info(f"Relationship batch sync: {synced} synced, {failed} failed")
+        logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed}
 
     def clear_completed_jobs(self) -> int:

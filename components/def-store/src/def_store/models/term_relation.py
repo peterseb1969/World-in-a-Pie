@@ -1,4 +1,4 @@
-"""TermRelationship model for ontology support in the Def-Store service."""
+"""TermRelation model for ontology support in the Def-Store service."""
 
 from datetime import UTC, datetime
 from typing import Any
@@ -8,12 +8,12 @@ from pydantic import Field
 from pymongo import IndexModel
 
 
-class TermRelationship(Document):
+class TermRelation(Document):
     """
-    A typed, directed relationship between two terms.
+    A typed, directed relation between two terms.
 
     Enables ontology support by representing polyhierarchy (multiple parents),
-    typed relationships (is_a, part_of, etc.), and cross-terminology links.
+    typed relations (is_a, part_of, etc.), and cross-terminology links.
 
     Examples:
     - "Viral pneumonia" is_a "Pneumonia"
@@ -27,7 +27,7 @@ class TermRelationship(Document):
         description="Namespace for data isolation"
     )
 
-    # Relationship endpoints
+    # Relation endpoints
     source_term_id: str = Field(
         ...,
         description="The subject term ID"
@@ -37,16 +37,16 @@ class TermRelationship(Document):
         description="The object term ID"
     )
 
-    # Relationship type (term ID or value from _ONTOLOGY_RELATIONSHIP_TYPES)
-    relationship_type: str = Field(
+    # Relation type (term ID or value from _ONTOLOGY_RELATIONSHIP_TYPES)
+    relation_type: str = Field(
         ...,
-        description="Relationship type value (e.g., 'is_a', 'part_of')"
+        description="Relation type value (e.g., 'is_a', 'part_of')"
     )
 
     # Denormalized fields for query efficiency
-    relationship_value: str | None = Field(
+    relation_value: str | None = Field(
         None,
-        description="Denormalized relationship type display value"
+        description="Denormalized relation type display value"
     )
     source_terminology_id: str | None = Field(
         None,
@@ -75,31 +75,31 @@ class TermRelationship(Document):
     )
     created_by: str | None = Field(
         None,
-        description="User or system that created this relationship"
+        description="User or system that created this relation"
     )
 
     class Settings:
-        name = "term_relationships"
+        name = "term_relations"
         indexes = [
-            # Find all relationships FROM a term
+            # Find all relations FROM a term
             IndexModel(
-                [("namespace", 1), ("source_term_id", 1), ("relationship_type", 1)],
+                [("namespace", 1), ("source_term_id", 1), ("relation_type", 1)],
                 name="ns_source_type_idx"
             ),
-            # Find all relationships TO a term (reverse lookup)
+            # Find all relations TO a term (reverse lookup)
             IndexModel(
-                [("namespace", 1), ("target_term_id", 1), ("relationship_type", 1)],
+                [("namespace", 1), ("target_term_id", 1), ("relation_type", 1)],
                 name="ns_target_type_idx"
             ),
-            # Uniqueness: one relationship of each type between two terms
+            # Uniqueness: one relation of each type between two terms
             IndexModel(
-                [("namespace", 1), ("source_term_id", 1), ("target_term_id", 1), ("relationship_type", 1)],
+                [("namespace", 1), ("source_term_id", 1), ("target_term_id", 1), ("relation_type", 1)],
                 unique=True,
                 name="ns_source_target_type_unique_idx"
             ),
             # By terminology (for ontology-wide queries)
             IndexModel(
-                [("namespace", 1), ("source_terminology_id", 1), ("relationship_type", 1)],
+                [("namespace", 1), ("source_terminology_id", 1), ("relation_type", 1)],
                 name="ns_src_terminology_type_idx"
             ),
             # Status filter

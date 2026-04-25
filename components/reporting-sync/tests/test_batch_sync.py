@@ -1,5 +1,5 @@
 """
-Tests for BatchSyncService — terminology, term, and relationship batch sync.
+Tests for BatchSyncService — terminology, term, and relation batch sync.
 
 Covers the Def-Store API → PostgreSQL batch sync path.
 All external dependencies (httpx, asyncpg) are mocked.
@@ -42,7 +42,7 @@ def service(mock_pool):
     svc = BatchSyncService(pool)
     svc.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
     svc.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
-    svc.schema_manager.ensure_term_relationships_table = AsyncMock(return_value="term_relationships")
+    svc.schema_manager.ensure_term_relations_table = AsyncMock(return_value="term_relations")
     return svc
 
 
@@ -423,7 +423,7 @@ class TestBatchSyncTerms:
 
 
 # =========================================================================
-# batch_sync_relationships
+# batch_sync_term_relations
 # =========================================================================
 
 
@@ -431,7 +431,7 @@ SAMPLE_RELATIONSHIP = {
     "namespace": "wip",
     "source_term_id": "0190b000-0000-7000-0000-000000000001",
     "target_term_id": "0190b000-0000-7000-0000-000000000002",
-    "relationship_type": "is_a",
+    "relation_type": "is_a",
     "source_term_value": "Pneumonia",
     "target_term_value": "Lung Disease",
     "source_terminology_id": "TRM-001",
@@ -443,12 +443,12 @@ SAMPLE_RELATIONSHIP = {
 }
 
 
-class TestBatchSyncRelationships:
-    """Tests for batch_sync_relationships."""
+class TestBatchSyncRelations:
+    """Tests for batch_sync_term_relations."""
 
     @pytest.mark.asyncio
-    async def test_syncs_relationships(self, service, mock_pool):
-        """Relationships are fetched and synced."""
+    async def test_syncs_relations(self, service, mock_pool):
+        """Relations are fetched and synced."""
         _pool, _conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
@@ -458,7 +458,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            result = await service.batch_sync_relationships(namespace="wip")
+            result = await service.batch_sync_term_relations(namespace="wip")
 
         assert result["synced"] == 1
         assert result["failed"] == 0
@@ -475,7 +475,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            await service.batch_sync_relationships(namespace="wip")
+            await service.batch_sync_term_relations(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $11 = created_at (index 11)
@@ -494,7 +494,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([SAMPLE_RELATIONSHIP]))
             mock_client_cls.return_value = mock_client
 
-            await service.batch_sync_relationships(namespace="wip")
+            await service.batch_sync_term_relations(namespace="wip")
 
         args = conn.execute.call_args[0]
         # $9 = metadata (index 9)
@@ -512,7 +512,7 @@ class TestBatchSyncRelationships:
             mock_client.get = AsyncMock(return_value=_make_api_response([], status_code=500))
             mock_client_cls.return_value = mock_client
 
-            result = await service.batch_sync_relationships(namespace="wip")
+            result = await service.batch_sync_term_relations(namespace="wip")
 
         assert result["synced"] == 0
         conn.execute.assert_not_awaited()

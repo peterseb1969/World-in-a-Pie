@@ -65,20 +65,20 @@ async def create_term(
     return data["results"][0]["id"]
 
 
-async def create_relationship(
+async def create_relation(
     client: AsyncClient,
     auth_headers: dict,
     source_id: str,
     target_id: str,
     rel_type: str = "is_a",
 ) -> dict:
-    """Create an ontology relationship and return the response."""
+    """Create an ontology relation and return the response."""
     resp = await client.post(
-        f"{API}/ontology/relationships",
+        f"{API}/ontology/term-relations",
         json=[{
             "source_term_id": source_id,
             "target_term_id": target_id,
-            "relationship_type": rel_type,
+            "relation_type": rel_type,
         }],
         headers=auth_headers,
         params={"namespace": "wip"},
@@ -318,10 +318,10 @@ class TestHardDeleteTerms:
         assert get_resp.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_delete_term_mutable_cascades_relationships(
+    async def test_delete_term_mutable_cascades_relations(
         self, client: AsyncClient, auth_headers: dict
     ):
-        """Deleting a term from a mutable terminology should also hard-delete its relationships."""
+        """Deleting a term from a mutable terminology should also hard-delete its relations."""
         terminology = await create_terminology(
             client, auth_headers, value="REL_CASCADE", label="Rel Cascade",
             mutable=True,
@@ -331,13 +331,13 @@ class TestHardDeleteTerms:
         parent = await create_term(client, auth_headers, terminology_id, "parent_term")
         child = await create_term(client, auth_headers, terminology_id, "child_term")
 
-        # Create a relationship
-        rel_data = await create_relationship(client, auth_headers, child, parent, "is_a")
+        # Create a relation
+        rel_data = await create_relation(client, auth_headers, child, parent, "is_a")
         assert rel_data["succeeded"] == 1
 
-        # Verify relationship exists
+        # Verify relation exists
         rel_resp = await client.get(
-            f"{API}/ontology/relationships",
+            f"{API}/ontology/term-relations",
             params={"term_id": child, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
@@ -353,9 +353,9 @@ class TestHardDeleteTerms:
         )
         assert get_resp.status_code == 404
 
-        # Verify relationship is gone too
+        # Verify relation is gone too
         rel_resp2 = await client.get(
-            f"{API}/ontology/relationships",
+            f"{API}/ontology/term-relations",
             params={"term_id": child, "direction": "outgoing", "namespace": "wip"},
             headers=auth_headers,
         )
@@ -457,10 +457,10 @@ class TestHardDeleteTerminology:
             assert get_term.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_delete_mutable_terminology_cascades_relationships(
+    async def test_delete_mutable_terminology_cascades_relations(
         self, client: AsyncClient, auth_headers: dict
     ):
-        """Deleting a mutable terminology should hard-delete terms and their relationships."""
+        """Deleting a mutable terminology should hard-delete terms and their relations."""
         terminology = await create_terminology(
             client, auth_headers, value="TERM_REL_CASCADE", label="Term Rel Cascade",
             mutable=True,
@@ -470,8 +470,8 @@ class TestHardDeleteTerminology:
         parent = await create_term(client, auth_headers, terminology_id, "parent")
         child = await create_term(client, auth_headers, terminology_id, "child")
 
-        # Create relationship
-        rel_data = await create_relationship(client, auth_headers, child, parent, "is_a")
+        # Create relation
+        rel_data = await create_relation(client, auth_headers, child, parent, "is_a")
         assert rel_data["succeeded"] == 1
 
         # Delete the terminology
@@ -493,10 +493,10 @@ class TestHardDeleteTerminology:
             )
             assert get_term.status_code == 404
 
-        # Verify relationships are gone
+        # Verify relations are gone
         for tid in [parent, child]:
             rel_resp = await client.get(
-                f"{API}/ontology/relationships",
+                f"{API}/ontology/term-relations",
                 params={"term_id": tid, "namespace": "wip"},
                 headers=auth_headers,
             )

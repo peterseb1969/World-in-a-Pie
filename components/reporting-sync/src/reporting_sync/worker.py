@@ -430,8 +430,8 @@ class SyncWorker:
             async with self.pool.acquire() as conn:
                 if event_type == "term.deleted":
                     if term_data.get("hard_delete"):
-                        # Hard delete: remove from terms and cascade relationships
-                        rel_table = await self.schema_manager.ensure_term_relationships_table()
+                        # Hard delete: remove from terms and cascade term_relations
+                        rel_table = await self.schema_manager.ensure_term_relations_table()
                         await conn.execute(
                             f'DELETE FROM "{rel_table}" WHERE "namespace" = $1 AND ("source_term_id" = $2 OR "target_term_id" = $2)',
                             namespace, term_id,
@@ -526,31 +526,31 @@ class SyncWorker:
             logger.error(f"Error syncing term: {e}")
             raise
 
-    async def _process_relationship_event(self, event_data: dict[str, Any]) -> bool:
+    async def _process_term_relation_event(self, event_data: dict[str, Any]) -> bool:
         """
-        Process a relationship event (created, deleted).
+        Process a term_relation event (created, deleted).
 
-        Syncs the relationship to the term_relationships table in PostgreSQL.
+        Syncs the term_relation to the term_relations table in PostgreSQL.
         """
         start_time = time.perf_counter()
         event_type = event_data.get("event_type")
-        rel = event_data.get("relationship", {})
+        rel = event_data.get("term_relation", {})
 
         namespace = rel["namespace"]
         source_term_id = rel.get("source_term_id")
         target_term_id = rel.get("target_term_id")
-        relationship_type = rel.get("relationship_type")
+        relation_type = rel.get("relation_type")
 
-        if not source_term_id or not target_term_id or not relationship_type:
-            logger.warning("Invalid relationship event: missing required fields")
+        if not source_term_id or not target_term_id or not relation_type:
+            logger.warning("Invalid term_relation event: missing required fields")
             return False
 
         # Ensure table exists
-        table_name = await self.schema_manager.ensure_term_relationships_table()
+        table_name = await self.schema_manager.ensure_term_relations_table()
 
         try:
             async with self.pool.acquire() as conn:
-                if event_type == "relationship.deleted":
+                if event_type == "term_relation.deleted":
                     if rel.get("hard_delete"):
                         # Hard delete: remove from table
                         await conn.execute(
@@ -559,9 +559,9 @@ class SyncWorker:
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
-                              AND "relationship_type" = $4
+                              AND "relation_type" = $4
                             """,
-                            namespace, source_term_id, target_term_id, relationship_type,
+                            namespace, source_term_id, target_term_id, relation_type,
                         )
                     else:
                         # Soft delete (existing behavior)
@@ -572,9 +572,9 @@ class SyncWorker:
                             WHERE "namespace" = $1
                               AND "source_term_id" = $2
                               AND "target_term_id" = $3
-                              AND "relationship_type" = $4
+                              AND "relation_type" = $4
                             """,
-                            namespace, source_term_id, target_term_id, relationship_type,
+                            namespace, source_term_id, target_term_id, relation_type,
                         )
                 else:
                     # Upsert for create/reactivate
@@ -582,11 +582,11 @@ class SyncWorker:
                         f"""
                         INSERT INTO "{table_name}" (
                             "namespace", "source_term_id", "target_term_id",
-                            "relationship_type", "source_term_value", "target_term_value",
+                            "relation_type", "source_term_value", "target_term_value",
                             "source_terminology_id", "target_terminology_id",
                             "metadata", "status", "created_at", "created_by"
                         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11)
-                        ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relationship_type")
+                        ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relation_type")
                         DO UPDATE SET
                             "status" = EXCLUDED."status",
                             "source_term_value" = EXCLUDED."source_term_value",
@@ -597,7 +597,7 @@ class SyncWorker:
                         namespace,
                         source_term_id,
                         target_term_id,
-                        relationship_type,
+                        relation_type,
                         rel.get("source_term_value"),
                         rel.get("target_term_value"),
                         rel.get("source_terminology_id"),
@@ -609,13 +609,13 @@ class SyncWorker:
 
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.info(
-                f"Synced relationship {source_term_id} --{relationship_type}--> "
+                f"Synced term_relation {source_term_id} --{relation_type}--> "
                 f"{target_term_id} to {table_name} ({latency_ms:.1f}ms)"
             )
             return True
 
         except Exception as e:
-            logger.error(f"Error syncing relationship: {e}")
+            logger.error(f"Error syncing term_relation: {e}")
             raise
 
     async def _process_message(self, msg) -> None:
@@ -637,8 +637,8 @@ class SyncWorker:
                 success = await self._process_terminology_event(event_data)
             elif event_type.startswith("term."):
                 success = await self._process_term_event(event_data)
-            elif event_type.startswith("relationship."):
-                success = await self._process_relationship_event(event_data)
+            elif event_type.startswith("term_relation."):
+                success = await self._process_term_relation_event(event_data)
             else:
                 logger.warning(f"Unknown event type: {event_type}")
                 success = True  # Don't retry unknown events

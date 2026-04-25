@@ -21,7 +21,7 @@ TERMS_FILE = "terms.jsonl"
 TEMPLATES_FILE = "templates.jsonl"
 DOCUMENTS_FILE = "documents.jsonl"
 FILES_FILE = "files.jsonl"
-RELATIONSHIPS_FILE = "relationships.jsonl"
+TERM_RELATIONS_FILE = "term_relations.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
 REGISTRY_ENTRIES_FILE = "registry_entries.jsonl"
 BLOBS_DIR = "blobs/"
@@ -29,7 +29,7 @@ BLOBS_DIR = "blobs/"
 ENTITY_FILES = {
     "terminologies": TERMINOLOGIES_FILE,
     "terms": TERMS_FILE,
-    "relationships": RELATIONSHIPS_FILE,
+    "term_relations": TERM_RELATIONS_FILE,
     "templates": TEMPLATES_FILE,
     "documents": DOCUMENTS_FILE,
     "files": FILES_FILE,

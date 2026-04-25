@@ -61,7 +61,7 @@ async def test_list_tables_summary(http_client: AsyncClient, mock_state):
             {"table_name": "doc_bank_transaction"},
             {"table_name": "terminologies"},
             {"table_name": "terms"},
-            {"table_name": "term_relationships"},
+            {"table_name": "term_relations"},
             {"table_name": "_wip_schema_migrations"},  # should be filtered out
         ],
         # Subsequent calls: columns for each allowed table (5 tables)
@@ -374,7 +374,7 @@ async def test_export_table_csv_rejects_disallowed_table(http_client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_export_table_csv_allows_metadata_tables(http_client: AsyncClient, mock_state):
-    """GET /export/csv allows terminologies, terms, term_relationships."""
+    """GET /export/csv allows terminologies, terms, term_relations."""
     _pool, conn = mock_state
     _setup_csv_mocks(conn, ["id"], [{"id": "t1"}])
 
@@ -497,20 +497,20 @@ async def test_batch_terms_route(http_client: AsyncClient, mock_batch_service):
 
 
 @pytest.mark.asyncio
-async def test_batch_relationships_route(http_client: AsyncClient, mock_batch_service):
-    """POST /sync/batch/relationships hits the relationship handler, not {template_value}."""
-    mock_batch_service.batch_sync_relationships = AsyncMock(
+async def test_batch_relations_route(http_client: AsyncClient, mock_batch_service):
+    """POST /sync/batch/relations hits the relation handler, not {template_value}."""
+    mock_batch_service.batch_sync_term_relations = AsyncMock(
         return_value={"synced": 99, "failed": 0, "total": 99}
     )
 
     async with http_client:
-        resp = await http_client.post("/api/reporting-sync/sync/batch/relationships?namespace=wip")
+        resp = await http_client.post("/api/reporting-sync/sync/batch/relations?namespace=wip")
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["table"] == "term_relationships"
+    assert data["table"] == "term_relations"
     assert data["synced"] == 99
-    mock_batch_service.batch_sync_relationships.assert_awaited_once()
+    mock_batch_service.batch_sync_term_relations.assert_awaited_once()
 
 
 @pytest.mark.asyncio

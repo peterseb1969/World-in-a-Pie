@@ -1,14 +1,14 @@
 """Data models for the Def-Store service."""
 
 from .api_models import (
-    CreateRelationshipRequest,
     CreateTerminologyRequest,
+    CreateTermRelationRequest,
     CreateTermRequest,
-    DeleteRelationshipRequest,
+    DeleteTermRelationRequest,
     ExportFormat,
     ImportTerminologyRequest,
-    RelationshipListResponse,
-    RelationshipResponse,
+    TermRelationListResponse,
+    TermRelationResponse,
     TerminologyResponse,
     TermResponse,
     TraversalNode,
@@ -20,21 +20,21 @@ from .api_models import (
 )
 from .audit_log import TermAuditLog
 from .term import Term
-from .term_relationship import TermRelationship
+from .term_relation import TermRelation
 from .terminology import Terminology
 
 __all__ = [
-    "CreateRelationshipRequest",
+    "CreateTermRelationRequest",
     "CreateTermRequest",
     "CreateTerminologyRequest",
-    "DeleteRelationshipRequest",
+    "DeleteTermRelationRequest",
     "ExportFormat",
     "ImportTerminologyRequest",
-    "RelationshipListResponse",
-    "RelationshipResponse",
     "Term",
     "TermAuditLog",
-    "TermRelationship",
+    "TermRelation",
+    "TermRelationListResponse",
+    "TermRelationResponse",
     "TermResponse",
     "Terminology",
     "TerminologyResponse",

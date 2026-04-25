@@ -478,26 +478,26 @@ class TestTerminologyEventPipeline:
 
 
 # =============================================================================
-# Relationship events
+# Relation events
 # =============================================================================
 
 
 @requires_e2e
-class TestRelationshipEventPipeline:
-    """Relationship events → term_relationships table."""
+class TestRelationEventPipeline:
+    """Relation events → term_relations table."""
 
-    async def test_relationship_created_via_nats(self, pg_pool, nats_client):
+    async def test_relation_created_via_nats(self, pg_pool, nats_client):
         nc, js, stream_name = nats_client
         await init_postgres_schema(pg_pool)
 
         status = SyncStatus(running=False, connected_to_nats=True, connected_to_postgres=True)
         worker = SyncWorker(nc, js, pg_pool, status)
 
-        event = make_event("relationship.created", "relationship", {
+        event = make_event("term_relation.created", "relation", {
             "namespace": "test",
             "source_term_id": "TERM-A",
             "target_term_id": "TERM-B",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "source_term_value": "Cat",
             "target_term_value": "Animal",
             "source_terminology_id": "VOCAB-1",
@@ -506,7 +506,7 @@ class TestRelationshipEventPipeline:
             "status": "active",
             "created_by": "test-user",
         })
-        await js.publish("wip.relationships", event)
+        await js.publish("wip.term_relations", event)
 
         sub = await js.pull_subscribe("wip.>", durable="test-e2e-rel", stream=stream_name)
         messages = await sub.fetch(batch=1, timeout=5)
@@ -514,17 +514,17 @@ class TestRelationshipEventPipeline:
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT * FROM term_relationships
+                """SELECT * FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-A", "TERM-B", "test",
             )
             assert row is not None
-            assert row["relationship_type"] == "is_a"
+            assert row["relation_type"] == "is_a"
             assert row["source_term_value"] == "Cat"
             assert row["status"] == "active"
 
-    async def test_relationship_hard_delete_pipeline(self, pg_pool, nats_client):
-        """Insert a relationship, then hard delete it → row gone from PostgreSQL."""
+    async def test_relation_hard_delete_pipeline(self, pg_pool, nats_client):
+        """Insert a relation, then hard delete it → row gone from PostgreSQL."""
         nc, js, stream_name = nats_client
         await init_postgres_schema(pg_pool)
 
@@ -532,11 +532,11 @@ class TestRelationshipEventPipeline:
         worker = SyncWorker(nc, js, pg_pool, status)
 
         # Create
-        create_event = make_event("relationship.created", "relationship", {
+        create_event = make_event("term_relation.created", "relation", {
             "namespace": "test",
             "source_term_id": "TERM-HD-A",
             "target_term_id": "TERM-HD-B",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "source_term_value": "Child",
             "target_term_value": "Parent",
             "source_terminology_id": "VOCAB-1",
@@ -545,17 +545,17 @@ class TestRelationshipEventPipeline:
             "status": "active",
             "created_by": "test-user",
         })
-        await js.publish("wip.relationships", create_event)
+        await js.publish("wip.term_relations", create_event)
 
         # Hard delete
-        delete_event = make_event("relationship.deleted", "relationship", {
+        delete_event = make_event("term_relation.deleted", "relation", {
             "namespace": "test",
             "source_term_id": "TERM-HD-A",
             "target_term_id": "TERM-HD-B",
-            "relationship_type": "is_a",
+            "relation_type": "is_a",
             "hard_delete": True,
         })
-        await js.publish("wip.relationships", delete_event)
+        await js.publish("wip.term_relations", delete_event)
 
         sub = await js.pull_subscribe("wip.>", durable="test-e2e-rel-hd", stream=stream_name)
         messages = await sub.fetch(batch=2, timeout=5)
@@ -564,13 +564,13 @@ class TestRelationshipEventPipeline:
 
         async with pg_pool.acquire() as conn:
             count = await conn.fetchval(
-                """SELECT COUNT(*) FROM term_relationships
+                """SELECT COUNT(*) FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-HD-A", "TERM-HD-B", "test",
             )
             assert count == 0
 
-    async def test_relationship_deleted_via_nats(self, pg_pool, nats_client):
+    async def test_relation_deleted_via_nats(self, pg_pool, nats_client):
         nc, js, stream_name = nats_client
         await init_postgres_schema(pg_pool)
 
@@ -578,24 +578,24 @@ class TestRelationshipEventPipeline:
         worker = SyncWorker(nc, js, pg_pool, status)
 
         # Create
-        create_event = make_event("relationship.created", "relationship", {
+        create_event = make_event("term_relation.created", "relation", {
             "namespace": "test",
             "source_term_id": "TERM-X",
             "target_term_id": "TERM-Y",
-            "relationship_type": "part_of",
+            "relation_type": "part_of",
             "status": "active",
             "created_by": "test-user",
         })
-        await js.publish("wip.relationships", create_event)
+        await js.publish("wip.term_relations", create_event)
 
         # Delete
-        delete_event = make_event("relationship.deleted", "relationship", {
+        delete_event = make_event("term_relation.deleted", "relation", {
             "namespace": "test",
             "source_term_id": "TERM-X",
             "target_term_id": "TERM-Y",
-            "relationship_type": "part_of",
+            "relation_type": "part_of",
         })
-        await js.publish("wip.relationships", delete_event)
+        await js.publish("wip.term_relations", delete_event)
 
         sub = await js.pull_subscribe("wip.>", durable="test-e2e-rel-del", stream=stream_name)
         messages = await sub.fetch(batch=2, timeout=5)
@@ -604,7 +604,7 @@ class TestRelationshipEventPipeline:
 
         async with pg_pool.acquire() as conn:
             row = await conn.fetchrow(
-                """SELECT status FROM term_relationships
+                """SELECT status FROM term_relations
                    WHERE source_term_id = $1 AND target_term_id = $2 AND namespace = $3""",
                 "TERM-X", "TERM-Y", "test",
             )

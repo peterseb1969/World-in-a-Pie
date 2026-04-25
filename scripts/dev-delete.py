@@ -12,7 +12,7 @@ Usage:
     # Actually delete (by UUID or value code)
     python scripts/dev-delete.py --force 019abc01-def3-7abc-8def-123456789abc
 
-    # Delete with full cascade (terminology → terms → relationships,
+    # Delete with full cascade (terminology → terms → term_relations,
     # template → child templates → documents → files, etc.)
     python scripts/dev-delete.py --cascade --force COUNTRY
 
@@ -103,10 +103,10 @@ ENTITY_MAP = {
         "collection": "terms",
         "id_field": "term_id",
     },
-    "relationship": {
+    "term_relation": {
         "db": "wip_def_store",
-        "collection": "term_relationships",
-        "id_field": "relationship_id",
+        "collection": "term_relations",
+        "id_field": "term_relation_id",
     },
     "template": {
         "db": "wip_template_store",
@@ -134,7 +134,7 @@ ENTITY_MAP = {
 LIST_ALIASES = {
     "terminologies": "terminology",
     "terms": "term",
-    "relationships": "relationship",
+    "term_relations": "term_relation",
     "templates": "template",
     "documents": "document",
     "files": "file",
@@ -145,13 +145,13 @@ LIST_ALIASES = {
 PG_TABLE_MAP = {
     "terminology": {"table": "_wip_terminologies", "id_field": "terminology_id"},
     "term": {"table": "_wip_terms", "id_field": "term_id"},
-    "relationship": {"table": "_wip_term_relationships", "id_field": "relationship_id"},
+    "term_relation": {"table": "_wip_term_relations", "id_field": "term_relation_id"},
     "document": None,  # Documents go into doc_{template_value} tables — handled specially
 }
 
 # Deletion order for namespace mode: children before parents
 NAMESPACE_DELETE_ORDER = [
-    "relationship",
+    "term_relation",
     "document",
     "file",
     "term",
@@ -208,7 +208,7 @@ def check_backends_for_data(client, args, s3, pg_conn, namespace=None,
         if namespace:
             tmpl_coll = client["wip_template_store"]["templates"]
             has_pg_data = tmpl_coll.count_documents({"namespace": namespace}) > 0
-        elif entity_ids and entity_type in ("terminology", "term", "relationship",
+        elif entity_ids and entity_type in ("terminology", "term", "term_relation",
                                              "template", "document"):
             has_pg_data = True  # any of these types may have PG rows
         if has_pg_data:
@@ -638,11 +638,11 @@ def delete_entity(
 
 def _plan_terminology_cascade(client, terminology_id, cascade_plan, pg_doc_ids,
                                file_ids_to_delete, minio_keys, pg_conn):
-    """Plan cascade: terminology → terms → relationships.
+    """Plan cascade: terminology → terms → term_relations.
     Also warn about templates that reference this terminology."""
     reg_coll = client["wip_registry"]["registry_entries"]
     term_coll = client["wip_def_store"]["terms"]
-    rel_coll = client["wip_def_store"]["term_relationships"]
+    rel_coll = client["wip_def_store"]["term_relations"]
 
     # Terms in this terminology
     term_ids = term_coll.distinct("term_id", {"terminology_id": terminology_id})
@@ -657,39 +657,39 @@ def _plan_terminology_cascade(client, terminology_id, cascade_plan, pg_doc_ids,
             ),
         ))
 
-        # Relationships involving these terms
+        # TermRelations involving these terms
         rel_query = {"$or": [
             {"source_term_id": {"$in": term_ids}},
             {"target_term_id": {"$in": term_ids}},
         ]}
         rel_count = rel_coll.count_documents(rel_query)
         if rel_count:
-            rel_ids = rel_coll.distinct("relationship_id", rel_query)
+            rel_ids = rel_coll.distinct("term_relation_id", rel_query)
             cascade_plan.append((
-                "relationships involving terms",
+                "term_relations involving terms",
                 rel_count,
                 lambda q=rel_query, ids=rel_ids: _exec_cascade_delete(
-                    client, "wip_def_store", "term_relationships",
-                    q, "relationship_id", ids,
-                    reg_coll, pg_conn, PG_TABLE_MAP.get("relationship"),
+                    client, "wip_def_store", "term_relations",
+                    q, "term_relation_id", ids,
+                    reg_coll, pg_conn, PG_TABLE_MAP.get("term_relation"),
                 ),
             ))
 
-    # Relationships referencing the terminology directly
+    # TermRelations referencing the terminology directly
     trel_query = {"$or": [
         {"source_terminology_id": terminology_id},
         {"target_terminology_id": terminology_id},
     ]}
     trel_count = rel_coll.count_documents(trel_query)
     if trel_count:
-        trel_ids = rel_coll.distinct("relationship_id", trel_query)
+        trel_ids = rel_coll.distinct("term_relation_id", trel_query)
         cascade_plan.append((
-            "relationships referencing terminology",
+            "term_relations referencing terminology",
             trel_count,
             lambda q=trel_query, ids=trel_ids: _exec_cascade_delete(
-                client, "wip_def_store", "term_relationships",
-                q, "relationship_id", ids,
-                reg_coll, pg_conn, PG_TABLE_MAP.get("relationship"),
+                client, "wip_def_store", "term_relations",
+                q, "term_relation_id", ids,
+                reg_coll, pg_conn, PG_TABLE_MAP.get("term_relation"),
             ),
         ))
 
@@ -789,9 +789,9 @@ def _plan_template_cascade(client, template_id, template_value, cascade_plan,
 
 
 def _plan_term_cascade(client, term_id, cascade_plan):
-    """Plan cascade: term → relationships."""
+    """Plan cascade: term → term_relations."""
     reg_coll = client["wip_registry"]["registry_entries"]
-    rel_coll = client["wip_def_store"]["term_relationships"]
+    rel_coll = client["wip_def_store"]["term_relations"]
 
     rel_query = {"$or": [
         {"source_term_id": term_id},
@@ -799,14 +799,14 @@ def _plan_term_cascade(client, term_id, cascade_plan):
     ]}
     rel_count = rel_coll.count_documents(rel_query)
     if rel_count:
-        rel_ids = rel_coll.distinct("relationship_id", rel_query)
+        rel_ids = rel_coll.distinct("term_relation_id", rel_query)
         cascade_plan.append((
-            "relationships involving this term",
+            "term_relations involving this term",
             rel_count,
             lambda q=rel_query, ids=rel_ids: _exec_cascade_delete(
-                client, "wip_def_store", "term_relationships",
-                q, "relationship_id", ids,
-                reg_coll, None, PG_TABLE_MAP.get("relationship"),
+                client, "wip_def_store", "term_relations",
+                q, "term_relation_id", ids,
+                reg_coll, None, PG_TABLE_MAP.get("term_relation"),
             ),
         ))
 
@@ -1137,7 +1137,7 @@ def main():
     )
     parser.add_argument(
         "--cascade", action="store_true",
-        help="Also delete child entities (terminology→terms→relationships, "
+        help="Also delete child entities (terminology→terms→term_relations, "
              "template→child templates→documents→files)",
     )
     parser.add_argument(

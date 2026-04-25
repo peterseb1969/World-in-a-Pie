@@ -78,17 +78,17 @@ def fresh_import(
     ))
     _create_terms(client, target_namespace, terms, remapper, batch_size, stats, continue_on_error)
 
-    # Step 3b: Create relationships (after terms, using remapped IDs)
-    relationships = list(reader.read_entities("relationships"))
-    if relationships:
-        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating relationships (remapped IDs)")
+    # Step 3b: Create term_relations (after terms, using remapped IDs)
+    term_relations = list(reader.read_entities("term_relations"))
+    if term_relations:
+        console.print("\n[bold cyan]Step 2b:[/bold cyan] Creating term_relations (remapped IDs)")
         _emit(progress_callback, ProgressEvent(
-            phase="phase_relationships",
-            message=f"Creating {len(relationships)} relationships",
+            phase="phase_term_relations",
+            message=f"Creating {len(term_relations)} term_relations",
             percent=30.0,
-            total=len(relationships),
+            total=len(term_relations),
         ))
-        _create_relationships(client, target_namespace, relationships, remapper, batch_size, stats, continue_on_error)
+        _create_term_relations(client, target_namespace, term_relations, remapper, batch_size, stats, continue_on_error)
 
     # Step 4: Create and activate templates (multi-pass dependency resolution)
     console.print("\n[bold cyan]Step 3:[/bold cyan] Creating templates (multi-pass)")
@@ -289,28 +289,28 @@ def _create_terms(
     )
 
 
-def _ensure_relationship_types(
+def _ensure_relation_types(
     client: WIPClient,
     namespace: str,
-    relationships: list[dict],
+    term_relations: list[dict],
     stats: ImportStats,
 ) -> None:
-    """Ensure all relationship types used in the data exist in _ONTOLOGY_RELATIONSHIP_TYPES.
+    """Ensure all term_relation types used in the data exist in _ONTOLOGY_RELATIONSHIP_TYPES.
 
     Custom types (e.g. 'targets') may exist on the source instance but not
-    on a fresh target.  This adds any missing types before creating relationships.
+    on a fresh target.  This adds any missing types before creating term_relations.
     """
-    needed = {r["relationship_type"] for r in relationships}
+    needed = {r["relation_type"] for r in term_relations}
 
     # Fetch currently valid types
     try:
         # Try creating a dummy to get the error listing valid types
         result = client.post(
-            "def-store", "/ontology/relationships",
+            "def-store", "/ontology/term-relations",
             json=[{
                 "source_term_id": "00000000-0000-0000-0000-000000000000",
                 "target_term_id": "00000000-0000-0000-0000-000000000001",
-                "relationship_type": "__probe__",
+                "relation_type": "__probe__",
                 "metadata": {},
             }],
             params={"namespace": namespace},
@@ -342,7 +342,7 @@ def _ensure_relationship_types(
                 break
         if not ort_id:
             stats.warnings.append(
-                f"Cannot register relationship types {missing}: "
+                f"Cannot register term_relation types {missing}: "
                 f"_ONTOLOGY_RELATIONSHIP_TYPES terminology not found"
             )
             return
@@ -351,28 +351,28 @@ def _ensure_relationship_types(
         payloads = [{"value": rt, "label": rt.replace("_", " ").title(), "created_by": "wip-toolkit"} for rt in missing]
         result = client.post("def-store", f"/terminologies/{ort_id}/terms", json=payloads, params={"namespace": namespace})
         added = result.get("succeeded", 0)
-        console.print(f"  Registered {added} relationship type(s): {', '.join(sorted(missing))}")
+        console.print(f"  Registered {added} term_relation type(s): {', '.join(sorted(missing))}")
     except WIPClientError as e:
-        stats.warnings.append(f"Failed to register relationship types {missing}: {e}")
+        stats.warnings.append(f"Failed to register term_relation types {missing}: {e}")
 
 
-def _create_relationships(
+def _create_term_relations(
     client: WIPClient,
     namespace: str,
-    relationships: list[dict],
+    term_relations: list[dict],
     remapper: IDRemapper,
     batch_size: int,
     stats: ImportStats,
     continue_on_error: bool,
 ) -> None:
-    """Create relationships with remapped term IDs."""
-    _ensure_relationship_types(client, namespace, relationships, stats)
+    """Create term_relations with remapped term IDs."""
+    _ensure_relation_types(client, namespace, term_relations, stats)
     created = 0
     failed = 0
     skipped = 0
 
-    for i in range(0, len(relationships), batch_size):
-        batch = relationships[i:i + batch_size]
+    for i in range(0, len(term_relations), batch_size):
+        batch = term_relations[i:i + batch_size]
         payloads = []
         for r in batch:
             source = remapper.term_map.get(r["source_term_id"], r["source_term_id"])
@@ -380,13 +380,13 @@ def _create_relationships(
             payloads.append({
                 "source_term_id": source,
                 "target_term_id": target,
-                "relationship_type": r["relationship_type"],
+                "relation_type": r["relation_type"],
                 "metadata": r.get("metadata") or {},
             })
 
         try:
             result = client.post(
-                "def-store", "/ontology/relationships",
+                "def-store", "/ontology/term-relations",
                 json=payloads,
                 params={"namespace": namespace},
             )
@@ -399,13 +399,13 @@ def _create_relationships(
                     failed += 1
         except WIPClientError as e:
             failed += len(batch)
-            stats.errors.append(f"Failed to create relationship batch at index {i}: {e}")
+            stats.errors.append(f"Failed to create term_relation batch at index {i}: {e}")
             if not continue_on_error:
                 raise
 
-    stats.created.relationships = created
-    stats.failed.relationships = failed
-    stats.skipped.relationships = skipped
+    stats.created.term_relations = created
+    stats.failed.term_relations = failed
+    stats.skipped.term_relations = skipped
     msg = f"  Created {created}"
     if skipped:
         msg += f", skipped {skipped}"

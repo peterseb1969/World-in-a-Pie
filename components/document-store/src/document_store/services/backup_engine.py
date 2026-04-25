@@ -36,8 +36,7 @@ logger = logging.getLogger("document_store.backup_engine")
 # ---------------------------------------------------------------------------
 # Collection map: (archive entity type) → (database env var, database default, collection name)
 #
-# Archive uses "relationships" for the file name, but the MongoDB collection
-# in def-store is "term_relationships". This map bridges the naming gap.
+# Archive entity type and MongoDB collection name match: "term_relations".
 # ---------------------------------------------------------------------------
 
 _DB_REGISTRY = os.getenv("REGISTRY_DATABASE_NAME", "wip_registry")
@@ -49,7 +48,7 @@ _DB_DOCUMENT_STORE = os.getenv("DOCUMENT_STORE_DATABASE_NAME", "wip_document_sto
 COLLECTION_MAP: dict[str, tuple[str, str]] = {
     "terminologies": (_DB_DEF_STORE, "terminologies"),
     "terms": (_DB_DEF_STORE, "terms"),
-    "relationships": (_DB_DEF_STORE, "term_relationships"),
+    "term_relations": (_DB_DEF_STORE, "term_relations"),
     "templates": (_DB_TEMPLATE_STORE, "templates"),
     "documents": (_DB_DOCUMENT_STORE, "documents"),
     "files": (_DB_DOCUMENT_STORE, "files"),
@@ -60,7 +59,7 @@ COLLECTION_MAP: dict[str, tuple[str, str]] = {
 BACKUP_ENTITY_ORDER = [
     "terminologies",
     "terms",
-    "relationships",
+    "term_relations",
     "templates",
     "documents",
     "files",
@@ -177,7 +176,7 @@ class DirectBackupEngine:
                 counts=EntityCounts(
                     terminologies=writer.entity_count("terminologies"),
                     terms=writer.entity_count("terms"),
-                    relationships=writer.entity_count("relationships"),
+                    term_relations=writer.entity_count("term_relations"),
                     templates=writer.entity_count("templates"),
                     documents=writer.entity_count("documents"),
                     files=writer.entity_count("files"),
@@ -351,7 +350,7 @@ class DirectRestoreEngine:
             restore_order = [
                 "terminologies",
                 "terms",
-                "relationships",
+                "term_relations",
                 "templates",
                 "documents",
                 "files",
@@ -362,7 +361,7 @@ class DirectRestoreEngine:
             total = sum(
                 getattr(manifest.counts, et, 0)
                 for et in [
-                    "terminologies", "terms", "relationships",
+                    "terminologies", "terms", "term_relations",
                     "templates", "documents", "files", "registry_entries",
                 ]
             )

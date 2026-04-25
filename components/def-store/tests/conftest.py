@@ -36,7 +36,7 @@ from def_store.api.auth import set_api_key  # noqa: E402
 from def_store.main import app  # noqa: E402
 from def_store.models.audit_log import TermAuditLog  # noqa: E402
 from def_store.models.term import Term  # noqa: E402
-from def_store.models.term_relationship import TermRelationship  # noqa: E402
+from def_store.models.term_relation import TermRelation  # noqa: E402
 from def_store.models.terminology import Terminology  # noqa: E402
 from def_store.services.registry_client import RegistryClient  # noqa: E402
 
@@ -71,7 +71,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
             # Registry models
             Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
             # Def-Store models
-            Terminology, Term, TermAuditLog, TermRelationship,
+            Terminology, Term, TermAuditLog, TermRelation,
         ],
     )
 
@@ -84,7 +84,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await Term.delete_all()
     await Terminology.delete_all()
     await TermAuditLog.delete_all()
-    await TermRelationship.delete_all()
+    await TermRelation.delete_all()
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
@@ -98,10 +98,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Invalidate OntologyService cache so each test starts fresh
     from def_store.services.ontology_service import OntologyService
-    OntologyService.invalidate_relationship_type_cache()
+    OntologyService.invalidate_relation_type_cache()
 
     # Bootstrap system terminologies directly in MongoDB.
-    # These are internal data (relationship types etc.) that def-store
+    # These are internal data (relation types etc.) that def-store
     # creates at startup. They use hardcoded SYS-* IDs and don't need
     # Registry registration — they're never resolved via synonyms.
     from def_store.services.system_terminologies import SYSTEM_TERMINOLOGIES

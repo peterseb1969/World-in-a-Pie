@@ -5,7 +5,7 @@ metadata:
   category: core
   description: |
     Terminology management. Stores controlled vocabularies and terms
-    with ontology relationships. Consumed by Template-Store for term
+    with ontology term-relations. Consumed by Template-Store for term
     validation on document fields.
 
 spec:
@@ -31,7 +31,7 @@ spec:
     optional:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
       # NATS is optional — only present when reporting or ingest module active.
-      # Def-store publishes terminology/term/relationship events here;
+      # Def-store publishes terminology/term/term_relation events here;
       # reporting-sync's worker consumes them to populate metadata tables
       # in real time. When NATS_URL is empty the service gracefully skips.
       - {name: NATS_URL, source: {from_component: nats}}

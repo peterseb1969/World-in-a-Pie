@@ -189,7 +189,7 @@ async def connect_nats() -> tuple[nats.NATS, JetStreamContext]:
                 "wip.templates.>",
                 "wip.terminologies.>",
                 "wip.terms.>",
-                "wip.relationships.>",
+                "wip.term_relations.>",
             ],
             retention="limits",
             max_msgs=1_000_000,
@@ -328,7 +328,7 @@ async def lifespan(app: FastAPI):
         await sm.ensure_terminologies_table()
         await sm.ensure_terms_table()
         await sm.ensure_templates_table()
-        await sm.ensure_term_relationships_table()
+        await sm.ensure_term_relations_table()
     except Exception as e:
         logger.error(f"Failed to connect to PostgreSQL: {e}")
         state.sync_status.connected_to_postgres = False
@@ -723,16 +723,16 @@ async def trigger_term_sync(
     }
 
 
-@router.post("/sync/batch/relationships")
-async def trigger_relationship_sync(
+@router.post("/sync/batch/term_relations")
+async def trigger_term_relation_sync(
     namespace: str,
     page_size: int = 100,
 ) -> dict[str, Any]:
     """
-    Batch sync all term relationships from Def-Store to PostgreSQL.
+    Batch sync all term term_relations from Def-Store to PostgreSQL.
 
-    Fetches all active relationships via the Def-Store ontology API
-    and upserts them into the term_relationships table.
+    Fetches all active term_relations via the Def-Store ontology API
+    and upserts them into the term_relations table.
 
     Args:
         namespace: Namespace to sync (default: wip)
@@ -741,14 +741,14 @@ async def trigger_relationship_sync(
     if not state.batch_sync_service:
         raise HTTPException(status_code=503, detail="Batch sync service not available")
 
-    result = await state.batch_sync_service.batch_sync_relationships(
+    result = await state.batch_sync_service.batch_sync_term_relations(
         namespace=namespace,
         page_size=page_size,
     )
 
     return {
         "status": "completed",
-        "table": "term_relationships",
+        "table": "term_relations",
         **result,
     }
 
@@ -1242,7 +1242,7 @@ async def list_tables(
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     allowed_prefixes = ("doc_",)
-    allowed_exact = {"terminologies", "terms", "term_relationships"}
+    allowed_exact = {"terminologies", "terms", "term_relations"}
 
     async with state.postgres_pool.acquire() as conn:
         # Get all base tables in public schema
@@ -1388,7 +1388,7 @@ async def execute_query(body: ReportQuery):
 
 # Allowed tables for CSV export (same whitelist as /tables)
 _EXPORT_ALLOWED_PREFIXES = ("doc_",)
-_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relationships"}
+_EXPORT_ALLOWED_EXACT = {"terminologies", "terms", "term_relations"}
 
 
 def _is_allowed_table(name: str) -> bool:
@@ -1438,7 +1438,7 @@ async def export_table_csv(
         raise HTTPException(
             status_code=400,
             detail=f"Table '{table}' is not available for export. "
-            "Only doc_* tables and metadata tables (terminologies, terms, term_relationships) are allowed.",
+            "Only doc_* tables and metadata tables (terminologies, terms, term_relations) are allowed.",
         )
 
     download_name = filename or f"{table}.csv"
@@ -1496,7 +1496,7 @@ async def delete_namespace(prefix: str):
     """Delete all reporting data for a namespace.
 
     Removes rows from all doc_* tables, metadata tables (terminologies, terms,
-    term_relationships, templates), and sync status where namespace matches.
+    term_relations, templates), and sync status where namespace matches.
 
     Called by Registry during namespace deletion.
     """
@@ -1535,7 +1535,7 @@ async def delete_namespace(prefix: str):
             total_deleted += count
 
         # Delete from metadata tables
-        for table_name in ("terminologies", "templates", "terms", "term_relationships"):
+        for table_name in ("terminologies", "templates", "terms", "term_relations"):
             try:
                 result = await conn.execute(
                     f'DELETE FROM "{table_name}" WHERE namespace = $1', prefix

@@ -75,9 +75,9 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
     },
     {
         "value": "_ONTOLOGY_RELATIONSHIP_TYPES",
-        "label": "Ontology Relationship Types",
-        "description": "System terminology defining relationship types for ontology support. "
-                       "Each term represents a typed relationship between concepts.",
+        "label": "Ontology Relation Types",
+        "description": "System terminology defining relation types for ontology support. "
+                       "Each term represents a typed relation between concepts.",
         "case_sensitive": False,
         "metadata": {
             "source": "WIP System",
@@ -108,7 +108,7 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
             {
                 "value": "part_of",
                 "label": "Part of",
-                "description": "Mereological part-whole relationship",
+                "description": "Mereological part-whole relation",
                 "aliases": [],
                 "metadata": {"inverse": "has_part", "transitive": True},
                 "sort_order": 3
@@ -166,8 +166,12 @@ SYSTEM_TERMINOLOGIES: list[dict[str, Any]] = [
 ]
 
 
-# Constant for the relationship types terminology value
-RELATIONSHIP_TYPES_TERMINOLOGY_VALUE = "_ONTOLOGY_RELATIONSHIP_TYPES"
+# Constant for the term-relation types terminology value.
+# Note: the data identifier "_ONTOLOGY_RELATIONSHIP_TYPES" is retained
+# because apps' "_ONTOLOGY_RELATIONSHIP_TYPES_EXT.json" extension files
+# match against this value. Renaming the value would require coordinating
+# updates across every app repo that extends it.
+TERM_RELATION_TYPES_TERMINOLOGY_VALUE = "_ONTOLOGY_RELATIONSHIP_TYPES"
 
 
 async def ensure_system_terminologies() -> dict[str, Any]:

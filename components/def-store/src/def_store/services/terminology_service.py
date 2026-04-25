@@ -21,15 +21,15 @@ from ..models.api_models import (
 )
 from ..models.audit_log import TermAuditLog
 from ..models.term import Term
-from ..models.term_relationship import TermRelationship
+from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .nats_client import (
     EventType as NatsEventType,
 )
 from .nats_client import (
-    publish_relationship_event,
     publish_term_event,
     publish_term_events_bulk,
+    publish_term_relation_event,
     publish_terminology_event,
 )
 from .registry_client import RegistryError, get_registry_client
@@ -363,7 +363,7 @@ class TerminologyService:
         Delete a terminology. Hard-deletes if mutable OR if hard_delete=True
         and namespace deletion_mode is 'full'. Soft-deletes otherwise.
 
-        Also deletes/deactivates all terms and relationships in the terminology.
+        Also deletes/deactivates all terms and relations in the terminology.
 
         Args:
             terminology_id: Terminology to delete
@@ -393,7 +393,7 @@ class TerminologyService:
             should_hard_delete = True
 
         if should_hard_delete:
-            # HARD DELETE: remove terminology, all terms, and all relationships
+            # HARD DELETE: remove terminology, all terms, and all relations
 
             # 1. Get all term IDs in this terminology
             term_ids = [
@@ -401,9 +401,9 @@ class TerminologyService:
                 for t in await Term.find({"terminology_id": terminology_id}).to_list()
             ]
 
-            # 2. Delete all relationships involving these terms
+            # 2. Delete all relations involving these terms
             if term_ids:
-                await TermRelationship.find({
+                await TermRelation.find({
                     "$or": [
                         {"source_term_id": {"$in": term_ids}},
                         {"target_term_id": {"$in": term_ids}}
@@ -647,10 +647,10 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # Invalidate relationship type cache if this is the system terminology
+        # Invalidate relation type cache if this is the system terminology
         if terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
-            OntologyService.invalidate_relationship_type_cache()
+            OntologyService.invalidate_relation_type_cache()
 
         return TerminologyService._to_term_response(term)
 
@@ -929,10 +929,10 @@ class TerminologyService:
             terminology.updated_at = now
             await terminology.save()
 
-        # Invalidate relationship type cache if this is the system terminology
+        # Invalidate relation type cache if this is the system terminology
         if total_created > 0 and terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
             from .ontology_service import OntologyService
-            OntologyService.invalidate_relationship_type_cache()
+            OntologyService.invalidate_relation_type_cache()
 
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
@@ -1188,33 +1188,33 @@ class TerminologyService:
             should_hard_delete = True
 
         if should_hard_delete:
-            # HARD DELETE: remove term and cascade relationships
+            # HARD DELETE: remove term and cascade relations
 
-            # 1. Find and delete relationships involving this term
-            relationships = await TermRelationship.find({
+            # 1. Find and delete relations involving this term
+            relations = await TermRelation.find({
                 "$or": [
                     {"source_term_id": term_id},
                     {"target_term_id": term_id}
                 ]
             }).to_list()
 
-            if relationships:
-                # Publish relationship.deleted events before removing
-                for rel in relationships:
-                    await publish_relationship_event(
-                        NatsEventType.RELATIONSHIP_DELETED,
+            if relations:
+                # Publish relation.deleted events before removing
+                for rel in relations:
+                    await publish_term_relation_event(
+                        NatsEventType.TERM_RELATION_DELETED,
                         {
                             "namespace": rel.namespace,
                             "source_term_id": rel.source_term_id,
                             "target_term_id": rel.target_term_id,
-                            "relationship_type": rel.relationship_type,
+                            "relation_type": rel.relation_type,
                             "hard_delete": True,
                         },
                         changed_by=actor,
                     )
 
-                # Delete relationships from MongoDB
-                await TermRelationship.find({
+                # Delete relations from MongoDB
+                await TermRelation.find({
                     "$or": [
                         {"source_term_id": term_id},
                         {"target_term_id": term_id}

@@ -680,7 +680,7 @@ class TestTransformAndInsert:
 
 @requires_postgres
 class TestMetadataTables:
-    """Verify metadata tables (terminologies, terms, templates, relationships)."""
+    """Verify metadata tables (terminologies, terms, templates, relations)."""
 
     async def test_terminologies_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
@@ -741,21 +741,21 @@ class TestMetadataTables:
             assert row["value"] == "Person"
             assert row["status"] == "active"
 
-    async def test_term_relationships_table_created(self, pg_pool):
+    async def test_term_relations_table_created(self, pg_pool):
         sm = SchemaManager(pg_pool)
-        await sm.ensure_term_relationships_table()
-        assert await sm.table_exists("term_relationships")
+        await sm.ensure_term_relations_table()
+        assert await sm.table_exists("term_relations")
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO term_relationships
-                    (namespace, source_term_id, target_term_id, relationship_type, status)
+                INSERT INTO term_relations
+                    (namespace, source_term_id, target_term_id, relation_type, status)
                 VALUES ($1, $2, $3, $4, $5)
                 """,
                 "test", "TERM-A", "TERM-B", "is_a", "active",
             )
-            count = await conn.fetchval("SELECT COUNT(*) FROM term_relationships")
+            count = await conn.fetchval("SELECT COUNT(*) FROM term_relations")
             assert count == 1
 
     async def test_idempotent_table_creation(self, pg_pool):
@@ -826,7 +826,7 @@ class TestNamespaceDeletion:
         await sm.ensure_terminologies_table()
         await sm.ensure_terms_table()
         await sm.ensure_templates_table()
-        await sm.ensure_term_relationships_table()
+        await sm.ensure_term_relations_table()
 
         # Insert metadata in two namespaces
         async with pg_pool.acquire() as conn:
@@ -844,8 +844,8 @@ class TestNamespaceDeletion:
                     f"TPL-{ns}", ns, f"Template-{ns}", 1, "active",
                 )
                 await conn.execute(
-                    """INSERT INTO term_relationships
-                        (namespace, source_term_id, target_term_id, relationship_type, status)
+                    """INSERT INTO term_relations
+                        (namespace, source_term_id, target_term_id, relation_type, status)
                        VALUES ($1, $2, $3, $4, $5)""",
                     ns, f"SRC-{ns}", f"TGT-{ns}", "is_a", "active",
                 )
@@ -853,7 +853,7 @@ class TestNamespaceDeletion:
         # Delete one namespace from all metadata tables
         async with pg_pool.acquire() as conn:
             total_deleted = 0
-            for table in ("terminologies", "templates", "terms", "term_relationships"):
+            for table in ("terminologies", "templates", "terms", "term_relations"):
                 result = await conn.execute(
                     f'DELETE FROM "{table}" WHERE namespace = $1', "delete_me"
                 )
@@ -863,7 +863,7 @@ class TestNamespaceDeletion:
 
         # Verify "keep" namespace untouched
         async with pg_pool.acquire() as conn:
-            for table in ("terminologies", "terms", "templates", "term_relationships"):
+            for table in ("terminologies", "terms", "templates", "term_relations"):
                 count = await conn.fetchval(
                     f'SELECT COUNT(*) FROM "{table}" WHERE namespace = $1', "keep"
                 )

@@ -3,7 +3,7 @@
 Unit tests (mocked NATS + PostgreSQL) verifying that hard_delete events
 produce DELETE FROM statements instead of UPDATE status.
 
-Covers all entity types: documents, templates, terminologies, terms, relationships.
+Covers all entity types: documents, templates, terminologies, terms, relations.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -61,7 +61,7 @@ def worker(mock_nats, mock_jetstream, mock_pool, sync_status):
     w.schema_manager.ensure_templates_table = AsyncMock(return_value="templates")
     w.schema_manager.ensure_terminologies_table = AsyncMock(return_value="terminologies")
     w.schema_manager.ensure_terms_table = AsyncMock(return_value="terms")
-    w.schema_manager.ensure_term_relationships_table = AsyncMock(return_value="term_relationships")
+    w.schema_manager.ensure_term_relations_table = AsyncMock(return_value="term_relations")
     w.schema_manager.update_table_schema = AsyncMock(return_value=[])
     return w
 
@@ -338,8 +338,8 @@ class TestTermHardDelete:
     """Tests for term.deleted events with hard_delete=True."""
 
     @pytest.mark.asyncio
-    async def test_hard_delete_cascades_relationships(self, worker, mock_pool):
-        """hard_delete term deletes from term_relationships and terms tables."""
+    async def test_hard_delete_cascades_relations(self, worker, mock_pool):
+        """hard_delete term deletes from term_relations and terms tables."""
         _, conn = mock_pool
         event = {
             "event_type": "term.deleted",
@@ -356,12 +356,12 @@ class TestTermHardDelete:
         result = await worker._process_term_event(event)
 
         assert result is True
-        # Should have two DELETE calls: relationships first, then term
+        # Should have two DELETE calls: relations first, then term
         assert conn.execute.await_count >= 2
         calls = [c[0][0] for c in conn.execute.call_args_list]
-        rel_delete = [c for c in calls if "term_relationships" in c and "DELETE" in c]
-        term_delete = [c for c in calls if "terms" in c and "DELETE" in c and "term_relationships" not in c]
-        assert len(rel_delete) == 1, f"Expected 1 relationship DELETE, got: {calls}"
+        rel_delete = [c for c in calls if "term_relations" in c and "DELETE" in c]
+        term_delete = [c for c in calls if "terms" in c and "DELETE" in c and "term_relations" not in c]
+        assert len(rel_delete) == 1, f"Expected 1 relation DELETE, got: {calls}"
         assert len(term_delete) == 1, f"Expected 1 term DELETE, got: {calls}"
 
     @pytest.mark.asyncio
@@ -389,56 +389,56 @@ class TestTermHardDelete:
 
 
 # =========================================================================
-# Relationship Hard-Delete
+# Relation Hard-Delete
 # =========================================================================
 
 
-class TestRelationshipHardDelete:
-    """Tests for relationship.deleted events with hard_delete=True."""
+class TestRelationHardDelete:
+    """Tests for term_relation.deleted events with hard_delete=True."""
 
     @pytest.mark.asyncio
     async def test_hard_delete_produces_delete_sql(self, worker, mock_pool):
-        """hard_delete relationship produces DELETE FROM term_relationships."""
+        """hard_delete relation produces DELETE FROM term_relations."""
         _, conn = mock_pool
         event = {
-            "event_type": "relationship.deleted",
-            "relationship": {
+            "event_type": "term_relation.deleted",
+            "relation": {
                 "namespace": "wip",
                 "source_term_id": "0190b000-0000-7000-0000-000000000001",
                 "target_term_id": "0190b000-0000-7000-0000-000000000002",
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
                 "source_terminology_id": "0190a000-0000-7000-0000-000000000001",
                 "target_terminology_id": "0190a000-0000-7000-0000-000000000001",
                 "hard_delete": True,
             },
         }
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
         sql = conn.execute.call_args[0][0]
         assert "DELETE FROM" in sql
         assert "source_term_id" in sql
         assert "target_term_id" in sql
-        assert "relationship_type" in sql
+        assert "relation_type" in sql
 
     @pytest.mark.asyncio
     async def test_soft_delete_uses_update(self, worker, mock_pool):
-        """Soft delete relationship uses UPDATE."""
+        """Soft delete relation uses UPDATE."""
         _, conn = mock_pool
         event = {
-            "event_type": "relationship.deleted",
-            "relationship": {
+            "event_type": "term_relation.deleted",
+            "relation": {
                 "namespace": "wip",
                 "source_term_id": "0190b000-0000-7000-0000-000000000003",
                 "target_term_id": "0190b000-0000-7000-0000-000000000004",
-                "relationship_type": "is_a",
+                "relation_type": "is_a",
                 "source_terminology_id": "0190a000-0000-7000-0000-000000000002",
                 "target_terminology_id": "0190a000-0000-7000-0000-000000000002",
             },
         }
 
-        result = await worker._process_relationship_event(event)
+        result = await worker._process_term_relation_event(event)
 
         assert result is True
         sql = conn.execute.call_args[0][0]

@@ -141,44 +141,43 @@ fi
 mkdir -p "$APP_DIR/libs"
 mkdir -p "$APP_DIR/tools"
 
-# --- Copy slash commands (new projects only) ---
+# --- Copy slash commands (new + refresh) ---
+# Canonical source is WIP. Gene pool updates must propagate to all repos.
 
-if ! $REFRESH_MODE; then
-    echo "2. Copying slash commands..."
-    cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
-    echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
+echo "2. Copying slash commands..."
+cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
+echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-    # --- Copy slash command playbooks (new projects only) ---
-    # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
-    # Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.
+# --- Copy slash command playbooks (new + refresh) ---
+# Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
+# Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.
 
-    if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
-        mkdir -p "$APP_DIR/docs/playbooks"
-        cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
-        PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-        echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
+if [ -d "$WIP_ROOT/docs/playbooks/app-builder" ]; then
+    mkdir -p "$APP_DIR/docs/playbooks"
+    cp "$WIP_ROOT/docs/playbooks/app-builder/"*.md "$APP_DIR/docs/playbooks/" 2>/dev/null || true
+    PLAYBOOK_COUNT=$(find "$APP_DIR/docs/playbooks/" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+    echo "   Copied: $PLAYBOOK_COUNT playbook(s) to docs/playbooks/"
+else
+    echo "   Warning: $WIP_ROOT/docs/playbooks/app-builder/ not found, skipping playbooks"
+fi
+
+# --- Copy reference docs (new + refresh) ---
+
+echo "3. Copying reference documentation..."
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md app-containerization-guide.md; do
+    if [ -f "$WIP_ROOT/docs/$doc" ]; then
+        cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
+        echo "   Copied: docs/$doc"
     else
-        echo "   Warning: $WIP_ROOT/docs/playbooks/app-builder/ not found, skipping playbooks"
+        echo "   Warning: docs/$doc not found, skipping"
     fi
-
-    # --- Copy reference docs (new projects only) ---
-
-    echo "3. Copying reference documentation..."
-    for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md; do
-        if [ -f "$WIP_ROOT/docs/$doc" ]; then
-            cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
-            echo "   Copied: docs/$doc"
-        else
-            echo "   Warning: docs/$doc not found, skipping"
-        fi
-    done
-    # Design docs live in a subdirectory
-    if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
-        cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
-        echo "   Copied: docs/design/ontology-support.md"
-    else
-        echo "   Warning: docs/design/ontology-support.md not found, skipping"
-    fi
+done
+# Design docs live in a subdirectory
+if [ -f "$WIP_ROOT/docs/design/ontology-support.md" ]; then
+    cp "$WIP_ROOT/docs/design/ontology-support.md" "$APP_DIR/docs/"
+    echo "   Copied: docs/design/ontology-support.md"
+else
+    echo "   Warning: docs/design/ontology-support.md not found, skipping"
 fi
 
 # --- Generate .mcp.json ---
@@ -619,14 +618,19 @@ Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
-- \`docs/ontology-support.md\` — Term relationships, polyhierarchy, typed relationships, traversal queries
+- \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
 - \`docs/dev-delete.md\` — Hard-delete entities during development (modes, backends, remote usage)
+
+## Key Identity Concepts
+
+- **Identity hash ≠ canonical ID.** Identity hash = uniqueness key for upsert *within a specific template* — same field values under two different templates are two different documents. Canonical ID / synonyms = deterministic identification of exactly one entity across the entire system (Registry-resolved). When calling \`createDocumentsBulk\`, the identity hash is scoped to the template you pass — never assume it is unique across templates.
+- **The Registry is the identity authority.** All identity resolution goes through the Registry. Do not implement app-side identity resolution by hash lookups — use the document_id returned by the API.
 
 ## MCP
 
 WIP is accessed exclusively via MCP tools (71 tools, 5 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
-- Read \`wip://data-model\` — terminologies, templates, documents, fields, relationships
+- Read \`wip://data-model\` — terminologies, templates, documents, fields, term-relations
 - Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
 
 \`wip://development-guide\` provides the full 4-phase workflow reference if needed.
