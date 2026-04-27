@@ -1,0 +1,350 @@
+/**
+ * Server-side bootstrap library — the offer-on-empty / use-on-exists pattern.
+ *
+ * This template implements the universal app-bootstrap discipline (see the
+ * "Namespace Bootstrap on Launch" section of the generated CLAUDE.md, and
+ * docs/design/document-relationships.md for the full data-model spec it
+ * works against).
+ *
+ * Three rules:
+ *   1. If the namespace does NOT exist on launch, the app shows the user
+ *      an explicit bootstrap offer. We do NOT auto-bootstrap silently.
+ *   2. If the namespace DOES exist, the app uses it as-is. No schema
+ *      reconciliation, no merge logic, no "templates differ" check.
+ *      Rolling redeploys against an existing namespace must come up
+ *      clean.
+ *   3. On user-initiated bootstrap, the app writes one BOOTSTRAP_RECORD
+ *      audit doc capturing app version, timestamp, what was created,
+ *      and the current commit SHA. This is the provenance trail any
+ *      future YAC reading the namespace can rely on.
+ *
+ * Restore is NOT an app concern. If the user wants to drop the namespace
+ * or restore an old backup, that's a console-initiated action via
+ * `wip-deploy` or direct API. The bootstrap UI just MENTIONS restore as
+ * an alternative the user may prefer; it does not provide UI for it.
+ *
+ * SEED FILE CONVENTION (read before adapting):
+ *   server/seed/terminologies/<VALUE>.json
+ *     { value, label, description, mutable?, terms[], ontology?: { relationships[] } }
+ *   server/seed/templates/<NN>_<VALUE>.json    (numeric prefix orders dependencies)
+ *     { value, label, description, identity_fields[], fields[], reporting? }
+ *   The runBootstrap loop reads these at runtime — no schema in code.
+ *
+ * REQUIRED before this works in your app:
+ *   - A `BOOTSTRAP_RECORD` template in server/seed/templates/. See the
+ *     comment block on writeBootstrapRecord() below for the canonical
+ *     shape — do not deviate without escalation.
+ *   - The app's other terminologies + templates in seed/.
+ *   - process.env.APP_VERSION and process.env.GIT_COMMIT_SHA set at
+ *     build/deploy time. (The Dockerfile.dev / CI baseline templates
+ *     in WIP set these via build args; if your app build doesn't, add
+ *     it before shipping bootstrap.)
+ *
+ * TODO when adopting this template:
+ *   - Set NAMESPACE to your app's namespace prefix.
+ *   - Adapt the BOOTSTRAP_RECORD field assembly if your spec adds fields.
+ *   - Verify your `wip-api.ts` exposes wipGet / wipPost / wipPut. APP-CT
+ *     ships these in server/lib/wip-api.ts; the same shape is expected.
+ */
+
+import { wipGet, wipPost, wipPut } from './wip-api.js'
+import { readFileSync, readdirSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const SEED_DIR = join(__dirname, '..', 'seed')
+
+// TODO: set this to your app's namespace prefix.
+const NAMESPACE = 'TODO_APP_NAMESPACE'
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyObj = Record<string, any>
+
+export type BootstrapStatus = 'unknown' | 'wip_unreachable' | 'needs_bootstrap' | 'ready'
+
+export interface BootstrapProgress {
+  step: string
+  detail: string
+  done: boolean
+  error?: string
+}
+
+/**
+ * Check if WIP is reachable and whether the namespace exists.
+ *
+ * Per the spec: namespace exists → ready, period. We do NOT also check
+ * "and has expected templates" — that's schema reconciliation, which is a
+ * YAC or migration-tool concern, not a startup gate. A partially-bootstrapped
+ * namespace is the user's signal to use the console (wip-deploy / direct
+ * API), not the app's signal to silently re-bootstrap.
+ */
+export async function checkStatus(): Promise<BootstrapStatus> {
+  // Use namespace listing as health probe — no dedicated /health endpoint
+  let namespaces: Array<{ prefix: string }>
+  try {
+    namespaces = (await wipGet('/api/registry/namespaces')) as Array<{ prefix: string }>
+  } catch {
+    return 'wip_unreachable'
+  }
+
+  return namespaces.some((ns) => ns.prefix === NAMESPACE) ? 'ready' : 'needs_bootstrap'
+}
+
+/**
+ * Run the full bootstrap. Calls onProgress for each step.
+ *
+ * Order matters: namespace → terminologies (with terms inline) → ontology
+ * term-relations → templates (in filename-sorted order so dependencies
+ * resolve) → BOOTSTRAP_RECORD audit doc.
+ */
+export async function runBootstrap(
+  onProgress: (p: BootstrapProgress) => void,
+): Promise<void> {
+  const progress = (step: string, detail: string) =>
+    onProgress({ step, detail, done: false })
+
+  const startedAt = new Date().toISOString()
+  const templatesCreated: string[] = []
+  const edgeTypesCreated: string[] = []
+  const terminologiesCreated: string[] = []
+
+  try {
+    // Step 1: Create namespace (idempotent upsert via PUT)
+    progress('namespace', `Creating ${NAMESPACE} namespace...`)
+    await wipPut(`/api/registry/namespaces/${NAMESPACE}`, {
+      description: `${NAMESPACE} app data (bootstrap created)`,
+    })
+
+    // Step 2: Load and create terminologies
+    progress('terminologies', 'Loading seed data...')
+    const termFiles = readdirSync(join(SEED_DIR, 'terminologies'))
+      .filter((f) => f.endsWith('.json') && !f.startsWith('_'))
+      .sort()
+
+    const terminologies: AnyObj[] = []
+    for (const file of termFiles) {
+      const data = JSON.parse(readFileSync(join(SEED_DIR, 'terminologies', file), 'utf-8'))
+      terminologies.push(data)
+    }
+
+    progress('terminologies', `Creating ${terminologies.length} terminologies...`)
+    const termBulk = terminologies.map((t) => ({
+      value: t.value,
+      label: t.label,
+      description: t.description || '',
+      namespace: NAMESPACE,
+      ...(t.mutable ? { mutable: true } : {}),
+    }))
+    const termResult = (await wipPost('/api/def-store/terminologies', termBulk)) as {
+      results: Array<{ status: string; id: string; error?: string }>
+    }
+
+    // Build value → terminology_id map
+    const termIdMap = new Map<string, string>()
+    for (let i = 0; i < termResult.results.length; i++) {
+      const r = termResult.results[i]
+      if (r.id) {
+        termIdMap.set(terminologies[i].value, r.id)
+        terminologiesCreated.push(terminologies[i].value)
+      }
+    }
+
+    // Step 3: Create terms for each terminology
+    let totalTerms = 0
+    for (const termData of terminologies) {
+      const terms = termData.terms || []
+      if (!terms.length) continue
+
+      const termId = termIdMap.get(termData.value)
+      if (!termId) continue
+
+      progress('terms', `Creating ${terms.length} terms for ${termData.value}...`)
+      await wipPost(`/api/def-store/terminologies/${termId}/terms`, terms)
+      totalTerms += terms.length
+    }
+    progress('terms', `Created ${totalTerms} terms across ${terminologies.length} terminologies`)
+
+    // Step 4: Create ontology term-relations.
+    //
+    // Note the API path: /api/def-store/ontology/term-relations (not
+    // /relationships — that path was renamed in WIP Phase 0, commit
+    // 2eeb872). The seed-file key is still `relationships` for
+    // historical compatibility; the wire payload uses term-relations.
+    const allRelations: AnyObj[] = []
+    for (const termData of terminologies) {
+      const rels = termData.ontology?.relationships || []
+      for (const rel of rels) {
+        allRelations.push({
+          source_term_id: rel.source,
+          target_term_id: rel.target,
+          relation_type: rel.type,
+        })
+      }
+    }
+
+    if (allRelations.length) {
+      progress('term-relations', `Creating ${allRelations.length} ontology term-relations...`)
+      await wipPost(
+        `/api/def-store/ontology/term-relations?namespace=${NAMESPACE}`,
+        allRelations,
+      )
+    }
+
+    // Step 5: Create templates (sorted by filename prefix for dependency order)
+    const templateFiles = readdirSync(join(SEED_DIR, 'templates'))
+      .filter((f) => f.endsWith('.json'))
+      .sort()
+
+    progress('templates', `Creating ${templateFiles.length} templates...`)
+    for (const file of templateFiles) {
+      const data = JSON.parse(readFileSync(join(SEED_DIR, 'templates', file), 'utf-8'))
+      progress('templates', `Creating ${data.value}...`)
+
+      const template: AnyObj = {
+        value: data.value,
+        label: data.label,
+        description: data.description || '',
+        namespace: NAMESPACE,
+        identity_fields: data.identity_fields || [],
+        fields: data.fields.map((f: AnyObj) => mapField(f)),
+      }
+
+      // Forward edge-type metadata when present. See
+      // docs/design/document-relationships.md and CASE-64.
+      if (data.usage && data.usage !== 'entity') template.usage = data.usage
+      if (data.source_templates) template.source_templates = data.source_templates
+      if (data.target_templates) template.target_templates = data.target_templates
+      if (data.versioned === false) template.versioned = false
+
+      if (data.reporting) template.reporting = data.reporting
+
+      await wipPost('/api/template-store/templates?on_conflict=validate', [template])
+
+      if (data.usage === 'relationship') edgeTypesCreated.push(data.value)
+      else templatesCreated.push(data.value)
+    }
+
+    // Wait for template cache to refresh (PoNIF #6 — see wip://ponifs).
+    // Without this, the BOOTSTRAP_RECORD write below races the just-
+    // created BOOTSTRAP_RECORD template and may validate against an
+    // empty resolution.
+    progress('cache', 'Waiting for template cache to refresh...')
+    await new Promise((resolve) => setTimeout(resolve, 6000))
+
+    // Step 6: Write the BOOTSTRAP_RECORD audit doc.
+    //
+    // Per the universal pattern (see CLAUDE.md "Namespace Bootstrap on
+    // Launch"): one doc captures who/when/what/which-version. The
+    // BOOTSTRAP_RECORD template MUST exist in seed/templates/ — without
+    // it this step fails with a "template not found" error.
+    progress('audit', 'Writing BOOTSTRAP_RECORD audit doc...')
+    await writeBootstrapRecord({
+      startedAt,
+      templatesCreated,
+      edgeTypesCreated,
+      terminologiesCreated,
+    })
+
+    onProgress({ step: 'done', detail: 'Bootstrap complete', done: true })
+  } catch (err) {
+    onProgress({
+      step: 'error',
+      detail: (err as Error).message,
+      done: true,
+      error: (err as Error).message,
+    })
+    throw err
+  }
+}
+
+/**
+ * Write the BOOTSTRAP_RECORD audit doc.
+ *
+ * Canonical fields (do not deviate without escalation):
+ *   - bootstrap_id: unique ID for this bootstrap run (timestamp-based)
+ *   - app_version: from process.env.APP_VERSION
+ *   - bootstrapped_at: ISO timestamp when the bootstrap *started*
+ *   - commit_sha: from process.env.GIT_COMMIT_SHA (build-time arg)
+ *   - templates_created: list of entity-template values created
+ *   - edge_types_created: list of edge-type (usage='relationship') values created
+ *   - terminologies_created: list of terminology values created
+ *
+ * The BOOTSTRAP_RECORD template (entity, identity_fields=['bootstrap_id'])
+ * lives in server/seed/templates/. See template-store conventions for
+ * field-definition syntax.
+ */
+async function writeBootstrapRecord(meta: {
+  startedAt: string
+  templatesCreated: string[]
+  edgeTypesCreated: string[]
+  terminologiesCreated: string[]
+}): Promise<void> {
+  const bootstrapId = `bootstrap-${meta.startedAt.replace(/[:.]/g, '-')}`
+  const doc = {
+    template_value: 'BOOTSTRAP_RECORD',
+    namespace: NAMESPACE,
+    data: {
+      bootstrap_id: bootstrapId,
+      app_version: process.env.APP_VERSION || 'unknown',
+      bootstrapped_at: meta.startedAt,
+      commit_sha: process.env.GIT_COMMIT_SHA || 'unknown',
+      templates_created: meta.templatesCreated,
+      edge_types_created: meta.edgeTypesCreated,
+      terminologies_created: meta.terminologiesCreated,
+    },
+  }
+  await wipPost('/api/document-store/documents', [doc])
+}
+
+
+/**
+ * Map a seed field definition to WIP template field format.
+ *
+ * Adapt this if your seed-file shape diverges from APP-CT's. The mapping
+ * exists because seed-file authors prefer compact shapes (e.g., `enum: [...]`)
+ * but the WIP API expects the full validation object. Every WIP field
+ * convention you set here lives once.
+ */
+function mapField(f: AnyObj): AnyObj {
+  const field: AnyObj = {
+    name: f.name,
+    label: f.label,
+    type: f.type,
+  }
+
+  if (f.mandatory) field.mandatory = true
+  if (f.terminology_ref) field.terminology_ref = f.terminology_ref
+  if (f.semantic_type) field.semantic_type = f.semantic_type
+
+  // Reference fields
+  if (f.reference_type) field.reference_type = f.reference_type
+  if (f.target_templates) field.target_templates = f.target_templates
+
+  // Array fields
+  if (f.type === 'array') {
+    if (f.items?.type) field.array_item_type = f.items.type
+    else if (f.array_item_type) field.array_item_type = f.array_item_type
+
+    if (f.items?.terminology_ref) field.array_terminology_ref = f.items.terminology_ref
+    else if (f.array_terminology_ref) field.array_terminology_ref = f.array_terminology_ref
+  }
+
+  // File fields
+  if (f.type === 'file' && f.file_config) {
+    field.file_config = {
+      multiple: f.file_config.multiple ?? false,
+      ...(f.file_config.max_count ? { max_files: f.file_config.max_count } : {}),
+      ...(f.file_config.max_files ? { max_files: f.file_config.max_files } : {}),
+      ...(f.file_config.max_size_mb ? { max_size_mb: f.file_config.max_size_mb } : {}),
+      ...(f.file_config.accept ? { allowed_types: [f.file_config.accept] } : {}),
+      ...(f.file_config.allowed_types ? { allowed_types: f.file_config.allowed_types } : {}),
+    }
+  }
+
+  // Validation
+  if (f.validation) field.validation = f.validation
+  if (f.enum) field.validation = { ...field.validation, enum: f.enum }
+
+  return field
+}

@@ -180,6 +180,27 @@ else
     echo "   Warning: docs/design/ontology-support.md not found, skipping"
 fi
 
+# --- Copy bootstrap templates (new projects only) ---
+
+if ! $REFRESH_MODE; then
+    BOOTSTRAP_SRC="$WIP_ROOT/apps/templates/bootstrap"
+    if [ -d "$BOOTSTRAP_SRC" ]; then
+        echo ""
+        echo "   Copying bootstrap templates..."
+        mkdir -p "$APP_DIR/templates/bootstrap"
+        for tpl in bootstrap.server.ts.template bootstrap.routes.ts.template BootstrapGate.tsx.template; do
+            if [ -f "$BOOTSTRAP_SRC/$tpl" ]; then
+                cp "$BOOTSTRAP_SRC/$tpl" "$APP_DIR/templates/bootstrap/"
+                echo "     templates/bootstrap/$tpl"
+            else
+                echo "     Warning: $tpl not found in $BOOTSTRAP_SRC, skipping"
+            fi
+        done
+    else
+        echo "   Warning: $BOOTSTRAP_SRC not found, skipping bootstrap templates"
+    fi
+fi
+
 # --- Generate .mcp.json ---
 
 if $REFRESH_MODE; then
@@ -612,14 +633,33 @@ Follow the 4-phase development process. Start with:
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
+## Namespace Bootstrap on Launch
+
+Every WIP-consuming app must follow the **offer-on-empty / use-on-exists** discipline at runtime. Three rules:
+
+1. **Namespace missing on launch** → show the user an explicit bootstrap offer. Do **not** auto-bootstrap silently. The user can either (a) confirm bootstrap or (b) restore from a backup via the WIP console / \`wip-deploy\` first and reload.
+2. **Namespace exists on launch** → use it as-is. **No** schema reconciliation, **no** "templates differ" check, **no** merge logic. Rolling redeploys against an existing namespace must come up clean. A partially-bootstrapped namespace is the user's signal to use the console, not the app's signal to silently re-bootstrap.
+3. **On user-initiated bootstrap** → write one **\`BOOTSTRAP_RECORD\`** audit doc capturing: \`bootstrap_id\`, \`app_version\`, \`bootstrapped_at\`, \`commit_sha\`, \`templates_created\`, \`edge_types_created\`, \`terminologies_created\`. This is the provenance trail any future YAC reading the namespace can rely on.
+
+**Restore is not an app concern.** The bootstrap UI mentions restore as an alternative the user may prefer; it does not provide UI for it. Restore is console-initiated.
+
+**Starting point — three template files** are copied into \`templates/bootstrap/\` of every new app project:
+- \`bootstrap.server.ts.template\` — \`checkStatus()\` and \`runBootstrap()\` library functions, with the §3.4 deltas (post-rename term-relations API, BOOTSTRAP_RECORD writing) already applied
+- \`bootstrap.routes.ts.template\` — Express \`GET /server-api/bootstrap/status\` and \`POST /server-api/bootstrap/run\` (SSE streaming for progress)
+- \`BootstrapGate.tsx.template\` — React component that wraps the app and renders the four states (checking / unreachable / needs-bootstrap / bootstrapping / error / ready)
+
+Read each template's header comment, fill in the TODO markers (namespace, app title), drop a \`BOOTSTRAP_RECORD\` template into \`server/seed/templates/\`, and you're done. The seed-file convention (\`server/seed/terminologies/<VALUE>.json\`, \`server/seed/templates/<NN>_<VALUE>.json\`) is documented in the server template's header.
+
 ## Reference Documentation
 
 Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
+- \`docs/technology-stack.md\` — Canonical stack (React, TypeScript, Vite, TanStack Query, Tailwind)
 - \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
 - \`docs/dev-delete.md\` — Hard-delete entities during development (modes, backends, remote usage)
+- \`templates/bootstrap/*.template\` — Bootstrap pattern starting points (see "Namespace Bootstrap on Launch" above)
 
 ## Key Identity Concepts
 
