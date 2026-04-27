@@ -462,18 +462,25 @@ var DefStoreService = class extends BaseService {
   async bulkValidate(data) {
     return this.post("/validate/bulk", data);
   }
-  // ---- Ontology / Relationships ----
-  async listRelationships(params) {
-    return this.get("/ontology/relationships", params);
+  // ---- Ontology / Term Relations ----
+  //
+  // The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+  // the document-relationships work, 2026-04-25): "relationship" now
+  // refers to document-to-document edges; "relation" / "term-relation"
+  // refers to the term-ontology edges (is_a, part_of, ...). HTTP path,
+  // wire field, and these client method names all moved together — no
+  // backward-compat aliases.
+  async listTermRelations(params) {
+    return this.get("/ontology/term-relations", params);
   }
-  async listAllRelationships(params) {
-    return this.get("/ontology/relationships/all", params);
+  async listAllTermRelations(params) {
+    return this.get("/ontology/term-relations/all", params);
   }
-  async createRelationships(items, namespace) {
-    return this.post("/ontology/relationships", items, { namespace });
+  async createTermRelations(items, namespace) {
+    return this.post("/ontology/term-relations", items, { namespace });
   }
-  async deleteRelationships(items, namespace) {
-    return this.del("/ontology/relationships", items, { namespace });
+  async deleteTermRelations(items, namespace) {
+    return this.del("/ontology/term-relations", items, { namespace });
   }
   async getAncestors(termId, params) {
     return this.get(`/ontology/terms/${termId}/ancestors`, params);

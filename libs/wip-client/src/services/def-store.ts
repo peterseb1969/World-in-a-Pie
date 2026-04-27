@@ -20,10 +20,10 @@ import type {
   AuditLogResponse,
 } from '../types/terminology.js'
 import type {
-  Relationship,
-  RelationshipListResponse,
-  CreateRelationshipRequest,
-  DeleteRelationshipRequest,
+  TermRelation,
+  TermRelationListResponse,
+  CreateTermRelationRequest,
+  DeleteTermRelationRequest,
   TraversalResponse,
 } from '../types/ontology.js'
 
@@ -198,39 +198,46 @@ export class DefStoreService extends BaseService {
     return this.post('/validate/bulk', data)
   }
 
-  // ---- Ontology / Relationships ----
+  // ---- Ontology / Term Relations ----
+  //
+  // The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+  // the document-relationships work, 2026-04-25): "relationship" now
+  // refers to document-to-document edges; "relation" / "term-relation"
+  // refers to the term-ontology edges (is_a, part_of, ...). HTTP path,
+  // wire field, and these client method names all moved together — no
+  // backward-compat aliases.
 
-  async listRelationships(params: {
+  async listTermRelations(params: {
     term_id: string
     direction?: string
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     page?: number
     page_size?: number
-  }): Promise<RelationshipListResponse> {
-    return this.get('/ontology/relationships', params)
+  }): Promise<TermRelationListResponse> {
+    return this.get('/ontology/term-relations', params)
   }
 
-  async listAllRelationships(params?: {
+  async listAllTermRelations(params?: {
     namespace?: string
-    relationship_type?: string
+    relation_type?: string
     status?: string
     page?: number
     page_size?: number
-  }): Promise<RelationshipListResponse> {
-    return this.get('/ontology/relationships/all', params)
+  }): Promise<TermRelationListResponse> {
+    return this.get('/ontology/term-relations/all', params)
   }
 
-  async createRelationships(items: CreateRelationshipRequest[], namespace: string): Promise<BulkResponse> {
-    return this.post('/ontology/relationships', items, { namespace })
+  async createTermRelations(items: CreateTermRelationRequest[], namespace: string): Promise<BulkResponse> {
+    return this.post('/ontology/term-relations', items, { namespace })
   }
 
-  async deleteRelationships(items: DeleteRelationshipRequest[], namespace: string): Promise<BulkResponse> {
-    return this.del('/ontology/relationships', items, { namespace })
+  async deleteTermRelations(items: DeleteTermRelationRequest[], namespace: string): Promise<BulkResponse> {
+    return this.del('/ontology/term-relations', items, { namespace })
   }
 
   async getAncestors(termId: string, params?: {
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
@@ -238,18 +245,18 @@ export class DefStoreService extends BaseService {
   }
 
   async getDescendants(termId: string, params?: {
-    relationship_type?: string
+    relation_type?: string
     namespace?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, namespace: string): Promise<Relationship[]> {
+  async getParents(termId: string, namespace: string): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/parents`, { namespace })
   }
 
-  async getChildren(termId: string, namespace: string): Promise<Relationship[]> {
+  async getChildren(termId: string, namespace: string): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/children`, { namespace })
   }
 

@@ -1,11 +1,11 @@
 import type { PaginatedResponse } from './common.js'
 
-export interface Relationship {
+export interface TermRelation {
   namespace: string
   source_term_id: string
   target_term_id: string
-  relationship_type: string
-  relationship_value?: string
+  relation_type: string
+  relation_value?: string
   source_term_value?: string
   source_term_label?: string
   target_term_value?: string
@@ -18,20 +18,20 @@ export interface Relationship {
   created_by?: string
 }
 
-export type RelationshipListResponse = PaginatedResponse<Relationship>
+export type TermRelationListResponse = PaginatedResponse<TermRelation>
 
-export interface CreateRelationshipRequest {
+export interface CreateTermRelationRequest {
   source_term_id: string
   target_term_id: string
-  relationship_type: string
+  relation_type: string
   metadata?: Record<string, unknown>
   created_by?: string
 }
 
-export interface DeleteRelationshipRequest {
+export interface DeleteTermRelationRequest {
   source_term_id: string
   target_term_id: string
-  relationship_type: string
+  relation_type: string
   hard_delete?: boolean
 }
 
@@ -45,7 +45,7 @@ export interface TraversalNode {
 
 export interface TraversalResponse {
   term_id: string
-  relationship_type: string
+  relation_type: string
   direction: string
   nodes: TraversalNode[]
   total: number
