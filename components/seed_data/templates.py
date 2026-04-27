@@ -46,7 +46,7 @@ def get_template_definitions() -> list[dict[str, Any]]:
         ARRAY_HEAVY,
         # Append-only (no identity_fields)
         EVENT_LOG,
-        # Relationship templates (usage='relationship')
+        # Edge types (templates with usage='relationship')
         # Endpoints must already exist before edges are written, so these
         # are seeded by the post-document relationship phase, not the main
         # document seeder. They appear here so template-store creates them.
@@ -56,7 +56,7 @@ def get_template_definitions() -> list[dict[str, Any]]:
 
 
 def get_relationship_templates() -> list[dict[str, Any]]:
-    """Return relationship templates (usage='relationship') only."""
+    """Return edge types (templates with usage='relationship') only."""
     return [t for t in get_template_definitions() if t.get("usage") == "relationship"]
 
 
@@ -986,7 +986,7 @@ EVENT_LOG = {
 
 
 # =============================================================================
-# RELATIONSHIP TEMPLATES (usage='relationship')
+# EDGE TYPES (templates with usage='relationship')
 # =============================================================================
 # See docs/design/document-relationships.md for the contract:
 #   - usage: "relationship"

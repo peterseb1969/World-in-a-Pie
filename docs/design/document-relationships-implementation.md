@@ -84,7 +84,7 @@ Completed in commit `2eeb872` (2026-04-25). Cleared the naming collision so "rel
 | Validation on create | `components/template-store/src/template_store/services/template_service.py` — when `usage=relationship`: require non-empty `source_templates`, `target_templates`, and `source_ref`/`target_ref` reference fields that match template-level lists |
 | Registry registration | `source_templates` / `target_templates` template values resolved to template_ids at creation (same pattern as existing `target_templates` on reference fields) |
 | Template-store API schema | `components/template-store/src/template_store/models/api_models.py` — mirror the new fields in request/response shapes |
-| Tests | Contract tests for valid/invalid relationship templates |
+| Tests | Contract tests for valid/invalid edge types |
 
 **Estimate:** 2–3 commits, **1 day.**
 
@@ -200,7 +200,7 @@ Completed in commit `2eeb872` (2026-04-25). Cleared the naming collision so "rel
 **Estimate:** 2 commits, **1 day.**
 
 **Risks:**
-- Schema migration for existing reporting tables that already have relationship templates from pre-v2 experiments (none expected in prod; dev may have).
+- Schema migration for existing reporting tables that already have edge types from pre-v2 experiments (none expected in prod; dev may have).
 - Not on the platform critical path — can ship after Phases 0–6 are done.
 
 ---

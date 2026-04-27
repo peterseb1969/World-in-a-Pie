@@ -688,11 +688,11 @@ class RuleCondition(BaseModel):
 | `reference` | Reserved for lightweight LOV documents. Currently behaves like `entity`. | Placeholder |
 | `relationship` | Typed, property-carrying edge between two documents. Enables write-time validation, query APIs, and reporting columns. | Shipping |
 
-**The annotation changes behaviour, not structure.** A relationship template is still a normal template stored in template-store; its documents are still normal MongoDB documents. What changes is what document-store enforces on write, what extra endpoints are reachable, and what columns reporting-sync provisions.
+**The annotation changes behaviour, not structure.** An edge type is still a normal template stored in template-store; its documents are still normal MongoDB documents. What changes is what document-store enforces on write, what extra endpoints are reachable, and what columns reporting-sync provisions. Throughout this section "edge type" refers to the schema; "template" refers to the underlying storage representation.
 
-#### Relationship templates (`usage: "relationship"`)
+#### Edge types (`usage: "relationship"`)
 
-A relationship template MUST declare:
+An edge type MUST declare:
 
 - `source_templates: list[str]` — non-empty list of template values allowed as the source endpoint
 - `target_templates: list[str]` — non-empty list of template values allowed as the target endpoint
@@ -701,7 +701,7 @@ A relationship template MUST declare:
 
 The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, lazy Mongo indexes (`(template_id, data.source_ref)` and `…target_ref`), and reporting-sync (`source_ref_id` / `target_ref_id` columns) all key on those names. Template-store enforces the shape on every create.
 
-Documents under a relationship template additionally enforce:
+Documents under an edge type additionally enforce:
 
 - `source_ref` and `target_ref` resolve to documents in templates listed in `source_templates` / `target_templates`
 - Both endpoints live in the same namespace as the relationship document (`cross_namespace_relationship` error otherwise — deferred to post-v2)
@@ -713,7 +713,7 @@ See `docs/api-conventions.md` for the API surface (the `/relationships` and `/tr
 
 `versioned: true` (default) — updates create new versions, full audit trail preserved.
 
-`versioned: false` — updates overwrite the existing document in place; documents stay at `version: 1` forever. The document_id is stable across writes; the previous payload is gone. Useful for relationship templates where the edge identity matters but its history doesn't.
+`versioned: false` — updates overwrite the existing document in place; documents stay at `version: 1` forever. The document_id is stable across writes; the previous payload is gone. Useful for edge types where the relationship identity matters but its history doesn't.
 
 #### Immutability
 

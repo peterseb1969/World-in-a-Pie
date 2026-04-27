@@ -535,47 +535,47 @@ Trap: You update a template and immediately create a document — it validates
       against the OLD version from cache.
 Rule: Pass explicit template_version, or wait 5 seconds after template changes.
 
-## 7. Template Usage — Annotation Changes Lifecycle, Not Shape
-Every template carries a `usage` annotation: 'entity' (default), 'reference',
-or 'relationship'. A `usage: relationship` template *looks* like an ordinary
-template with two reference fields (`source_ref`, `target_ref`), but
-document-store treats its writes differently — extra cross-namespace and
-not-archived validation, lazy Mongo indexes on data.source_ref / data.target_ref,
-two new query endpoints (/relationships, /traverse), and reporting-sync
-auto-provisions `source_ref_id` / `target_ref_id` columns on the table.
+## 7. Edge Types Are Stored as Templates
+WIP has two conceptually distinct schemas that share a storage representation:
+**entity templates** (the default — `usage: 'entity'`) and **edge types**
+(`usage: 'relationship'`). They live in the same `templates` collection and
+flow through the same APIs, but document-store treats edge-type writes
+differently: extra cross-namespace and not-archived validation, lazy Mongo
+indexes on data.source_ref / data.target_ref, two query endpoints
+(/relationships, /traverse), and reporting-sync columns
+(source_ref_id / target_ref_id). The MCP tool `create_edge_type` exists
+specifically to surface this distinction at the agent-facing API ingress.
 
 Trap: You see a template with two `reference_type: document` fields and assume
-      it's just an entity template with foreign keys. You build code that ignores
-      the relationship contract — and then a `cross_namespace_relationship`
-      error fires on a write you thought was a plain document, or columns you
-      didn't declare appear in the reporting table.
-Rule: Always check `template.usage` before reasoning about a template's
-      lifecycle. `usage` is immutable after creation — to change it, create a
-      new template. See also PoNIF #8 — relationship templates can ALSO opt
-      out of versioning entirely via `versioned: false`, an exception to
-      PoNIF #2.
+      it's just an entity template with foreign keys. The `usage` flag is
+      easy to miss in a definition — but it's what selects the conceptual
+      type of the schema.
+Rule: Check `template.usage` before reasoning about a template's lifecycle.
+      Schemas with `usage: 'relationship'` are edge types — different
+      validation, different query endpoints, different reporting columns.
+      `usage` is immutable after creation. See also PoNIF #8 — edge types
+      can opt out of versioning entirely via `versioned: false`, an
+      exception to PoNIF #2.
 
 ## 8. `versioned: false` — Updates Overwrite In Place
 Direct exception to PoNIF #2. PoNIF #2 says every update creates a new
-version. That's the default and applies to entity templates. Templates with
-`usage: relationship` (see PoNIF #7) can declare `versioned: false` at
-creation; documents under such a template stay at version=1 forever, updates
-overwrite the existing payload, the previous data is gone. Used for
-relationship templates where the edge identity matters but its history
-doesn't (e.g. "monster has spell"). The flag is immutable after template
-creation.
+version. That's the default and applies to entity templates. Edge types
+(see PoNIF #7) can declare `versioned: false` at creation; documents under
+such an edge type stay at version=1 forever, updates overwrite the existing
+payload, the previous data is gone. Used for relationships where the edge
+identity matters but its history doesn't (e.g. "monster has spell"). The
+flag is immutable after creation.
 
 Trap: You write code that loads `version=N-1` to compute a diff between
       versions, or assumes `get_document_versions(id)` returns more than one
-      row. On a `versioned: false` template both fail silently — diff is
+      row. On a `versioned: false` edge type both fail silently — diff is
       against nothing, version list has one entry. Worse: code that
       internalised PoNIF #2 ("update always creates a new version") will
       apply that rule universally and be blindsided.
 Rule: Check `template.versioned` (defaults to true) before assuming version
-      history exists. If you need history on an edge type, build it on a
-      template with `versioned: true`. Currently only available on
-      `usage: relationship` templates; if/when it expands to entity
-      templates, this rule applies there too.
+      history exists. If you need history on a relationship, build the edge
+      type with `versioned: true`. Currently only available on edge types;
+      if/when it expands to entity templates, this rule applies there too.
 
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
@@ -585,9 +585,9 @@ lost these warnings and reverted to conventional assumptions. Signs of drift:
 - Treating inactive entities as deleted
 - Not checking per-item results in bulk operations
 - Treating a template with two `reference_type: document` fields as an entity
-  template (it might be a `usage: relationship` template with a stricter contract)
+  template (it might be an edge type — `usage: relationship` — with a stricter contract)
 - Assuming every document update creates a new version (a `versioned: false`
-  template overwrites in place)
+  edge type overwrites in place)
 
 If any of these feel natural, re-read this resource.
 """
@@ -1698,6 +1698,160 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
 
 
 @mcp.tool()
+async def create_edge_type(
+    value: str,
+    label: str,
+    source_templates: list[str],
+    target_templates: list[str],
+    fields: list[dict],
+    namespace: str | None = None,
+    description: str | None = None,
+    versioned: bool = True,
+    identity_fields: list[str] | None = None,
+    rules: list[dict] | None = None,
+) -> str:
+    """Create an edge type — the schema for a class of relationships between documents.
+
+    An edge type is stored as a template with `usage: 'relationship'`. Examples:
+    EMPLOYEE_MANAGES (EMPLOYEE → EMPLOYEE), ORDER_CONTAINS (ORDER → PRODUCT),
+    EXPERIMENT_INPUT (EXPERIMENT → MOLECULE).
+
+    Documents created against an edge type get extra validation
+    (cross-namespace and archived-endpoint rejected) plus dedicated query
+    endpoints (`get_document_relationships`, `traverse_documents`) and Postgres
+    reporting columns (`source_ref_id`, `target_ref_id`).
+
+    This tool is the documented happy path. The legacy route (`create_template`
+    with `usage: 'relationship'` set manually) still works but doesn't get
+    early contract validation.
+
+    Args:
+        value: Edge type code (e.g., 'EMPLOYEE_MANAGES'). UPPER_SNAKE_CASE,
+            unique within namespace.
+        label: Human-readable name (e.g., 'Employee manages employee').
+        source_templates: Non-empty list of template values (or IDs) allowed
+            as the source endpoint. e.g. ['EMPLOYEE'].
+        target_templates: Non-empty list of template values (or IDs) allowed
+            as the target endpoint. e.g. ['EMPLOYEE'] (self-ref OK).
+        fields: Field definitions. MUST include two `reference_type: document`
+            fields named exactly `source_ref` and `target_ref`, each with
+            `target_templates` matching the corresponding template-level list.
+            Add edge-property fields (e.g. `since`, `role`, `quantity`) as needed.
+        namespace: Namespace. Omit to use server default.
+        description: Optional description of what this edge type represents.
+        versioned: True (default) means updates create new versions
+            (standard lifecycle). False means updates overwrite in place;
+            documents stay at version=1 forever, no history is preserved.
+            **Immutable after creation** — see PoNIF #8 (`wip://ponifs`).
+        identity_fields: Optional. Default is `[source_ref, target_ref]`
+            (deduplicates edges by endpoint pair). Add a third field
+            (e.g. `role`, `timepoint`) to allow multiple distinct edges
+            between the same pair.
+        rules: Optional cross-field validation rules.
+
+    Validation (raises before hitting template-store):
+        - source_templates non-empty
+        - target_templates non-empty
+        - fields contains a `source_ref` reference field with reference_type=document
+          and target_templates matching the template-level source_templates
+        - fields contains a `target_ref` reference field with the same shape
+          against target_templates
+
+    Example:
+        create_edge_type(
+            value="EMPLOYEE_MANAGES",
+            label="Employee manages employee",
+            source_templates=["EMPLOYEE"],
+            target_templates=["EMPLOYEE"],
+            fields=[
+                {"name": "source_ref", "label": "Manager", "type": "reference",
+                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
+                 "mandatory": True},
+                {"name": "target_ref", "label": "Direct Report", "type": "reference",
+                 "reference_type": "document", "target_templates": ["EMPLOYEE"],
+                 "mandatory": True},
+                {"name": "since", "label": "Since", "type": "date"},
+                {"name": "reporting_type", "label": "Reporting Type", "type": "term",
+                 "terminology_ref": "REPORTING_TYPE"},
+            ],
+        )
+    """
+    # Local validation — better error messages than letting template-store
+    # reject the bulk POST after a round-trip.
+    errors: list[str] = []
+    if not source_templates:
+        errors.append("source_templates is required and must be non-empty")
+    if not target_templates:
+        errors.append("target_templates is required and must be non-empty")
+
+    field_names = {f.get("name") for f in fields if isinstance(f, dict)}
+    for required_field, expected_targets in (
+        ("source_ref", source_templates),
+        ("target_ref", target_templates),
+    ):
+        if required_field not in field_names:
+            errors.append(
+                f"fields must include a `{required_field}` reference field "
+                f"(reference_type='document', target_templates={expected_targets})"
+            )
+            continue
+        ref_field = next(
+            (f for f in fields if isinstance(f, dict) and f.get("name") == required_field),
+            None,
+        )
+        if ref_field is None:
+            continue
+        if ref_field.get("type") != "reference":
+            errors.append(f"`{required_field}` must have type='reference'")
+        if ref_field.get("reference_type") != "document":
+            errors.append(f"`{required_field}` must have reference_type='document'")
+        ref_targets = ref_field.get("target_templates")
+        if ref_targets is None or list(ref_targets) != list(expected_targets):
+            errors.append(
+                f"`{required_field}.target_templates` ({ref_targets}) must match "
+                f"the template-level {required_field.replace('_ref', '_templates')} "
+                f"({expected_targets})"
+            )
+
+    if errors:
+        return "Edge-type contract validation failed:\n  - " + "\n  - ".join(errors)
+
+    template = {
+        "value": value,
+        "label": label,
+        "usage": "relationship",
+        "source_templates": list(source_templates),
+        "target_templates": list(target_templates),
+        "versioned": versioned,
+        "fields": fields,
+    }
+    if description is not None:
+        template["description"] = description
+    if identity_fields is not None:
+        template["identity_fields"] = list(identity_fields)
+    if rules is not None:
+        template["rules"] = list(rules)
+
+    try:
+        client = get_client()
+        ns = namespace or client.default_namespace
+        if ns:
+            template.setdefault("namespace", ns)
+        data = await client.create_template(template)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        err = str(e)
+        if "already exists" in err:
+            return (
+                f"WIP error: {err}\n\nTo evolve an existing edge type, use "
+                f"update_template — it creates a new version. Note that "
+                f"`usage`, `source_templates`, `target_templates`, and "
+                f"`versioned` are immutable after creation."
+            )
+        return _error(e)
+
+
+@mcp.tool()
 async def update_template(template_id: str, updates: dict) -> str:
     """Update a template by creating a new version. Use this to add/remove/modify fields.
 
@@ -2032,8 +2186,8 @@ async def get_document_relationships(
     Args:
         document_id: Seed document ID (or any synonym/value the Registry resolves).
         direction: 'incoming', 'outgoing', or 'both' (default 'both').
-        template: Comma-separated relationship template values to include
-            (default: all relationship templates).
+        template: Comma-separated edge type values to include
+            (default: all edge types).
         namespace: Override; defaults to the seed document's namespace.
         active_only: Exclude inactive/archived rel docs (default True).
         page, page_size: Pagination (default 1 / 50).
@@ -2068,7 +2222,7 @@ async def traverse_documents(
 ) -> str:
     """N-hop graph traversal from a document via relationship documents.
 
-    BFS expansion through relationship templates. At each hop, follows
+    BFS expansion through edge types. At each hop, follows
     rel docs touching the current frontier and adds the *other* endpoint
     document_ids to the next frontier. Visited docs are skipped (cycles
     terminate). Capped at depth=10 and max 1000 nodes — sets
@@ -2082,8 +2236,8 @@ async def traverse_documents(
     Args:
         document_id: Seed document ID (or any resolvable identifier).
         depth: Number of relationship hops, 1..10 (default 1).
-        types: Comma-separated rel template values to constrain the
-            traversal (default: all relationship templates).
+        types: Comma-separated edge type values to constrain the
+            traversal (default: all edge types).
         direction: 'outgoing', 'incoming', or 'both' (default 'outgoing').
         namespace: Override; defaults to the seed document's namespace.
 
@@ -3181,6 +3335,7 @@ WRITE_TOOLS = frozenset({
     # Templates
     "create_template",
     "create_templates_bulk",
+    "create_edge_type",
     "update_template",
     "activate_template",
     "deactivate_template",

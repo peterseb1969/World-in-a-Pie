@@ -348,7 +348,7 @@ The original `data.source_ref` / `data.target_ref` (whatever the writer submitte
 
 Non-relationship documents (`usage: "entity"` — the default) emit the standard payload with no extra fields. **Subscribers must ignore unknown fields** — the envelope is forward-compatible and other usage classes may grow their own enrichments.
 
-When the document-store can't reach template-store at publish time (degraded state, transient failure), the enrichment is skipped and a `WARNING` is logged (`Phase-6 enrichment skipped: get_template(...) raised ...`). The event still publishes with the standard payload — subscribers handling relationship templates should treat `template_usage` as optional and fall back to looking up the template by `template_id` + `template_version` if it's missing.
+When the document-store can't reach template-store at publish time (degraded state, transient failure), the enrichment is skipped and a `WARNING` is logged (`Phase-6 enrichment skipped: get_template(...) raised ...`). The event still publishes with the standard payload — subscribers handling edge types should treat `template_usage` as optional and fall back to looking up the template by `template_id` + `template_version` if it's missing.
 
 ### Authentication
 

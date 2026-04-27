@@ -164,17 +164,19 @@ Codes defined by `PATCH /documents`:
 
 ---
 
-## Relationship Templates
+## Edge Types
 
-Templates carry a `usage` annotation (`entity` (default), `reference`, `relationship`). Setting `usage: "relationship"` enables the document-relationships feature: cross-document edges with their own properties, validated and queryable through dedicated endpoints. The full design lives at [`docs/design/document-relationships.md`](design/document-relationships.md).
+An **edge type** is the schema for a class of relationships between documents (think `EMPLOYEE_MANAGES`, `ORDER_CONTAINS`, `EXPERIMENT_INPUT`). It is implemented as a template with `usage: "relationship"` — same storage as any other template, but a distinct conceptual layer with its own validation, query endpoints, and reporting columns. Throughout this section, "edge type" is the schema; "template" refers to the underlying storage. The full design lives at [`docs/design/document-relationships.md`](design/document-relationships.md).
 
-### Template-creation constraints
+Templates carry a `usage` annotation (`entity` (default), `reference`, `relationship`). Setting `usage: "relationship"` declares the template as an edge type. Use the `create_edge_type` MCP tool for the documented happy path; calling `create_template` with `usage: "relationship"` directly works as a power-user route.
+
+### Edge-type creation constraints
 
 When `usage == "relationship"`, template-store rejects the create unless **all** of the following hold (each violation surfaces as a per-item bulk error):
 
 1. `source_templates: list[str]` is non-empty — template values allowed as the source endpoint.
 2. `target_templates: list[str]` is non-empty — template values allowed as the target endpoint.
-3. The template declares two reference fields named **exactly** `source_ref` and `target_ref` with `reference_type: "document"` and a `target_templates` list that matches the corresponding template-level list.
+3. The edge type declares two reference fields named **exactly** `source_ref` and `target_ref` with `reference_type: "document"` and a `target_templates` list that matches the corresponding template-level list.
 
 The field-name convention (`source_ref` / `target_ref`) is mandatory — query APIs, Mongo indexes, and reporting-sync all key on those names. Template-store validates the shape on every create.
 
@@ -195,11 +197,11 @@ Standard validation (template constraints, type checks, term resolution, referen
 
 ### `versioned: false` lifecycle
 
-Set `versioned: false` on a relationship template to make updates **overwrite in place** instead of creating new versions. Documents under such a template stay at `version: 1` forever; the document_id is stable, but no history is preserved.
+Set `versioned: false` on an edge type to make updates **overwrite in place** instead of creating new versions. Documents under such an edge type stay at `version: 1` forever; the document_id is stable, but no history is preserved.
 
 This is the right shape for relationships where the edge identity matters but its history doesn't (e.g., "monster has spell" in a bestiary). Concurrency on the in-place path is governed by the existing `if_match` token — strongly recommended for high-write workloads.
 
-`versioned` defaults to `true` (standard versioning) and is immutable after template creation.
+`versioned` defaults to `true` (standard versioning) and is immutable after edge-type creation.
 
 ### Query endpoints
 
@@ -212,7 +214,7 @@ Returns relationship documents pointing at or from `{id}`. Backed by lazy Mongo 
 | Query parameter | Values | Default |
 |---|---|---|
 | `direction` | `incoming` \| `outgoing` \| `both` | `both` |
-| `template` | comma-separated relationship template values | all relationship templates |
+| `template` | comma-separated edge type values | all edge types |
 | `namespace` | namespace prefix | the seed document's namespace |
 | `active_only` | `true` \| `false` | `true` |
 | `page`, `page_size` | standard pagination | 1, 50 (max 500) |
@@ -226,13 +228,13 @@ BFS expansion through relationship documents from `{id}`. At each hop, finds rel
 | Query parameter | Values | Default |
 |---|---|---|
 | `depth` | 1..**10** (hard cap) | 1 |
-| `types` | comma-separated relationship template values | all |
+| `types` | comma-separated edge type values | all |
 | `direction` | `outgoing` \| `incoming` \| `both` | `outgoing` |
 | `namespace` | namespace prefix | the seed document's namespace |
 
 **Safety bounds:** `depth` is capped at 10 by FastAPI request validation; the response also fires a `truncated: true` flag if the BFS hits the internal `max_nodes=1000` ceiling. Anything deeper or wider is an analytical query that belongs in the Postgres reporting layer (`run_report_query`).
 
-The MongoDB-only invariant holds: both endpoints work with reporting-sync stopped. Postgres `source_ref_id` / `target_ref_id` columns (added by reporting-sync for relationship templates) are an analytics convenience, not a functional dependency.
+The MongoDB-only invariant holds: both endpoints work with reporting-sync stopped. Postgres `source_ref_id` / `target_ref_id` columns (added by reporting-sync for edge types) are an analytics convenience, not a functional dependency.
 
 ---
 

@@ -41,7 +41,9 @@ Every template gets a new top-level field `usage` with values:
 
 The annotation changes *behavior* (validation, query APIs, reporting shape), not *structure*. Relationship documents flow through the same document engine, same backup format, same MCP document APIs. Templates without `usage: relationship` behave exactly like v1.1.0 entity templates — zero cost.
 
-### Relationship template shape
+### Edge type shape
+
+An **edge type** is the schema for a class of relationships between documents. It is implemented as a template with `usage: relationship` — the storage layer is unchanged, but the conceptual layer treats edge types as a distinct kind of thing from entity templates. Throughout this doc, "edge type" refers to the schema and "template" refers to the underlying storage representation.
 
 ```yaml
 template:
@@ -79,13 +81,13 @@ template:
 - `source_templates: list[str]` — template values allowed as the source endpoint. Required when `usage: relationship`.
 - `target_templates: list[str]` — template values allowed as the target endpoint. Required when `usage: relationship`.
 
-**Convention:** the relationship template MUST declare two reference fields named `source_ref` and `target_ref`. These are regular reference fields with `reference_type: document` and `target_templates` matching the template-level list. Template-store validates on template creation that these fields exist and agree with the template-level declarations.
+**Convention:** an edge type MUST declare two reference fields named `source_ref` and `target_ref`. These are regular reference fields with `reference_type: document` and `target_templates` matching the template-level list. Template-store validates at creation time that these fields exist and agree with the template-level declarations.
 
 **Why mandate the field names?** Query APIs, Mongo indexes, and reporting-sync all need stable access paths. Naming them by convention is simpler than introducing "which field is the source" metadata.
 
 ### Validation at write time
 
-On `create_document` against a relationship template:
+On `create_document` against an edge type:
 
 1. Standard template validation (all fields, reference resolution).
 2. `source_ref` must resolve to a document whose template value is in the template-level `source_templates` list. Resolution goes through Registry (`resolve_entity_ids(bypass_cache=True)` — Principle 3).
@@ -139,7 +141,7 @@ N-hop graph traversal from this document.
 | Query parameter | Values | Default |
 |---|---|---|
 | `depth` | 1..10 | 1 |
-| `types` | relationship template values | all |
+| `types` | edge type values | all |
 | `direction` | `outgoing` \| `incoming` \| `both` | `outgoing` |
 
 Response: tree structure rooted at the document, with edges = relationship documents, nodes = documents reached.
@@ -185,7 +187,7 @@ The system-terminology data identifier `_ONTOLOGY_RELATIONSHIP_TYPES` was **not*
 
 ### Postgres reporting (optional, archetype-gated)
 
-When `reporting-sync` is deployed, a relationship template's reporting table gets two indexed columns: `source_ref_id` (resolved from the `source_ref` reference field's internal storage — identity_hash for `latest`, document_id for `pinned`) and `target_ref_id`. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
+When `reporting-sync` is deployed, an edge type's reporting table gets two indexed columns: `source_ref_id` (resolved from the `source_ref` reference field's internal storage — identity_hash for `latest`, document_id for `pinned`) and `target_ref_id`. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
 
 Example queries then become tractable in SQL:
 
@@ -268,7 +270,7 @@ A relationship's `source_ref` and `target_ref` pass through the existing univers
 
 ### Template versioning
 
-Relationship templates version like any other. A v2 of EXPERIMENT_INPUT can add fields; existing v1 documents keep validating against v1. The `versioned` flag on the template is set at creation and immutable — changing it would silently reshape existing documents' lifecycle.
+Edge types version like any other template. A v2 of EXPERIMENT_INPUT can add fields; existing v1 documents keep validating against v1. The `versioned` flag is set at creation and immutable — changing it would silently reshape existing documents' lifecycle.
 
 ### Namespace isolation
 
@@ -294,7 +296,7 @@ Relationship documents are documents. Existing backup/restore handles them autom
 
 - **`$graphLookup` bidirectional merge strategy.** For `direction=both`, two `$graphLookup`s return overlapping trees. Merging requires dedup by document `_id`, and some way to mark the direction each edge was reached from. Two options: (a) run the merge client-side in the document-store handler, or (b) use a single `$graphLookup` with a pre-projected edge collection that has both directions materialised. Decide during implementation.
 - **`versioned: false` concurrency.** If two writers update the same latest-only relationship simultaneously, the "overwrite in place" path needs an optimistic-concurrency token. Existing document-store update path has `if_match` support — reuse.
-- **Identity fields on relationship templates.** Whether to make `(source_ref, target_ref)` a default identity tuple (dedup edges on create) or leave it to the template author. Recommendation: leave to the author — sometimes multiple edges between the same pair are intentional (an experiment used bevacizumab twice, at different timepoints, different concentrations). Let the author set `identity_fields: [source_ref, target_ref, timepoint]` when dedup is wanted.
+- **Identity fields on edge types.** Whether to make `(source_ref, target_ref)` a default identity tuple (dedup edges on create) or leave it to the schema author. Recommendation: leave to the author — sometimes multiple edges between the same pair are intentional (an experiment used bevacizumab twice, at different timepoints, different concentrations). Let the author set `identity_fields: [source_ref, target_ref, timepoint]` when dedup is wanted.
 - **Relationship-to-self.** Is `source_ref == target_ref` legal? Arguably yes (self-loop in graph terms — rare but legitimate, e.g., a document `supersedes` an earlier version of itself). Default: allow, no check at platform level.
 
 ## References
