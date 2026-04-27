@@ -11,7 +11,7 @@
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      ontology-support.md, dev-delete.md)
+#      technology-stack.md, dev-delete.md, app-containerization-guide.md, ontology-support.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
 #   6. Copies wip-toolkit wheel and dev-delete.py
@@ -164,7 +164,7 @@ fi
 # --- Copy reference docs (new + refresh) ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md dev-delete.md app-containerization-guide.md; do
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md technology-stack.md dev-delete.md app-containerization-guide.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
