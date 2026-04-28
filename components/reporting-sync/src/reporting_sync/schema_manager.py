@@ -157,6 +157,35 @@ class SchemaManager:
         "updated_at", "updated_by", "data_json", "term_references_json",
     }
 
+    @staticmethod
+    def _full_text_columns(base_col: str) -> list[tuple[str, str]]:
+        """Return the (search, tsv) column pair for a full-text-indexed field.
+
+        Two-column shape:
+          - <field>_search TEXT — written by the transformer with markdown
+            stripped via reporting_sync.transformer._strip_md so query-time
+            tokenisation operates on plain prose, not link/code-fence syntax.
+          - <field>_tsv tsvector GENERATED ALWAYS AS (...) STORED — the
+            query target. Computed automatically from <field>_search;
+            never written directly. setweight('B') is the v1 default
+            weight (matches the fireside design — uniform 'B' for now;
+            per-field weighting comes when a real consumer asks).
+
+        The GENERATED column means we never need to compute tsvector in
+        the transformer — Postgres recomputes on every write to the
+        _search column. GIN index on _tsv is added separately by the
+        DDL generator.
+        """
+        return [
+            (f"{base_col}_search", "TEXT"),
+            (
+                f"{base_col}_tsv",
+                "tsvector GENERATED ALWAYS AS ("
+                f'setweight(to_tsvector(\'english\', coalesce("{base_col}_search", \'\')), \'B\')'
+                ") STORED",
+            ),
+        ]
+
     def generate_create_table_ddl(
         self,
         template_value: str,
@@ -213,6 +242,7 @@ class SchemaManager:
 
         # Data columns from template fields
         # Prefix with "data_" if field name conflicts with system columns
+        full_text_base_cols: list[str] = []
         for field in fields:
             field_columns = self._generate_column_ddl(field, config=config)
             # Check if the base field name conflicts
@@ -222,6 +252,15 @@ class SchemaManager:
                     # Prefix all columns for this field (base and term_id)
                     col_name = f"data_{col_name}"
                 columns.append((col_name, col_type))
+
+            # Full-text-indexed string fields get the (search, tsv) pair.
+            # Validator at template-creation enforces type=string, so the
+            # check here is defensive — silently skip non-string fields
+            # rather than emit broken DDL.
+            if getattr(field, "full_text_indexed", None) and field.type == FieldType.STRING:
+                base_col = f"data_{field.name}" if needs_prefix else field.name
+                columns.extend(self._full_text_columns(base_col))
+                full_text_base_cols.append(base_col)
 
         # JSON columns for full data (useful for complex queries)
         columns.extend([
@@ -275,6 +314,16 @@ ON "{table_name}"(namespace, identity_hash) WHERE status = 'active';
 CREATE INDEX IF NOT EXISTS "{table_name}_source_ref_id_idx" ON "{table_name}"(source_ref_id);
 CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(target_ref_id);
 """
+
+        # Full-text-search GIN indexes — one per indexed field. The
+        # _tsv column is GENERATED ALWAYS, so the index stays current
+        # automatically as documents are written.
+        for base_col in full_text_base_cols:
+            ddl += (
+                f'\nCREATE INDEX IF NOT EXISTS "{table_name}_{base_col}_tsv_idx" '
+                f'ON "{table_name}" USING GIN ("{base_col}_tsv");\n'
+            )
+
         return ddl.strip()
 
     async def table_exists(self, table_name: str) -> bool:
@@ -395,6 +444,31 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                         logger.info(f"Adding column {col_name} to {table_name}")
                         await conn.execute(alter_sql)
                         migrations.append(alter_sql)
+
+                # Full-text-indexed string fields: ensure the (search,
+                # tsv) column pair and the GIN index exist. Idempotent —
+                # legacy tables created before FTS landed catch up here.
+                if (
+                    getattr(field, "full_text_indexed", None)
+                    and field.type == FieldType.STRING
+                ):
+                    base_col = f"data_{field.name}" if needs_prefix else field.name
+                    for fts_col, fts_type in self._full_text_columns(base_col):
+                        if fts_col not in existing_columns:
+                            alter_sql = (
+                                f'ALTER TABLE "{table_name}" '
+                                f'ADD COLUMN "{fts_col}" {fts_type}'
+                            )
+                            logger.info(f"Adding FTS column {fts_col} to {table_name}")
+                            await conn.execute(alter_sql)
+                            migrations.append(alter_sql)
+                    idx_sql = (
+                        f'CREATE INDEX IF NOT EXISTS '
+                        f'"{table_name}_{base_col}_tsv_idx" ON "{table_name}" '
+                        f'USING GIN ("{base_col}_tsv")'
+                    )
+                    await conn.execute(idx_sql)
+                    migrations.append(idx_sql)
 
             if migrations:
                 # Record the migration

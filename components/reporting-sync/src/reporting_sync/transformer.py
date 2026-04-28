@@ -12,12 +12,76 @@ Responsibilities:
 import contextlib
 import json
 import logging
+import re
 from datetime import date, datetime
 from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
 
 logger = logging.getLogger(__name__)
+
+
+# Markdown preprocessing for full-text indexing. Runs in Python at sync
+# time before the GENERATED tsvector column tokenises. Goal: feed
+# to_tsvector plain prose, not link/heading/bullet syntax. **Code-block
+# contents are preserved** — fences are stripped but the code itself
+# stays so a search for `tsvector` finds it inside code samples (this is
+# a deliberate v1 design call from the FTS fireside).
+_MD_HEADING = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+_MD_CODE_FENCE = re.compile(r"^[ \t]{0,3}```[^\n]*\n", re.MULTILINE)
+_MD_CODE_FENCE_CLOSE = re.compile(r"\n[ \t]{0,3}```[ \t]*$", re.MULTILINE)
+_MD_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]+\)")
+_MD_BOLD = re.compile(r"\*\*([^*\n]+)\*\*")
+_MD_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_MD_BOLD_UNDER = re.compile(r"__([^_\n]+)__")
+_MD_ITALIC_UNDER = re.compile(r"(?<!_)_([^_\n]+)_(?!_)")
+_MD_BULLET = re.compile(r"^[ \t]{0,3}[-*+][ \t]+", re.MULTILINE)
+_MD_NUMBERED = re.compile(r"^[ \t]{0,3}\d+\.[ \t]+", re.MULTILINE)
+_MD_BLOCKQUOTE = re.compile(r"^[ \t]{0,3}>[ \t]?", re.MULTILINE)
+_MD_HR = re.compile(r"^[ \t]{0,3}(-{3,}|\*{3,}|_{3,})[ \t]*$", re.MULTILINE)
+
+
+def _strip_md(text: str | None) -> str | None:
+    """Strip common markdown syntax for full-text-search preprocessing.
+
+    Preserves code-block contents (fence delimiters removed, code kept).
+    Replaces links/images with their visible text. Removes inline
+    formatting markers (bold, italic, headings, bullets, blockquotes).
+
+    Returns the original input verbatim if not a string. None passes
+    through as None.
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        return text
+    if not text:
+        return text
+
+    s = text
+    # Code fences: drop the fence lines but keep the code between them.
+    s = _MD_CODE_FENCE.sub("", s)
+    s = _MD_CODE_FENCE_CLOSE.sub("", s)
+    # Images first (so the !\[ doesn't get caught by the link rule).
+    s = _MD_IMAGE.sub(r"\1", s)
+    # Links: keep visible text, drop URL.
+    s = _MD_LINK.sub(r"\1", s)
+    # Inline code: keep contents.
+    s = _MD_INLINE_CODE.sub(r"\1", s)
+    # Emphasis markers.
+    s = _MD_BOLD.sub(r"\1", s)
+    s = _MD_BOLD_UNDER.sub(r"\1", s)
+    s = _MD_ITALIC.sub(r"\1", s)
+    s = _MD_ITALIC_UNDER.sub(r"\1", s)
+    # Block-level prefixes.
+    s = _MD_HEADING.sub("", s)
+    s = _MD_BULLET.sub("", s)
+    s = _MD_NUMBERED.sub("", s)
+    s = _MD_BLOCKQUOTE.sub("", s)
+    s = _MD_HR.sub("", s)
+    return s
 
 
 # Time unit factors for computing duration seconds
@@ -417,6 +481,21 @@ class DocumentTransformer:
                 base_row[f"{safe_field}_file_id"] = file_ref.get("file_id")
                 base_row[f"{safe_field}_filename"] = file_ref.get("filename")
                 base_row[f"{safe_field}_content_type"] = file_ref.get("content_type")
+
+        # Full-text-indexed fields: populate <field>_search with the
+        # markdown-stripped value. The schema_manager creates a
+        # GENERATED tsvector column from this — we don't write the
+        # tsvector itself. Only top-level string fields are eligible
+        # (validator at template-creation enforces type=string).
+        for f in template.get("fields", []):
+            if not f.get("full_text_indexed"):
+                continue
+            if f.get("type") != "string":
+                continue
+            field_name = f["name"]
+            raw = data.get(field_name)
+            search_col = f"{self._safe_column_name(field_name)}_search"
+            base_row[search_col] = _strip_md(raw) if isinstance(raw, str) else None
 
         # Store original JSON
         base_row["data_json"] = json.dumps(data)
