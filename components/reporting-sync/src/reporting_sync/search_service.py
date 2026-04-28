@@ -7,7 +7,7 @@ Provides unified search across all WIP services and reverse lookups.
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 import httpx
@@ -38,6 +38,18 @@ class SearchResult(BaseModel):
     status: str | None = Field(None, description="Entity status")
     description: str | None = Field(None, description="Brief description or context")
     updated_at: datetime | None = Field(None, description="Last update time")
+    score: float | None = Field(
+        None,
+        description="Relevance score (FTS only — ts_rank). Absent for substring matches.",
+    )
+    snippet: str | None = Field(
+        None,
+        description=(
+            "Highlighted excerpt around match (FTS only — ts_headline). "
+            "HTML by default with <b>...</b> around hits. Pass "
+            "snippet_format='text' on the request for plain text."
+        ),
+    )
 
 
 class SearchResponse(BaseModel):
@@ -59,6 +71,38 @@ class SearchRequest(StrictModel):
     )
     namespace: str | None = Field(None, description="Filter by namespace")
     status: str | None = Field(None, description="Filter by status")
+    template: str | None = Field(
+        None,
+        description=(
+            "Restrict document search to a single template (by value). "
+            "Other entity types ignore this filter."
+        ),
+    )
+    mode: Literal["auto", "fts", "substring"] = Field(
+        "auto",
+        description=(
+            "Document-search strategy. 'auto' (default) uses tsvector "
+            "indexing on tables that have it and falls back to substring "
+            "elsewhere. 'fts' forces tsvector — tables without indexed "
+            "fields are skipped. 'substring' is the legacy ILIKE path "
+            "and works on every doc_* table regardless of indexing."
+        ),
+    )
+    include_inactive: bool = Field(
+        False,
+        description=(
+            "When false (default), only active documents are returned — "
+            "aligns with PoNIF #1 'inactive means retired, not deleted'. "
+            "Set true to surface inactive/archived docs in the result set."
+        ),
+    )
+    snippet_format: Literal["html", "text"] = Field(
+        "html",
+        description=(
+            "Snippet rendering for FTS hits. 'html' (default) wraps "
+            "matched terms with <b>...</b>. 'text' returns plain text."
+        ),
+    )
     limit: int = Field(50, ge=1, le=200, description="Max results per type")
 
 
@@ -198,7 +242,13 @@ class SearchService:
         if "template" in types:
             tasks.append(("template", self._search_templates(query, namespace, status, limit)))
         if "document" in types:
-            tasks.append(("document", self._search_documents(query, namespace, status, limit)))
+            tasks.append(("document", self._search_documents(
+                query, namespace, status, limit,
+                template=request.template,
+                mode=request.mode,
+                include_inactive=request.include_inactive,
+                snippet_format=request.snippet_format,
+            )))
         if "file" in types:
             tasks.append(("file", self._search_files(query, namespace, status, limit)))
 
@@ -404,14 +454,27 @@ class SearchService:
             return []
 
     async def _search_documents(
-        self, query: str, namespace: str | None, status: str | None, limit: int
+        self,
+        query: str,
+        namespace: str | None,
+        status: str | None,
+        limit: int,
+        *,
+        template: str | None = None,
+        mode: str = "auto",
+        include_inactive: bool = False,
+        snippet_format: str = "html",
     ) -> list[SearchResult]:
         """Search documents via PostgreSQL reporting tables.
 
-        Builds a UNION ALL across all ``doc_*`` tables, searching every
-        text/varchar column with ILIKE. This is a real content search — it
-        finds "Ankylosaurus" inside a monster's name field, not just in the
-        document ID or template name.
+        Mode dispatch (per table):
+          - 'fts': use tsvector + GIN if the table has any *_tsv column;
+            else skip the table.
+          - 'substring': always ILIKE across text columns (legacy path).
+          - 'auto': FTS when *_tsv columns exist, substring otherwise.
+
+        Inactive filter: WHERE status='active' is the default — aligns
+        with PoNIF #1. Pass include_inactive=True to disable.
 
         Falls back to the REST API scan if PostgreSQL is unavailable.
         """
@@ -420,86 +483,232 @@ class SearchService:
 
         try:
             async with self.postgres_pool.acquire() as conn:
-                # 1. Discover doc_* tables.
-                tables = await conn.fetch("""
-                    SELECT table_name
-                    FROM information_schema.tables
-                    WHERE table_schema = 'public'
-                      AND table_type = 'BASE TABLE'
-                      AND table_name LIKE 'doc_%'
-                    ORDER BY table_name
-                """)
+                # 1. Discover doc_* tables (optionally restricted to one).
+                if template:
+                    safe_value = template.lower()
+                    tables = await conn.fetch(
+                        """
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_type = 'BASE TABLE'
+                          AND table_name = $1
+                        """,
+                        f"doc_{safe_value}",
+                    )
+                else:
+                    tables = await conn.fetch("""
+                        SELECT table_name
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_type = 'BASE TABLE'
+                          AND table_name LIKE 'doc_%'
+                        ORDER BY table_name
+                    """)
 
                 if not tables:
                     return []
 
-                pattern = f"%{query}%"
                 results: list[SearchResult] = []
 
-                # 2. Search each table individually — simpler and more robust
-                #    than a giant UNION ALL across heterogeneous schemas.
                 for tbl_row in tables:
                     if len(results) >= limit:
                         break
-
                     tname = tbl_row["table_name"]
-
-                    # Find text-searchable columns in this table.
-                    cols = await conn.fetch("""
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
-                          AND table_name = $1
-                          AND data_type IN ('text', 'character varying')
-                    """, tname)
-
-                    if not cols:
-                        continue
-
-                    col_names = [c["column_name"] for c in cols]
-                    or_clauses = " OR ".join(f'"{c}" ILIKE $1' for c in col_names)
-
-                    # Derive template_value from table name: doc_ct_trial → CT_TRIAL
-                    template_value = tname[4:].upper()
-
-                    # Check which ID column exists (document_id or entity_id).
-                    id_col = "document_id" if "document_id" in col_names else None
-                    if not id_col:
-                        all_cols = await conn.fetch("""
-                            SELECT column_name FROM information_schema.columns
-                            WHERE table_schema = 'public' AND table_name = $1
-                        """, tname)
-                        all_col_names = [c["column_name"] for c in all_cols]
-                        id_col = "document_id" if "document_id" in all_col_names else (
-                            "entity_id" if "entity_id" in all_col_names else None
-                        )
-
-                    id_expr = f'"{id_col}"' if id_col else "''"
                     remaining = limit - len(results)
 
-                    sql = f'SELECT {id_expr} AS doc_id FROM "{tname}" WHERE ({or_clauses}) LIMIT {remaining}'
+                    # Discover columns once per table.
+                    all_cols_rows = await conn.fetch(
+                        """
+                        SELECT column_name, data_type
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = $1
+                        """,
+                        tname,
+                    )
+                    all_cols = [
+                        (r["column_name"], r["data_type"]) for r in all_cols_rows
+                    ]
+                    if not all_cols:
+                        continue
+
+                    tsv_cols = [n for n, t in all_cols if t == "tsvector"]
+                    text_cols = [
+                        n for n, t in all_cols if t in ("text", "character varying")
+                    ]
+
+                    # Pick the path for this table.
+                    use_fts = bool(tsv_cols) and mode in ("auto", "fts")
+                    if mode == "fts" and not tsv_cols:
+                        continue  # skip — no tsvector columns to query
+
+                    template_value = tname[4:].upper()
+
                     try:
-                        rows = await conn.fetch(sql, pattern)
+                        if use_fts:
+                            rows = await self._fts_query(
+                                conn, tname, tsv_cols, query, namespace,
+                                include_inactive, snippet_format, remaining,
+                            )
+                            for row in rows:
+                                results.append(SearchResult(
+                                    type="document",
+                                    id=row["doc_id"] or "",
+                                    value=template_value,
+                                    label=f"{template_value} document",
+                                    status=row.get("status") or "active",
+                                    description=f"Matched in {tname}",
+                                    updated_at=row.get("updated_at"),
+                                    score=float(row["score"]) if row.get("score") is not None else None,
+                                    snippet=row.get("snippet"),
+                                ))
+                        else:
+                            rows = await self._substring_query(
+                                conn, tname, text_cols, query, namespace,
+                                include_inactive, remaining,
+                            )
+                            for row in rows:
+                                results.append(SearchResult(
+                                    type="document",
+                                    id=row["doc_id"] or "",
+                                    value=template_value,
+                                    label=f"{template_value} document",
+                                    status=row.get("status") or "active",
+                                    description=f"Matched in {tname}",
+                                    updated_at=row.get("updated_at"),
+                                ))
                     except Exception as table_err:
                         logger.warning("Search in table %s failed: %s", tname, table_err)
                         continue
 
-                    for row in rows:
-                        results.append(SearchResult(
-                            type="document",
-                            id=row["doc_id"] or "",
-                            value=template_value,
-                            label=f"{template_value} document",
-                            status="active",
-                            description=f"Matched in {tname}",
-                            updated_at=None,
-                        ))
-
+                # FTS results carry scores — sort the merged set by score
+                # descending so the best matches across templates rise.
+                # Substring matches have no score; they sort after FTS hits.
+                results.sort(
+                    key=lambda r: (
+                        0 if r.score is not None else 1,
+                        -(r.score or 0.0),
+                    )
+                )
                 return results
 
         except Exception as e:
             logger.error(f"PostgreSQL document search failed: {e}")
             return await self._search_documents_rest_fallback(query, namespace, status, limit)
+
+    async def _fts_query(
+        self,
+        conn: asyncpg.Connection,
+        tname: str,
+        tsv_cols: list[str],
+        query: str,
+        namespace: str | None,
+        include_inactive: bool,
+        snippet_format: str,
+        limit: int,
+    ) -> list[dict]:
+        """Run a PostgreSQL FTS query against one doc_* table.
+
+        Uses an OR-of-tsvectors WHERE clause so each *_tsv GIN index can
+        be hit independently. Rank is computed against the concatenation
+        for stable ordering. Snippet stitches the matching *_search
+        columns together for ts_headline.
+        """
+        # OR clause: any indexed column matches.
+        or_clause = " OR ".join(f'"{c}" @@ q.query' for c in tsv_cols)
+        # Concat of tsvectors for ts_rank.
+        rank_expr = " || ".join(f'"{c}"' for c in tsv_cols)
+        # Parallel _search columns (drop the _tsv suffix).
+        search_cols = [c[: -len("_tsv")] + "_search" for c in tsv_cols]
+        # Snippet input — coalesce nulls and join with a separator so
+        # ts_headline can pick fragments from any of the indexed sources.
+        snippet_input = " || ' ... ' || ".join(
+            f"coalesce(\"{c}\", '')" for c in search_cols
+        )
+
+        if snippet_format == "text":
+            headline_options = "MaxFragments=2,MaxWords=20,MinWords=5"
+        else:
+            headline_options = (
+                "StartSel=<b>,StopSel=</b>,MaxFragments=2,MaxWords=20,MinWords=5"
+            )
+
+        # Status filter — inactive documents stay invisible by default.
+        status_clause = "" if include_inactive else " AND d.status = 'active'"
+        # Optional namespace filter.
+        params: list[Any] = [query]
+        ns_clause = ""
+        if namespace:
+            params.append(namespace)
+            ns_clause = f" AND d.namespace = ${len(params)}"
+        params.append(limit)
+        limit_param = f"${len(params)}"
+
+        sql = f"""
+            WITH q AS (SELECT plainto_tsquery('english', $1) AS query)
+            SELECT
+                d.document_id AS doc_id,
+                d.status AS status,
+                d.updated_at AS updated_at,
+                ts_rank({rank_expr}, q.query) AS score,
+                ts_headline(
+                    'english',
+                    {snippet_input},
+                    q.query,
+                    '{headline_options}'
+                ) AS snippet
+            FROM "{tname}" d, q
+            WHERE ({or_clause}){status_clause}{ns_clause}
+            ORDER BY score DESC
+            LIMIT {limit_param}
+        """
+        rows = await conn.fetch(sql, *params)
+        return [dict(r) for r in rows]
+
+    async def _substring_query(
+        self,
+        conn: asyncpg.Connection,
+        tname: str,
+        text_cols: list[str],
+        query: str,
+        namespace: str | None,
+        include_inactive: bool,
+        limit: int,
+    ) -> list[dict]:
+        """Run an ILIKE substring query (legacy path, no tsvector).
+
+        Reads `status` and `document_id` from system columns — every
+        doc_* table has them. updated_at is returned as NULL since
+        substring matches don't carry ranking metadata.
+        """
+        if not text_cols:
+            return []
+        or_clauses = " OR ".join(f'"{c}" ILIKE $1' for c in text_cols)
+        id_expr = (
+            '"document_id"' if "document_id" in text_cols
+            else ('"entity_id"' if "entity_id" in text_cols else "''")
+        )
+
+        params: list[Any] = [f"%{query}%"]
+        ns_clause = ""
+        if namespace:
+            params.append(namespace)
+            ns_clause = f" AND namespace = ${len(params)}"
+        status_clause = "" if include_inactive else " AND status = 'active'"
+        params.append(limit)
+        limit_param = f"${len(params)}"
+
+        sql = f"""
+            SELECT
+                {id_expr} AS doc_id,
+                status AS status,
+                NULL::timestamp AS updated_at
+            FROM "{tname}"
+            WHERE ({or_clauses}){status_clause}{ns_clause}
+            LIMIT {limit_param}
+        """
+        rows = await conn.fetch(sql, *params)
+        return [dict(r) for r in rows]
 
     async def _search_documents_rest_fallback(
         self, query: str, namespace: str | None, status: str | None, limit: int
