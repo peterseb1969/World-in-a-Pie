@@ -61,6 +61,7 @@ export interface FieldDefinition {
   validation?: FieldValidation
   semantic_type?: SemanticType
   include_subtypes?: boolean
+  full_text_indexed?: boolean
   inherited?: boolean
   inherited_from?: string
   metadata: Record<string, unknown>

@@ -23,8 +23,8 @@ from ..models.api_models import (
     ValidationError,
     ValidationWarning,
 )
-from ..models.field import ReferenceType
-from ..models.template import Template, TemplateMetadata, TemplateUsage
+from ..models.field import FieldDefinition, FieldType, ReferenceType
+from ..models.template import ReportingConfig, Template, TemplateMetadata, TemplateUsage
 from .def_store_client import DefStoreError, get_def_store_client
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
@@ -106,6 +106,57 @@ class TemplateService:
                 )
 
     # =========================================================================
+    # FULL-TEXT-INDEX STRUCTURAL VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    def _validate_full_text_indexed_constraints(
+        fields: list[FieldDefinition],
+        reporting: ReportingConfig | None,
+    ) -> None:
+        """Enforce structural constraints on full_text_indexed fields.
+
+        - Only string fields may carry full_text_indexed=true. Any other
+          base type is rejected (term/reference/file/object/array carry
+          their own column shape that doesn't accept tsvector indexing).
+        - If any field is full_text_indexed, the template's reporting
+          config must allow sync (sync_enabled=true). The flag depends
+          on the reporting layer to materialise the tsvector column —
+          you cannot index what isn't synced.
+
+        Operates on the *final* fields list and reporting config so it
+        can be called from both create and update paths.
+
+        Raises ValueError on violation.
+        """
+        indexed_fields = [
+            f for f in fields if getattr(f, "full_text_indexed", None)
+        ]
+        if not indexed_fields:
+            return
+
+        non_string = [
+            f for f in indexed_fields if f.type != FieldType.STRING
+        ]
+        if non_string:
+            names_and_types = ", ".join(
+                f"{f.name}(type={f.type.value})" for f in non_string
+            )
+            raise ValueError(
+                f"full_text_indexed is only valid on type=string fields; "
+                f"got {names_and_types}"
+            )
+
+        # Default ReportingConfig has sync_enabled=True — only an explicit
+        # False conflicts. (reporting may be None; that means defaults.)
+        if reporting is not None and not reporting.sync_enabled:
+            indexed_names = ", ".join(f.name for f in indexed_fields)
+            raise ValueError(
+                f"full_text_indexed requires reporting.sync_enabled=true; "
+                f"field(s) {indexed_names} cannot be indexed without sync"
+            )
+
+    # =========================================================================
     # TEMPLATE CRUD OPERATIONS
     # =========================================================================
 
@@ -140,6 +191,12 @@ class TemplateService:
         # Structural validation for relationship templates (purely
         # declarative — runs even in draft mode, no DB calls).
         TemplateService._validate_relationship_template_shape(request)
+
+        # Structural validation for full_text_indexed fields (also
+        # purely declarative — runs in draft mode too).
+        TemplateService._validate_full_text_indexed_constraints(
+            request.fields, request.reporting
+        )
 
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
@@ -731,6 +788,16 @@ class TemplateService:
                 await TemplateService._normalize_field_references(new_fields, original.namespace)
             except EntityNotFoundError as e:
                 raise ValueError(str(e)) from e
+
+        # Validate full_text_indexed constraints against the merged final
+        # state — fields may add/remove the flag, reporting.sync_enabled
+        # may flip; both can break the invariant.
+        new_reporting = (
+            request.reporting if request.reporting is not None else original.reporting
+        )
+        TemplateService._validate_full_text_indexed_constraints(
+            new_fields, new_reporting
+        )
 
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version. usage,

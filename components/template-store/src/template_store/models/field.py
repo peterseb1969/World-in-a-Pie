@@ -208,6 +208,24 @@ class FieldDefinition(BaseModel):
         description="Semantic type for additional validation (email, url, latitude, etc.)"
     )
 
+    # Postgres full-text indexing (reporting layer materialises a tsvector
+    # column + GIN index on this field; the /api/reporting-sync/search
+    # endpoint uses it for ranked, snippet-rich search). Only valid on
+    # type=string fields, and requires the template's reporting.sync_enabled
+    # to be true (validated at template creation).
+    #
+    # v1 accepts bool only. The schema reserves space for future per-field
+    # language hints (e.g. "en", "de") — passing a string today raises a
+    # validation error so the future expansion stays non-breaking.
+    full_text_indexed: bool | None = Field(
+        None,
+        description=(
+            "Enable PostgreSQL full-text indexing on this field. Only valid "
+            "for type=string and requires template reporting.sync_enabled=true. "
+            "Future: language codes ('en', 'de') will be accepted; v1 is bool only."
+        )
+    )
+
     # Inheritance tracking (populated during resolution, not stored)
     inherited: bool | None = Field(
         None,

@@ -141,6 +141,7 @@ class TemplateField(BaseModel):
     file_config: FileFieldConfig | None = None
     array_file_config: FileFieldConfig | None = None
     semantic_type: SemanticType | None = None
+    full_text_indexed: bool | None = None
 
 
 class SyncStatus(BaseModel):
