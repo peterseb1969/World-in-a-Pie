@@ -17,6 +17,8 @@ import {
   useUpdateDocuments,
   useDeleteDocument,
   useUploadFile,
+  useCreateTermRelations,
+  useDeleteTermRelations,
 } from '../src/hooks/use-mutations'
 import { wipKeys } from '../src/utils/keys'
 import type { WipClient } from '@wip/client'
@@ -37,6 +39,8 @@ function createMockClient() {
       getTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', value: 'Term' }),
       createTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', status: 'created' }),
       deleteTerm: vi.fn().mockResolvedValue({ entity_id: 'term1', status: 'deleted' }),
+      createTermRelations: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
+      deleteTermRelations: vi.fn().mockResolvedValue({ results: [], total: 0, succeeded: 0, failed: 0 }),
     },
     templates: {
       listTemplates: vi.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -552,6 +556,66 @@ describe('Mutation hooks', () => {
 
       expect(invalidateSpy).toHaveBeenCalledWith({
         queryKey: wipKeys.files.all,
+      })
+    })
+  })
+
+  // Renamed from useCreateRelationships / useDeleteRelationships in the
+  // Phase-0 ontology rename wave (CASE-67 for @wip/client; CASE-167 for
+  // @wip/react). Tests pinned so a future rename cannot silently break
+  // the contract this hook exposes to consumers.
+  describe('useCreateTermRelations', () => {
+    it('calls client.defStore.createTermRelations with items + namespace', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useCreateTermRelations(), { wrapper: Wrapper })
+
+      const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
+      await act(() =>
+        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+      )
+
+      expect(mockClient.defStore.createTermRelations).toHaveBeenCalledWith(items, 'wip')
+    })
+
+    it('invalidates terms cache on success', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { result } = renderHook(() => useCreateTermRelations(), { wrapper: Wrapper })
+
+      await act(() =>
+        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+      )
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: wipKeys.terms.all,
+      })
+    })
+  })
+
+  describe('useDeleteTermRelations', () => {
+    it('calls client.defStore.deleteTermRelations with items + namespace', async () => {
+      const { Wrapper } = createWrapper(mockClient)
+      const { result } = renderHook(() => useDeleteTermRelations(), { wrapper: Wrapper })
+
+      const items = [{ source_term_id: 's', target_term_id: 't', relation_type: 'is_a' }]
+      await act(() =>
+        result.current.mutateAsync({ items: items as any, namespace: 'wip' }),
+      )
+
+      expect(mockClient.defStore.deleteTermRelations).toHaveBeenCalledWith(items, 'wip')
+    })
+
+    it('invalidates terms cache on success', async () => {
+      const { Wrapper, queryClient } = createWrapper(mockClient)
+      const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries')
+      const { result } = renderHook(() => useDeleteTermRelations(), { wrapper: Wrapper })
+
+      await act(() =>
+        result.current.mutateAsync({ items: [] as any, namespace: 'wip' }),
+      )
+
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: wipKeys.terms.all,
       })
     })
   })

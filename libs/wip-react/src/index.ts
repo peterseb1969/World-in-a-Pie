@@ -43,9 +43,9 @@ export {
   useDeleteFile,
   useDeleteFiles,
   useHardDeleteFile,
-  // Ontology / Relationships
-  useCreateRelationships,
-  useDeleteRelationships,
+  // Ontology / Term-Relations (renamed from "Relationships" in CASE-67/167)
+  useCreateTermRelations,
+  useDeleteTermRelations,
   // Namespaces
   useCreateNamespace,
   useUpdateNamespace,

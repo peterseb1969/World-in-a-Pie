@@ -16,8 +16,8 @@ import type {
   FileUploadMetadata,
   FileEntity,
   UpdateFileMetadataRequest,
-  CreateRelationshipRequest,
-  DeleteRelationshipRequest,
+  CreateTermRelationRequest,
+  DeleteTermRelationRequest,
   CreateNamespaceRequest,
   UpdateNamespaceRequest,
   Namespace,
@@ -436,19 +436,26 @@ export function useHardDeleteFile(
 }
 
 // ============================================================================
-// ONTOLOGY / RELATIONSHIP HOOKS
+// ONTOLOGY / TERM-RELATION HOOKS
 // ============================================================================
+// The platform renamed this surface in WIP commit 2eeb872 (Phase 0 of
+// the document-relationships work, 2026-04-25): "relationship" now
+// refers to document-to-document edges; "term-relation" refers to the
+// term-ontology edges (is_a, part_of, ...). @wip/client@0.13.0 carried
+// the rename; @wip/react was the trailing gap (CASE-167) and follows
+// it here. No backward-compat aliases — fresh-instance restart is the
+// recovery path.
 
-export function useCreateRelationships(
-  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: CreateRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+export function useCreateTermRelations(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: CreateTermRelationRequest[]; namespace: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ items, namespace }: { items: CreateRelationshipRequest[]; namespace: string }) =>
-      client.defStore.createRelationships(items, namespace),
+    mutationFn: ({ items, namespace }: { items: CreateTermRelationRequest[]; namespace: string }) =>
+      client.defStore.createTermRelations(items, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       onSuccess?.(...args)
@@ -456,16 +463,16 @@ export function useCreateRelationships(
   })
 }
 
-export function useDeleteRelationships(
-  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: DeleteRelationshipRequest[]; namespace: string }>, 'mutationFn'>,
+export function useDeleteTermRelations(
+  options?: Omit<UseMutationOptions<BulkResponse, Error, { items: DeleteTermRelationRequest[]; namespace: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ items, namespace }: { items: DeleteRelationshipRequest[]; namespace: string }) =>
-      client.defStore.deleteRelationships(items, namespace),
+    mutationFn: ({ items, namespace }: { items: DeleteTermRelationRequest[]; namespace: string }) =>
+      client.defStore.deleteTermRelations(items, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       onSuccess?.(...args)
