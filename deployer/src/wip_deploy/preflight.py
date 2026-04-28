@@ -57,9 +57,34 @@ def check_port_free(port: int, *, host: str = "0.0.0.0") -> None:
         sock.close()
 
 
-def check_ports_free(ports: list[int], *, host: str = "0.0.0.0") -> None:
+def check_ports_free(
+    ports: list[int],
+    *,
+    host: str = "0.0.0.0",
+    install_dir: Path | None = None,
+) -> None:
     """Probe every port. Raises on the first conflict — if there are
-    multiple conflicts the user fixes one and retries."""
+    multiple conflicts the user fixes one and retries.
+
+    Reconcile mode: when ``install_dir`` is supplied and contains a
+    rendered ``docker-compose.yaml``, the install-dir is treated as a
+    pre-existing deployment we're updating in place. Port collisions
+    with our own running containers (typically caddy on 8443/8080)
+    are expected in that case — re-installing the same name should
+    not require nuking just to free our own ports. So we skip the
+    port check entirely when reconcile mode is active.
+
+    The trade-off: a foreign process holding our port wouldn't get
+    caught by this check during a reconcile. That's acceptable
+    because compose itself will surface the conflict at apply time
+    (with a clearer error than our pre-flight could give for a
+    "we own this port but it looks taken" case).
+    """
+    if install_dir is not None:
+        compose_yaml = install_dir / "docker-compose.yaml"
+        if compose_yaml.is_file():
+            return  # reconcile path — let compose handle port reuse
+
     for p in ports:
         check_port_free(p, host=host)
 

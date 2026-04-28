@@ -83,7 +83,31 @@ def _target_opt() -> typer.models.OptionInfo:
 
 
 def _hostname_opt() -> typer.models.OptionInfo:
-    return typer.Option("--hostname", help="External hostname as seen by browsers.")
+    return typer.Option(
+        "--hostname",
+        help=(
+            "External hostname as seen by browsers. Defaults to "
+            "'localhost' when --target dev (no /etc/hosts magic) and "
+            "'wip.local' otherwise."
+        ),
+    )
+
+
+def _resolve_hostname(hostname: str | None, target: str) -> str:
+    """Resolve --hostname's default based on target.
+
+    - target=dev defaults to 'localhost' (browser-reachable on the
+      same machine, no /etc/hosts entry required).
+    - target=compose|k8s defaults to 'wip.local' for backwards
+      compatibility (operator typically picks a real hostname).
+
+    An explicit --hostname always overrides.
+    """
+    if hostname is not None:
+        return hostname
+    if target == "dev":
+        return "localhost"
+    return "wip.local"
 
 
 def _tls_opt() -> typer.models.OptionInfo:
@@ -238,7 +262,7 @@ def _name_opt() -> typer.models.OptionInfo:
 def validate(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
-    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
     http_port: Annotated[int | None, _http_port_opt()] = None,
@@ -267,6 +291,7 @@ def validate(
     wip-component.yaml / wip-app.yaml, and runs all cross-cutting
     validators. Exit 0 on success, 1 on failure.
     """
+    hostname = _resolve_hostname(hostname, target)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -340,7 +365,7 @@ def validate(
 def show_spec(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
-    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
     http_port: Annotated[int | None, _http_port_opt()] = None,
@@ -371,6 +396,7 @@ def show_spec(
     Useful for debugging: "what does --preset standard actually resolve to?"
     No discovery, no validation — just the computed spec.
     """
+    hostname = _resolve_hostname(hostname, target)
     deployment, _components, _apps = _assemble(
         preset=preset,
         target=target,
@@ -417,7 +443,7 @@ def show_spec(
 def render(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
-    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
     http_port: Annotated[int | None, _http_port_opt()] = None,
@@ -452,6 +478,7 @@ def render(
     Useful for inspection: look at the generated docker-compose.yaml,
     Caddyfile, and Dex config before starting the stack.
     """
+    hostname = _resolve_hostname(hostname, target)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -502,7 +529,7 @@ def render(
 def install(
     preset: Annotated[str, _preset_opt()] = "standard",
     target: Annotated[str, _target_opt()] = "compose",
-    hostname: Annotated[str, _hostname_opt()] = "wip.local",
+    hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
     http_port: Annotated[int | None, _http_port_opt()] = None,
@@ -554,6 +581,7 @@ def install(
         )
         raise typer.Exit(2)
 
+    hostname = _resolve_hostname(hostname, target)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -783,6 +811,77 @@ def rebuild(
     typer.echo(
         typer.style(
             f"✓ Rebuilt {rebuilt}", fg=typer.colors.GREEN, bold=True
+        )
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# restart
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def restart(
+    services: Annotated[
+        list[str],
+        typer.Argument(
+            help=(
+                "One or more service names to restart (matches keys "
+                "under `services:` in the rendered docker-compose.yaml). "
+                "At least one is required."
+            ),
+        ),
+    ],
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Compose install directory. Defaults to "
+                "~/.wip-deploy/<name>/."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str, _name_opt()] = "default",
+) -> None:
+    """Restart one or more services in an existing install.
+
+    Compose/dev only. Reads the rendered docker-compose.yaml under
+    the install directory and runs `compose restart <svc>...` — does
+    not rebuild the image or recreate the container, just bounces
+    the process. Picks up env-var changes that don't propagate
+    through bind-mounted source.
+
+    For Dockerfile or package.json/requirements.txt edits use
+    `wip-deploy rebuild` instead — restart alone won't pick up
+    a new image.
+
+    Examples:
+
+      wip-deploy restart react-console
+      wip-deploy restart def-store template-store --name wip-dev-local
+    """
+    from wip_deploy.apply import ApplyError, restart_compose_services
+
+    target_dir = install_dir or _default_install_dir(name)
+
+    if not services:
+        typer.echo("error: at least one service name is required", err=True)
+        raise typer.Exit(2)
+
+    try:
+        restart_compose_services(
+            install_dir=target_dir,
+            services=list(services),
+        )
+    except ApplyError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    restarted = ", ".join(services)
+    typer.echo(
+        typer.style(
+            f"✓ Restarted {restarted}", fg=typer.colors.GREEN, bold=True
         )
     )
 
@@ -1111,7 +1210,7 @@ def _run_preflight_or_exit(deployment: Deployment, install_dir: Path) -> None:
 
     ports = [deployment.spec.network.https_port, deployment.spec.network.http_port]
     try:
-        check_ports_free(ports)
+        check_ports_free(ports, install_dir=install_dir)
     except PreflightError as e:
         typer.echo(
             typer.style(f"✗ {e}", fg=typer.colors.RED, bold=True), err=True

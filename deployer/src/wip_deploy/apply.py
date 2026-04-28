@@ -232,6 +232,64 @@ def rebuild_compose_services(
     )
 
 
+def restart_compose_services(
+    *,
+    install_dir: Path,
+    services: list[str],
+) -> None:
+    """Restart one or more services in an existing compose install.
+
+    The lightweight counterpart to ``rebuild_compose_services`` — does
+    not rebuild the image or recreate the container, just stops + starts
+    the existing process. Useful for picking up env-var changes that
+    don't propagate through bind-mounted source, or just bouncing a
+    process that's gone sideways.
+
+    For Dockerfile / requirements.txt edits, use ``rebuild_compose_services``
+    so the image actually picks up the new content.
+
+    Raises ApplyError if the install directory or compose file is
+    missing, if any requested service is not in the compose, or if
+    ``compose restart`` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    available = _services_in_compose(compose_file)
+    unknown = [s for s in services if s not in available]
+    if unknown:
+        raise ApplyError(
+            "unknown service(s): "
+            + ", ".join(unknown)
+            + ". Available: "
+            + ", ".join(sorted(available))
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    cmd = [
+        *compose_cmd,
+        "--env-file", ".env",
+        "-f", "docker-compose.yaml",
+        "restart",
+        *services,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            cwd=install_dir,
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(
+            f"{compose_cmd[0]} restart failed (exit {e.returncode})"
+        ) from e
+
+
 def _services_in_compose(compose_file: Path) -> set[str]:
     """Read the service keys from a rendered docker-compose.yaml."""
     import yaml as _yaml

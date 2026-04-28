@@ -66,6 +66,33 @@ class TestPortChecks:
         finally:
             sock.close()
 
+    def test_reconcile_skips_port_check_when_install_exists(
+        self, tmp_path: Path
+    ) -> None:
+        """CASE-171 #3: re-installing the same name shouldn't refuse
+        because our own caddy container is holding the port. When the
+        install_dir contains a rendered compose, we're reconciling —
+        let compose handle port reuse."""
+        (tmp_path / "docker-compose.yaml").write_text("services: {}\n")
+        port, sock = _find_busy_port()
+        try:
+            # Should NOT raise — install_dir presence flips us to reconcile.
+            check_ports_free([port], host="127.0.0.1", install_dir=tmp_path)
+        finally:
+            sock.close()
+
+    def test_reconcile_still_checks_when_install_dir_empty(
+        self, tmp_path: Path
+    ) -> None:
+        """An install_dir without docker-compose.yaml is fresh-install
+        — the normal port check still runs."""
+        port, sock = _find_busy_port()
+        try:
+            with pytest.raises(PreflightError, match=f"port {port}"):
+                check_ports_free([port], host="127.0.0.1", install_dir=tmp_path)
+        finally:
+            sock.close()
+
 
 # ────────────────────────────────────────────────────────────────────
 # Stale container checks

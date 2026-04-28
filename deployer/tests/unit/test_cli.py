@@ -102,7 +102,12 @@ class TestValidateActivationRules:
         assert "postgres" in r.output
         assert "nats" in r.output
 
-    def test_standard_does_not_activate_postgres(self) -> None:
+    def test_standard_activates_postgres_but_not_ingest_gateway(self) -> None:
+        # CASE-171: `standard` was restored to v1 semantics — everything
+        # except ingest-gateway. So reporting-sync is in (postgres
+        # therefore active), but ingest-gateway is not (lazy NATS-side
+        # opt-in). Pinned to catch a regression like the one that
+        # silently shipped in v2 where standard had only mcp-server.
         r = _invoke_valid(
             "validate",
             "--preset", "standard",
@@ -111,11 +116,11 @@ class TestValidateActivationRules:
             "--repo-root", str(REPO_ROOT),
         )
         assert r.exit_code == 0, r.output
-        # postgres shouldn't be listed
         component_line = next(
             line for line in r.output.splitlines() if line.startswith("Components:")
         )
-        assert "postgres" not in component_line
+        assert "postgres" in component_line, component_line
+        assert "ingest-gateway" not in component_line, component_line
 
     def test_headless_does_not_activate_dex(self) -> None:
         r = _invoke_valid(
@@ -295,3 +300,65 @@ class TestAppSourceFlag:
         from wip_deploy.cli import _parse_app_sources
         with pytest.raises(ValueError, match="not a directory"):
             _parse_app_sources(["rc=/definitely/not/a/real/path/xyz"])
+
+
+# CASE-171 Phase A — restart verb, hostname default resolver, standard preset shape
+
+
+class TestResolveHostname:
+    """Hostname default depends on target (CASE-171 #7)."""
+
+    def test_explicit_hostname_overrides(self) -> None:
+        from wip_deploy.cli import _resolve_hostname
+        assert _resolve_hostname("custom.host", "dev") == "custom.host"
+        assert _resolve_hostname("custom.host", "compose") == "custom.host"
+
+    def test_dev_target_defaults_to_localhost(self) -> None:
+        from wip_deploy.cli import _resolve_hostname
+        assert _resolve_hostname(None, "dev") == "localhost"
+
+    def test_compose_target_defaults_to_wip_local(self) -> None:
+        from wip_deploy.cli import _resolve_hostname
+        assert _resolve_hostname(None, "compose") == "wip.local"
+
+    def test_k8s_target_defaults_to_wip_local(self) -> None:
+        from wip_deploy.cli import _resolve_hostname
+        assert _resolve_hostname(None, "k8s") == "wip.local"
+
+
+class TestRestartVerb:
+    """The restart verb (CASE-171 #4)."""
+
+    def test_restart_help_renders(self) -> None:
+        from typer.testing import CliRunner
+
+        from wip_deploy.cli import app
+        r = CliRunner().invoke(app, ["restart", "--help"])
+        assert r.exit_code == 0
+        # Body content rather than option names — option names truncate
+        # in narrow terminals; content stays stable.
+        assert "Restart one or more services" in r.output
+
+    def test_restart_requires_at_least_one_service(self, tmp_path: Path) -> None:
+        from typer.testing import CliRunner
+
+        from wip_deploy.cli import app
+        # No services and a fake install dir → typer surfaces "missing argument"
+        r = CliRunner().invoke(
+            app, ["restart", "--install-dir", str(tmp_path)]
+        )
+        assert r.exit_code != 0
+
+
+class TestStandardPresetShape:
+    """CASE-171 #1 — restored v1 semantics."""
+
+    def test_standard_includes_reporting_minio_mcp(self) -> None:
+        from wip_deploy.presets import PRESETS
+        opt = set(PRESETS["standard"]["modules"]["optional"])
+        assert {"reporting-sync", "minio", "mcp-server"} <= opt
+
+    def test_standard_does_not_include_ingest_gateway(self) -> None:
+        from wip_deploy.presets import PRESETS
+        opt = set(PRESETS["standard"]["modules"]["optional"])
+        assert "ingest-gateway" not in opt
