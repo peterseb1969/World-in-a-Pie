@@ -2505,18 +2505,59 @@ async def search(
     types: list[str] | None = None,
     namespace: str | None = None,
     limit: int = 20,
+    template: str | None = None,
+    mode: str = "auto",
+    include_inactive: bool = False,
+    snippet_format: str = "html",
 ) -> str:
     """Unified search across all WIP entities (via reporting-sync).
 
+    For documents, the search uses PostgreSQL full-text indexing on
+    template fields that declared `full_text_indexed: true` at template
+    creation. Tables without indexed fields fall back to substring
+    matching. The default `mode='auto'` does the right thing per
+    table — apps don't have to think about it.
+
     Args:
-        query: Search string.
-        types: Filter by entity type: 'terminology', 'term', 'template', 'document'.
+        query: Search string. For full-text mode, this is parsed by
+            plainto_tsquery (whitespace-tokenised AND query). For
+            substring mode, it's an ILIKE pattern (no wildcards needed).
+        types: Filter by entity type: 'terminology', 'term', 'template',
+            'document', 'file'. Omit to search all types.
         namespace: Filter by namespace. Omit to search all namespaces.
-        limit: Max results.
+        limit: Max results per type (1-200, default 20).
+        template: Restrict document search to a single template (by
+            value, e.g. 'LESSON'). Other entity-type searches ignore
+            this filter.
+        mode: Document-search strategy.
+            - 'auto' (default): use FTS where available, substring
+              elsewhere. Picks the right path per table.
+            - 'fts': force FTS — tables without indexed fields are
+              skipped. Use when ranking is required.
+            - 'substring': legacy ILIKE across text columns. Works on
+              every doc_* table regardless of indexing; no ranking.
+        include_inactive: When false (default), only active documents
+            are returned (PoNIF #1: inactive means retired). Set true
+            to surface archived/deleted docs in deliberate queries.
+        snippet_format: Snippet rendering for FTS hits.
+            - 'html' (default): wraps matched terms with <b>...</b>.
+            - 'text': plain text without highlighting markup.
+
+    FTS document hits carry `score` (ts_rank float) and `snippet`
+    (ts_headline excerpt). Substring hits and non-document results
+    have neither. Results are sorted: FTS hits by score descending,
+    then substring hits, then other entity types.
     """
     try:
         data = await get_client().unified_search(
-            query=query, types=types, namespace=namespace, limit=limit
+            query=query,
+            types=types,
+            namespace=namespace,
+            limit=limit,
+            template=template,
+            mode=mode,
+            include_inactive=include_inactive,
+            snippet_format=snippet_format,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

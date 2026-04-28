@@ -227,6 +227,14 @@ export interface SearchResult {
   status: string | null
   description: string | null
   updated_at: string | null
+  /** ts_rank score; populated for FTS document hits only. */
+  score?: number | null
+  /**
+   * ts_headline excerpt; populated for FTS document hits only.
+   * HTML by default with <b>...</b> around matched terms; pass
+   * snippet_format='text' on the request for plain text.
+   */
+  snippet?: string | null
 }
 
 export interface SearchResponse {

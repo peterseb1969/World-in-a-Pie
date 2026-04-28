@@ -1382,12 +1382,24 @@ class WipClient:
         types: list[str] | None = None,
         namespace: str | None = None,
         limit: int = 20,
+        template: str | None = None,
+        mode: str | None = None,
+        include_inactive: bool | None = None,
+        snippet_format: str | None = None,
     ) -> dict:
         body: dict[str, Any] = {"query": query, "limit": limit}
         if types:
             body["types"] = types
         if namespace:
             body["namespace"] = namespace
+        if template:
+            body["template"] = template
+        if mode is not None:
+            body["mode"] = mode
+        if include_inactive is not None:
+            body["include_inactive"] = include_inactive
+        if snippet_format is not None:
+            body["snippet_format"] = snippet_format
         return await self._post(
             self.reporting_sync_url, "/api/reporting-sync/search", json=body
         )

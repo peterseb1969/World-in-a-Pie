@@ -132,6 +132,25 @@ export class ReportingSyncService extends BaseService {
     namespace: string
     status?: string
     limit?: number
+    /** Restrict document search to a single template (by value). */
+    template?: string
+    /**
+     * Document-search strategy. 'auto' (default) picks FTS for tables
+     * with full_text_indexed fields and falls back to ILIKE elsewhere.
+     * 'fts' forces FTS (skips tables without indexed fields). 'substring'
+     * forces ILIKE on all tables.
+     */
+    mode?: 'auto' | 'fts' | 'substring'
+    /**
+     * When false (default), only active documents are returned —
+     * aligns with PoNIF #1 "inactive means retired, not deleted".
+     */
+    include_inactive?: boolean
+    /**
+     * Snippet rendering for FTS hits. 'html' (default) wraps matched
+     * terms with <b>...</b>. 'text' returns plain text.
+     */
+    snippet_format?: 'html' | 'text'
   }): Promise<SearchResponse> {
     return this.post('/search', params)
   }
