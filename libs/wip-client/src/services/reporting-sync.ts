@@ -129,7 +129,13 @@ export class ReportingSyncService extends BaseService {
   async search(params: {
     query: string
     types?: string[]
-    namespace: string
+    /**
+     * Filter by namespace. Optional — when omitted the server runs
+     * the search across all namespaces visible to the API key.
+     * Single-namespace keys derive it implicitly; multi-namespace
+     * keys see all of theirs.
+     */
+    namespace?: string
     status?: string
     limit?: number
     /** Restrict document search to a single template (by value). */
