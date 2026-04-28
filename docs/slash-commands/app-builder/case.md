@@ -18,4 +18,4 @@ If `ok`, run the case helper for context:
 cd yac-discussions && echo "Next case number: $(bash case-helper.sh next)" && echo "--- Recent cases ---" && bash case-helper.sh last 5 && echo "--- Open cases ---" && bash case-helper.sh open
 ```
 
-Then you MUST Read `docs/playbooks/backend/case-workflow.md` before taking any action. Do not guess the file format, subcommand handlers, or status transitions from memory — they live in the playbook. Use the case number from the helper when filing new cases. Then execute the requested sub-command from `$ARGUMENTS`.
+Then you MUST Read `docs/playbooks/app-builder/case-workflow.md` before taking any action. Do not guess the file format, subcommand handlers, or status transitions from memory — they live in the playbook. Use the case number from the helper when filing new cases. Then execute the requested sub-command from `$ARGUMENTS`.
