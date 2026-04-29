@@ -93,15 +93,17 @@ Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, rep
 
 ### WIP Service URLs
 
-The MCP server connects **directly** to each service (not via Caddy), because it runs on the same host as the WIP services. These defaults are correct for local development. Application code should use `@wip/client` through the Caddy proxy instead — see `libs/wip-client/README.md`.
+The MCP server can route traffic through a unified proxy (like Caddy) or connect directly to individual services. The unified proxy is the standard approach for both development and production.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `REGISTRY_URL` | `http://localhost:8001` | Registry service |
-| `DEF_STORE_URL` | `http://localhost:8002` | Def-Store service |
-| `TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service |
-| `DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service |
-| `REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service |
+| `WIP_API_URL` | *(none)* | Base URL for all API requests (e.g., `https://localhost:8443`). If set, overrides the individual service URLs below. |
+| `WIP_VERIFY_TLS` | `true` | Set to `false` when using a self-signed cert for local dev (`https://localhost:8443`). |
+| `REGISTRY_URL` | `http://localhost:8001` | Registry service (used if `WIP_API_URL` is unset) |
+| `DEF_STORE_URL` | `http://localhost:8002` | Def-Store service (used if `WIP_API_URL` is unset) |
+| `TEMPLATE_STORE_URL` | `http://localhost:8003` | Template-Store service (used if `WIP_API_URL` is unset) |
+| `DOCUMENT_STORE_URL` | `http://localhost:8004` | Document-Store service (used if `WIP_API_URL` is unset) |
+| `REPORTING_SYNC_URL` | `http://localhost:8005` | Reporting-Sync service (used if `WIP_API_URL` is unset) |
 
 ### API Key Resolution
 

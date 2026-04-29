@@ -201,7 +201,14 @@ Harmless warning from `.env` parsing. The MCP server still works correctly. Caus
 
 ### Services unreachable
 
-The MCP server defaults to `http://localhost:800X` for all services. If services are on a different host, set the environment variables:
+The MCP server defaults to `http://localhost:800X` for all individual services. If you are routing all traffic through the WIP Caddy proxy (the standard deployment approach), set a single base URL:
+
+```bash
+export WIP_API_URL=https://localhost:8443
+export WIP_VERIFY_TLS=false  # If using a self-signed cert for local dev
+```
+
+Alternatively, if services are on a different host without a router, you can configure them individually:
 
 ```bash
 export REGISTRY_URL=http://your-wip-host.local:8001

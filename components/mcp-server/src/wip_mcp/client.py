@@ -68,6 +68,7 @@ class WipClient:
 
     def __init__(
         self,
+        api_url: str | None = None,
         registry_url: str | None = None,
         def_store_url: str | None = None,
         template_store_url: str | None = None,
@@ -77,19 +78,21 @@ class WipClient:
         timeout: float = 30.0,
         verify_tls: bool | None = None,
     ):
-        self.registry_url = registry_url or os.getenv(
+        base = api_url or os.getenv("WIP_API_URL")
+
+        self.registry_url = base or registry_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
-        self.def_store_url = def_store_url or os.getenv(
+        self.def_store_url = base or def_store_url or os.getenv(
             "DEF_STORE_URL", "http://localhost:8002"
         )
-        self.template_store_url = template_store_url or os.getenv(
+        self.template_store_url = base or template_store_url or os.getenv(
             "TEMPLATE_STORE_URL", "http://localhost:8003"
         )
-        self.document_store_url = document_store_url or os.getenv(
+        self.document_store_url = base or document_store_url or os.getenv(
             "DOCUMENT_STORE_URL", "http://localhost:8004"
         )
-        self.reporting_sync_url = reporting_sync_url or os.getenv(
+        self.reporting_sync_url = base or reporting_sync_url or os.getenv(
             "REPORTING_SYNC_URL", "http://localhost:8005"
         )
         self.api_key = api_key or _resolve_api_key()
