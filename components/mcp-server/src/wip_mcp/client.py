@@ -46,11 +46,17 @@ class WipClient:
     All constructor arguments fall back to environment variables when
     omitted:
 
+      - `api_url` → `WIP_API_URL`. When set, becomes the SERVICE BASE
+        for ALL five services and overrides the per-service `*_URL`
+        vars below. Set this when routing through Caddy (e.g.,
+        `https://localhost:8443`); leave unset to address each
+        service directly. Precedence per service URL is:
+        `api_url` arg > `WIP_API_URL` > per-service arg > per-service
+        env var > built-in localhost:8000X default.
       - `*_url` args → the corresponding `*_URL` env var. Each URL is a
         SERVICE BASE (e.g., http://wip-registry:8001 for direct service
-        access, or https://host:8443 when going through Caddy). The
-        client owns the `/api/<service>/...` path prefix and appends
-        it at call sites.
+        access). The client owns the `/api/<service>/...` path prefix
+        and appends it at call sites.
       - `api_key` → `_resolve_api_key()`, which reads WIP_API_KEY, then
         WIP_API_KEY_FILE (for key rotation without editing .mcp.json),
         then falls back to the dev default.
