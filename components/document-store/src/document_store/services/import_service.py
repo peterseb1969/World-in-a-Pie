@@ -34,7 +34,7 @@ class ImportService:
             try:
                 import openpyxl
             except ImportError:
-                raise ValueError("openpyxl not installed. Add it to requirements.txt.")
+                raise ValueError("openpyxl not installed. Add it to requirements.txt.") from None
 
             wb = openpyxl.load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
             ws = wb.active

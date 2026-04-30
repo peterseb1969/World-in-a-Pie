@@ -88,7 +88,7 @@ async def import_documents(
         return {"error": f"Failed to parse file: {e}"}
 
     # Validate mapping references valid columns
-    invalid_cols = [col for col in mapping.keys() if col not in headers]
+    invalid_cols = [col for col in mapping if col not in headers]
     if invalid_cols:
         return {
             "error": f"Column mapping references columns not found in file: {invalid_cols}",

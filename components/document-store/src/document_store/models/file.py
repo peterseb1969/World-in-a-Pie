@@ -5,15 +5,15 @@ and referenced by documents like any other reference type.
 """
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
 from pymongo import DESCENDING, IndexModel
 
 
-class FileStatus(str, Enum):
+class FileStatus(StrEnum):
     """Status values for files."""
     ORPHAN = "orphan"      # Uploaded but not referenced by any active document
     ACTIVE = "active"      # Referenced by at least one active document
@@ -130,7 +130,9 @@ class File(BeanieDocument):
 
     class Settings:
         name = "files"
-        indexes = [
+        # ClassVar signals to ruff that this is class-level state (Beanie
+        # convention — read at metaclass init), not an instance default.
+        indexes: ClassVar[list] = [
             # Unique file ID within namespace
             IndexModel([("namespace", 1), ("file_id", 1)], unique=True, name="ns_file_id_unique_idx"),
             # Status queries within namespace

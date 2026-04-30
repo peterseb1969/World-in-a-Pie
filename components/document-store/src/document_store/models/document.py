@@ -1,15 +1,15 @@
 """Document model for the Document Store service."""
 
 from datetime import UTC, datetime
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, ClassVar
 
 from beanie import Document as BeanieDocument
 from pydantic import BaseModel, Field
 from pymongo import DESCENDING, IndexModel
 
 
-class DocumentStatus(str, Enum):
+class DocumentStatus(StrEnum):
     """Status values for documents."""
     ACTIVE = "active"
     INACTIVE = "inactive"
@@ -138,7 +138,9 @@ class Document(BeanieDocument):
 
     class Settings:
         name = "documents"
-        indexes = [
+        # ClassVar signals to ruff that this is class-level state (Beanie
+        # convention — read at metaclass init), not an instance default.
+        indexes: ClassVar[list] = [
             # Unique (document_id, version) within namespace — stable ID across versions
             IndexModel([("namespace", 1), ("document_id", 1), ("version", 1)], unique=True, name="ns_document_id_version_unique_idx"),
             # Version lookup by identity within namespace

@@ -194,7 +194,7 @@ class DefStoreClient:
                 return terminology
 
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     def _build_term_lookup(self, terms: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """
@@ -430,7 +430,7 @@ class DefStoreClient:
 
                 return response.json()
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}")
+            raise DefStoreError(f"Request failed: {e!s}") from e
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""

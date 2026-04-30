@@ -85,13 +85,15 @@ class ReferenceValidator:
         violations = []
 
         # Check template reference
-        if template_namespace != document_namespace:
-            if not self._is_allowed_reference(template_namespace, namespace_info, is_strict):
-                violations.append({
-                    "type": "template",
-                    "namespace": template_namespace,
-                    "message": f"Template namespace '{template_namespace}' is not accessible from '{document_namespace}' namespace",
-                })
+        if (
+            template_namespace != document_namespace
+            and not self._is_allowed_reference(template_namespace, namespace_info, is_strict)
+        ):
+            violations.append({
+                "type": "template",
+                "namespace": template_namespace,
+                "message": f"Template namespace '{template_namespace}' is not accessible from '{document_namespace}' namespace",
+            })
 
         # Check term references
         if term_references:
@@ -102,13 +104,15 @@ class ReferenceValidator:
                     term_namespaces.add(term_ns)
 
             for term_ns in term_namespaces:
-                if term_ns != document_namespace:
-                    if not self._is_allowed_reference(term_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "term",
-                            "namespace": term_ns,
-                            "message": f"Term namespace '{term_ns}' is not accessible from '{document_namespace}' namespace",
-                        })
+                if (
+                    term_ns != document_namespace
+                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "term",
+                        "namespace": term_ns,
+                        "message": f"Term namespace '{term_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
 
         # Check file references
         if file_references:
@@ -119,13 +123,15 @@ class ReferenceValidator:
                     file_namespaces.add(file_ns)
 
             for file_ns in file_namespaces:
-                if file_ns != document_namespace:
-                    if not self._is_allowed_reference(file_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "file",
-                            "namespace": file_ns,
-                            "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
-                        })
+                if (
+                    file_ns != document_namespace
+                    and not self._is_allowed_reference(file_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "file",
+                        "namespace": file_ns,
+                        "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
+                    })
 
         if violations:
             raise ReferenceValidationError(
@@ -187,24 +193,29 @@ class ReferenceValidator:
         violations = []
 
         # Check extends reference
-        if extends_template_namespace and extends_template_namespace != template_namespace:
-            if not self._is_allowed_reference(extends_template_namespace, namespace_info, is_strict):
-                violations.append({
-                    "type": "extends",
-                    "namespace": extends_template_namespace,
-                    "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
-                })
+        if (
+            extends_template_namespace
+            and extends_template_namespace != template_namespace
+            and not self._is_allowed_reference(extends_template_namespace, namespace_info, is_strict)
+        ):
+            violations.append({
+                "type": "extends",
+                "namespace": extends_template_namespace,
+                "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
+            })
 
         # Check terminology references
         if terminology_namespaces:
             for term_ns in terminology_namespaces:
-                if term_ns != template_namespace:
-                    if not self._is_allowed_reference(term_ns, namespace_info, is_strict):
-                        violations.append({
-                            "type": "terminology",
-                            "namespace": term_ns,
-                            "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
-                        })
+                if (
+                    term_ns != template_namespace
+                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
+                ):
+                    violations.append({
+                        "type": "terminology",
+                        "namespace": term_ns,
+                        "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
+                    })
 
         if violations:
             raise ReferenceValidationError(

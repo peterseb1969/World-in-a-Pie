@@ -19,7 +19,6 @@ import pytest_asyncio
 from registry.models.entry import RegistryEntry
 from registry.models.namespace import Namespace
 
-
 # =========================================================================
 # Fixtures
 # =========================================================================

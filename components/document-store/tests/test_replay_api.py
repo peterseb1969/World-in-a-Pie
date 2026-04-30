@@ -3,11 +3,10 @@
 These tests mock the replay service to avoid needing NATS/MongoDB.
 """
 
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
-from httpx import AsyncClient
+from unittest.mock import MagicMock, patch
 
-from document_store.models.replay import ReplayStatus
+import pytest
+from httpx import AsyncClient
 
 
 def _mock_replay_service(sessions=None):

@@ -111,7 +111,7 @@ class FileStorageClient:
                     **extra_args
                 )
         except ClientError as e:
-            raise FileStorageError(f"Failed to upload file: {e}")
+            raise FileStorageError(f"Failed to upload file: {e}") from e
 
     async def download(self, storage_key: str) -> bytes:
         """
@@ -137,8 +137,8 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to download file: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to download file: {e}") from e
 
     async def download_stream(self, storage_key: str, chunk_size: int = 64 * 1024):
         """
@@ -177,8 +177,8 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to download file: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to download file: {e}") from e
 
     async def delete(self, storage_key: str) -> None:
         """
@@ -197,7 +197,7 @@ class FileStorageClient:
                     Key=storage_key
                 )
         except ClientError as e:
-            raise FileStorageError(f"Failed to delete file: {e}")
+            raise FileStorageError(f"Failed to delete file: {e}") from e
 
     async def exists(self, storage_key: str) -> bool:
         """
@@ -220,7 +220,7 @@ class FileStorageClient:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
                 return False
-            raise FileStorageError(f"Failed to check file existence: {e}")
+            raise FileStorageError(f"Failed to check file existence: {e}") from e
 
     async def generate_download_url(
         self,
@@ -265,7 +265,7 @@ class FileStorageClient:
 
                 return url
         except ClientError as e:
-            raise FileStorageError(f"Failed to generate download URL: {e}")
+            raise FileStorageError(f"Failed to generate download URL: {e}") from e
 
     async def get_file_info(self, storage_key: str) -> dict:
         """
@@ -295,8 +295,8 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code in ("404", "NoSuchKey"):
-                raise FileStorageError(f"File not found: {storage_key}")
-            raise FileStorageError(f"Failed to get file info: {e}")
+                raise FileStorageError(f"File not found: {storage_key}") from e
+            raise FileStorageError(f"Failed to get file info: {e}") from e
 
     async def health_check(self) -> bool:
         """Check if the storage service is healthy."""
@@ -331,7 +331,7 @@ class FileStorageClient:
                         return True
                     raise
         except ClientError as e:
-            raise FileStorageError(f"Failed to ensure bucket exists: {e}")
+            raise FileStorageError(f"Failed to ensure bucket exists: {e}") from e
 
 
 class FileStorageError(Exception):

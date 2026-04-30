@@ -1,6 +1,7 @@
 """Event replay service — replays stored documents as NATS events."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -136,10 +137,8 @@ class ReplayService:
             task = self._tasks.get(session_id)
             if task and not task.done():
                 task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    pass
 
         session.status = ReplayStatus.CANCELLED
 

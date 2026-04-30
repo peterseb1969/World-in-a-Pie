@@ -511,7 +511,7 @@ async def test_list_documents_filter_by_status(client: AsyncClient, auth_headers
     result1 = await create_one(client, auth_headers, "PERSON", sample_person_data)
     data2 = sample_person_data.copy()
     data2["national_id"] = "999999999"
-    result2 = await create_one(client, auth_headers, "PERSON", data2)
+    await create_one(client, auth_headers, "PERSON", data2)
 
     # Delete one
     await client.request(

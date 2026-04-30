@@ -165,7 +165,7 @@ class TemplateStoreClient:
 
                 return result
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {e!s}")
+            raise TemplateStoreError(f"Request failed: {e!s}") from e
 
     async def get_template_resolved(
         self,
@@ -282,7 +282,7 @@ class TemplateStoreClient:
                 data = response.json()
                 return data.get("items", [])
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {e!s}")
+            raise TemplateStoreError(f"Request failed: {e!s}") from e
 
     async def validate_template_references(
         self,

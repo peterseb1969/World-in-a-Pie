@@ -41,9 +41,9 @@ async def start_replay(
             message=f"Replay started: {session['total_count']} documents to publish",
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
 
 @router.get("/{session_id}", response_model=ReplaySessionResponse)

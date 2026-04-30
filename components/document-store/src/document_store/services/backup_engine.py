@@ -11,6 +11,7 @@ in :mod:`backup_service`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import socket
@@ -20,7 +21,6 @@ from pathlib import Path
 from typing import Any
 
 from motor.motor_asyncio import AsyncIOMotorClient
-
 from wip_toolkit.archive import ArchiveReader, ArchiveWriter
 from wip_toolkit.models import (
     EntityCounts,
@@ -191,10 +191,8 @@ class DirectBackupEngine:
 
         except Exception:
             # ArchiveWriter cleans up temp files in __del__, but let's be explicit
-            try:
+            with contextlib.suppress(Exception):
                 writer._cleanup()
-            except Exception:
-                pass
             raise
 
     async def _pre_count(
@@ -421,7 +419,7 @@ class DirectRestoreEngine:
     async def _check_namespace_empty(self, namespace: str) -> None:
         """Verify no data exists for this namespace across all collections."""
         non_empty: list[str] = []
-        for entity_type, (db_name, coll_name) in COLLECTION_MAP.items():
+        for _entity_type, (db_name, coll_name) in COLLECTION_MAP.items():
             count = await self._mongo[db_name][coll_name].count_documents(
                 {"namespace": namespace}, limit=1
             )
