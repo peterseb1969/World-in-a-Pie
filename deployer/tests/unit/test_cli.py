@@ -408,11 +408,15 @@ class TestExamplesAndDiscoverability:
         r = _invoke("install", "--help")
         assert r.exit_code == 0
         assert "Examples:" in r.output
-        # At least one concrete invocation should be visible. Normalize
-        # whitespace because Rich's panel renderer wraps lines differently
-        # across environments (Gitea CI vs interactive terminals) — the
-        # substring "--target dev" can otherwise be split across a wrap.
-        flat = " ".join(r.output.split())
+        # At least one concrete invocation should be visible. Strip ANSI
+        # codes AND normalize whitespace, because Rich highlights "--option"
+        # as two separately-styled spans ("-" + "-target") with escape codes
+        # in between — the literal substring "--target" never appears
+        # contiguously in the raw output. Plus, panel rendering wraps lines
+        # differently across environments (Gitea CI vs interactive terms).
+        import re
+        flat = re.sub(r"\x1b\[[0-9;]*m", "", r.output)
+        flat = " ".join(flat.split())
         assert "--target dev" in flat
 
     def test_validate_help_includes_examples_block(self) -> None:
