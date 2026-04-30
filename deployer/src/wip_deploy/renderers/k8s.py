@@ -818,6 +818,42 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
             strip_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
 
         ingress_name = f"{r.backend_service.removeprefix('wip-')}-ingress"
+
+        # CASE-248: when the route declares preserve_prefix_subpaths,
+        # the strip rule's regex EXCLUDES those subpaths via a negative
+        # lookahead, so the admin Ingress's Prefix paths win for them.
+        # Without the exclusion, nginx-ingress's cross-Ingress merging
+        # would let the strip regex (with rewrite-target annotation)
+        # absorb requests that should reach the admin paths.
+        # The lookahead requires segment boundary (`/` or end-of-string)
+        # so e.g. a bucket named "healthy" still routes through the strip.
+        if r.preserve_prefix_subpaths:
+            excluded = []
+            for sub in r.preserve_prefix_subpaths:
+                # Strip the route prefix → admin segment name (e.g.
+                # "/minio/health" → "health"). Skip if the subpath
+                # isn't actually under the route prefix.
+                if not sub.startswith(r.path + "/"):
+                    continue
+                excluded.append(sub[len(r.path) + 1:])
+            if excluded:
+                excl_alt = "|".join(excluded)
+                # /minio/(?!health(/|$)|admin(/|$))(.*) — strip everything
+                # under /minio EXCEPT the listed admin segments.
+                strip_path = (
+                    f"{r.path}/(?!(?:{excl_alt})(?:/|$))(.*)"
+                )
+                strip_rewrite = "/$1"
+            else:
+                strip_path = f"{r.path}(/|$)(.*)"
+                strip_rewrite = "/$2"
+        else:
+            strip_path = f"{r.path}(/|$)(.*)"
+            strip_rewrite = "/$2"
+
+        # Override the rewrite-target if we computed a custom one.
+        strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = strip_rewrite
+
         docs.append({
             "apiVersion": "networking.k8s.io/v1",
             "kind": "Ingress",
@@ -833,7 +869,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 "rules": [{
                     "host": cfg.hostname,
                     "http": {"paths": [{
-                        "path": f"{r.path}(/|$)(.*)",
+                        "path": strip_path,
                         "pathType": "ImplementationSpecific",
                         "backend": {
                             "service": {
@@ -846,14 +882,12 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
             },
         })
 
-        # CASE-248: preserve-prefix subpaths get their own Ingress so
-        # the rewrite-target annotation on the strip Ingress doesn't
-        # leak onto them. NGINX Ingress merges Ingresses on the same
-        # host and gives more-specific paths precedence — so e.g.
-        # /minio/health wins over /minio(/|$)(.*) for matching.
+        # Preserve-prefix subpaths get their own Ingress (no rewrite
+        # annotation). With the strip regex now excluding these
+        # segments, the admin Ingress's Prefix paths cleanly own
+        # /minio/health/* and /minio/admin/* — no cross-Ingress fight.
         if r.preserve_prefix_subpaths:
             preserve_annotations = dict(base_annotations)
-            # Same auth/streaming policy as the strip rule.
             if cfg.gateway_auth_url and r.auth_protected:
                 preserve_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
                 preserve_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (

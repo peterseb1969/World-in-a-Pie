@@ -356,19 +356,26 @@ class TestPreservePrefixSubpaths:
         tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
         return list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
 
-    def test_minio_strip_ingress_present(
+    def test_minio_strip_ingress_excludes_admin_subpaths(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> None:
+        """When preserve_prefix_subpaths is set, the strip regex uses
+        a negative lookahead to exclude those segments. Otherwise
+        nginx-ingress's cross-Ingress merging lets the strip rule
+        absorb requests that should hit the admin Ingress."""
         docs = self._ingress_docs(tmp_path, real_discovery)
         ing = next(d for d in docs if d["metadata"]["name"] == "minio-ingress")
-        # The strip rule uses the regex form for /minio.
         path = ing["spec"]["rules"][0]["http"]["paths"][0]
-        assert path["path"] == "/minio(/|$)(.*)"
+        # Excludes "health" and "admin" segments via negative lookahead.
+        assert "(?!" in path["path"]
+        assert "health" in path["path"]
+        assert "admin" in path["path"]
         assert path["pathType"] == "ImplementationSpecific"
-        # Has the rewrite annotation.
+        # Capture group 1 is the rest of the path (lookahead is
+        # non-capturing).
         assert ing["metadata"]["annotations"][
             "nginx.ingress.kubernetes.io/rewrite-target"
-        ] == "/$2"
+        ] == "/$1"
 
     def test_minio_admin_ingress_separate_with_preserve_paths(
         self, tmp_path: Path, real_discovery: Discovery,
