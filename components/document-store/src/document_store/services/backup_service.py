@@ -358,9 +358,9 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 # ---------------------------------------------------------------------------
 # Loopback toolkit client + runner factories (CASE-23 Phase 3 STEP 4)
 #
-# Guardrail 1 (see docs/design/backup-restore-approach.md): this module is the
-# single import chokepoint for ``wip_toolkit``. ``api/backup.py`` (STEP 5) must
-# never ``import wip_toolkit`` directly — it calls these factories instead.
+# Guardrail 1: this module is the single import chokepoint for ``wip_toolkit``.
+# ``api/backup.py`` (STEP 5) must never ``import wip_toolkit`` directly — it
+# calls these factories instead.
 # ---------------------------------------------------------------------------
 
 

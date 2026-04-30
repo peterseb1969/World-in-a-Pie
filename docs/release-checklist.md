@@ -135,7 +135,6 @@ Test on at least one real device (Pi or VM), not just localhost.
 ## 8. Post-Release
 
 - [ ] Verify tag exists on both remotes
-- [ ] Update `docs/roadmap.md` if applicable
 - [ ] Deploy tagged version to Pi: `git pull && ./scripts/setup.sh --preset full --hostname <host> --prod -y`
 
 ---

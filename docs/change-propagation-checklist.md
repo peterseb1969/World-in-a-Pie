@@ -53,7 +53,6 @@ Not every change touches every layer — use judgement. But review the full list
 ## Documentation
 
 - [ ] **Design doc** (`docs/design/`) — update status if implementing a planned feature
-- [ ] **Roadmap** (`docs/roadmap.md`) — update progress
 - [ ] **API docs** — if endpoint signatures changed
 
 ---

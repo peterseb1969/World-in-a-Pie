@@ -11,7 +11,7 @@
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      technology-stack.md, dev-delete.md, app-containerization-guide.md, ontology-support.md)
+#      app-containerization-guide.md, ontology-support.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
 #   6. Copies wip-toolkit wheel and dev-delete.py
@@ -164,7 +164,7 @@ fi
 # --- Copy reference docs (new + refresh) ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md technology-stack.md dev-delete.md app-containerization-guide.md; do
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md app-containerization-guide.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
@@ -212,7 +212,6 @@ fi
 # Determine API key from .env (source of truth for running containers)
 # NOTE: The MCP server needs a privileged key (wip-admins or wip-services) because
 # it operates across namespaces. App code should use a namespace-scoped key instead.
-# See docs/migration-unscoped-api-keys.md for details.
 ACTIVE_KEY=""
 if [ -f "$WIP_ROOT/.env" ]; then
     ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
@@ -656,9 +655,7 @@ Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
-- \`docs/technology-stack.md\` — Canonical stack (React, TypeScript, Vite, TanStack Query, Tailwind)
 - \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
-- \`docs/dev-delete.md\` — Hard-delete entities during development (modes, backends, remote usage)
 - \`templates/bootstrap/*.template\` — Bootstrap pattern starting points (see "Namespace Bootstrap on Launch" above)
 
 ## Key Identity Concepts
@@ -716,7 +713,7 @@ wip-toolkit --host pi-poe-8gb.local --proxy export wip /tmp/backup.zip
 
 ## Dev Delete
 
-\`tools/dev-delete.py\` hard-deletes entities during iterative development. See \`docs/dev-delete.md\` for full usage.
+\`tools/dev-delete.py\` hard-deletes entities during iterative development.
 
 \`\`\`bash
 # Dry run (default)

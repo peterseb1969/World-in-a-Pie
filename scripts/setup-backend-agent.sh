@@ -180,7 +180,7 @@ echo "2. Generating .mcp.json..."
 # Determine API key
 # The backend agent's MCP server needs a privileged key (wip-admins or wip-services)
 # because it operates across namespaces. Non-privileged keys without explicit namespace
-# scoping will get no access. See docs/migration-unscoped-api-keys.md.
+# scoping will get no access.
 API_KEY=""
 API_KEY_SOURCE=""
 if [[ "$TARGET" == "local" ]]; then
@@ -356,7 +356,7 @@ The project absolute path for this clone is `__WIP_ROOT__`. Use this path for ve
 
 WIP runs on anything from a Raspberry Pi 5 (8GB) to Kubernetes. Users define terminologies (controlled vocabularies) and templates (document schemas), then store validated documents. A reporting pipeline syncs to PostgreSQL for analytics. An MCP server exposes the whole thing to AI agents as tools.
 
-Eight services + Caddy reverse proxy. See `docs/architecture.md` for the full service map, ports, and infrastructure. Names you will see constantly:
+Eight services + Caddy reverse proxy. Names you will see constantly:
 
 - **Registry** — the identity authority: canonical IDs, namespaces, synonyms
 - **Def-Store** — terminologies and terms (ontology support via term relations)
@@ -742,7 +742,6 @@ This is not the exhaustive WIP reference. It is the starting checklist — role,
 - API behaviour: MCP `wip://conventions`, `docs/api-conventions.md`
 - Data model: MCP `wip://data-model`
 - PoNIFs: MCP `wip://ponifs`
-- Architecture: `docs/architecture.md`
 
 Treat this file as the map. The territory is in the linked docs and the MCP resources.
 CLAUDEEOF

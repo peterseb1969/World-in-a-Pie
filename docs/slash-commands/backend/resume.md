@@ -45,13 +45,10 @@ From git log and uncommitted changes, determine which component or library was b
 - `ui/wip-console/` → Vue 3 Console UI
 - `scripts/` → Setup/tooling scripts
 
-#### 4. Check roadmap for priorities
-Read `docs/roadmap.md` to understand current priorities and what was likely being worked on.
-
-#### 5. Check for design documents
+#### 4. Check for design documents
 If recent commits reference a feature, check `docs/design/` for the relevant design document. This gives context on intent and scope.
 
-#### 6. Report to user
+#### 5. Report to user
 Present a concise recovery summary:
 
 ```
@@ -63,7 +60,6 @@ Uncommitted: changes to components/reporting-sync/src/sync.py
 
 Active component: reporting-sync
 Related design doc: docs/design/... (if applicable)
-Roadmap context: [relevant roadmap item]
 
 Suggested next step: [based on evidence]
 ```

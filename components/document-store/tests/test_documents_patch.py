@@ -1,8 +1,7 @@
 """Tests for PATCH /documents (RFC 7396 partial updates).
 
-Covers the per-item error code matrix from docs/design/document-patch.md
-plus happy paths, the no-op detection rule, and a representative bulk
-mixed-success scenario.
+Covers the per-item error code matrix plus happy paths, the no-op detection
+rule, and a representative bulk mixed-success scenario.
 """
 
 import pytest

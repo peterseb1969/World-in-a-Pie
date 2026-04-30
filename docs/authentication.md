@@ -406,8 +406,6 @@ Non-privileged API keys **must** include a `namespaces` field listing the namesp
 
 **Startup warning:** Keys missing `namespaces` that aren't in a privileged group trigger a warning at service startup. Check logs for `API key 'X' has no namespace scope`.
 
-See `docs/migration-unscoped-api-keys.md` for migration details.
-
 ### Identity Tracking
 
 When a request is authenticated, the identity is available for audit:

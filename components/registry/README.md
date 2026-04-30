@@ -78,7 +78,7 @@ export MASTER_API_KEY=$(openssl rand -hex 32)
 | POST | `/api/registry/namespaces` | Create namespaces (bulk) |
 | GET | `/api/registry/namespaces/{id}` | Get namespace |
 | PUT | `/api/registry/namespaces/{id}` | Update namespace |
-| DELETE | `/api/registry/namespaces/{id}` | Delete namespace (**hard-delete** — see `docs/design/namespace-deletion.md`) |
+| DELETE | `/api/registry/namespaces/{id}` | Delete namespace (**hard-delete**) |
 | POST | `/api/registry/namespaces/initialize-wip` | Initialize WIP internal namespaces |
 
 ### Entries

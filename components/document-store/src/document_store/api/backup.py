@@ -1,9 +1,9 @@
 """REST endpoints for backup/restore (CASE-23 Phase 3 STEP 5).
 
 This module is the public HTTP surface for the backup/restore subsystem. It
-intentionally does **not** import ``wip_toolkit`` — that is Guardrail 1 from
-``docs/design/backup-restore-approach.md``. All toolkit interaction goes
-through the factory functions in :mod:`document_store.services.backup_service`.
+intentionally does **not** import ``wip_toolkit`` — that is Guardrail 1. All
+toolkit interaction goes through the factory functions in
+:mod:`document_store.services.backup_service`.
 
 Endpoints
 ---------
