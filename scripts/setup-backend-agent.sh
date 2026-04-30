@@ -458,7 +458,7 @@ Rules describe what to do. These describe why applying them is harder than it so
 
 ## 6. Deploying — wip-deploy v2
 
-wip-deploy is the canonical deployer. It replaces the legacy `scripts/setup.sh` + `scripts/setup-wip.sh` + hand-maintained `k8s/` paths — those are being retired. Do not extend them; changes flow through `deployer/`.
+wip-deploy is the canonical deployer. The legacy `scripts/setup.sh` + `scripts/setup-wip.sh` + hand-maintained `k8s/` paths have been retired (validated end-to-end against the Pi cluster, BE-YAC-20260430-2000, then deleted per `docs/design/wip-deploy-v2.md:967-983`). All deployment work flows through `deployer/`.
 
 **Three targets, one spec.**
 - **`compose`** — production-style, via podman-compose / docker-compose
@@ -721,13 +721,11 @@ __WIP_ROOT__/
 │   ├── design/               # Feature design documents
 │   ├── security/             # Key rotation, encryption at rest
 │   └── slash-commands/       # Slash command sources (backend/ and app-builder/)
-├── scripts/                  # Setup, security, quality audit, seed data, wip-test.sh
-├── config/                   # Caddy, Dex, presets, API key configs
+├── scripts/                  # Build, security, quality audit, seed data, wip-test.sh
+├── config/                   # Caddy, Dex, API key configs
 ├── libs/                     # wip-auth (Py), wip-client (TS), wip-react (hooks)
 ├── components/               # Eight services, each with src/ and tests/
 ├── deployer/                 # wip-deploy v2 (the canonical deployer)
-├── docker-compose/           # Legacy modular compose (being retired)
-├── k8s/                      # Legacy K8s manifests (being retired by deployer)
 ├── apps/                     # App manifests (not app source — apps live in their own repos)
 ├── yac-discussions/          # Cross-agent cases (symlinked)
 └── WIP-Toolkit/              # CLI toolkit

@@ -27,5 +27,5 @@ Check the current state of a running WIP instance — service health, data count
 
 ### When to Run
 - **Always** at the start of a session (after `/setup` has passed once)
-- After infrastructure changes (setup.sh, docker-compose changes)
+- After infrastructure changes (wip-deploy install / rebuild / restart)
 - Before and after running seed scripts
