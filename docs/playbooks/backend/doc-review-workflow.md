@@ -4,10 +4,17 @@ Full handler reference for the `/doc-review` slash command. The slash command st
 
 By the time you are reading this, `yac-discussions/` is known to exist. Do not re-check.
 
+> **Source of truth.** The canonical case-frontmatter spec lives in `templates/doc-yac/CLAUDE.md` §6 (FR-YAC's territory; the gene-pool source for DOC-YAC's CLAUDE.md). When the format evolves, FRanC updates §6; this playbook reads from it. If anything in §6 contradicts what's below, §6 wins.
+
+DOC-YAC files two case types you'll see here:
+
+- `type: doc-audit` — full questionnaire walk on a surviving doc; carries a `severity` field.
+- `type: doc-deletion` — short-form case recommending `git rm`; **no `severity` field by design** (per CASE-234 — deletion is a placement decision, not a content-quality judgment).
+
 ## Subcommands
 
-- `/doc-review` — review all open doc-review cases
-- `/doc-review <number>` — review a single case (e.g., `/doc-review 3`)
+- `/doc-review` — review all open doc-audit / doc-deletion cases
+- `/doc-review <number>` — review a single case (e.g., `/doc-review 235`)
 
 ---
 
@@ -15,42 +22,60 @@ By the time you are reading this, `yac-discussions/` is known to exist. Do not r
 
 ### 1. Find open doc-review cases
 
+Filter by frontmatter `type:`, not by filename pattern. Current cases use `CASE-NN-<status>-<slug>.md` per `case-workflow.md`; legacy `CASE-*-doc-*.md` globs match nothing.
+
 ```bash
-ls yac-discussions/CASE-*-doc-*.md 2>/dev/null
+for f in yac-discussions/CASE-*-open-*.md; do
+  head -20 "$f" | grep -qE '^type: (doc-audit|doc-deletion)$' && echo "$f"
+done
 ```
 
-Read the frontmatter of each. Include cases that need your attention:
-- `status: open` and `type: doc-review` — first-round reviews (not yet responded)
-- `status: responded` with a `## Comment` section dated AFTER your last `## Response` — re-reviews (DOC-YAC pushed back)
+For re-reviews, also include responded cases with a `## Comment` section dated *after* your last `## Response`:
 
-If none found, say "No doc-review cases needing attention" and stop.
+```bash
+for f in yac-discussions/CASE-*-responded-*.md; do
+  head -20 "$f" | grep -qE '^type: (doc-audit|doc-deletion)$' && echo "$f"
+done
+```
 
-### 2. Present the queue
+For each candidate from the second list, verify the most recent `## Comment — ...` block is dated after the last `## Response — ...` block before including it.
+
+If neither pass yields cases, say "No doc-review cases needing attention" and stop.
+
+### 2. Synthesis-group preflight
+
+Before processing the queue: if any case has `proposed_action: merge-into-X`, grep for sister cases sharing a `synthesis_group:` slug and bundle them.
+
+```bash
+grep -l 'synthesis_group: <slug>' yac-discussions/CASE-*.md
+```
+
+When N cases feed one synthesis target, read all N before proposing the merged replacement. Synthesizing once across the group beats writing N independent "merge into X" responses that don't see each other.
+
+### 3. Present the queue
 
 ```markdown
 ## Doc-Review Queue
 
-| # | Case | Document | Severity | Filed by |
-|---|------|----------|----------|----------|
-| 1 | CASE-20260402-1305-doc-vision | Vision.md | needs-update | DOC-YAC-20260402-1300 | **re-review** |
-| 2 | CASE-20260402-1312-doc-claude | CLAUDE.md | minor-issues | DOC-YAC-20260402-1300 | new |
-| ... | ... | ... | ... | ... | ... |
+| # | Case | Document | Type | Severity | Filed by | Mode |
+|---|------|----------|------|----------|----------|------|
+| 1 | CASE-235 | README.md | doc-audit | needs-update | DOC-YAC-20260429-0050 | new |
+| 2 | CASE-173 | k8s-installation_log.md | doc-deletion | — | DOC-YAC-20260429-0050 | new |
+| 3 | CASE-259 | doc-review-workflow.md | doc-audit | needs-update | DOC-YAC-20260429-0050 | re-review |
 
-**Total:** N cases (X new, Y re-reviews). Starting with re-reviews, then new by severity.
+**Total:** N cases (X audits, Y deletions, Z re-reviews). Order: re-reviews first; then `doc-audit` by severity (`needs-rewrite` → `needs-update` → `minor-issues` → `acceptable`); then `doc-deletion` cases (no severity — order by case number). Group together any cases sharing a `synthesis_group:` slug.
 ```
 
-### 3. Review each case
+### 4. Review each case
 
-Process cases in severity order: `needs-rewrite` first, then `needs-update`, then `minor-issues`, then `acceptable`.
+Run the appropriate single-case procedure (see below).
 
-For each case, run the single-case procedure (see below).
-
-### 4. Progress updates
+### 5. Progress updates
 
 After every 3 cases, print a one-line status:
 
 ```
-Reviewed 3/12 — 2 patches proposed, 1 no-action-needed.
+Reviewed 3/12 — 2 patches proposed, 1 deletion confirmed.
 ```
 
 ---
@@ -59,42 +84,97 @@ Reviewed 3/12 — 2 patches proposed, 1 no-action-needed.
 
 ### 1. Read the case
 
-Find `yac-discussions/CASE-<NN>-*.md` (e.g., `CASE-03-*`). Read the matching file. If it doesn't exist, tell Peter and stop.
+Find `yac-discussions/CASE-<NN>-*.md` (e.g., `CASE-235-*`). Read the matching file. If it doesn't exist, tell Peter and stop.
 
-### 2. Read the document under review
+### 2. Branch on case type
 
-The case frontmatter has a `document:` field with the filename. Find and read that file in the current repo.
+Read the frontmatter `type:` field:
 
-If the file doesn't exist (renamed or removed since the audit), note this — it's a finding in itself.
+- **`type: doc-deletion`** → §A below (short procedure).
+- **`type: doc-audit`** → §B below (full procedure).
 
-### 3. Evaluate each questionnaire item
+---
 
-Work through the DOC-YAC's questionnaire answers:
+### §A — Handling a `doc-deletion` case
 
-**For accuracy flags (item 9):** This is your primary job. The DOC-YAC flagged claims it couldn't verify. Check each one against the actual code:
+Deletion cases are short by design (FR-YAC template §4). The DOC-YAC concluded the doc has no concrete reader/task on full read; there is no questionnaire to walk.
+
+Your job: **confirm the deletion is safe to action.**
+
+#### A.1 Read the document
+
+The case frontmatter has a `target_doc:` field. Read that file. If it doesn't exist (already deleted in a prior session), note it and propose closing the case as `not-an-issue`.
+
+#### A.2 Verify nothing depends on it
+
+Grep the repo for filename references — a doc may be forced-read by a slash-command stub, `/setup`, or `CLAUDE.md` even if no human ever opens it:
+
+```bash
+grep -rn "$(basename <target_doc> .md)" docs/ scripts/ .claude/ components/ libs/ 2>/dev/null
+```
+
+Also check git history for recency of meaningful change: `git log --oneline -- <target_doc> | head -5`.
+
+#### A.3 Decide
+
+- **Safe to delete:** propose `git rm <path>`, note `v1.1.0` recovery point.
+- **Load-bearing for some path DOC-YAC missed:** propose `keep` or `move-to-surface-X` instead, with rationale.
+
+#### A.4 Respond
+
+Skip the questionnaire-shaped response. Use:
+
+```markdown
+## Response — <your session ID> (<YYYY-MM-DD HH:MM>)
+
+### Verification
+<What you checked: forced-read references, recent-change relevance, whether any current code path depends on this doc.>
+
+### Recommendation
+<delete | keep (with rationale) | move-to-surface-X>
+
+### Proposed action
+<Exact `git rm` command, or proposed alternative.>
+```
+
+Then go to §3 below (status update + rename).
+
+---
+
+### §B — Handling a `doc-audit` case
+
+Full questionnaire walk. The DOC-YAC's questionnaire is defined in `templates/doc-yac/CLAUDE.md` §3.
+
+#### B.1 Read the document under review
+
+The case frontmatter has a `target_doc:` field with the path (relative to repo root). Find and read that file.
+
+If the file doesn't exist (renamed or removed since the audit), note it — that's a finding in itself.
+
+#### B.2 Evaluate each questionnaire item
+
+**Q11 (Accuracy flags) is your primary job.** The DOC-YAC flagged claims it couldn't verify. Check each against the actual code:
+
 - Is the described behavior correct?
 - Are API examples accurate (endpoints, parameters, response formats)?
 - Are configuration steps current?
 - Have features been added, removed, or renamed since the doc was written?
 
-**For undefined references (item 6):** Determine whether the referenced concept is:
-- Defined elsewhere (link needed)
-- Not documented anywhere (doc gap — new content needed)
-- Obvious to the intended audience (no action)
+**Q8 (Undefined references):** Determine whether the referenced concept is defined elsewhere (link needed), undocumented (doc gap — new content needed), or obvious to the intended audience (no action).
 
-**For contradictions (items 7, 8):** Determine which version is correct by checking the code.
+**Q9, Q10 (Contradictions):** Determine which version is correct by checking the code.
 
-**For audience/structure issues (items 1–5):** Use your judgement. You know the codebase — is the doc pitched at the right level for its audience?
+**Q1–Q7 (Audience, mode, surface, linkage):** Use your judgement. You know the codebase — is the doc pitched at the right level for its audience? Is the surface assignment right?
 
-**For necessity (items 10, 11):** Confirm or challenge the DOC-YAC's assessment. You know what's actually used.
+**Q12 (Redundant?):** Confirm or challenge the DOC-YAC's redundancy assessment.
 
-**For doc-specific questions (item 12):** Answer each one.
+**Q13 (Doc-specific):** Answer each one.
 
-### 4. Propose a patch
+**Q14, Q15, Q16 (Categorization, proposed action, freshness):** Confirm or correct DOC-YAC's draft.
 
-If the document needs changes, write a concrete markdown patch. This is the actual proposed text, not a description of what to change.
+#### B.3 Propose a patch
 
-Format:
+If the document needs changes, write a concrete markdown patch — the actual proposed text, not a description of what to change.
 
 ```markdown
 ### Proposed Changes
@@ -117,11 +197,9 @@ Reason: [one line — why this change]
 
 If the document needs no changes (DOC-YAC was too cautious, or issues are cosmetic), say so explicitly.
 
-If the document should be deleted (redundant, obsolete), say so and explain what replaces it.
+If the document should be deleted (DOC-YAC misjudged "keep"), say so and explain what replaces it — convert to a deletion finding in your response.
 
-### 5. Respond to the case
-
-Append to the case file using the standard case response format:
+#### B.4 Respond
 
 ```markdown
 ## Response — <your session ID> (<YYYY-MM-DD HH:MM>)
@@ -133,19 +211,27 @@ Append to the case file using the standard case response format:
 <Your assessment of the DOC-YAC's other findings: agree / disagree / partially agree — with reasoning>
 
 ### Proposed Patch
-<The full proposed changes as described in step 4, or "No changes needed" with explanation>
+<The full proposed changes as described in B.3, or "No changes needed" with explanation>
 
 ### Recommendation
-<One of: rewrite (with outline), update (patch above), minor-edit (patch above), no-action, delete>
+<One of: rewrite (with outline) | update (patch above) | minor-edit (patch above) | no-action | delete>
 ```
 
-### 6. Update case status
+Then go to §3 below (status update + rename).
 
-Change `status: open` to `status: responded` in the frontmatter.
+---
 
-### 7. Confirm
+### 3. Update case status (both §A and §B)
 
-Tell Peter: case ID, document, your recommendation, and the number of proposed changes. One line.
+Change `status: open` to `status: responded` in the frontmatter. Rename the file:
+
+```bash
+mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-<slug>.md
+```
+
+### 4. Confirm
+
+Tell Peter: case ID, document, your recommendation, and the number of proposed changes (or "delete" / "keep" for deletion cases). One line.
 
 ---
 
@@ -190,6 +276,7 @@ The `[Round N]` marker helps Peter and FRanC track the discussion depth.
 ## Resolution
 
 After Peter reviews your response, he will either:
+
 - Accept the patch → implement it (or tell you to)
 - Refine → edit the patch and implement
 - Discard → close the case as no-action
