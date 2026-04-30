@@ -408,8 +408,12 @@ class TestExamplesAndDiscoverability:
         r = _invoke("install", "--help")
         assert r.exit_code == 0
         assert "Examples:" in r.output
-        # At least one concrete invocation should be visible.
-        assert "--target dev" in r.output
+        # At least one concrete invocation should be visible. Normalize
+        # whitespace because Rich's panel renderer wraps lines differently
+        # across environments (Gitea CI vs interactive terminals) — the
+        # substring "--target dev" can otherwise be split across a wrap.
+        flat = " ".join(r.output.split())
+        assert "--target dev" in flat
 
     def test_validate_help_includes_examples_block(self) -> None:
         r = _invoke("validate", "--help")
