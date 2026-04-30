@@ -41,6 +41,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import httpx as _httpx
 from wip_toolkit.client import WIPClient
 from wip_toolkit.config import WIPConfig
 from wip_toolkit.export.exporter import run_export
@@ -51,7 +52,18 @@ from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
 
 logger = logging.getLogger("document_store.backup_service")
 
-import httpx as _httpx
+# Detached background tasks (fire-and-forget). Holding a strong reference
+# keeps them alive against asyncio's weak-reference task tracking, which
+# would otherwise GC them mid-flight. Tasks self-discard on completion.
+# RUF006.
+_bg_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+    """Pin a detached task against GC; auto-discard on completion."""
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+    return task
 
 
 async def _trigger_reporting_batch_sync(namespace: str) -> None:
@@ -167,7 +179,7 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         # writes directly to MongoDB and bypasses the NATS event path that
         # reporting-sync normally subscribes to.
         if job.kind == BackupJobKind.RESTORE and job.namespace:
-            asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace))
+            _track(asyncio.ensure_future(_trigger_reporting_batch_sync(job.namespace)))
     elif event.phase == "error":
         job.status = BackupJobStatus.FAILED
         job.error = event.message
@@ -330,10 +342,11 @@ async def start_async_job(
             _job_queues.pop(job_id, None)
             _job_tasks.pop(job_id, None)
 
-    # Launch producer and consumer concurrently. The consumer task is the
-    # one we track — it completes after the producer finishes and sentinel
-    # is drained.
-    asyncio.create_task(produce(), name=f"backup-produce-{job_id}")
+    # Launch producer and consumer concurrently. The consumer task is
+    # tracked in _job_tasks for status lookup; the producer is detached
+    # (it finishes when the export/import is done and emits sentinel).
+    # Pin the producer against asyncio GC via _track.
+    _track(asyncio.create_task(produce(), name=f"backup-produce-{job_id}"))
     task = asyncio.create_task(consume(), name=f"backup-consume-{job_id}")
     _job_tasks[job_id] = task
     return task

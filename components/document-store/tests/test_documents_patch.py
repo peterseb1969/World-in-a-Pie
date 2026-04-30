@@ -7,7 +7,6 @@ rule, and a representative bulk mixed-success scenario.
 import pytest
 from httpx import AsyncClient
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
