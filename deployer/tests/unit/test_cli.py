@@ -362,3 +362,76 @@ class TestStandardPresetShape:
         from wip_deploy.presets import PRESETS
         opt = set(PRESETS["standard"]["modules"]["optional"])
         assert "ingest-gateway" not in opt
+
+
+class TestExamplesAndDiscoverability:
+    """The `examples` verb plus footer hint and per-verb Examples blocks
+    that make wip-deploy's surface discoverable from `--help` alone."""
+
+    def test_examples_command_runs_and_exits_zero(self) -> None:
+        r = _invoke("examples")
+        assert r.exit_code == 0
+        # Spot-check that the curated workflow categories rendered.
+        assert "GETTING STARTED" in r.output
+        assert "DEV LOOP" in r.output
+        assert "TEARDOWN" in r.output
+
+    def test_examples_command_includes_install_recipes(self) -> None:
+        r = _invoke("examples")
+        assert r.exit_code == 0
+        assert "wip-deploy install --target dev" in r.output
+        assert "--app-source react-console=" in r.output
+        assert "--tls letsencrypt" in r.output
+
+    def test_examples_command_lists_presets(self) -> None:
+        r = _invoke("examples")
+        assert r.exit_code == 0
+        # All five presets should appear with descriptions.
+        for preset in ("core", "headless", "standard", "analytics", "full"):
+            assert preset in r.output
+
+    def test_main_help_advertises_examples_verb(self) -> None:
+        """Main --help must point lazy users at the examples command."""
+        r = _invoke("--help")
+        assert r.exit_code == 0
+        # Epilog appears at the bottom.
+        assert "wip-deploy examples" in r.output
+
+    def test_main_help_lists_examples_command(self) -> None:
+        """The examples verb must show up in the Commands list."""
+        r = _invoke("--help")
+        assert r.exit_code == 0
+        assert "examples" in r.output
+
+    def test_install_help_includes_examples_block(self) -> None:
+        """The install verb (most flag-heavy) must surface recipes inline."""
+        r = _invoke("install", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output
+        # At least one concrete invocation should be visible.
+        assert "--target dev" in r.output
+
+    def test_validate_help_includes_examples_block(self) -> None:
+        r = _invoke("validate", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output
+
+    def test_show_spec_help_includes_examples_block(self) -> None:
+        r = _invoke("show-spec", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output
+
+    def test_render_help_includes_examples_block(self) -> None:
+        r = _invoke("render", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output
+
+    def test_status_help_includes_examples_block(self) -> None:
+        r = _invoke("status", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output
+
+    def test_nuke_help_includes_examples_block(self) -> None:
+        r = _invoke("nuke", "--help")
+        assert r.exit_code == 0
+        assert "Examples:" in r.output

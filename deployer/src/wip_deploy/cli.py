@@ -37,6 +37,10 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
     pretty_exceptions_show_locals=False,
+    epilog=(
+        "Try 'wip-deploy examples' for common workflows. "
+        "Run 'wip-deploy COMMAND --help' for command-specific options."
+    ),
 )
 
 
@@ -290,6 +294,12 @@ def validate(
     Builds the Deployment from preset + flags, discovers every
     wip-component.yaml / wip-app.yaml, and runs all cross-cutting
     validators. Exit 0 on success, 1 on failure.
+
+    Examples:
+
+      wip-deploy validate
+      wip-deploy validate --preset full --target k8s
+      wip-deploy validate --hostname wip.example.com --tls letsencrypt
     """
     hostname = _resolve_hostname(hostname, target)
     deployment, components, apps_list = _assemble(
@@ -395,6 +405,12 @@ def show_spec(
 
     Useful for debugging: "what does --preset standard actually resolve to?"
     No discovery, no validation — just the computed spec.
+
+    Examples:
+
+      wip-deploy show-spec --preset standard
+      wip-deploy show-spec --preset full --format json | jq '.spec.apps'
+      wip-deploy show-spec --target dev
     """
     hostname = _resolve_hostname(hostname, target)
     deployment, _components, _apps = _assemble(
@@ -477,6 +493,12 @@ def render(
 
     Useful for inspection: look at the generated docker-compose.yaml,
     Caddyfile, and Dex config before starting the stack.
+
+    Examples:
+
+      wip-deploy render --preset standard
+      wip-deploy render --preset full --output-dir /tmp/wip-render
+      wip-deploy render --target k8s --namespace wip
     """
     hostname = _resolve_hostname(hostname, target)
     deployment, components, apps_list = _assemble(
@@ -573,6 +595,28 @@ def install(
 
     Generates secrets on first run (persists to the secret backend);
     re-runs pick up existing values and don't regenerate.
+
+    Examples:
+
+      # Quick localhost dev (no /etc/hosts magic, source bind-mounted, --reload)
+      wip-deploy install --target dev --preset standard
+
+      # First Pi install with self-signed TLS
+      wip-deploy install --hostname wip-pi.local --preset standard
+
+      # Pi or cloud install with Let's Encrypt
+      wip-deploy install --hostname wip.example.com --tls letsencrypt
+
+      # Hot-reload an app from a local checkout
+      wip-deploy install --target dev --app-source react-console=$HOME/Dev/WIP-ReactConsole
+
+      # Override image tag for one app (skip the manifest pin)
+      wip-deploy install --tag v1.2.0 --app react-console
+
+      # Render against K8s instead of compose
+      wip-deploy install --target k8s --namespace wip --tls external
+
+    Run 'wip-deploy examples' for more workflows.
     """
     if target not in ("compose", "k8s", "dev"):
         typer.echo(
@@ -701,6 +745,12 @@ def status(
 
     Compose/dev: reads `podman-compose ps` from the install directory.
     K8s: reads `kubectl get pods` from the given namespace.
+
+    Examples:
+
+      wip-deploy status
+      wip-deploy status --name wip-dev-local
+      wip-deploy status --namespace wip
     """
     from wip_deploy.status import (
         StatusError,
@@ -973,6 +1023,20 @@ def nuke(
 
     By default, runs `compose down` in the install dir (scoped teardown).
     With `--purge-all`, removes every wip-* container/pod on the host.
+
+    Examples:
+
+      # Tear down (preserve data and secrets — re-install reuses both)
+      wip-deploy nuke
+
+      # Full teardown including data volumes (databases gone)
+      wip-deploy nuke --remove-data --yes
+
+      # Cross-install cleanup of every wip-* on host (DESTRUCTIVE)
+      wip-deploy nuke --purge-all --remove-data --remove-secrets --yes
+
+      # See what would be removed without removing it
+      wip-deploy nuke --purge-all --dry-run
     """
     if purge_all:
         _nuke_purge_all(
@@ -1074,6 +1138,101 @@ def _nuke_purge_all(
 def _confirm(prompt: str) -> bool:
     response = typer.prompt(f"{prompt} [y/N]", default="n", show_default=False)
     return response.strip().lower() in ("y", "yes")
+
+
+# ────────────────────────────────────────────────────────────────────
+# examples
+# ────────────────────────────────────────────────────────────────────
+
+
+_EXAMPLES_TEXT = """\
+wip-deploy — common workflows
+
+GETTING STARTED
+  Localhost dev (recommended first install — no /etc/hosts magic):
+    wip-deploy install --target dev --preset standard
+
+  First Pi install with self-signed TLS:
+    wip-deploy install --hostname wip-pi.local --preset standard
+
+  Pi or cloud install with Let's Encrypt:
+    wip-deploy install --hostname wip.example.com --tls letsencrypt
+
+DEV LOOP — hot-reload an app from a local checkout
+  React Console with bind-mounted source:
+    wip-deploy install --target dev --app-source react-console=$HOME/Dev/WIP-ReactConsole
+
+  Multiple apps from local checkouts (repeat --app-source):
+    wip-deploy install --target dev \\
+      --app-source react-console=$HOME/Dev/WIP-ReactConsole \\
+      --app-source clintrial=$HOME/Dev/WIP-ClinTrial
+
+  Override the image tag for one app (skip the manifest pin):
+    wip-deploy install --tag v1.2.0 --app react-console
+
+CHANGING AN EXISTING INSTALL
+  Pick up an env-var change, no rebuild:
+    wip-deploy restart def-store
+
+  Pull a new image and recreate the container:
+    wip-deploy rebuild registry
+
+  See current state of running services:
+    wip-deploy status
+
+INSPECTION (no-op verbs — useful for debugging)
+  See what a preset resolves to without applying:
+    wip-deploy show-spec --preset full
+
+  Render the compose / Caddyfile / Dex config to a directory:
+    wip-deploy render --preset standard --output-dir /tmp/wip-render
+
+  Validate without rendering or applying:
+    wip-deploy validate --preset analytics --target k8s
+
+KUBERNETES
+  Render manifests for inspection before applying:
+    wip-deploy render --target k8s --namespace wip --preset standard
+
+  Install against a real cluster (needs kubectl context set):
+    wip-deploy install --target k8s --namespace wip --tls external
+
+TEARDOWN
+  Tear down (preserve data and secrets — re-install reuses both):
+    wip-deploy nuke
+
+  Full teardown including data volumes:
+    wip-deploy nuke --remove-data --yes
+
+  Cross-install cleanup of every wip-* on host (DESTRUCTIVE):
+    wip-deploy nuke --purge-all --remove-data --remove-secrets --yes
+
+PRESETS — pick one, then tweak with --add NAME / --remove NAME / --app NAME
+  core       minimal API-only backend
+  headless   same as core, no UI surface
+  standard   core + OIDC + auth-gateway (most common)
+  analytics  standard + reporting (Postgres + reporting-sync)
+  full       analytics + files (MinIO) + ingest (NATS streaming)
+
+TARGETS
+  compose   production-style podman-compose / docker-compose deployment
+  dev       hot-reload for local development (compose + bind-mounts + --reload)
+  k8s       Kubernetes manifests (Ingress + Deployment + Service)
+
+For verb-specific options:
+  wip-deploy COMMAND --help
+"""
+
+
+@app.command()
+def examples() -> None:
+    """Print common wip-deploy workflows with their exact commands.
+
+    A curated map of "what do I run for X?" — grouped by intent
+    (getting started, dev loop, ops, inspection, k8s, teardown). For
+    verb-specific options, run 'wip-deploy COMMAND --help'.
+    """
+    typer.echo(_EXAMPLES_TEXT)
 
 
 # ────────────────────────────────────────────────────────────────────
