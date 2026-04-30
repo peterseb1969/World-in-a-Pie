@@ -292,6 +292,46 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 
 ---
 
+## Common Questions
+
+### Who is WIP for right now?
+
+Honestly: technically curious people who want to watch an experiment unfold, and professionals in regulated data domains — particularly clinical trial operations — who recognise the data interoperability problems WIP is designed to solve.
+
+WIP is currently a working experiment, not a packaged product. The companion repository [WIP-Constellations](https://github.com/peterseb1969/WIP-Constellations) is generating real evidence about whether non-trivial applications can genuinely be built on WIP in a day, by an AI agent, without writing backend code. That experiment will determine whether WIP can be packaged and distributed to a broader audience of ambitious hobbyists and developers.
+
+### What are the best use cases for WIP?
+
+WIP works best when you have:
+
+- **Multiple data sources with different ID schemes** that need to coexist and interoperate
+- **Regulated or audit-sensitive data** where full history and provenance matter
+- **Multiple applications sharing the same underlying data** where consistency across apps is more important than speed of any one app
+- **AI-generated application development** where enforcing schema discipline on the AI before it writes any data is valuable
+- **Long-lived data** that needs to outlive the applications that created it
+- **Controlled vocabulary requirements** — anywhere "list of values" problems have burned you before
+
+Concrete domains: clinical trial data management, configuration management, master data management, compliance records, IoT data collection, research data repositories, multi-tenant SaaS backends.
+
+### What are bad use cases for WIP?
+
+WIP is the wrong tool when:
+
+- **You need raw write throughput above everything else** — WIP validates and registers every document; that is overhead by design
+- **Your data model is truly simple and stable** — a single table with five columns does not need a generic storage engine
+- **You need a workflow engine** — WIP stores and validates data; it does not orchestrate processes
+- **You need a general-purpose event bus or pub/sub messaging layer** — WIP receives events via the Ingest Gateway, but it is not designed to be your application's event hub
+- **You want a managed cloud service** — WIP is self-hosted by design; if you want someone else to operate your infrastructure, look elsewhere
+- **You are building something purely throwaway** — if the data genuinely does not matter after the app is retired, the structure WIP requires is unnecessary overhead
+
+### Is WIP ready for enterprise use?
+
+The architecture is enterprise-grade in its design principles — OIDC authentication, namespace isolation, audit trails, controlled vocabularies, referential integrity, federation-ready identity. The inspiration comes directly from enterprise challenges in clinical trial operations.
+
+However, WIP is currently maintained by a single developer as an experiment. It has no commercial support, no SLA, and no dedicated operations team. For enterprise adoption, the packaging, documentation, and support model would need to mature significantly. The blueprint is sound; the productisation is not there yet.
+
+---
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
