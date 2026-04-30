@@ -40,12 +40,12 @@ Not every change touches every layer — use judgement. But review the full list
 
 - [ ] **`scripts/seed_comprehensive.py`** — seed data should exercise new features
 - [ ] **`scripts/dev-delete.py`** — delete logic should handle new fields/behaviors
-- [ ] **`scripts/setup.sh`** — if new infrastructure or config is needed
+- [ ] **`deployer/`** — if new infrastructure, env vars, routes, or component manifests are needed (canonical deployer per CLAUDE.md §6; replaces the retired `setup.sh` / `setup-wip.sh` paths)
 - [ ] **Other scripts** — `import_testdata.py`, `import_obo_graph.py`, etc. if relevant
 
 ## Tests
 
-- [ ] **Component tests** — unit/integration tests for the service that changed
+- [ ] **Component tests** — `./scripts/wip-test.sh <component>` (the canonical wrapper handles venv, `PYTHONPATH`, exit codes per CLAUDE.md §10)
 - [ ] **Reporting-sync tests** — if event handling or PG schema changed
 - [ ] **Client lib tests** — type compilation, hook tests
 - [ ] **E2E** — manual or scripted verification through the full stack
