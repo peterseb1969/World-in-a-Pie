@@ -41,6 +41,7 @@ if [[ $# -lt 1 ]]; then
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
     echo "Libraries:  wip-auth" >&2
+    echo "Tools:      deployer" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
 fi
@@ -52,17 +53,21 @@ shift
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server)
 PYTHON_LIBS=(wip-auth)
+PYTHON_TOOLS=(deployer)
 
 run_python_tests() {
     local name="$1"
     shift
     local dir
 
-    # Check components/ first, then libs/
+    # Check components/ first, then libs/, then top-level packages
+    # (e.g., deployer/) with the standard src/ + tests/ shape.
     if [[ -d "$REPO_ROOT/components/$name" ]]; then
         dir="$REPO_ROOT/components/$name"
     elif [[ -d "$REPO_ROOT/libs/$name" ]]; then
         dir="$REPO_ROOT/libs/$name"
+    elif [[ -d "$REPO_ROOT/$name" && -d "$REPO_ROOT/$name/src" && -d "$REPO_ROOT/$name/tests" ]]; then
+        dir="$REPO_ROOT/$name"
     else
         echo "ERROR: Unknown component '$name'" >&2
         return 1
@@ -115,7 +120,7 @@ if [[ "$TARGET" == "all" ]]; then
     FAILED=()
     PASSED=()
 
-    for comp in "${PYTHON_COMPONENTS[@]}" "${PYTHON_LIBS[@]}"; do
+    for comp in "${PYTHON_COMPONENTS[@]}" "${PYTHON_LIBS[@]}" "${PYTHON_TOOLS[@]}"; do
         if run_python_tests "$comp" "$@"; then
             PASSED+=("$comp")
         else
