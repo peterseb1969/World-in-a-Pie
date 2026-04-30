@@ -106,18 +106,13 @@ WIP is built on three principles:
 | Document | Description |
 |----------|-------------|
 | [Vision](docs/Vision.md) | Philosophy, design principles, and use cases |
-| [Architecture](docs/architecture.md) | Detailed system architecture |
+| [WIP Guide](docs/wip-guide.md) | The operator-facing guide — install, auth, networking, storage, apps, security |
+| [Install Test Guide](docs/install-test-guide.md) | Reproducible install procedure for the v1.0 install-test |
 | [Data Models](docs/data-models.md) | Conceptual data structures |
 | [API Conventions](docs/api-conventions.md) | Bulk-first API, BulkResponse contract |
-| [Authentication](docs/authentication.md) | API keys, JWT/OIDC, Dex configuration |
-| [Network Configuration](docs/network-configuration.md) | Hostnames, TLS, OIDC setup, critical gotchas |
-| [Reporting Layer](docs/reporting-layer.md) | PostgreSQL sync for analytics |
+| [Glossary](docs/glossary.md) | A–Z terminology reference |
 | [Development Guide](docs/development-guide.md) | Running tests, quality audit, seed data, agent modes |
-| [Production Deployment](docs/production-deployment.md) | Secure production setup guide |
 | [App Setup Guide](docs/WIP_AppSetup_Guide.md) | Setting up app projects that build on WIP |
-| [Namespace Implementation](docs/namespace-implementation.md) | Namespace scoping and data isolation |
-| [Roadmap](docs/roadmap.md) | Future plans, pending features, design docs |
-| [FAQ](docs/faq.md) | Common issues and solutions |
 
 ---
 
@@ -132,8 +127,8 @@ WIP is built on three principles:
 git clone https://github.com/peterseb1969/World-in-a-Pie.git
 cd World-in-a-Pie
 
-# Run setup (auto-detects platform)
-./scripts/setup.sh --preset standard --hostname localhost --localhost
+# Install (canonical v2 deployer)
+wip-deploy install --preset standard --target compose --hostname localhost --tls internal
 
 # Access the UI
 open https://localhost:8443
@@ -158,23 +153,22 @@ See [Development Guide](docs/development-guide.md) for details on both modes.
 ### Production Deployment
 
 ```bash
-# Deploy with production security (generates random secrets, enables auth)
-./scripts/setup.sh --preset standard --hostname wip-pi.local --prod -y
+# Tier 1 — home network. Random secrets, self-signed TLS via Caddy.
+wip-deploy install --preset standard --target compose --hostname wip-pi.local --tls internal
 
 # Validate production readiness
 ./scripts/security/production-check.sh
 
-# View generated credentials (store securely, then delete)
-cat data/secrets/credentials.txt
+# Retrieve the admin password from the secrets backend
+cat ~/.wip-deploy/default/secrets/dex-password-admin
 ```
 
 For internet-exposed deployments with Let's Encrypt TLS:
 ```bash
-./scripts/setup.sh --preset standard --hostname wip.example.com --prod \
-  --email admin@example.com -y
+wip-deploy install --preset standard --target compose --hostname wip.example.com --tls letsencrypt
 ```
 
-See [Production Deployment Guide](docs/production-deployment.md) for complete instructions.
+See [WIP Guide](docs/wip-guide.md) for the full operator reference (deploy, auth, networking, storage, apps, security).
 
 ---
 
@@ -208,7 +202,7 @@ See [Production Deployment Guide](docs/production-deployment.md) for complete in
 - Namespace-scoped referential integrity
 - Ontology support — OBO Graph JSON import, typed relationships, polyhierarchy, traversal queries, unified import with auto-format detection
 
-See [Roadmap](docs/roadmap.md) for current priorities and design documents.
+See [WIP Guide](docs/wip-guide.md) for the canonical operator reference and `git log` for current priorities.
 
 ---
 
@@ -236,7 +230,7 @@ This decouples producers from the WIP API surface — useful for IoT pipelines, 
 
 WIP's **Reporting-Sync** service streams changes from MongoDB to PostgreSQL in real time via NATS events. Every template becomes a SQL table with flattened fields, term references, and version history. Point any BI tool that speaks PostgreSQL at the `wip_reporting` database for instant dashboards.
 
-No ETL pipelines, no schema management — tables evolve automatically as templates change. Term-aware columns enable cross-template joins through shared vocabularies. See [Reporting Layer](docs/reporting-layer.md) for connection settings and table layout.
+No ETL pipelines, no schema management — tables evolve automatically as templates change. Term-aware columns enable cross-template joins through shared vocabularies. See [WIP Guide](docs/wip-guide.md) for connection settings and the reporting topology.
 
 ### The Registry: Foreign IDs as First-Class Citizens
 
@@ -275,7 +269,7 @@ WIP ships with a **Model Context Protocol (MCP) server** that exposes the full p
 }
 ```
 
-70+ tools covering all CRUD operations, plus 5 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
+88 tools covering all CRUD operations, plus 5 resources for API conventions, data model documentation, and non-obvious behaviours. Supports stdio, SSE, and HTTP streamable transports — validated on local, SSH proxy, and Kubernetes deployments.
 
 > [!CAUTION]
 > **Cloud AI + your data: three channels of exposure.**

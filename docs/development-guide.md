@@ -6,19 +6,25 @@ Day-to-day development reference for working on the WIP codebase.
 
 ## Running Tests
 
+The canonical wrapper handles venv activation, `PYTHONPATH`, and exit codes. Use it:
+
 ```bash
-# Activate venv first
-source .venv/bin/activate
+# Run a component's tests
+./scripts/wip-test.sh registry
+./scripts/wip-test.sh document-store
+./scripts/wip-test.sh all
 
-# Run a component's tests locally
-cd components/registry && PYTHONPATH=src pytest tests/ -v
-
-# Run inside container
-podman exec -it wip-registry pytest /app/tests -v
-
-# TypeScript libraries
+# TypeScript libraries (use their own scripts)
 cd libs/wip-client && npm test
 cd libs/wip-react && npm test
+```
+
+If you need to run pytest directly (debugging a single test, attaching a debugger), the wrapper's source shows the equivalent invocation; do not hand-roll `cd && PYTHONPATH=src pytest` — that's the form CLAUDE.md §10 explicitly rejects.
+
+For tests against a running container:
+
+```bash
+podman exec -it wip-registry pytest /app/tests -v
 ```
 
 CI runs all component tests via `.gitea/workflows/test.yaml`.
@@ -90,7 +96,7 @@ For working ON WIP itself — modifying services, libraries, infrastructure.
 ./scripts/setup-backend-agent.sh [--target local|ssh|http] [--host HOST]
 ```
 
-Provides: `/setup`, `/resume`, `/wip-status`, `/understand`, `/test`, `/quality`, `/review-changes`, `/pre-commit`, `/roadmap`
+Provides: `/setup`, `/resume`, `/wip-status`, `/understand`, `/test`, `/quality`, `/review-changes`, `/pre-commit`, `/case`, `/lesson`, `/report`, `/doc-review`
 
 ### App Builder Agent
 
@@ -110,20 +116,16 @@ See `docs/WIP_AppSetup_Guide.md` for the full app builder guide.
 
 | Document | What it covers |
 |----------|---------------|
-| `docs/architecture.md` | System architecture, service interactions |
+| `docs/wip-guide.md` | Operator-facing reference: deploy, auth, networking, storage, apps, security |
 | `docs/api-conventions.md` | Bulk-first convention, BulkResponse contract |
 | `docs/uniqueness-and-identity.md` | ID generation, Registry synonyms, identity hashing |
 | `docs/data-models.md` | Document, template, term data models |
-| `docs/authentication.md` | Auth modes, API keys, JWT/OIDC configuration |
-| `docs/network-configuration.md` | 4 deployment scenarios, OIDC setup, critical gotchas |
-| `docs/production-deployment.md` | Production hardening guide |
 | `docs/mcp-server.md` | MCP tools, resources, AI development workflow |
-| `docs/reporting-layer.md` | MongoDB → PostgreSQL sync architecture |
-| `docs/semantic-types.md` | 7 semantic field types with validation rules |
-| `docs/bulk-import-tuning.md` | Tuning batch sizes for 100k+ imports |
+| `docs/semantic-types.md` | Semantic field types with validation rules |
+| `docs/glossary.md` | A–Z terminology reference |
+| `docs/install-test-guide.md` | Reproducible install procedure for the v1.0 install-test |
 | `docs/WIP_AppSetup_Guide.md` | Setting up app projects that build on WIP |
 | `docs/development-guide.md` | This file — tests, quality audit, seed data, agent modes |
-| `docs/roadmap.md` | Future plans, pending features, design docs |
-| `docs/security/` | Key rotation, encryption at rest |
-| `docs/design/` | Feature design documents (ontology, replay, draft mode, etc.) |
+| `docs/design/` | Surviving feature design documents (ontology, edge types, etc.) |
 | `docs/release-checklist.md` | Pre-release verification checklist (code, tests, security, docs, deploy) |
+| `docs/change-propagation-checklist.md` | Cross-layer propagation when adding or modifying a field/feature |
