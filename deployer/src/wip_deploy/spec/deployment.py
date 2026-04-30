@@ -120,7 +120,7 @@ class AuthSpec(WIPModel):
 # ────────────────────────────────────────────────────────────────────
 
 
-TLSMode = Literal["internal", "letsencrypt", "external"]
+TLSMode = Literal["internal", "letsencrypt", "external", "self-signed"]
 
 
 class NetworkSpec(WIPModel):
@@ -270,6 +270,20 @@ class DeploymentSpec(WIPModel):
         if self.secrets.backend == "k8s-secret" and self.target != "k8s":
             raise ValueError(
                 f"secrets.backend='k8s-secret' requires target='k8s'; "
+                f"got target={self.target!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def self_signed_requires_k8s(self) -> DeploymentSpec:
+        # Auto-generated self-signed certs are k8s-only. Compose's
+        # `internal` mode already gives Caddy-managed self-signed; dev
+        # uses `internal` for the same reason. Only k8s needs an
+        # external cert source, hence the new mode.
+        if self.network.tls == "self-signed" and self.target != "k8s":
+            raise ValueError(
+                f"tls='self-signed' requires target='k8s' (compose/dev "
+                f"use tls='internal' for Caddy-managed self-signed certs); "
                 f"got target={self.target!r}"
             )
         return self

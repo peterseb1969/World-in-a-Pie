@@ -123,6 +123,62 @@ class TestPlatform:
 
 
 # ────────────────────────────────────────────────────────────────────
+# TLS — target-aware default (CASE-247)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestTLSDefaults:
+    def test_compose_internal_stays_internal(self) -> None:
+        d = build_deployment(_minimal_compose_inputs(tls="internal"))
+        assert d.spec.network.tls == "internal"
+
+    def test_k8s_internal_upgrades_to_self_signed(self) -> None:
+        """Default tls=internal for --target k8s auto-upgrades to
+        self-signed so the install pre-flight generates a cert + Secret.
+        Compose's `internal` mode handles its own cert (Caddy); k8s'
+        legacy `internal` was effectively no-TLS until CASE-247."""
+        d = build_deployment(
+            _minimal_compose_inputs(
+                target="k8s",
+                compose_data_dir=None,
+                tls="internal",
+                hostname="wip-test.local",
+                secrets_backend="file",
+            )
+        )
+        assert d.spec.network.tls == "self-signed"
+
+    def test_k8s_explicit_external_preserved(self) -> None:
+        d = build_deployment(
+            _minimal_compose_inputs(
+                target="k8s",
+                compose_data_dir=None,
+                tls="external",
+                hostname="wip-test.local",
+                secrets_backend="file",
+            )
+        )
+        assert d.spec.network.tls == "external"
+
+    def test_k8s_explicit_self_signed_preserved(self) -> None:
+        d = build_deployment(
+            _minimal_compose_inputs(
+                target="k8s",
+                compose_data_dir=None,
+                tls="self-signed",
+                hostname="wip-test.local",
+                secrets_backend="file",
+            )
+        )
+        assert d.spec.network.tls == "self-signed"
+
+    def test_self_signed_rejected_for_compose(self) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="tls='self-signed' requires target='k8s'"):
+            build_deployment(_minimal_compose_inputs(tls="self-signed"))
+
+
+# ────────────────────────────────────────────────────────────────────
 # Secrets default by target
 # ────────────────────────────────────────────────────────────────────
 

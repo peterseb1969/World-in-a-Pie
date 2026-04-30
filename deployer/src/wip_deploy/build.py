@@ -127,9 +127,16 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     # doesn't need privileged ports.
     default_https = 443 if inputs.target == "k8s" else 8443
     default_http = 80 if inputs.target == "k8s" else 8080
+    # Target-aware TLS: for k8s, auto-upgrade tls=internal (the default)
+    # to tls=self-signed so the install pre-flight generates a cert + Secret.
+    # On compose/dev, tls=internal means Caddy-managed self-signed and
+    # already works. CASE-247.
+    tls = inputs.tls
+    if inputs.target == "k8s" and tls == "internal":
+        tls = "self-signed"
     spec_dict["network"] = {
         "hostname": inputs.hostname,
-        "tls": inputs.tls,
+        "tls": tls,
         "https_port": inputs.https_port if inputs.https_port is not None else default_https,
         "http_port": inputs.http_port if inputs.http_port is not None else default_http,
     }

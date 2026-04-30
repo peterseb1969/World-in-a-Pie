@@ -639,6 +639,15 @@ def apply_k8s(
     _clean_rendered_tree(install_dir)
     tree.write(install_dir)
 
+    # CASE-247: tls=self-signed pre-flight — generate cert + Secret if
+    # missing, before the Ingress lands and tries to bind to it.
+    if deployment.spec.network.tls == "self-signed":
+        _ensure_self_signed_tls_secret(
+            ns=ns,
+            secret_name=k8s.tls_secret_name,
+            hostname=deployment.spec.network.hostname,
+        )
+
     _kubectl_apply_tree(install_dir, ns)
 
     up_count = _count_k8s_workloads(tree)
@@ -737,6 +746,95 @@ def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
         raise ApplyError(
             f"kubectl {' '.join(args)} failed (exit {e.returncode}): {stderr}"
         ) from e
+
+
+# ────────────────────────────────────────────────────────────────────
+# Self-signed TLS (CASE-247)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _ensure_self_signed_tls_secret(
+    *, ns: str, secret_name: str, hostname: str,
+) -> None:
+    """Idempotently ensure a kubernetes.io/tls Secret exists in `ns`.
+
+    First run: creates the namespace if missing, generates a CN=hostname
+    self-signed cert (RSA-4096, 1y validity), creates the Secret.
+    Re-run: detects existing Secret and no-ops (rotation is via
+    `kubectl delete secret <name> -n <ns>` then re-install).
+
+    Required for tls=self-signed (auto-applied for --target k8s when
+    --tls is unspecified or 'internal'). See CASE-247.
+    """
+    if not shutil.which("openssl"):
+        raise ApplyError(
+            "openssl not on PATH; required for tls=self-signed cert "
+            "generation. Either install openssl or pass --tls external "
+            "and pre-create the TLS Secret yourself."
+        )
+
+    _ensure_namespace(ns)
+
+    existing = subprocess.run(
+        ["kubectl", "get", "secret", secret_name, "-n", ns],
+        capture_output=True, text=True,
+    )
+    if existing.returncode == 0:
+        return  # Secret already there; idempotent re-install.
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        crt_path = Path(tmp) / "tls.crt"
+        key_path = Path(tmp) / "tls.key"
+        try:
+            subprocess.run(
+                [
+                    "openssl", "req", "-x509", "-newkey", "rsa:4096",
+                    "-sha256", "-days", "365", "-nodes",
+                    "-keyout", str(key_path), "-out", str(crt_path),
+                    "-subj", f"/CN={hostname}",
+                    "-addext", f"subjectAltName=DNS:{hostname}",
+                ],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise ApplyError(
+                f"openssl failed to generate self-signed cert for "
+                f"hostname={hostname!r}: {stderr}"
+            ) from e
+
+        try:
+            subprocess.run(
+                [
+                    "kubectl", "create", "secret", "tls", secret_name,
+                    "--cert", str(crt_path), "--key", str(key_path),
+                    "-n", ns,
+                ],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise ApplyError(
+                f"kubectl create secret tls {secret_name} -n {ns} failed "
+                f"(exit {e.returncode}): {stderr}"
+            ) from e
+
+
+def _ensure_namespace(ns: str) -> None:
+    """Create the namespace if missing. Idempotent."""
+    result = subprocess.run(
+        ["kubectl", "create", "namespace", ns],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return
+    if "already exists" in (result.stderr or ""):
+        return
+    raise ApplyError(
+        f"kubectl create namespace {ns} failed "
+        f"(exit {result.returncode}): {(result.stderr or '').strip()}"
+    )
 
 
 # ────────────────────────────────────────────────────────────────────

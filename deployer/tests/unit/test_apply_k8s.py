@@ -17,6 +17,8 @@ from wip_deploy.apply import (
     ApplyError,
     _clean_rendered_tree,
     _count_k8s_workloads,
+    _ensure_namespace,
+    _ensure_self_signed_tls_secret,
     _expected_workloads,
     _pod_for_component,
     apply_k8s,
@@ -316,3 +318,89 @@ class TestPodForComponent:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         with pytest.raises(ApplyError, match="no running pod"):
             _pod_for_component("wip-test", "ghost-component")
+
+
+# ────────────────────────────────────────────────────────────────────
+# Self-signed TLS pre-flight (CASE-247)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestEnsureNamespace:
+    @patch("wip_deploy.apply.subprocess.run")
+    def test_creates_when_missing(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        _ensure_namespace("wip-test")
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["kubectl", "create", "namespace"]
+        assert cmd[3] == "wip-test"
+
+    @patch("wip_deploy.apply.subprocess.run")
+    def test_already_exists_is_idempotent(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr='Error: namespaces "wip-test" already exists'
+        )
+        _ensure_namespace("wip-test")  # no raise
+
+    @patch("wip_deploy.apply.subprocess.run")
+    def test_other_error_raises(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="connection refused"
+        )
+        with pytest.raises(ApplyError, match="connection refused"):
+            _ensure_namespace("wip-test")
+
+
+class TestEnsureSelfSignedTLSSecret:
+    @patch("wip_deploy.apply.shutil.which", return_value=None)
+    def test_missing_openssl_raises(self, _which: MagicMock) -> None:
+        with pytest.raises(ApplyError, match="openssl not on PATH"):
+            _ensure_self_signed_tls_secret(
+                ns="wip-test", secret_name="wip-tls", hostname="wip-test.local"
+            )
+
+    @patch("wip_deploy.apply.subprocess.run")
+    @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
+    def test_skips_when_secret_exists(
+        self, _which: MagicMock, mock_run: MagicMock
+    ) -> None:
+        # First call: ensure_namespace (rc=0). Second: get secret (rc=0 → exists).
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=0, stderr=""),  # get secret (exists)
+        ]
+        _ensure_self_signed_tls_secret(
+            ns="wip-test", secret_name="wip-tls", hostname="wip-test.local"
+        )
+        # Should NOT have called openssl or kubectl create secret.
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        assert not any("openssl" in c[0] for c in cmds)
+        assert not any(
+            "create" in c and "secret" in c and "tls" in c for c in cmds
+        )
+
+    @patch("wip_deploy.apply.subprocess.run")
+    @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl")
+    def test_generates_and_creates_when_missing(
+        self, _which: MagicMock, mock_run: MagicMock
+    ) -> None:
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=1, stderr="NotFound"),  # get secret (missing)
+            MagicMock(returncode=0, stderr=""),  # openssl req
+            MagicMock(returncode=0, stderr=""),  # kubectl create secret tls
+        ]
+        _ensure_self_signed_tls_secret(
+            ns="wip-test", secret_name="wip-tls", hostname="wip-test.local"
+        )
+        cmds = [c[0][0] for c in mock_run.call_args_list]
+        # openssl was called with /CN=wip-test.local
+        openssl_cmd = next(c for c in cmds if c[0] == "openssl")
+        assert "/CN=wip-test.local" in openssl_cmd
+        assert "subjectAltName=DNS:wip-test.local" in openssl_cmd
+        # kubectl create secret tls wip-tls -n wip-test
+        create_cmd = next(
+            c for c in cmds
+            if c[0] == "kubectl" and "create" in c and "tls" in c
+        )
+        assert "wip-tls" in create_cmd
+        assert "wip-test" in create_cmd

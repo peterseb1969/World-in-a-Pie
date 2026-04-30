@@ -115,7 +115,14 @@ def _resolve_hostname(hostname: str | None, target: str) -> str:
 
 
 def _tls_opt() -> typer.models.OptionInfo:
-    return typer.Option("--tls", help="TLS mode: internal | letsencrypt | external.")
+    return typer.Option(
+        "--tls",
+        help=(
+            "TLS mode: internal | letsencrypt | external | self-signed. "
+            "Default 'internal' is auto-upgraded to 'self-signed' for "
+            "--target k8s (deployer generates a cert + Secret pre-install)."
+        ),
+    )
 
 
 def _https_port_opt() -> typer.models.OptionInfo:
