@@ -355,14 +355,15 @@ export function useArchiveDocument(
 // ============================================================================
 
 export function useUploadFile(
-  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata }>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata; namespace?: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ file, filename, metadata }) => client.files.uploadFile(file, filename, metadata),
+    mutationFn: ({ file, filename, metadata, namespace }) =>
+      client.files.uploadFile(file, filename, metadata, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
       onSuccess?.(...args)

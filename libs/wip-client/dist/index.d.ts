@@ -1286,7 +1286,7 @@ interface FileQueryParams {
 
 declare class FileStoreService extends BaseService {
     constructor(transport: FetchTransport);
-    uploadFile(file: File | Blob, filename?: string, metadata?: FileUploadMetadata): Promise<FileEntity>;
+    uploadFile(file: File | Blob, filename?: string, metadata?: FileUploadMetadata, namespace?: string): Promise<FileEntity>;
     listFiles(params?: FileQueryParams): Promise<FileListResponse>;
     getFile(fileId: string): Promise<FileEntity>;
     getDownloadUrl(fileId: string, expiresIn?: number): Promise<FileDownloadResponse>;

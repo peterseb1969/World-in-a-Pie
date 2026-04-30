@@ -844,13 +844,14 @@ var FileStoreService = class extends BaseService {
     super(transport, "/api/document-store/files");
   }
   // ---- Files ----
-  async uploadFile(file, filename, metadata) {
+  async uploadFile(file, filename, metadata, namespace) {
     const formData = new FormData();
     if (file instanceof File) {
       formData.append("file", file);
     } else {
       formData.append("file", file, filename ?? "upload");
     }
+    if (namespace) formData.append("namespace", namespace);
     if (metadata?.description) formData.append("description", metadata.description);
     if (metadata?.tags?.length) formData.append("tags", metadata.tags.join(","));
     if (metadata?.category) formData.append("category", metadata.category);
