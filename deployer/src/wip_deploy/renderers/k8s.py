@@ -118,6 +118,10 @@ def render_k8s(
     ingress_cfg = generate_ingress_config(deployment, components, apps)
     tree.add("ingress.yaml", _render_ingress(ingress_cfg, ns))
 
+    # NetworkPolicies (CASE-238 MVP: namespace-wide isolation;
+    # per-component egress rules are a follow-up).
+    tree.add("network-policies.yaml", _render_network_policies(ns))
+
     return tree
 
 
@@ -135,6 +139,161 @@ def _render_namespace(ns: str) -> str:
             "labels": {_LABELS_PART_OF: "wip"},
         },
     })
+
+
+# ────────────────────────────────────────────────────────────────────
+# NetworkPolicies (CASE-238)
+#
+# MVP scope: namespace-wide isolation. Five policies:
+#   - deny-all-default          → block all traffic by default
+#   - allow-same-namespace      → pod ↔ pod inside ns works
+#   - allow-ingress-controller  → nginx-ingress (in 'ingress' ns) reaches us
+#   - allow-egress-dns          → kube-dns lookups for cluster DNS
+#   - allow-egress-https        → outbound HTTPS (Anthropic, etc.)
+#
+# What this gets us:
+#   - A compromised wip pod cannot pivot to other namespaces
+#     (mongodb, teslamate, pihole, …) — the headline security win.
+#   - Pods in the namespace can still talk to each other, can do
+#     DNS lookups, can reach the internet over HTTPS. So nothing
+#     functional breaks vs. the no-policy baseline.
+#
+# What this does NOT get us (follow-up case):
+#   - Per-component egress rules (e.g. registry can ONLY reach
+#     mongodb, not other components). The legacy
+#     `k8s/network-policies.yaml` had ~14 such per-component
+#     policies. Restoring them needs each component manifest to
+#     declare its egress dependencies, which is a spec-level change
+#     plus a renderer that walks the call graph. Out of MVP scope;
+#     filed as a follow-up.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _render_network_policies(ns: str) -> str:
+    """Render the namespace-isolation NetworkPolicy bundle.
+
+    CASE-238 MVP — restores the cross-namespace isolation guarantee
+    that the legacy `k8s/network-policies.yaml` provided. Per-component
+    egress rules are a follow-up case (see file header).
+    """
+    labels = {_LABELS_PART_OF: "wip"}
+
+    deny_all = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "deny-all-default",
+            "namespace": ns,
+            "labels": labels,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Ingress", "Egress"],
+        },
+    }
+
+    allow_same_ns = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "allow-same-namespace",
+            "namespace": ns,
+            "labels": labels,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [{"from": [{"podSelector": {}}]}],
+            "egress": [{"to": [{"podSelector": {}}]}],
+        },
+    }
+
+    # NGINX ingress controller runs in the 'ingress' namespace on
+    # MicroK8s. The kubernetes.io/metadata.name label is auto-added
+    # by k8s 1.21+ on every namespace.
+    allow_ingress_controller = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "allow-ingress-controller",
+            "namespace": ns,
+            "labels": labels,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Ingress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {
+                                    "kubernetes.io/metadata.name": "ingress",
+                                },
+                            },
+                        },
+                    ],
+                },
+            ],
+        },
+    }
+
+    # DNS — UDP/TCP 53 to anywhere. Required for cluster service DNS
+    # (*.svc.cluster.local) AND external lookups.
+    allow_egress_dns = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "allow-egress-dns",
+            "namespace": ns,
+            "labels": labels,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "ports": [
+                        {"port": 53, "protocol": "UDP"},
+                        {"port": 53, "protocol": "TCP"},
+                    ],
+                },
+            ],
+        },
+    }
+
+    # HTTPS egress — Anthropic API for askBar/NL queries (RC, dnd-mcp),
+    # external image registries, OIDC discovery for federated providers.
+    # Open to anywhere on 443/TCP, matching the legacy posture.
+    allow_egress_https = {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+            "name": "allow-egress-https",
+            "namespace": ns,
+            "labels": labels,
+        },
+        "spec": {
+            "podSelector": {},
+            "policyTypes": ["Egress"],
+            "egress": [
+                {
+                    "ports": [
+                        {"port": 443, "protocol": "TCP"},
+                    ],
+                },
+            ],
+        },
+    }
+
+    parts = [
+        _dump(deny_all),
+        _dump(allow_same_ns),
+        _dump(allow_ingress_controller),
+        _dump(allow_egress_dns),
+        _dump(allow_egress_https),
+    ]
+    return "---\n".join(parts)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -686,6 +845,55 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 }],
             },
         })
+
+        # CASE-248: preserve-prefix subpaths get their own Ingress so
+        # the rewrite-target annotation on the strip Ingress doesn't
+        # leak onto them. NGINX Ingress merges Ingresses on the same
+        # host and gives more-specific paths precedence — so e.g.
+        # /minio/health wins over /minio(/|$)(.*) for matching.
+        if r.preserve_prefix_subpaths:
+            preserve_annotations = dict(base_annotations)
+            # Same auth/streaming policy as the strip rule.
+            if cfg.gateway_auth_url and r.auth_protected:
+                preserve_annotations["nginx.ingress.kubernetes.io/auth-url"] = cfg.gateway_auth_url
+                preserve_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
+                    f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
+                )
+                preserve_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
+                    "X-WIP-User,X-WIP-Groups,X-API-Key"
+                )
+            if r.streaming:
+                preserve_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
+
+            preserve_paths = [{
+                "path": sub,
+                "pathType": "Prefix",
+                "backend": {
+                    "service": {
+                        "name": r.backend_service,
+                        "port": {"number": r.backend_port},
+                    },
+                },
+            } for sub in r.preserve_prefix_subpaths]
+
+            docs.append({
+                "apiVersion": "networking.k8s.io/v1",
+                "kind": "Ingress",
+                "metadata": {
+                    "name": f"{ingress_name}-admin",
+                    "namespace": ns,
+                    "labels": {_LABELS_PART_OF: "wip"},
+                    "annotations": preserve_annotations,
+                },
+                "spec": {
+                    "ingressClassName": cfg.ingress_class,
+                    "tls": tls_block,
+                    "rules": [{
+                        "host": cfg.hostname,
+                        "http": {"paths": preserve_paths},
+                    }],
+                },
+            })
 
     return _dump_multi(docs)
 

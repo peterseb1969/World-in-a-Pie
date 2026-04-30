@@ -127,6 +127,27 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         out.write(f"        redir * {route.path}/ permanent\n")
         out.write("    }\n\n")
 
+    # CASE-248: preserve-prefix subpaths under a strip_prefix route.
+    # MinIO's S3 API at /minio/<bucket>/<key> needs the prefix stripped
+    # (presigned URLs encode the bucket+key path); but its own admin
+    # endpoints under /minio/admin and /minio/health live in MinIO's
+    # URL space and need the prefix preserved. Emit `handle` blocks
+    # for those subpaths first; Caddy's longest-match picks them over
+    # the trailing handle_path block.
+    backend = f"wip-{route.backend_component}:{route.backend_port}"
+    if route.strip_prefix and route.preserve_prefix_subpaths:
+        for sub in route.preserve_prefix_subpaths:
+            out.write(f"    handle {sub}/* {{\n")
+            if route.auth_protected:
+                _write_forward_auth(out, cfg)
+            if route.streaming:
+                out.write(f"        reverse_proxy {backend} {{\n")
+                out.write("            flush_interval -1\n")
+                out.write("        }\n")
+            else:
+                out.write(f"        reverse_proxy {backend}\n")
+            out.write("    }\n\n")
+
     # `handle_path` strips the route's prefix before forwarding; `handle`
     # preserves the full request path. MinIO's S3 API is the canonical
     # strip_prefix case — it serves at the root and doesn't know about
@@ -136,7 +157,6 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     out.write(f"    {directive} {route.path}/* {{\n")
     if route.auth_protected:
         _write_forward_auth(out, cfg)
-    backend = f"wip-{route.backend_component}:{route.backend_port}"
     if route.streaming:
         out.write(f"        reverse_proxy {backend} {{\n")
         out.write("            flush_interval -1\n")

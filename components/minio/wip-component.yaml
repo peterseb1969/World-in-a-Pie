@@ -31,7 +31,17 @@ spec:
   # verifies against its own routing. auth_required=false because the
   # presigned URL carries its own expiring signature.
   routes:
-    - {path: /minio, auth_required: false, strip_prefix: true}
+    # Strip the /minio prefix on the S3 API so SigV2 presigned URLs
+    # validate (the bucket+key path must match what MinIO sees).
+    # But MinIO's own admin/health endpoints live at /minio/health,
+    # /minio/admin in MinIO's URL space — preserve those subpaths so
+    # external probes work. CASE-248.
+    - path: /minio
+      auth_required: false
+      strip_prefix: true
+      preserve_prefix_subpaths:
+        - /minio/health
+        - /minio/admin
 
   storage:
     - {name: data, mount_path: /data, size: 50Gi}

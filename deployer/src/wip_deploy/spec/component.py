@@ -107,6 +107,16 @@ class Route(WIPModel):
     # Needed for backends that serve at the root and don't know about the
     # public prefix — MinIO's S3 API is the canonical case.
     strip_prefix: bool = False
+    # Subpaths within `path` that should NOT be stripped — useful when
+    # the same backend exposes both root-level and prefixed APIs under
+    # the public prefix. MinIO is the canonical case: its S3 API at
+    # /<bucket>/<key> requires strip_prefix=True (presigned URLs encode
+    # the bucket+key path), but its admin/health endpoints live at
+    # /minio/health, /minio/admin under MinIO's own URL space.
+    # Renderers emit these as preserve-prefix routes that take
+    # precedence over the regex/strip rule. Only meaningful when
+    # `strip_prefix=True`. CASE-248.
+    preserve_prefix_subpaths: list[str] = Field(default_factory=list)
     # Emit a 301 from the bare path to the trailing-slash variant
     # (Caddy only — nginx Ingress matches both via pathType=Prefix).
     # Defaults True for SPA-friendly behavior (relative-URL resolution

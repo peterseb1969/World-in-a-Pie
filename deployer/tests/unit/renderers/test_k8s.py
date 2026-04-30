@@ -85,6 +85,7 @@ class TestTreeShape:
         assert "secrets.yaml" in paths
         assert "configmaps.yaml" in paths
         assert "ingress.yaml" in paths
+        assert "network-policies.yaml" in paths
         assert "services/registry.yaml" in paths
 
     def test_secrets_have_0600_mode(
@@ -261,3 +262,149 @@ class TestActivation:
         # reporting-sync and its deps (postgres, nats) not in standard
         assert not any("reporting-sync" in p for p in paths)
         assert not any("postgres" in p for p in paths)
+
+
+# ────────────────────────────────────────────────────────────────────
+# NetworkPolicies (CASE-238)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNetworkPolicies:
+    def _network_policies_doc(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> str:
+        d = _k8s_deployment()
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        return tree.files[Path("network-policies.yaml")].content
+
+    def test_emits_five_policies(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        doc = self._network_policies_doc(tmp_path, real_discovery)
+        policies = list(yaml.safe_load_all(doc))
+        assert len(policies) == 5
+        assert all(p["kind"] == "NetworkPolicy" for p in policies)
+
+    def test_includes_deny_all_default(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        deny = next(p for p in policies if p["metadata"]["name"] == "deny-all-default")
+        assert set(deny["spec"]["policyTypes"]) == {"Ingress", "Egress"}
+        # Empty podSelector → applies to all pods
+        assert deny["spec"]["podSelector"] == {}
+        # No ingress/egress rules → fully blocking
+        assert "ingress" not in deny["spec"]
+        assert "egress" not in deny["spec"]
+
+    def test_includes_allow_ingress_controller_with_correct_namespace_label(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-ingress-controller")
+        rules = p["spec"]["ingress"][0]["from"]
+        assert rules[0]["namespaceSelector"]["matchLabels"][
+            "kubernetes.io/metadata.name"
+        ] == "ingress"
+
+    def test_includes_dns_egress(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        policies = list(yaml.safe_load_all(
+            self._network_policies_doc(tmp_path, real_discovery)
+        ))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-egress-dns")
+        ports = p["spec"]["egress"][0]["ports"]
+        protos = {(d["port"], d["protocol"]) for d in ports}
+        assert (53, "UDP") in protos
+        assert (53, "TCP") in protos
+
+    def test_namespace_applied_to_all_policies(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """All emitted policies should live in the deployment's namespace."""
+        import yaml
+        d = _k8s_deployment(namespace="wip-test")
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        doc = tree.files[Path("network-policies.yaml")].content
+        for p in yaml.safe_load_all(doc):
+            assert p["metadata"]["namespace"] == "wip-test"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Preserve-prefix subpaths (CASE-248 — MinIO admin/health)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestPreservePrefixSubpaths:
+    def _ingress_docs(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> list[dict]:  # type: ignore[type-arg]
+        # `full` preset enables minio + reporting-sync + ingest-gateway.
+        d = _k8s_deployment(modules=["minio", "reporting-sync", "ingest-gateway"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        return list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
+
+    def test_minio_strip_ingress_present(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        ing = next(d for d in docs if d["metadata"]["name"] == "minio-ingress")
+        # The strip rule uses the regex form for /minio.
+        path = ing["spec"]["rules"][0]["http"]["paths"][0]
+        assert path["path"] == "/minio(/|$)(.*)"
+        assert path["pathType"] == "ImplementationSpecific"
+        # Has the rewrite annotation.
+        assert ing["metadata"]["annotations"][
+            "nginx.ingress.kubernetes.io/rewrite-target"
+        ] == "/$2"
+
+    def test_minio_admin_ingress_separate_with_preserve_paths(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """Preserve-prefix paths live in a SEPARATE Ingress so the
+        rewrite-target annotation on the strip Ingress doesn't apply
+        to them. Otherwise NGINX would rewrite /minio/health/live to
+        /$2 (empty) and 404."""
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        admin = next(
+            d for d in docs if d["metadata"]["name"] == "minio-ingress-admin"
+        )
+        # No rewrite-target annotation on the admin Ingress.
+        assert (
+            "nginx.ingress.kubernetes.io/rewrite-target"
+            not in admin["metadata"]["annotations"]
+        )
+        # Two prefix-typed paths (admin + health).
+        paths = admin["spec"]["rules"][0]["http"]["paths"]
+        assert len(paths) == 2
+        path_strs = {p["path"] for p in paths}
+        assert "/minio/health" in path_strs
+        assert "/minio/admin" in path_strs
+        for p in paths:
+            assert p["pathType"] == "Prefix"
+
+    def test_routes_without_preserve_paths_emit_only_strip_ingress(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        """Components without preserve_prefix_subpaths shouldn't get a
+        spurious -admin Ingress emitted."""
+        docs = self._ingress_docs(tmp_path, real_discovery)
+        # Sanity: the wip-ingress (main API ingress) doesn't have an admin sibling.
+        admin_names = {
+            d["metadata"]["name"] for d in docs
+            if d["metadata"]["name"].endswith("-admin")
+        }
+        # Only minio's admin Ingress should be present.
+        assert admin_names == {"minio-ingress-admin"}

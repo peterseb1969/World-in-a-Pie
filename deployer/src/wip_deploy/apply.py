@@ -685,6 +685,7 @@ _PRUNE_ALLOWLIST = (
     "apps/v1/Deployment",
     "apps/v1/StatefulSet",
     "networking.k8s.io/v1/Ingress",
+    "networking.k8s.io/v1/NetworkPolicy",
 )
 
 

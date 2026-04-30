@@ -36,6 +36,9 @@ class ResolvedRoute:
     streaming: bool
     strip_prefix: bool
     redirect_bare_path: bool
+    # Subpaths within `path` to NOT strip when strip_prefix=True.
+    # MinIO admin/health under /minio is the canonical case. CASE-248.
+    preserve_prefix_subpaths: tuple[str, ...] = ()
 
 
 def resolve_routes(
@@ -117,4 +120,5 @@ def _resolve_one(
         streaming=route.streaming,
         strip_prefix=route.strip_prefix,
         redirect_bare_path=route.redirect_bare_path,
+        preserve_prefix_subpaths=tuple(route.preserve_prefix_subpaths),
     )

@@ -27,6 +27,11 @@ class IngressRule:
     auth_protected: bool
     streaming: bool
     strip_prefix: bool
+    # Subpaths within `path` to expose with prefix preserved (no rewrite)
+    # alongside the strip rule. NGINX Ingress's path matching gives
+    # exact/Prefix paths precedence over ImplementationSpecific (regex),
+    # so these win for matching requests. CASE-248 — MinIO admin/health.
+    preserve_prefix_subpaths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,7 @@ def generate_ingress_config(
             auth_protected=r.auth_protected,
             streaming=r.streaming,
             strip_prefix=r.strip_prefix,
+            preserve_prefix_subpaths=r.preserve_prefix_subpaths,
         )
         for r in resolve_routes(deployment, components, apps)
     ]
