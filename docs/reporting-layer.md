@@ -338,6 +338,80 @@ template_store:
   api_key: ${API_KEY}
 ```
 
+## BI Tool Integration
+
+The reporting layer exposes WIP data as standard PostgreSQL — any BI tool that
+speaks PostgreSQL works against it (Metabase, Grafana, Superset, Tableau,
+DBeaver, plain `psql`). WIP doesn't ship a specific BI tool; pick the one
+your team already uses and point it at the `wip_reporting` database.
+
+### Connection settings
+
+| Setting | Value |
+|---|---|
+| Database type | PostgreSQL |
+| Host | `wip-postgres` (when on `wip-network`) or your WIP host |
+| Port | `5432` |
+| Database | `wip_reporting` |
+| Username | `wip` |
+| Password | Dev: `wip_dev_password`. Production: `WIP_POSTGRES_PASSWORD` env var or `data/secrets/postgres_password`. |
+| SSL | **OFF** — WIP's PostgreSQL doesn't terminate SSL. Most BI tools default it on; turn it off explicitly in the tool's UI. Don't pass `sslmode=disable` in connection options — just toggle the SSL switch off. |
+
+The SSL-off setting is the most common integration footgun: BI tools default to
+"Use a secure connection" and the connection silently fails.
+
+### Table layout
+
+Each template with `sync_enabled: true` becomes a PostgreSQL table named
+`doc_<template_value>` (lowercased). Standard columns:
+
+- Metadata: `document_id`, `template_id`, `template_version`, `version`,
+  `status`, `identity_hash`, `created_at`, `created_by`, `updated_at`.
+- One column per template field (e.g., `first_name`, `email`).
+- For term fields: a `<field>_term_id` companion column with the resolved
+  term ID, alongside the human-readable value.
+- `data_json`: the full document payload as `JSONB` for queries that need
+  the unflattened shape.
+
+### Example queries
+
+Count documents per template:
+
+```sql
+SELECT
+  table_name,
+  (xpath('/row/cnt/text()',
+    query_to_xml(format('SELECT count(*) AS cnt FROM %I', table_name), false, true, '')
+  ))[1]::text::int AS doc_count
+FROM information_schema.tables
+WHERE table_schema = 'public' AND table_name LIKE 'doc_%'
+ORDER BY doc_count DESC;
+```
+
+Term distribution across a template:
+
+```sql
+SELECT country, country_term_id, COUNT(*) AS n
+FROM doc_customer
+WHERE status = 'active'
+GROUP BY country, country_term_id
+ORDER BY n DESC;
+```
+
+Cross-template joins are first-class — both tables share the same Registry IDs,
+so joining `doc_order.customer_id = doc_customer.document_id` Just Works.
+
+### Networking
+
+If your BI tool runs on the same Podman network as WIP, use the internal
+hostname `wip-postgres`. If it runs on a separate host (e.g., a workstation
+querying a Pi-hosted WIP), use the WIP host's external IP/hostname and ensure
+PostgreSQL's port `5432` is reachable. For production deployments behind a
+firewall, prefer keeping PostgreSQL internal and proxying queries through your
+BI tool's server-side query layer.
+
+---
+
 ## Implementation Status
 
 All phases complete:

@@ -232,17 +232,11 @@ External System → NATS (wip.ingest.*) → Ingest Gateway → REST APIs
 
 This decouples producers from the WIP API surface — useful for IoT pipelines, ETL jobs, or any system that speaks NATS.
 
-### Business Intelligence with Metabase
+### Business Intelligence on PostgreSQL
 
-WIP's **Reporting-Sync** service streams changes from MongoDB to PostgreSQL in real time via NATS events. Every template becomes a SQL table with flattened fields, term references, and version history. Deploy Metabase on top for instant dashboards:
+WIP's **Reporting-Sync** service streams changes from MongoDB to PostgreSQL in real time via NATS events. Every template becomes a SQL table with flattened fields, term references, and version history. Point any BI tool that speaks PostgreSQL at the `wip_reporting` database for instant dashboards.
 
-```bash
-# One command to add BI
-podman-compose -f deploy/optional/metabase/docker-compose.yml up -d
-# → Metabase at http://localhost:3030, pre-connected to wip_reporting
-```
-
-No ETL pipelines, no schema management — tables evolve automatically as templates change. Term-aware columns enable cross-template joins through shared vocabularies.
+No ETL pipelines, no schema management — tables evolve automatically as templates change. Term-aware columns enable cross-template joins through shared vocabularies. See [Reporting Layer](docs/reporting-layer.md) for connection settings and table layout.
 
 ### The Registry: Foreign IDs as First-Class Citizens
 

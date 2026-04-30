@@ -60,7 +60,7 @@ This document details the technology choices for World In a Pie (WIP) and the ra
 │                                                                  │
 │  OPTIONAL                                                        │
 │  ┌─────────────────────────────────────────────────────────┐    │
-│  │  Metabase       │  BI dashboard (deploy/optional/)      │    │
+│  │  Any BI tool    │  BI on PostgreSQL (operator-provided) │    │
 │  │  Mongo Express  │  MongoDB web UI (dev mode)            │    │
 │  └─────────────────────────────────────────────────────────┘    │
 │                                                                  │

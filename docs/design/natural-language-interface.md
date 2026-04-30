@@ -297,15 +297,12 @@ services:
 
 ### Optional Deployment
 
-Like Metabase, the NLI service lives in the optional tier:
-
-```
-deploy/optional/nli/
-├── docker-compose.yml      # Production compose
-└── README.md               # Setup instructions
-```
-
-`setup.sh` gets a `--with-nli` flag (or module system: `modules: [nli]`).
+The NLI service is an optional add-on, not part of any core preset. Once
+implemented, it ships as a regular WIP component:
+`components/nli-service/wip-component.yaml` declaring its image, ports,
+env vars, and routes. The deployer (`wip-deploy`) enables it via
+`--add nli-service` (or a preset extension) — no separate compose file
+or hand-maintained `deploy/` directory needed.
 
 ### Resource Budget (Pi 5, 8GB)
 
@@ -349,7 +346,7 @@ The NLI service is a proxy — all heavy computation happens at the AI provider.
 1. Add `GoogleProvider` and `OpenAIProvider`
 2. Add provider selection in settings UI
 3. Conversation title auto-generation
-4. Optional deployment setup (`deploy/optional/nli/`)
+4. Optional deployment setup (`components/nli-service/wip-component.yaml` so `wip-deploy --add nli-service` works)
 
 ### Session 5: Write Access + Voice (Future)
 

@@ -252,7 +252,7 @@ WIP uses a modular deployment system with **presets** (sensible defaults) and **
 | **Port** | 3030 |
 | **Network** | wip-network |
 | **Volumes** | `./data:/metabase-data` |
-| **Deployment** | Optional, separate (`deploy/optional/metabase/`) |
+| **Deployment** | Optional, external — operator provides their own compose / k8s manifest pointing at `wip-network` and `wip_reporting`. See `docs/reporting-layer.md` "BI Tool Integration" for connection settings. |
 
 **Exposed Endpoints:**
 - `http://localhost:3030` - Metabase web UI
