@@ -5,10 +5,12 @@ Phase 2 must be complete with **explicit user approval** of the data model.
 The WIP MCP server must be connected.
 
 ### Before Any MCP Calls
-Read `docs/WIP_PoNIFs.md` — the 6 PoNIFs describe non-intuitive WIP behaviours that will cause silent failures if you rely on conventional assumptions. Pay special attention to:
+Read `docs/WIP_PoNIFs.md` — the 8 PoNIFs describe non-intuitive WIP behaviours that will cause silent failures if you rely on conventional assumptions. Pay special attention to:
 - PoNIF #2: Template update does NOT replace the old version — both stay active
 - PoNIF #3: Identity fields control create-vs-update via hash — get them wrong and versioning breaks silently
 - PoNIF #4: Bulk API returns 200 OK even when items fail — check per-item results
+- PoNIF #7: Edge types are templates with `usage: "relationship"` — different validation, different query endpoints; reference fields must be named exactly `source_ref` and `target_ref`
+- PoNIF #8: `versioned: false` edge types overwrite in place — no version history
 
 ### Steps — Strict Order, Using MCP Tools
 

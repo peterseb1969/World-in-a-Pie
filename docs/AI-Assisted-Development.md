@@ -187,16 +187,18 @@ Input value in reference field
 
 ## PoNIFs — Quick Reference
 
-WIP has 6 behaviours that violate conventional expectations. Read `wip://ponifs` (MCP resource) for the full version. Here's the summary:
+WIP has 8 behaviours that violate conventional expectations. Read `wip://ponifs` (MCP resource) for the full version. Here's the summary:
 
 | # | PoNIF | Trap | Rule |
 |---|-------|------|------|
 | 1 | Nothing Ever Dies | Trying to delete entities | Deactivate, never delete. Inactive = retired, not gone. |
 | 2 | Template Versioning | Assuming update replaces old version | Update creates a new version. Old version stays active. Always pass `template_version`. |
-| 3 | Document Identity | Adding timestamps or run-specific data to documents | Identity hash determines create vs. update. Extra fields = always-new hash = no versioning. |
+| 3 | Document Identity | Adding timestamps or run-specific data to documents | Identity hash determines create vs. update. Extra fields = always-new hash = no versioning. Identity is template-scoped — always pair `identity_hash` lookups with `template_id`. |
 | 4 | Bulk-First 200 OK | Checking HTTP status for success | Always 200. Check `results[i].status` for per-item outcomes. |
 | 5 | Registry Synonyms | Assuming one ID per entity | Multiple IDs are normal. Merge to reconcile. |
-| 6 | Template Cache | Expecting instant effect after template change | Cached for up to 5 seconds. Restart service if urgent. |
+| 6 | Template Cache | Expecting instant effect after template change | Cached for up to 5 seconds. Pass explicit `template_version`, or wait. |
+| 7 | Edge Types Are Templates | Treating a template with two `reference_type: document` fields as an entity | Check `template.usage`. `usage: "relationship"` = edge type — different validation, different query endpoints, different reporting columns. Reference fields must be named exactly `source_ref` and `target_ref`. |
+| 8 | `versioned: false` overwrite | Assuming every document update creates a new version | Edge types may set `versioned: false`; updates overwrite in place, version stays at 1, history is gone. Check `template.versioned` before assuming history exists. |
 
 **The Compactheimer's Warning:** After context compaction, AI assistants lose PoNIF knowledge and revert to conventional patterns. If you find yourself assuming any of the "Trap" column behaviours feel natural, re-read `wip://ponifs`.
 

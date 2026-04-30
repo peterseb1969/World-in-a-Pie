@@ -15,7 +15,7 @@ This command relies ONLY on durable artifacts — files on disk, git history, WI
 Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as concrete tool calls — do not substitute "I remember from training" for actually running the reads:
 
 - `ReadMcpResourceTool server=wip uri=wip://development-guide` — the four-phase process for building on WIP. **Golden Rule: Never modify WIP. Only consume its APIs.** This is the single most important boundary for an APP-YAC; reload it.
-- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six PoNIFs. Conventional assumptions cause silent failures.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight PoNIFs (#7 Edge Types and #8 `versioned: false` added 2026-04-25). Conventional assumptions cause silent failures.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — entity shapes in WIP.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
 

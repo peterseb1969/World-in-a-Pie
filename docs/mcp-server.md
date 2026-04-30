@@ -22,7 +22,7 @@ The server runs in one of two modes, controlled by the `WIP_MCP_MODE` environmen
 
 ### Normal Mode (default)
 
-All 70+ tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
+All 88 tools are available — full read/write access to the WIP data model. This is the mode used during application development (Phases 1–4 below).
 
 ```bash
 python -m wip_mcp                  # stdio
@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 32 write tools. The server exposes only 40 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 39 write tools. The server exposes only 49 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -44,22 +44,23 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (32):**
+**Write tools removed (39):**
 
 | Category | Tools removed |
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
 | Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term` |
 | Term Relations | `create_term_relations`, `delete_term_relations` |
-| Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `activate_template`, `deactivate_template` |
-| Documents | `create_document`, `create_documents_bulk`, `archive_document` |
+| Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template` |
+| Documents | `create_document`, `create_documents_bulk`, `update_document`, `archive_document`, `delete_document` |
 | Files | `upload_file`, `delete_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
 | Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
+| Backup / Restore | `start_backup`, `start_restore`, `delete_backup_job` |
 | Registry | `add_synonym`, `remove_synonym`, `merge_entries` |
-| Namespace | `delete_namespace` |
+| Namespace | `create_namespace`, `delete_namespace` |
 
-**Read-only tools available (38):**
+**Read-only tools available (49):**
 
 Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), sync status, file metadata, template fields, and document versions.
 
@@ -245,7 +246,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `wip://conventions` | Bulk-first API patterns, identity hashing, versioning, pagination, querying |
 | `wip://data-model` | Core entity types: terminologies, terms, templates, documents, files, relations |
 | `wip://development-guide` | The 4-phase development process with guidance per phase |
-| `wip://ponifs` | Powerful, Non-Intuitive Features — 6 WIP behaviours that violate conventional expectations, plus the Compactheimer's Warning for AI assistants |
+| `wip://ponifs` | Powerful, Non-Intuitive Features — 8 WIP behaviours that violate conventional expectations (#7 Edge Types and #8 `versioned: false` added 2026-04-25), plus the Compactheimer's Warning for AI assistants |
 | `wip://query-assistant-prompt` | Query assistant prompt for SQL reporting |
 
 ---

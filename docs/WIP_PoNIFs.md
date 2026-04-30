@@ -130,6 +130,53 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 
 *This PoNIF was identified by Constellation-Claude during its review of this document — itself an example of the collaborative review process catching gaps.*
 
+### 7. Edge Types Are Stored as Templates
+
+**The feature:** WIP has two conceptually distinct schemas that share a storage representation: **entity templates** (the default — `usage: "entity"`) and **edge types** (`usage: "relationship"`). Both live in the same `templates` collection and flow through the same APIs, but document-store treats edge-type writes differently — extra cross-namespace and not-archived validation, lazy MongoDB indexes on `data.source_ref` / `data.target_ref`, two query endpoints (`/relationships`, `/traverse`), and reporting-sync columns (`source_ref_id` / `target_ref_id`). The MCP tool `create_edge_type` exists specifically to surface this distinction at the agent-facing API ingress.
+
+The contract that makes an edge type *be* an edge type:
+
+- `usage: "relationship"` (immutable after creation)
+- non-empty `source_templates` and `target_templates` lists declaring which templates can sit at each endpoint
+- two reference fields named **exactly** `source_ref` and `target_ref` (template-store enforces the names)
+
+The motivation comes from a class of data that fits nowhere else cleanly: properties that belong to the *interaction* between two documents. An experiment uses bevacizumab — but the quantity, the role (treatment vs. control), the lot number — none of those belong to the experiment, and none belong to bevacizumab. They belong to *how* the experiment uses bevacizumab. An edge type holds them.
+
+**Why it's powerful:** Models the interaction without forcing the edge data into either endpoint or duplicating fields across both. The query APIs (`/relationships`, `/traverse`) operate over typed edges with full schema validation. Reporting-sync's resolved `source_ref_id` / `target_ref_id` columns enable SQL JOINs that follow the graph in PostgreSQL.
+
+**Why it's non-intuitive:** Conventional ORMs and graph DBs split entities and relationships into different storage with different APIs. WIP unifies them via a single `usage` annotation — edge types *are* templates, relationship documents *are* documents. Same storage, different conceptual layer. The flag is easy to miss when reading a template definition.
+
+**What goes wrong:**
+
+- Developers see a template with two `reference_type: document` fields and assume it's an entity template with foreign keys. The `usage` flag tells you which conceptual type it is — and the validation, indexing, and query surface all change with it.
+- Developers create `usage: "entity"` templates with `source_ref` / `target_ref` fields and try to use them as relationships. The `/relationships` and `/traverse` endpoints require `usage: "relationship"`; the queries return nothing useful against entity templates.
+- Developers name their reference fields anything other than `source_ref` and `target_ref`. Template-store rejects the create. The naming is a contract, not a convention.
+
+**Sensible default:** `create_edge_type` exists as a separate MCP tool precisely so the agent-facing API can't accidentally treat an edge type as an entity template. The library / MCP layer should keep surfacing `usage` in any tool output that describes a template, so the conceptual layer is visible at the ingress, not buried in a JSON blob.
+
+See `docs/design/document-relationships.md` for the full design rationale, validation rules, and query semantics.
+
+### 8. `versioned: false` — Updates Overwrite In Place
+
+**The feature:** Setting `versioned: false` on an edge type (PoNIF #7) makes updates **overwrite the existing payload** instead of creating a new version. Documents under such an edge type stay at `version: 1` forever. The previous data is gone after a successful update.
+
+This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does NOT Replace"). It applies only to edge types today; the flag is immutable after template creation.
+
+**Why it's powerful:** Some relationships have identity but not history. "Monster has spell" in a bestiary changes when the bestiary author tweaks a spell list — there's no audit interest in "what spells did this monster have last year." Versioning every edge update wastes storage and obscures the current state.
+
+**Why it's non-intuitive:** Every other entity in WIP versions on update — that's PoNIF #1 ("Nothing Ever Dies") combined with PoNIF #2. A reader who has internalised those rules will apply them universally and miss this exception. PoNIF #7 + PoNIF #8 together break two invariants the reader has just learned to trust.
+
+**What goes wrong:**
+
+- Code that loads `version=N-1` to compute a diff against `version=N` returns nothing on a `versioned: false` edge type — there is no previous version.
+- `get_document_versions(id)` returns a list of length 1 forever. Code that paginates or filters this list silently does the wrong thing.
+- Audit-trail assumptions (compliance flows, change history UIs) treat `versioned: false` data the same as everything else and produce gaps.
+- Concurrency on the in-place path needs `if_match` (existing OCC token); naive overwrite logic loses concurrent updates.
+
+**Sensible default:** `template.versioned` defaults to `true` — the conservative default that preserves history. Code reading documents should check `template.versioned` (or equivalently, that `get_document_versions` returns more than one row) before assuming history exists. If you need history on a relationship, build the edge type with `versioned: true`. The flag is immutable after creation, so the choice is permanent — pick deliberately.
+
+See `docs/design/document-relationships.md` §"Versioning" for the rationale and the implementation contract.
+
 ---
 
 ## PoNIFs and AI Assistants
@@ -184,8 +231,12 @@ WIP's PoNIFs are a mix of both. The defaults (especially in `@wip/client`) need 
 | Bulk first / 200 OK always | CLAUDE.md WIP Access Rules | `@wip/client` wraps singles; needs `hasErrors()` helper | Partial |
 | Registry synonyms | AI-Assisted-Dev.md | Surface resolution path in errors | Pending |
 | Template resolution timing | This document, Entry 019 | Cache with TTL (implemented) | ✓ Fixed |
+| Edge types as templates | This document, `document-relationships.md` | `create_edge_type` MCP tool surfaces the distinction; `usage` always shown in tool outputs | ✓ Documented |
+| `versioned: false` overwrite | This document, `document-relationships.md` | Default `versioned: true`; flag immutable after creation | ✓ Documented |
 | Compactheimer's drift | This document | PoNIF checkpoints in slash commands | Pending |
 
 ---
 
 *This document emerged from Day 4 of the WIP Constellation experiment, after repeated encounters with the same pattern: a correct-but-surprising WIP behaviour causing confusion for AI assistants and requiring explicit correction. The term "PoNIF" was coined by Peter to name the pattern and make it discussable. Every bug in the experiment that wasn't a real bug — every "fix" that was actually a misunderstanding — traces back to a PoNIF that wasn't yet documented or defaulted.*
+
+*PoNIFs #7 (Edge Types) and #8 (`versioned: false`) were added Day 42 (2026-04-25) alongside the document-relationships implementation — the first net-new PoNIFs since the original Day 4 list. They follow the same pattern: a powerful capability (typed property-carrying edges between documents) with non-intuitive consequences (a class of templates that is also a class of relationships; a class of documents that opts out of versioning). The fact that two new PoNIFs landed simultaneously is itself instructive — capabilities that violate two reader invariants at once need both invariants spelled out, not just one.*

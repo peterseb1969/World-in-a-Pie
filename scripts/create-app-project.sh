@@ -653,7 +653,7 @@ Read each template's header comment, fill in the TODO markers (namespace, app ti
 
 Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
-- \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 6 non-intuitive behaviours
+- \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 8 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
 - \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
 - \`templates/bootstrap/*.template\` — Bootstrap pattern starting points (see "Namespace Bootstrap on Launch" above)
@@ -665,10 +665,10 @@ Read these before starting:
 
 ## MCP
 
-WIP is accessed exclusively via MCP tools (71 tools, 5 resources). Before starting:
+WIP is accessed exclusively via MCP tools (88 tools, 5 resources). Before starting:
 - Read \`wip://conventions\` — bulk-first API, identity hashing, versioning
 - Read \`wip://data-model\` — terminologies, templates, documents, fields, term-relations
-- Read \`wip://ponifs\` — 6 behaviours that trip up every new developer
+- Read \`wip://ponifs\` — 8 behaviours that trip up every new developer
 
 \`wip://development-guide\` provides the full 4-phase workflow reference if needed.
 \`wip://query-assistant-prompt\` provides a complete system prompt for NL query agents (used by --preset query apps).

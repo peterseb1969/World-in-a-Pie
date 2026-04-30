@@ -6,11 +6,11 @@
 
 Derived from Theme 8 of the [v2 design seeds](../../../FR-YAC/reports/BE-YAC-20260409-1636/fireside-v2-design-seeds.md#theme-8-template-usage-annotations-apr-14). Decisions recorded in that file's "Decisions (2026-04-25)" section close all outstanding Theme-8 questions.
 
-Companion: [`document-relationships-implementation.md`](document-relationships-implementation.md) — decomposition, sequencing, effort estimates.
+The original implementation plan (`document-relationships-implementation.md`) was retired and `git rm`'d after Phase 0–7 completed. Recoverable from the doc-archive + `v1.1.0` tag if forensic detail is needed.
 
 ## Motivation
 
-WIP today supports Document → Document references via the `reference` field type (see [`reference-fields.md`](reference-fields.md)). A reference says "this document points at that one," but it carries no properties of its own. When information belongs to the **interaction** between two documents — not to either endpoint — there is no idiomatic way to model it.
+WIP today supports Document → Document references via the `reference` field type (see [`data-models.md`](../data-models.md)). A reference says "this document points at that one," but it carries no properties of its own. When information belongs to the **interaction** between two documents — not to either endpoint — there is no idiomatic way to model it.
 
 The motivating example (lab journal): an experiment uses 50µg of bevacizumab at 10mg/mL from lot `LOT-2026-0412`, with role `catalyst`. The quantity and role are:
 

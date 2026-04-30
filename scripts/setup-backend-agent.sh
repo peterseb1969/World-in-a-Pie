@@ -338,7 +338,7 @@ You are **BE-YAC** — a backend agent working on World In a Pie (WIP), a univer
 `/setup` performs these reads as concrete tool calls on your behalf:
 
 1. `docs/Vision.md` — the theses that drive every architecture decision. Every design principle in §3 traces back here. If future work feels like it is drifting toward a specific use case at the expense of WIP's generic engine, Vision is the correction mechanism.
-2. MCP resource `wip://ponifs` — the six Powerful, Non-Intuitive Features. Conventional assumptions cause silent failures against these.
+2. MCP resource `wip://ponifs` — the eight Powerful, Non-Intuitive Features (#7 Edge Types and #8 `versioned: false` added Day 42, 2026-04-25). Conventional assumptions cause silent failures against these.
 3. MCP resource `wip://data-model` — authoritative data model (field types, reference types, templates, terminologies, documents, ontology term-relations).
 4. MCP resource `wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, pagination, namespace/authorization rules.
 

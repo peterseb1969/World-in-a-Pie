@@ -15,7 +15,7 @@ This command relies ONLY on durable artifacts — files on disk, git history, WI
 Compaction wipes prior reads. The same baseline that `/setup` enforces at session start must be reloaded here as concrete tool calls — do not substitute "I remember from training" for actually running the reads:
 
 - `Read` `docs/Vision.md` — the theses; without them, drift toward use-case-specific solutions becomes invisible.
-- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the six PoNIFs. Conventional assumptions cause silent failures against these.
+- `ReadMcpResourceTool server=wip uri=wip://ponifs` — the eight PoNIFs (#7 Edge Types and #8 `versioned: false` added 2026-04-25). Conventional assumptions cause silent failures against these.
 - `ReadMcpResourceTool server=wip uri=wip://data-model` — what entities exist in WIP and how they're shaped.
 - `ReadMcpResourceTool server=wip uri=wip://conventions` — bulk-first 200 OK, PATCH semantics, idempotent bootstrap, template cache, namespace/authorization rules.
 

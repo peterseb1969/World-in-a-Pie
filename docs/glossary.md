@@ -116,7 +116,7 @@ An endpoint (`GET /health`) that reports service status. Used by the setup scrip
 ## I
 
 ### Identity
-The unique "fingerprint" of a document, computed from its [identity fields](#identity-fields). Two documents with the same identity are considered versions of the same entity.
+The unique "fingerprint" of a document, computed from its [identity fields](#identity-fields). Two documents with the same identity *under the same template* are considered versions of the same entity. Identity is **template-scoped** — two templates may share identity_fields without their documents colliding. Lookups by identity_hash must always be scoped to a `template_id`; namespace-wide identity_hash lookups can silently re-parent documents when templates share identity_fields.
 
 ### Identity Fields
 The template-defined fields that form the [composite key](#composite-key). Specified in the template's `identity_fields` array. Must be mandatory fields.
@@ -200,7 +200,7 @@ A formal representation of knowledge as a set of concepts and typed [relations](
 ## P
 
 ### PoNIF
-Powerful, Non-Intuitive Feature. A WIP behavior that is correct by design but surprises new users. Six PoNIFs are documented in the `wip://ponifs` MCP resource.
+Powerful, Non-Intuitive Feature. A WIP behavior that is correct by design but surprises new users. Eight PoNIFs are documented in the `wip://ponifs` MCP resource (#7 Edge Types and #8 `versioned: false` added 2026-04-25 alongside the document-relationships implementation).
 
 ### Podman
 Container runtime used by WIP. Compatible with Docker commands (`podman-compose`). Supports rootless containers on Linux.
@@ -250,7 +250,7 @@ Service that consumes [events](#event) from NATS and synchronizes data to Postgr
 A field-level type hint that triggers format-specific validation and reporting behavior. Types: `email`, `url`, `latitude`, `longitude`, `percentage`, `duration`, `geo_point`. Specified via `semantic_type` on template fields.
 
 ### Setup Script
-The `scripts/setup.sh` script that automates WIP deployment. Auto-detects platform, generates configuration, and starts all services.
+`wip-deploy install --preset standard --target compose --hostname <X>` is the canonical installer. Generates manifests + `.env`, brings the stack up. Replaces the legacy `scripts/setup.sh` + `scripts/setup-wip.sh` pair (being retired). See [WIP Guide](wip-guide.md).
 
 ### Status
 Lifecycle state of an entity. Values for documents: `active`, `inactive`, `archived`. Values for terms: `active`, `deprecated` (with reason and optional replacement), `inactive` (soft-delete). Values for templates: `draft`, `active`, `inactive`.
