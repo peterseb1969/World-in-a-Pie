@@ -726,6 +726,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 file_config=file_config,
                 array_file_config=array_file_config,
                 semantic_type=semantic_type,
+                full_text_indexed=f.get("full_text_indexed"),
             ))
 
         # Parse reporting config if present
