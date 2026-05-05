@@ -261,7 +261,41 @@ def _repo_root_opt() -> typer.models.OptionInfo:
 
 
 def _name_opt() -> typer.models.OptionInfo:
-    return typer.Option("--name", help="Deployment name.")
+    return typer.Option(
+        "--name",
+        help=(
+            "Deployment name. Determines the install dir "
+            "(~/.wip-deploy/<name>/). When unspecified, defaults to "
+            "the --namespace value for --target k8s, and to 'default' "
+            "otherwise — so `--namespace wip-kb --target k8s` lands at "
+            "~/.wip-deploy/wip-kb/ without needing to pass --name twice."
+        ),
+    )
+
+
+def _resolve_name(
+    name: str | None,
+    *,
+    target: str | None = None,
+    namespace: str | None = None,
+) -> str:
+    """Resolve --name's sentinel to an effective deployment name.
+
+    - User-provided name: use as-is.
+    - Unspecified name + k8s target with a namespace: use the namespace
+      (so install/render/etc. land at ~/.wip-deploy/<namespace>/).
+    - Unspecified name otherwise: 'default' (matches the historical
+      behaviour for compose/dev installs).
+
+    Verbs that don't take --target / --namespace (status, rebuild,
+    restart, nuke) call this with just `name`, falling through to
+    'default' for the unspecified case.
+    """
+    if name is not None:
+        return name
+    if target == "k8s" and namespace:
+        return namespace
+    return "default"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -294,7 +328,7 @@ def validate(
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
     secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
 ) -> None:
     """Validate a deployment configuration without rendering or applying.
 
@@ -309,6 +343,7 @@ def validate(
       wip-deploy validate --hostname wip.example.com --tls letsencrypt
     """
     hostname = _resolve_hostname(hostname, target)
+    name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -403,7 +438,7 @@ def show_spec(
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
     secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     output_format: Annotated[
         str, typer.Option("--format", help="yaml | json")
     ] = "yaml",
@@ -420,6 +455,7 @@ def show_spec(
       wip-deploy show-spec --target dev
     """
     hostname = _resolve_hostname(hostname, target)
+    name = _resolve_name(name, target=target, namespace=namespace)
     deployment, _components, _apps = _assemble(
         preset=preset,
         target=target,
@@ -487,7 +523,7 @@ def render(
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
     secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     output_dir: Annotated[
         Path | None,
         typer.Option(
@@ -508,6 +544,7 @@ def render(
       wip-deploy render --target k8s --namespace wip
     """
     hostname = _resolve_hostname(hostname, target)
+    name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -579,7 +616,7 @@ def install(
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
     secrets_location: Annotated[str | None, _secrets_location_opt()] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
         Path | None,
         typer.Option(
@@ -633,6 +670,7 @@ def install(
         raise typer.Exit(2)
 
     hostname = _resolve_hostname(hostname, target)
+    name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -735,7 +773,7 @@ def status(
             ),
         ),
     ] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     namespace: Annotated[
         str | None,
         typer.Option(
@@ -764,6 +802,12 @@ def status(
         format_table,
         read_compose_status,
         read_k8s_status,
+    )
+
+    name = _resolve_name(
+        name,
+        target=("k8s" if namespace is not None else None),
+        namespace=namespace,
     )
 
     if namespace is not None:
@@ -813,7 +857,7 @@ def rebuild(
             ),
         ),
     ] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     no_wait: Annotated[
         bool,
         typer.Option(
@@ -847,6 +891,7 @@ def rebuild(
     """
     from wip_deploy.apply import ApplyError, rebuild_compose_services
 
+    name = _resolve_name(name)
     target_dir = install_dir or _default_install_dir(name)
 
     if not services:
@@ -899,7 +944,7 @@ def restart(
             ),
         ),
     ] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
 ) -> None:
     """Restart one or more services in an existing install.
 
@@ -920,6 +965,7 @@ def restart(
     """
     from wip_deploy.apply import ApplyError, restart_compose_services
 
+    name = _resolve_name(name)
     target_dir = install_dir or _default_install_dir(name)
 
     if not services:
@@ -960,7 +1006,7 @@ def nuke(
             ),
         ),
     ] = None,
-    name: Annotated[str, _name_opt()] = "default",
+    name: Annotated[str | None, _name_opt()] = None,
     remove_data: Annotated[
         bool,
         typer.Option(
@@ -1054,6 +1100,7 @@ def nuke(
         )
         return
 
+    name = _resolve_name(name)
     target_dir = install_dir or _default_install_dir(name)
     target_secrets = secrets_location or (
         _default_install_dir(name) / "secrets" if remove_secrets else None
