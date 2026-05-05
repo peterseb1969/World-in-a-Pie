@@ -83,6 +83,16 @@ def apply_compose(
     # tag; without --force-recreate, it keeps the existing container
     # even if the image was rebuilt. Both are footguns in dev mode.
     force_build = deployment.spec.target == "dev"
+
+    # CASE-282: dev installs must guarantee every service ends up on
+    # the freshly-built image. `--force-recreate` alone isn't enough —
+    # cross-project container name conflicts (e.g. wip-* containers
+    # left over from an earlier install with a different project name)
+    # silently survive `compose up`, leaving the operator with a mix
+    # of fresh and stale containers. Wipe them up front.
+    if deployment.spec.target == "dev":
+        _remove_stale_wip_containers()
+
     _run_up(install_dir, compose_cmd, force_build=force_build)
 
     # Count the services in our rendered file to report a summary.
@@ -123,6 +133,52 @@ def _detect_compose_cmd() -> list[str]:
     raise ApplyError(
         "neither podman-compose nor docker is available on PATH"
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# Stale-container wipe (CASE-282 — dev target)
+# ────────────────────────────────────────────────────────────────────
+
+
+def _remove_stale_wip_containers() -> None:
+    """Stop+remove any `wip-*` containers, regardless of compose project.
+
+    Forces a clean state before `compose up` for `--target dev`. Required
+    because `--force-recreate` doesn't reliably handle cross-project
+    name conflicts: containers left over from an earlier install with
+    a different project name silently survive the up, producing a mix
+    of fresh and stale containers.
+
+    Best-effort: if neither `podman` nor `docker` is on PATH, the wipe
+    is skipped silently — `compose up` will fail naturally and the
+    operator can take it from there.
+
+    CASE-282.
+    """
+    cli = "podman" if shutil.which("podman") else (
+        "docker" if shutil.which("docker") else None
+    )
+    if cli is None:
+        return
+
+    list_result = subprocess.run(
+        [cli, "ps", "-a", "--filter", "name=^wip-", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    if list_result.returncode != 0:
+        # Best-effort: if list fails (e.g. daemon not running), let
+        # `compose up` surface the real error.
+        return
+
+    names = [n.strip() for n in list_result.stdout.splitlines() if n.strip()]
+    if not names:
+        return
+
+    # `rm -f` stops + removes in one call. Best-effort: a failure here
+    # (e.g. permission, container locked) shouldn't block the install —
+    # `compose up` will hit its own error if the leftover blocks it,
+    # and the operator gets a clear signal.
+    subprocess.run([cli, "rm", "-f", *names], capture_output=True)
 
 
 # ────────────────────────────────────────────────────────────────────
