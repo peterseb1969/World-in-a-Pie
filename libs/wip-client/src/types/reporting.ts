@@ -176,6 +176,33 @@ export interface BatchSyncResponse {
   message: string
 }
 
+/**
+ * Result shape for the entity-table batch syncs (terminologies, terms,
+ * term_relations). Synchronous on the server (no per-job polling); the
+ * full result is in the response body.
+ */
+export interface BatchEntitySyncResult {
+  status: 'completed' | 'failed'
+  table: 'terminologies' | 'terms' | 'term_relations'
+  /** Entries fetched from the source service. */
+  fetched?: number
+  /** Entries upserted into PostgreSQL. */
+  synced?: number
+  /** Entries that failed to upsert. */
+  failed?: number
+  /** Free-form additional fields the server may emit. */
+  [extra: string]: unknown
+}
+
+export interface BatchJobCancelResult {
+  status: 'cancelled' | 'not_running'
+  job_id: string
+}
+
+export interface BatchJobsCleared {
+  cleared: number
+}
+
 // ── CSV Export ──
 
 export interface CsvExportQuery {

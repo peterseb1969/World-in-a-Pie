@@ -1069,6 +1069,69 @@ var ReportingSyncService = class extends BaseService {
     };
     return this.post("/query", body);
   }
+  // ── Batch Sync (CASE-283) ──
+  /**
+   * Trigger a batch sync for ALL templates with `sync_enabled=true`.
+   * Returns one BatchSyncResponse per template; jobs run async on
+   * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
+   * progress.
+   */
+  async triggerBatchSyncAll(options) {
+    return this.post("/sync/batch", void 0, { ...options });
+  }
+  /**
+   * Trigger a batch sync for a single template (by value).
+   * Job runs async; poll `getBatchJob(job_id)` for progress.
+   */
+  async triggerBatchSync(templateValue, options) {
+    return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });
+  }
+  /**
+   * Synchronous batch sync for the terminologies entity table.
+   * Returns the result inline; no per-job polling.
+   */
+  async triggerTerminologySync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/terminologies", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /**
+   * Synchronous batch sync for the terms entity table.
+   * Iterates every active terminology in `namespace` and syncs its
+   * terms.
+   */
+  async triggerTermSync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/terms", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /**
+   * Synchronous batch sync for the term_relations entity table.
+   */
+  async triggerTermRelationSync(namespace, pageSize = 100) {
+    return this.post("/sync/batch/term_relations", void 0, {
+      namespace,
+      page_size: pageSize
+    });
+  }
+  /** List all batch sync jobs (in-memory, lost on reporting-sync restart). */
+  async listBatchJobs() {
+    return this.get("/sync/batch/jobs");
+  }
+  /** Fetch a single batch sync job by id. 404 if unknown. */
+  async getBatchJob(jobId) {
+    return this.get(`/sync/batch/jobs/${jobId}`);
+  }
+  /** Cancel a running batch sync job. */
+  async cancelBatchJob(jobId) {
+    return this.del(`/sync/batch/jobs/${jobId}`);
+  }
+  /** Clear all completed/failed/cancelled jobs from in-memory state. */
+  async clearCompletedJobs() {
+    return this.del("/sync/batch/jobs");
+  }
   // ── Sync Awareness ──
   /**
    * Wait for the reporting sync to catch up.

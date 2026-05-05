@@ -1,17 +1,22 @@
 import { BaseService } from './base.js'
 import { WipError } from '../errors.js'
 import type {
-  IntegrityCheckResult,
-  SearchResponse,
   ActivityResponse,
-  TermDocumentsResponse,
+  BatchEntitySyncResult,
+  BatchJobCancelResult,
+  BatchJobsCleared,
+  BatchSyncJob,
+  BatchSyncResponse,
   EntityReferencesResponse,
+  IntegrityCheckResult,
   ReferencedByResponse,
   ReportQueryParams,
   ReportQueryResult,
   ReportTable,
   ReportTableSchema,
+  SearchResponse,
   SyncStatus,
+  TermDocumentsResponse,
 } from '../types/reporting.js'
 
 export class ReportingSyncService extends BaseService {
@@ -49,6 +54,91 @@ export class ReportingSyncService extends BaseService {
       ...options,
     }
     return this.post('/query', body)
+  }
+
+  // ── Batch Sync (CASE-283) ──
+
+  /**
+   * Trigger a batch sync for ALL templates with `sync_enabled=true`.
+   * Returns one BatchSyncResponse per template; jobs run async on
+   * the server. Poll `listBatchJobs()` or `getBatchJob(job_id)` for
+   * progress.
+   */
+  async triggerBatchSyncAll(options?: {
+    force?: boolean
+    page_size?: number
+  }): Promise<BatchSyncResponse[]> {
+    return this.post('/sync/batch', undefined, { ...options })
+  }
+
+  /**
+   * Trigger a batch sync for a single template (by value).
+   * Job runs async; poll `getBatchJob(job_id)` for progress.
+   */
+  async triggerBatchSync(
+    templateValue: string,
+    options?: { force?: boolean; page_size?: number },
+  ): Promise<BatchSyncResponse> {
+    return this.post(`/sync/batch/${templateValue}`, undefined, { ...options })
+  }
+
+  /**
+   * Synchronous batch sync for the terminologies entity table.
+   * Returns the result inline; no per-job polling.
+   */
+  async triggerTerminologySync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/terminologies', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /**
+   * Synchronous batch sync for the terms entity table.
+   * Iterates every active terminology in `namespace` and syncs its
+   * terms.
+   */
+  async triggerTermSync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/terms', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /**
+   * Synchronous batch sync for the term_relations entity table.
+   */
+  async triggerTermRelationSync(
+    namespace: string,
+    pageSize: number = 100,
+  ): Promise<BatchEntitySyncResult> {
+    return this.post('/sync/batch/term_relations', undefined, {
+      namespace, page_size: pageSize,
+    })
+  }
+
+  /** List all batch sync jobs (in-memory, lost on reporting-sync restart). */
+  async listBatchJobs(): Promise<BatchSyncJob[]> {
+    return this.get('/sync/batch/jobs')
+  }
+
+  /** Fetch a single batch sync job by id. 404 if unknown. */
+  async getBatchJob(jobId: string): Promise<BatchSyncJob> {
+    return this.get(`/sync/batch/jobs/${jobId}`)
+  }
+
+  /** Cancel a running batch sync job. */
+  async cancelBatchJob(jobId: string): Promise<BatchJobCancelResult> {
+    return this.del(`/sync/batch/jobs/${jobId}`)
+  }
+
+  /** Clear all completed/failed/cancelled jobs from in-memory state. */
+  async clearCompletedJobs(): Promise<BatchJobsCleared> {
+    return this.del('/sync/batch/jobs')
   }
 
   // ── Sync Awareness ──

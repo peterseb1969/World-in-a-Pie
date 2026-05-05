@@ -1,6 +1,6 @@
 {
   "name": "@wip/react",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "React hooks for WIP client (TanStack Query)",
   "type": "module",
