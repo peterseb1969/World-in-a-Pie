@@ -336,6 +336,63 @@ async def test_create_terms_sends_post_to_terminology_terms():
     assert "/api/def-store/terminologies/0190b000-0000-7000-0000-000000000001/terms" in url
 
 
+@pytest.mark.asyncio
+async def test_create_terms_resolves_value_to_uuid():
+    """create_terms accepts a terminology value (e.g. 'COUNTRY') and resolves
+    it to the canonical UUID before posting. Without this, the docstring's
+    "UUID or value" promise is a lie and APP-YACs hit the universal-synonym
+    gap (Vision.md 'References Must Resolve')."""
+    resolved_uuid = "0190b000-0000-7000-0000-000000000001"
+    lookup_response = {"terminology_id": resolved_uuid, "value": "COUNTRY"}
+    bulk_response = {
+        "results": [{"index": 0, "status": "created", "term_id": "TRM-001"}],
+        "total": 1, "succeeded": 1, "failed": 0,
+    }
+    # First call (lookup-by-value) returns the resolved UUID; second
+    # call (post terms) returns the bulk response.
+    mock_http = _mock_http()
+    mock_http.get = AsyncMock(return_value=_mock_response(lookup_response))
+    mock_http.post = AsyncMock(return_value=_mock_response(bulk_response))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        result = await client.create_terms(
+            terminology_id="COUNTRY",
+            terms=[{"value": "CH", "label": "Switzerland"}],
+        )
+
+    assert result["succeeded"] == 1
+    # Resolved via lookup-by-value …
+    lookup_url = mock_http.get.call_args.args[0]
+    assert "/api/def-store/terminologies/by-value/COUNTRY" in lookup_url
+    # … then posted to the path with the resolved UUID.
+    post_url = mock_http.post.call_args.args[0]
+    assert f"/api/def-store/terminologies/{resolved_uuid}/terms" in post_url
+
+
+@pytest.mark.asyncio
+async def test_create_terms_uuid_skips_resolution():
+    """When the input is already a UUID, no lookup happens — straight POST."""
+    bulk_response = {
+        "results": [{"index": 0, "status": "created", "term_id": "TRM-001"}],
+        "total": 1, "succeeded": 1, "failed": 0,
+    }
+    uuid = "0190b000-0000-7000-0000-000000000001"
+    mock_http = _mock_http()
+    mock_http.get = AsyncMock(side_effect=AssertionError("get should not be called"))
+    mock_http.post = AsyncMock(return_value=_mock_response(bulk_response))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.create_terms(
+            terminology_id=uuid,
+            terms=[{"value": "CH", "label": "Switzerland"}],
+        )
+
+    mock_http.get.assert_not_called()
+    mock_http.post.assert_awaited_once()
+
+
 # =========================================================================
 # Error cases
 # =========================================================================
