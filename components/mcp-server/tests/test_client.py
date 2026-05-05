@@ -608,6 +608,60 @@ async def test_delete_backup_job():
 
 
 # =========================================================================
+# CASE-290: upsert_namespace — PUT body filters None fields
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_filters_none_from_body():
+    """Client.upsert_namespace must not forward None-valued fields.
+
+    Partial-update semantics depend on this: a caller flipping only
+    `deletion_mode` should send `{"deletion_mode": "full"}`, not
+    `{"description": null, "isolation_mode": null, "deletion_mode": "full", ...}`.
+    The registry's `exclude_unset=True` would treat None-fields as
+    explicitly-set, potentially overwriting other state."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb", "deletion_mode": "full"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    mock_http.put.assert_awaited_once()
+    call = mock_http.put.call_args
+    assert "/api/registry/namespaces/dev-kb" in call.args[0]
+    body = call.kwargs["json"]
+    assert body == {"deletion_mode": "full"}
+    assert "description" not in body
+    assert "isolation_mode" not in body
+    assert "allowed_external_refs" not in body
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_all_supplied_fields():
+    """All non-None fields appear in the PUT body."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(
+            prefix="dev-kb",
+            description="KB dev",
+            isolation_mode="strict",
+            deletion_mode="retain",
+            allowed_external_refs=["wip", "shared"],
+        )
+
+    body = mock_http.put.call_args.kwargs["json"]
+    assert body == {
+        "description": "KB dev",
+        "isolation_mode": "strict",
+        "deletion_mode": "retain",
+        "allowed_external_refs": ["wip", "shared"],
+    }
+
+
+# =========================================================================
 # Edge cases / helpers
 # =========================================================================
 

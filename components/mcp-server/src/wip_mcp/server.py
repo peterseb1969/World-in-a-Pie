@@ -841,6 +841,49 @@ async def create_namespace(
 
 
 @mcp.tool()
+async def upsert_namespace(
+    prefix: str,
+    description: str | None = None,
+    isolation_mode: str | None = None,
+    deletion_mode: str | None = None,
+    allowed_external_refs: list[str] | None = None,
+) -> str:
+    """Upsert a namespace via PUT (idempotent). Creates on missing, updates supplied fields when existing.
+
+    Use for evolving namespace properties without the create-vs-update
+    branching in caller code:
+    - flipping `deletion_mode` to enable hard-delete before namespace deletion
+    - tightening `isolation_mode` (open → strict) for security
+    - adding cross-namespace allow-lists (`allowed_external_refs`) for federation
+    - editing `description`
+
+    Only fields explicitly supplied are touched; omitted fields keep their
+    existing values on existing namespaces, or take platform defaults on
+    create. Always 200 OK. Idempotent: re-running with the same body is a no-op.
+
+    See wip://conventions §"Namespace upsert".
+
+    Args:
+        prefix: Namespace prefix to upsert (e.g., 'dev-kb', 'prod').
+        description: Human-readable description.
+        isolation_mode: 'open' (cross-namespace refs allowed) or 'strict' (same-namespace only).
+        deletion_mode: 'retain' (soft-delete only) or 'full' (allows hard-delete and namespace deletion).
+        allowed_external_refs: For strict isolation, allowlist of external namespace prefixes.
+    """
+    try:
+        data = await get_client().upsert_namespace(
+            prefix=prefix,
+            description=description,
+            isolation_mode=isolation_mode,
+            deletion_mode=deletion_mode,
+            allowed_external_refs=allowed_external_refs,
+        )
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def get_namespace_stats(prefix: str) -> str:
     """Get statistics for a namespace — entity counts by type."""
     try:
@@ -3422,6 +3465,7 @@ WRITE_TOOLS = frozenset({
     "merge_entries",
     # Namespace
     "create_namespace",
+    "upsert_namespace",
     "delete_namespace",
 })
 

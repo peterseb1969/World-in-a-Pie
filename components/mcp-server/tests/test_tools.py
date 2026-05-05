@@ -475,3 +475,93 @@ async def test_create_edge_type_explicit_empty_respected():
 
     template = mock.create_template.call_args.args[0]
     assert template["identity_fields"] == []
+
+
+# =========================================================================
+# CASE-290: upsert_namespace — PUT-based namespace upsert MCP tool
+# =========================================================================
+
+from wip_mcp.server import upsert_namespace  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_creates_on_missing():
+    """PUT creates the namespace per the upsert contract.
+
+    `create_namespace` (POST) returns 409 if the namespace exists; the
+    PUT-based `upsert_namespace` is the idempotent path. The wrapper's
+    job is to forward to client.upsert_namespace with the supplied
+    fields — no extra logic, no policy."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "description": "KB dev namespace",
+        "isolation_mode": "open",
+        "deletion_mode": "retain",
+        "allowed_external_refs": [],
+        "status": "active",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        result = await upsert_namespace(
+            prefix="dev-kb",
+            description="KB dev namespace",
+        )
+
+    data = json.loads(result)
+    assert data["prefix"] == "dev-kb"
+    mock.upsert_namespace.assert_awaited_once()
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["prefix"] == "dev-kb"
+    assert call_kwargs["description"] == "KB dev namespace"
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_updates_existing_fields():
+    """Re-running PUT with the same body is a no-op (idempotent).
+
+    The wrapper just forwards; the registry's `exclude_unset=True`
+    semantics + setattr-only-non-None loop guarantee re-runs are
+    no-ops. This test verifies the wrapper passes the body through
+    faithfully on every call."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+        "status": "active",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    assert mock.upsert_namespace.await_count == 2
+    for call in mock.upsert_namespace.call_args_list:
+        assert call.kwargs["prefix"] == "dev-kb"
+        assert call.kwargs["deletion_mode"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_preserves_untouched_fields():
+    """Caller flipping just `deletion_mode` must leave other fields alone.
+
+    The wrapper passes `None` for unspecified params; the *client*
+    method is responsible for not putting Nones in the HTTP body
+    (covered separately by test_client.py). This test verifies the
+    wrapper hands through Nones faithfully — no fabricated defaults."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(prefix="dev-kb", deletion_mode="full")
+
+    mock.upsert_namespace.assert_awaited_once()
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["prefix"] == "dev-kb"
+    assert call_kwargs["deletion_mode"] == "full"
+    assert call_kwargs["description"] is None
+    assert call_kwargs["isolation_mode"] is None
+    assert call_kwargs["allowed_external_refs"] is None
