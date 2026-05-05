@@ -238,6 +238,39 @@ class WipClient:
             self.registry_url, "/api/registry/namespaces", json=payload
         )
 
+    async def upsert_namespace(
+        self,
+        prefix: str,
+        description: str | None = None,
+        isolation_mode: str | None = None,
+        deletion_mode: str | None = None,
+        allowed_external_refs: list[str] | None = None,
+        updated_by: str | None = None,
+    ) -> dict:
+        """PUT /api/registry/namespaces/{prefix} — idempotent upsert.
+
+        Forwards only non-None fields so partial updates don't reset
+        other fields. The registry uses `exclude_unset=True` semantics
+        on its end; matching that here keeps the contract honest from
+        the caller's perspective. See wip://conventions and CASE-290.
+        """
+        payload: dict[str, Any] = {}
+        if description is not None:
+            payload["description"] = description
+        if isolation_mode is not None:
+            payload["isolation_mode"] = isolation_mode
+        if deletion_mode is not None:
+            payload["deletion_mode"] = deletion_mode
+        if allowed_external_refs is not None:
+            payload["allowed_external_refs"] = allowed_external_refs
+        if updated_by is not None:
+            payload["updated_by"] = updated_by
+        return await self._put(
+            self.registry_url,
+            f"/api/registry/namespaces/{prefix}",
+            json=payload,
+        )
+
     async def get_namespace(self, prefix: str) -> dict:
         return await self._get(
             self.registry_url, f"/api/registry/namespaces/{prefix}"
