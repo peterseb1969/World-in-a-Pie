@@ -1743,10 +1743,15 @@ async def create_edge_type(
             (standard lifecycle). False means updates overwrite in place;
             documents stay at version=1 forever, no history is preserved.
             **Immutable after creation** — see PoNIF #8 (`wip://ponifs`).
-        identity_fields: Optional. Default is `[source_ref, target_ref]`
-            (deduplicates edges by endpoint pair). Add a third field
-            (e.g. `role`, `timepoint`) to allow multiple distinct edges
-            between the same pair.
+        identity_fields: Optional. **Default is `[source_ref, target_ref]`**
+            (deduplicates edges by endpoint pair). Required for
+            `versioned: false` to work as documented in PoNIF #8 —
+            without identity dedup, "duplicate writes overwrite in
+            place" can't fire (every duplicate becomes a new document).
+            Add a third field (e.g. `role`, `timepoint`) to allow
+            multiple distinct edges between the same pair. Pass `[]`
+            explicitly to opt out into truly append-only semantics
+            (rare; conflicts with `versioned: false`).
         rules: Optional cross-field validation rules.
 
     Validation (raises before hitting template-store):
@@ -1827,7 +1832,16 @@ async def create_edge_type(
     }
     if description is not None:
         template["description"] = description
-    if identity_fields is not None:
+    # CASE-288: substitute the documented default when the caller
+    # didn't pass identity_fields. Distinguish None (use default)
+    # from [] (explicit append-only opt-out, rare). PoNIF #8's
+    # versioned=false overwrite-in-place contract relies on identity
+    # dedup firing — without [source_ref, target_ref] as the default,
+    # the docstring's promise and the PoNIF would be silent contract
+    # violations.
+    if identity_fields is None:
+        template["identity_fields"] = ["source_ref", "target_ref"]
+    else:
         template["identity_fields"] = list(identity_fields)
     if rules is not None:
         template["rules"] = list(rules)
