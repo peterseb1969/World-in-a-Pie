@@ -685,11 +685,13 @@ The `/case` command lives at `.claude/commands/case.md`. Peter symlinks both the
 **Two remotes — always push to both.** Gitea runs the CI.
 
 ```bash
-git push origin develop && git push github develop
+git push gitea develop && git push origin develop
 ```
 
-- **origin** → `http://gitea.local:3000/peter/World-in-a-Pie.git` (Gitea, primary, runs CI)
-- **github** → `git@github.com:peterseb1969/World-in-a-Pie.git` (mirror)
+- **gitea** → `http://gitea.local:3000/peter/World-in-a-Pie.git` (Gitea, primary, runs CI)
+- **origin** → `https://github.com/peterseb1969/World-in-a-Pie` (GitHub, mirror)
+
+Verify with `git remote -v` if in doubt.
 
 Full rule at `feedback_push_to_gitea.md`.
 
