@@ -509,6 +509,19 @@ class WipClient:
     async def create_terms(
         self, terminology_id: str, terms: list[dict], batch_size: int | None = None
     ) -> dict:
+        # Accept UUID or value/synonym — the docstring promises both.
+        # The path-segment endpoint at the def-store side only matches
+        # UUIDs, so resolve a non-UUID input via lookup-by-value first.
+        # Aligns this tool with the universal synonym resolution
+        # principle (Vision.md "References Must Resolve").
+        import re
+        is_uuid = bool(re.match(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+            terminology_id, re.IGNORECASE
+        ))
+        if not is_uuid:
+            term = await self.get_terminology_by_value(terminology_id)
+            terminology_id = term["terminology_id"]
         resp = await self._post(
             self.def_store_url,
             f"/api/def-store/terminologies/{terminology_id}/terms",
