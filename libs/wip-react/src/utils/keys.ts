@@ -53,5 +53,8 @@ export const wipKeys = {
     activity: (params?: object) => ['wip', 'reporting', 'activity', params] as const,
     search: (params?: object) => ['wip', 'reporting', 'search', params] as const,
     query: (sql: string, params?: unknown[]) => ['wip', 'reporting', 'query', sql, params] as const,
+    syncStatus: () => ['wip', 'reporting', 'sync-status'] as const,
+    batchJobs: () => ['wip', 'reporting', 'batch-jobs'] as const,
+    batchJob: (jobId: string) => ['wip', 'reporting', 'batch-jobs', jobId] as const,
   },
 } as const
