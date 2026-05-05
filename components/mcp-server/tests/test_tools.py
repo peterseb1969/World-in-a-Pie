@@ -363,3 +363,115 @@ async def test_import_documents_csv_auto_mapping():
         assert data["succeeded"] == 1
     finally:
         os.unlink(tmp_path)
+
+
+# =========================================================================
+# CASE-288: create_edge_type — identity_fields default substitution
+# =========================================================================
+
+from wip_mcp.server import create_edge_type  # noqa: E402
+
+
+def _edge_type_fields():
+    """Standard source_ref + target_ref pair with the right shape."""
+    return [
+        {
+            "name": "source_ref",
+            "label": "Source",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["PERSON"],
+            "mandatory": True,
+        },
+        {
+            "name": "target_ref",
+            "label": "Target",
+            "type": "reference",
+            "reference_type": "document",
+            "target_templates": ["PERSON"],
+            "mandatory": True,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_default_identity_fields():
+    """When identity_fields is omitted, the wrapper substitutes the
+    documented default `[source_ref, target_ref]` before forwarding to
+    create_template. Without this, PoNIF #8's versioned=false
+    overwrite-in-place contract is silently broken — every duplicate
+    write becomes a new document instead of overwriting."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T-IMPACTS", "version": 1}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="IMPACTS",
+            label="Impacts",
+            source_templates=["LESSON"],
+            target_templates=["DECISION"],
+            fields=[
+                {**_edge_type_fields()[0], "target_templates": ["LESSON"]},
+                {**_edge_type_fields()[1], "target_templates": ["DECISION"]},
+            ],
+            versioned=False,
+        )
+
+    mock.create_template.assert_awaited_once()
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == ["source_ref", "target_ref"]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_explicit_identity_fields_preserved():
+    """A caller passing identity_fields explicitly (e.g., adding a third
+    field for multi-edge dedup) must have their value forwarded as-is —
+    not overridden by the default."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T", "version": 1}
+
+    fields = _edge_type_fields() + [
+        {"name": "role", "label": "Role", "type": "string"}
+    ]
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="COLLAB",
+            label="Collaboration",
+            source_templates=["PERSON"],
+            target_templates=["PERSON"],
+            fields=fields,
+            identity_fields=["source_ref", "target_ref", "role"],
+        )
+
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == ["source_ref", "target_ref", "role"]
+
+
+@pytest.mark.asyncio
+async def test_create_edge_type_explicit_empty_respected():
+    """`identity_fields=[]` is an explicit opt-out into truly
+    append-only semantics — rare, but the caller's intent must be
+    preserved (FR-YAC's pushback #4 on CASE-288 — distinguish "not
+    provided" from "explicitly empty")."""
+    mock = _mock_client()
+    mock.default_namespace = None
+    mock.create_template.return_value = {"template_id": "T", "version": 1}
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await create_edge_type(
+            value="LOGS",
+            label="Append-only edge log",
+            source_templates=["PERSON"],
+            target_templates=["EVENT"],
+            fields=[
+                {**_edge_type_fields()[0], "target_templates": ["PERSON"]},
+                {**_edge_type_fields()[1], "target_templates": ["EVENT"]},
+            ],
+            identity_fields=[],
+        )
+
+    template = mock.create_template.call_args.args[0]
+    assert template["identity_fields"] == []
