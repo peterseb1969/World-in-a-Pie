@@ -118,6 +118,13 @@ PUT is an upsert — creates the namespace on missing using platform defaults
 allowed_external_refs=[]); updates supplied fields when existing. Always 200 OK.
 Idempotent: re-running with the same body is a no-op.
 
+Safety guards on `deletion_mode`:
+- The 'wip' default namespace cannot be flipped to `full` — 400.
+- Flipping an existing namespace from `retain` to `full` requires
+  `confirm_enable_deletion=true` in the body — 400 without it.
+- Creating a new namespace with `deletion_mode='full'` is allowed
+  directly (no transition to confirm).
+
 ### Template create with conflict validation: POST /templates?on_conflict=validate
 Adds a query parameter to control collision behavior on (namespace, value):
 - on_conflict='error' (default): collisions return per-item status='error',
@@ -847,6 +854,7 @@ async def upsert_namespace(
     isolation_mode: str | None = None,
     deletion_mode: str | None = None,
     allowed_external_refs: list[str] | None = None,
+    confirm_enable_deletion: bool = False,
 ) -> str:
     """Upsert a namespace via PUT (idempotent). Creates on missing, updates supplied fields when existing.
 
@@ -859,7 +867,15 @@ async def upsert_namespace(
 
     Only fields explicitly supplied are touched; omitted fields keep their
     existing values on existing namespaces, or take platform defaults on
-    create. Always 200 OK. Idempotent: re-running with the same body is a no-op.
+    create. Always 200 OK (with the standard guard exceptions). Idempotent:
+    re-running with the same body is a no-op.
+
+    Safety guards on `deletion_mode`:
+    - The 'wip' default namespace cannot be flipped to `full`.
+    - Flipping an existing namespace from `retain` to `full` requires
+      `confirm_enable_deletion=true`. Without it, the registry returns 400.
+      Creating a new namespace with `deletion_mode='full'` is allowed
+      directly (no transition to confirm).
 
     See wip://conventions §"Namespace upsert".
 
@@ -869,6 +885,8 @@ async def upsert_namespace(
         isolation_mode: 'open' (cross-namespace refs allowed) or 'strict' (same-namespace only).
         deletion_mode: 'retain' (soft-delete only) or 'full' (allows hard-delete and namespace deletion).
         allowed_external_refs: For strict isolation, allowlist of external namespace prefixes.
+        confirm_enable_deletion: Required (set True) when flipping an existing namespace's
+            deletion_mode from 'retain' to 'full'. Default False.
     """
     try:
         data = await get_client().upsert_namespace(
@@ -877,6 +895,7 @@ async def upsert_namespace(
             isolation_mode=isolation_mode,
             deletion_mode=deletion_mode,
             allowed_external_refs=allowed_external_refs,
+            confirm_enable_deletion=confirm_enable_deletion,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

@@ -255,6 +255,12 @@ client.registry.upsert_namespace("my-app", {
 
 The response is always `200 OK` with the resulting `NamespaceResponse`. Calling it twice with the same body is a no-op on the second call.
 
+**Safety guards on `deletion_mode`** (mirror the narrow PATCH route at `/api/registry/namespaces/{prefix}`):
+
+- The `wip` default namespace cannot be flipped to `full`. Returns 400.
+- Flipping an existing namespace from `retain` to `full` requires `confirm_enable_deletion=true` in the body. Without it, the registry returns 400.
+- Creating a new namespace with `deletion_mode='full'` is allowed directly (no transition to confirm).
+
 ### Template create with conflict validation — `POST /api/template-store/templates?on_conflict=validate`
 
 `POST /templates` accepts an `on_conflict` query parameter:

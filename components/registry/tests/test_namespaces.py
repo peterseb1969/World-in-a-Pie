@@ -550,6 +550,109 @@ class TestUpdateNamespace:
         assert data["description"] == "New description"
         assert data["isolation_mode"] == "strict"
 
+    # CASE-291: PUT route mirrors the safety guards the narrow PATCH route
+    # at namespace_deletion.py:140 enforces — wip can't go full, and an
+    # existing namespace flipping retain→full needs confirm_enable_deletion.
+
+    @pytest.mark.asyncio
+    async def test_upsert_blocks_wip_full(self, client: AsyncClient, auth_headers: dict):
+        """PUT cannot flip the 'wip' default namespace to deletion_mode='full'."""
+        await client.post(
+            "/api/registry/namespaces/initialize-wip",
+            headers=auth_headers,
+        )
+
+        response = await client.put(
+            "/api/registry/namespaces/wip",
+            json={"deletion_mode": "full", "confirm_enable_deletion": True},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert "wip" in response.json()["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_upsert_requires_confirm_retain_to_full(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Existing retain → full transition without confirm_enable_deletion is rejected."""
+        await client.post(
+            "/api/registry/namespaces",
+            json={"prefix": "guard-retain"},
+            headers=auth_headers,
+        )
+
+        response = await client.put(
+            "/api/registry/namespaces/guard-retain",
+            json={"deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 400
+        assert "confirm_enable_deletion" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_upsert_allows_retain_to_full_with_confirm(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Existing retain → full with confirm_enable_deletion=true succeeds."""
+        await client.post(
+            "/api/registry/namespaces",
+            json={"prefix": "guard-confirm"},
+            headers=auth_headers,
+        )
+
+        response = await client.put(
+            "/api/registry/namespaces/guard-confirm",
+            json={
+                "deletion_mode": "full",
+                "confirm_enable_deletion": True,
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["deletion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_upsert_create_with_deletion_mode_full_allowed(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Creating a new namespace via PUT with deletion_mode='full' is allowed.
+
+        No retain→full transition is happening — the caller is opting in
+        at creation time, mirroring the existing POST create_namespace
+        behaviour (no confirm needed at creation)."""
+        response = await client.put(
+            "/api/registry/namespaces/guard-create-full",
+            json={"deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["deletion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_upsert_idempotent_full_to_full(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """Re-applying deletion_mode='full' to a namespace already at 'full' is a no-op.
+
+        No transition is happening, so confirm_enable_deletion is not required.
+        Without this carve-out, idempotent re-runs would start failing once
+        a namespace is at 'full'."""
+        # Create directly at full (allowed)
+        await client.put(
+            "/api/registry/namespaces/guard-idempotent",
+            json={"deletion_mode": "full"},
+            headers=auth_headers,
+        )
+
+        # Re-run identical body — should still succeed without confirm
+        response = await client.put(
+            "/api/registry/namespaces/guard-idempotent",
+            json={"deletion_mode": "full"},
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert response.json()["deletion_mode"] == "full"
+
 
 class TestArchiveNamespace:
     """Tests for archiving namespaces."""

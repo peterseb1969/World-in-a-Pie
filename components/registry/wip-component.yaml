@@ -11,6 +11,10 @@ metadata:
 spec:
   image:
     name: registry
+    # Per-component tag override. Bumped when the deployer's global content
+    # tag won't force a re-pull (Kubernetes IfNotPresent + cached digest).
+    # First pin landed for CASE-291 (PUT-vs-PATCH safety-guard parity).
+    tag: v1.0.0
     build_context: .
 
   ports:

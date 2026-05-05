@@ -222,10 +222,32 @@ async def upsert_namespace(
 
     This makes app bootstrap scripts idempotent — a single self-healing
     call replaces the `GET → 404 → POST` dance.
+
+    Safety guards on `deletion_mode` mirror the narrow PATCH route:
+    the `wip` default namespace cannot be flipped to `full`, and
+    flipping an existing namespace from `retain` to `full` requires
+    `confirm_enable_deletion=true` in the body.
     """
     ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
     actor = request.updated_by
+
+    new_deletion_mode = update_data.get("deletion_mode")
+    if new_deletion_mode == "full":
+        if prefix == "wip":
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot enable deletion on the default 'wip' namespace",
+            )
+        if ns is not None and ns.deletion_mode == "retain":
+            if not update_data.get("confirm_enable_deletion"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Set confirm_enable_deletion=true in the body to flip "
+                        "deletion_mode from 'retain' to 'full'"
+                    ),
+                )
 
     if ns is None:
         # Create path — use provided fields, defaults for the rest.
@@ -242,8 +264,12 @@ async def upsert_namespace(
         return namespace_to_response(ns)
 
     # Update path — only touch explicitly provided fields.
+    # confirm_enable_deletion is a safety toggle, not a stored field —
+    # consumed by the guard above and dropped here.
     for field, value in update_data.items():
-        if value is not None and field != "updated_by":
+        if field in ("updated_by", "confirm_enable_deletion"):
+            continue
+        if value is not None:
             setattr(ns, field, value)
 
     ns.updated_at = datetime.now(UTC)

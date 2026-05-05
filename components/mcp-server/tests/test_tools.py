@@ -565,3 +565,27 @@ async def test_upsert_namespace_preserves_untouched_fields():
     assert call_kwargs["description"] is None
     assert call_kwargs["isolation_mode"] is None
     assert call_kwargs["allowed_external_refs"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_confirm_enable_deletion():
+    """CASE-291: confirm_enable_deletion=True passes through to the client.
+
+    The MCP tool's default is False (opt-in), and callers flipping
+    retain→full on an existing namespace must explicitly pass True.
+    The wrapper just forwards — the registry enforces the policy."""
+    mock = _mock_client()
+    mock.upsert_namespace.return_value = {
+        "prefix": "dev-kb",
+        "deletion_mode": "full",
+    }
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await upsert_namespace(
+            prefix="dev-kb",
+            deletion_mode="full",
+            confirm_enable_deletion=True,
+        )
+
+    call_kwargs = mock.upsert_namespace.call_args.kwargs
+    assert call_kwargs["confirm_enable_deletion"] is True

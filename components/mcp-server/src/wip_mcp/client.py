@@ -245,6 +245,7 @@ class WipClient:
         isolation_mode: str | None = None,
         deletion_mode: str | None = None,
         allowed_external_refs: list[str] | None = None,
+        confirm_enable_deletion: bool | None = None,
         updated_by: str | None = None,
     ) -> dict:
         """PUT /api/registry/namespaces/{prefix} — idempotent upsert.
@@ -252,7 +253,13 @@ class WipClient:
         Forwards only non-None fields so partial updates don't reset
         other fields. The registry uses `exclude_unset=True` semantics
         on its end; matching that here keeps the contract honest from
-        the caller's perspective. See wip://conventions and CASE-290.
+        the caller's perspective.
+
+        `confirm_enable_deletion` is the safety toggle for retain→full
+        flips on existing namespaces (mirrors the guard on the narrow
+        PATCH route — see CASE-291). Pass True to opt in.
+
+        See wip://conventions and CASE-290 / CASE-291.
         """
         payload: dict[str, Any] = {}
         if description is not None:
@@ -263,6 +270,8 @@ class WipClient:
             payload["deletion_mode"] = deletion_mode
         if allowed_external_refs is not None:
             payload["allowed_external_refs"] = allowed_external_refs
+        if confirm_enable_deletion is not None:
+            payload["confirm_enable_deletion"] = confirm_enable_deletion
         if updated_by is not None:
             payload["updated_by"] = updated_by
         return await self._put(

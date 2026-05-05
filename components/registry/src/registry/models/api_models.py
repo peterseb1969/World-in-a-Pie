@@ -52,6 +52,13 @@ class NamespaceUpdate(StrictModel):
         default=None,
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )
+    confirm_enable_deletion: bool | None = Field(
+        default=None,
+        description=(
+            "Required when flipping deletion_mode from 'retain' to 'full' on an "
+            "existing namespace. Mirrors the safety guard on the narrow PATCH route."
+        ),
+    )
     updated_by: str | None = None
 
 

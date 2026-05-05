@@ -661,6 +661,36 @@ async def test_upsert_namespace_forwards_all_supplied_fields():
     }
 
 
+@pytest.mark.asyncio
+async def test_upsert_namespace_forwards_confirm_enable_deletion():
+    """CASE-291: confirm_enable_deletion lands in the PUT body when set.
+
+    The registry only consults the field when a retain→full transition
+    is in flight, but the client must put it on the wire whenever the
+    caller passes a value (True or False). Default is None — omitted
+    from the body."""
+    mock_http = _mock_http(_mock_response({"prefix": "dev-kb"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.upsert_namespace(
+            prefix="dev-kb",
+            deletion_mode="full",
+            confirm_enable_deletion=True,
+        )
+
+    body = mock_http.put.call_args.kwargs["json"]
+    assert body == {"deletion_mode": "full", "confirm_enable_deletion": True}
+
+    # Without confirm_enable_deletion, the field stays out of the body.
+    mock_http2 = _mock_http(_mock_response({"prefix": "dev-kb"}))
+    with patch.object(client, "_get_client", return_value=mock_http2):
+        await client.upsert_namespace(prefix="dev-kb", description="X")
+
+    body2 = mock_http2.put.call_args.kwargs["json"]
+    assert "confirm_enable_deletion" not in body2
+
+
 # =========================================================================
 # Edge cases / helpers
 # =========================================================================
