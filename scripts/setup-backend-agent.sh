@@ -215,6 +215,16 @@ fi
 
 case "$TARGET" in
     local)
+        # F19 (CASE-287): use WIP_API_KEY_FILE when sourced from a
+        # wip-deploy secrets file — that way key rotation in WIP applies
+        # automatically without re-running this script. Fall back to
+        # literal WIP_API_KEY for .env-sourced keys (which the file
+        # backend doesn't auto-rotate) and the dev fixture.
+        if [[ "$API_KEY_SOURCE" == "$HOME/.wip-deploy/"*/secrets/api-key ]]; then
+            KEY_ENV_LINE='"WIP_API_KEY_FILE": "'"$API_KEY_SOURCE"'"'
+        else
+            KEY_ENV_LINE='"WIP_API_KEY": "'"$API_KEY"'"'
+        fi
         # Defaults assume WIP is reachable via Caddy on https://localhost:8443
         # (the shape wip-deploy install --target dev|compose produces). For
         # direct-to-service setups (services on 8001-8005 unroot'd), edit the
@@ -227,7 +237,7 @@ case "$TARGET" in
       "command": "$VENV_PYTHON",
       "args": ["-m", "wip_mcp.server"],
       "env": {
-        "WIP_API_KEY": "$API_KEY",
+        $KEY_ENV_LINE,
         "REGISTRY_URL": "https://localhost:8443",
         "DEF_STORE_URL": "https://localhost:8443",
         "TEMPLATE_STORE_URL": "https://localhost:8443",
@@ -327,6 +337,8 @@ echo "3. Generating CLAUDE.md..."
 cat > "$WIP_ROOT/CLAUDE.md" << 'CLAUDEEOF'
 # WIP — Backend Development
 
+<!-- last reviewed: 2026-05-02 / CASE-287 -->
+
 You are **BE-YAC** — a backend agent working on World In a Pie (WIP), a universal template-driven document storage system. You are one of many. The current session will end; the next BE-YAC will read this file and the artifacts you leave behind. Everything worth keeping goes into durable files.
 
 ---
@@ -363,13 +375,16 @@ Eight services + Caddy reverse proxy. Names you will see constantly:
 - **Template-Store** — document schemas, draft mode, versioning, reference fields
 - **Document-Store** — storage, file handling, CSV/XLSX import, replay
 - **Reporting-Sync** — MongoDB → PostgreSQL via NATS events
-- **MCP Server** — 70+ tools for AI-assisted development (stdio / SSE / streamable HTTP)
+- **Auth-Gateway** — auth shim in front of every backend service (validates API keys, enforces namespace scoping)
+- **Ingest-Gateway** — async bulk ingest path for instrument data and large imports
+- **MCP Server** — 88 tools for AI-assisted development (stdio / SSE / streamable HTTP)
 
 Shared libraries:
 
 - `libs/wip-auth/` — Python auth + resolver, imported by all backend services
 - `libs/wip-client/` — `@wip/client` TypeScript library
 - `libs/wip-react/` — `@wip/react` hooks
+- `libs/wip-proxy/` — `@wip/proxy` Express middleware (apps use this for WIP API proxying with auth injection)
 
 ---
 
@@ -575,9 +590,9 @@ Do not `pip install` new packages into the venv without approval — `.venv` is 
 | `/quality` | Run quality audit |
 | `/review-changes` | Analyze uncommitted work |
 | `/pre-commit` | CI-equivalent checks |
-| `/roadmap` | Current priorities |
 | `/report` | Capture fireside chat or trigger session summary |
 | `/lesson` | Capture a lesson into structured memory |
+| `/doc-review` | Run a documentation audit on a target file or directory |
 | `/case file|list|read|respond|implement|close|comment` | Cross-agent case management |
 
 ---

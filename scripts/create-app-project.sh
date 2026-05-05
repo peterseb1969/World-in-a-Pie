@@ -543,9 +543,11 @@ echo "$STEP_NUM. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
 
+<!-- last reviewed: 2026-05-02 / CASE-287 -->
+
 ## What This App Does
 
-> TODO: Describe what this app does in one paragraph.
+> $APP_NAME — TODO: replace this line with what this app does.
 
 ## The Golden Rule
 
@@ -564,10 +566,13 @@ Your development namespace is \`$DEV_NAMESPACE\`. Use it for all data modeling d
 2. Create terminologies, templates, and test documents in this namespace
 3. Iterate until the data model is stable
 4. When ready for production, create a new namespace (e.g., \`${APP_SLUG}\`) and recreate the finalized model there
-5. Clean up the dev namespace with \`dev-delete.py\`:
-   \`\`\`bash
-   python tools/dev-delete.py --namespace $DEV_NAMESPACE --force
+5. Retire the dev namespace via the API when the data model is finalised:
    \`\`\`
+   mcp__wip__delete_namespace(prefix="$DEV_NAMESPACE")
+   \`\`\`
+   (or \`DELETE /api/registry/namespaces/$DEV_NAMESPACE\`). The API
+   honours each namespace's deletion mode (\`retain\` vs \`full\`) — no
+   \`--force\` flag needed.
 
 **Important:** MCP tool calls use the privileged admin key, so always pass \`namespace=$DEV_NAMESPACE\` explicitly. Your app's runtime key (scoped to one namespace) gets automatic namespace derivation — no \`namespace\` parameter needed in app code.
 
@@ -589,7 +594,7 @@ WIP_API_KEY=$APP_KEY_PLAINTEXT
 EOF
 else
 cat >> "$APP_DIR/CLAUDE.md" << 'EOF'
-No key was auto-provisioned (WIP may not have been running). Create one via the Registry API — see WIP's `docs/api-key-management.md`.
+No key was auto-provisioned by this script. If WIP is running locally and you have an admin key, create a runtime key via `mcp__wip__create_api_key` (or `POST /api/registry/api-keys`). If a key was already provisioned out-of-band (e.g. for a non-localhost target like `wip-kb.local`), check `.env` and `~/.wip-deploy/<deployment>/secrets/`.
 
 Save the `plaintext_key` from the response to `.env`:
 ```bash
@@ -606,7 +611,11 @@ Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP deriv
 
 ## Process
 
-Follow the 4-phase development process. Start with:
+Follow the 4-phase development process.
+
+If a \`KICKOFF.md\` exists in this directory, read it first — the kickoff supersedes the standard \`/explore\` start for special-case apps (e.g. design-package-driven apps like APP-KB).
+
+Otherwise start with:
 
 \`\`\`
 /explore
@@ -680,14 +689,15 @@ For Phase 4 (app building), use @wip/client, @wip/react, and @wip/proxy:
 - \`libs/wip-react-README.md\` — React hooks (TanStack Query, 30+ hooks)
 - \`libs/wip-proxy-README.md\` — Express middleware for WIP API proxying with auth injection
 
-Install from tarballs in \`libs/\`:
+**Phase 4 begins with:**
 \`\`\`bash
-npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz
+npm install ./libs/wip-client-*.tgz ./libs/wip-react-*.tgz ./libs/wip-proxy-*.tgz @tanstack/react-query
 \`\`\`
+The WIP libs are tarballs in \`libs/\`. \`@tanstack/react-query\` is the peer dependency that powers \`@wip/react\`'s hooks — install it explicitly; the scaffold's \`package.json\` does not pre-declare it.
 
 ## Dev Setup Gotchas
 
-**TLS:** WIP uses a self-signed cert on \`https://localhost:8443\`. Node.js \`fetch()\` rejects self-signed certs. Add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). Production with proper certs needs no workaround.
+**TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — \`https://localhost:8443\` for compose dev, \`https://<ingress-hostname>\` for k8s (e.g. \`https://wip-kb.local\`). Node.js \`fetch()\` rejects self-signed certs; add \`NODE_TLS_REJECT_UNAUTHORIZED=0\` to your \`dev:server\` script (NOT \`start\`/production). The python wip_mcp client uses \`WIP_VERIFY_TLS=false\` (already set in \`.mcp.json\`). Production with proper certs needs no workaround.
 
 **@wip/client baseUrl:** In browser apps behind a Vite proxy, use \`baseUrl: '/wip'\` (resolved to \`window.location.origin + '/wip'\`). Do NOT use a bare relative path without the client resolving it — \`new URL('/wip/...')\` throws without a protocol.
 
@@ -708,25 +718,8 @@ Key commands:
 
 Remote WIP instances:
 \`\`\`bash
-wip-toolkit --host pi-poe-8gb.local --proxy export wip /tmp/backup.zip
+wip-toolkit --host wip-kb.local --proxy export kb /tmp/kb-backup.zip
 \`\`\`
-
-## Dev Delete
-
-\`tools/dev-delete.py\` hard-deletes entities during iterative development.
-
-\`\`\`bash
-# Dry run (default)
-python tools/dev-delete.py --namespace myapp
-
-# Actually delete
-python tools/dev-delete.py --namespace myapp --force
-
-# Remote MongoDB
-python tools/dev-delete.py --mongo-uri mongodb://remote-host:27017/ --namespace myapp --force
-\`\`\`
-
-Requires \`pymongo\`. For file/reporting cleanup also install \`boto3\` and \`psycopg2-binary\`.
 
 ## Session Awareness
 
@@ -772,10 +765,11 @@ At the start of every session, run \`date '+%Y%m%d-%H%M'\` and assign yourself a
 
 | App | Prefix |
 |-----|--------|
-| Statement Manager | \`APP-SM\` |
-| Receipt Scanner | \`APP-RS\` |
-| D&D Compendium | \`APP-DND\` |
+| AuthorAssist | \`APP-AA\` |
 | ClinTrial Explorer | \`APP-CT\` |
+| D&D Compendium | \`APP-DND\` |
+| KB | \`APP-KB\` |
+| React Console | \`APP-RC\` |
 | New apps | \`APP-<SHORT>\` (pick a 2-4 letter code, tell the user) |
 
 Format: \`<PREFIX>-YYYYMMDD-HHMM\`. Example: \`APP-CT-20260331-2015\`.
