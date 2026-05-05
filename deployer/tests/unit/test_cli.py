@@ -326,6 +326,45 @@ class TestResolveHostname:
         assert _resolve_hostname(None, "k8s") == "wip.local"
 
 
+class TestResolveName:
+    """`--name` defaults to `--namespace` for k8s installs (CASE-287 follow-up).
+
+    Avoids the convention gotcha where APP-YAC consumers expect
+    `~/.wip-deploy/<namespace>/secrets/api-key` but the deployer wrote
+    them to `~/.wip-deploy/default/secrets/`.
+    """
+
+    def test_explicit_name_overrides(self) -> None:
+        from wip_deploy.cli import _resolve_name
+        assert _resolve_name("custom") == "custom"
+        assert _resolve_name("custom", target="k8s", namespace="wip-kb") == "custom"
+
+    def test_k8s_with_namespace_uses_namespace(self) -> None:
+        from wip_deploy.cli import _resolve_name
+        assert _resolve_name(None, target="k8s", namespace="wip-kb") == "wip-kb"
+
+    def test_k8s_without_namespace_falls_through_to_default(self) -> None:
+        from wip_deploy.cli import _resolve_name
+        assert _resolve_name(None, target="k8s", namespace=None) == "default"
+        assert _resolve_name(None, target="k8s", namespace="") == "default"
+
+    def test_compose_target_uses_default(self) -> None:
+        from wip_deploy.cli import _resolve_name
+        # Even when a namespace value is somehow passed for compose,
+        # the convention is that compose installs use 'default'.
+        assert _resolve_name(None, target="compose") == "default"
+        assert _resolve_name(None, target="compose", namespace="wip-kb") == "default"
+
+    def test_dev_target_uses_default(self) -> None:
+        from wip_deploy.cli import _resolve_name
+        assert _resolve_name(None, target="dev") == "default"
+
+    def test_no_target_no_namespace_uses_default(self) -> None:
+        # Verbs like rebuild/restart/nuke don't have target/namespace.
+        from wip_deploy.cli import _resolve_name
+        assert _resolve_name(None) == "default"
+
+
 class TestRestartVerb:
     """The restart verb (CASE-171 #4)."""
 
