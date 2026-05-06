@@ -669,6 +669,8 @@ tasks:
 
 **Fireside chats.** When Peter initiates a design discussion, architecture debate, or scope conversation, use `/report` to capture it. Not just what was decided — why, what alternatives were considered, what Peter actually said.
 
+**Running log.** For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to `session-updates.md` via `/report update-session [terse note]`. Three trigger categories: (1) discoveries without a commit anchor (e.g., "scaffold imports `./wip-api.js` which doesn't exist"), (2) scope-trim decisions mid-session (why you're doing less than originally pitched), (3) block/unblock state and pre-compaction snapshots. Append-only — distinct from `session.md` (overwritten at end) and `report-<slug>.md` (per-decision). Each entry is **timestamp + short headline + one paragraph**. Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't. The four files together — `session.md` + `commits.md` + `session-updates.md` + any `report-*.md` — are what `/resume` reads to rebuild context.
+
 ### 12.2 Cross-Agent Cases
 
 When you hit a bug, missing feature, or platform gap another YAC needs to handle: file a case via `/case`.

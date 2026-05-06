@@ -859,6 +859,20 @@ Update (overwrite) the summary section — don't append multiple summaries.
 ### Fireside Chats
 
 When Peter initiates a design discussion, architecture debate, or scope conversation, use the \`/report\` slash command to capture it. These are the high-value narrative moments — not just what was decided, but why, what alternatives were considered, and what Peter said.
+
+### Running Log
+
+For session-meaningful work that is **neither a change, an end-state, nor a fireside-grade decision**, append to \`session-updates.md\` via \`/report update-session [terse note]\`. Three trigger categories:
+
+1. **Discoveries without a commit anchor** — e.g., "scaffold imports \`./wip-api.js\` which doesn't exist anywhere."
+2. **Scope-trim decisions mid-session** — why you're doing less than originally pitched, when the rationale matters for reading the resulting commit but isn't architectural enough for a fireside.
+3. **Block/unblock state and pre-compaction snapshots** — written when context is filling so post-compaction recovery has more than just the last commit message and a stale session.md.
+
+Append-only — distinct from \`session.md\` (overwritten at end) and \`report-<slug>.md\` (per-decision). Each entry is **timestamp + short headline + one paragraph**.
+
+Discipline test before writing: *"Would future-me, after a compaction, want to know this in 6 hours?"* If yes, write. If "this is just thinking out loud," don't.
+
+The four files together — \`session.md\` + \`commits.md\` + \`session-updates.md\` + any \`report-*.md\` — are what \`/resume\` reads to rebuild context.
 EOF
 echo "   Written: CLAUDE.md"
 

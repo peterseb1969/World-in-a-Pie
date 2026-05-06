@@ -21,7 +21,17 @@ Compaction wipes prior reads. The same baseline that `/setup` enforces at sessio
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
-#### 2. Check git state
+#### 2. Check session reports
+
+Read your session report dir at `/Users/peter/Development/FR-YAC/reports/<your-session-id>/`. Three files together rebuild the session's working memory:
+
+- `session.md` — current state (last `/report session-end` snapshot or initial frontmatter).
+- `commits.md` — append-only commit log since session start.
+- `session-updates.md` — append-only running log of session-meaningful work that didn't have a commit anchor or fireside (discoveries during reading, scope-trim rationale, pre-compaction snapshots, block/unblock state). Written by `/report update-session`. For multi-day sessions with `## /resume <date>` section breaks, scope to the most recent `## /resume` block first.
+
+These are newer than git history (they capture in-progress reasoning that hasn't been committed) and richer than chat (they survived compaction).
+
+#### 3. Check git state
 ```
 git log --oneline -20    # What was committed recently?
 git status               # Any uncommitted work?
@@ -30,7 +40,7 @@ git diff --stat          # What's changed but not committed?
 
 Uncommitted changes are the most fragile state — they survived compaction only because they're on disk, but they haven't been saved to git yet. Note them carefully.
 
-#### 3. Identify the active component
+#### 4. Identify the active component
 From git log and uncommitted changes, determine which component or library was being worked on. Look at file paths in recent commits and diffs:
 - `components/registry/` → Registry service
 - `components/def-store/` → Def-Store service
@@ -45,10 +55,10 @@ From git log and uncommitted changes, determine which component or library was b
 - `ui/wip-console/` → Vue 3 Console UI
 - `scripts/` → Setup/tooling scripts
 
-#### 4. Check for design documents
+#### 5. Check for design documents
 If recent commits reference a feature, check `docs/design/` for the relevant design document. This gives context on intent and scope.
 
-#### 5. Report to user
+#### 6. Report to user
 Present a concise recovery summary:
 
 ```
