@@ -867,7 +867,9 @@ For session-meaningful work that is **neither a change, an end-state, nor a fire
 
 1. **Discoveries without a commit anchor** — e.g., "scaffold imports \`./wip-api.js\` which doesn't exist anywhere."
 2. **Scope-trim decisions mid-session** — why you're doing less than originally pitched, when the rationale matters for reading the resulting commit but isn't architectural enough for a fireside.
-3. **Block/unblock state and pre-compaction snapshots** — written when context is filling so post-compaction recovery has more than just the last commit message and a stale session.md.
+3. **Block/unblock state and pre-\`/compact\` snapshots** — written when context is filling so the post-compaction same-agent self has more than just the last commit message and a stale session.md.
+
+**\`/compact\` vs \`/clear\`:** before \`/compact\` (same agent continues, conversation just summarized) write a running-log entry — this mode. Before \`/clear\` or end-of-day (next agent starts cold from durable artifacts) run \`/report session-end\`. The two events look similar but have different recovery semantics.
 
 Append-only — distinct from \`session.md\` (overwritten at end) and \`report-<slug>.md\` (per-decision). Each entry is **timestamp + short headline + one paragraph**.
 
