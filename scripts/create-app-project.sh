@@ -638,6 +638,7 @@ Otherwise start with:
 - \`/add-app\` — Add a second app that cross-references the first
 - \`/resume\` — Recover context after compaction or at start of a new session
 - \`/report\` — Capture fireside chat or trigger session summary
+- \`/deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/deploy\` — install is BE-YAC's territory (CASE-300)
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
