@@ -409,6 +409,15 @@ def _dev_service_block(
         base_path = environment.get("APP_BASE_PATH")
         if base_path and "VITE_BASE_PATH" not in environment:
             environment["VITE_BASE_PATH"] = base_path
+    # CASE-301: extend PYTHONPATH so the bind-mounted wip-auth source
+    # shadows the build-baked site-packages copy. Without this, edits
+    # to libs/wip-auth/ would only land via a full `wip-deploy install`
+    # (build-context refresh + image rebuild) rather than via a simple
+    # restart. The build-time pip install stays as a fallback — if the
+    # bind-mount is somehow missing, the site-packages copy still lets
+    # the container boot.
+    if name in _AUTH_SERVICES:
+        environment["PYTHONPATH"] = "/app/libs/wip-auth/src:/app/src"
     if environment:
         block["environment"] = environment
 
@@ -511,6 +520,17 @@ def _dev_volumes_for(
             source = (repo_root / "components" / owner.metadata.name / "src").resolve()
             if source.exists():
                 volumes.append(f"{source}:/app/src:ro")
+        # CASE-301: also bind-mount libs/wip-auth/src for components that
+        # use wip_auth, so library edits propagate via a `restart` instead
+        # of forcing a full `wip-deploy install` to refresh the
+        # build-context. The PYTHONPATH override above (set in
+        # _dev_service_block) makes Python find this bind-mount before
+        # falling through to the site-packages copy installed at build
+        # time.
+        if owner.metadata.name in _AUTH_SERVICES:
+            wip_auth_src = (repo_root / "libs" / "wip-auth" / "src").resolve()
+            if wip_auth_src.is_dir():
+                volumes.append(f"{wip_auth_src}:/app/libs/wip-auth/src:ro")
 
     # CASE-55: app source-mount for --app-source overrides. Mount the
     # entire app directory into /app (including package.json + src/ +
