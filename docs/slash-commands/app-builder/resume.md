@@ -21,7 +21,17 @@ Compaction wipes prior reads. As an APP-YAC, you must reload baseline context as
 
 Output one line per source confirming it was loaded. This step is non-optional; recovery without baseline context is recovery into the same drift the previous session ended in.
 
-#### 2. Check durable documentation
+#### 2. Check session reports
+
+Read your session report dir at `/Users/peter/Development/FR-YAC/reports/<your-session-id>/`. Three files together rebuild the session's working memory:
+
+- `session.md` — current state (last `/report session-end` snapshot or initial frontmatter).
+- `commits.md` — append-only commit log since session start.
+- `session-updates.md` — append-only running log of session-meaningful work that didn't have a commit anchor or fireside (discoveries during reading, scope-trim rationale, pre-compaction snapshots, block/unblock state). Written by `/report update-session`. For multi-day sessions with `## /resume <date>` section breaks, scope to the most recent `## /resume` block first.
+
+These are newer than git history (they capture in-progress reasoning that hasn't been committed) and richer than chat (they survived compaction).
+
+#### 3. Check durable documentation
 Read the app's documentation files (if they exist):
 - `README.md` — what this app does
 - `ARCHITECTURE.md` — how it's structured, key decisions
@@ -31,7 +41,7 @@ Read the app's documentation files (if they exist):
 
 If none of these exist, you're likely in early phases (before Phase 4).
 
-#### 3. Check git state
+#### 4. Check git state
 ```
 git log --oneline -20    # What was committed recently?
 git status               # Any uncommitted work?
@@ -40,20 +50,20 @@ git diff --stat          # What's changed but not committed?
 
 Uncommitted changes are the most fragile state — they survived compaction only because they're on disk, but they haven't been saved to git yet. Note them carefully.
 
-#### 4. Check WIP state
+#### 5. Check WIP state
 Run the same checks as `/wip-status`:
 - `get_wip_status` — are services healthy?
 - `list_terminologies` — what vocabularies exist?
 - `list_templates` — what document schemas exist?
 - `query_by_template(template_value)` for each active template — how many documents?
 
-#### 5. Check seed files
+#### 6. Check seed files
 If `data-model/` exists:
 - Compare seed files against WIP state
 - If they match: Phases 2-3 are complete
 - If WIP has entities not in seed files: either Phase 3 was done without export, or work is in progress
 
-#### 6. Determine current phase
+#### 7. Determine current phase
 Use the evidence to determine where you are:
 
 | Evidence | Phase |
@@ -64,14 +74,14 @@ Use the evidence to determine where you are:
 | App scaffold exists in `src/` | Phase 4 (Application Layer) in progress |
 | App has multiple committed features, tests pass | Phase 4 complete, now in `/improve` mode |
 
-#### 7. Reconstruct task state
+#### 8. Reconstruct task state
 Based on all of the above, determine:
 - What phase you're in
 - What's been completed (committed work, data in WIP)
 - What's in progress (uncommitted changes)
 - What's next (the logical next step in the current phase)
 
-#### 8. Report to user
+#### 9. Report to user
 Present a concise recovery summary:
 
 ```
