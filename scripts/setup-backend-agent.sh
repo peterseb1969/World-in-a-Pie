@@ -593,6 +593,7 @@ Do not `pip install` new packages into the venv without approval — `.venv` is 
 | `/report` | Capture fireside chat or trigger session summary |
 | `/lesson` | Capture a lesson into structured memory |
 | `/doc-review` | Run a documentation audit on a target file or directory |
+| `/deploy redeploy|install|verify` | Routinized deployment with mandatory pre-flight (CASE-298) |
 | `/case file|list|read|respond|implement|close|comment` | Cross-agent case management |
 
 ---
