@@ -580,6 +580,79 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    // ---- Phase-4 relationship-graph queries (CASE-296) ----
+
+    it('getDocumentRelationships fetches /relationships', async () => {
+      mockJsonResponse({ items: [], total: 0, page: 1, page_size: 50 })
+
+      await client.documents.getDocumentRelationships('D-001')
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/D-001/relationships')
+    })
+
+    it('getDocumentRelationships forwards filter params', async () => {
+      mockJsonResponse({ items: [], total: 0, page: 2, page_size: 25 })
+
+      await client.documents.getDocumentRelationships('D-001', {
+        direction: 'incoming',
+        template: 'IMPACTS,REFERENCES',
+        active_only: false,
+        page: 2,
+        page_size: 25,
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('direction=incoming')
+      expect(url).toContain('template=IMPACTS')
+      expect(url).toContain('active_only=false')
+      expect(url).toContain('page=2')
+      expect(url).toContain('page_size=25')
+    })
+
+    it('traverseDocuments fetches /traverse with depth + direction', async () => {
+      mockJsonResponse({
+        seed_document_id: 'D-001',
+        direction: 'outgoing',
+        depth: 3,
+        types_filter: [],
+        nodes: [],
+        total_nodes: 0,
+        truncated: false,
+      })
+
+      await client.documents.traverseDocuments('D-001', {
+        depth: 3,
+        direction: 'outgoing',
+      })
+
+      const [url] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/documents/D-001/traverse')
+      expect(url).toContain('depth=3')
+      expect(url).toContain('direction=outgoing')
+    })
+
+    it('traverseDocuments returns truncated flag from server', async () => {
+      mockJsonResponse({
+        seed_document_id: 'D-001',
+        direction: 'both',
+        depth: 10,
+        types_filter: ['IMPACTS'],
+        nodes: [],
+        total_nodes: 1000,
+        truncated: true,
+      })
+
+      const result = await client.documents.traverseDocuments('D-001', {
+        depth: 10,
+        types: 'IMPACTS',
+        direction: 'both',
+      })
+
+      expect(result.truncated).toBe(true)
+      expect(result.total_nodes).toBe(1000)
+    })
+
     // ---- Backup / Restore (CASE-23 Phase 3 STEP 7) ----
 
     function backupSnapshot(overrides: Record<string, unknown> = {}) {

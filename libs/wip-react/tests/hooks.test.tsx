@@ -543,7 +543,15 @@ describe('Mutation hooks', () => {
         result.current.mutateAsync({ file, filename: 'test.txt', metadata: metadata as any }),
       )
 
-      expect(mockClient.files.uploadFile).toHaveBeenCalledWith(file, 'test.txt', metadata)
+      // The hook's mutationFn destructures `{ file, filename, metadata, namespace }`
+      // and forwards all four positionally — when the caller omits namespace it
+      // arrives as `undefined`, which still appears in the spy's call record.
+      expect(mockClient.files.uploadFile).toHaveBeenCalledWith(
+        file,
+        'test.txt',
+        metadata,
+        undefined,
+      )
     })
 
     it('invalidates files cache on success', async () => {
