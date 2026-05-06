@@ -249,7 +249,11 @@ def create_providers_from_config(
     return providers
 
 
-def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
+def setup_auth(
+    app,
+    config: AuthConfig | None = None,
+    public_paths: list[str] | None = None,
+) -> list[AuthProvider]:
     """Setup authentication for a FastAPI application.
 
     This is the main entry point for configuring auth. It:
@@ -260,6 +264,13 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
     Args:
         app: The FastAPI application
         config: Optional auth configuration (loads from env if None)
+        public_paths: Service-specific paths (exact match) the auth
+            middleware should skip provider iteration for. Universal
+            endpoints (`/health`, `/ready`, `/docs`, `/redoc`,
+            `/openapi.json`, `/`) are always public. Pass the
+            api-prefixed health route, e.g., `["/api/registry/health"]`,
+            so external monitors and stale-key clients can probe it
+            without a 401 (CASE-60).
 
     Returns:
         List of configured providers (for testing/inspection)
@@ -269,7 +280,7 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
         from wip_auth import setup_auth
 
         app = FastAPI()
-        setup_auth(app)  # Reads from WIP_AUTH_* env vars
+        setup_auth(app, public_paths=["/api/registry/health"])
     """
     if config is None:
         config = get_auth_config()
@@ -279,7 +290,9 @@ def setup_auth(app, config: AuthConfig | None = None) -> list[AuthProvider]:
     providers = create_providers_from_config(config)
 
     if providers:
-        middleware_class = create_auth_middleware(providers)
+        middleware_class = create_auth_middleware(
+            providers, public_paths=public_paths,
+        )
         app.add_middleware(middleware_class)
 
     return providers

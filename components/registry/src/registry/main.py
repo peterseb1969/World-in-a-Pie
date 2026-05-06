@@ -189,8 +189,11 @@ Admin operations (namespace management) require elevated privileges.
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars)
-providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars).
+# public_paths exempts the api-prefixed /health route from auth so
+# external monitors and stale-key clients can probe it without a 401
+# (CASE-60). Root /health is already in the universal default set.
+providers = setup_auth(app, public_paths=["/api/registry/health"])
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)

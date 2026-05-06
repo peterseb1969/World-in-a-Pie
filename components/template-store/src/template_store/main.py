@@ -188,8 +188,10 @@ All endpoints require API key authentication via the `X-API-Key` header.
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
-_providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY).
+# public_paths exempts the api-prefixed /health route from auth so external
+# monitors and stale-key clients can probe it without a 401 (CASE-60).
+_providers = setup_auth(app, public_paths=["/api/template-store/health"])
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)

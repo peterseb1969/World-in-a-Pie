@@ -204,8 +204,10 @@ unique, system-wide identifiers. IDs are configurable per namespace (default: UU
     redoc_url="/redoc",
 )
 
-# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY)
-_providers = setup_auth(app)
+# Setup authentication (reads from WIP_AUTH_* env vars, falls back to API_KEY).
+# public_paths exempts the api-prefixed /health route from auth so external
+# monitors and stale-key clients can probe it without a 401 (CASE-60).
+_providers = setup_auth(app, public_paths=["/api/def-store/health"])
 
 # Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
 setup_rate_limiting(app)
