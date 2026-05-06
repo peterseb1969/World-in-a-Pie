@@ -142,11 +142,16 @@ class TestComposeYaml:
     def test_registry_prefix_applied_to_wip_services(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
+        # Pick def-store: it has no per-component tag override, so it
+        # inherits the global ImagesSpec.tag. Components like registry or
+        # mcp-server pin their own tags for cache invalidation (CASE-293
+        # makes that workaround unnecessary going forward, but the pins
+        # stay around as version markers).
         doc = self._render_compose(
             tmp_path, real_discovery, registry="ghcr.io/example"
         )
-        reg = doc["services"]["registry"]
-        assert reg["image"] == "ghcr.io/example/registry:v2.0.0"
+        ds = doc["services"]["def-store"]
+        assert ds["image"] == "ghcr.io/example/def-store:v2.0.0"
 
     def test_fully_qualified_infrastructure_images_untouched(
         self, tmp_path: Path, real_discovery: Discovery
