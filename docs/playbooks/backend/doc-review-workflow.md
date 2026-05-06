@@ -52,7 +52,68 @@ grep -l 'synthesis_group: <slug>' yac-discussions/CASE-*.md
 
 When N cases feed one synthesis target, read all N before proposing the merged replacement. Synthesizing once across the group beats writing N independent "merge into X" responses that don't see each other.
 
-### 3. Present the queue
+### 3. Deletion-sweep pre-flight (mandatory when N ≥ 3 doc-deletion cases)
+
+If the queue has three or more `type: doc-deletion` cases scheduled for the same PR/sweep, run a **single batched cross-cutting grep** before presenting the queue. The per-case §A.2 grep is correct at the unit level, but a sweep needs the cross-cutting picture *before* any destructive op so deletions in queue order don't silently break code that forces-reads a later target.
+
+This step exists because the per-case discipline misses cross-cutting dependencies. CASE-281 was filed after a 50-doc deletion sweep where 7 of 50 turned out to be forced-read by `.claude/commands/` stubs, scaffold scripts, CLAUDE.md self-refs, and source-code citations. In-queue-order deletion would have silently broken `/roadmap`, `/resume`, `/case`, and fresh app project setup.
+
+**Three buckets:**
+
+- **Clean delete** — no forced-read references found anywhere. Safe to proceed in the sweep PR.
+- **Forced-read defer** — referenced from `.claude/commands/` stubs, `scripts/setup-*.sh` heredocs, `CLAUDE.md` self-refs, source code (`components/`, `libs/`), or test docstrings. These need a companion PR that creates replacements, updates references, or decides the slash-command fate. **Do not delete in the same PR as the clean ones.**
+- **Index-only** — referenced only by `README.md` Documentation tables or dev-guide doc-tables. Anticipated by the audit's post-consolidation index PR; can be bundled there rather than blocking the clean sweep.
+
+**Recipe — single batched grep across all `target_doc:` paths in the deletion-case set:**
+
+```bash
+# Collect deletion targets from the deletion-case set into a tempfile
+# (avoids bash array — portable to macOS bash 3.2 which lacks mapfile).
+TARGETS_FILE=$(mktemp)
+for f in yac-discussions/CASE-*-open-*.md; do
+  head -20 "$f" | grep -q '^type: doc-deletion$' || continue
+  awk '/^target_doc:/ {print $2}' "$f"
+done > "$TARGETS_FILE"
+
+echo "=== Found $(wc -l < "$TARGETS_FILE") deletion targets ==="
+
+# Cross-cutting search per target. Skip the target itself in the matches.
+while IFS= read -r path; do
+  [ -z "$path" ] && continue
+  base=$(basename "$path")
+  echo "=== $path ==="
+  grep -rln \
+    --include="*.md" --include="*.sh" --include="*.py" --include="*.yaml" \
+    --include="*.ts" --include="*.tsx" \
+    -e "$base" -e "$path" \
+    .claude/commands/ docs/ scripts/ CLAUDE.md \
+    components/ libs/ apps/ 2>/dev/null \
+    | grep -v "^$path$"
+done < "$TARGETS_FILE"
+
+rm -f "$TARGETS_FILE"
+```
+
+Categorize each target into one of the three buckets, then **report the bucketing to Peter before any destructive op.** Format:
+
+```
+=== Deletion-sweep pre-flight (N=12 deletions) ===
+Clean (8): docs/old-X.md, docs/legacy-Y.md, ...
+Forced-read defer (3):
+  - docs/playbooks/backend/case-workflow.md → .claude/commands/case.md (slash-command stub)
+  - docs/architecture.md → CLAUDE.md §3, scripts/setup-backend-agent.sh heredoc
+  - docs/dev-delete.md → scripts/create-app-project.sh (copies into every new app)
+Index-only (1): docs/k8s-installation_log.md → README.md Documentation table
+=== 3 targets need carve-out before sweep can proceed cleanly. ===
+```
+
+Peter approves the carve. The sweep PR then runs against the **clean bucket only**. The forced-read defer bucket gets a companion PR (replacements + reference updates + the deletes). The index-only bucket bundles into the post-consolidation index PR.
+
+**`forced_read_suspect:` field (DOC-YAC heuristic, advisory):** if the case frontmatter has `forced_read_suspect: <suspected-path>` (DOC-YAC's §3 Q1.5 advisory — see `templates/doc-yac/CLAUDE.md`), prioritize verifying that target first. The field is a SIGNAL, not a verification — your batched grep is what counts. The advisory exists because DOC-YAC can't grep code (its ignorance boundary), so it can only flag patterns from filenames + cross-references; verification is your job.
+
+Skip this step when the queue has fewer than three deletion cases — the per-case §A.2 grep suffices for unit-level checks at that scale.
+
+### 4. Present the queue
 
 ```markdown
 ## Doc-Review Queue
@@ -63,14 +124,14 @@ When N cases feed one synthesis target, read all N before proposing the merged r
 | 2 | CASE-173 | k8s-installation_log.md | doc-deletion | — | DOC-YAC-20260429-0050 | new |
 | 3 | CASE-259 | doc-review-workflow.md | doc-audit | needs-update | DOC-YAC-20260429-0050 | re-review |
 
-**Total:** N cases (X audits, Y deletions, Z re-reviews). Order: re-reviews first; then `doc-audit` by severity (`needs-rewrite` → `needs-update` → `minor-issues` → `acceptable`); then `doc-deletion` cases (no severity — order by case number). Group together any cases sharing a `synthesis_group:` slug.
+**Total:** N cases (X audits, Y deletions, Z re-reviews). Order: re-reviews first; then `doc-audit` by severity (`needs-rewrite` → `needs-update` → `minor-issues` → `acceptable`); then `doc-deletion` cases (no severity — order by case number). Group together any cases sharing a `synthesis_group:` slug. If a deletion-sweep pre-flight (§3) carved out forced-read targets, surface that split in the queue presentation.
 ```
 
-### 4. Review each case
+### 5. Review each case
 
 Run the appropriate single-case procedure (see below).
 
-### 5. Progress updates
+### 6. Progress updates
 
 After every 3 cases, print a one-line status:
 
@@ -114,6 +175,8 @@ grep -rn "$(basename <target_doc> .md)" docs/ scripts/ .claude/ components/ libs
 ```
 
 Also check git history for recency of meaningful change: `git log --oneline -- <target_doc> | head -5`.
+
+> When processing a sweep (≥3 deletion cases in one PR), the §3 batched pre-flight already covers this grep across all targets at once. The per-case A.2 stays as the unit-level check; A.2's findings should align with §3's bucketing for the same target. If they conflict, §3's batched run wins (it sees cross-target patterns the per-case grep misses).
 
 #### A.3 Decide
 
