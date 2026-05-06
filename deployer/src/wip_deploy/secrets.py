@@ -7,7 +7,9 @@ name from two sources:
      active components and enabled apps. (Optional env vars' secrets
      are not auto-generated — supply them manually if needed.)
   2. Dex user passwords + static client secrets emitted by
-     `generate_dex_config` (when Dex is active).
+     `generate_dex_config` (when Dex is active). For each user
+     password, a paired derived secret `<name>.bcrypt` is also
+     collected and cached so renders are deterministic (CASE-295).
 
 Then ensure each named secret has a value via the backend, generating
 fresh random values for any missing names and returning a
@@ -18,12 +20,26 @@ from __future__ import annotations
 
 import secrets as py_secrets
 
+import bcrypt
+
 from wip_deploy.config_gen.dex import generate_dex_config
 from wip_deploy.secrets_backend.base import ResolvedSecrets, SecretBackend
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
+
+# CASE-295: derived bcrypt-hash secret naming. Renderers read the
+# cached hash via `secrets.get(name + BCRYPT_SUFFIX)` so the output
+# is byte-stable across renders. Only renders should consume the
+# hashed value; flows that need to verify a user-supplied password
+# read the plaintext.
+BCRYPT_SUFFIX = ".bcrypt"
+
+
+def bcrypt_secret_name(plaintext_name: str) -> str:
+    """Derived-secret naming convention. See `BCRYPT_SUFFIX`."""
+    return f"{plaintext_name}{BCRYPT_SUFFIX}"
 
 # ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +74,12 @@ def collect_required_secrets(
     if dex_cfg is not None:
         for u in dex_cfg.users:
             names.add(u.password_secret.name)
+            # CASE-295: pair the plaintext with a cached bcrypt hash so
+            # renders are deterministic. Without this, each render
+            # bcrypts afresh — bcrypt.gensalt() is non-deterministic by
+            # design — and `wip-deploy status --diff` reports false drift
+            # on the dex-config ConfigMap every time.
+            names.add(bcrypt_secret_name(u.password_secret.name))
         for client in dex_cfg.clients:
             names.add(client.secret.name)
 
@@ -94,12 +116,47 @@ def ensure_secrets(
     The backend caches existing values and generates only for missing
     names. Persistence is a separate step (`backend.persist()`); this
     orchestrator calls it automatically on success.
+
+    Derived secrets (CASE-295): names ending in `.bcrypt` are paired
+    with the same name minus the suffix; the generator hashes the
+    paired plaintext rather than producing a fresh random value. Sort
+    order guarantees the plaintext is resolved first (e.g.,
+    `dex-password-admin` < `dex-password-admin.bcrypt`).
     """
     names = collect_required_secrets(deployment, components, apps)
 
     resolved: dict[str, str] = {}
     for name in sorted(names):
-        resolved[name] = backend.get_or_generate(name, default_generator)
+        if name.endswith(BCRYPT_SUFFIX):
+            plaintext_name = name[: -len(BCRYPT_SUFFIX)]
+            plaintext = resolved.get(plaintext_name)
+            if plaintext is None:
+                # The plaintext should have been resolved earlier in
+                # the sort order. If we get here, the convention was
+                # violated (someone collected `<name>.bcrypt` without
+                # `<name>`) — fail loudly.
+                raise ValueError(
+                    f"derived bcrypt secret {name!r} requires "
+                    f"plaintext {plaintext_name!r} to be collected "
+                    "alongside it"
+                )
+            generator = _bcrypt_generator(plaintext)
+        else:
+            generator = default_generator
+        resolved[name] = backend.get_or_generate(name, generator)
 
     backend.persist()
     return ResolvedSecrets(values=resolved)
+
+
+def _bcrypt_generator(plaintext: str):  # type: ignore[no-untyped-def]
+    """Return a generator that hashes `plaintext` with bcrypt cost 10.
+
+    Cost 10 matches the existing render path (was at compose_dex.py
+    before CASE-295 moved the hashing into secret generation).
+    """
+    def _gen() -> str:
+        return bcrypt.hashpw(
+            plaintext.encode(), bcrypt.gensalt(rounds=10)
+        ).decode()
+    return _gen

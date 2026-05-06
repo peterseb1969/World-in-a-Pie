@@ -243,3 +243,117 @@ class TestEnsureSecrets:
         # And postgres-password is new.
         assert "postgres-password" in r2.values
         assert "postgres-password" not in r1.values
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-295: derived bcrypt secrets for dex passwords (deterministic renders)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestBcryptDerivedSecrets:
+    def test_collect_pairs_each_dex_password_with_bcrypt(
+        self, real_discovery: Discovery
+    ) -> None:
+        """Every collected dex user password gets a paired `.bcrypt`
+        derived secret. Without this, the renderer would re-hash on
+        every render and `wip-deploy status --diff` would always
+        report drift on the dex-config ConfigMap."""
+        d = _compose_deployment()
+        names = collect_required_secrets(
+            d, real_discovery.components, real_discovery.apps
+        )
+
+        for user in ("admin", "editor", "viewer"):
+            plaintext_name = f"dex-password-{user}"
+            assert plaintext_name in names
+            assert f"{plaintext_name}.bcrypt" in names
+
+    def test_ensure_caches_bcrypt_so_subsequent_renders_match(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Two installs into the same secret backend produce identical
+        `.bcrypt` values — proves the hash is generated once and reused.
+
+        Without the cache, bcrypt.gensalt() would emit different hashes
+        on each call (intentional bcrypt behaviour for password storage,
+        but disastrous for render determinism)."""
+        import bcrypt
+
+        dir_ = tmp_path / "secrets"
+        d = _compose_deployment()
+
+        r1 = ensure_secrets(
+            d,
+            real_discovery.components,
+            real_discovery.apps,
+            FileSecretBackend(dir_),
+        )
+        r2 = ensure_secrets(
+            d,
+            real_discovery.components,
+            real_discovery.apps,
+            FileSecretBackend(dir_),
+        )
+
+        admin_bcrypt = r1.get("dex-password-admin.bcrypt")
+        assert r2.get("dex-password-admin.bcrypt") == admin_bcrypt
+        # And the cached hash actually verifies against the plaintext.
+        assert bcrypt.checkpw(
+            r1.get("dex-password-admin").encode(),
+            admin_bcrypt.encode(),
+        )
+
+    def test_bcrypt_persists_to_file_backend(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The `.bcrypt` derived secret is written to disk like any
+        other — recoverable across processes, not just in-memory."""
+        dir_ = tmp_path / "secrets"
+        d = _compose_deployment()
+
+        ensure_secrets(
+            d,
+            real_discovery.components,
+            real_discovery.apps,
+            FileSecretBackend(dir_),
+        )
+
+        # Inspect the on-disk layout directly — bypass the backend.
+        bcrypt_file = dir_ / "dex-password-admin.bcrypt"
+        assert bcrypt_file.exists()
+        contents = bcrypt_file.read_text()
+        # bcrypt hashes start with $2b$ or $2a$
+        assert contents.startswith("$2"), f"unexpected hash format: {contents!r}"
+
+    def test_dex_config_render_is_deterministic(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Render the dex config twice with the same secrets backend
+        and assert byte-identical output. This is the contract that
+        `wip-deploy status --diff` (CASE-294) depends on."""
+        from wip_deploy.config_gen.dex import generate_dex_config
+        from wip_deploy.renderers.compose_dex import render_dex_config
+
+        dir_ = tmp_path / "secrets"
+        d = _compose_deployment()
+
+        s1 = ensure_secrets(
+            d,
+            real_discovery.components,
+            real_discovery.apps,
+            FileSecretBackend(dir_),
+        )
+        s2 = ensure_secrets(
+            d,
+            real_discovery.components,
+            real_discovery.apps,
+            FileSecretBackend(dir_),
+        )
+
+        dex_cfg = generate_dex_config(
+            d, real_discovery.components, real_discovery.apps
+        )
+        assert dex_cfg is not None
+        out1 = render_dex_config(dex_cfg, s1)
+        out2 = render_dex_config(dex_cfg, s2)
+        assert out1 == out2
