@@ -482,3 +482,100 @@ class TestExamplesAndDiscoverability:
         r = _invoke("nuke", "--help")
         assert r.exit_code == 0
         assert "Examples:" in r.output
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-294: deployment.json persistence + status --diff
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestStatusDiff:
+    """Spec persistence on install + diff-against-live via the status verb."""
+
+    def _make_k8s_deployment(self):  # type: ignore[no-untyped-def]
+        from wip_deploy.spec import (
+            AuthSpec,
+            Deployment,
+            DeploymentMetadata,
+            DeploymentSpec,
+            ImagesSpec,
+            K8sPlatform,
+            NetworkSpec,
+            PlatformSpec,
+            SecretsSpec,
+        )
+
+        return Deployment(
+            metadata=DeploymentMetadata(name="diff-test"),
+            spec=DeploymentSpec(
+                target="k8s",
+                modules={"optional": ["mcp-server"]},
+                auth=AuthSpec(mode="oidc", gateway=True),
+                network=NetworkSpec(hostname="wip.local"),
+                images=ImagesSpec(registry="ghcr.io/test", tag="v0.1.0"),
+                platform=PlatformSpec(k8s=K8sPlatform(namespace="wip-test")),
+                secrets=SecretsSpec(backend="file", location="/tmp/s"),
+            ),
+        )
+
+    def test_persist_and_load_round_trip(self, tmp_path: Path) -> None:
+        """Persisted Deployment loads back equal — Pydantic round-trip."""
+        from wip_deploy.cli import _load_deployment, _persist_deployment
+
+        d = self._make_k8s_deployment()
+        _persist_deployment(d, tmp_path)
+
+        target = tmp_path / "deployment.json"
+        assert target.exists()
+        assert target.read_text().endswith("\n")
+
+        # Round-trip
+        d2 = _load_deployment(tmp_path)
+        assert d2.metadata.name == d.metadata.name
+        assert d2.spec.target == d.spec.target
+        assert d2.spec.platform.k8s.namespace == d.spec.platform.k8s.namespace
+        assert d2.spec.images.registry == d.spec.images.registry
+        assert d2.spec.images.tag == d.spec.images.tag
+
+    def test_persist_writes_versioned_envelope(self, tmp_path: Path) -> None:
+        """The on-disk format is a versioned envelope so future schema
+        evolution can refuse old files cleanly."""
+        from wip_deploy.cli import _persist_deployment
+
+        d = self._make_k8s_deployment()
+        _persist_deployment(d, tmp_path)
+
+        import json
+        payload = json.loads((tmp_path / "deployment.json").read_text())
+        assert payload["wip_deploy_format_version"] == 1
+        assert "deployment" in payload
+        assert payload["deployment"]["metadata"]["name"] == "diff-test"
+
+    def test_load_deployment_refuses_missing(self, tmp_path: Path) -> None:
+        """Missing deployment.json → exit 2 with a message that points
+        the user at `wip-deploy install`."""
+        r = _invoke("status", "--install-dir", str(tmp_path), "--diff")
+        assert r.exit_code == 2
+        assert "deployment.json" in r.output
+        assert "wip-deploy install" in r.output
+
+    def test_load_deployment_refuses_wrong_version(self, tmp_path: Path) -> None:
+        """Old/unknown schema version → exit 2 with a clear message."""
+        import json
+        (tmp_path / "deployment.json").write_text(
+            json.dumps({"wip_deploy_format_version": 999, "deployment": {}})
+        )
+        r = _invoke("status", "--install-dir", str(tmp_path), "--diff")
+        assert r.exit_code == 2
+        assert "version" in r.output.lower()
+
+    def test_diff_help_advertises_kubectl(self) -> None:
+        """The --diff flag's help text should make the kubectl shell-out
+        explicit so operators don't need to read the source."""
+        r = _invoke("status", "--help")
+        assert r.exit_code == 0
+        import re
+        flat = re.sub(r"\x1b\[[0-9;]*m", "", r.output)
+        flat = " ".join(flat.split())
+        assert "--diff" in flat
+        assert "kubectl diff" in flat
