@@ -717,6 +717,16 @@ def install(
     if deployment.spec.target in ("compose", "dev"):
         _run_preflight_or_exit(deployment, target_dir)
 
+    # Clean up legacy CASE-294 state file before apply. Earlier builds
+    # wrote `deployment.json` into the install dir; kubectl apply -R -f
+    # picks it up as a (broken) manifest. _persist_deployment writes
+    # to `deployment.deployer-state` now, but if a stale legacy file
+    # lingers from a prior install we drop it here so apply doesn't
+    # trip on it.
+    legacy_state = target_dir / "deployment.json"
+    if legacy_state.exists():
+        legacy_state.unlink()
+
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
     tree = _render_tree(deployment, components, apps_list, secrets)
 
@@ -1484,6 +1494,13 @@ def _default_install_dir(name: str) -> Path:
 _DEPLOYMENT_JSON_VERSION = 1
 
 
+# File name uses a non-yaml/json extension so kubectl's recursive
+# apply filter (`-R -f <install_dir>`) skips it. yaml/yml/json files
+# in the install dir are k8s manifests; this one is deployer-internal
+# state that would fail kubectl validation if picked up.
+_DEPLOYMENT_STATE_FILENAME = "deployment.deployer-state"
+
+
 def _persist_deployment(deployment: Deployment, install_dir: Path) -> None:
     """Persist the Deployment to the install dir so `status --diff`
     can re-render against the same spec without needing the install
@@ -1495,19 +1512,34 @@ def _persist_deployment(deployment: Deployment, install_dir: Path) -> None:
         "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
         "deployment": deployment.model_dump(mode="json"),
     }
-    (install_dir / "deployment.json").write_text(
+    (install_dir / _DEPLOYMENT_STATE_FILENAME).write_text(
         json.dumps(payload, indent=2, default=str) + "\n"
     )
+
+    # Migration: earlier CASE-294 wrote `deployment.json`, which
+    # kubectl picks up as a (broken) manifest on the next install.
+    # If a stale copy exists, remove it. Same content lives in the
+    # new file.
+    legacy = install_dir / "deployment.json"
+    if legacy.exists():
+        legacy.unlink()
 
 
 def _load_deployment(install_dir: Path) -> Deployment:
     """Load a previously-persisted Deployment. Refuses missing or
     older-version files with an actionable error."""
-    target = install_dir / "deployment.json"
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    # Fall back to the legacy filename so installs done with the
+    # earlier CASE-294 build can still --diff. _persist_deployment
+    # migrates the file on next install.
+    legacy = install_dir / "deployment.json"
+    if not target.exists() and legacy.exists():
+        target = legacy
     if not target.exists():
         typer.echo(
-            f"error: {target} not found. Run `wip-deploy install` first "
-            "(installs since CASE-294 persist the spec).",
+            f"error: {install_dir / _DEPLOYMENT_STATE_FILENAME} not found. "
+            "Run `wip-deploy install` first (installs since CASE-294 "
+            "persist the spec).",
             err=True,
         )
         raise typer.Exit(2)

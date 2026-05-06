@@ -525,7 +525,7 @@ class TestStatusDiff:
         d = self._make_k8s_deployment()
         _persist_deployment(d, tmp_path)
 
-        target = tmp_path / "deployment.json"
+        target = tmp_path / "deployment.deployer-state"
         assert target.exists()
         assert target.read_text().endswith("\n")
 
@@ -546,28 +546,58 @@ class TestStatusDiff:
         _persist_deployment(d, tmp_path)
 
         import json
-        payload = json.loads((tmp_path / "deployment.json").read_text())
+        payload = json.loads((tmp_path / "deployment.deployer-state").read_text())
         assert payload["wip_deploy_format_version"] == 1
         assert "deployment" in payload
         assert payload["deployment"]["metadata"]["name"] == "diff-test"
 
     def test_load_deployment_refuses_missing(self, tmp_path: Path) -> None:
-        """Missing deployment.json → exit 2 with a message that points
-        the user at `wip-deploy install`."""
+        """Missing state file → exit 2 with a message that points the
+        user at `wip-deploy install`."""
         r = _invoke("status", "--install-dir", str(tmp_path), "--diff")
         assert r.exit_code == 2
-        assert "deployment.json" in r.output
+        assert "deployment.deployer-state" in r.output
         assert "wip-deploy install" in r.output
 
     def test_load_deployment_refuses_wrong_version(self, tmp_path: Path) -> None:
         """Old/unknown schema version → exit 2 with a clear message."""
         import json
-        (tmp_path / "deployment.json").write_text(
+        (tmp_path / "deployment.deployer-state").write_text(
             json.dumps({"wip_deploy_format_version": 999, "deployment": {}})
         )
         r = _invoke("status", "--install-dir", str(tmp_path), "--diff")
         assert r.exit_code == 2
         assert "version" in r.output.lower()
+
+    def test_legacy_deployment_json_loads_and_migrates(
+        self, tmp_path: Path
+    ) -> None:
+        """Backwards compat: a deployment.json from the earlier CASE-294
+        build still loads via --diff (read-fall-back), and the next
+        install rewrites to the new filename + removes the legacy."""
+        import json
+        from wip_deploy.cli import _load_deployment, _persist_deployment
+
+        # Simulate a stale install: legacy filename, no new filename.
+        d = self._make_k8s_deployment()
+        legacy = tmp_path / "deployment.json"
+        legacy.write_text(
+            json.dumps(
+                {
+                    "wip_deploy_format_version": 1,
+                    "deployment": d.model_dump(mode="json"),
+                }
+            )
+        )
+
+        # Read path falls back to legacy.
+        d2 = _load_deployment(tmp_path)
+        assert d2.metadata.name == d.metadata.name
+
+        # Next persist migrates: new file present, legacy removed.
+        _persist_deployment(d, tmp_path)
+        assert (tmp_path / "deployment.deployer-state").exists()
+        assert not (tmp_path / "deployment.json").exists()
 
     def test_diff_help_advertises_kubectl(self) -> None:
         """The --diff flag's help text should make the kubectl shell-out
