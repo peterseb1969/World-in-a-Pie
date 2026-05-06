@@ -27,10 +27,39 @@ The "I just changed code, get the cluster to re-pull" path. Most routine.
 
 ### Pre-flight (all run; output punch list at end)
 
+The recipe branches by **install target**. BE-YAC primarily redeploys against k8s (wip-kb, wip-stable), but the same `/deploy redeploy` flow also applies to compose-dev installs (wip-dev-local). `kubectl get nodes` against a compose-dev install would silently check the operator's *current* k8s context (often a different cluster), giving a false [ok]. Step 0 detects target so subsequent checks pick the right probe.
+
 ```bash
-# 1. Cluster reachable + healthy
-kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{":"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
-# Expected: all True. If any False/missing → STOP.
+# 0. Detect target from the install directory shape
+INSTALL_DIR=~/.wip-deploy/<current-name>
+if [ -f "$INSTALL_DIR/docker-compose.yaml" ]; then
+  TARGET=compose
+elif [ -d "$INSTALL_DIR/services" ]; then
+  TARGET=k8s
+else
+  echo "[FAIL] target detection: $INSTALL_DIR shape doesn't match compose (no docker-compose.yaml) or k8s (no services/ dir)"
+  exit 1
+fi
+echo "[ok] target: $TARGET"
+
+# 1. Runtime reachable + this stack healthy
+case "$TARGET" in
+  compose)
+    # All wip-* containers Up; healthchecks reporting healthy where declared.
+    podman ps --format "{{.Names}}  {{.Status}}" | grep -E "^wip-" | awk '
+      /healthy/   { ok++ }
+      /unhealthy/ { bad++; print "  unhealthy: " $1 }
+      /Up [0-9]/  { up++ }
+      END { if (bad) exit 1; print "  " up " up, " ok " healthy" }
+    '
+    ;;
+  k8s)
+    # Cluster nodes Ready (kubectl context must match the install's cluster
+    # — verify before relying; --context is the explicit override).
+    kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{":"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+    # Expected: all True. If any False/missing → STOP.
+    ;;
+esac
 
 # 2. Current install state — what's running, on what image, in what namespace
 wip-deploy status --name <current-name>
@@ -58,31 +87,51 @@ test -f ~/.wip-deploy/<name>/secrets/api-key && echo "secrets ok" || echo "MISSI
 # If pin is already ahead of running OR source unchanged: report "no pin bump needed".
 
 # 7. Image-pull hostnames resolvable from cluster nodes (Day 46/47 nss-mdns prevention)
-#
-# Scope: ONLY hostnames the cluster's container runtime needs to resolve to
-# pull images — that's the `gitea.local` style registry hostname referenced
-# in `components/<svc>/wip-component.yaml` `image:` lines. The browser-facing
-# ingress hostname (e.g., `wip-kb.local`) is NOT in scope — pods don't talk
-# to it; only the operator's Mac and end-user browsers resolve it.
-#
-# Slim k8s pods don't have `getent`/`nslookup`/`dig` on PATH, so probe via
-# direct SSH to each node (works on the Pi cluster):
-#
-#   for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
-#     for host in gitea.local; do  # extend list per spec.images.registry
-#       ssh "$node" "getent hosts $host || grep -F \" $host \" /etc/hosts || echo 'UNRESOLVED on '$(hostname)"
-#     done
-#   done
-#
-# Alternative when SSH is unavailable: `kubectl debug node/<name> --image=busybox
-# -- nslookup <host>`, when kubectl debug is enabled on the cluster.
-#
-# Day 46/47 fix: /etc/hosts entries on every node for image-pull hostnames
-# (e.g., `192.168.1.17  gitea.local`). Pi-Hole-driven local DNS would also
-# work; whichever the operator chose, this check verifies it's actually live.
+case "$TARGET" in
+  k8s)
+    # Scope: ONLY hostnames the cluster's container runtime needs to resolve
+    # to pull images — that's the `gitea.local` style registry hostname
+    # referenced in `components/<svc>/wip-component.yaml` `image:` lines. The
+    # browser-facing ingress hostname (e.g., `wip-kb.local`) is NOT in scope
+    # — pods don't talk to it; only the operator's Mac and end-user browsers
+    # resolve it.
+    #
+    # Slim k8s pods don't have `getent`/`nslookup`/`dig` on PATH, so probe
+    # via direct SSH to each node (works on the Pi cluster):
+    #
+    #   for node in $(kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+    #     for host in gitea.local; do  # extend list per spec.images.registry
+    #       ssh "$node" "getent hosts $host || grep -F \" $host \" /etc/hosts || echo 'UNRESOLVED on '$(hostname)"
+    #     done
+    #   done
+    #
+    # Alternative when SSH is unavailable: `kubectl debug node/<name>
+    # --image=busybox -- nslookup <host>`, when kubectl debug is enabled.
+    #
+    # Day 46/47 fix: /etc/hosts entries on every node for image-pull
+    # hostnames (e.g., `192.168.1.17  gitea.local`). Pi-Hole-driven local
+    # DNS would also work; whichever the operator chose, this check
+    # verifies it's actually live.
+    ;;
+  compose)
+    # On compose dev, image pulls go through the host's resolver — already
+    # working if podman can reach the registry. Skip this check.
+    echo "[ok] hostnames: skipped (compose dev uses host resolver)"
+    ;;
+esac
 
-# 8. For k8s target: TLS secret present in target namespace (CASE-247 prevention)
-kubectl -n <namespace> get secret <tls-secret-name> 2>&1 | grep -q "NotFound" && echo "TLS SECRET MISSING — pre-create with: openssl req ... && kubectl create secret tls"
+# 8. TLS secret present in target namespace (CASE-247 prevention)
+case "$TARGET" in
+  k8s)
+    kubectl -n <namespace> get secret <tls-secret-name> 2>&1 | grep -q "NotFound" \
+      && echo "TLS SECRET MISSING — pre-create with: openssl req ... && kubectl create secret tls"
+    ;;
+  compose)
+    # Compose-dev TLS is handled by Caddy's local self-signed cert (or
+    # localhost mkcert on operator setup). Not a pre-flight concern.
+    echo "[ok] tls: skipped (compose dev uses Caddy local cert)"
+    ;;
+esac
 ```
 
 Pre-flight output is a single punch-list block:
@@ -116,17 +165,33 @@ wip-deploy install --name <current-name> [other flags from current install]
 ### Smoke (mandatory)
 
 ```bash
-# Pod readiness — the truth-source. kubelet runs each pod's
-# readinessProbe / livenessProbe (the same /health endpoint a curl loop
-# would hit), so this is comprehensive *and* low-noise.
-kubectl get pods -n <namespace>
-# Expected: all Running, no CrashLoopBackOff, all 1/1 in READY column.
+# 1. Container/pod readiness — the truth-source. kubelet (k8s) and
+# podman healthcheck (compose) both run the same /health endpoint a curl
+# loop would hit, so this is comprehensive AND low-noise.
+case "$TARGET" in
+  compose)
+    podman ps --format "{{.Names}}  {{.Status}}" | grep -E "^wip-"
+    # Expected: all "Up X (healthy)" where a healthcheck is declared.
+    # Containers without a healthcheck (e.g. wip-dex, wip-caddy) just
+    # show "Up X" — that's fine.
+    ;;
+  k8s)
+    kubectl get pods -n <namespace>
+    # Expected: all Running, no CrashLoopBackOff, all 1/1 in READY column.
+    ;;
+esac
 
-# Bellwether curl — proves the gateway → ingress → service routing chain
-# is wired end-to-end. If this works, the whole routing stack works for
-# anything else under /api/. We use registry as the bellwether because
-# every other service depends on it for identity resolution.
-curl -sk --max-time 5 https://<hostname>/api/registry/health \
+# 2. Bellwether curl — proves the gateway → ingress → service routing
+# chain is wired end-to-end. If this works, the whole routing stack
+# works for anything else under /api/. We use registry as the bellwether
+# because every other service depends on it for identity resolution.
+# Hostname differs by target: compose dev defaults to localhost:8443,
+# k8s uses the cluster's public hostname (e.g. wip-kb.local).
+case "$TARGET" in
+  compose) HOST=https://localhost:8443 ;;
+  k8s)     HOST=https://<hostname> ;;
+esac
+curl -sk --max-time 5 "$HOST/api/registry/health" \
   | python3 -c "import sys,json;print(json.loads(sys.stdin.read()).get('status','unknown'))" \
   || echo "registry: BELLWETHER UNREACHABLE"
 
@@ -134,10 +199,10 @@ curl -sk --max-time 5 https://<hostname>/api/registry/health \
 # auth-gateway at /auth, etc.) so a hard-coded for-loop over /api/<svc>/health
 # is fragile. If a specific service is in scope for the redeploy, curl that
 # one's actual route per its components/<svc>/wip-component.yaml `routes:`
-# entry. Otherwise, trust kubelet.
+# entry. Otherwise, trust the runtime's healthcheck.
 
-# Browser-side check (k8s only, human verifies):
-echo "Peter: open https://<hostname>/ in browser, verify auth flow + at least one read-only data path"
+# Browser-side check (human verifies):
+echo "Peter: open $HOST/ in browser, verify auth flow + at least one read-only data path"
 ```
 
 Smoke output is a checklist; failures don't auto-rollback (the operator decides) but are surfaced clearly.
