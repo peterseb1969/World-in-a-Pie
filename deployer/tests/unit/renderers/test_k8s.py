@@ -150,10 +150,39 @@ class TestComponents:
     def test_image_ref_uses_registry_and_tag(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        # def-store has no per-component tag override, so it inherits
+        # the global ImagesSpec.tag. Picking a component without a pin
+        # keeps the assertion stable when others (registry, mcp-server)
+        # bump their own tags for cache invalidation.
+        docs = self._parse(tmp_path, real_discovery, "services/def-store.yaml")
         deployment = next(d for d in docs if d["kind"] == "Deployment")
         image = deployment["spec"]["template"]["spec"]["containers"][0]["image"]
-        assert image == "ghcr.io/peterseb1969/registry:v1.1.0"
+        assert image == "ghcr.io/peterseb1969/def-store:v1.1.0"
+
+    def test_image_pull_policy_always_for_wip_built(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-293: WIP-built components (build_context set) get
+        imagePullPolicy=Always so same-tag re-pushes don't get the
+        IfNotPresent cached-digest treatment."""
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        assert container.get("imagePullPolicy") == "Always"
+
+    def test_image_pull_policy_omitted_for_external_images(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-293: external images (build_context=None — mongo, postgres,
+        dex, etc.) keep the k8s default IfNotPresent. No registry hit on
+        every pod start, no risk of stale digest since their tags are
+        upstream version pins."""
+        docs = self._parse(
+            tmp_path, real_discovery, "infrastructure/mongodb.yaml"
+        )
+        statefulset = next(d for d in docs if d["kind"] == "StatefulSet")
+        container = statefulset["spec"]["template"]["spec"]["containers"][0]
+        assert "imagePullPolicy" not in container
 
     def test_env_secrets_use_secretkeyref(
         self, tmp_path: Path, real_discovery: Discovery

@@ -565,6 +565,14 @@ def _container_spec(
         "image": _image_ref(owner, deployment),
     }
 
+    # WIP-built images (build_context is set) iterate fast — same-tag re-pushes
+    # are routine and the k8s default `IfNotPresent` causes silent stale-digest
+    # rollouts. `Always` does an HTTP HEAD per pod start; cost is negligible
+    # against a LAN registry. External images (mongo, postgres, dex, etc.)
+    # have build_context=None and stay on the k8s default.
+    if owner.spec.image.build_context is not None:
+        container["imagePullPolicy"] = "Always"
+
     if owner.spec.ports:
         container["ports"] = [
             {"containerPort": p.container_port, "protocol": p.protocol}
