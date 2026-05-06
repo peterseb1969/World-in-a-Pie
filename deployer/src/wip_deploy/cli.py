@@ -6,6 +6,9 @@ Step 3 scope: `validate` and `show-spec` verbs. Renderers + `install` /
 
 from __future__ import annotations
 
+import json
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
@@ -740,6 +743,12 @@ def install(
         )
         raise typer.Exit(1) from e
 
+    # Persist the Deployment so `wip-deploy status --diff` can re-render
+    # against the same spec without needing the install args. Written
+    # post-apply because a failed install leaves the prior deployment.json
+    # in place (last-known-good state for diff).
+    _persist_deployment(deployment, target_dir)
+
     typer.echo("")
     if result.healthy:
         typer.echo(typer.style("✓ Install complete.", fg=typer.colors.GREEN, bold=True))
@@ -785,29 +794,54 @@ def status(
             ),
         ),
     ] = None,
+    diff: Annotated[
+        bool,
+        typer.Option(
+            "--diff",
+            help=(
+                "Re-render manifests from the persisted spec and run "
+                "`kubectl diff` against the live cluster. K8s only. "
+                "Exits 0 on no drift, 1 on drift, 2 on error. Requires "
+                "an install dir with a deployment.json (written by "
+                "`wip-deploy install`)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Print a compact table of deployed services and their health.
 
     Compose/dev: reads `podman-compose ps` from the install directory.
     K8s: reads `kubectl get pods` from the given namespace.
 
+    With `--diff` (k8s only): re-renders manifests from the persisted
+    spec and shells out to `kubectl diff` against the live cluster.
+    Catches drift from kubectl one-shots, deployer-side renderer
+    changes, and edits to wip-component.yaml that haven't been
+    re-installed yet.
+
     Examples:
 
       wip-deploy status
       wip-deploy status --name wip-dev-local
       wip-deploy status --namespace wip
+      wip-deploy status --namespace wip-kb --diff
     """
+    name = _resolve_name(
+        name,
+        target=("k8s" if namespace is not None else None),
+        namespace=namespace,
+    )
+
+    if diff:
+        resolved_dir = install_dir or _default_install_dir(name)
+        _do_status_diff(resolved_dir, namespace_override=namespace)
+        return
+
     from wip_deploy.status import (
         StatusError,
         format_table,
         read_compose_status,
         read_k8s_status,
-    )
-
-    name = _resolve_name(
-        name,
-        target=("k8s" if namespace is not None else None),
-        namespace=namespace,
     )
 
     if namespace is not None:
@@ -1440,6 +1474,121 @@ def _run_preflight_or_exit(deployment: Deployment, install_dir: Path) -> None:
 def _default_install_dir(name: str) -> Path:
     """Default materialization directory — `~/.wip-deploy/<name>/`."""
     return Path.home() / ".wip-deploy" / name
+
+
+# ────────────────────────────────────────────────────────────────────
+# Spec persistence (CASE-294 — for `status --diff` re-rendering)
+# ────────────────────────────────────────────────────────────────────
+
+
+_DEPLOYMENT_JSON_VERSION = 1
+
+
+def _persist_deployment(deployment: Deployment, install_dir: Path) -> None:
+    """Persist the Deployment to the install dir so `status --diff`
+    can re-render against the same spec without needing the install
+    args. Versioned envelope so future schema evolution can refuse
+    older files cleanly.
+    """
+    install_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
+        "deployment": deployment.model_dump(mode="json"),
+    }
+    (install_dir / "deployment.json").write_text(
+        json.dumps(payload, indent=2, default=str) + "\n"
+    )
+
+
+def _load_deployment(install_dir: Path) -> Deployment:
+    """Load a previously-persisted Deployment. Refuses missing or
+    older-version files with an actionable error."""
+    target = install_dir / "deployment.json"
+    if not target.exists():
+        typer.echo(
+            f"error: {target} not found. Run `wip-deploy install` first "
+            "(installs since CASE-294 persist the spec).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        payload = json.loads(target.read_text())
+    except json.JSONDecodeError as e:
+        typer.echo(f"error: {target} is not valid JSON: {e}", err=True)
+        raise typer.Exit(2) from e
+    version = payload.get("wip_deploy_format_version")
+    if version != _DEPLOYMENT_JSON_VERSION:
+        typer.echo(
+            f"error: {target} is version {version!r}; this deployer "
+            f"expects {_DEPLOYMENT_JSON_VERSION}. Re-run `wip-deploy "
+            "install` to refresh.",
+            err=True,
+        )
+        raise typer.Exit(2)
+    try:
+        return Deployment.model_validate(payload["deployment"])
+    except Exception as e:
+        typer.echo(f"error: {target} failed to deserialize: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
+    """Re-render manifests from the persisted Deployment, write to a
+    temp dir, run `kubectl diff` against the live cluster, exit with
+    its return code. K8s target only.
+    """
+    deployment = _load_deployment(install_dir)
+    if deployment.spec.target != "k8s":
+        typer.echo(
+            f"error: --diff currently supports k8s target only "
+            f"(got {deployment.spec.target!r})",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        root = find_repo_root()
+    except FileNotFoundError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    discovery = discover(root)
+    if not discovery.ok:
+        typer.echo("manifest discovery errors:", err=True)
+        for err in discovery.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(1)
+
+    secrets = _ensure_secrets_via_spec(
+        deployment, discovery.components, discovery.apps
+    )
+    tree = _render_tree(
+        deployment, discovery.components, discovery.apps, secrets
+    )
+
+    with tempfile.TemporaryDirectory(prefix="wip-deploy-diff-") as td:
+        td_path = Path(td)
+        tree.write(td_path)
+
+        ns = namespace_override or (
+            deployment.spec.platform.k8s.namespace
+            if deployment.spec.platform.k8s
+            else None
+        )
+        cmd = ["kubectl", "diff", "-f", str(td_path), "-R"]
+        if ns:
+            cmd.extend(["-n", ns])
+
+        try:
+            result = subprocess.run(cmd, check=False)
+        except FileNotFoundError as e:
+            typer.echo(
+                "error: kubectl not found on PATH. Install kubectl and "
+                "ensure it's configured against the target cluster.",
+                err=True,
+            )
+            raise typer.Exit(2) from e
+        raise typer.Exit(result.returncode)
 
 
 def _ensure_secrets_via_spec(
