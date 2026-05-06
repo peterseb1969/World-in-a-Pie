@@ -162,6 +162,27 @@ class TestComposeYaml:
         # Dex similarly pins its own version
         assert doc["services"]["dex"]["image"] == "ghcr.io/dexidp/dex:v2.45.0"
 
+    def test_compose_target_does_not_bind_mount_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-301 regression guard: only the dev target bind-mounts
+        libs/wip-auth/src for live library editing. Compose target
+        keeps the build-time pip install (production fidelity)."""
+        doc = self._render_compose(tmp_path, real_discovery)
+        for svc_name, svc in doc["services"].items():
+            volumes = svc.get("volumes", [])
+            wip_auth_mounts = [v for v in volumes if "/wip-auth/" in v or v.endswith("/wip-auth")]
+            assert not wip_auth_mounts, (
+                f"{svc_name} should not have wip-auth volumes in compose mode; "
+                f"found {wip_auth_mounts}"
+            )
+            env = svc.get("environment", {})
+            # PYTHONPATH should not be set as a runtime override in compose
+            # (image's ENV PYTHONPATH=/app/src baked at build time stands).
+            assert "PYTHONPATH" not in env, (
+                f"{svc_name} should not have a PYTHONPATH override in compose mode"
+            )
+
     def test_inactive_components_absent(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

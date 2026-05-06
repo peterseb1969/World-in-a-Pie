@@ -184,6 +184,23 @@ class TestComponents:
         container = statefulset["spec"]["template"]["spec"]["containers"][0]
         assert "imagePullPolicy" not in container
 
+    def test_k8s_target_does_not_bind_mount_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-301 regression guard: only the dev target bind-mounts
+        libs/wip-auth/src for live library editing. K8s target keeps the
+        build-time pip install (production fidelity); pods don't have
+        the operator's repo on their filesystem."""
+        docs = self._parse(tmp_path, real_discovery, "services/registry.yaml")
+        deployment = next(d for d in docs if d["kind"] == "Deployment")
+        container = deployment["spec"]["template"]["spec"]["containers"][0]
+        for vm in container.get("volumeMounts", []):
+            assert "wip-auth" not in vm.get("name", "")
+            assert "wip-auth" not in vm.get("mountPath", "")
+        # No PYTHONPATH override at the container level either.
+        env = {e["name"]: e for e in container.get("env", [])}
+        assert "PYTHONPATH" not in env
+
     def test_env_secrets_use_secretkeyref(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:

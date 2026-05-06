@@ -572,3 +572,88 @@ class TestTargetValidation:
                 d, real_discovery.components, real_discovery.apps, s,
                 repo_root=REPO_ROOT,
             )
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-301: dev target bind-mounts libs/wip-auth/src so library edits
+# propagate via `restart` instead of forcing a full `wip-deploy install`.
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestWipAuthBindMount:
+    def _compose_doc(
+        self, tmp_path: Path, discovery: Discovery, **overrides: object
+    ) -> dict:  # type: ignore[type-arg]
+        d = _dev_deployment(**overrides)  # type: ignore[arg-type]
+        s = _secrets(tmp_path, d, discovery)
+        tree = render_dev_simple(
+            d, discovery.components, discovery.apps, s, repo_root=REPO_ROOT,
+        )
+        return yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+
+    def test_auth_service_mounts_wip_auth_source(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Each component in _AUTH_SERVICES gets a bind-mount of
+        libs/wip-auth/src to /app/libs/wip-auth/src in dev mode. Without
+        this, edits to libs/wip-auth/ would only land via a full
+        `wip-deploy install` (build-context refresh + image rebuild)."""
+        doc = self._compose_doc(tmp_path, real_discovery)
+        reg = doc["services"]["registry"]
+        wip_auth_src_target = "/app/libs/wip-auth/src"
+        mounts = [v for v in reg.get("volumes", []) if wip_auth_src_target in v]
+        assert mounts, (
+            f"registry should mount libs/wip-auth/src into "
+            f"{wip_auth_src_target}; volumes were {reg.get('volumes')}"
+        )
+        # Source path is read-only and points at the repo's libs/wip-auth/src
+        assert mounts[0].endswith(f"{wip_auth_src_target}:ro")
+        assert "libs/wip-auth/src" in mounts[0]
+
+    def test_auth_service_pythonpath_prepends_wip_auth(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The bind-mount alone isn't enough — PYTHONPATH must put the
+        bind-mounted path FIRST so it shadows the build-baked
+        site-packages copy. Otherwise edits would still be ignored
+        because Python finds wip_auth in site-packages first."""
+        doc = self._compose_doc(tmp_path, real_discovery)
+        env = doc["services"]["registry"]["environment"]
+        assert "PYTHONPATH" in env
+        # The wip-auth path must come first so it shadows site-packages.
+        parts = env["PYTHONPATH"].split(":")
+        assert parts[0] == "/app/libs/wip-auth/src", (
+            f"PYTHONPATH first entry should be /app/libs/wip-auth/src; "
+            f"got {env['PYTHONPATH']!r}"
+        )
+        assert "/app/src" in parts
+
+    def test_non_auth_service_does_not_get_wip_auth_mount(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """Non-Python components (mongodb, dex, etc.) don't import
+        wip_auth and should not get the bind-mount or PYTHONPATH override."""
+        doc = self._compose_doc(tmp_path, real_discovery)
+        mongo = doc["services"]["mongodb"]
+        wip_auth_volumes = [
+            v for v in mongo.get("volumes", []) if "wip-auth" in v
+        ]
+        assert not wip_auth_volumes
+        # mongo doesn't get a PYTHONPATH override (not in _AUTH_SERVICES)
+        assert "PYTHONPATH" not in mongo.get("environment", {})
+
+    def test_source_mount_disabled_skips_wip_auth_too(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """When --source-mount=false, neither the component source nor
+        the wip-auth source gets bind-mounted. The PYTHONPATH override
+        is still emitted (it's harmless when no bind-mount is present
+        — Python falls through to site-packages). This matches the
+        symmetry of the existing source_mount behavior for
+        components/<svc>/src."""
+        doc = self._compose_doc(tmp_path, real_discovery, source_mount=False)
+        reg = doc["services"]["registry"]
+        # No source mounts at all
+        for v in reg.get("volumes", []):
+            assert "/app/src" not in v
+            assert "/app/libs/wip-auth/src" not in v
