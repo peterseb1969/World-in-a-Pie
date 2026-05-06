@@ -17,6 +17,9 @@ import type {
   ImportDocumentsOptions,
   ReplayRequest,
   ReplaySessionResponse,
+  DocumentRelationshipsParams,
+  DocumentTraverseParams,
+  DocumentTraverseResponse,
 } from '../types/document.js'
 import type {
   BackupJobSnapshot,
@@ -144,6 +147,44 @@ export class DocumentStoreService extends BaseService {
 
   async queryDocuments(body: DocumentQueryRequest): Promise<DocumentListResponse> {
     return this.post('/documents/query', body)
+  }
+
+  // ---- Relationship-graph queries (Phase 4 / CASE-296) ----
+
+  /**
+   * List relationship documents touching a document.
+   *
+   * Returns relationship documents (templates with `usage: 'relationship'`)
+   * that point at (incoming) or from (outgoing) the given document.
+   *
+   * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+   * `(template_id, data.target_ref)` — query is O(matches), not
+   * O(documents).
+   *
+   * @param documentId Seed document ID (or any synonym/value the Registry resolves).
+   * @param params Filter, pagination, and namespace overrides.
+   */
+  async getDocumentRelationships(
+    documentId: string,
+    params?: DocumentRelationshipsParams,
+  ): Promise<DocumentListResponse> {
+    return this.get(`/documents/${documentId}/relationships`, params)
+  }
+
+  /**
+   * BFS traversal through relationship documents from a seed document.
+   *
+   * Capped at `depth=10` and `max_nodes=1000` (safety bounds). When a
+   * cap fires, the response sets `truncated: true`.
+   *
+   * @param documentId Seed document ID.
+   * @param params Depth (1..10), type filter, direction, namespace.
+   */
+  async traverseDocuments(
+    documentId: string,
+    params?: DocumentTraverseParams,
+  ): Promise<DocumentTraverseResponse> {
+    return this.get(`/documents/${documentId}/traverse`, params)
   }
 
   // ---- Import ----

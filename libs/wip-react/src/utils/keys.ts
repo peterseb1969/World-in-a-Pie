@@ -29,6 +29,10 @@ export const wipKeys = {
     versions: (id: string) => ['wip', 'documents', 'versions', id] as const,
     tableView: (templateId: string, params?: object) =>
       ['wip', 'documents', 'table', templateId, params] as const,
+    relationships: (id: string, params?: object) =>
+      ['wip', 'documents', 'relationships', id, params] as const,
+    traverse: (id: string, params?: object) =>
+      ['wip', 'documents', 'traverse', id, params] as const,
   },
 
   files: {

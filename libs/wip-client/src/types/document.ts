@@ -269,3 +269,74 @@ export interface ReplaySessionResponse {
   throttle_ms: number
   message: string
 }
+
+// ----------------------------------------------------------------------------
+// Phase-4 relationship-graph query APIs (CASE-296)
+// ----------------------------------------------------------------------------
+
+/**
+ * Params for `GET /api/document-store/documents/{id}/relationships`.
+ *
+ * Returns relationship documents (templates with `usage: 'relationship'`)
+ * that point at (incoming) or from (outgoing) the given document.
+ * Backed by Mongo indexes on `(template_id, data.source_ref)` and
+ * `(template_id, data.target_ref)`.
+ */
+export interface DocumentRelationshipsParams {
+  /** `incoming` | `outgoing` | `both`. Default `both`. */
+  direction?: 'incoming' | 'outgoing' | 'both'
+  /** Comma-separated relationship template values. Default: all. */
+  template?: string
+  /** Defaults to the seed document's namespace. */
+  namespace?: string
+  /** Default true — exclude inactive/archived rel docs. */
+  active_only?: boolean
+  page?: number
+  /** Default 50, capped at 500. */
+  page_size?: number
+}
+
+/** One node in a document-relationship traversal result (CASE-296). */
+export interface DocumentTraverseNode {
+  document_id: string
+  template_id: string
+  template_value?: string | null
+  namespace: string
+  /** Hops from the seed (0 = seed itself). */
+  depth: number
+  /** Document_id of the relationship doc traversed to reach this node; null for the seed. */
+  via_relationship?: string | null
+  /** Chain of document_ids from seed (exclusive) to this node (inclusive). */
+  path: string[]
+}
+
+/**
+ * Response for `GET /api/document-store/documents/{id}/traverse`.
+ *
+ * BFS expansion through relationship documents, capped at depth=10 and
+ * max_nodes=1000. When a cap fires, `truncated` is true.
+ */
+export interface DocumentTraverseResponse {
+  seed_document_id: string
+  /** `outgoing` | `incoming` | `both`. */
+  direction: string
+  depth: number
+  /** Relationship template values used to constrain traversal; empty = all. */
+  types_filter: string[]
+  nodes: DocumentTraverseNode[]
+  total_nodes: number
+  /** True if a depth-cap or expansion-cap stopped traversal early. */
+  truncated: boolean
+}
+
+/** Params for `GET /api/document-store/documents/{id}/traverse` (CASE-296). */
+export interface DocumentTraverseParams {
+  /** 1..10. Default 1. */
+  depth?: number
+  /** Comma-separated relationship template values. Default: all. */
+  types?: string
+  /** `outgoing` | `incoming` | `both`. Default `outgoing`. */
+  direction?: 'outgoing' | 'incoming' | 'both'
+  /** Defaults to the seed document's namespace. */
+  namespace?: string
+}
