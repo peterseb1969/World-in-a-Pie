@@ -543,7 +543,7 @@ echo "$STEP_NUM. Generating CLAUDE.md..."
 cat > "$APP_DIR/CLAUDE.md" << EOF
 # $APP_NAME
 
-<!-- last reviewed: 2026-05-02 / CASE-287 -->
+<!-- last reviewed: 2026-05-07 / CASE-301 -->
 
 ## What This App Does
 
@@ -554,6 +554,8 @@ cat > "$APP_DIR/CLAUDE.md" << EOF
 > **Never modify WIP. Build on top of it.**
 
 WIP is the backend. This app is a frontend that maps a domain onto WIP's primitives (terminologies, templates, documents) and presents them to users.
+
+**Verify before asserting any factual claim.** Any factual claim a cheap check could falsify — a file's contents, a function's location, a date, a count, a previous case's content — must be checked, not asserted from memory. "I'm pretty sure" is fabrication if you haven't run the check. The pattern has been observed in BE-YAC (CASE-141, CASE-290) and FRanC (CASE-300); it is agent-agnostic.
 
 ## Dev Namespace
 
