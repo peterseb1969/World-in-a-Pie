@@ -143,7 +143,7 @@ _DEV_DEFAULT = "dev_master_key_for_testing"
 @pytest.fixture
 def clean_api_key_env(monkeypatch):
     """Ensure none of the api-key-related env vars leak in from the shell."""
-    for var in ("WIP_API_KEY", "WIP_API_KEY_FILE", "MASTER_API_KEY"):
+    for var in ("WIP_API_KEY", "WIP_API_KEY_FILE", "MASTER_API_KEY", "API_KEY"):
         monkeypatch.delenv(var, raising=False)
     yield monkeypatch
 
@@ -165,18 +165,42 @@ def test_resolve_api_key_defaults_when_nothing_set(clean_api_key_env) -> None:
     assert _resolve_api_key() == _DEV_DEFAULT
 
 
-def test_resolve_api_key_does_NOT_read_MASTER_API_KEY(clean_api_key_env) -> None:
-    """Explicit negative: MASTER_API_KEY is NOT a fallback for WIP_API_KEY.
+def test_resolve_api_key_reads_MASTER_API_KEY(clean_api_key_env) -> None:
+    """CASE-312 reopen: when wip_mcp runs as the deployer's container, the env
+    var the deployer sets is MASTER_API_KEY (per the component manifest's
+    `MASTER_API_KEY: from_secret: api-key`). Without honouring it, the
+    HTTP-transport invocation falls through to the dev default, the upstream
+    httpx client sends `X-API-Key: dev_master_key_for_testing`, and every tool
+    call returns 401 Unauthorized — silently breaking askBar end-to-end.
 
-    Regression guard against the specific invention shipped in the
-    2026-04-24 stdio config. If someone later decides MASTER_API_KEY
-    should also be honored, this test forces the decision to be
-    deliberate (update _resolve_api_key AND flip this assertion)
-    rather than accidental ambient coupling.
+    The original 2026-04-24 stdio config invented a MASTER_API_KEY read; the
+    test_docstring_env_var_drift suite caught it and forced its removal. This
+    test is the deliberate REINTRODUCTION as a real fallback (not invention),
+    documented in _resolve_api_key's docstring with priority order so the
+    drift test stays clean.
     """
-    clean_api_key_env.setenv("MASTER_API_KEY", "should-be-ignored")
-    # With no WIP_API_KEY / WIP_API_KEY_FILE, we still get the default.
-    assert _resolve_api_key() == _DEV_DEFAULT
+    clean_api_key_env.setenv("MASTER_API_KEY", "deployer-set-key")
+    assert _resolve_api_key() == "deployer-set-key"
+
+
+def test_resolve_api_key_reads_API_KEY(clean_api_key_env) -> None:
+    """CASE-312 reopen: API_KEY is also set on the container (legacy name
+    used elsewhere in the platform). Lower priority than MASTER_API_KEY but
+    valid as a fallback; aligns _resolve_api_key with what the deployed
+    container actually carries."""
+    clean_api_key_env.setenv("API_KEY", "legacy-name-key")
+    assert _resolve_api_key() == "legacy-name-key"
+
+
+def test_resolve_api_key_priority_order(clean_api_key_env) -> None:
+    """WIP_API_KEY beats MASTER_API_KEY beats API_KEY beats WIP_API_KEY_FILE
+    beats default. Order matters: an app explicitly setting WIP_API_KEY for
+    its own scoped key should not be overridden by a deployer-set master key
+    inherited via the parent process env."""
+    clean_api_key_env.setenv("WIP_API_KEY", "wip-key")
+    clean_api_key_env.setenv("MASTER_API_KEY", "master-key")
+    clean_api_key_env.setenv("API_KEY", "api-key-val")
+    assert _resolve_api_key() == "wip-key"
 
 
 def test_resolve_api_key_WIP_API_KEY_wins_over_FILE(clean_api_key_env, tmp_path) -> None:
