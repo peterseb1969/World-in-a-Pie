@@ -693,6 +693,8 @@ The `/case` command lives at `.claude/commands/case.md`. Peter symlinks both the
 - Peter said "off the record"
 
 **Case discipline:**
+- **Filing always uses `case-helper.sh claim <slug>`** — never `Write` to `yac-discussions/CASE-*.md` directly, never `case-helper.sh next` followed by `Write`. The atomic claim is the only collision-safe path. CASE-67 (Apr 27 2026) and CASE-301 (May 6 2026) were both 2-YAC 13-minute collisions caused by skipping this. CASE-306 names the discipline.
+- **After filing, mirror to wip-kb via `add-to-kb.py`.** Once the body is written, run `python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-NN-...md`. The script POSTs the canonical CASE_RECORD into the `kb` namespace and derives REFERENCES edges from frontmatter `related:`. Idempotent on rerun. This step is **not optional** — without it, the flat file lives in FR-YAC but the KB record never lands. CASE-307 names the design.
 - *Peter's Take* is for Peter's verbatim input only. Empty unless provided.
 - Renaming or editing existing case files is a shared-state change — propose, wait for approval.
 - Filing hypotheses as findings is fabrication. Label them.
