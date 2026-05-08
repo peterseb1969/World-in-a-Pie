@@ -111,6 +111,25 @@ def build_sort_clauses(
         )
 
     if field not in _CORE_SORT_FIELDS and not field.startswith("data."):
+        # CASE-317: sort_by is a declarative slot — the platform
+        # commits to the field's meaning for pagination order.
+        # metadata.* is caller-attached audit context with no
+        # platform-side commitments and is not indexed by reporting-
+        # sync, so it cannot carry pagination order. Surface the
+        # metadata case explicitly because it's the most-likely
+        # mistake — operators reach for it after seeing
+        # metadata.<x> work in POST /documents/query filters (which
+        # remain free; only declarative slots reject metadata).
+        if field.startswith("metadata."):
+            raise ValueError(
+                f"sort_by must reference a structural field, not a "
+                f"metadata path. Got '{field}'. metadata.* is caller-"
+                f"attached context with no schema commitments and is "
+                f"not indexed by reporting-sync. Supported: "
+                f"{', '.join(_CORE_SORT_FIELDS)}, or data.<path>. "
+                f"POST /documents/query filters can still use "
+                f"metadata.<path> — only declarative slots reject it."
+            )
         raise ValueError(
             f"Unknown sort field '{field}'. Supported: "
             f"{', '.join(_CORE_SORT_FIELDS)}, "

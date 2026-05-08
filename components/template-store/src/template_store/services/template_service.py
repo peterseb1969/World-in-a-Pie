@@ -106,6 +106,60 @@ class TemplateService:
                 )
 
     # =========================================================================
+    # METADATA-IN-DECLARATIVE-SLOTS VALIDATION
+    # =========================================================================
+
+    @staticmethod
+    def _validate_no_metadata_in_declarative_slots(
+        identity_fields: list[str] | None,
+        fields: list[FieldDefinition],
+    ) -> None:
+        """Reject metadata.<x> references in template-level declarative
+        slots — slots where the platform commits to the field's
+        structural meaning (identity, FTS indexing).
+
+        Per the data-model contract:
+        - data.<field> is validated, queryable, identity-bearing,
+          indexable, FTS-able. The platform commits to its meaning.
+        - metadata.* is free-form caller-attached context. No schema
+          commitments, no platform-side guarantees.
+
+        A metadata.<x> reference in identity_fields or full_text_indexed
+        bends the contract: the document body claims structural meaning
+        for caller-context, downstream services try to honour it, the
+        guarantees aren't there, and failures cascade silently. CASE-316
+        + CASE-318 are the canonical cascade.
+
+        Read-path queries (POST /documents/query filters) are NOT a
+        declarative slot and remain free — operators legitimately need
+        to filter on metadata for debugging / audit. Only slots that
+        commit to field meaning reject metadata.
+        """
+        if identity_fields:
+            bad_identity = [f for f in identity_fields if f.startswith("metadata.")]
+            if bad_identity:
+                raise ValueError(
+                    f"identity_fields must reference structural data fields, "
+                    f"not metadata paths. Got {bad_identity}. metadata.* is "
+                    f"caller-attached context with no schema commitments and "
+                    f"cannot carry structural identity. Hoist the field(s) to "
+                    f"top-level data fields and reference them by name."
+                )
+
+        fts_metadata = [
+            f for f in fields
+            if getattr(f, "full_text_indexed", None)
+            and f.name.startswith("metadata.")
+        ]
+        if fts_metadata:
+            names = ", ".join(f.name for f in fts_metadata)
+            raise ValueError(
+                f"full_text_indexed cannot be applied to metadata.* paths. "
+                f"Got: {names}. metadata.* is not part of the template "
+                f"schema and is not indexed by reporting-sync."
+            )
+
+    # =========================================================================
     # FULL-TEXT-INDEX STRUCTURAL VALIDATION
     # =========================================================================
 
@@ -196,6 +250,14 @@ class TemplateService:
         # purely declarative — runs in draft mode too).
         TemplateService._validate_full_text_indexed_constraints(
             request.fields, request.reporting
+        )
+
+        # Reject metadata.<x> in declarative slots (identity_fields,
+        # full_text_indexed) — declarative slots commit the platform
+        # to structural meaning; metadata.* has no schema guarantees.
+        # Read-path query filters remain free.
+        TemplateService._validate_no_metadata_in_declarative_slots(
+            request.identity_fields, request.fields
         )
 
         # Check if value already exists within namespace — skip in restore mode
@@ -799,6 +861,18 @@ class TemplateService:
             new_fields, new_reporting
         )
 
+        # Reject metadata.<x> in declarative slots after the merge —
+        # an update may newly introduce identity_fields=["metadata.x"]
+        # or flip full_text_indexed on a metadata-prefixed field.
+        new_identity_fields = (
+            request.identity_fields
+            if request.identity_fields is not None
+            else original.identity_fields
+        )
+        TemplateService._validate_no_metadata_in_declarative_slots(
+            new_identity_fields, new_fields
+        )
+
         # Stable ID: reuse original template_id (no Registry call for updates)
         # Create new template document for this version. usage,
         # versioned, source_templates, and target_templates are
@@ -1156,6 +1230,26 @@ class TemplateService:
             # Structural validation for relationship templates
             try:
                 TemplateService._validate_relationship_template_shape(template_req)
+            except ValueError as e:
+                results.append(BulkResultItem(
+                    index=i,
+                    status="error",
+                    value=template_req.value,
+                    error=str(e)
+                ))
+                continue
+
+            # Structural validation for full_text_indexed (pre-existing
+            # gap — bulk path was bypassing this) and metadata-in-
+            # declarative-slots (CASE-317). Both are purely declarative
+            # so they run for drafts too.
+            try:
+                TemplateService._validate_full_text_indexed_constraints(
+                    template_req.fields, template_req.reporting
+                )
+                TemplateService._validate_no_metadata_in_declarative_slots(
+                    template_req.identity_fields, template_req.fields
+                )
             except ValueError as e:
                 results.append(BulkResultItem(
                     index=i,
