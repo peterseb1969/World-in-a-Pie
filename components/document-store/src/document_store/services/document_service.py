@@ -22,6 +22,9 @@ from ..models.api_models import (
     DocumentVersionResponse,
     DocumentVersionSummary,
     PatchDocumentItem,
+    PeerProjection,
+    RelationshipItem,
+    RelationshipListResponse,
     TraverseNode,
     TraverseResponse,
     ValidationError,
@@ -1022,7 +1025,9 @@ class DocumentService:
         active_only: bool = True,
         page: int = 1,
         page_size: int = 50,
-    ) -> DocumentListResponse:
+        include_peers: bool = False,
+        identity: Any = None,
+    ) -> RelationshipListResponse:
         """Return relationship documents that point at (incoming) or from
         (outgoing) the given document.
 
@@ -1032,6 +1037,15 @@ class DocumentService:
         relationship templates have data.source_ref / data.target_ref
         fields, so a query on those keys naturally filters to
         relationship documents.
+
+        When include_peers=True, each item is decorated with the peer
+        entity at the OTHER end of the edge — direction-agnostic, latest
+        active version, projected to {document_id, namespace, template_value,
+        template_id, status, data: {title?, doc_status?}}. Closes the N+1
+        fetch loop the relationships sidebar would otherwise pay (CASE-303).
+        Cross-namespace peers respect read permission: an unauthorised
+        peer namespace populates peer_error_code='forbidden' on that item
+        rather than 403'ing the whole request.
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -1058,7 +1072,7 @@ class DocumentService:
             )
             if not template_ids:
                 # Filter resolved to nothing — return empty page
-                return DocumentListResponse(
+                return RelationshipListResponse(
                     items=[], total=0, page=page, page_size=page_size, pages=0,
                 )
             query["template_id"] = {"$in": template_ids}
@@ -1068,11 +1082,124 @@ class DocumentService:
         documents = await Document.find(query).sort(
             [("created_at", -1)]
         ).skip(skip).limit(page_size).to_list()
-        items = await self._batch_to_responses(documents)
+        edge_items = await self._batch_to_responses(documents)
+
+        items: list[RelationshipItem] = [
+            RelationshipItem(**item.model_dump()) for item in edge_items
+        ]
+
+        if include_peers:
+            await self._decorate_with_peers(items, document_id, identity)
+
         pages = math.ceil(total / page_size) if total else 0
-        return DocumentListResponse(
+        return RelationshipListResponse(
             items=items, total=total, page=page, page_size=page_size, pages=pages,
         )
+
+    async def _decorate_with_peers(
+        self,
+        items: list[RelationshipItem],
+        seed_document_id: str,
+        identity: Any,
+    ) -> None:
+        """Populate peer / peer_error_code on each item in place (CASE-303).
+
+        Strategy:
+          1. Collect peer document_ids (the OTHER end of each edge — direction-
+             agnostic; self-loops resolve to the seed itself).
+          2. Single batched lookup against the documents collection: latest
+             active (or inactive — PoNIF #1: inactive peers still resolve)
+             version of each peer document_id.
+          3. For each edge, attach peer or peer_error_code per the lookup +
+             namespace permission check.
+
+        Permission policy: caller already has read on the seed namespace
+        (checked at API layer). Cross-namespace peers require an explicit
+        read grant on the peer namespace; missing grant -> peer_error_code=
+        forbidden, peer=None, no 403 on the whole request.
+        """
+        if not items:
+            return
+
+        peer_ids: set[str] = set()
+        for item in items:
+            data = item.data or {}
+            source_ref = data.get("source_ref")
+            target_ref = data.get("target_ref")
+            peer_id = (
+                target_ref if source_ref == seed_document_id else source_ref
+            )
+            if peer_id:
+                peer_ids.add(peer_id)
+
+        if not peer_ids:
+            return
+
+        # Batched lookup: latest version of each peer document_id.
+        # PoNIF #1 — inactive peers still resolve, so no status filter.
+        # The aggregation pipeline mirrors list_documents(latest_only=True).
+        peer_pipeline: list[dict] = [
+            {"$match": {"document_id": {"$in": list(peer_ids)}}},
+            {"$sort": {"document_id": 1, "version": -1}},
+            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+            {"$replaceRoot": {"newRoot": "$doc"}},
+        ]
+        peer_docs = await Document.aggregate(peer_pipeline).to_list()
+        peer_lookup: dict[str, Document] = {
+            doc["document_id"]: Document(**doc) for doc in peer_docs
+        }
+
+        # Permission cache per namespace — avoid re-checking same ns N times.
+        from wip_auth.permissions import permission_sufficient, resolve_permission
+        ns_permission_cache: dict[str, str] = {}
+
+        async def can_read_namespace(ns: str) -> bool:
+            if identity is None:
+                return True  # service called without identity context — trust caller
+            if ns not in ns_permission_cache:
+                ns_permission_cache[ns] = await resolve_permission(identity, ns)
+            return permission_sufficient(ns_permission_cache[ns], "read")
+
+        for item in items:
+            data = item.data or {}
+            source_ref = data.get("source_ref")
+            target_ref = data.get("target_ref")
+            peer_id = (
+                target_ref if source_ref == seed_document_id else source_ref
+            )
+            if not peer_id:
+                # Edge with no resolvable peer field — leave peer=None silently.
+                continue
+
+            peer_doc = peer_lookup.get(peer_id)
+            if peer_doc is None:
+                item.peer_error_code = "not_found"
+                item.peer_error = f"Peer document '{peer_id}' not found"
+                continue
+
+            if not await can_read_namespace(peer_doc.namespace):
+                item.peer_error_code = "forbidden"
+                item.peer_error = (
+                    f"No read access to peer namespace '{peer_doc.namespace}'"
+                )
+                continue
+
+            # Compact projection — title and doc_status when present.
+            peer_data = peer_doc.data or {}
+            projected_data: dict[str, Any] = {}
+            if "title" in peer_data:
+                projected_data["title"] = peer_data["title"]
+            if "doc_status" in peer_data:
+                projected_data["doc_status"] = peer_data["doc_status"]
+
+            item.peer = PeerProjection(
+                document_id=peer_doc.document_id,
+                namespace=peer_doc.namespace,
+                template_id=peer_doc.template_id,
+                template_value=peer_doc.template_value,
+                status=peer_doc.status,
+                data=projected_data,
+            )
 
     async def traverse_relationships(
         self,

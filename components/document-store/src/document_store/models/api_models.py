@@ -151,6 +151,73 @@ class DocumentListResponse(BaseModel):
 
 
 # ============================================================================
+# Relationships endpoint with optional peer projection (CASE-303)
+# ============================================================================
+
+class PeerProjection(BaseModel):
+    """Compact projection of a peer entity document for ?include=peers (CASE-303).
+
+    The relationships endpoint returns edge documents (relationship templates).
+    When ?include=peers is set, each item gains a peer field carrying the
+    entity at the OTHER end of the edge — direction-agnostic, latest active
+    version, projected down to the at-a-glance fields needed to render a
+    relationship sidebar without an N+1 fetch.
+
+    Hardcoded field set in v1: title, doc_status. Future: extend via a
+    template-side header_fields declaration once the templates-as-projection-
+    authority convention is settled (out of scope for this case).
+    """
+
+    document_id: str
+    namespace: str
+    template_id: str
+    template_value: str | None = None
+    status: DocumentStatus
+    data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Compact projection — title and doc_status when present on the peer."
+    )
+
+
+class RelationshipItem(DocumentResponse):
+    """Edge document with optional peer projection (CASE-303).
+
+    When the caller passes ?include=peers, each item carries either:
+      - peer: a PeerProjection of the entity at the OTHER end of the edge
+      - peer_error_code: 'not_found' | 'forbidden' (peer is None)
+
+    Inactive peers per PoNIF #1 are NOT errors — they are returned as a
+    populated peer object with status: 'inactive' so the UI can render them
+    dimmed. peer_error_code is reserved for actual resolution failures.
+    """
+
+    peer: PeerProjection | None = None
+    peer_error_code: str | None = Field(
+        None,
+        description="Set when peer is null. Enum: not_found | forbidden."
+    )
+    peer_error: str | None = Field(
+        None,
+        description="Optional human-readable peer error message."
+    )
+
+
+class RelationshipListResponse(BaseModel):
+    """Response shape for GET /documents/{id}/relationships.
+
+    Backwards-compatible with the prior DocumentListResponse: when
+    ?include=peers is absent, items have no peer/peer_error_code/peer_error
+    fields populated and the shape is functionally identical.
+    """
+
+    items: list[RelationshipItem]
+    total: int
+    page: int
+    page_size: int
+    pages: int
+
+
+# ============================================================================
 # Phase 4 — Document-relationship query APIs
 # ============================================================================
 
