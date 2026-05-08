@@ -541,17 +541,53 @@ class TestCaddyfile:
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        # No bare-path redirect for /mcp
-        assert "handle /mcp {" not in caddyfile
-        # But /mcp/* is still handled (not deleted — just no redirect)
+        # No bare-path REDIRECT for /mcp (the conditional redirect block
+        # that would land at `handle /mcp { redir * /mcp/ permanent }`).
+        assert "redir * /mcp/ permanent" not in caddyfile
+        # CASE-312: a SIBLING handle block serves bare /mcp instead of
+        # redirecting it. Both bare and wildcard reach the backend.
+        assert "handle /mcp {" in caddyfile
         assert "handle /mcp/* {" in caddyfile
         assert "reverse_proxy wip-mcp-server:8007" in caddyfile
+        # The bare /mcp block forwards directly (no redirect inside).
+        mcp_bare = caddyfile[caddyfile.index("handle /mcp {"):]
+        bare_block_end = mcp_bare.index("}")
+        assert "reverse_proxy" in mcp_bare[:bare_block_end]
+        assert "redir " not in mcp_bare[:bare_block_end]
 
         # Other routes retain the default behavior — /api/registry
-        # still gets its redirect.
+        # still gets its redirect AND its wildcard matcher.
         assert "handle /api/registry {" in caddyfile
         registry_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
         assert "redir * /api/registry/ permanent" in registry_bare[:120]
+        assert "handle /api/registry/* {" in caddyfile
+
+    def test_redirect_bare_path_false_emits_bare_handle_block(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-312 regression guard.
+
+        When a route opts out of the bare-path redirect (redirect_bare_path:
+        False), the renderer must emit a SIBLING handle block for the bare
+        path that forwards directly to the backend — NOT redirect to
+        `<path>/`. Without it, bare requests fall through to Caddy's
+        200-empty default. That's what crashed the MCP StreamableHTTP
+        transport with "Unexpected content type: null", silently breaking
+        the dev askBar and any external HTTP MCP client.
+        """
+        d = _minimal_compose(modules=["mcp-server"])
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
+        caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
+
+        # Bare handle block forwards to backend without redirecting.
+        bare_idx = caddyfile.index("handle /mcp {")
+        bare_block = caddyfile[bare_idx : bare_idx + 200]
+        assert "reverse_proxy wip-mcp-server:8007" in bare_block
+        assert "redir" not in bare_block.split("\n}")[0]
+        # Wildcard block also exists (redirects + wildcard for the
+        # subpath case the SDK doesn't hit but external clients might).
+        assert "handle /mcp/* {" in caddyfile
 
     def test_streaming_route_sets_flush_interval(
         self, tmp_path: Path, real_discovery: Discovery
