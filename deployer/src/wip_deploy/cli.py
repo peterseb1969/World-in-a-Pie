@@ -195,6 +195,7 @@ def _app_source_opt() -> typer.models.OptionInfo:
             "--app-source clintrial=/Users/peter/Development/WIP-ClinTrial. "
             "If <PATH>/Dockerfile.dev exists, it's preferred over Dockerfile "
             "so the app can define its own dev-mode command (e.g., `npm run dev`). "
+            "Implicitly enables the named app (no separate --app needed). "
             "Ignored for target!=dev."
         ),
     )
@@ -1380,6 +1381,18 @@ def _assemble(
 
     if target == "compose" and data_dir is None:
         data_dir = root / "data"
+
+    # CASE-313 (related): --app-source NAME=PATH implicitly enables NAME.
+    # Without this, a user who passes ONLY --app-source has to also
+    # remember --app NAME, which the help-text example omits and which
+    # produced silent app-drop in past sessions (an --app-source without
+    # --app rendered with apps=[] and dropped the app from the deployment
+    # entirely). Bind-mounting source for an app you didn't enable has
+    # no coherent meaning anyway, so the implication is one-way and safe.
+    apps = list(apps)  # copy to avoid mutating caller's list
+    for src_name in app_sources:
+        if src_name not in apps:
+            apps.append(src_name)
 
     # Build
     inputs = BuildInputs(

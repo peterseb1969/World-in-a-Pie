@@ -7,6 +7,7 @@ fixtures) — the tests double as smoke tests that the whole pipeline
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,65 @@ class TestAppSourceFlag:
         from wip_deploy.cli import _parse_app_sources
         with pytest.raises(ValueError, match="not a directory"):
             _parse_app_sources(["rc=/definitely/not/a/real/path/xyz"])
+
+    def test_app_source_implicitly_enables_app(self, tmp_path: Path) -> None:
+        """CASE-313 (related): --app-source NAME=PATH must enable NAME, even
+        when --app NAME isn't passed separately. Bind-mounting source for an
+        app you didn't enable has no coherent meaning, and the help-text
+        example shows --app-source on its own — past behaviour silently
+        dropped the app from the deployment, which is what produced the
+        react-console regression on 2026-05-08.
+        """
+        rc_src = tmp_path / "WIP-ReactConsole"
+        rc_src.mkdir()
+
+        r = _invoke(
+            "show-spec",
+            "--preset", "standard",
+            "--target", "dev",
+            "--hostname", "localhost",
+            "--format", "json",
+            "--app-source", f"react-console={rc_src}",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert r.exit_code == 0, r.output
+        parsed = json.loads(r.output)
+
+        # react-console should be in the apps list with enabled=True even
+        # though we didn't pass --app react-console.
+        app_entries = parsed["spec"]["apps"]
+        assert any(
+            a["name"] == "react-console" and a.get("enabled", True) is True
+            for a in app_entries
+        ), f"react-console not auto-enabled in apps list: {app_entries}"
+
+        # And the source mount is recorded, of course.
+        app_sources = parsed["spec"]["platform"]["dev"]["app_sources"]
+        assert "react-console" in app_sources
+
+    def test_app_source_does_not_duplicate_existing_app(self, tmp_path: Path) -> None:
+        """When the user passes BOTH --app NAME and --app-source NAME=PATH,
+        NAME appears once in the apps list, not twice. The implicit-enable
+        is a set-union, not a list-append.
+        """
+        rc_src = tmp_path / "WIP-ReactConsole"
+        rc_src.mkdir()
+
+        r = _invoke(
+            "show-spec",
+            "--preset", "standard",
+            "--target", "dev",
+            "--hostname", "localhost",
+            "--format", "json",
+            "--app", "react-console",
+            "--app-source", f"react-console={rc_src}",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert r.exit_code == 0, r.output
+        parsed = json.loads(r.output)
+
+        rc_entries = [a for a in parsed["spec"]["apps"] if a["name"] == "react-console"]
+        assert len(rc_entries) == 1, f"react-console duplicated: {rc_entries}"
 
 
 # CASE-171 Phase A — restart verb, hostname default resolver, standard preset shape
