@@ -14,7 +14,7 @@
 #      app-containerization-guide.md, ontology-support.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
-#   6. Copies wip-toolkit wheel and dev-delete.py
+#   6. Copies wip-toolkit wheel
 #   7. Generates a starter CLAUDE.md
 #   8. Initialises a git repo
 #
@@ -347,12 +347,17 @@ copy_tarball "$CLIENT_TARBALL" "@wip/client" "wip-client-README.md"
 copy_tarball "$REACT_TARBALL" "@wip/react" "wip-react-README.md"
 copy_tarball "$PROXY_TARBALL" "@wip/proxy" "wip-proxy-README.md"
 
-# --- Copy wip-toolkit and dev-delete.py ---
+# --- Copy wip-toolkit ---
+#
+# (CASE-286: dev-delete.py copy removed 2026-05-08. The legacy script bypassed
+# the WIP API and wrote directly to MongoDB; superseded by `mcp__wip__delete_namespace`
+# which the heredoc already prescribes. Apps no longer get the orphan tool in
+# their tools/ directory.)
 
 if $REFRESH_MODE; then
-    echo "3. Refreshing wip-toolkit and dev-delete.py..."
+    echo "3. Refreshing wip-toolkit..."
 else
-    echo "6. Copying wip-toolkit and dev-delete.py..."
+    echo "6. Copying wip-toolkit..."
 fi
 
 # wip-toolkit wheel
@@ -384,14 +389,6 @@ if [ -n "$TOOLKIT_WHEEL" ]; then
 else
     echo "   Warning: wip-toolkit wheel not found. Build it with:"
     echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
-fi
-
-# dev-delete.py
-if [ -f "$WIP_ROOT/scripts/dev-delete.py" ]; then
-    cp "$WIP_ROOT/scripts/dev-delete.py" "$APP_DIR/tools/"
-    echo "   Copied: tools/dev-delete.py"
-else
-    echo "   Warning: scripts/dev-delete.py not found"
 fi
 
 # --- Copy query scaffold files (--preset query only, new projects only) ---
