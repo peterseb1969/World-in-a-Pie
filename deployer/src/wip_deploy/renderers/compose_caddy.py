@@ -154,16 +154,31 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     # the public /minio prefix, and SigV2 presigned URLs encode the
     # bucket+key path that must match what MinIO sees.
     directive = "handle_path" if route.strip_prefix else "handle"
-    out.write(f"    {directive} {route.path}/* {{\n")
-    if route.auth_protected:
-        _write_forward_auth(out, cfg)
-    if route.streaming:
-        out.write(f"        reverse_proxy {backend} {{\n")
-        out.write("            flush_interval -1\n")
-        out.write("        }\n")
-    else:
-        out.write(f"        reverse_proxy {backend}\n")
-    out.write("    }\n\n")
+
+    def _emit_block(matcher_path: str) -> None:
+        out.write(f"    {directive} {matcher_path} {{\n")
+        if route.auth_protected:
+            _write_forward_auth(out, cfg)
+        if route.streaming:
+            out.write(f"        reverse_proxy {backend} {{\n")
+            out.write("            flush_interval -1\n")
+            out.write("        }\n")
+        else:
+            out.write(f"        reverse_proxy {backend}\n")
+        out.write("    }\n\n")
+
+    # CASE-312: when redirect_bare_path is False, no companion `handle
+    # {route.path}` block was emitted above. The wildcard matcher
+    # `{route.path}/*` alone does NOT match the bare path (Caddy's path
+    # glob requires the trailing slash). Without an explicit bare-path
+    # block, requests for `/<path>` fall through to Caddy's default
+    # 200-with-empty-body behaviour — which the MCP StreamableHTTP
+    # transport hits as "Unexpected content type: null" and crashes.
+    # Emit a sibling bare-path handle block (Caddy's first-match wins,
+    # both forward to the same backend) so bare requests are served too.
+    if not route.redirect_bare_path:
+        _emit_block(route.path)
+    _emit_block(f"{route.path}/*")
 
 
 def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
