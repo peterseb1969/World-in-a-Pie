@@ -24,6 +24,7 @@ from ..models.api_models import (
     DocumentResponse,
     DocumentVersionResponse,
     PatchDocumentItem,
+    RelationshipListResponse,
     TraverseResponse,
 )
 from ..models.document import DocumentStatus
@@ -312,7 +313,7 @@ async def get_latest_document(
 
 @router.get(
     "/{document_id}/relationships",
-    response_model=DocumentListResponse,
+    response_model=RelationshipListResponse,
     summary="List relationship documents touching this document",
     description="""
 Return relationship documents (templates with usage='relationship')
@@ -321,6 +322,11 @@ that point at (incoming) or from (outgoing) the given document.
 Backed by Mongo indexes on (template_id, data.source_ref) and
 (template_id, data.target_ref) created lazily on first relationship-
 document write.
+
+Pass `?include=peers` (CASE-303) to embed a compact peer projection on
+each item — the entity at the OTHER end of the edge — avoiding an N+1
+fetch for relationship-sidebar rendering. Default response shape is
+unchanged when `include` is absent or does not contain `peers`.
 """,
 )
 async def get_document_relationships(
@@ -332,6 +338,10 @@ async def get_document_relationships(
     active_only: bool = Query(True, description="Exclude inactive/archived relationship docs"),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
+    include: str | None = Query(
+        None,
+        description="Comma-separated optional inclusions. Currently supports: 'peers' (embed a compact peer projection on each item, CASE-303).",
+    ),
     _: str = Depends(require_api_key),
 ):
     """List relationships incident to a document."""
@@ -346,6 +356,9 @@ async def get_document_relationships(
     await check_namespace_permission(identity, seed.namespace, "read")
 
     template_filter = [t.strip() for t in template.split(",")] if template else None
+    include_set = (
+        {tok.strip() for tok in include.split(",") if tok.strip()} if include else set()
+    )
     try:
         return await service.find_relationships(
             document_id=document_id,
@@ -355,6 +368,8 @@ async def get_document_relationships(
             active_only=active_only,
             page=page,
             page_size=page_size,
+            include_peers="peers" in include_set,
+            identity=identity,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
