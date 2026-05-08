@@ -21,6 +21,29 @@ class BulkError(Exception):
         super().__init__(msg)
 
 
+def _raise_for_status_with_body(resp: httpx.Response) -> None:
+    """Like httpx.Response.raise_for_status(), but the raised exception's
+    message includes the response body — so consumers see the server's
+    actual validation/error detail instead of just an HTTP code.
+
+    CASE-315: the original `resp.raise_for_status()` produces messages like
+    "Client error '422 Unprocessable Entity' for url '...'" that hide the
+    server's structured `detail` payload (e.g., "Extra inputs are not
+    permitted"). MCP-tool consumers see the opaque code and have to dig
+    through HTTP traces to figure out which field tripped validation.
+    """
+    if resp.is_success:
+        return
+    body = resp.text
+    if len(body) > 1000:
+        body = body[:1000] + "…"
+    raise httpx.HTTPStatusError(
+        f"{resp.status_code} {resp.reason_phrase} from {resp.request.url}: {body}",
+        request=resp.request,
+        response=resp,
+    )
+
+
 def _resolve_api_key() -> str:
     """Resolve the API key from env var or file.
 
@@ -171,7 +194,7 @@ class WipClient:
         # Strip None params
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.get(f"{base_url}{path}", params=params)
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def _post(
@@ -181,7 +204,7 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.post(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def _put(
@@ -191,7 +214,7 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.put(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def _patch(
@@ -201,7 +224,7 @@ class WipClient:
         client = await self._get_client()
         params = {k: v for k, v in params.items() if v is not None}
         resp = await client.patch(f"{base_url}{path}", json=json, params=params)
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def _delete(
@@ -213,7 +236,7 @@ class WipClient:
         resp = await client.request(
             "DELETE", f"{base_url}{path}", json=json, params=params,
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     def _unwrap_single(self, bulk_response: dict[str, Any]) -> dict[str, Any]:
@@ -334,7 +357,7 @@ class WipClient:
             f"{self.registry_url}/api/registry/namespaces/{prefix}",
             params=params,
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def search_registry(
@@ -1033,10 +1056,17 @@ class WipClient:
         return self._unwrap_single(resp)
 
     async def query_documents(self, filters: dict) -> dict:
+        # CASE-315: the doc-store endpoint accepts `namespace` as a QUERY PARAM,
+        # not a body field. The body is a StrictModel with extra='forbid', so
+        # passing namespace inside `filters` produces a 422 ("Extra inputs are
+        # not permitted"). Pop it out and route via _post's params kwarg.
+        body = dict(filters)  # shallow-copy: don't mutate caller's dict
+        namespace = body.pop("namespace", None)
         return await self._post(
             self.document_store_url,
             "/api/document-store/documents/query",
-            json=filters,
+            json=body,
+            namespace=namespace,
         )
 
     async def get_table_view(
@@ -1126,7 +1156,7 @@ class WipClient:
             data=data,
             headers={"X-API-Key": self.api_key},  # Override default JSON headers
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def delete_file(self, file_id: str, force: bool = False, namespace: str | None = None) -> dict:
@@ -1188,7 +1218,7 @@ class WipClient:
             files=files,
             headers={"X-API-Key": self.api_key},
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def import_documents(
@@ -1217,7 +1247,7 @@ class WipClient:
             data=data,
             headers={"X-API-Key": self.api_key},
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     # ========================================================
@@ -1342,7 +1372,7 @@ class WipClient:
                 data=data,
                 headers={"X-API-Key": self.api_key},
             )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         return resp.json()
 
     async def get_backup_job(self, job_id: str) -> dict:
