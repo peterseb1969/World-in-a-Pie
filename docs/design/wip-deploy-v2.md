@@ -978,6 +978,7 @@ Emits Tiltfile + runs `tilt up`. Source-mount + live-reload. Ctrl-C tears down.
    - Delete `config/presets/`, `config/production/`
    - Rename `scripts/` → `tools/`
    - Shrink `quick-install.sh` to the bootstrap form
+     **Update 2026-05-08, CASE-278:** the shrink was deferred when the v1 retirement landed in BE-YAC-20260430-2000, leaving `scripts/quick-install.sh` orphaned and broken (it fetched the just-deleted `setup-wip.sh`). On 2026-05-08 the design call was changed: **delete entirely instead of shrink to bootstrap.** `README.md` already documents `wip-deploy install` as the canonical entry point; the wrapper script added no value. The "20-line bootstrap form" described elsewhere in this document (§ "What survives") is therefore not implemented — `wip-deploy install` is the entry.
 7. Merge `v2-deployer` → `develop` as a single commit. v1.1 remains on the `v1.1` tag.
 
 No coexistence period. v1.1 is tagged; v2 replaces. No "both scripts exist for a while" — that's the current state and it is the problem.
