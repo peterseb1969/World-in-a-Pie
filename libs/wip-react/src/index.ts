@@ -1,6 +1,9 @@
 // Provider
 export { WipProvider, useWipClient, type WipProviderProps } from './provider.js'
 
+// Brand-attribution component (CASE-308)
+export { WipFooter, type WipFooterProps } from './WipFooter.js'
+
 // Query key factories
 export { wipKeys } from './utils/keys.js'
 export { STALE_TIMES } from './utils/defaults.js'

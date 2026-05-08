@@ -160,6 +160,37 @@ function MyComponent() {
 
 ---
 
+## Components
+
+### `<WipFooter>` (CASE-308)
+
+Brand-attribution footer. Drop into any WIP app's root layout to render a small "Built on WIP" mark with the embedded logo.
+
+```tsx
+import { WipFooter } from '@wip/react'
+
+function App() {
+  return (
+    <>
+      {/* ...your app... */}
+      <WipFooter />                       {/* "Built on WIP" */}
+      <WipFooter appName="ClinTrial" />   {/* "ClinTrial · Built on WIP" */}
+    </>
+  )
+}
+```
+
+| Prop | Type | Default | Purpose |
+|---|---|---|---|
+| `appName` | `string` | `undefined` | Prepends `<appName> · ` to the attribution text. |
+| `className` | `string` | `undefined` | Layout-only override merged onto the wrapper `<footer>`. |
+| `variant` | `'compact' \| 'full'` | `'compact'` | v1 ships `compact` only. `full` reserved for v1.5. |
+| `style` | `CSSProperties` | `undefined` | Optional inline style override. |
+
+The logo embeds as a base64 data URL (~12 KB) inside the component — no asset copy needed in your app's `public/`.
+
+---
+
 ## Read Hooks
 
 All read hooks return TanStack Query's `UseQueryResult<T>` with `data`, `isLoading`, `error`, `refetch`, etc. Every hook accepts an optional final parameter to override TanStack Query options (staleTime, refetchInterval, etc.).
@@ -598,6 +629,9 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 ```typescript
 // Provider & client access
 export { WipProvider, useWipClient, type WipProviderProps }
+
+// Brand-attribution component (CASE-308)
+export { WipFooter, type WipFooterProps }
 
 // Cache management
 export { wipKeys, STALE_TIMES }
