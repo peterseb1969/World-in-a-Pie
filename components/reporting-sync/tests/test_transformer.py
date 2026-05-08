@@ -477,14 +477,17 @@ class TestSchemaManagerDDL:
         assert "_ns_active_identity_idx" not in ddl
 
     def test_latest_only_has_active_identity_index(self):
-        """Test that latest_only strategy creates the partial unique index."""
+        """Test that latest_only strategy creates the partial unique index
+        when the template declares identity_fields."""
         sm = self._make_schema_manager()
         config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
         fields = [
             TemplateField(name="name", type=FieldType.STRING),
         ]
 
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+        ddl = sm.generate_create_table_ddl(
+            "person", 1, fields, config, identity_fields=["name"],
+        )
 
         # Partial unique index should exist for latest_only
         assert "_ns_active_identity_idx" in ddl
@@ -498,7 +501,9 @@ class TestSchemaManagerDDL:
             TemplateField(name="email", type=FieldType.STRING),
         ]
 
-        ddl = sm.generate_create_table_ddl("contact", 1, fields)
+        ddl = sm.generate_create_table_ddl(
+            "contact", 1, fields, identity_fields=["email"],
+        )
 
         # Default should be latest_only: single-column PK
         assert "document_id\" TEXT PRIMARY KEY" in ddl

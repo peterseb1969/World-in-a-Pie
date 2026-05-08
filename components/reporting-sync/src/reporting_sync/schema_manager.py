@@ -193,6 +193,7 @@ class SchemaManager:
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
         usage: str = "entity",
+        identity_fields: list[str] | None = None,
     ) -> str:
         """Generate CREATE TABLE statement for a template.
 
@@ -201,6 +202,15 @@ class SchemaManager:
         document tables work cleanly. The columns are populated by the
         transformer from the Phase-6 enriched event payload
         (data.source_ref_resolved / data.target_ref_resolved).
+
+        identity_fields: the template's declared identity_fields list. An
+        empty list (or None) is the platform's first-class append-only
+        declaration per PoNIF #3 — every doc gets identity_hash="" and
+        the partial-unique index on (namespace, identity_hash) WHERE
+        status='active' would collide on every doc beyond the first.
+        Skip the index in that case; document_id remains the upsert key
+        via the worker's ON CONFLICT (document_id), so version-bumps of
+        the same doc still work.
         """
         table_name = self.get_table_name(template_value, config)
         include_metadata = config.include_metadata if config else True
@@ -300,8 +310,13 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_created_at_idx" ON "{table_name}"(na
 """
 
         # Partial unique index only applies to latest_only strategy
-        # (all_versions tables store multiple versions per document_id)
-        if strategy != SyncStrategy.ALL_VERSIONS:
+        # (all_versions tables store multiple versions per document_id).
+        # Skip it for identity-less templates: identity_hash is "" for
+        # every doc, so the partial-unique constraint on
+        # (namespace, identity_hash) WHERE status='active' would admit
+        # exactly one active doc per namespace and reject the rest with
+        # UniqueViolationError. Empty identity_fields = append-only mode.
+        if strategy != SyncStrategy.ALL_VERSIONS and identity_fields:
             ddl += f"""
 -- Partial unique index for active documents by identity within namespace
 CREATE UNIQUE INDEX IF NOT EXISTS "{table_name}_ns_active_identity_idx"
@@ -360,10 +375,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
         usage: str = "entity",
+        identity_fields: list[str] | None = None,
     ) -> str:
         """Create a table for a template."""
         ddl = self.generate_create_table_ddl(
-            template_value, template_version, fields, config, usage=usage,
+            template_value, template_version, fields, config,
+            usage=usage, identity_fields=identity_fields,
         )
         table_name = self.get_table_name(template_value, config)
 
@@ -394,23 +411,58 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
         fields: list[TemplateField],
         config: ReportingConfig | None = None,
         usage: str = "entity",
+        identity_fields: list[str] | None = None,
     ) -> list[str]:
         """
         Update table schema if template has new fields.
 
         Only adds new columns; never removes or modifies existing columns
         to preserve historical data.
+
+        For identity-less templates whose table was created under a
+        previous schema-manager version (when the unique-identity index
+        was always emitted), drop the now-broken index so identity-less
+        sync can land docs.
         """
         table_name = self.get_table_name(template_value, config)
 
         if not await self.table_exists(table_name):
-            await self.create_table(template_value, template_version, fields, config, usage=usage)
+            await self.create_table(
+                template_value, template_version, fields, config,
+                usage=usage, identity_fields=identity_fields,
+            )
             return [f"Created table {table_name}"]
 
         existing_columns = await self.get_existing_columns(table_name)
         migrations = []
 
         async with self.pool.acquire() as conn:
+            # Identity-less template + legacy unique-identity index?
+            # Drop it. The index was created when this schema-manager
+            # always emitted it; identity_hash="" makes it collide on
+            # every doc beyond the first.
+            if not identity_fields:
+                idx_name = f"{table_name}_ns_active_identity_idx"
+                idx_exists = await conn.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE schemaname = 'public'
+                          AND tablename = $1
+                          AND indexname = $2
+                    )
+                    """,
+                    table_name,
+                    idx_name,
+                )
+                if idx_exists:
+                    drop_sql = f'DROP INDEX IF EXISTS "{idx_name}"'
+                    await conn.execute(drop_sql)
+                    migrations.append(drop_sql)
+                    logger.info(
+                        f"Dropped legacy unique-identity index {idx_name} "
+                        f"(template {template_value} has no identity_fields)"
+                    )
             # Phase 7 — relationship templates need source_ref_id / target_ref_id
             # columns + indexes. Add them lazily when missing so legacy
             # relationship templates that pre-date Phase 7 catch up on next
@@ -741,14 +793,19 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         table_name = self.get_table_name(template_value, config)
 
         usage = template.get("usage", "entity")
+        identity_fields = template.get("identity_fields") or []
 
         if await self.table_exists(table_name):
             migrations = await self.update_table_schema(
-                template_value, template_version, fields, config, usage=usage,
+                template_value, template_version, fields, config,
+                usage=usage, identity_fields=identity_fields,
             )
             if migrations:
                 logger.info(f"Updated table {table_name} with {len(migrations)} new columns")
         else:
-            await self.create_table(template_value, template_version, fields, config, usage=usage)
+            await self.create_table(
+                template_value, template_version, fields, config,
+                usage=usage, identity_fields=identity_fields,
+            )
 
         return table_name

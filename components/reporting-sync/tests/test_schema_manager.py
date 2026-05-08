@@ -364,7 +364,9 @@ class TestCreateTableDDLStrategies:
         sm = self._make_sm()
         config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
         fields = [TemplateField(name="name", type=FieldType.STRING)]
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+        ddl = sm.generate_create_table_ddl(
+            "person", 1, fields, config, identity_fields=["name"],
+        )
         assert "_ns_active_identity_idx" in ddl
         assert "WHERE status = 'active'" in ddl
 
@@ -372,8 +374,49 @@ class TestCreateTableDDLStrategies:
         sm = self._make_sm()
         config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
         fields = [TemplateField(name="name", type=FieldType.STRING)]
-        ddl = sm.generate_create_table_ddl("person", 1, fields, config)
+        ddl = sm.generate_create_table_ddl(
+            "person", 1, fields, config, identity_fields=["name"],
+        )
         assert "_ns_active_identity_idx" not in ddl
+
+    def test_latest_only_empty_identity_fields_skips_unique_index(self):
+        """Empty identity_fields = first-class append-only template per
+        PoNIF #3. The partial-unique index would collide on every doc
+        beyond the first since identity_hash="" for all of them."""
+        sm = self._make_sm()
+        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
+        fields = [TemplateField(name="event_type", type=FieldType.STRING)]
+        ddl = sm.generate_create_table_ddl(
+            "audit_log", 1, fields, config, identity_fields=[],
+        )
+        assert "_ns_active_identity_idx" not in ddl
+
+    def test_latest_only_no_identity_fields_param_skips_unique_index(self):
+        """Default (omitted) identity_fields is treated the same as
+        empty: schema-manager has no explicit identity declaration to
+        index against, so don't create a constraint that will collide."""
+        sm = self._make_sm()
+        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
+        fields = [TemplateField(name="event_type", type=FieldType.STRING)]
+        ddl = sm.generate_create_table_ddl("audit_log", 1, fields, config)
+        assert "_ns_active_identity_idx" not in ddl
+
+    def test_identity_fields_still_emits_other_indexes(self):
+        """Even when the unique-identity index is skipped, the other
+        per-table indexes (namespace, namespace+template_id,
+        namespace+status, namespace+identity_hash, namespace+created_at)
+        must still land — they're useful for read-path queries."""
+        sm = self._make_sm()
+        config = ReportingConfig(sync_strategy=SyncStrategy.LATEST_ONLY)
+        fields = [TemplateField(name="event_type", type=FieldType.STRING)]
+        ddl = sm.generate_create_table_ddl(
+            "audit_log", 1, fields, config, identity_fields=[],
+        )
+        assert "doc_audit_log_namespace_idx" in ddl
+        assert "doc_audit_log_ns_template_id_idx" in ddl
+        assert "doc_audit_log_ns_status_idx" in ddl
+        assert "doc_audit_log_ns_identity_hash_idx" in ddl
+        assert "doc_audit_log_ns_created_at_idx" in ddl
 
 
 # =========================================================================
@@ -430,7 +473,9 @@ class TestUpdateTableSchema:
             TemplateField(name="age", type=FieldType.INTEGER),  # new field
         ]
 
-        migrations = await sm.update_table_schema("person", 2, fields)
+        migrations = await sm.update_table_schema(
+            "person", 2, fields, identity_fields=["name"],
+        )
 
         assert len(migrations) == 1
         assert "ADD COLUMN" in migrations[0]
@@ -452,7 +497,9 @@ class TestUpdateTableSchema:
         })
 
         fields = [TemplateField(name="name", type=FieldType.STRING)]
-        migrations = await sm.update_table_schema("person", 2, fields)
+        migrations = await sm.update_table_schema(
+            "person", 2, fields, identity_fields=["name"],
+        )
         assert migrations == []
 
     @pytest.mark.asyncio
@@ -490,7 +537,9 @@ class TestUpdateTableSchema:
             TemplateField(name="country", type=FieldType.TERM),  # new
         ]
 
-        migrations = await sm.update_table_schema("person", 2, fields)
+        migrations = await sm.update_table_schema(
+            "person", 2, fields, identity_fields=["name"],
+        )
 
         assert len(migrations) == 2
         col_names = [m.split('"')[3] for m in migrations if "ADD COLUMN" in m]
@@ -512,7 +561,9 @@ class TestUpdateTableSchema:
         })
 
         fields = [TemplateField(name="email", type=FieldType.STRING)]
-        migrations = await sm.update_table_schema("person", 2, fields)
+        migrations = await sm.update_table_schema(
+            "person", 2, fields, identity_fields=["email"],
+        )
 
         assert len(migrations) == 1
         assert "NOT NULL" not in migrations[0]
@@ -533,12 +584,98 @@ class TestUpdateTableSchema:
         })
 
         fields = [TemplateField(name="email", type=FieldType.STRING)]
-        await sm.update_table_schema("person", 2, fields)
+        await sm.update_table_schema(
+            "person", 2, fields, identity_fields=["email"],
+        )
 
         # Check that conn.execute was called with INSERT INTO _wip_schema_migrations
         calls = conn.execute.call_args_list
         migration_call = [c for c in calls if "_wip_schema_migrations" in str(c)]
         assert len(migration_call) >= 1
+
+    @pytest.mark.asyncio
+    async def test_drops_legacy_unique_identity_index_for_identity_less_template(
+        self, mock_pool,
+    ):
+        """When a table was created under the previous schema-manager
+        (which always emitted the partial-unique identity index) and the
+        template now declares no identity_fields, the legacy index must
+        be dropped — otherwise every doc beyond the first collides with
+        UniqueViolationError on identity_hash=''."""
+        pool, conn = mock_pool
+        sm = SchemaManager(pool)
+
+        sm.table_exists = AsyncMock(return_value=True)
+        sm.get_existing_columns = AsyncMock(return_value={
+            "document_id", "namespace", "template_id", "template_version",
+            "version", "status", "identity_hash",
+            "created_at", "created_by", "updated_at", "updated_by",
+            "data_json", "term_references_json", "file_references_json",
+        })
+        # Simulate the legacy index existing on the deployed table
+        conn.fetchval = AsyncMock(return_value=True)
+
+        fields = [TemplateField(name="event_type", type=FieldType.STRING)]
+        migrations = await sm.update_table_schema(
+            "audit_log", 2, fields, identity_fields=[],
+        )
+
+        drop_migrations = [m for m in migrations if "DROP INDEX" in m]
+        assert len(drop_migrations) == 1
+        assert "doc_audit_log_ns_active_identity_idx" in drop_migrations[0]
+
+    @pytest.mark.asyncio
+    async def test_no_drop_when_identity_index_already_absent(self, mock_pool):
+        """Idempotent: re-running update_table_schema after the index
+        was already dropped doesn't repeat the DROP migration."""
+        pool, conn = mock_pool
+        sm = SchemaManager(pool)
+
+        sm.table_exists = AsyncMock(return_value=True)
+        sm.get_existing_columns = AsyncMock(return_value={
+            "document_id", "namespace", "template_id", "template_version",
+            "version", "status", "identity_hash",
+            "created_at", "created_by", "updated_at", "updated_by",
+            "event_type", "data_json", "term_references_json",
+            "file_references_json",
+        })
+        conn.fetchval = AsyncMock(return_value=False)  # legacy index gone
+
+        fields = [TemplateField(name="event_type", type=FieldType.STRING)]
+        migrations = await sm.update_table_schema(
+            "audit_log", 2, fields, identity_fields=[],
+        )
+
+        assert not any("DROP INDEX" in m for m in migrations)
+
+    @pytest.mark.asyncio
+    async def test_does_not_drop_index_for_template_with_identity_fields(
+        self, mock_pool,
+    ):
+        """If identity_fields is non-empty, the partial-unique index is
+        the correct shape and must be preserved — even if all other
+        fields are unchanged."""
+        pool, conn = mock_pool
+        sm = SchemaManager(pool)
+
+        sm.table_exists = AsyncMock(return_value=True)
+        sm.get_existing_columns = AsyncMock(return_value={
+            "document_id", "namespace", "template_id", "template_version",
+            "version", "status", "identity_hash",
+            "created_at", "created_by", "updated_at", "updated_by",
+            "case_number", "data_json", "term_references_json",
+            "file_references_json",
+        })
+        # Even if fetchval would say "yes index exists" we should not
+        # drop it because the identity_fields declaration is non-empty.
+        conn.fetchval = AsyncMock(return_value=True)
+
+        fields = [TemplateField(name="case_number", type=FieldType.INTEGER)]
+        migrations = await sm.update_table_schema(
+            "case_record", 2, fields, identity_fields=["data.case_number"],
+        )
+
+        assert not any("DROP INDEX" in m for m in migrations)
 
 
 # =========================================================================
@@ -695,6 +832,90 @@ class TestEnsureTableForTemplate:
 
         table_name = await sm.ensure_table_for_template(template)
         assert table_name == "my_custom_table"
+
+    @pytest.mark.asyncio
+    async def test_passes_identity_fields_from_template_to_create_table(
+        self, mock_pool,
+    ):
+        """Template's top-level identity_fields list must reach
+        create_table so the partial-unique index decision is correct."""
+        pool, _conn = mock_pool
+        sm = SchemaManager(pool)
+        sm.table_exists = AsyncMock(return_value=False)
+        sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
+
+        template = {
+            "value": "case_record",
+            "version": 1,
+            "fields": [{"name": "case_number", "type": "integer"}],
+            "identity_fields": ["data.case_number"],
+        }
+
+        await sm.ensure_table_for_template(template)
+        kwargs = sm.create_table.call_args.kwargs
+        assert kwargs.get("identity_fields") == ["data.case_number"]
+
+    @pytest.mark.asyncio
+    async def test_passes_empty_identity_fields_from_template_to_create_table(
+        self, mock_pool,
+    ):
+        """Append-only templates declare identity_fields=[]. The empty
+        list must reach create_table verbatim — anything else (None,
+        truthy default) would change the index decision."""
+        pool, _conn = mock_pool
+        sm = SchemaManager(pool)
+        sm.table_exists = AsyncMock(return_value=False)
+        sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
+
+        template = {
+            "value": "audit_log",
+            "version": 1,
+            "fields": [{"name": "event_type", "type": "string"}],
+            "identity_fields": [],
+        }
+
+        await sm.ensure_table_for_template(template)
+        kwargs = sm.create_table.call_args.kwargs
+        assert kwargs.get("identity_fields") == []
+
+    @pytest.mark.asyncio
+    async def test_omits_identity_fields_defaults_to_empty_list(self, mock_pool):
+        """Templates without an identity_fields key get [] passed
+        through — same effect as explicit append-only declaration."""
+        pool, _conn = mock_pool
+        sm = SchemaManager(pool)
+        sm.table_exists = AsyncMock(return_value=False)
+        sm.create_table = AsyncMock(return_value="CREATE TABLE ...")
+
+        template = {
+            "value": "audit_log",
+            "version": 1,
+            "fields": [{"name": "event_type", "type": "string"}],
+        }
+
+        await sm.ensure_table_for_template(template)
+        kwargs = sm.create_table.call_args.kwargs
+        assert kwargs.get("identity_fields") == []
+
+    @pytest.mark.asyncio
+    async def test_passes_identity_fields_to_update_table_schema(self, mock_pool):
+        """For existing tables, identity_fields must reach
+        update_table_schema so the legacy-index drop path can fire."""
+        pool, _conn = mock_pool
+        sm = SchemaManager(pool)
+        sm.table_exists = AsyncMock(return_value=True)
+        sm.update_table_schema = AsyncMock(return_value=[])
+
+        template = {
+            "value": "audit_log",
+            "version": 2,
+            "fields": [{"name": "event_type", "type": "string"}],
+            "identity_fields": [],
+        }
+
+        await sm.ensure_table_for_template(template)
+        kwargs = sm.update_table_schema.call_args.kwargs
+        assert kwargs.get("identity_fields") == []
 
     @pytest.mark.asyncio
     async def test_handles_array_item_type(self, mock_pool):
