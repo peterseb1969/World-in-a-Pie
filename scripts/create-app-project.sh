@@ -148,6 +148,50 @@ echo "2. Copying slash commands..."
 cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
+# --- Generate .claude/settings.local.json defaults (CASE-169) ---
+# 23 catchall bash patterns for routine non-destructive commands.
+# Avoids prompt-friction for every cat/sed/ls/etc. on a fresh APP-YAC.
+# File is gitignored; user customizations preserved on re-run.
+# find:* deliberately omitted — find -exec / -delete are destructive
+# and should be earned per session.
+
+if [ ! -f "$APP_DIR/.claude/settings.local.json" ]; then
+    cat > "$APP_DIR/.claude/settings.local.json" << 'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(grep:*)",
+      "Bash(tee:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(tr:*)",
+      "Bash(cut:*)",
+      "Bash(wc:*)",
+      "Bash(xargs:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(ls:*)",
+      "Bash(pwd:*)",
+      "Bash(stat:*)",
+      "Bash(file:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(realpath:*)",
+      "Bash(which:*)",
+      "Bash(type:*)"
+    ]
+  }
+}
+EOF
+    echo "   Written: .claude/settings.local.json (23 catchall patterns)"
+else
+    echo "   Skipped: .claude/settings.local.json already exists (preserved)"
+fi
+
 # --- Copy slash command playbooks (new + refresh) ---
 # Slim slash commands reference docs/playbooks/<name>.md (flat) for full procedures.
 # Source layout in WIP is docs/playbooks/app-builder/, destination is flat docs/playbooks/.

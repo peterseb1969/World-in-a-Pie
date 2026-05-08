@@ -785,6 +785,50 @@ rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
 cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
 
+# --- 4b. Generate .claude/settings.local.json defaults (CASE-169) ---
+# 23 catchall bash patterns for routine non-destructive commands.
+# Avoids prompt-friction for every cat/sed/ls/etc. on a fresh YAC.
+# File is gitignored; user customizations preserved on re-run.
+# find:* deliberately omitted — find -exec / -delete are destructive
+# and should be earned per session.
+
+if [ ! -f "$WIP_ROOT/.claude/settings.local.json" ]; then
+    cat > "$WIP_ROOT/.claude/settings.local.json" << 'EOF'
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(sed:*)",
+      "Bash(awk:*)",
+      "Bash(grep:*)",
+      "Bash(tee:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(tr:*)",
+      "Bash(cut:*)",
+      "Bash(wc:*)",
+      "Bash(xargs:*)",
+      "Bash(sort:*)",
+      "Bash(uniq:*)",
+      "Bash(diff:*)",
+      "Bash(ls:*)",
+      "Bash(pwd:*)",
+      "Bash(stat:*)",
+      "Bash(file:*)",
+      "Bash(basename:*)",
+      "Bash(dirname:*)",
+      "Bash(realpath:*)",
+      "Bash(which:*)",
+      "Bash(type:*)"
+    ]
+  }
+}
+EOF
+    echo "   Written: .claude/settings.local.json (23 catchall patterns)"
+else
+    echo "   Skipped: .claude/settings.local.json already exists (preserved)"
+fi
+
 # --- 5. Verify MCP connectivity (local only) ---
 
 if [[ "$TARGET" == "local" ]]; then
