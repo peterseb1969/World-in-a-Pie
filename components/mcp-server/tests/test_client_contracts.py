@@ -56,6 +56,7 @@ import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 import wip_mcp.client as client_module
@@ -237,6 +238,7 @@ def _capture_urls_mock() -> AsyncMock:
     resp = MagicMock()
     resp.json.return_value = {"items": [], "total": 0, "page": 1, "pages": 0}
     resp.status_code = 200
+    resp.is_success = True  # _raise_for_status_with_body short-circuits on this
     resp.raise_for_status = MagicMock()
     mock.get.return_value = resp
     mock.post.return_value = resp
@@ -490,3 +492,90 @@ def test_document_relationship_url_paths_match_phase4_routes() -> None:
     assert "/api/document-store/documents/{document_id}/traverse" in source, (
         "client.py must reference /api/document-store/documents/{document_id}/traverse"
     )
+
+
+# =========================================================================
+# Test J — CASE-315: query_documents wrapper splits namespace correctly
+# =========================================================================
+
+
+@pytest.mark.asyncio
+async def test_query_documents_namespace_routed_as_query_param() -> None:
+    """CASE-315 gap A regression guard.
+
+    The doc-store endpoint accepts `namespace` as a query parameter, not a
+    body field (the body is a StrictModel with extra='forbid'). Passing
+    namespace inside the filters dict must produce ?namespace=... on the
+    URL, not {namespace: ...} in the body.
+    """
+    client = _make_client(document_store_url="https://localhost:8443")
+    mock_http = _capture_urls_mock()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.query_documents({
+            "namespace": "kb",
+            "filters": [{"field": "data.title", "operator": "eq", "value": "x"}],
+        })
+
+    args, kwargs = mock_http.post.call_args
+    body = kwargs.get("json")
+    params = kwargs.get("params") or {}
+
+    # namespace is in URL params, NOT in the body.
+    assert params.get("namespace") == "kb", f"namespace not routed to params: {params}"
+    assert body is not None
+    assert "namespace" not in body, (
+        f"namespace leaked into body: {body}"
+    )
+    # The rest of the dict (filters, etc.) IS in the body.
+    assert "filters" in body, f"filters dropped from body: {body}"
+
+
+@pytest.mark.asyncio
+async def test_query_documents_does_not_mutate_caller_dict() -> None:
+    """The caller's filters dict must not be modified by the namespace pop —
+    side-effects on caller-owned data are a footgun. CASE-315.
+    """
+    client = _make_client(document_store_url="https://localhost:8443")
+    mock_http = _capture_urls_mock()
+    caller_dict = {"namespace": "kb", "filters": []}
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.query_documents(caller_dict)
+    assert "namespace" in caller_dict, (
+        "client.query_documents mutated the caller's dict by popping namespace"
+    )
+
+
+# =========================================================================
+# Test K — CASE-315: HTTP error messages surface server response body
+# =========================================================================
+
+
+def test_raise_for_status_with_body_includes_response_text() -> None:
+    """CASE-315 part 2: when the server returns 4xx/5xx, the raised exception
+    must include the response body so consumers see WHY it failed (e.g., the
+    "Extra inputs are not permitted" detail) rather than just the HTTP code.
+    """
+    from wip_mcp.client import _raise_for_status_with_body
+
+    request = httpx.Request("POST", "https://example.test/api/x")
+    body = '{"detail":[{"type":"extra_forbidden","loc":["body","namespace"],"msg":"Extra inputs are not permitted"}]}'
+    response = httpx.Response(422, content=body, request=request)
+
+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
+        _raise_for_status_with_body(response)
+
+    msg = str(exc_info.value)
+    # The HTTP details are still there (so existing log-grep / debug flows work).
+    assert "422" in msg
+    # And the actual server message is included so consumers can act on it.
+    assert "Extra inputs are not permitted" in msg
+
+
+def test_raise_for_status_with_body_passthrough_on_success() -> None:
+    """No exception on 2xx. Sanity check that the helper doesn't raise on
+    happy-path responses."""
+    from wip_mcp.client import _raise_for_status_with_body
+
+    request = httpx.Request("GET", "https://example.test/api/x")
+    response = httpx.Response(200, content='{"ok": true}', request=request)
+    _raise_for_status_with_body(response)  # must not raise
