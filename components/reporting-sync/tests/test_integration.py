@@ -914,11 +914,13 @@ class TestIndexesAndConstraints:
         assert "doc_indexed_ns_identity_hash_idx" in idx_names
 
     async def test_partial_unique_index_latest_only(self, pg_pool):
-        """LATEST_ONLY tables have a partial unique index on active identity_hash."""
+        """LATEST_ONLY tables with declared identity_fields have the
+        partial unique index on active identity_hash. Without
+        identity_fields the index is correctly omitted (CASE-316)."""
         await init_postgres_schema(pg_pool)
         sm = SchemaManager(pg_pool)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("UniqueIdx", 1, fields)
+        await sm.create_table("UniqueIdx", 1, fields, identity_fields=["name"])
 
         async with pg_pool.acquire() as conn:
             indexes = await conn.fetch(
@@ -934,7 +936,9 @@ class TestIndexesAndConstraints:
         sm = SchemaManager(pg_pool)
         config = ReportingConfig(sync_strategy=SyncStrategy.ALL_VERSIONS)
         fields = make_fields(("name", FieldType.STRING))
-        await sm.create_table("NoUnique", 1, fields, config)
+        await sm.create_table(
+            "NoUnique", 1, fields, config, identity_fields=["name"],
+        )
 
         async with pg_pool.acquire() as conn:
             indexes = await conn.fetch(
@@ -943,6 +947,34 @@ class TestIndexesAndConstraints:
             idx_names = {r["indexname"] for r in indexes}
 
         assert "doc_nounique_ns_active_identity_idx" not in idx_names
+
+    async def test_no_partial_unique_index_for_identity_less_template(
+        self, pg_pool,
+    ):
+        """CASE-316: empty identity_fields = first-class append-only
+        declaration. Postgres-side: the partial-unique index must NOT
+        be created — the existing index would collide on the second
+        insert because every doc gets identity_hash=''. Verify against
+        real postgres."""
+        await init_postgres_schema(pg_pool)
+        sm = SchemaManager(pg_pool)
+        fields = make_fields(("event_type", FieldType.STRING))
+        await sm.create_table(
+            "AppendOnly", 1, fields, identity_fields=[],
+        )
+
+        async with pg_pool.acquire() as conn:
+            indexes = await conn.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename = 'doc_appendonly'"
+            )
+            idx_names = {r["indexname"] for r in indexes}
+
+        assert "doc_appendonly_ns_active_identity_idx" not in idx_names
+        # All other indexes still land — they remain useful for reads.
+        assert "doc_appendonly_namespace_idx" in idx_names
+        assert "doc_appendonly_ns_template_id_idx" in idx_names
+        assert "doc_appendonly_ns_status_idx" in idx_names
+        assert "doc_appendonly_ns_identity_hash_idx" in idx_names
 
     async def test_primary_key_enforced_latest_only(self, pg_pool):
         """LATEST_ONLY: duplicate document_id raises UniqueViolation on raw INSERT."""
