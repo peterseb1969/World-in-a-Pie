@@ -158,13 +158,16 @@ async def list_documents(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     cursor: str | None = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
+    sort_by: str | None = Query(None, description="Sort field: created_at (default), updated_at, version, or data.<path>. Incompatible with cursor."),
+    sort_order: str | None = Query(None, description="Sort order: asc | desc (default desc)"),
     _: str = Depends(require_api_key)
 ):
     """List documents with pagination.
 
     Use latest_only=true to return only the highest version of each document_id.
     Use cursor for efficient deep pagination (avoids skip/limit degradation).
-    When cursor is provided, page parameter is ignored and total is -1.
+    When cursor is provided, page parameter is ignored and total is -1, and
+    sort_by/sort_order must be omitted (cursor mode is _id-ordered).
     """
     identity = get_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
@@ -176,16 +179,21 @@ async def list_documents(
         )
 
     service = get_document_service()
-    return await service.list_documents(
-        template_id=template_id,
-        template_value=template_value,
-        status=status,
-        page=page,
-        page_size=page_size,
-        latest_only=latest_only,
-        cursor=cursor,
-        ns_filter=ns_filter.query,
-    )
+    try:
+        return await service.list_documents(
+            template_id=template_id,
+            template_value=template_value,
+            status=status,
+            page=page,
+            page_size=page_size,
+            latest_only=latest_only,
+            cursor=cursor,
+            ns_filter=ns_filter.query,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 @router.get(
@@ -507,7 +515,10 @@ async def query_documents(
     ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
 
     service = get_document_service()
-    return await service.query_documents(request, ns_filter=ns_filter.query)
+    try:
+        return await service.query_documents(request, ns_filter=ns_filter.query)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 @router.get(

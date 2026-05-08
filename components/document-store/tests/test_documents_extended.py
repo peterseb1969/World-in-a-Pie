@@ -260,6 +260,179 @@ async def test_query_with_sorting(client: AsyncClient, auth_headers: dict):
     assert ages == sorted(ages)
 
 
+# ============================================================================
+# Tests: GET /documents sort_by / sort_order (CASE-304)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_list_documents_sort_by_updated_at_desc(client: AsyncClient, auth_headers: dict):
+    """GET /documents honours sort_by=updated_at + sort_order=desc."""
+    for i in range(3):
+        await create_one(
+            client, auth_headers, "PERSON",
+            {"national_id": f"55000000{i}", "first_name": f"Sort{i}", "last_name": "Test"},
+        )
+
+    response = await client.get(
+        "/api/document-store/documents?sort_by=updated_at&sort_order=desc",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    timestamps = [item["updated_at"] for item in data["items"]]
+    assert timestamps == sorted(timestamps, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_documents_sort_by_unknown_field_returns_422(client: AsyncClient, auth_headers: dict):
+    """Unknown sort_by gets 422 with a hint listing supported fields."""
+    response = await client.get(
+        "/api/document-store/documents?sort_by=nope",
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    detail = response.json().get("detail", "")
+    assert "created_at" in detail
+    assert "updated_at" in detail
+    assert "data.<path>" in detail
+
+
+@pytest.mark.asyncio
+async def test_list_documents_sort_order_invalid_returns_422(client: AsyncClient, auth_headers: dict):
+    """Invalid sort_order gets 422."""
+    response = await client.get(
+        "/api/document-store/documents?sort_by=created_at&sort_order=sideways",
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert "asc" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_list_documents_default_sort_unchanged(client: AsyncClient, auth_headers: dict):
+    """Without sort_by/sort_order, behaviour matches pre-CASE-304 default (created_at desc)."""
+    for i in range(3):
+        await create_one(
+            client, auth_headers, "PERSON",
+            {"national_id": f"56000000{i}", "first_name": f"Default{i}", "last_name": "Test"},
+        )
+
+    response = await client.get(
+        "/api/document-store/documents",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    timestamps = [item["created_at"] for item in data["items"]]
+    assert timestamps == sorted(timestamps, reverse=True)
+
+
+@pytest.mark.asyncio
+async def test_list_documents_cursor_with_sort_returns_422(client: AsyncClient, auth_headers: dict):
+    """Cursor pagination is _id-ordered; passing sort_by alongside is rejected."""
+    response = await client.get(
+        "/api/document-store/documents?cursor=507f1f77bcf86cd799439011&sort_by=updated_at",
+        headers=auth_headers,
+    )
+    assert response.status_code == 422
+    assert "cursor" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_list_documents_latest_only_with_sort(client: AsyncClient, auth_headers: dict):
+    """latest_only path applies sort_by/sort_order to the deduped result."""
+    for i in range(3):
+        await create_one(
+            client, auth_headers, "PERSON",
+            {"national_id": f"57000000{i}", "first_name": f"Latest{i}", "last_name": "Test"},
+        )
+
+    response = await client.get(
+        "/api/document-store/documents?latest_only=true&sort_by=updated_at&sort_order=asc",
+        headers=auth_headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    timestamps = [item["updated_at"] for item in data["items"]]
+    assert timestamps == sorted(timestamps)
+
+
+# ============================================================================
+# CASE-304 tiebreaker — pagination determinism on identical primary-sort
+# ============================================================================
+
+
+def test_build_sort_clauses_appends_document_id_tiebreaker():
+    """Helper always appends ('document_id', 1) for stable pagination at ties."""
+    from document_store.services.document_service import build_sort_clauses
+
+    clauses = build_sort_clauses("updated_at", "desc")
+    assert clauses == [("updated_at", -1), ("document_id", 1)]
+
+    clauses_default = build_sort_clauses(None, None)
+    assert clauses_default == [("created_at", -1), ("document_id", 1)]
+
+
+def test_build_sort_clauses_accepts_data_path():
+    """Helper accepts data.<path> for forward-compat with sortable_fields."""
+    from document_store.services.document_service import build_sort_clauses
+
+    clauses = build_sort_clauses("data.severity", "asc")
+    assert clauses == [("data.severity", 1), ("document_id", 1)]
+
+
+def test_build_sort_clauses_rejects_unknown_field():
+    """Unknown sort field raises ValueError with a hint."""
+    from document_store.services.document_service import build_sort_clauses
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="Unknown sort field"):
+        build_sort_clauses("nope", "asc")
+
+
+def test_build_sort_clauses_rejects_invalid_order():
+    """Invalid sort_order raises ValueError."""
+    from document_store.services.document_service import build_sort_clauses
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="Invalid sort_order"):
+        build_sort_clauses("created_at", "sideways")
+
+
+@pytest.mark.asyncio
+async def test_list_documents_pagination_deterministic_at_ties(client: AsyncClient, auth_headers: dict):
+    """Two pages of size 1 over 3 docs return distinct documents — no doc appears on both pages.
+
+    Regression guard for the live pagination scrambling APP-KB-YAC verified
+    against wip-kb on 2026-05-08 (3 docs sharing identical microsecond updated_at).
+    The document_id ASC tiebreaker keeps page boundaries stable.
+    """
+    for i in range(3):
+        await create_one(
+            client, auth_headers, "PERSON",
+            {"national_id": f"58000000{i}", "first_name": f"Tie{i}", "last_name": "Test"},
+        )
+
+    response_p1 = await client.get(
+        "/api/document-store/documents?sort_by=updated_at&sort_order=desc&page=1&page_size=1",
+        headers=auth_headers,
+    )
+    response_p2 = await client.get(
+        "/api/document-store/documents?sort_by=updated_at&sort_order=desc&page=2&page_size=1",
+        headers=auth_headers,
+    )
+    assert response_p1.status_code == 200
+    assert response_p2.status_code == 200
+
+    p1_id = response_p1.json()["items"][0]["document_id"]
+    p2_id = response_p2.json()["items"][0]["document_id"]
+    assert p1_id != p2_id, (
+        "page 1 and page 2 returned the same document — pagination is non-deterministic "
+        "(missing tiebreaker). CASE-304 regression."
+    )
+
+
 @pytest.mark.asyncio
 async def test_query_cross_template(client: AsyncClient, auth_headers: dict, sample_person_data: dict, sample_employee_data: dict):
     """Query without template_id searches across all templates."""

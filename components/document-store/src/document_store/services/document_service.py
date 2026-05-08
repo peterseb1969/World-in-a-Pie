@@ -78,6 +78,46 @@ def json_merge_patch(target: Any, patch: Any) -> Any:
     return result
 
 
+_CORE_SORT_FIELDS = ("created_at", "updated_at", "version")
+
+
+def build_sort_clauses(
+    sort_by: str | None,
+    sort_order: str | None,
+    *,
+    default_sort_by: str = "created_at",
+    default_sort_order: str = "desc",
+) -> list[tuple[str, int]]:
+    """Build a list of (field, direction) sort clauses for Beanie / aggregation.
+
+    Always appends ("document_id", 1) as a deterministic tiebreaker so
+    pagination is stable when primary-sort values tie (CASE-304).
+
+    Allows three core fields plus any "data.<path>" string. Forward-compat
+    with a future "sortable_fields" template extension: today data.<path>
+    is accepted permissively (matches existing POST behaviour); when the
+    template-side declaration lands, validation can tighten without
+    breaking the wire shape.
+    """
+    field = (sort_by or default_sort_by).strip() or default_sort_by
+    order = (sort_order or default_sort_order).strip().lower() or default_sort_order
+
+    if order not in ("asc", "desc"):
+        raise ValueError(
+            f"Invalid sort_order '{sort_order}'. Must be 'asc' or 'desc'."
+        )
+
+    if field not in _CORE_SORT_FIELDS and not field.startswith("data."):
+        raise ValueError(
+            f"Unknown sort field '{field}'. Supported: "
+            f"{', '.join(_CORE_SORT_FIELDS)}, "
+            f"or data.<path> for template-declared sortable fields."
+        )
+
+    direction = 1 if order == "asc" else -1
+    return [(field, direction), ("document_id", 1)]
+
+
 class DocumentService:
     """
     Service for document CRUD operations and upsert logic.
@@ -1195,6 +1235,8 @@ class DocumentService:
         latest_only: bool = False,
         cursor: str | None = None,
         ns_filter: dict | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
     ) -> DocumentListResponse:
         """List documents with pagination.
 
@@ -1204,6 +1246,13 @@ class DocumentService:
         When cursor is provided, uses cursor-based pagination (more efficient
         for deep pages). The cursor is the MongoDB _id of the last item from
         the previous page. When using cursor, skip/total count are avoided.
+        Cursor mode is _id-ordered by construction; sort_by is incompatible.
+
+        sort_by / sort_order honour the same allow-list as POST /documents/query
+        (created_at, updated_at, version, or data.<path>). Default is
+        created_at DESC for stable offset pagination. CASE-304: a deterministic
+        document_id ASC tiebreaker is always appended so identical primary-sort
+        values do not scramble across page boundaries.
         """
         from bson import ObjectId
 
@@ -1218,6 +1267,7 @@ class DocumentService:
             query["status"] = status.value
 
         if latest_only:
+            sort_clauses = build_sort_clauses(sort_by, sort_order)
             # Aggregation: group by document_id, keep highest version
             pipeline: list[dict] = [
                 {"$match": query} if query else {"$match": {}},
@@ -1227,7 +1277,7 @@ class DocumentService:
                     "doc": {"$first": "$$ROOT"},
                 }},
                 {"$replaceRoot": {"newRoot": "$doc"}},
-                {"$sort": {"created_at": -1}},
+                {"$sort": dict(sort_clauses)},
             ]
 
             count_pipeline = [*pipeline, {"$count": "total"}]
@@ -1243,6 +1293,11 @@ class DocumentService:
             results = await Document.aggregate(paginated_pipeline).to_list()
             documents = [Document(**doc) for doc in results]
         elif cursor:
+            if sort_by is not None or sort_order is not None:
+                raise ValueError(
+                    "sort_by/sort_order are incompatible with cursor pagination "
+                    "(cursor mode is _id-ordered by construction)."
+                )
             # Cursor-based pagination: use _id > cursor, sorted by _id ASC
             try:
                 cursor_oid = ObjectId(cursor)
@@ -1257,13 +1312,14 @@ class DocumentService:
                 [("_id", 1)]
             ).limit(page_size).to_list()
         else:
+            sort_clauses = build_sort_clauses(sort_by, sort_order)
             # Count total
             total = await Document.find(query).count()
 
-            # Fetch page — sort by created_at DESC for stable offset pagination
+            # Fetch page — sort + tiebreaker for stable offset pagination
             skip = (page - 1) * page_size
             documents = await Document.find(query).sort(
-                [("created_at", -1)]
+                sort_clauses
             ).skip(skip).limit(page_size).to_list()
 
         # Convert to responses in batch (single aggregation instead of N queries)
@@ -1540,14 +1596,12 @@ class DocumentService:
         # Count total
         total = await Document.find(query).count()
 
-        # Build sort
-        sort_direction = 1 if request.sort_order == "asc" else -1
-        sort_field = request.sort_by
+        sort_clauses = build_sort_clauses(request.sort_by, request.sort_order)
 
         # Fetch page
         skip = (request.page - 1) * request.page_size
         documents = await Document.find(query)\
-            .sort([(sort_field, sort_direction)])\
+            .sort(sort_clauses)\
             .skip(skip)\
             .limit(request.page_size)\
             .to_list()
