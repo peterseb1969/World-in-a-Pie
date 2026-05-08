@@ -641,6 +641,7 @@ Otherwise start with:
 - \`/resume\` — Recover context after compaction or at start of a new session
 - \`/report\` — Capture fireside chat or trigger session summary
 - \`/deploy redeploy|verify\` — Redeploy this YAC's own source to the running dev install (or smoke-only). Subset of BE-YAC's \`/deploy\` — install is BE-YAC's territory (CASE-300)
+- \`/case file|list|read|respond|comment|close|implement\` — Cross-agent case management. **Filing must use \`bash yac-discussions/case-helper.sh claim <slug>\`** (atomic, race-safe; CASE-67 + CASE-301 collisions made this discipline mandatory — see CASE-306). After writing the body, mirror into the \`kb\` namespace via \`python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-NN-...md\` (CASE-307). The dual-write is the canonical KB population path; not optional.
 
 **Context management:** When context reaches ~70-80%, the human should tell you to run \`/resume\` or save state (DESIGN.md, memory files) before compaction hits.
 
