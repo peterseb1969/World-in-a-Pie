@@ -23,7 +23,7 @@ const env = () => ({
   MCP_CWD: process.env.MCP_CWD || '',
   MCP_MODULE: process.env.MCP_MODULE || 'wip_mcp',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-  CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5-20251001',
+  CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5',
   WIP_NAMESPACE: process.env.WIP_NAMESPACE || '',
   MAX_TURNS: parseInt(process.env.MAX_TURNS || '15'),
   SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
@@ -177,8 +177,19 @@ export async function ask(
     const response = await anthropic.messages.create({
       model: e.CLAUDE_MODEL,
       max_tokens: 4096,
-      system: systemPrompt,
-      tools: mcpTools,
+      // CASE-308 — prompt caching on the static blocks. The system prompt and
+      // tool definitions don't change across turns within a session; marking
+      // them as cache breakpoints lets turn 2+ within the 5-minute TTL hit
+      // cache instead of re-reading the same tokens. The cache_control on
+      // the LAST tool definition extends caching across the whole tools array.
+      system: [
+        { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } },
+      ],
+      tools: mcpTools.map((t, idx, arr) =>
+        idx === arr.length - 1
+          ? { ...t, cache_control: { type: 'ephemeral' } }
+          : t
+      ),
       messages: session.messages,
     })
 
