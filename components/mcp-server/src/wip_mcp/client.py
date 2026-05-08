@@ -24,10 +24,29 @@ class BulkError(Exception):
 def _resolve_api_key() -> str:
     """Resolve the API key from env var or file.
 
-    Priority: WIP_API_KEY env var > WIP_API_KEY_FILE contents > default dev key.
+    Priority: WIP_API_KEY env var > MASTER_API_KEY > API_KEY > WIP_API_KEY_FILE
+    contents > default dev key.
+
+    WIP_API_KEY is the canonical name when wip_mcp is invoked as a host-spawned
+    stdio server (apps/CLI tools set it explicitly). MASTER_API_KEY and API_KEY
+    are the names the deployer sets in the wip-mcp-server container env (per
+    the component manifest's `MASTER_API_KEY: from_secret: api-key`); without
+    them in the priority list, an HTTP-transport invocation through the
+    deployed cluster falls through to the dev default and every upstream call
+    silently 401s — CASE-312 reopen.
+
     WIP_API_KEY_FILE allows key rotation without updating each app's .mcp.json.
     """
+    # Each os.getenv read is unrolled (rather than looped) so the
+    # docstring-env-var-drift static check finds every name as a string
+    # literal — see test_docstring_env_var_drift.
     key = os.getenv("WIP_API_KEY")
+    if key:
+        return key
+    key = os.getenv("MASTER_API_KEY")
+    if key:
+        return key
+    key = os.getenv("API_KEY")
     if key:
         return key
     key_file = os.getenv("WIP_API_KEY_FILE")

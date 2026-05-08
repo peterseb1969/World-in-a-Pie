@@ -25,6 +25,11 @@ const env = () => ({
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-haiku-4-5',
   WIP_NAMESPACE: process.env.WIP_NAMESPACE || '',
+  // CASE-312 reopen: HTTP/SSE transports need to carry the API key on every
+  // request. The MCP SDK's transports don't auto-read process.env — they take
+  // explicit requestInit.headers. Without this, the platform's auth middleware
+  // 401s the initialize handshake and the agent crashes at startup.
+  WIP_API_KEY: process.env.WIP_API_KEY || '',
   MAX_TURNS: parseInt(process.env.MAX_TURNS || '15'),
   SESSION_TTL_MS: parseInt(process.env.SESSION_TTL_MINUTES || '30') * 60_000,
 })
@@ -82,11 +87,30 @@ function createTransport() {
   const e = env()
   if (e.MCP_URL) {
     const url = new URL(e.MCP_URL)
+
+    // CASE-312 reopen: inject the API key into the transport's requestInit
+    // headers. The MCP SDK doesn't read process.env on its own. Without this,
+    // initialize POSTs to a deployed wip-deploy install hit the platform's
+    // ApiKeyMiddleware and 401 — the agent crashes before the askBar can
+    // load any tools.
+    const headers: Record<string, string> = {}
+    if (e.WIP_API_KEY) headers['X-API-Key'] = e.WIP_API_KEY
+
     if (e.MCP_TRANSPORT === 'sse' || e.MCP_URL.endsWith('/sse')) {
-      return new SSEClientTransport(url)
+      // SSE has two surfaces — the EventSource for the read stream and the
+      // POST endpoint for outbound JSON-RPC. Both need the header.
+      return new SSEClientTransport(url, {
+        requestInit: { headers },
+        eventSourceInit: {
+          fetch: (u, init) => fetch(u, {
+            ...init,
+            headers: { ...(init?.headers as Record<string, string> | undefined), ...headers },
+          }),
+        },
+      })
     }
     // Default to Streamable HTTP for remote URLs
-    return new StreamableHTTPClientTransport(url)
+    return new StreamableHTTPClientTransport(url, { requestInit: { headers } })
   }
 
   // Stdio: spawn local MCP server process
