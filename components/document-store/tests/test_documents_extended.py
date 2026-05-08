@@ -384,18 +384,47 @@ def test_build_sort_clauses_accepts_data_path():
 
 def test_build_sort_clauses_rejects_unknown_field():
     """Unknown sort field raises ValueError with a hint."""
-    from document_store.services.document_service import build_sort_clauses
-
     import pytest as _pytest
+
+    from document_store.services.document_service import build_sort_clauses
     with _pytest.raises(ValueError, match="Unknown sort field"):
         build_sort_clauses("nope", "asc")
 
 
+def test_build_sort_clauses_rejects_metadata_path_with_specific_message():
+    """CASE-317: sort_by is a declarative slot (the platform commits
+    to the field for pagination order). metadata.* is caller-attached
+    context — must be rejected with a metadata-aware message that
+    distinguishes from a typo or unknown field."""
+    import pytest as _pytest
+
+    from document_store.services.document_service import build_sort_clauses
+    with _pytest.raises(ValueError) as excinfo:
+        build_sort_clauses("metadata.custom.case_number", "asc")
+    msg = str(excinfo.value)
+    # The metadata-specific hint surfaces explicitly (not the generic
+    # "Unknown sort field" path). Operators reaching for metadata.<x>
+    # in sort_by need to know POST /documents/query filters still work.
+    assert "metadata path" in msg
+    assert "metadata.custom.case_number" in msg
+    assert "POST /documents/query" in msg
+
+
+def test_build_sort_clauses_rejects_bare_metadata_prefix():
+    """Any path starting with metadata.<x> hits the same hint, not
+    just deeply-nested metadata.custom.<x>."""
+    import pytest as _pytest
+
+    from document_store.services.document_service import build_sort_clauses
+    with _pytest.raises(ValueError, match="metadata path"):
+        build_sort_clauses("metadata.source_system", "desc")
+
+
 def test_build_sort_clauses_rejects_invalid_order():
     """Invalid sort_order raises ValueError."""
-    from document_store.services.document_service import build_sort_clauses
-
     import pytest as _pytest
+
+    from document_store.services.document_service import build_sort_clauses
     with _pytest.raises(ValueError, match="Invalid sort_order"):
         build_sort_clauses("created_at", "sideways")
 
