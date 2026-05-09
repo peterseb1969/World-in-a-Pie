@@ -26,6 +26,15 @@ function joinClassNames(base: string, override?: string): string {
 // asset-loaded) so consumers don't need to copy anything to their app's
 // public/. The full-illustration WIP_logo_blue_small.png is still the
 // canonical hero/splash mark; this footer mark is the small-scale referent.
+//
+// CASE-321: the SVG carries explicit width/height attributes (16/16,
+// matching h-4 = 1rem at default root). Tailwind JIT only compiles
+// utilities it sees in the consumer's `content` paths, and
+// `node_modules/@wip/react/**` is not in any standard consumer config —
+// so without intrinsic dimensions, an SVG with `viewBox` + no width/height
+// fills its flex parent (page-dominating logo). The intrinsic attrs are
+// the fallback when Tailwind hasn't compiled the className; consumer-
+// supplied `className` overrides still win via CSS specificity.
 export function WipFooter({
   appName,
   className,
@@ -39,6 +48,8 @@ export function WipFooter({
       <div className={INNER}>
         <svg
           viewBox="0 0 100 100"
+          width="16"
+          height="16"
           className={LOGO_CLASS}
           aria-hidden="true"
           focusable="false"
