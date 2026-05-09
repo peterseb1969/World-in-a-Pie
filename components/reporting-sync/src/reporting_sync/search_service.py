@@ -103,7 +103,16 @@ class SearchRequest(StrictModel):
             "matched terms with <b>...</b>. 'text' returns plain text."
         ),
     )
-    limit: int = Field(50, ge=1, le=200, description="Max results per type")
+    limit: int = Field(
+        50,
+        ge=1,
+        le=100,
+        description=(
+            "Max results per type (cap aligns with platform pagination max — "
+            "see wip://conventions). For broader recall use refined queries; "
+            "for full enumeration use the paginated query endpoints."
+        ),
+    )
 
 
 class ActivityItem(BaseModel):

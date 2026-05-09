@@ -2601,7 +2601,8 @@ async def search(
         types: Filter by entity type: 'terminology', 'term', 'template',
             'document', 'file'. Omit to search all types.
         namespace: Filter by namespace. Omit to search all namespaces.
-        limit: Max results per type (1-200, default 20).
+        limit: Max results per type (1-100, default 20). Cap aligns
+            with the platform pagination max — see wip://conventions.
         template: Restrict document search to a single template (by
             value, e.g. 'LESSON'). Other entity-type searches ignore
             this filter.
