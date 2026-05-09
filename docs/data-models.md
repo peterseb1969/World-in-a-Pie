@@ -91,6 +91,10 @@ class Terminology(BaseModel):
         default=False,
         description="Whether new terms can be added by users"
     )
+    mutable: bool = Field(
+        default=False,
+        description="When True, terms can be hard-deleted (not just deprecated). Implies extensible=True. Immutable after creation if terms exist."
+    )
     status: Literal["active", "inactive"] = Field(
         default="active",
         description="Lifecycle status"

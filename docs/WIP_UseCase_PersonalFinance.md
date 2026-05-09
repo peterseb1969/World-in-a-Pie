@@ -2,7 +2,7 @@
 
 *Part 1 of 3 — Foundational Use Case*
 
-*DRAFT — March 2026*
+*Foundational Use Case*
 
 ---
 
@@ -221,27 +221,25 @@ These queries become available as additional constellations are added to WIP, il
 > **The network effect in practice**
 > Notice that the Financial constellation participates in every cross-constellation query above. This is why we call it foundational. But the pattern is recursive: the Energy constellation will similarly create cross-links to Home Management, and Home Management to Vehicle maintenance, and so on. Each new constellation added multiplies the analytical surface area.
 
-# Suggested Implementation Sequence
+# Implementation Status
 
 The financial constellation benefits from a phased approach where each app builds on the previous one:
 
 |           |                      |                                                                                                       |                                                    |
 |-----------|----------------------|-------------------------------------------------------------------------------------------------------|----------------------------------------------------|
-| **Phase** | **App**              | **Rationale**                                                                                         | **Prerequisite**                                   |
-| **1**     | Statement Manager    | Establishes the foundational transaction feed that other apps depend on                               | None — this is the starting point                  |
-| **2**     | Receipt Scanner      | Adds item-level granularity; receipt-to-transaction matching demonstrates cross-app value immediately | Statement Manager (for reconciliation)             |
-| **3**     | Subscription Tracker | Builds on transaction patterns from Statement Manager; quick to implement, high user impact           | Statement Manager (for auto-detection)             |
-| **4**     | Investment Tracker   | Requires external data integration (market prices); more complex but completes the net-worth picture  | Statement Manager (for dividend reconciliation)    |
-| **5**     | BI Layer             | Maximum value when all data sources are in place; can start simple and grow                           | At least Phase 1 + 2 for meaningful cross-analysis |
+| **Phase** | **App**              | **Rationale**                                                                                         | **Status**                                   |
+| **1**     | Statement Manager    | Establishes the foundational transaction feed that other apps depend on                               | **Built**                  |
+| **2**     | Receipt Scanner      | Adds item-level granularity; receipt-to-transaction matching demonstrates cross-app value immediately | **Built**             |
+| **3**     | Subscription Tracker | Builds on transaction patterns from Statement Manager; quick to implement, high user impact           | Pending             |
+| **4**     | Investment Tracker   | Requires external data integration (market prices); more complex but completes the net-worth picture  | Pending    |
+| **5**     | BI Layer             | Maximum value when all data sources are in place; can start simple and grow                           | Pending |
 
-# Next in the Series
+# Other Constellations
 
-This document is the first in a three-part series illustrating how a shared backend like WIP enables interconnected app constellations:
+This document covers the foundational Personal Finance constellation. Additional constellations are planned but not yet separately documented:
 
-- **Part 1: Personal Finance Constellation** (this document) — the foundational layer
+- **Energy & Sustainability** — meter readings, solar production, tariff analysis, with direct financial cross-links
+- **Vehicle & Mobility** — fuel and charging logs, trip classification, total cost of ownership
+- **Home Management** — equipment, maintenance, renovation planning, converging energy and financial data
 
-- **Part 2: Energy & Sustainability Constellation** — meter readings, solar production, tariff analysis, with direct financial cross-links
-
-- **Part 3: Home Management Constellation** — equipment, maintenance, renovation planning, converging energy and financial data
-
-Each subsequent document will include the same introductory section on the network effect, reinforcing the core argument, followed by constellation-specific detail and an expanding map of cross-constellation queries.
+The cross-constellation queries in the BI Layer section above illustrate the value these constellations would unlock when their data shares the same backend.

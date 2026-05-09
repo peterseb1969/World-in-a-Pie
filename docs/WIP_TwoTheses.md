@@ -2,8 +2,6 @@
 
 *A shared backend for personal data. A guardrail for AI-assisted development.*
 
-*DRAFT — March 2026*
-
 ---
 
 # What This Document Is
@@ -29,11 +27,11 @@ To move beyond assertion, a companion document series presents concrete use case
 
 - **Personal Finance** (the foundational constellation): receipt scanning, bank statement management, investment tracking, subscription monitoring, and a BI layer that queries across all four.
 
-- **Energy & Sustainability:** utility metering, solar production monitoring, and home climate logging — enriched by external data sources (weather, tariffs, grid carbon intensity) that transform raw readings into actionable insight.
+- **Energy & Sustainability:** utility metering, solar production monitoring, and home climate logging — enriched by external data sources (weather, tariffs, grid carbon intensity) that transform raw readings into actionable insight. *(future constellation — not yet documented)*
 
-- **Vehicle & Mobility** (a satellite): fuel and charging logs, trip classification, service history, and total cost of ownership — bridging the energy and financial domains.
+- **Vehicle & Mobility** (a satellite): fuel and charging logs, trip classification, service history, and total cost of ownership — bridging the energy and financial domains. *(future constellation — not yet documented)*
 
-- **Home Management:** equipment registry, maintenance logging, network inventory, and renovation planning — the convergence point where physical assets meet financial costs and energy performance.
+- **Home Management:** equipment registry, maintenance logging, network inventory, and renovation planning — the convergence point where physical assets meet financial costs and energy performance. *(future constellation — not yet documented)*
 
 ## Why constellations, not just apps
 
@@ -135,13 +133,13 @@ There are many backend platforms an AI could build on. What makes WIP particular
 
 # The Experiment
 
-The experiment begins now, starting with the Personal Finance constellation as defined in the companion use case document series. The approach is deliberate:
+The experiment is underway, starting with the Personal Finance constellation as defined in the companion use case document series.
 
-## What will be built
+## What has been built
 
-The Financial constellation’s Statement Manager will be the first app implemented, following the AI-Assisted Development process from Phase 1 through Phase 4. It will be built by an AI assistant (Claude), with a human providing domain guidance and approval at each gate. Once the Statement Manager is operational, the Receipt Scanner will follow, introducing cross-app references and transaction matching. The Subscription Tracker and Investment Tracker will be added incrementally. The BI layer will grow as data accumulates.
+The Financial constellation’s Statement Manager was the first app implemented, following the AI-Assisted Development process from Phase 1 through Phase 4. It was built by an AI assistant (Claude), with a human providing domain guidance and approval at each gate. The Receipt Scanner followed, introducing cross-app references and transaction matching. The Subscription Tracker and Investment Tracker remain to be added. The BI layer will grow as data accumulates.
 
-If the Financial constellation succeeds, the Energy constellation will follow, introducing cross-constellation queries and external data integration. The Home Management constellation completes the series and delivers the convergence test: the renovation worked example that spans all three constellations.
+The Energy constellation and Home Management constellation are intended to follow — introducing cross-constellation queries and the renovation worked example — but are not yet implemented.
 
 ## What will be observed
 
@@ -155,7 +153,7 @@ The experiment is designed to produce evidence for or against both theses. The q
 
 ## What will be shared
 
-The experiment will be conducted transparently. The use case documents (Parts 1, 2, 2.1, 3) are already available. As implementation proceeds, the following will be shared:
+The experiment will be conducted transparently. The use case document for Part 1 (Personal Finance) is available; Parts 2, 2.1, and 3 are intended future work. As implementation proceeds, the following will be shared:
 
 - The data models as designed (terminologies, templates, identity field choices)
 
@@ -180,4 +178,4 @@ If you are interested in WIP itself, the constellations are a stress test. They 
 > **How to get involved**
 > Watch the experiment as it unfolds. Read the use case documents and challenge the data models. Suggest constellations or satellites that would test the theses in new ways. Try building your own app on WIP using the AI-Assisted Development process and share what you learn. Or simply wait for results and judge the evidence on its merits. All of these are useful contributions.
 
-The first implementation session begins with the Financial constellation’s Statement Manager. Let’s see how far this goes.
+The Statement Manager and Receipt Scanner are built. Let’s see how far this goes.

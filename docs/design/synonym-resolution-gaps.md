@@ -79,7 +79,7 @@ Seven API-boundary gaps were closed in a single pass. These were the "stragglers
 | 2 | `replaced_by_term_id` not resolved in deprecate endpoint | def-store | Added `resolve_bulk_ids` for `replaced_by_term_id` field |
 | 3 | Audit endpoints had zero resolution | def-store | Added `resolve_or_404` to `GET /audit/terms/{id}` and `GET /audit/terminologies/{id}` |
 | 4 | Export endpoint didn't resolve `terminology_id` | def-store | Added `resolve_or_404` to `GET /export/{terminology_id}` |
-| 5 | Legacy validation endpoints retired | def-store | Removed `/validation/validate` and `/validation/validate-bulk` router (file deleted 2026-04-04). Consumers should use `POST /terms/validate` and `POST /terms/validate/bulk` instead. See `docs/migration-legacy-validation-api.md`. |
+| 5 | Legacy validation endpoints retired | def-store | Removed `/validation/validate` and `/validation/validate-bulk` router (file deleted 2026-04-04). Consumers should use `POST /terms/validate` and `POST /terms/validate/bulk` instead. |
 | 6 | Template value lookup defaulted namespace to "wip" | template-store | Made namespace required for value-based lookups — raises `ValueError` if omitted |
 | 7 | Table view namespace fallback to "wip" | document-store | Replaced `.get("namespace", "wip")` with explicit check; raises 500 if namespace missing |
 
@@ -270,9 +270,9 @@ Once these are in place, the swap is straightforward. The remaining side effects
 
 ---
 
-## Relation to Fast Bulk Transfer
+## Relation to Bulk Transfer Performance
 
-This analysis was prompted by the fast bulk transfer design, but the gaps identified here are **WIP consistency issues**, not import/export issues. The resolution layer should work correctly for normal operations first:
+This analysis was prompted by bulk-transfer performance work, but the gaps identified here are **WIP consistency issues**, not import/export issues. The resolution layer should work correctly for normal operations first:
 
 - Template creation should resolve cross-namespace references through the Registry
 - Batch activation should resolve interdependent templates through the Registry
@@ -280,4 +280,4 @@ This analysis was prompted by the fast bulk transfer design, but the gaps identi
 
 Once WIP's internal resolution is consistent, import/export follows naturally: import goes through the API, references resolve correctly, no special-case remapping needed. A sane internal design eliminates the need for import-time hacks.
 
-The fast bulk transfer design should be revisited after the resolution layer is complete. The performance optimization (direct MongoDB insert) is still valid, but the reference handling strategy depends on having a working resolution layer.
+The performance optimization (direct MongoDB insert) is still valid once the reference handling strategy depends on having a working resolution layer.

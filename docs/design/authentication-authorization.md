@@ -253,7 +253,7 @@ if (ALLOWED_GROUPS.length > 0 && !user.groups.some(g => ALLOWED_GROUPS.includes(
 
 **Prerequisite:** Phase 1 (user identity must be known)
 
-This phase is already designed in detail: see `docs/design/namespace-authorization.md`. Summary:
+Phase 2 is implemented. Summary:
 
 ### Permission Model
 
@@ -286,7 +286,7 @@ App (Express)                      @wip/proxy                       WIP Service
 
 ### Enforcement Rollout
 
-Phase 2 activates the existing `check_namespace_permission()` calls. Services already have the function — it just needs to be called from route handlers. See `namespace-authorization.md` Session 2 for the per-service integration plan.
+Phase 2 is implemented. `check_namespace_permission()` is called from route handlers in document-store, template-store, def-store, and registry.
 
 ### Single-User Compatibility
 
@@ -419,15 +419,14 @@ Constellation
 
 2. **Single sign-out.** Each app has its own Express session — logging out of one app doesn't log out of others. Is this acceptable, or should we implement back-channel logout via Dex?
 
-3. **API key + user identity intersection.** Requests carry both an API key (service auth) and user identity (from headers). Should the API key's namespace restrictions constrain the user's permissions? **Yes — implemented** (2026-04-04). Non-privileged API keys must have explicit `namespaces`; unscoped keys get no access. The API key's namespace scope acts as a ceiling on what the user can access through that app.
+3. **API key + user identity intersection.** ~~Open question.~~ **Resolved** (2026-04-04). Non-privileged API keys must have explicit `namespaces`; unscoped keys get no access. The API key's namespace scope acts as a ceiling on what the user can access through that app.
 
-4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But if an attacker compromises an API key, they can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (see `docs/security/key-rotation.md`).
+4. **Header trust boundary.** `X-WIP-User` headers are only trusted when accompanied by a valid API key. But if an attacker compromises an API key, they can impersonate any user. Mitigation: API keys for app proxies should have limited namespace scope, and key rotation should be easy (see the WIP Guide for key rotation procedures).
 
 ## Relation to Existing Designs
 
 | Document | Relation |
 |----------|-------------|
-| `app-gateway.md` | Phase 1 here is independent of gateway routing. Gateway (Phases 2-3 there) is needed for multi-app sub-path routing, not for auth. |
-| `namespace-authorization.md` | Phase 2 here = that entire document. Already designed in detail. |
+| `pluggable-apps.md` | Phase 1 here is independent of gateway routing. Pluggable-apps proposes gateway-level auth for v2. |
+| `wip-guide.md` | WIP Guide covers key rotation (formerly `security/key-rotation.md`) and auth configuration. |
 | `authentication.md` | Reference doc for current auth. Needs updating after each phase. |
-| `security/key-rotation.md` | API key management. Relevant to Phase 1 (app API keys) and Phase 4 (header trust). |
