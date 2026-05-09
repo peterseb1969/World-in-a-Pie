@@ -1081,7 +1081,7 @@ async def unified_search(request: SearchRequest) -> SearchResponse:
             - query: Search string (required)
             - types: Entity types to search (optional, defaults to all)
             - status: Filter by status (optional)
-            - limit: Max results per type (1-200, default 50)
+            - limit: Max results per type (1-100, default 50)
 
     Returns:
         SearchResponse with results grouped by type and total counts
