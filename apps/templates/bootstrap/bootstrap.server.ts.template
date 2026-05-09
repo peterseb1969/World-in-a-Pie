@@ -61,6 +61,45 @@ const NAMESPACE = 'TODO_APP_NAMESPACE'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyObj = Record<string, any>
 
+interface BulkItemResult {
+  index?: number
+  status?: string
+  id?: string
+  error?: string
+  error_code?: string
+}
+
+/**
+ * Assert that a WIP bulk-write response contains zero per-item errors.
+ *
+ * WIP's bulk APIs always return HTTP 200 (PoNIF #4 — Bulk-First). Per-item
+ * failures are inside `results[i].status === 'error'` with `error` /
+ * `error_code` fields. Without this check, a typo, a reference-violation,
+ * or a future schema mismatch slips through bootstrap silently — the
+ * namespace ends up partially seeded and BootstrapGate transitions to
+ * `ready` anyway. This helper turns the silent failure into a thrown
+ * error with a useful summary.
+ *
+ * Accepts both the canonical envelope `{results, total, succeeded, failed}`
+ * (every WIP bulk endpoint today) and a raw array (defensive against any
+ * future endpoint that drifts).
+ */
+function assertBulkSuccess(response: unknown, context: string): void {
+  const r = response as { results?: BulkItemResult[] } | BulkItemResult[]
+  const items = Array.isArray(r) ? r : r.results || []
+  const errors = items.filter((i) => i.status === 'error')
+  if (errors.length) {
+    const summary = errors
+      .map((e) =>
+        `[${e.index ?? '?'}] ${e.error_code || ''} ${e.error || 'unknown'}`.trim(),
+      )
+      .join('; ')
+    throw new Error(
+      `${context}: ${errors.length}/${items.length} items failed — ${summary}`,
+    )
+  }
+}
+
 export type BootstrapStatus = 'unknown' | 'wip_unreachable' | 'needs_bootstrap' | 'ready'
 
 export interface BootstrapProgress {
@@ -139,8 +178,11 @@ export async function runBootstrap(
     const termResult = (await wipPost('/api/def-store/terminologies', termBulk)) as {
       results: Array<{ status: string; id: string; error?: string }>
     }
+    assertBulkSuccess(termResult, 'terminologies create')
 
-    // Build value → terminology_id map
+    // Build value → terminology_id map. assertBulkSuccess above already
+    // threw on any per-item error, so the skip-on-no-id branch only
+    // fires for genuinely-malformed responses (defensive).
     const termIdMap = new Map<string, string>()
     for (let i = 0; i < termResult.results.length; i++) {
       const r = termResult.results[i]
@@ -160,7 +202,11 @@ export async function runBootstrap(
       if (!termId) continue
 
       progress('terms', `Creating ${terms.length} terms for ${termData.value}...`)
-      await wipPost(`/api/def-store/terminologies/${termId}/terms`, terms)
+      const termsResult = await wipPost(
+        `/api/def-store/terminologies/${termId}/terms`,
+        terms,
+      )
+      assertBulkSuccess(termsResult, `terms create for ${termData.value}`)
       totalTerms += terms.length
     }
     progress('terms', `Created ${totalTerms} terms across ${terminologies.length} terminologies`)
@@ -185,10 +231,11 @@ export async function runBootstrap(
 
     if (allRelations.length) {
       progress('term-relations', `Creating ${allRelations.length} ontology term-relations...`)
-      await wipPost(
+      const relsResult = await wipPost(
         `/api/def-store/ontology/term-relations?namespace=${NAMESPACE}`,
         allRelations,
       )
+      assertBulkSuccess(relsResult, 'ontology term-relations create')
     }
 
     // Step 5: Create templates (sorted by filename prefix for dependency order)
@@ -219,7 +266,11 @@ export async function runBootstrap(
 
       if (data.reporting) template.reporting = data.reporting
 
-      await wipPost('/api/template-store/templates?on_conflict=validate', [template])
+      const tplResult = await wipPost(
+        '/api/template-store/templates?on_conflict=validate',
+        [template],
+      )
+      assertBulkSuccess(tplResult, `template create ${data.value}`)
 
       if (data.usage === 'relationship') edgeTypesCreated.push(data.value)
       else templatesCreated.push(data.value)
@@ -280,9 +331,23 @@ async function writeBootstrapRecord(meta: {
   edgeTypesCreated: string[]
   terminologiesCreated: string[]
 }): Promise<void> {
+  // Resolve BOOTSTRAP_RECORD's template_id (and version) first. The
+  // /api/document-store/documents endpoint requires `template_id`
+  // (StrictModel with extra='forbid' — `template_value` is rejected
+  // with `extra_forbidden` per item). Pre-CASE-299 this was POSTed as
+  // `template_value: 'BOOTSTRAP_RECORD'` and the per-item error was
+  // silently swallowed, leaving the namespace's audit doc missing.
+  // Per PoNIF #6, pass an explicit template_version so the document
+  // validates against the version we just created — not whatever
+  // "latest" resolves to via the 5s cache.
+  const tmpl = (await wipGet(
+    `/api/template-store/templates/by-value/BOOTSTRAP_RECORD?namespace=${NAMESPACE}`,
+  )) as { template_id: string; version: number }
+
   const bootstrapId = `bootstrap-${meta.startedAt.replace(/[:.]/g, '-')}`
   const doc = {
-    template_value: 'BOOTSTRAP_RECORD',
+    template_id: tmpl.template_id,
+    template_version: tmpl.version,
     namespace: NAMESPACE,
     data: {
       bootstrap_id: bootstrapId,
@@ -294,7 +359,14 @@ async function writeBootstrapRecord(meta: {
       terminologies_created: meta.terminologiesCreated,
     },
   }
-  await wipPost('/api/document-store/documents', [doc])
+  // NOTE: if your app's BOOTSTRAP_RECORD seed declares additional
+  // mandatory fields (e.g., title, authored_by, doc_status), add them
+  // here OR set `default_value` in the seed and let the platform
+  // apply defaults at validation time. With CASE-299's mapField fix,
+  // default_value declared in seed JSON is now forwarded through to
+  // template-store, so server-side defaults work as documented.
+  const result = await wipPost('/api/document-store/documents', [doc])
+  assertBulkSuccess(result, 'BOOTSTRAP_RECORD write')
 }
 
 
@@ -316,6 +388,11 @@ function mapField(f: AnyObj): AnyObj {
   if (f.mandatory) field.mandatory = true
   if (f.terminology_ref) field.terminology_ref = f.terminology_ref
   if (f.semantic_type) field.semantic_type = f.semantic_type
+  if (f.full_text_indexed) field.full_text_indexed = f.full_text_indexed
+  // `default_value` uses `!== undefined` (not truthy) because `false` is
+  // a legitimate default for boolean fields like `root` — a truthy
+  // check would silently drop it.
+  if (f.default_value !== undefined) field.default_value = f.default_value
 
   // Reference fields
   if (f.reference_type) field.reference_type = f.reference_type
