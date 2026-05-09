@@ -6,8 +6,8 @@ work; browser reaches apps via Caddy. K8s + dev renderers pending.
 **Last updated:** 2026-04-16
 **Author:** Peter + BE-YAC
 **See also:**
-- `install-path-drift.md` — the problem this solves (drift resolved for compose)
-- `wip-deploy-v2-status.md` — living status + follow-up work
+- `deployer/` directory — the canonical implementation
+- `wip-guide.md` — deployment operations and runbooks
 
 ## Context
 
@@ -17,7 +17,7 @@ v1.x ships three divergent installation paths:
 - `scripts/quick-install.sh` + `scripts/setup-wip.sh` — turnkey production (monolithic compose, auth-gateway via `forward_auth`)
 - `k8s/` — hand-maintained Kubernetes manifests (NGINX Ingress, direct proxy, no auth-gateway)
 
-Each re-implements overlapping logic independently. The drift between them has reached the point where Theme 7's auth-gateway exists only on the compose path, and k8s is broken. See `install-path-drift.md` for the full analysis.
+Each re-implements overlapping logic independently. The drift between them reached the point where Theme 7's auth-gateway existed only on the compose path, and k8s was broken.
 
 v2 replaces all three paths with a single declarative deployment system:
 
@@ -315,7 +315,7 @@ class EnvSource(BaseModel):
 
     Symmetric gap (known limitation): `from_secret` on an optional env
     when the secret wasn't collected currently emits `${VAR}` → empty
-    string rather than skipping. See follow-up in wip-deploy-v2-status.
+    string rather than skipping. (Known limitation — tracked in deployer/)
     """
     literal: str | None = None
     from_spec: str | None = None              # dotted path into SpecContext
