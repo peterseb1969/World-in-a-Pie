@@ -11,7 +11,7 @@
 #   1. Creates the directory structure
 #   2. Copies slash commands from docs/slash-commands/app-builder/
 #   3. Copies reference docs (AI-Assisted-Development.md, WIP_PoNIFs.md, WIP_DevGuardrails.md,
-#      app-containerization-guide.md, technology-stack.md, ui-guidance.md, ontology-support.md)
+#      wip-guide.md, technology-stack.md, ui-guidance.md, ontology-support.md)
 #   4. Generates .mcp.json pointing to this WIP installation
 #   5. Copies and extracts client library tarballs + READMEs
 #   6. Copies wip-toolkit wheel
@@ -208,7 +208,7 @@ fi
 # --- Copy reference docs (new + refresh) ---
 
 echo "3. Copying reference documentation..."
-for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md app-containerization-guide.md technology-stack.md ui-guidance.md; do
+for doc in AI-Assisted-Development.md WIP_PoNIFs.md WIP_DevGuardrails.md wip-guide.md technology-stack.md ui-guidance.md; do
     if [ -f "$WIP_ROOT/docs/$doc" ]; then
         cp "$WIP_ROOT/docs/$doc" "$APP_DIR/docs/"
         echo "   Copied: docs/$doc"
@@ -709,6 +709,7 @@ Read these before starting:
 - \`docs/AI-Assisted-Development.md\` — 4-phase process, data model design guide, PoNIFs quick reference
 - \`docs/WIP_PoNIFs.md\` — Full guide to WIP's 8 non-intuitive behaviours
 - \`docs/WIP_DevGuardrails.md\` — UI stack, app skeleton, testing conventions
+- \`docs/wip-guide.md\` — Operator-facing guide: install, deploy, harden, run alongside an app (consolidates 10 prior docs incl. containerization, auth, networking, storage)
 - \`docs/technology-stack.md\` — **Canonical** v1 stack (React 19 + TS + Vite + TanStack Query + Tailwind 3 + Inter); required @wip/* libraries; forbidden choices. Read before any architecture call.
 - \`docs/ui-guidance.md\` — **Canonical** v1 visual anchor: brand palette tokens (primary/accent/success/danger), typography hierarchy (text-2xl page titles, NOT text-3xl), component shapes (cards, modals, tinted callouts), accessibility floor. \`tailwind.config.js\` ships pre-extended with these tokens — use the named classes (\`bg-primary\`, \`text-text-muted\`), not inline hex.
 - \`docs/ontology-support.md\` — Term relations, polyhierarchy, typed relations, traversal queries
