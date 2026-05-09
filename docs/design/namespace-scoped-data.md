@@ -12,7 +12,7 @@ Design document for adding namespace support to all WIP services, enabling names
 4. **Dev/test workflows**: Create `-dev` or `-test` suffixed namespaces for experimentation
 5. **Namespace archival**: Soft-delete entire namespaces while preserving data
 
-## Current State (as of Feb 2025)
+## Current State (as of Feb 2026)
 
 ### What's Implemented
 
@@ -30,7 +30,7 @@ Design document for adding namespace support to all WIP services, enabling names
 - By-value lookups default to `namespace=None` (search all namespaces)
 - Seed script uses `--namespace seed` to isolate test data from production data
 
-**Implementation note:** This design document originally proposed using the full pool name (e.g., `"wip-terminologies"`) as the namespace field value. The actual implementation uses a short prefix (e.g., `"wip"`) and derives the pool name in the registry client. See [Namespace Implementation](../namespace-implementation.md) for current details.
+**Implementation note:** This design document originally proposed using the full pool name (e.g., `"wip-terminologies"`) as the namespace field value. The actual implementation uses a short prefix (e.g., `"wip"`) and derives the pool name in the registry client. (An earlier `namespace-implementation.md` reference was archived per CASE-184; for current schema details see `docs/data-models.md`.)
 
 ### What's NOT Implemented
 
