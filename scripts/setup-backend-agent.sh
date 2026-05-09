@@ -455,6 +455,11 @@ Rules describe what to do. These describe why applying them is harder than it so
 - **Ask before destructive actions.** Git force-push, dropping data, deleting branches, wiping volumes — confirm first.
 - **Bugs get reproduced before they get fixed.** Do not jump from a bug report to "here is the probable cause, here is the fix." Reproduction is delegated to the reporting YAC. Code-reading analysis is fine as context; label it as hypothesis. Full rule at `feedback_reproduce_bugs_first.md`.
 
+### 4.6 Tool use — Bash timeouts and waits
+
+- **Never set Bash `timeout > 60000` ms.** Use `run_in_background: true` for any command that may exceed 60 s. Use `Monitor` for streaming output, or wait for the auto-completion notification when the background task finishes. A PreToolUse hook (`~/.claude/hooks/block-long-bash-timeout.sh`) now mechanically rejects calls with `timeout > 60000` — the discipline rule still applies even if the hook is disabled or absent in a future setup. *Origin: CASE-319, where this rule lived in `feedback_no_long_bash_timeouts.md` and failed to prevent recurrence twice in 90 minutes within one session.*
+- **Verify-before-wait.** Before scheduling any wait on a long-running command, verify the prerequisites that command depends on can succeed. For pytest runs against a dev cluster: check the host-bound ports the conftest will connect to (e.g., `nc -z localhost 27017` for MongoDB) before kicking the test off. The class of failure is *waiting on an action that depends on unverified state* — the wait then can't complete and burns wall time on a hang. *Origin: CASE-319 (compounded with CASE-320 — the agent waited 10 minutes for tests that couldn't finish because the deployer no longer exposed mongo's port to the host; nc -z would have caught it in 50 ms).*
+
 ---
 
 ## 5. Key Conventions
