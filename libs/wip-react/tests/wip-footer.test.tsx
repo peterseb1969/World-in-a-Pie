@@ -20,6 +20,15 @@ describe('WipFooter (CASE-308 + CASE-314)', () => {
     expect(svg!.getAttribute('viewBox')).toBe('0 0 100 100')
     expect(svg!.getAttribute('class')).toContain('h-4')
 
+    // CASE-321: intrinsic width/height attributes are required so the
+    // SVG renders at the correct size even when Tailwind's JIT hasn't
+    // compiled the h-4/w-auto utilities (which happens by default in
+    // every consumer because node_modules/@wip/react isn't in their
+    // tailwind content paths). Without these attrs, SVG with viewBox
+    // and no dimensions fills the flex parent — page-dominating logo.
+    expect(svg!.getAttribute('width')).toBe('16')
+    expect(svg!.getAttribute('height')).toBe('16')
+
     // World-in-a-pie geometry: pie body path + dish rect both render
     expect(svg!.querySelector('path')).not.toBeNull()
     expect(svg!.querySelector('rect')).not.toBeNull()
