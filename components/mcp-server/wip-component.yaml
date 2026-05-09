@@ -27,6 +27,15 @@ spec:
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+    optional:
+      # The 8 reporting-sync MCP tools (search, run_report_query,
+      # get_table_view, list_report_tables, query_by_template,
+      # export_report_csv, export_table_csv, get_sync_status) only work
+      # when reporting-sync is active. Declared optional because
+      # reporting-sync is itself optional: when inactive, the var stays
+      # unset and the MCP client falls back to its in-process default
+      # (which fails fast at first call rather than silently). CASE-330.
+      - {name: REPORTING_SYNC_URL, source: {from_component: reporting-sync}}
 
   routes:
     # redirect_bare_path=false: MCPs StreamableHTTP transport mounts
