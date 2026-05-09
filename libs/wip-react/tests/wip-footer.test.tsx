@@ -2,20 +2,27 @@ import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import { WipFooter } from '../src/WipFooter'
 
-describe('WipFooter (CASE-308)', () => {
-  it('renders the default attribution with the embedded logo', () => {
-    const { container, getByAltText, getByText } = render(<WipFooter />)
+describe('WipFooter (CASE-308 + CASE-314)', () => {
+  it('renders the default attribution with the inline SVG mark', () => {
+    const { container, getByText } = render(<WipFooter />)
 
     const footer = container.querySelector('footer')
     expect(footer).not.toBeNull()
     expect(footer!.className).toContain('mt-12')
     expect(footer!.className).toContain('border-t')
 
-    const logo = getByAltText('WIP')
-    expect(logo.tagName).toBe('IMG')
-    expect((logo as HTMLImageElement).src).toMatch(/^data:image\/png;base64,/)
-    expect(logo.className).toContain('h-4')
-    expect(logo.className).toContain('opacity-70')
+    // CASE-314: mark is now an inline SVG (not an <img>) — decorative
+    // (aria-hidden), so the adjacent text "Built on WIP" provides the
+    // accessible label. Structural check rather than getByAltText.
+    const svg = container.querySelector('svg')
+    expect(svg).not.toBeNull()
+    expect(svg!.getAttribute('aria-hidden')).toBe('true')
+    expect(svg!.getAttribute('viewBox')).toBe('0 0 100 100')
+    expect(svg!.getAttribute('class')).toContain('h-4')
+
+    // World-in-a-pie geometry: pie body path + dish rect both render
+    expect(svg!.querySelector('path')).not.toBeNull()
+    expect(svg!.querySelector('rect')).not.toBeNull()
 
     expect(getByText('Built on WIP')).not.toBeNull()
   })
