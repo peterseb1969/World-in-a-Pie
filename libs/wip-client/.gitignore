@@ -1,3 +1,8 @@
 node_modules/
 dist/
 *.tsbuildinfo
+
+# Auto-generated OpenAPI types — derived from schemas/ via scripts/generate-types.ts.
+# Consumers use the hand-written types in src/types/*.ts; generated/ is an
+# intermediate artifact regenerated on each schema refresh.
+src/types/generated/

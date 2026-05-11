@@ -148,6 +148,15 @@ export interface Template {
   extends_version?: number
   identity_fields: string[]
   /**
+   * Fields to surface in peer/header projection contexts (CASE-343).
+   * Bare names target `data.<name>`; `metadata.custom.<name>` paths
+   * are allowed for audit fields. Empty → the platform's projection
+   * falls back to `identity_fields`. The relationships endpoint's
+   * `?include=peers` projection reads this; future list / summary
+   * endpoints may consume it too.
+   */
+  header_fields?: string[]
+  /**
    * Usage class: entity (default), reference, or relationship.
    * Immutable after creation. Relationship templates ("edge types")
    * additionally require source_templates + target_templates and
@@ -192,6 +201,12 @@ export interface CreateTemplateRequest {
   extends?: string
   extends_version?: number
   identity_fields?: string[]
+  /**
+   * Peer/header-projection fields (CASE-343). Bare names target data.*,
+   * `metadata.custom.<name>` paths allowed. Empty → projection falls
+   * back to identity_fields.
+   */
+  header_fields?: string[]
   /** Usage class — defaults to 'entity' on the server when omitted. */
   usage?: TemplateUsage
   /** Required when usage='relationship'; ignored otherwise. */
@@ -216,6 +231,8 @@ export interface UpdateTemplateRequest {
   extends?: string
   extends_version?: number
   identity_fields?: string[]
+  /** Update peer/header-projection fields (CASE-343). */
+  header_fields?: string[]
   fields?: FieldDefinition[]
   rules?: ValidationRule[]
   metadata?: Partial<TemplateMetadata>

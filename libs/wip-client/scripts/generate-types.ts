@@ -40,8 +40,11 @@ async function main() {
     mkdirSync(outDir, { recursive: true })
   }
 
-  // Dynamic import — openapi-typescript is a devDependency
-  const { default: openapiTS } = await import('openapi-typescript')
+  // Dynamic import — openapi-typescript is a devDependency.
+  // v7+ returns a TypeScript AST (Node[]) from openapiTS() — convert via
+  // astToString() before writing. v6 returned a string directly; the v7
+  // breaking change quietly broke this script (CASE-345 surfaced).
+  const { default: openapiTS, astToString } = await import('openapi-typescript')
 
   for (const svc of SERVICES) {
     let source: string | URL
@@ -55,9 +58,9 @@ async function main() {
       console.log(`Reading ${svc.name} from schemas/${svc.name}.json...`)
       const spec = JSON.parse(readFileSync(cacheFile, 'utf-8'))
       try {
-        const output = await openapiTS(spec)
+        const ast = await openapiTS(spec)
         const outFile = `${outDir}/${svc.name}.ts`
-        writeFileSync(outFile, output as string, 'utf-8')
+        writeFileSync(outFile, astToString(ast), 'utf-8')
         console.log(`  -> ${outFile}`)
       } catch (err) {
         console.error(`  Failed for ${svc.name}:`, (err as Error).message)
@@ -66,9 +69,9 @@ async function main() {
       const url = `${baseUrl}:${svc.port}/openapi.json`
       console.log(`Fetching ${url}...`)
       try {
-        const output = await openapiTS(new URL(url))
+        const ast = await openapiTS(new URL(url))
         const outFile = `${outDir}/${svc.name}.ts`
-        writeFileSync(outFile, output as string, 'utf-8')
+        writeFileSync(outFile, astToString(ast), 'utf-8')
         console.log(`  -> ${outFile}`)
       } catch (err) {
         console.error(`  Failed for ${svc.name}:`, (err as Error).message)

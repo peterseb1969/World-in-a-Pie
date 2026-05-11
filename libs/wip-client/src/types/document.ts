@@ -294,6 +294,39 @@ export interface DocumentRelationshipsParams {
   page?: number
   /** Default 50, capped at 500. */
   page_size?: number
+  /**
+   * Comma-separated optional inclusions. Currently supports:
+   *   - `peers` — embeds a PeerProjection on each item (CASE-303 / CASE-343)
+   */
+  include?: string
+}
+
+/**
+ * Compact projection of a peer entity document, returned on relationship
+ * items when `?include=peers` is set (CASE-303, extended CASE-343).
+ *
+ * The fields surfaced in `data` and `metadata` are determined by the peer
+ * template's `header_fields` (or `identity_fields` fallback). Legacy
+ * templates with neither declared fall back to `{title, doc_status}`.
+ */
+export interface PeerProjection {
+  document_id: string
+  namespace: string
+  template_id: string
+  template_value?: string | null
+  status: 'active' | 'inactive' | 'archived' | 'deleted'
+  /**
+   * Projected data fields per the peer template's `header_fields`
+   * (or `identity_fields` fallback).
+   */
+  data: Record<string, unknown>
+  /**
+   * Projected metadata fields. Only populated when the peer template's
+   * `header_fields` references `metadata.custom.<name>` paths
+   * (CASE-343). Shape is `{custom: {<name>: <value>, ...}}` when
+   * present, otherwise null/undefined.
+   */
+  metadata?: { custom: Record<string, unknown> } | null
 }
 
 /** One node in a document-relationship traversal result (CASE-296). */
