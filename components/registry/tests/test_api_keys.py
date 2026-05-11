@@ -2,6 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
+
 from wip_auth.providers.api_key import verify_api_key
 
 BASE = "/api/registry/api-keys"
@@ -77,8 +78,8 @@ class TestListAPIKeys:
         response = await client.get(BASE, headers=auth_headers)
         assert response.status_code == 200
         data = response.json()
-        names = [k["name"] for k in data]
-        sources = {k["name"]: k["source"] for k in data}
+        names = [k["name"] for k in data["items"]]
+        sources = {k["name"]: k["source"] for k in data["items"]}
 
         assert "legacy" in names
         assert sources["legacy"] == "config"
@@ -89,9 +90,54 @@ class TestListAPIKeys:
     async def test_list_no_hashes_exposed(self, client: AsyncClient, auth_headers: dict):
         response = await client.get(BASE, headers=auth_headers)
         assert response.status_code == 200
-        for key in response.json():
+        for key in response.json()["items"]:
             assert "key_hash" not in key
             assert "plaintext_key" not in key
+
+    @pytest.mark.asyncio
+    async def test_list_pagination_envelope(self, client: AsyncClient, auth_headers: dict):
+        """List response carries the platform-wide pagination envelope."""
+        response = await client.get(BASE, headers=auth_headers)
+        assert response.status_code == 200
+        data = response.json()
+        # Envelope shape per wip://conventions
+        assert "items" in data
+        assert "total" in data
+        assert "page" in data
+        assert "page_size" in data
+        assert "pages" in data
+        assert data["page"] == 1
+        assert data["page_size"] == 50
+        assert isinstance(data["items"], list)
+        assert data["total"] >= 1  # the legacy config-file key exists
+
+    @pytest.mark.asyncio
+    async def test_list_pagination_page_2(self, client: AsyncClient, auth_headers: dict):
+        """page_size=1 paginates correctly across config + runtime keys."""
+        # Create enough runtime keys so we have >= 3 total (legacy + 2 created)
+        await client.post(BASE, json={"name": "page-a"}, headers=auth_headers)
+        await client.post(BASE, json={"name": "page-b"}, headers=auth_headers)
+
+        # Page 1
+        r1 = await client.get(f"{BASE}?page=1&page_size=1", headers=auth_headers)
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert d1["page_size"] == 1
+        assert len(d1["items"]) == 1
+        assert d1["total"] >= 3
+        assert d1["pages"] == d1["total"]
+
+        # Page 2 — different item (sorted by name)
+        r2 = await client.get(f"{BASE}?page=2&page_size=1", headers=auth_headers)
+        d2 = r2.json()
+        assert len(d2["items"]) == 1
+        assert d2["items"][0]["name"] != d1["items"][0]["name"]
+
+    @pytest.mark.asyncio
+    async def test_list_page_size_max_is_100(self, client: AsyncClient, auth_headers: dict):
+        """page_size > 100 is rejected per platform convention."""
+        response = await client.get(f"{BASE}?page_size=101", headers=auth_headers)
+        assert response.status_code == 422
 
 
 class TestGetAPIKey:

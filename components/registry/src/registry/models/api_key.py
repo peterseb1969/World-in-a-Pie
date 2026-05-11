@@ -109,3 +109,13 @@ class APIKeySyncRecord(BaseModel):
     expires_at: datetime | None
     enabled: bool
     namespaces: list[str] | None
+
+
+class APIKeyListResponse(BaseModel):
+    """Paginated response for listing API keys (per wip://conventions)."""
+
+    items: list[APIKeyResponse]
+    total: int
+    page: int = 1
+    page_size: int = 50
+    pages: int = 0
