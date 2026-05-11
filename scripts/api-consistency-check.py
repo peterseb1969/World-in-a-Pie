@@ -20,6 +20,48 @@ import re
 import sys
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# Exemptions (CASE-335 Angle B + C)
+# ---------------------------------------------------------------------------
+#
+# Path-substring patterns. Matched against the *full* route, i.e.
+# `APIRouter(prefix=...)` + decorator path. Pre-CASE-335 this list lived
+# inline in `_check_write_endpoint` and matched only the decorator path,
+# which silently misfired when routers mounted at `/files`, `/import`,
+# etc. used `@router.post("")` for the root operation.
+EXEMPT_PATH_PATTERNS = [
+    "/activate", "/import", "/export", "/health", "/initialize",
+    "/reactivate", "/hard", "/validate", "/search",
+    "/query", "/preview", "/provision", "/upload",
+    "/restore", "/archive", "/cascade",
+    "/start", "/pause", "/resume",
+]
+
+# Function-name patterns for operation verbs that the URL doesn't always
+# carry. When a decorator path is `""` and the operation verb lives on
+# `APIRouter(prefix=...)` or on the function name only, the path-substring
+# match can't see it. These regexes catch the common WIP naming
+# conventions for inherently-non-bulk operations.
+EXEMPT_FUNCTION_PATTERNS = [
+    re.compile(r"^upload_"),     # multipart binary uploads
+    re.compile(r"^import_"),     # CSV/XLSX imports (multipart or streaming)
+    re.compile(r"^start_"),      # long-running operations (start_backup)
+    re.compile(r"^pause_"),      # control endpoints
+    re.compile(r"^resume_"),     # control endpoints
+    re.compile(r"^cancel_"),     # control endpoints (cancel_replay)
+]
+
+# One-off exemptions for endpoints that are singletons by design but
+# don't fit a name-pattern bucket. The rationale lives here so future
+# readers see *why* the convention doesn't apply.
+EXEMPT_FUNCTIONS = {
+    "create_api_key": (
+        "Singleton by design — API key provisioning happens 1-2 at a time "
+        "during namespace bootstrap. Bulk shape can be added when demand "
+        "emerges. (CASE-335 Angle B)"
+    ),
+}
+
 
 def find_api_files(root: str) -> list[Path]:
     """Find all API route files."""
@@ -32,11 +74,34 @@ def find_api_files(root: str) -> list[Path]:
             if os.path.basename(f) not in exclude]
 
 
+def _extract_router_prefix(tree: ast.Module) -> str:
+    """Find `APIRouter(prefix=...)` in module-level assignments.
+
+    Returns the prefix string (e.g., '/files', '/import') or '' if the
+    file's router is mounted at the root. Catches the case where the
+    operation verb lives on the prefix and the decorator path is empty
+    (CASE-335 Angle C).
+    """
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        # router = APIRouter(prefix='/files', ...)
+        if isinstance(func, ast.Name) and func.id == "APIRouter":
+            for kw in node.value.keywords:
+                if kw.arg == "prefix" and isinstance(kw.value, ast.Constant):
+                    return kw.value.value
+    return ""
+
+
 class EndpointVisitor(ast.NodeVisitor):
     """AST visitor that extracts FastAPI endpoint definitions."""
 
-    def __init__(self, filepath: str):
+    def __init__(self, filepath: str, router_prefix: str = ""):
         self.filepath = filepath
+        self.router_prefix = router_prefix
         self.violations = []
         self.endpoints = []
 
@@ -84,17 +149,24 @@ class EndpointVisitor(ast.NodeVisitor):
 
         # Extract path from first positional arg
         path = ""
-        if decorator.args:
-            if isinstance(decorator.args[0], ast.Constant):
-                path = decorator.args[0].value
+        if decorator.args and isinstance(decorator.args[0], ast.Constant):
+            path = decorator.args[0].value
 
         return method, path
 
     def _check_write_endpoint(self, node, info):
-        """Check that write endpoints follow bulk-first convention."""
+        """Check that write endpoints follow bulk-first convention.
+
+        Exemption order (CASE-335 Angle B + C):
+          1. Singleton DELETE-by-ID: DELETE with a path parameter (`{...}`)
+             is by definition a single-target operation. No bulk shape applies.
+          2. Function-name pattern: `upload_*`, `import_*`, `start_*`,
+             `pause_*`, `resume_*`, `cancel_*` are inherently non-bulk.
+          3. One-off `EXEMPT_FUNCTIONS` entries (e.g., `create_api_key`).
+          4. Path-substring against the full route (router prefix + path).
+        """
         # Check for List[...] in parameters (via type annotation)
         has_list_body = False
-        has_bulk_response = False
 
         for arg in node.args.args:
             annotation = arg.annotation
@@ -110,29 +182,35 @@ class EndpointVisitor(ast.NodeVisitor):
         if node.returns:
             ret_str = ast.dump(node.returns)
             if "BulkResponse" in ret_str or "Bulk" in ret_str:
-                has_bulk_response = True
+                pass
             # Also accept dict return (common in FastAPI)
             elif "dict" in ret_str:
-                has_bulk_response = True  # Can't statically verify dict contents
+                pass  # Can't statically verify dict contents
 
-        # Some endpoints are exempt (e.g., /activate, /import, health checks)
-        exempt_patterns = [
-            "/activate", "/import", "/export", "/health", "/initialize",
-            "/reactivate", "/hard", "/validate", "/search",
-            "/query", "/preview", "/provision", "/upload",
-            "/restore", "/archive", "/cascade",
-            "/start", "/pause", "/resume",  # replay control endpoints
-        ]
+        method = info.get("method", "")
         path = info.get("path", "")
-        is_exempt = any(p in path for p in exempt_patterns)
+        full_path = self.router_prefix + path
+        func_name = info.get("function", "")
 
-        if not is_exempt:
-            if not has_list_body:
-                self.violations.append({
-                    **info,
-                    "rule": "bulk-first-request",
-                    "message": f"{info['method'].upper()} {path}: write endpoint should accept List[...] body",
-                })
+        # 1. Singleton DELETE-by-ID — path parameter present.
+        if method == "delete" and "{" in path:
+            return
+        # 2. Function-name patterns.
+        if any(pat.match(func_name) for pat in EXEMPT_FUNCTION_PATTERNS):
+            return
+        # 3. One-off function exemptions.
+        if func_name in EXEMPT_FUNCTIONS:
+            return
+        # 4. Path-substring against the full route.
+        if any(p in full_path for p in EXEMPT_PATH_PATTERNS):
+            return
+
+        if not has_list_body:
+            self.violations.append({
+                **info,
+                "rule": "bulk-first-request",
+                "message": f"{info['method'].upper()} {path}: write endpoint should accept List[...] body",
+            })
 
     def _check_get_endpoint(self, node, info):
         """Check that GET list endpoints have pagination parameters."""
@@ -156,29 +234,35 @@ class EndpointVisitor(ast.NodeVisitor):
         exempt_patterns = ["/health", "/stats", "/count"]
         is_exempt = any(p in path for p in exempt_patterns)
 
-        if not is_exempt and not (has_page and has_page_size):
-            # Only flag if the endpoint looks like a list endpoint
-            # (heuristic: root path "/" or path without ID params)
-            if path in ("", "/", "/{namespace}") or path.endswith("/"):
-                self.violations.append({
-                    **info,
-                    "rule": "pagination-params",
-                    "message": f"GET {path}: list endpoint missing page/page_size parameters",
-                })
+        # Only flag list-shaped endpoints (root path "/" or "" or
+        # /{namespace}) without page/page_size params.
+        looks_like_list = path in ("", "/", "/{namespace}") or path.endswith("/")
+        if (
+            not is_exempt
+            and not (has_page and has_page_size)
+            and looks_like_list
+        ):
+            self.violations.append({
+                **info,
+                "rule": "pagination-params",
+                "message": f"GET {path}: list endpoint missing page/page_size parameters",
+            })
 
         # Check page_size defaults
         for arg in node.args.args + node.args.kwonlyargs:
-            if arg.arg == "page_size":
-                # Check default value
-                defaults = node.args.defaults + node.args.kw_defaults
-                for default in defaults:
-                    if isinstance(default, ast.Constant) and arg.arg == "page_size":
-                        if default.value != 50:
-                            self.violations.append({
-                                **info,
-                                "rule": "page-size-default",
-                                "message": f"GET {path}: page_size default should be 50, got {default.value}",
-                            })
+            if arg.arg != "page_size":
+                continue
+            defaults = node.args.defaults + node.args.kw_defaults
+            for default in defaults:
+                if (
+                    isinstance(default, ast.Constant)
+                    and default.value != 50
+                ):
+                    self.violations.append({
+                        **info,
+                        "rule": "page-size-default",
+                        "message": f"GET {path}: page_size default should be 50, got {default.value}",
+                    })
 
 
 def check_file(filepath: Path) -> dict:
@@ -189,7 +273,8 @@ def check_file(filepath: Path) -> dict:
     except (SyntaxError, UnicodeDecodeError) as e:
         return {"file": str(filepath), "error": str(e), "violations": [], "endpoints": []}
 
-    visitor = EndpointVisitor(str(filepath))
+    router_prefix = _extract_router_prefix(tree)
+    visitor = EndpointVisitor(str(filepath), router_prefix=router_prefix)
     visitor.visit(tree)
 
     return {
