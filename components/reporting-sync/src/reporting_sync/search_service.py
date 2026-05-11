@@ -6,6 +6,7 @@ Provides unified search across all WIP services and reverse lookups.
 
 import asyncio
 import logging
+import math
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -52,22 +53,69 @@ class SearchResult(BaseModel):
     )
 
 
+class SearchTypeResults(BaseModel):
+    """Per-type paginated bucket (CASE-329).
+
+    Each entity type the search visited gets its own envelope so consumers
+    can paginate per type (e.g., "give me page 2 of document hits without
+    re-fetching the terminology hits"). Mirrors the platform-wide
+    pagination envelope — see `wip://conventions`.
+    """
+
+    items: list[SearchResult] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 50
+    pages: int = 0
+
+
 class SearchResponse(BaseModel):
-    """Response from unified search."""
+    """Response from unified search.
+
+    Post-CASE-329 the response groups results per entity type, each with
+    its own pagination envelope (see `SearchTypeResults`). The legacy
+    flat `results: list` + `counts: dict` shape was removed at the same
+    time. Consumers wanting "all hits across types" iterate the values
+    of `results`.
+    """
 
     query: str
-    results: list[SearchResult] = Field(default_factory=list)
-    counts: dict[str, int] = Field(default_factory=dict)
-    total: int = 0
+    mode: str | None = Field(
+        None,
+        description=(
+            "Echo of the document-search mode used ('auto', 'fts', or "
+            "'substring'). Informational only."
+        ),
+    )
+    results: dict[str, SearchTypeResults] = Field(
+        default_factory=dict,
+        description=(
+            "Per-type paginated buckets keyed by entity type "
+            "('terminology', 'term', 'template', 'document', 'file'). "
+            "Only types the search visited appear here."
+        ),
+    )
+    total: int = Field(
+        0,
+        description="Total hits across all types (sum of per-type totals).",
+    )
 
 
 class SearchRequest(StrictModel):
-    """Request for unified search."""
+    """Request for unified search.
+
+    Pagination follows the platform-wide convention — see
+    `wip://conventions` (page/page_size with max 100 per page). Each
+    entity type the search visits is paginated independently; the same
+    `page`/`page_size` is applied to every type. The legacy `limit`
+    parameter is accepted as a deprecation-window alias for `page_size`
+    (CASE-329) — set either `limit` OR `page_size`, never both.
+    """
 
     query: str = Field(..., min_length=1, description="Search string")
     types: list[str] | None = Field(
         None,
-        description="Entity types to search: terminology, term, template, document"
+        description="Entity types to search: terminology, term, template, document, file"
     )
     namespace: str | None = Field(None, description="Filter by namespace")
     status: str | None = Field(None, description="Filter by status")
@@ -103,14 +151,29 @@ class SearchRequest(StrictModel):
             "matched terms with <b>...</b>. 'text' returns plain text."
         ),
     )
-    limit: int = Field(
+    page: int = Field(
+        1,
+        ge=1,
+        description="Page number (1-indexed). See `wip://conventions`.",
+    )
+    page_size: int = Field(
         50,
         ge=1,
         le=100,
         description=(
-            "Max results per type (cap aligns with platform pagination max — "
-            "see wip://conventions). For broader recall use refined queries; "
-            "for full enumeration use the paginated query endpoints."
+            "Items per type, capped at 100 to align with the platform-wide "
+            "pagination max (see `wip://conventions`). For broader recall "
+            "use a refined query; for full enumeration use the paginated "
+            "query endpoints (e.g., query_documents)."
+        ),
+    )
+    limit: int | None = Field(
+        None,
+        ge=1,
+        le=100,
+        description=(
+            "DEPRECATED (CASE-329): alias for `page_size` when `page` is 1. "
+            "Pass `page_size` instead. Will be removed in a future release."
         ),
     )
 
@@ -223,6 +286,24 @@ class ReferencedByResponse(BaseModel):
 # SEARCH SERVICE
 # =============================================================================
 
+# Per-type ceiling on results held in memory. CASE-329 chose per-type
+# pagination as the platform-conformant shape; a hard cap keeps the
+# memory cost bounded and tells consumers when a query is too broad to
+# enumerate fully. Anything above this cap returns `total = MAX` with
+# pagination over the first MAX hits — refine the query for more.
+MAX_RESULTS_PER_TYPE = 1000
+
+
+def _paginate(
+    items: list["SearchResult"], page: int, page_size: int
+) -> tuple[list["SearchResult"], int]:
+    """Slice a sorted list of hits into a (page items, total pages) pair."""
+    total = len(items)
+    start = (page - 1) * page_size
+    end = start + page_size
+    pages = math.ceil(total / page_size) if total > 0 else 0
+    return items[start:end], pages
+
 
 class SearchService:
     """Service for unified search and activity tracking."""
@@ -230,53 +311,15 @@ class SearchService:
     def __init__(self, postgres_pool: asyncpg.Pool | None = None):
         self.postgres_pool = postgres_pool
 
-    async def search(self, request: SearchRequest) -> SearchResponse:
+    @staticmethod
+    def _sort_by_relevance(
+        items: list[SearchResult], query_lower: str
+    ) -> list[SearchResult]:
+        """Sort a per-type result bucket: exact value > exact id > substring > other.
+
+        Preserves the global relevance ranking the pre-CASE-329 cross-type
+        sort applied — just scoped to one type at a time now.
         """
-        Search across all entity types.
-
-        Queries each service in parallel and aggregates results.
-        """
-        query = request.query.strip()
-        types = request.types or ["terminology", "term", "template", "document", "file"]
-        namespace = request.namespace
-        status = request.status
-        limit = request.limit
-
-        # Run searches in parallel
-        tasks = []
-        if "terminology" in types:
-            tasks.append(("terminology", self._search_terminologies(query, namespace, status, limit)))
-        if "term" in types:
-            tasks.append(("term", self._search_terms(query, namespace, status, limit)))
-        if "template" in types:
-            tasks.append(("template", self._search_templates(query, namespace, status, limit)))
-        if "document" in types:
-            tasks.append(("document", self._search_documents(
-                query, namespace, status, limit,
-                template=request.template,
-                mode=request.mode,
-                include_inactive=request.include_inactive,
-                snippet_format=request.snippet_format,
-            )))
-        if "file" in types:
-            tasks.append(("file", self._search_files(query, namespace, status, limit)))
-
-        # Gather results
-        all_results: list[SearchResult] = []
-        counts: dict[str, int] = {}
-
-        results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
-
-        for (entity_type, _), result in zip(tasks, results):
-            if isinstance(result, Exception):
-                logger.error(f"Search failed for {entity_type}: {result}")
-                counts[entity_type] = 0
-            else:
-                all_results.extend(result)
-                counts[entity_type] = len(result)
-
-        # Sort by relevance (exact matches first, then by updated_at).
-        # Normalize updated_at to UTC-aware to avoid naive/aware comparison errors.
         _epoch = datetime.min.replace(tzinfo=UTC)
 
         def _sort_dt(dt: datetime | None) -> datetime:
@@ -286,53 +329,128 @@ class SearchService:
                 return dt.replace(tzinfo=UTC)
             return dt
 
-        query_lower = query.lower()
-        all_results.sort(
+        items_sorted = sorted(
+            items,
             key=lambda r: (
                 0 if r.value and r.value.lower() == query_lower else
-                1 if r.id.lower() == query_lower else
+                1 if r.id and r.id.lower() == query_lower else
                 2 if r.value and query_lower in r.value.lower() else
                 3,
-                _sort_dt(r.updated_at),
+                # Negate timestamp so newer items rise within each tier.
+                -_sort_dt(r.updated_at).timestamp(),
             ),
-            reverse=False  # Lower score = better match
         )
+        return items_sorted
+
+    async def search(self, request: SearchRequest) -> SearchResponse:
+        """Search across all entity types with per-type pagination (CASE-329).
+
+        Each entity type returns its own paginated envelope keyed by
+        type ('terminology', 'term', 'template', 'document', 'file').
+        Pagination follows the platform-wide convention — see
+        `wip://conventions`.
+        """
+        query = request.query.strip()
+        types = request.types or ["terminology", "term", "template", "document", "file"]
+        namespace = request.namespace
+        status = request.status
+        page = request.page
+        # CASE-329 deprecation alias: when `limit` is set and `page_size`
+        # is left at default, treat `limit` as the page_size for the
+        # current page. Remove the alias in a future release.
+        page_size = request.page_size
+        if request.limit is not None and request.page_size == 50:
+            page_size = request.limit
+
+        # Run searches in parallel. Each search returns the FULL matching
+        # set (capped at MAX_RESULTS_PER_TYPE) so the orchestrator can
+        # compute accurate per-type totals and slice the requested page.
+        tasks = []
+        if "terminology" in types:
+            tasks.append(("terminology", self._search_terminologies(query, namespace, status)))
+        if "term" in types:
+            tasks.append(("term", self._search_terms(query, namespace, status)))
+        if "template" in types:
+            tasks.append(("template", self._search_templates(query, namespace, status)))
+        if "document" in types:
+            tasks.append(("document", self._search_documents(
+                query, namespace, status,
+                template=request.template,
+                mode=request.mode,
+                include_inactive=request.include_inactive,
+                snippet_format=request.snippet_format,
+            )))
+        if "file" in types:
+            tasks.append(("file", self._search_files(query, namespace, status)))
+
+        gathered = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
+
+        results: dict[str, SearchTypeResults] = {}
+        cross_total = 0
+        for (entity_type, _), result in zip(tasks, gathered, strict=False):
+            if isinstance(result, Exception):
+                logger.error(f"Search failed for {entity_type}: {result}")
+                results[entity_type] = SearchTypeResults(
+                    items=[], total=0, page=page, page_size=page_size, pages=0,
+                )
+                continue
+            items = result
+            page_items, pages = _paginate(items, page, page_size)
+            total = len(items)
+            cross_total += total
+            results[entity_type] = SearchTypeResults(
+                items=page_items,
+                total=total,
+                page=page,
+                page_size=page_size,
+                pages=pages,
+            )
 
         return SearchResponse(
             query=query,
-            results=all_results[:limit * 2],  # Cap total results
-            counts=counts,
-            total=sum(counts.values())
+            mode=request.mode,
+            results=results,
+            total=cross_total,
         )
 
     async def _search_terminologies(
-        self, query: str, namespace: str | None, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None,
     ) -> list[SearchResult]:
-        """Search terminologies in Def-Store."""
+        """Search terminologies in Def-Store.
+
+        Returns ALL matching items sorted by relevance (CASE-329). The
+        orchestrator slices for the requested page. Capped at
+        MAX_RESULTS_PER_TYPE.
+        """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Fetch more items than limit to search through, then filter
-                params: dict[str, Any] = {"page_size": 100}
-                if namespace:
-                    params["namespace"] = namespace
-                if status:
-                    params["status"] = status
+                # Page through def-store until exhausted or cap hit.
+                page = 1
+                all_items: list[dict[str, Any]] = []
+                while True:
+                    params: dict[str, Any] = {"page_size": 100, "page": page}
+                    if namespace:
+                        params["namespace"] = namespace
+                    if status:
+                        params["status"] = status
 
-                response = await client.get(
-                    f"{settings.def_store_url}/api/def-store/terminologies",
-                    params=params,
-                    headers={"X-API-Key": settings.api_key}
-                )
+                    response = await client.get(
+                        f"{settings.def_store_url}/api/def-store/terminologies",
+                        params=params,
+                        headers={"X-API-Key": settings.api_key}
+                    )
+                    if response.status_code != 200:
+                        return []
+                    data = response.json()
+                    batch = data.get("items", [])
+                    all_items.extend(batch)
+                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
+                        break
+                    page += 1
 
-                if response.status_code != 200:
-                    return []
-
-                data = response.json()
                 results = []
                 query_lower = query.lower()
-
-                for item in data.get("items", []):
-                    # Filter by query
+                for item in all_items:
                     if (query_lower in item.get("value", "").lower() or
                         query_lower in item.get("label", "").lower() or
                         query_lower in item.get("terminology_id", "").lower()):
@@ -346,20 +464,22 @@ class SearchService:
                             updated_at=self._parse_datetime(item.get("updated_at"))
                         ))
 
-                return results[:limit]
+                results = self._sort_by_relevance(results, query_lower)
+                return results[:MAX_RESULTS_PER_TYPE]
         except Exception as e:
             logger.error(f"Terminology search failed: {e}")
             return []
 
     async def _search_terms(
-        self, query: str, namespace: str | None, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None,
     ) -> list[SearchResult]:
-        """Search terms across all terminologies."""
-        # First get all terminologies, then search terms in each
-        # This is not ideal for large datasets, but works for now
+        """Search terms across all terminologies.
+
+        Returns ALL matching items sorted by relevance (CASE-329).
+        Capped at MAX_RESULTS_PER_TYPE; the orchestrator slices.
+        """
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Get terminologies first
                 term_params: dict[str, Any] = {"status": "active", "page_size": 100}
                 if namespace:
                     term_params["namespace"] = namespace
@@ -376,8 +496,10 @@ class SearchService:
                 results = []
                 query_lower = query.lower()
 
-                # Search terms in each terminology (limit parallel requests)
-                for terminology in terminologies[:20]:  # Limit to 20 terminologies
+                # Search terms in each terminology. Cap on terminologies
+                # iterated stays at 20 to keep tail latency bounded; cap
+                # on returned results uses MAX_RESULTS_PER_TYPE.
+                for terminology in terminologies[:20]:
                     term_id = terminology.get("terminology_id")
                     params = {"page_size": 100}
                     if status:
@@ -393,7 +515,6 @@ class SearchService:
                         continue
 
                     for term in terms_response.json().get("items", []):
-                        # Filter by query
                         if (query_lower in term.get("value", "").lower() or
                             query_lower in term.get("label", "").lower() or
                             query_lower in term.get("term_id", "").lower() or
@@ -408,42 +529,53 @@ class SearchService:
                                 updated_at=self._parse_datetime(term.get("updated_at"))
                             ))
 
-                    if len(results) >= limit:
+                    if len(results) >= MAX_RESULTS_PER_TYPE:
                         break
 
-                return results[:limit]
+                results = self._sort_by_relevance(results, query_lower)
+                return results[:MAX_RESULTS_PER_TYPE]
         except Exception as e:
             logger.error(f"Term search failed: {e}")
             return []
 
     async def _search_templates(
-        self, query: str, namespace: str | None, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None,
     ) -> list[SearchResult]:
-        """Search templates in Template Store."""
+        """Search templates in Template Store.
+
+        Returns ALL matching items sorted by relevance (CASE-329).
+        Capped at MAX_RESULTS_PER_TYPE.
+        """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Fetch more items than limit to search through, then filter
-                params: dict[str, Any] = {"page_size": 100, "latest_only": True}
-                if namespace:
-                    params["namespace"] = namespace
-                if status:
-                    params["status"] = status
+                page = 1
+                all_items: list[dict[str, Any]] = []
+                while True:
+                    params: dict[str, Any] = {
+                        "page_size": 100, "page": page, "latest_only": True,
+                    }
+                    if namespace:
+                        params["namespace"] = namespace
+                    if status:
+                        params["status"] = status
 
-                response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates",
-                    params=params,
-                    headers={"X-API-Key": settings.api_key}
-                )
+                    response = await client.get(
+                        f"{settings.template_store_url}/api/template-store/templates",
+                        params=params,
+                        headers={"X-API-Key": settings.api_key}
+                    )
+                    if response.status_code != 200:
+                        return []
+                    data = response.json()
+                    batch = data.get("items", [])
+                    all_items.extend(batch)
+                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
+                        break
+                    page += 1
 
-                if response.status_code != 200:
-                    return []
-
-                data = response.json()
                 results = []
                 query_lower = query.lower()
-
-                for item in data.get("items", []):
-                    # Filter by query
+                for item in all_items:
                     if (query_lower in item.get("value", "").lower() or
                         query_lower in item.get("label", "").lower() or
                         query_lower in item.get("template_id", "").lower()):
@@ -457,7 +589,8 @@ class SearchService:
                             updated_at=self._parse_datetime(item.get("updated_at"))
                         ))
 
-                return results[:limit]
+                results = self._sort_by_relevance(results, query_lower)
+                return results[:MAX_RESULTS_PER_TYPE]
         except Exception as e:
             logger.error(f"Template search failed: {e}")
             return []
@@ -467,7 +600,6 @@ class SearchService:
         query: str,
         namespace: str | None,
         status: str | None,
-        limit: int,
         *,
         template: str | None = None,
         mode: str = "auto",
@@ -485,10 +617,16 @@ class SearchService:
         Inactive filter: WHERE status='active' is the default — aligns
         with PoNIF #1. Pass include_inactive=True to disable.
 
-        Falls back to the REST API scan if PostgreSQL is unavailable.
+        Returns ALL FTS+substring hits across doc_* tables sorted by
+        score (CASE-329). The orchestrator slices to the requested page;
+        per-table queries are capped at MAX_RESULTS_PER_TYPE so a single
+        bad table can't blow memory. Falls back to the REST API scan if
+        PostgreSQL is unavailable.
         """
         if not self.postgres_pool:
-            return await self._search_documents_rest_fallback(query, namespace, status, limit)
+            return await self._search_documents_rest_fallback(
+                query, namespace, status, MAX_RESULTS_PER_TYPE,
+            )
 
         try:
             async with self.postgres_pool.acquire() as conn:
@@ -521,10 +659,10 @@ class SearchService:
                 results: list[SearchResult] = []
 
                 for tbl_row in tables:
-                    if len(results) >= limit:
+                    if len(results) >= MAX_RESULTS_PER_TYPE:
                         break
                     tname = tbl_row["table_name"]
-                    remaining = limit - len(results)
+                    remaining = MAX_RESULTS_PER_TYPE - len(results)
 
                     # Discover columns once per table.
                     all_cols_rows = await conn.fetch(
@@ -599,11 +737,13 @@ class SearchService:
                         -(r.score or 0.0),
                     )
                 )
-                return results
+                return results[:MAX_RESULTS_PER_TYPE]
 
         except Exception as e:
             logger.error(f"PostgreSQL document search failed: {e}")
-            return await self._search_documents_rest_fallback(query, namespace, status, limit)
+            return await self._search_documents_rest_fallback(
+                query, namespace, status, MAX_RESULTS_PER_TYPE,
+            )
 
     async def _fts_query(
         self,
@@ -791,7 +931,7 @@ class SearchService:
 
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
-        for (entity_type, _), result in zip(tasks, results):
+        for (entity_type, _), result in zip(tasks, results, strict=False):
             if isinstance(result, Exception):
                 logger.error(f"Activity fetch failed for {entity_type}: {result}")
             else:
@@ -1531,31 +1671,41 @@ class SearchService:
             )
 
     async def _search_files(
-        self, query: str, namespace: str | None, status: str | None, limit: int
+        self, query: str, namespace: str | None, status: str | None,
     ) -> list[SearchResult]:
-        """Search files in Document Store."""
+        """Search files in Document Store.
+
+        Returns ALL matching items sorted by relevance (CASE-329).
+        Capped at MAX_RESULTS_PER_TYPE.
+        """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                params: dict[str, Any] = {"page_size": 100}
-                if namespace:
-                    params["namespace"] = namespace
-                if status:
-                    params["status"] = status
+                page = 1
+                all_items: list[dict[str, Any]] = []
+                while True:
+                    params: dict[str, Any] = {"page_size": 100, "page": page}
+                    if namespace:
+                        params["namespace"] = namespace
+                    if status:
+                        params["status"] = status
 
-                response = await client.get(
-                    f"{settings.document_store_url}/api/document-store/files",
-                    params=params,
-                    headers={"X-API-Key": settings.api_key}
-                )
+                    response = await client.get(
+                        f"{settings.document_store_url}/api/document-store/files",
+                        params=params,
+                        headers={"X-API-Key": settings.api_key}
+                    )
+                    if response.status_code != 200:
+                        return []
+                    data = response.json()
+                    batch = data.get("items", [])
+                    all_items.extend(batch)
+                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
+                        break
+                    page += 1
 
-                if response.status_code != 200:
-                    return []
-
-                data = response.json()
                 results = []
                 query_lower = query.lower()
-
-                for item in data.get("items", []):
+                for item in all_items:
                     file_id = item.get("file_id", "")
                     filename = item.get("filename", "")
                     metadata = item.get("metadata", {})
@@ -1578,7 +1728,8 @@ class SearchService:
                             updated_at=self._parse_datetime(item.get("updated_at") or item.get("uploaded_at"))
                         ))
 
-                return results[:limit]
+                results = self._sort_by_relevance(results, query_lower)
+                return results[:MAX_RESULTS_PER_TYPE]
         except Exception as e:
             logger.error(f"File search failed: {e}")
             return []
@@ -1943,7 +2094,7 @@ class SearchService:
                     for field in t.get("fields", []):
                         # Check terminology_ref (could be ID or value)
                         term_ref = field.get("terminology_ref")
-                        if term_ref and (term_ref == terminology_id or term_ref == terminology_value):
+                        if term_ref and (term_ref in (terminology_id, terminology_value)):
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),
@@ -1955,7 +2106,7 @@ class SearchService:
                             ))
                         # Check array_terminology_ref
                         array_term_ref = field.get("array_terminology_ref")
-                        if array_term_ref and (array_term_ref == terminology_id or array_term_ref == terminology_value):
+                        if array_term_ref and (array_term_ref in (terminology_id, terminology_value)):
                             references.append(IncomingReference(
                                 entity_type="template",
                                 entity_id=t.get("template_id"),

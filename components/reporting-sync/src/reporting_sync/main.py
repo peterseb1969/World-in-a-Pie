@@ -1070,21 +1070,24 @@ async def aggregated_integrity_check(
 
 @router.post("/search", response_model=SearchResponse)
 async def unified_search(request: SearchRequest) -> SearchResponse:
-    """
-    Unified search across all WIP entity types.
+    """Unified search across all WIP entity types with per-type pagination.
 
-    Searches terminologies, terms, templates, and documents in parallel.
-    Results are sorted by relevance (exact matches first).
+    Searches terminologies, terms, templates, documents, and files in
+    parallel. Each entity type returns its own pagination envelope
+    (CASE-329) — see `wip://conventions` for the platform pagination
+    contract.
 
     Args:
         request: Search parameters
             - query: Search string (required)
             - types: Entity types to search (optional, defaults to all)
             - status: Filter by status (optional)
-            - limit: Max results per type (1-100, default 50)
+            - page: Page number (default 1)
+            - page_size: Items per type (default 50, max 100)
+            - limit: DEPRECATED alias for page_size when page=1
 
     Returns:
-        SearchResponse with results grouped by type and total counts
+        SearchResponse with per-type paginated buckets keyed by entity type.
     """
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
