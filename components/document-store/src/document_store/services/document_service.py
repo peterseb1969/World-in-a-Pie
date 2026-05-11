@@ -1179,6 +1179,30 @@ class DocumentService:
                 ns_permission_cache[ns] = await resolve_permission(identity, ns)
             return permission_sufficient(ns_permission_cache[ns], "read")
 
+        # Template-aware header_fields lookup (CASE-343).
+        # Collect unique peer template_ids, fetch each template once, cache
+        # the projection-paths list per template_id. Falls back to
+        # identity_fields when header_fields is empty/unset, then to the
+        # legacy {title, doc_status} pair when both are empty (preserves
+        # CASE-303's compact-default for legacy templates).
+        peer_template_ids: set[str] = {
+            doc.template_id for doc in peer_lookup.values() if doc.template_id
+        }
+        template_client = get_template_store_client()
+        projection_paths_by_tid: dict[str, list[str]] = {}
+        for tid in peer_template_ids:
+            try:
+                tpl = await template_client.get_template(template_id=tid)
+            except Exception:
+                tpl = None
+            if not tpl:
+                projection_paths_by_tid[tid] = ["title", "doc_status"]
+                continue
+            paths = tpl.get("header_fields") or tpl.get("identity_fields") or []
+            if not paths:
+                paths = ["title", "doc_status"]
+            projection_paths_by_tid[tid] = list(paths)
+
         for item in items:
             data = item.data or {}
             source_ref = data.get("source_ref")
@@ -1203,13 +1227,38 @@ class DocumentService:
                 )
                 continue
 
-            # Compact projection — title and doc_status when present.
+            # Template-declared projection (CASE-343).
+            # Bare names target peer.data; "metadata.custom.<name>" paths
+            # target peer.metadata.custom. Missing fields are silently
+            # skipped (no error). Applied uniformly to entity templates
+            # and edge types — both can declare header_fields.
             peer_data = peer_doc.data or {}
+            peer_metadata = peer_doc.metadata or {}
+            peer_metadata_custom = (
+                peer_metadata.get("custom", {})
+                if isinstance(peer_metadata, dict)
+                else getattr(peer_metadata, "custom", {}) or {}
+            )
             projected_data: dict[str, Any] = {}
-            if "title" in peer_data:
-                projected_data["title"] = peer_data["title"]
-            if "doc_status" in peer_data:
-                projected_data["doc_status"] = peer_data["doc_status"]
+            projected_metadata_custom: dict[str, Any] = {}
+            paths = projection_paths_by_tid.get(
+                peer_doc.template_id, ["title", "doc_status"]
+            )
+            for path in paths:
+                if path.startswith("metadata.custom."):
+                    key = path[len("metadata.custom."):]
+                    if key in peer_metadata_custom:
+                        projected_metadata_custom[key] = peer_metadata_custom[key]
+                elif "." in path:
+                    # Other metadata.* paths or nested data paths — out of
+                    # scope for v1; skip silently. Future: dotted traversal.
+                    continue
+                elif path in peer_data:
+                    projected_data[path] = peer_data[path]
+
+            projected_metadata: dict[str, Any] | None = None
+            if projected_metadata_custom:
+                projected_metadata = {"custom": projected_metadata_custom}
 
             item.peer = PeerProjection(
                 document_id=peer_doc.document_id,
@@ -1218,6 +1267,7 @@ class DocumentService:
                 template_value=peer_doc.template_value,
                 status=peer_doc.status,
                 data=projected_data,
+                metadata=projected_metadata,
             )
 
     async def traverse_relationships(

@@ -155,7 +155,7 @@ class DocumentListResponse(BaseModel):
 # ============================================================================
 
 class PeerProjection(BaseModel):
-    """Compact projection of a peer entity document for ?include=peers (CASE-303).
+    """Compact projection of a peer entity document for ?include=peers (CASE-303, extended CASE-343).
 
     The relationships endpoint returns edge documents (relationship templates).
     When ?include=peers is set, each item gains a peer field carrying the
@@ -163,9 +163,12 @@ class PeerProjection(BaseModel):
     version, projected down to the at-a-glance fields needed to render a
     relationship sidebar without an N+1 fetch.
 
-    Hardcoded field set in v1: title, doc_status. Future: extend via a
-    template-side header_fields declaration once the templates-as-projection-
-    authority convention is settled (out of scope for this case).
+    Field set is determined by the peer template's `header_fields`
+    declaration (CASE-343), falling back to `identity_fields`, and finally
+    to {title, doc_status} for templates with neither. `header_fields`
+    may reference data paths (bare names → data.<name>) or audit paths
+    (metadata.custom.<name>), so both `data` and `metadata` are surfaced
+    on the projection.
     """
 
     document_id: str
@@ -175,7 +178,17 @@ class PeerProjection(BaseModel):
     status: DocumentStatus
     data: dict[str, Any] = Field(
         default_factory=dict,
-        description="Compact projection — title and doc_status when present on the peer."
+        description=(
+            "Projected data fields from the peer doc — populated per the "
+            "peer template's header_fields (or identity_fields fallback)."
+        )
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Projected metadata fields. Only populated when the peer "
+            "template's header_fields references metadata.custom.<name> paths."
+        )
     )
 
 
