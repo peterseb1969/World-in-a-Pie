@@ -232,7 +232,17 @@ Rename the file: `CASE-<NN>-open-<slug>.md` → `CASE-<NN>-responded-<slug>.md`
 mv yac-discussions/CASE-<NN>-open-<slug>.md yac-discussions/CASE-<NN>-responded-<slug>.md
 ```
 
-### 4. Confirm
+### 4. Mirror to wip-kb
+
+Re-run the loader to refresh the kb record body (idempotent — updates the existing CASE_RECORD via JSON Merge Patch, no duplicates):
+
+```bash
+python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-responded-<slug>.md
+```
+
+This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+
+### 5. Confirm
 
 Tell Peter what you responded and the case number.
 
@@ -264,7 +274,17 @@ Append to the case file:
 
 If the user provided text with the command (e.g., `/case comment 3 This is urgent`), use that as the comment body. Otherwise, infer from the current conversation context.
 
-### 4. Confirm
+### 4. Mirror to wip-kb
+
+Re-run the loader to refresh the kb record body (idempotent — comments don't change status, but the appended body must propagate to kb):
+
+```bash
+python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-*.md
+```
+
+This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+
+### 5. Confirm
 
 Tell Peter the comment was added.
 
@@ -292,7 +312,17 @@ Change `status:` to `status: closed` in the frontmatter.
 
 Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-closed-<slug>.md`
 
-### 4. Confirm
+### 4. Mirror to wip-kb
+
+Re-run the loader to refresh the kb record body and status:
+
+```bash
+python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-closed-<slug>.md
+```
+
+This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+
+### 5. Confirm
 
 Tell Peter the case is closed and why.
 
@@ -350,7 +380,17 @@ Applied N of M proposed changes. <Note any skipped changes and why.>
 
 Rename: `CASE-<NN>-<old-status>-<slug>.md` → `CASE-<NN>-implemented-<slug>.md`
 
-### 6. Confirm
+### 6. Mirror to wip-kb
+
+Re-run the loader to refresh the kb record body and status:
+
+```bash
+python3 ../FR-YAC/tools/add-to-kb.py yac-discussions/CASE-<NN>-implemented-<slug>.md
+```
+
+This step is **not optional** — without it, the kb body drifts from the flat-file source. CASE-307 names the design.
+
+### 7. Confirm
 
 Tell Peter the case is implemented. Do NOT commit — Peter decides when to commit.
 
