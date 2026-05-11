@@ -5,9 +5,10 @@ Runtime API keys are stored in MongoDB and managed here. Config-file keys
 """
 
 import logging
+import math
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import (
     APIKeyProvider,
@@ -18,8 +19,9 @@ from wip_auth import (
 )
 
 from ..models.api_key import (
-    APIKeyCreateRequest,
     APIKeyCreatedResponse,
+    APIKeyCreateRequest,
+    APIKeyListResponse,
     APIKeyResponse,
     APIKeySyncRecord,
     APIKeyUpdateRequest,
@@ -165,13 +167,20 @@ async def create_api_key(
 
 @router.get(
     "",
-    response_model=list[APIKeyResponse],
+    response_model=APIKeyListResponse,
     summary="List all API keys",
 )
 async def list_api_keys(
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=100, description="Items per page (max 100)"),
     _admin: str = Depends(require_admin_key),
-) -> list[APIKeyResponse]:
-    """List all API keys (config + runtime). No hashes returned."""
+) -> APIKeyListResponse:
+    """List all API keys (config + runtime) with pagination.
+
+    Pagination follows the platform-wide convention — see `wip://conventions`.
+    Results are sorted by name (deterministic) and sliced server-side.
+    No hashes returned.
+    """
     provider = _get_provider()
     results: list[APIKeyResponse] = []
 
@@ -185,7 +194,17 @@ async def list_api_keys(
     for doc in runtime_docs:
         results.append(_stored_to_response(doc))
 
-    return results
+    results.sort(key=lambda r: r.name)
+    total = len(results)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return APIKeyListResponse(
+        items=results[start:end],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
 
 
 @router.get(
