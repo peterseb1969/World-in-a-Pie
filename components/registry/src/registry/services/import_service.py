@@ -88,14 +88,29 @@ class ImportService:
             if mode == "create" and existing_ns:
                 raise ValueError(f"Namespace '{prefix}' already exists. Use mode='merge' or 'replace'.")
 
+            # Create or update namespace based on mode (CASE-344).
+            #
+            # The `prefix` field has a unique index on the Namespace collection
+            # (regardless of status), so the old "archive existing + create new"
+            # path produced a DuplicateKeyError every time replace was used.
+            # Fix: in `replace` mode, UPDATE the existing record's fields with
+            # the imported values instead of creating a new row. This preserves
+            # the unique-prefix invariant while honoring the operator's intent
+            # to overwrite namespace contents.
             if mode == "replace" and existing_ns:
-                # Archive existing data (soft delete)
-                existing_ns.status = "archived"
+                existing_ns.description = manifest.get(
+                    "description", f"Imported from {source_prefix}"
+                )
+                existing_ns.isolation_mode = manifest.get("isolation_mode", "open")
+                existing_ns.allowed_external_refs = manifest.get(
+                    "allowed_external_refs", []
+                )
+                existing_ns.id_config = manifest.get("id_config", {})
+                existing_ns.status = "active"
                 existing_ns.updated_at = datetime.now(UTC)
                 await existing_ns.save()
-
-            # Create or get namespace
-            if not existing_ns or mode == "replace":
+                namespace = existing_ns
+            elif not existing_ns:
                 namespace = Namespace(
                     prefix=prefix,
                     description=manifest.get("description", f"Imported from {source_prefix}"),
@@ -106,6 +121,7 @@ class ImportService:
                 )
                 await namespace.create()
             else:
+                # mode='merge' on existing — return the existing record
                 namespace = existing_ns
 
             # Build namespace mapping (for prefix remapping)
