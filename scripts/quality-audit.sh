@@ -44,7 +44,8 @@ for arg in "$@"; do
             echo "  --fix              Auto-fix ruff and eslint issues"
             echo "  --update-baseline  Write current counts to baseline.json"
             echo "  --install-deps     pip-install missing quality tools into the active"
-            echo "                     venv (vulture, radon, shellcheck-py), then continue."
+            echo "                     venv (vulture, radon, shellcheck-py, pytest-cov),"
+            echo "                     then continue."
             exit 0
             ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
@@ -88,19 +89,36 @@ check_tool vulture
 check_tool radon
 check_tool shellcheck
 
-if [ ${#MISSING[@]} -gt 0 ]; then
+# pytest-cov powers Step 9 (Python coverage in full mode). It's not in the
+# preflight `command -v` set because it's a pytest plugin (no binary), so we
+# detect it via `import pytest_cov`. If missing and --install-deps was passed,
+# install alongside the other tools; without --install-deps, just warn so the
+# user knows Step 9 will silently no-op. (CASE-326 follow-up — original
+# --install-deps shipped without this; the silent Step-9 failure surfaced
+# during the first full-mode run.)
+PYTEST_COV_MISSING=false
+if ! "$ROOT_DIR/.venv/bin/python" -c "import pytest_cov" 2>/dev/null; then
+    PYTEST_COV_MISSING=true
+fi
+
+if [ ${#MISSING[@]} -gt 0 ] || { [ "$INSTALL_DEPS" = true ] && [ "$PYTEST_COV_MISSING" = true ]; }; then
     if [ "$INSTALL_DEPS" = true ]; then
-        info "Installing missing quality tools into active venv: ${MISSING[*]}"
+        info "Installing missing quality tools into active venv: ${MISSING[*]:-}${PYTEST_COV_MISSING:+ pytest-cov}"
         # Map tool name → pip package. ruff/mypy/vulture/radon ship under the same
         # name; shellcheck (a C binary) is satisfied by shellcheck-py which puts
-        # a `shellcheck` shim on PATH.
+        # a `shellcheck` shim on PATH. pytest-cov is a pytest plugin.
         PIP_PKGS=()
-        for tool in "${MISSING[@]}"; do
-            case "$tool" in
-                shellcheck) PIP_PKGS+=("shellcheck-py") ;;
-                *)          PIP_PKGS+=("$tool") ;;
-            esac
-        done
+        if [ ${#MISSING[@]} -gt 0 ]; then
+            for tool in "${MISSING[@]}"; do
+                case "$tool" in
+                    shellcheck) PIP_PKGS+=("shellcheck-py") ;;
+                    *)          PIP_PKGS+=("$tool") ;;
+                esac
+            done
+        fi
+        if [ "$PYTEST_COV_MISSING" = true ]; then
+            PIP_PKGS+=("pytest-cov")
+        fi
         if ! pip install --quiet "${PIP_PKGS[@]}"; then
             fail "pip install ${PIP_PKGS[*]} failed. Install manually and re-run."
             exit 1
@@ -121,12 +139,15 @@ if [ ${#MISSING[@]} -gt 0 ]; then
         fail "Missing tools: ${MISSING[*]}"
         echo ""
         echo "Install with:"
-        echo "  pip install ruff mypy vulture radon"
+        echo "  pip install ruff mypy vulture radon pytest-cov"
         echo "  brew install shellcheck  # or: pip install shellcheck-py"
         echo ""
         echo "Or re-run with --install-deps to install them into the active venv."
         exit 1
     fi
+elif [ "$PYTEST_COV_MISSING" = true ] && ! $QUICK; then
+    warn "pytest-cov not installed — Step 9 (Python coverage) will produce no data."
+    warn "Re-run with --install-deps to install, or use --quick to skip coverage."
 fi
 
 # Check npm tools (optional — skip steps if not available)
@@ -355,31 +376,45 @@ else
 fi
 
 # ─── Step 9: pytest-cov (Python coverage) ────────────────────────────
+#
+# Delegates to wip-test.sh per component — that script handles test-container
+# provisioning (test-mongo / test-postgres / test-nats per CASE-320) AND
+# pytest invocation. Coverage flags pass through to pytest unchanged.
+# CASE-332 Fix A.
+#
+# Each per-component invocation's stderr is captured to a sidecar file so
+# Fix B (detect zero-output failures and warn loudly) and Fix C (report
+# generator distinguishes failed vs missing-plugin vs healthy) have the
+# raw failure signal to render. CASE-332 Fix B.
 if ! $QUICK; then
     info "Step 9: pytest-cov..."
     STEP_START=$(date +%s)
 
+    COVERAGE_FAILURES=()
     for component in registry def-store template-store document-store reporting-sync ingest-gateway; do
         component_dir="$ROOT_DIR/components/$component"
         if [ ! -d "$component_dir/tests" ]; then continue; fi
 
-        # Determine the Python package name (replace - with _)
         pkg_name=$(echo "$component" | tr '-' '_')
-
-        # ingest-gateway needs tests/ on PYTHONPATH for shared fixtures
-        local_pypath="src"
-        if [ "$component" = "ingest-gateway" ]; then local_pypath="src:tests"; fi
-
         info "  pytest-cov: $component..."
-        cd "$component_dir"
-        PYTHONPATH="$local_pypath" python3 -m pytest tests/ \
-            --cov="src/$pkg_name" \
-            --cov-report=json:"$RAW_DIR/pytest-cov-${component}.json" \
-            --cov-report=html:"$RAW_DIR/pytest-cov-${component}-html" \
-            -q --tb=no 2>&1 || true
-        cd "$ROOT_DIR"
+
+        # Delegate to wip-test.sh. It handles ensure_test_containers and
+        # the standard PYTHONPATH/cd shape for the component. Coverage
+        # args trail through to its pytest invocation.
+        if ! bash "$SCRIPT_DIR/wip-test.sh" "$component" \
+                --cov="src/$pkg_name" \
+                --cov-report=json:"$RAW_DIR/pytest-cov-${component}.json" \
+                --cov-report=html:"$RAW_DIR/pytest-cov-${component}-html" \
+                -q --tb=no \
+                2>"$RAW_DIR/pytest-cov-${component}.stderr"; then
+            warn "    pytest-cov $component: failed (see raw/pytest-cov-${component}.stderr)"
+            COVERAGE_FAILURES+=("$component")
+        fi
     done
 
+    if [ ${#COVERAGE_FAILURES[@]} -gt 0 ]; then
+        warn "pytest-cov: ${#COVERAGE_FAILURES[@]} of 6 components produced no coverage data: ${COVERAGE_FAILURES[*]}"
+    fi
     ok "pytest-cov complete ($(step_time $STEP_START))"
 else
     warn "Step 9: pytest-cov — skipped (--quick mode)"
@@ -390,11 +425,16 @@ if ! $QUICK && $HAS_VITEST; then
     info "Step 10: vitest coverage..."
     STEP_START=$(date +%s)
 
+    # Two reporters: `json` writes coverage-final.json (per-file detail),
+    # `json-summary` writes coverage-summary.json (aggregated totals).
+    # The report-generator reads coverage-summary.json. CASE-333.
     for lib in wip-client wip-react; do
         lib_dir="$ROOT_DIR/libs/$lib"
         if [ -d "$lib_dir" ]; then
             cd "$lib_dir"
-            npx vitest run --coverage --coverage.reporter=json \
+            npx vitest run --coverage \
+                --coverage.reporter=json \
+                --coverage.reporter=json-summary \
                 --coverage.reportsDirectory="$RAW_DIR/vitest-cov-${lib}" \
                 2>&1 || true
             cd "$ROOT_DIR"
