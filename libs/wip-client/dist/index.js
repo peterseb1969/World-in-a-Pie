@@ -1054,8 +1054,20 @@ var RegistryService = class extends BaseService {
     return this.del(`/namespaces/${prefix}/grants`, grants);
   }
   // ---- API Keys ----
-  async listAPIKeys() {
-    return this.get("/api-keys");
+  /**
+   * List API keys with pagination (CASE-335).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape is now a
+   * `PaginatedResponse<APIKeyInfo>` (envelope with `items`/`total`/`page`/
+   * `page_size`/`pages`) instead of a bare `APIKeyInfo[]`. Callers using
+   * `.map(...)` on the result must switch to `.items.map(...)`.
+   */
+  async listAPIKeys(params) {
+    const qs = new URLSearchParams();
+    if (params?.page !== void 0) qs.set("page", String(params.page));
+    if (params?.page_size !== void 0) qs.set("page_size", String(params.page_size));
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return this.get(`/api-keys${suffix}`);
   }
   async createAPIKey(request) {
     return this.post("/api-keys", request);

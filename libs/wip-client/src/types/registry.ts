@@ -285,3 +285,17 @@ export interface UpdateAPIKeyRequest {
   expires_at?: string
   enabled?: boolean
 }
+
+/**
+ * Paginated list response from `GET /api/registry/api-keys` (CASE-335).
+ * Follows the platform-wide pagination envelope (see `wip://conventions`).
+ */
+export type APIKeyListResponse = PaginatedResponse<APIKeyInfo>
+
+/** Query params for `GET /api/registry/api-keys` (CASE-335). */
+export interface ListAPIKeysParams {
+  /** Default 1. */
+  page?: number
+  /** Default 50, capped at 100. */
+  page_size?: number
+}
