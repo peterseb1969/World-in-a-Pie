@@ -144,6 +144,23 @@ class Template(Document):
         description="Fields that form the composite identity key for documents"
     )
 
+    # Peer-projection fields (CASE-343). Names of fields the platform
+    # should include when projecting this template's documents in compact
+    # "header" contexts: relationships endpoint's `?include=peers`,
+    # registry-list summaries, etc. Bare names target `data.<name>`;
+    # `metadata.custom.<name>` paths are allowed for app-defined audit
+    # fields. Empty list / None → projection falls back to identity_fields
+    # at read time (template authors who want richer projection declare
+    # explicit header_fields; identity-only templates work zero-config).
+    header_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Fields to include in peer/header projections (CASE-343). "
+            "Bare names → data.<name>; metadata.custom.<name> paths "
+            "allowed. Empty → projection falls back to identity_fields."
+        )
+    )
+
     # Usage annotation — controls validation, query APIs, and reporting
     # shape. Default 'entity' = v1.x behaviour. 'relationship' enables
     # the document-relationship feature (requires source_templates,

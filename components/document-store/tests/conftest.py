@@ -254,6 +254,56 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # --- CASE-343 header_fields fixture ---
+    # Template with explicit header_fields covering both data.* and
+    # metadata.custom.* paths. CASE_RECORD-shaped to mirror APP-KB's
+    # real schema (`case_number` in data, `case_status` in metadata.custom).
+    # Exercises the peer-projection's template-aware path including the
+    # metadata.custom.<name> branch.
+    {
+        "legacy_key": "TPL-CASE-RECORD",
+        "value": "CASE_RECORD",
+        "label": "Case Record",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["case_number"],
+        "header_fields": ["case_number", "metadata.custom.case_status"],
+        "fields": [
+            {"name": "case_number", "label": "Case number", "type": "integer", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            {"name": "doc_status", "label": "Doc status", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # --- CASE-343 relationship-edge fixture for CASE_RECORD ---
+    # An edge connecting two CASE_RECORD docs so the peer-projection path
+    # is exercised against the CASE-343 fixture.
+    {
+        "legacy_key": "TPL-REFERENCES",
+        "value": "REFERENCES",
+        "label": "References",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["CASE_RECORD"],
+        "target_templates": ["CASE_RECORD"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["CASE_RECORD"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["CASE_RECORD"],
+                "mandatory": True,
+            },
+        ],
+        "rules": [],
+    },
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.
@@ -339,6 +389,11 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
             "status": tdef["status"],
             "namespace": "wip",
             "identity_fields": tdef["identity_fields"],
+            # CASE-343 — pass through header_fields so peer-projection
+            # template-aware path resolves correctly. Defaults to [] when
+            # omitted so legacy fixtures (which don't declare it) fall
+            # through to the identity_fields fallback in projection logic.
+            "header_fields": tdef.get("header_fields", []),
             "fields": tdef["fields"],
             "rules": tdef["rules"],
             # Phase-1 fields — pass through with sensible defaults so legacy

@@ -350,3 +350,98 @@ def test_peer_projection_serialises_with_compact_data():
     assert dumped["document_id"] == "abc"
     assert dumped["data"] == {"title": "Hello"}
     assert dumped["status"] == DocumentStatus.ACTIVE
+
+
+def test_peer_projection_serialises_with_metadata():
+    """PeerProjection optional metadata field round-trips (CASE-343)."""
+    from document_store.models.api_models import PeerProjection
+    from document_store.models.document import DocumentStatus
+
+    proj = PeerProjection(
+        document_id="abc",
+        namespace="kb",
+        template_id="tpl-1",
+        template_value="CASE_RECORD",
+        status=DocumentStatus.ACTIVE,
+        data={"case_number": 343},
+        metadata={"custom": {"case_status": "open"}},
+    )
+    dumped = proj.model_dump()
+    assert dumped["data"] == {"case_number": 343}
+    assert dumped["metadata"] == {"custom": {"case_status": "open"}}
+
+
+# ============================================================================
+# CASE-343 — template-aware header_fields projection
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_relationships_include_peers_uses_header_fields(
+    client: AsyncClient, auth_headers: dict,
+):
+    """When the peer template declares header_fields, the projection
+    includes exactly those fields — both data.* and metadata.custom.*
+    paths flow through. CASE-343.
+    """
+    # Create two CASE_RECORD docs with case_number identity + metadata.custom.case_status.
+    # API convention: the top-level `metadata` field IS the custom dict
+    # (document_service wraps it as DocumentMetadata(custom=metadata)). So a
+    # CASE-343 `metadata.custom.case_status` path resolves against the flat
+    # dict passed here.
+    case1 = await _create_doc(client, auth_headers, "CASE_RECORD", {
+        "case_number": 343, "title": "Header fields", "doc_status": "active",
+    }, metadata={"case_status": "open", "noise_field": "should_be_skipped"})
+    case2 = await _create_doc(client, auth_headers, "CASE_RECORD", {
+        "case_number": 344, "title": "Replace mode fix", "doc_status": "active",
+    }, metadata={"case_status": "implemented"})
+
+    # Edge between them
+    await _create_doc(client, auth_headers, "REFERENCES", {
+        "source_ref": case1["document_id"], "target_ref": case2["document_id"],
+    })
+
+    resp = await client.get(
+        f"{API}/documents/{case1['document_id']}/relationships?include=peers",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    peer = items[0]["peer"]
+    assert peer is not None
+    assert peer["document_id"] == case2["document_id"]
+    # header_fields = ["case_number", "metadata.custom.case_status"]:
+    assert peer["data"] == {"case_number": 344}
+    assert peer["metadata"] == {"custom": {"case_status": "implemented"}}
+    # Other fields (title, doc_status, metadata.custom.noise_field) absent
+    assert "title" not in peer["data"]
+    assert "doc_status" not in peer["data"]
+
+
+@pytest.mark.asyncio
+async def test_relationships_include_peers_falls_back_to_identity_fields(
+    client: AsyncClient, auth_headers: dict,
+):
+    """When the peer template has no header_fields, the projection falls
+    back to identity_fields. MOLECULE has identity_fields=['molecule_id']
+    and no header_fields declaration → peer.data contains molecule_id.
+    CASE-343 default-to-identity_fields path.
+    """
+    exp_id, mol_id = await _seed_endpoints(client, auth_headers)
+    await _create_doc(client, auth_headers, "EXPERIMENT_INPUT", {
+        "source_ref": exp_id, "target_ref": mol_id, "role": "input",
+    })
+
+    resp = await client.get(
+        f"{API}/documents/{exp_id}/relationships?include=peers",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    peer = items[0]["peer"]
+    assert peer is not None
+    # MOLECULE's identity_fields=['molecule_id']; fallback projects it.
+    assert peer["data"] == {"molecule_id": "MOL-001"}
+    # metadata stays None when no metadata.custom.* path is in the projection set
+    assert peer.get("metadata") is None

@@ -58,6 +58,14 @@ class CreateTemplateRequest(StrictModel):
         default_factory=list,
         description="Fields that form the composite identity key"
     )
+    header_fields: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Fields to include in peer/header projections (CASE-343). "
+            "Bare names → data.<name>; metadata.custom.<name> paths allowed. "
+            "Empty → projection falls back to identity_fields."
+        )
+    )
     usage: TemplateUsage = Field(
         default=TemplateUsage.ENTITY,
         description="Usage class: entity (default), reference, or relationship. Immutable after creation."
@@ -130,6 +138,10 @@ class UpdateTemplateRequest(StrictModel):
     identity_fields: list[str] | None = Field(
         None,
         description="Update identity fields"
+    )
+    header_fields: list[str] | None = Field(
+        None,
+        description="Update peer-projection fields (CASE-343)"
     )
     fields: list[FieldDefinition] | None = Field(
         None,
