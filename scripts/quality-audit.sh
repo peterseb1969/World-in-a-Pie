@@ -27,6 +27,7 @@ QUICK=false
 CI_MODE=false
 FIX=false
 UPDATE_BASELINE=false
+INSTALL_DEPS=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -34,13 +35,16 @@ for arg in "$@"; do
         --ci) CI_MODE=true ;;
         --fix) FIX=true ;;
         --update-baseline) UPDATE_BASELINE=true ;;
+        --install-deps) INSTALL_DEPS=true ;;
         --help|-h)
-            echo "Usage: $0 [--quick] [--ci] [--fix] [--update-baseline]"
+            echo "Usage: $0 [--quick] [--ci] [--fix] [--update-baseline] [--install-deps]"
             echo ""
             echo "  --quick            Skip coverage steps (no MongoDB/services needed)"
             echo "  --ci               Exit non-zero if any dimension exceeds baseline"
             echo "  --fix              Auto-fix ruff and eslint issues"
             echo "  --update-baseline  Write current counts to baseline.json"
+            echo "  --install-deps     pip-install missing quality tools into the active"
+            echo "                     venv (vulture, radon, shellcheck-py), then continue."
             exit 0
             ;;
         *) echo "Unknown flag: $arg"; exit 1 ;;
@@ -85,12 +89,44 @@ check_tool radon
 check_tool shellcheck
 
 if [ ${#MISSING[@]} -gt 0 ]; then
-    fail "Missing tools: ${MISSING[*]}"
-    echo ""
-    echo "Install with:"
-    echo "  pip install ruff mypy vulture radon"
-    echo "  brew install shellcheck  # or: pip install shellcheck-py"
-    exit 1
+    if [ "$INSTALL_DEPS" = true ]; then
+        info "Installing missing quality tools into active venv: ${MISSING[*]}"
+        # Map tool name → pip package. ruff/mypy/vulture/radon ship under the same
+        # name; shellcheck (a C binary) is satisfied by shellcheck-py which puts
+        # a `shellcheck` shim on PATH.
+        PIP_PKGS=()
+        for tool in "${MISSING[@]}"; do
+            case "$tool" in
+                shellcheck) PIP_PKGS+=("shellcheck-py") ;;
+                *)          PIP_PKGS+=("$tool") ;;
+            esac
+        done
+        if ! pip install --quiet "${PIP_PKGS[@]}"; then
+            fail "pip install ${PIP_PKGS[*]} failed. Install manually and re-run."
+            exit 1
+        fi
+        # Re-probe — make sure every tool resolves before continuing
+        MISSING=()
+        check_tool ruff
+        check_tool mypy
+        check_tool vulture
+        check_tool radon
+        check_tool shellcheck
+        if [ ${#MISSING[@]} -gt 0 ]; then
+            fail "Tools still missing after install: ${MISSING[*]}"
+            exit 1
+        fi
+        ok "Installed: ${PIP_PKGS[*]}"
+    else
+        fail "Missing tools: ${MISSING[*]}"
+        echo ""
+        echo "Install with:"
+        echo "  pip install ruff mypy vulture radon"
+        echo "  brew install shellcheck  # or: pip install shellcheck-py"
+        echo ""
+        echo "Or re-run with --install-deps to install them into the active venv."
+        exit 1
+    fi
 fi
 
 # Check npm tools (optional — skip steps if not available)
