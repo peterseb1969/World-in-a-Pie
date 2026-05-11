@@ -1,8 +1,7 @@
 """Tests for Template CRUD operations."""
 
-from httpx import AsyncClient
 import pytest
-
+from httpx import AsyncClient
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -266,6 +265,81 @@ async def test_update_template_add_fields(client: AsyncClient, auth_headers: dic
     assert get_response.status_code == 200
     get_data = get_response.json()
     assert len(get_data["fields"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_template_header_fields_persists(
+    client: AsyncClient, auth_headers: dict
+):
+    """CASE-349: update with only header_fields persists the field.
+
+    Regression: _template_has_changed used to omit header_fields from its
+    comparison list, so an update that changed only header_fields was a
+    silent no-op (is_new_version: false) and the value was dropped.
+    """
+    template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
+        "value": "HDRFIELDS",
+        "label": "Header Fields Template",
+        "fields": [{"name": "name", "label": "Name", "type": "string"}],
+    })
+
+    # Update only header_fields via bulk PUT
+    response = await client.put(
+        "/api/template-store/templates",
+        headers=auth_headers,
+        json=[{
+            "template_id": template_id,
+            "header_fields": ["name", "metadata.custom.audit_id"],
+        }],
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["id"] == template_id
+    # A new version must be created — the change is real.
+    assert result["is_new_version"] is True
+    assert result["version"] == 2
+
+    # Read-back: header_fields persisted on the latest version.
+    get_response = await client.get(
+        f"/api/template-store/templates/{template_id}",
+        headers=auth_headers,
+    )
+    get_data = get_response.json()
+    assert get_data["header_fields"] == ["name", "metadata.custom.audit_id"]
+    assert get_data["version"] == 2
+
+
+@pytest.mark.asyncio
+async def test_update_template_no_change_skips_new_version(
+    client: AsyncClient, auth_headers: dict
+):
+    """CASE-349 companion: a no-op update still returns is_new_version: false.
+
+    Verifies the early-exit path remains intact when nothing actually changed
+    (sending the same header_fields the template already has).
+    """
+    template_id = await _create_one_id(client, auth_headers, {
+        "namespace": "wip",
+        "value": "HDRFIELDS_NOOP",
+        "label": "Header Fields No-op",
+        "fields": [{"name": "name", "label": "Name", "type": "string"}],
+        "header_fields": ["name"],
+    })
+
+    # Re-send the same header_fields — should not bump version.
+    response = await client.put(
+        "/api/template-store/templates",
+        headers=auth_headers,
+        json=[{
+            "template_id": template_id,
+            "header_fields": ["name"],
+        }],
+    )
+    assert response.status_code == 200
+    result = response.json()["results"][0]
+    assert result["is_new_version"] is False
+    assert result["version"] == 1
 
 
 @pytest.mark.asyncio
