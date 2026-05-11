@@ -25,11 +25,9 @@ correctly without exercising ZIP I/O.
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import pytest_asyncio
 from pymongo.errors import BulkWriteError
 from wip_toolkit.models import EntityCounts, Manifest, NamespaceConfig, ProgressEvent
 
@@ -127,7 +125,7 @@ class TestModuleStructure:
 
     def test_collection_map_shape(self):
         # Each entry is (db_name, coll_name) — both strings
-        for entity, (db, coll) in COLLECTION_MAP.items():
+        for _entity, (db, coll) in COLLECTION_MAP.items():
             assert isinstance(db, str) and db
             assert isinstance(coll, str) and coll
 
@@ -595,6 +593,5 @@ class TestRunRestoreBasicFlow:
         with patch(
             "document_store.services.backup_engine.ArchiveReader",
             return_value=mock_reader,
-        ):
-            with pytest.raises(RestoreEngineError, match="not empty"):
-                await engine.run_restore(tmp_path / "kb.zip", "kb")
+        ), pytest.raises(RestoreEngineError, match="not empty"):
+            await engine.run_restore(tmp_path / "kb.zip", "kb")
