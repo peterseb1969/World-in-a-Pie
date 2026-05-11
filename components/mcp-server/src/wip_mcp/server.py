@@ -2580,7 +2580,8 @@ async def search(
     query: str,
     types: list[str] | None = None,
     namespace: str | None = None,
-    limit: int = 20,
+    page: int = 1,
+    page_size: int = 20,
     template: str | None = None,
     mode: str = "auto",
     include_inactive: bool = False,
@@ -2594,6 +2595,12 @@ async def search(
     matching. The default `mode='auto'` does the right thing per
     table — apps don't have to think about it.
 
+    The response groups hits per entity type, each with its own
+    pagination envelope (CASE-329). See `wip://conventions` for the
+    platform pagination contract; each type has `items`, `total`,
+    `page`, `page_size`, `pages`. Same `page`/`page_size` applies to
+    every type.
+
     Args:
         query: Search string. For full-text mode, this is parsed by
             plainto_tsquery (whitespace-tokenised AND query). For
@@ -2601,8 +2608,8 @@ async def search(
         types: Filter by entity type: 'terminology', 'term', 'template',
             'document', 'file'. Omit to search all types.
         namespace: Filter by namespace. Omit to search all namespaces.
-        limit: Max results per type (1-100, default 20). Cap aligns
-            with the platform pagination max — see wip://conventions.
+        page: Page number (1-indexed). Default 1. (CASE-329)
+        page_size: Items per type. Default 20, cap 100. (CASE-329)
         template: Restrict document search to a single template (by
             value, e.g. 'LESSON'). Other entity-type searches ignore
             this filter.
@@ -2622,15 +2629,16 @@ async def search(
 
     FTS document hits carry `score` (ts_rank float) and `snippet`
     (ts_headline excerpt). Substring hits and non-document results
-    have neither. Results are sorted: FTS hits by score descending,
-    then substring hits, then other entity types.
+    have neither. Within each type bucket FTS hits sort by score
+    descending, then substring hits, then by relevance heuristics.
     """
     try:
         data = await get_client().unified_search(
             query=query,
             types=types,
             namespace=namespace,
-            limit=limit,
+            page=page,
+            page_size=page_size,
             template=template,
             mode=mode,
             include_inactive=include_inactive,

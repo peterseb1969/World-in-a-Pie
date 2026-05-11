@@ -24,11 +24,9 @@ from pydantic import ValidationError
 
 from reporting_sync.search_service import (
     SearchRequest,
-    SearchResponse,
     SearchResult,
     SearchService,
 )
-
 
 # =========================================================================
 # SearchRequest schema
@@ -42,7 +40,9 @@ def test_search_request_defaults():
     assert req.include_inactive is False
     assert req.snippet_format == "html"
     assert req.template is None
-    assert req.limit == 50
+    assert req.page == 1
+    assert req.page_size == 50
+    assert req.limit is None
 
 
 def test_search_request_accepts_explicit_options():
@@ -53,12 +53,29 @@ def test_search_request_accepts_explicit_options():
         snippet_format="text",
         template="LESSON",
         namespace="kb",
-        limit=10,
+        page=2,
+        page_size=10,
     )
     assert req.mode == "fts"
     assert req.include_inactive is True
     assert req.snippet_format == "text"
     assert req.template == "LESSON"
+    assert req.page == 2
+    assert req.page_size == 10
+
+
+def test_search_request_accepts_legacy_limit_alias():
+    """CASE-329: `limit` survives as a deprecation-window alias for page_size."""
+    req = SearchRequest(query="lesson", limit=25)
+    assert req.limit == 25
+    # Service maps limit→page_size when page_size is at default — schema-level
+    # the alias is just stored. The orchestrator applies it.
+
+
+def test_search_request_rejects_page_size_above_100():
+    """CASE-329 / CASE-328: page_size capped at 100 per wip://conventions."""
+    with pytest.raises(ValidationError):
+        SearchRequest(query="x", page_size=101)
 
 
 def test_search_request_rejects_invalid_mode():
@@ -163,7 +180,7 @@ async def test_auto_mode_uses_fts_when_tsv_columns_present():
           "score": 0.5, "snippet": "hit"}]
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    results = await svc._search_documents("term", None, None, 10, mode="auto")
+    results = await svc._search_documents("term", None, None, mode="auto")
     # An FTS query was issued — look for plainto_tsquery + ts_rank.
     fts_calls = [s for s, _ in conn.executed_sql if "plainto_tsquery" in s]
     assert fts_calls, "expected an FTS query to run"
@@ -187,7 +204,7 @@ async def test_auto_mode_falls_back_to_substring_when_no_tsv_columns():
         [{"doc_id": "DOC-1", "status": "active", "updated_at": None}]
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    results = await svc._search_documents("term", None, None, 10, mode="auto")
+    results = await svc._search_documents("term", None, None, mode="auto")
     # Substring path = ILIKE, no plainto_tsquery.
     assert not any("plainto_tsquery" in s for s, _ in conn.executed_sql)
     assert any("ILIKE" in s for s, _ in conn.executed_sql)
@@ -205,7 +222,7 @@ async def test_fts_mode_skips_table_without_tsv_columns():
         ("title", "text"),
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    results = await svc._search_documents("term", None, None, 10, mode="fts")
+    results = await svc._search_documents("term", None, None, mode="fts")
     # No data query should have been issued — only metadata discovery.
     data_queries = [
         s for s, _ in conn.executed_sql
@@ -231,7 +248,7 @@ async def test_substring_mode_forces_ilike_even_with_tsv_columns():
         [{"doc_id": "DOC-1", "status": "active", "updated_at": None}]
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10, mode="substring")
+    await svc._search_documents("term", None, None, mode="substring")
     assert any("ILIKE" in s for s, _ in conn.executed_sql)
     assert not any("plainto_tsquery" in s for s, _ in conn.executed_sql)
 
@@ -257,7 +274,7 @@ async def test_template_filter_restricts_table_lookup():
           "score": 0.3, "snippet": "x"}]
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10, template="LESSON")
+    await svc._search_documents("term", None, None, template="LESSON")
     table_lookups = [
         (s, p) for s, p in conn.executed_sql
         if "information_schema.tables" in s
@@ -288,7 +305,7 @@ async def test_default_excludes_inactive_documents():
     ]
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10)
+    await svc._search_documents("term", None, None)
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
     assert "status = 'active'" in fts_sql
 
@@ -306,7 +323,7 @@ async def test_include_inactive_drops_status_filter():
     ]
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10, include_inactive=True)
+    await svc._search_documents("term", None, None, include_inactive=True)
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
     assert "status = 'active'" not in fts_sql
 
@@ -323,7 +340,7 @@ async def test_include_inactive_substring_drops_status_filter():
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
     await svc._search_documents(
-        "term", None, None, 10, mode="substring", include_inactive=True
+        "term", None, None, mode="substring", include_inactive=True
     )
     sub_sql = next(s for s, _ in conn.executed_sql if "ILIKE" in s)
     assert "status = 'active'" not in sub_sql
@@ -347,7 +364,7 @@ async def test_snippet_format_html_uses_b_tags():
     ]
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10, snippet_format="html")
+    await svc._search_documents("term", None, None, snippet_format="html")
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
     assert "StartSel=<b>" in fts_sql
     assert "StopSel=</b>" in fts_sql
@@ -366,7 +383,7 @@ async def test_snippet_format_text_omits_b_tags():
     ]
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10, snippet_format="text")
+    await svc._search_documents("term", None, None, snippet_format="text")
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
     assert "StartSel=<b>" not in fts_sql
     assert "StopSel=" not in fts_sql or "StartSel=" not in fts_sql
@@ -393,7 +410,7 @@ async def test_multi_field_fts_uses_or_of_tsvectors():
     ]
     conn.rows_per_query = [[]]
     svc = SearchService(_mock_pool_with_conn(conn))
-    await svc._search_documents("term", None, None, 10)
+    await svc._search_documents("term", None, None)
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
     # OR clause means each GIN index can be used.
     assert '"title_tsv" @@ q.query' in fts_sql
@@ -431,7 +448,7 @@ async def test_fts_results_sorted_before_substring_results_in_auto_mode():
         [{"doc_id": "DOC-LEGACY", "status": "active", "updated_at": None}],
     ]
     svc = SearchService(_mock_pool_with_conn(conn))
-    results = await svc._search_documents("term", None, None, 10, mode="auto")
+    results = await svc._search_documents("term", None, None, mode="auto")
     assert len(results) == 2
     # FTS hit (with score) comes first regardless of execution order.
     assert results[0].id == "DOC-INDEXED"
@@ -456,5 +473,5 @@ async def test_no_postgres_pool_falls_back_to_rest():
         return []
 
     svc._search_documents_rest_fallback = fake_rest_fallback  # type: ignore[method-assign]
-    await svc._search_documents("term", None, None, 10)
+    await svc._search_documents("term", None, None)
     assert called["n"] == 1

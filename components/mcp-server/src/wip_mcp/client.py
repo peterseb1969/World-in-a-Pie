@@ -1494,13 +1494,16 @@ class WipClient:
         query: str,
         types: list[str] | None = None,
         namespace: str | None = None,
-        limit: int = 20,
+        page: int = 1,
+        page_size: int = 20,
         template: str | None = None,
         mode: str | None = None,
         include_inactive: bool | None = None,
         snippet_format: str | None = None,
     ) -> dict:
-        body: dict[str, Any] = {"query": query, "limit": limit}
+        body: dict[str, Any] = {
+            "query": query, "page": page, "page_size": page_size,
+        }
         if types:
             body["types"] = types
         if namespace:
