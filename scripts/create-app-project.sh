@@ -19,9 +19,16 @@
 #   8. Initialises a git repo
 #
 # --refresh mode (for cloned/existing apps):
-#   Only regenerates .mcp.json and refreshes libs/tools. Does NOT touch
-#   CLAUDE.md, slash commands, docs, or git. Use after cloning an app repo
-#   on a new machine where the WIP installation path differs.
+#   Refreshes everything propagatable from the gene pool: slash commands,
+#   slash-command playbooks, reference docs (AI-Assisted-Development, PoNIFs,
+#   DevGuardrails, wip-guide, technology-stack, ui-guidance, ontology-support),
+#   client libraries (tarballs + READMEs), wip-toolkit wheel, and regenerates
+#   .mcp.json with the current WIP installation path.
+#   Does NOT touch: CLAUDE.md (would clobber app-specific customisation —
+#   regenerate manually if needed), .claude/settings.local.json (preserved if
+#   already present), bootstrap templates, or git state. Use to bring an
+#   existing app repo up to date with the current gene pool without disturbing
+#   its CLAUDE.md or working tree.
 #
 # The generated .mcp.json uses WIP_API_KEY_FILE instead of a hardcoded key,
 # so API key rotation in WIP automatically applies to all apps.

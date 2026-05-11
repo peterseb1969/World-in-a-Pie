@@ -8,9 +8,12 @@
 # This script:
 #   1. Sets up Python venv with a compatible Python (3.11-3.13)
 #   2. Generates .mcp.json for the chosen transport
-#   3. Generates a backend-focused CLAUDE.md
-#   4. Copies backend slash commands to .claude/commands/
-#   5. Verifies MCP connectivity
+#   3. Generates a backend-focused CLAUDE.md (overwrites any existing)
+#   4. Copies backend slash commands to .claude/commands/ (deletes any existing
+#      *.md in that directory first — custom commands will be lost)
+#   4b. Writes .claude/settings.local.json with 23 catchall bash patterns
+#       (CASE-169) if the file does not already exist; preserved if present
+#   5. Verifies MCP connectivity (local target only)
 #
 
 set -euo pipefail
