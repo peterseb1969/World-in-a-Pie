@@ -326,20 +326,47 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
     else:
         w("### Python")
         w("")
+        import glob
         if coverage:
             w("| Component | Stmts | Miss | Cover% |")
             w("|-----------|-------|------|--------|")
             for c in coverage:
                 w(f"| {c['component']} | {c['statements']} | {c['missing']} | {c['coverage']:.1f}% |")
         else:
-            w("No coverage data available (requires MongoDB for service tests).")
+            # Distinguish failure modes per CASE-332 Fix C.
+            # If pytest-cov-*.stderr files exist with non-empty content,
+            # Step 9 invoked pytest but it errored out (most often: missing
+            # pytest-cov plugin pre-CASE-326 fix, or test-container/fixture
+            # failures). Otherwise: Step 9 never produced output.
+            stderr_files = list(glob.glob(str(raw_dir / "pytest-cov-*.stderr")))
+            failed_components = [
+                os.path.basename(f).replace("pytest-cov-", "").replace(".stderr", "")
+                for f in stderr_files
+                if os.path.getsize(f) > 0
+            ]
+            if failed_components:
+                w(f"**Python coverage failed for {len(failed_components)} component(s):** "
+                  f"{', '.join(failed_components)}.")
+                w("")
+                w(f"See `raw/pytest-cov-<component>.stderr` for the per-component failure detail. "
+                  f"Common causes:")
+                w("- `pytest-cov` plugin not installed (re-run with `--install-deps`)")
+                w("- Test containers not provisioned (Step 9 delegates to `wip-test.sh` which "
+                  "auto-starts test-mongo/test-postgres/test-nats — if delegation is bypassed, "
+                  "fixtures error at setup)")
+                w("- Component-specific test failures (run `bash scripts/wip-test.sh <component>` "
+                  "to see them in isolation)")
+            else:
+                w("No coverage data available. Step 9 may not have run (check audit log).")
         w("")
 
         w("### TypeScript")
         w("")
-        # Check for vitest coverage
+        # Read coverage-summary.json (vitest's `--coverage.reporter=json-summary`
+        # output). The audit script writes both `coverage-final.json` (per-file
+        # detail) and `coverage-summary.json` (aggregated totals); we use the
+        # summary here. CASE-333.
         has_ts_cov = False
-        import glob
         for f in glob.glob(str(raw_dir / "vitest-cov-*" / "coverage-summary.json")):
             has_ts_cov = True
             lib_name = Path(f).parent.name.replace("vitest-cov-", "")
@@ -349,7 +376,23 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
             branches = totals.get("branches", {})
             w(f"| {lib_name} | Stmts: {stmts.get('pct', 0):.1f}% | Branches: {branches.get('pct', 0):.1f}% |")
         if not has_ts_cov:
-            w("No TypeScript coverage data available.")
+            # Same failure-mode distinction as Python. If `coverage-final.json`
+            # exists but `coverage-summary.json` doesn't, Step 10 ran but
+            # didn't request the summary reporter (pre-CASE-333 fix).
+            final_files = list(glob.glob(str(raw_dir / "vitest-cov-*" / "coverage-final.json")))
+            if final_files:
+                libs_with_partial = [
+                    Path(f).parent.name.replace("vitest-cov-", "")
+                    for f in final_files
+                ]
+                w(f"**TypeScript coverage partial:** `coverage-final.json` present for "
+                  f"{', '.join(libs_with_partial)} but `coverage-summary.json` missing.")
+                w("")
+                w("This indicates Step 10 didn't request the `json-summary` reporter "
+                  "(CASE-333 Fix A — should be fixed in audit script). Per-file detail "
+                  "is in `raw/vitest-cov-<lib>/coverage-final.json`.")
+            else:
+                w("No TypeScript coverage data available. Step 10 may not have run.")
     w("")
 
     # Section 5: Complexity
