@@ -526,27 +526,24 @@ class TestImportNamespaceCreateMode:
 
 
 class TestImportNamespaceReplaceMode:
-    """mode='replace' archives existing + creates fresh.
-
-    BUG: replace mode is broken in import_service.py at this commit.
-    The Namespace model has a unique index on prefix (regardless of status),
-    so archiving the existing record and then trying to create a new one
-    with the same prefix fails with DuplicateKeyError. See sub-case filed
-    against this finding. xfail until the import service is patched (either
-    delete-archived-before-create, or change the unique index to scope on
-    (prefix, status)).
+    """mode='replace' updates the existing record with imported values
+    (CASE-344). The pre-fix behavior of archiving + creating a new row
+    raised DuplicateKeyError on the unique-prefix index. Post-fix, the
+    existing record is mutated in place — its status flips to 'active'
+    after the import, fields overwritten with the manifest's values.
     """
 
-    @pytest.mark.xfail(
-        reason="import-service replace mode broken: archives existing then "
-               "tries to create with same prefix; unique index on prefix "
-               "(regardless of status) rejects. CASE-342 sub-case to file.",
-        strict=True,
-    )
     @pytest.mark.asyncio
-    async def test_replace_archives_existing_and_creates_new(self, client, tmp_path):
-        existing = Namespace(prefix="replace-target", description="old desc", created_by="test")
+    async def test_replace_updates_existing_record(self, client, tmp_path):
+        existing = Namespace(
+            prefix="replace-target",
+            description="old desc",
+            isolation_mode="open",
+            allowed_external_refs=[],
+            created_by="test",
+        )
         await existing.create()
+        original_id = existing.id
 
         archive = _build_archive(
             tmp_path,
@@ -569,13 +566,19 @@ class TestImportNamespaceReplaceMode:
         ns, _stats = await svc.import_namespace(
             archive, target_prefix="replace-target", mode="replace",
         )
-        # New namespace has the imported description
+        # The returned namespace is the same row, mutated in place
+        assert ns.id == original_id
+        assert ns.prefix == "replace-target"
         assert ns.description == "fresh desc"
         assert ns.isolation_mode == "strict"
         assert ns.allowed_external_refs == ["wip"]
-        # Existing one is archived
-        await existing.sync()
-        assert existing.status == "archived"
+        assert ns.status == "active"
+
+        # Verify in DB
+        in_db = await Namespace.find_one({"prefix": "replace-target"})
+        assert in_db is not None
+        assert in_db.description == "fresh desc"
+        assert in_db.isolation_mode == "strict"
 
 
 class TestImportJsonl:
