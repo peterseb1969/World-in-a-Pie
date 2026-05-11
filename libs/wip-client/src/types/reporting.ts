@@ -264,10 +264,35 @@ export interface SearchResult {
   snippet?: string | null
 }
 
+/**
+ * Per-type paginated bucket on `SearchResponse.results` (CASE-329).
+ * Mirrors the platform-wide pagination envelope (see `wip://conventions`).
+ */
+export interface SearchTypeResults {
+  items: SearchResult[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
+}
+
+/**
+ * Response from `POST /api/reporting-sync/search`.
+ *
+ * Breaking change in @wip/client 0.19.0 (CASE-329): the legacy flat
+ * `results: SearchResult[]` + `counts: Record<string, number>` shape was
+ * replaced by per-type buckets keyed by entity type ('terminology',
+ * 'term', 'template', 'document', 'file'), each carrying its own
+ * pagination envelope. Consumers iterating "all hits" should iterate
+ * the values of `results`.
+ */
 export interface SearchResponse {
   query: string
-  results: SearchResult[]
-  counts: Record<string, number>
+  /** Echo of the document-search mode used (informational only). */
+  mode?: string | null
+  /** Per-type paginated buckets. Only types the search visited appear here. */
+  results: Record<string, SearchTypeResults>
+  /** Sum of per-type totals across all visited types. */
   total: number
 }
 
