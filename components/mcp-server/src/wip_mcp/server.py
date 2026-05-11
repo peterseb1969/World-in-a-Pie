@@ -1692,6 +1692,10 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
             - extends_version: Pin to specific parent version.
             - identity_fields: List of field names for deduplication.
               Choose carefully — see wip://conventions for pitfalls.
+            - header_fields: List of fields to surface in peer/header
+              projections (CASE-343). Bare names target data.<name>;
+              `metadata.custom.<name>` paths also allowed. Empty →
+              projection falls back to identity_fields.
             - status: 'active' (default) or 'draft' (skip validation).
 
         Field definition: {
@@ -1942,6 +1946,10 @@ async def update_template(template_id: str, updates: dict) -> str:
             - description: New description
             - fields: Complete field list (replaces all fields — include unchanged ones too)
             - identity_fields: Updated identity fields
+            - header_fields: Updated peer-projection fields (CASE-343).
+              Bare names target data.<name>; `metadata.custom.<name>`
+              paths allowed. Empty → projection falls back to
+              identity_fields.
             - extends: New parent template
             - rules: Updated validation rules
             - metadata: Updated metadata

@@ -617,6 +617,8 @@ class TemplateService:
             return True
         if request.identity_fields is not None and request.identity_fields != original.identity_fields:
             return True
+        if request.header_fields is not None and request.header_fields != original.header_fields:
+            return True
 
         # Compare fields using JSON serialization
         if request.fields is not None:
@@ -2142,6 +2144,7 @@ class TemplateService:
             extends=t.extends,
             extends_version=t.extends_version,
             identity_fields=t.identity_fields,
+            header_fields=t.header_fields,
             usage=t.usage,
             source_templates=t.source_templates,
             target_templates=t.target_templates,

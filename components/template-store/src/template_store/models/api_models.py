@@ -177,6 +177,7 @@ class TemplateResponse(BaseModel):
     extends: str | None = None
     extends_version: int | None = None
     identity_fields: list[str] = []
+    header_fields: list[str] = []
     usage: TemplateUsage = TemplateUsage.ENTITY
     source_templates: list[str] = []
     target_templates: list[str] = []
