@@ -838,6 +838,15 @@ interface Document {
     metadata: DocumentMetadata;
     is_latest_version?: boolean;
     latest_version?: number;
+    /**
+     * Compact projection of a related entity, attached when the
+     * relationships endpoint is called with `?include=peers` (CASE-303 /
+     * CASE-343 / CASE-348). Absent on documents returned by other
+     * endpoints. `null` when no related entity could be projected (e.g.,
+     * the target template has no `header_fields`, no `identity_fields`,
+     * and no legacy fallback).
+     */
+    peer?: PeerProjection | null;
 }
 interface CreateDocumentRequest {
     template_id: string;
