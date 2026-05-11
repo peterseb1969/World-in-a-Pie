@@ -260,32 +260,17 @@ else
     echo "4. Generating .mcp.json..."
 fi
 
-# Determine API key from .env (source of truth for running containers)
-# NOTE: The MCP server needs a privileged key (wip-admins or wip-services) because
-# it operates across namespaces. App code should use a namespace-scoped key instead.
-ACTIVE_KEY=""
-if [ -f "$WIP_ROOT/.env" ]; then
-    ACTIVE_KEY=$(grep "^API_KEY=" "$WIP_ROOT/.env" 2>/dev/null | head -1 | cut -d= -f2-)
-fi
-ACTIVE_KEY="${ACTIVE_KEY:-dev_master_key_for_testing}"
-
-if [ "$ACTIVE_KEY" = "dev_master_key_for_testing" ]; then
-    # Dev mode — hardcode the well-known dev key
-    MCP_ENV=$(cat <<ENVEOF
-        "WIP_API_KEY": "dev_master_key_for_testing",
-        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
-ENVEOF
-)
-    echo "   API key: dev_master_key_for_testing (dev mode, privileged)"
-else
-    # Production — embed the actual key from .env
-    MCP_ENV=$(cat <<ENVEOF
-        "WIP_API_KEY": "$ACTIVE_KEY",
-        "PYTHONPATH": "$WIP_ROOT/components/mcp-server/src"
-ENVEOF
-)
-    echo "   API key: production key from .env (${#ACTIVE_KEY} chars)"
-    echo "   Note: if you rotate the API key, re-run this script or update .mcp.json"
+# Determine the API-key secrets file
+# The MCP server reads its key from WIP_API_KEY_FILE at startup, so key rotation
+# in wip-deploy automatically propagates without re-running this script. The MCP
+# server needs a privileged key (wip-admins or wip-services) because it operates
+# across namespaces; app runtime code should use a namespace-scoped key instead.
+# Default points at the local-dev deployment. For other deployments, edit the
+# generated .mcp.json or set WIP_API_KEY_FILE_OVERRIDE before running the script.
+WIP_API_KEY_FILE="${WIP_API_KEY_FILE_OVERRIDE:-$HOME/.wip-deploy/wip-dev-local/secrets/api-key}"
+if [ ! -f "$WIP_API_KEY_FILE" ]; then
+    echo "   Warning: $WIP_API_KEY_FILE does not exist."
+    echo "            Deploy wip-dev-local (or set WIP_API_KEY_FILE_OVERRIDE) before using MCP."
 fi
 
 # Determine Python path
@@ -299,17 +284,24 @@ cat > "$APP_DIR/.mcp.json" << EOF
 {
   "mcpServers": {
     "wip": {
+      "type": "stdio",
       "command": "$PYTHON_PATH",
-      "args": ["-m", "wip_mcp"],
-      "cwd": "$WIP_ROOT",
+      "args": ["-m", "wip_mcp.server"],
       "env": {
-$MCP_ENV
+        "WIP_API_KEY_FILE": "$WIP_API_KEY_FILE",
+        "REGISTRY_URL": "https://localhost:8443",
+        "DEF_STORE_URL": "https://localhost:8443",
+        "TEMPLATE_STORE_URL": "https://localhost:8443",
+        "DOCUMENT_STORE_URL": "https://localhost:8443",
+        "REPORTING_SYNC_URL": "https://localhost:8443",
+        "WIP_VERIFY_TLS": "false"
       }
     }
   }
 }
 EOF
 echo "   Written: .mcp.json"
+echo "   API key source: $WIP_API_KEY_FILE"
 
 # --- Copy client libraries ---
 
