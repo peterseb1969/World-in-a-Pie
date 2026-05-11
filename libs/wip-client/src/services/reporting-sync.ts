@@ -216,6 +216,16 @@ export class ReportingSyncService extends BaseService {
 
   // ── Search & Activity ──
 
+  /**
+   * Unified search with per-type pagination (CASE-329).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape moved
+   * from a flat `results: SearchResult[]` to per-type buckets keyed
+   * by entity type, each with its own pagination envelope. Same
+   * `page`/`page_size` applies to every type. The legacy `limit`
+   * parameter is still accepted as a deprecation-window alias for
+   * `page_size` — use `page_size` going forward.
+   */
   async search(params: {
     query: string
     types?: string[]
@@ -227,6 +237,11 @@ export class ReportingSyncService extends BaseService {
      */
     namespace?: string
     status?: string
+    /** Page number (1-indexed). Default 1. (CASE-329) */
+    page?: number
+    /** Items per type. Default 50, cap 100. (CASE-329) */
+    page_size?: number
+    /** DEPRECATED (CASE-329): alias for page_size when page=1. */
     limit?: number
     /** Restrict document search to a single template (by value). */
     template?: string

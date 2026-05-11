@@ -1222,6 +1222,16 @@ var ReportingSyncService = class extends BaseService {
     return this.get("/health/integrity", params);
   }
   // ── Search & Activity ──
+  /**
+   * Unified search with per-type pagination (CASE-329).
+   *
+   * Breaking change in @wip/client 0.19.0: the response shape moved
+   * from a flat `results: SearchResult[]` to per-type buckets keyed
+   * by entity type, each with its own pagination envelope. Same
+   * `page`/`page_size` applies to every type. The legacy `limit`
+   * parameter is still accepted as a deprecation-window alias for
+   * `page_size` — use `page_size` going forward.
+   */
   async search(params) {
     return this.post("/search", params);
   }
