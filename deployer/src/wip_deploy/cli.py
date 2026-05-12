@@ -33,6 +33,7 @@ from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
+from wip_deploy.spec.deployment import AppRef
 from wip_deploy.spec.validators import validate_all
 
 app = typer.Typer(
@@ -1171,6 +1172,381 @@ def up(
             fg=typer.colors.GREEN,
             bold=True,
         )
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# add-app / remove-app / add-module / remove-module (CASE-313)
+#
+# Additive mutation verbs. Load the persisted deployment-state, mutate
+# the named field (apps or modules.optional), re-discover, validate,
+# render, apply, persist. Lets the operator add WIP-KB without
+# re-specifying every existing --app-source flag, and remove an app
+# cleanly without dropping the rest of the install by accident.
+# Symmetric to the CASE-331 Fix B drop-warning: that case made the
+# silent destructive shape loud; these verbs make additive change
+# the documented happy path.
+# ────────────────────────────────────────────────────────────────────
+
+
+def _load_and_discover_for_mutation(
+    install_name: str,
+    install_dir: Path | None,
+) -> tuple[str, Path, Deployment, list, list]:
+    """Shared prelude for the additive verbs.
+
+    Resolves the install dir, loads the persisted Deployment (exits
+    cleanly if missing — additive verbs only make sense against an
+    existing install), discovers components + apps in the WIP repo,
+    and returns the tuple. Errors hit typer.Exit with actionable
+    messages.
+    """
+    resolved_name = _resolve_name(install_name)
+    target_dir = install_dir or _default_install_dir(resolved_name)
+    deployment = _load_deployment(target_dir)
+
+    # Discover against the WIP repo root — components/apps may have
+    # been added since the last install (which is exactly what the
+    # operator is trying to use here).
+    try:
+        root = find_repo_root()
+    except FileNotFoundError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+
+    discovery = discover(root)
+    if not discovery.ok:
+        typer.echo("manifest discovery errors:", err=True)
+        for err in discovery.errors:
+            typer.echo(f"  - {err}", err=True)
+        raise typer.Exit(1)
+
+    return resolved_name, target_dir, deployment, discovery.components, discovery.apps
+
+
+def _apply_and_persist_mutation(
+    deployment: Deployment,
+    components: list,
+    apps_list: list,
+    target_dir: Path,
+    action_label: str,
+) -> None:
+    """Shared post-mutation lifecycle: validate → render → apply → persist.
+
+    Mirrors the back half of `install` but starts from a fully-mutated
+    Deployment loaded off disk rather than reconstructed from CLI
+    flags. The render+apply path is the same; persistence overwrites
+    the deployment-state with the mutated spec so subsequent verbs
+    see the latest.
+    """
+    _validate_or_exit(deployment, components, apps_list)
+
+    secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
+    tree = _render_tree(deployment, components, apps_list, secrets)
+
+    apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
+    try:
+        result = apply_fn(
+            deployment=deployment,
+            components=components,
+            apps=apps_list,
+            tree=tree,
+            install_dir=target_dir,
+        )
+    except ApplyError as e:
+        typer.echo(
+            typer.style(f"✗ {action_label} failed: {e}", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        raise typer.Exit(1) from e
+
+    _persist_deployment(deployment, target_dir)
+
+    if result.healthy:
+        typer.echo(typer.style(f"✓ {action_label}.", fg=typer.colors.GREEN, bold=True))
+    else:
+        typer.echo(
+            typer.style(
+                f"⚠ {action_label} finished, but not all services reached healthy",
+                fg=typer.colors.YELLOW,
+                bold=True,
+            )
+        )
+
+
+@app.command("add-app")
+def add_app(
+    app_name: Annotated[
+        str,
+        typer.Argument(
+            help="Name of the app to enable (matches `apps/<name>/wip-app.yaml`)."
+        ),
+    ],
+    source: Annotated[
+        Path | None,
+        typer.Option(
+            "--app-source",
+            "--source",
+            help=(
+                "Local checkout path for hot-reload (dev target only). "
+                "Bind-mounts the source into the app container and runs "
+                "the app's Dockerfile.dev. Equivalent to `--app-source "
+                "NAME=PATH` on install."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Add an app to an existing install without dropping anything else.
+
+    Loads the persisted spec, appends the named app, re-discovers,
+    re-renders, re-applies, and overwrites the deployment-state.
+    The rest of the install (other apps, optional modules, secrets,
+    network) is preserved untouched (CASE-313).
+
+    Examples:
+
+      wip-deploy add-app react-console --name wip-dev-local
+      wip-deploy add-app kb --app-source /Users/peter/Development/WIP-KB
+    """
+    resolved_name, target_dir, deployment, components, apps_list = (
+        _load_and_discover_for_mutation(name, install_dir)
+    )
+
+    # Verify the named app actually has a manifest in the WIP repo.
+    available = {a.metadata.name for a in apps_list}
+    if app_name not in available:
+        typer.echo(
+            f"error: app {app_name!r} not found in `apps/*/wip-app.yaml`. "
+            f"Available: {', '.join(sorted(available)) or '(none)'}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # source override only makes sense for dev target.
+    if source is not None and deployment.spec.target != "dev":
+        typer.echo(
+            f"error: --app-source is only valid for target=dev "
+            f"(this install's target is {deployment.spec.target!r})",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if source is not None and not source.is_dir():
+        typer.echo(f"error: --app-source path is not a directory: {source}", err=True)
+        raise typer.Exit(2)
+
+    # Already-enabled is a friendly no-op; flipping disabled → enabled
+    # is a real mutation.
+    existing = next((a for a in deployment.spec.apps if a.name == app_name), None)
+    if existing is not None and existing.enabled and source is None:
+        typer.echo(
+            f"⊙ app {app_name!r} is already enabled in this install — no change."
+        )
+        return
+    if existing is None:
+        deployment.spec.apps.append(AppRef(name=app_name, enabled=True))
+    else:
+        existing.enabled = True
+
+    if source is not None:
+        # Mutate the DevPlatform.app_sources mapping.
+        if deployment.spec.platform.dev is None:
+            typer.echo(
+                "error: install has no dev platform block; cannot set --app-source",
+                err=True,
+            )
+            raise typer.Exit(2)
+        deployment.spec.platform.dev.app_sources[app_name] = source
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Added app {app_name!r} to {resolved_name}",
+    )
+
+
+@app.command("remove-app")
+def remove_app(
+    app_name: Annotated[
+        str,
+        typer.Argument(help="Name of the app to remove from the install."),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Remove an app from an existing install without dropping the rest.
+
+    Mutation is the inverse of `add-app`: drops the AppRef from
+    `spec.apps`, drops any `app_sources` entry on the dev platform,
+    re-renders, re-applies, persists. The removed app's container is
+    force-removed via `podman rm -f wip-<name>` so it doesn't linger
+    as an orphan after the rendered compose stops mentioning it
+    (CASE-313).
+
+    Examples:
+
+      wip-deploy remove-app clintrial --name wip-dev-local
+    """
+    resolved_name, target_dir, deployment, components, apps_list = (
+        _load_and_discover_for_mutation(name, install_dir)
+    )
+
+    before = len(deployment.spec.apps)
+    deployment.spec.apps = [
+        a for a in deployment.spec.apps if a.name != app_name
+    ]
+    removed = before > len(deployment.spec.apps)
+
+    if not removed:
+        typer.echo(
+            f"⊙ app {app_name!r} is not in this install — no change."
+        )
+        return
+
+    if deployment.spec.platform.dev is not None:
+        deployment.spec.platform.dev.app_sources.pop(app_name, None)
+
+    # Stop the orphan container BEFORE re-applying so the operator
+    # doesn't see a "running" app that's no longer in the spec.
+    from wip_deploy.apply import stop_and_remove_container
+    stop_and_remove_container(app_name)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Removed app {app_name!r} from {resolved_name}",
+    )
+
+
+@app.command("add-module")
+def add_module(
+    module_name: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "Name of the optional module to enable (matches a "
+                "component with `category: optional` in its manifest)."
+            ),
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Enable an optional module in an existing install without dropping anything.
+
+    Equivalent to passing `--add <module>` on a fresh install, but
+    applied to the persisted spec. Other modules, apps, and platform
+    state are preserved (CASE-313).
+
+    Examples:
+
+      wip-deploy add-module reporting-sync --name wip-dev-local
+    """
+    resolved_name, target_dir, deployment, components, apps_list = (
+        _load_and_discover_for_mutation(name, install_dir)
+    )
+
+    # Module must exist as a discovered component with category=optional.
+    optional_components = {
+        c.metadata.name for c in components
+        if c.metadata.category == "optional"
+    }
+    if module_name not in optional_components:
+        typer.echo(
+            f"error: {module_name!r} is not a discovered optional component. "
+            f"Available: {', '.join(sorted(optional_components)) or '(none)'}",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if module_name in deployment.spec.modules.optional:
+        typer.echo(
+            f"⊙ module {module_name!r} is already enabled in this install — no change."
+        )
+        return
+
+    deployment.spec.modules.optional.append(module_name)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Added module {module_name!r} to {resolved_name}",
+    )
+
+
+@app.command("remove-module")
+def remove_module(
+    module_name: Annotated[
+        str,
+        typer.Argument(help="Name of the optional module to disable."),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+) -> None:
+    """Disable an optional module in an existing install without dropping anything.
+
+    Inverse of `add-module`. Force-removes the module's container via
+    `podman rm -f wip-<name>` so it doesn't linger as an orphan
+    (CASE-313).
+
+    Examples:
+
+      wip-deploy remove-module minio --name wip-dev-local
+    """
+    resolved_name, target_dir, deployment, components, apps_list = (
+        _load_and_discover_for_mutation(name, install_dir)
+    )
+
+    if module_name not in deployment.spec.modules.optional:
+        typer.echo(
+            f"⊙ module {module_name!r} is not enabled in this install — no change."
+        )
+        return
+
+    deployment.spec.modules.optional = [
+        m for m in deployment.spec.modules.optional if m != module_name
+    ]
+
+    from wip_deploy.apply import stop_and_remove_container
+    stop_and_remove_container(module_name)
+
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Removed module {module_name!r} from {resolved_name}",
     )
 
 

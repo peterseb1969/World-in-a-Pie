@@ -346,6 +346,29 @@ def restart_compose_services(
         ) from e
 
 
+def stop_and_remove_container(name: str) -> None:
+    """Force-stop and remove a single `wip-<name>` container.
+
+    Used by `wip-deploy remove-app` / `remove-module` (CASE-313) so a
+    spec mutation that drops a component doesn't leave an orphan
+    container running until the next `nuke`. Silent if the container
+    doesn't exist — idempotent.
+
+    Not a `compose` operation: when the rendered docker-compose.yaml
+    no longer contains the service, compose can't address it. We go
+    directly to `podman rm -f <container>` (or `docker rm`).
+    """
+    container = f"wip-{name}"
+    runtime = "podman" if shutil.which("podman") else "docker"
+    if not shutil.which(runtime):
+        return  # No container runtime — caller likely not running locally.
+    subprocess.run(
+        [runtime, "rm", "-f", container],
+        check=False,
+        capture_output=True,
+    )
+
+
 def up_compose_install(
     *,
     install_dir: Path,
