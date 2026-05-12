@@ -116,6 +116,59 @@ WIP is built on three principles:
 
 ---
 
+## Hardware
+
+WIP runs on anything from a Raspberry Pi to a cloud server. The right host depends on your workload and how visible you want WIP to be on your network.
+
+### Platforms
+
+- **Raspberry Pi 5 (recommended for home / lab).** The architecture — MongoDB + PostgreSQL + NATS + MinIO + 6 services + Caddy — is a step beyond what a Pi 4 handles gracefully. An 8 GB Pi 5 has real headroom; a 16 GB Pi 5 has plenty. **Pi 4 is not supported**: services start but compound under load.
+- **macOS (Mac mini / MacBook).** 16 GB and 24 GB hosts work fine for development and small production loads. Most operations run within the default 2 GB Podman machine config; bumping the Podman machine to 4 GB is more comfortable for sustained work (NL queries, bulk-mirror runs, multiple apps under `--app-source`). Beyond 4 GB the bottleneck is your usage pattern, not the host.
+- **Cloud server (Linux VM).** Same Pi 5 baseline: ~8 GB RAM is the floor for non-trivial workloads, with real local disk (not network-attached storage) for the data volumes. NAS-backed volumes pay heavily on MongoDB writes and NATS JetStream persistence. A 16 GB VM with an SSD-class block device is comfortable for production.
+
+### Pi: SSD is mandatory
+
+SD card storage is the single biggest performance variable on a Pi. MongoDB writes, NATS JetStream persistence, PostgreSQL, and MinIO all compound on slow storage. The 200+ docs/second tested throughput is an SSD figure; on an SD card you get a small fraction of that.
+
+**USB SSD setup:**
+
+```bash
+# Identify the device
+lsblk
+
+# Create a filesystem (CAUTION: destroys existing data on the partition)
+sudo mkfs.ext4 /dev/sda1
+
+# Mount and own
+sudo mkdir -p /mnt/wip-data
+sudo mount /dev/sda1 /mnt/wip-data
+sudo chown -R "$USER:$USER" /mnt/wip-data
+
+# Persist across reboots — by UUID
+sudo blkid /dev/sda1   # copy the UUID
+echo 'UUID=<your-uuid>  /mnt/wip-data  ext4  defaults,noatime  0  2' | sudo tee -a /etc/fstab
+
+# Install with the SSD as data dir
+wip-deploy install --preset standard --target compose --hostname wip-pi.local \
+  --data-dir /mnt/wip-data
+```
+
+### macOS: Podman machine sizing
+
+The default Podman machine config (2 GB) handles most development workflows. For sustained loads — NL queries, bulk operations, multiple apps via `--app-source` — resize to 4 GB:
+
+```bash
+podman machine stop
+podman machine set --memory 4096
+podman machine start
+```
+
+### Once your host is set
+
+Continue to [Quick Start](#quick-start) below for the install commands, or jump to the [WIP Guide](docs/wip-guide.md) once you're ready to deploy.
+
+---
+
 ## Quick Start
 
 ### Development Setup (Mac/Linux)

@@ -2,20 +2,13 @@
 
 The operator-facing guide for installing, securing, and running World In a Pie. If you are deploying WIP, configuring auth or networking, packaging an app to run alongside it, or hardening a production install — this is your one stop.
 
-> **Audience.** You have a target host (Pi, server, laptop) and want WIP up and useful. You are comfortable with the shell, podman/docker, and editing config files. You do not need to read the codebase to follow this guide.
+> **Audience.** You have a target host with Podman (or Kubernetes) installed and want WIP up and useful. You are comfortable with the shell, podman/docker, and editing config files. You do not need to read the codebase to follow this guide. Host-prep advice (Pi SSD setup, macOS Podman machine sizing, cloud VM specs) lives in the project [README's Hardware section](../README.md#hardware).
 
 For the *why* — design philosophy, theses, use cases — see [Vision](Vision.md) and the FAQ section in the [README](../README.md). For the data model and APIs, see [api-conventions.md](api-conventions.md), [data-models.md](data-models.md), and the MCP `wip://` resources.
 
 ---
 
 ## 1. Quick Start
-
-### Hardware
-
-WIP runs on anything from a Raspberry Pi to the cloud, but two recommendations are load-bearing for any non-trivial workload:
-
-- **Pi 5, not Pi 4.** The architecture (MongoDB + PostgreSQL + NATS + MinIO + 6 services + Caddy) is a step beyond what a Pi 4 handles gracefully. An 8 GB Pi 5 has real headroom; a 16 GB Pi 5 has plenty.
-- **SSD, not SD card.** This is the single biggest performance variable on a Pi. MongoDB writes, NATS JetStream persistence, PostgreSQL, and MinIO all compound on slow storage. The 200+ docs/second tested throughput is an SSD figure. On an SD card you will get a small fraction of that.
 
 ### Install (compose)
 
@@ -29,9 +22,9 @@ wip-deploy install --preset standard --target compose --hostname wip.local
 
 What this gives you:
 
-- All six services (Registry, Def-Store, Template-Store, Document-Store, Reporting-Sync, Ingest-Gateway when enabled), MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy
+- The eight WIP services: the four core data services (Registry, Def-Store, Template-Store, Document-Store), Auth-Gateway (sits in front for API-key + JWT validation), Reporting-Sync (PostgreSQL projection), Ingest-Gateway (async bulk via NATS, enabled by preset), and the MCP Server (when included via the preset)
+- The supporting infrastructure: MongoDB, PostgreSQL, NATS, MinIO, Dex, Caddy
 - HTTPS via Caddy on port 8443 (internal/self-signed by default)
-- The MCP server (when included via the preset)
 - A starter API key written to the secrets backend
 
 After the install completes, the console is at `https://<hostname>:8443/`.
@@ -79,7 +72,7 @@ wip-toolkit status --integrity   # adds the heavy referential-integrity scan
 
 You can amend a preset with `--add <module>` and `--remove <module>`. Apps (e.g., `react-console`, `clintrial`) are enabled per-install with `--app <name>` or, in dev mode, `--app-source <name>=<path>`.
 
-> **Legacy paths.** `scripts/setup.sh` and `scripts/setup-wip.sh` were the v1 installers. They are being retired in favour of `wip-deploy`. Older docs and scripts may still reference them — prefer `wip-deploy` for any new work.
+> **Legacy paths.** v1's `scripts/setup.sh` and `scripts/setup-wip.sh` were retired and **deleted**; only `wip-deploy` ships today. Older external docs may still reference them — ignore those references and use `wip-deploy` for all installs.
 
 ---
 
@@ -363,30 +356,7 @@ wip-deploy install --preset standard --target compose --hostname wip-pi.local \
 
 `WIP_DATA_DIR` is the underlying env var the deployer writes into `.env`. If you want to relocate after the install, stop services, move the tree, update `.env`, and recreate.
 
-### 5.3 Pi: USB SSD setup
-
-```bash
-# Identify the device
-lsblk
-
-# Create a filesystem (CAUTION: destroys existing data on the partition)
-sudo mkfs.ext4 /dev/sda1
-
-# Mount and own
-sudo mkdir -p /mnt/wip-data
-sudo mount /dev/sda1 /mnt/wip-data
-sudo chown -R "$USER:$USER" /mnt/wip-data
-
-# Persist across reboots — by UUID
-sudo blkid /dev/sda1   # copy the UUID
-echo 'UUID=<your-uuid>  /mnt/wip-data  ext4  defaults,noatime  0  2' | sudo tee -a /etc/fstab
-
-# Install with the SSD as data dir
-wip-deploy install --preset standard --target compose --hostname wip-pi.local \
-  --data-dir /mnt/wip-data
-```
-
-### 5.4 Network storage (NFS / GlusterFS / Ceph)
+### 5.3 Network storage (NFS / GlusterFS / Ceph)
 
 Mount the remote share at `/mnt/wip-data` (or wherever) and use `--data-dir` exactly as above. NFS works well for backup hosts and shared storage. GlusterFS and Ceph are options if you want HA across nodes; they're more involved than this guide covers — your `fstab` for NFS:
 
@@ -394,7 +364,7 @@ Mount the remote share at `/mnt/wip-data` (or wherever) and use `--data-dir` exa
 nas.local:/exports/wip-data  /mnt/wip-data  nfs  defaults,_netdev  0  0
 ```
 
-### 5.5 Container user mapping (Dex)
+### 5.4 Container user mapping (Dex)
 
 Dex runs as UID 1001 inside the container. With rootless podman, the host UID is mapped through the user namespace; the deployer handles this on a fresh install. If you set up storage manually and Dex won't start ("unable to open database file"), set ownership explicitly:
 
@@ -405,7 +375,7 @@ podman restart wip-dex
 
 Do **not** use `chmod 777` to "fix" permission errors on auth data.
 
-### 5.6 Backup
+### 5.5 Backup
 
 The recommended quick backup is a stop-and-tar:
 
@@ -443,7 +413,7 @@ WIP is a backend; "apps" are user-facing UIs that talk to it. The deployer has f
 
 ### 6.1 The App Contract (v2)
 
-An app ships **one file** alongside its source — `wip-app.yaml` — declaring everything the deployer needs to wire it in. Example (abridged from `apps/react-console/wip-app.yaml`):
+Each managed app has a manifest at `apps/<name>/wip-app.yaml` **in the WIP repo** (not in the app's own source tree) declaring everything the deployer needs to wire it in. The deployer discovers manifests by globbing `<wip-root>/apps/*/wip-app.yaml` — placing one in your app's source repo does nothing. Example (abridged from `apps/react-console/wip-app.yaml`):
 
 ```yaml
 api_version: wip.dev/v1
@@ -488,7 +458,69 @@ The deployer uses this manifest to:
 
 > **Legacy v1 contract.** v1 apps shipped a `docker-compose.app.<name>.yml` chunk with `wip.app.*` labels, picked up by `setup-wip.sh`. v2 manifests are the path forward; v1 chunks may still work in older trees but should not be used for new apps.
 
-### 6.2 Gotchas — every one was discovered the hard way
+### 6.2 Auth shape — pick before you implement
+
+WIP supports three distinct authentication shapes for apps. Pick one at design time; switching later means ripping out scaffolding and rebuilding. Two apps in the current constellation made different picks for non-overlapping reasons, and that's fine — what's not fine is picking the wrong shape by drift instead of by decision.
+
+#### Shape A — Gateway-managed (auth-gateway injects `X-WIP-User`)
+
+The auth-gateway terminates OIDC, validates the JWT, and forwards the request to your app with two headers set: `X-WIP-User` (the verified principal) and `X-WIP-Groups` (the user's groups). Your app reads identity from headers; it does not run an OIDC flow, hold sessions, or manage cookies.
+
+- **Manifest:** `routes[].auth_required: true` on every protected route.
+- **App env:** `WIP_API_KEY` (or `WIP_API_KEY_FILE`) for outbound API calls. No OIDC client config, no session secret, no cookie config.
+- **In WIP today:** react-console.
+- **When to pick:** you need per-user authorization but don't need to customize claims handling, session lifetime, profile pages, or the OIDC flow itself.
+- **What you give up:** no control over the auth flow. The gateway's verification logic is what it is.
+
+#### Shape B — App-side OIDC (sharing Dex as IdP)
+
+Your app runs its own OIDC client (`express-session` + `openid-client`, or equivalent) and points it at Dex (WIP's IdP). The gateway passes the request through unauthenticated; the app handles login redirects, sessions, cookies, and identity verification itself.
+
+- **Manifest:** `routes[].auth_required: false` (the gateway hands the request to the app; the app gates access via its own session middleware).
+- **App env:** `OIDC_ISSUER` (external Dex URL), `OIDC_INTERNAL_ISSUER` (internal Dex URL for localhost), `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `SESSION_SECRET`. Plus `WIP_API_KEY` for outbound platform calls.
+- **In WIP today:** WIP-KB (browser-facing routes).
+- **When to pick:** you need custom claims handling, custom session lifetime, an in-app login/profile UX, or integration with non-WIP IdPs you've added to Dex's connectors.
+- **What you sign up for:** sessions, cookies, the `trust proxy` dance, OIDC `state` parameter discipline, cookie-path-with-trailing-slash — all the gotchas in §6.3 around sessions exist because Shape B is in play.
+
+#### Shape C — API-key only (no user identity)
+
+The app authenticates as a service, not a user. Requests carry `X-API-Key` (or use the file-backed equivalent). There's no session, no cookie, no user binding — every request is "this service did it."
+
+- **Manifest:** either omit `routes` entirely (the app isn't user-facing), or set `routes[].auth_required: false` on the no-user-identity routes.
+- **App env:** `WIP_API_KEY` or `WIP_API_KEY_FILE`. Nothing else auth-related.
+- **In WIP today:** WIP-KB's askBar NL-query endpoint (talks to the platform via a privileged API key, independent of the session-based user auth on its UI routes); admin scripts; batch importers.
+- **When to pick:** your app doesn't have a per-user model. Admin tools, batch processors, system services.
+- **What you give up:** audit trail attribution to a user. Every action looks like the service did it. If "who initiated this" matters later, you'll regret it.
+
+#### Decision matrix
+
+| Question | A — Gateway | B — App-side OIDC | C — API-key only |
+|---|:-:|:-:|:-:|
+| Does your app need user identity? | yes | yes | no |
+| Custom claims / session lifetime / login UX? | no | yes | n/a |
+| Integration with non-WIP IdPs (Google, Okta, etc.)? | no | yes | n/a |
+| Per-user authorization on routes? | yes | yes | no |
+| Will every request look like "the service did it"? | no | no | yes |
+
+#### Failure modes for picking wrong
+
+| Wrong pick | Symptom | Cost to recover |
+|---|---|---|
+| Shape B when A would have worked | You wired up sessions, cookies, OIDC client, `trust proxy`, the §6.3 gotchas — all for what `X-WIP-User` would have given you for free | Medium: rip out scaffold, switch manifest to `auth_required: true`, replace session middleware with header reads |
+| Shape A when you actually need custom claims | You hit a wall when needing to extend the gateway's verification, or wanting non-standard session lifetimes | High: switch to B mid-life; everything Shape A skipped you now have to implement |
+| Shape C when you need user identity | Audit logs say "service did it"; can't attribute actions; security review later asks "who" and you can't answer | High: add a session/identity layer onto an app that wasn't designed for one |
+
+#### Combining shapes for different endpoints
+
+An app can run multiple shapes side-by-side; each route in the manifest can declare its own `auth_required` and the app dispatches accordingly. WIP-KB does exactly this: browser-facing routes are Shape B (session cookies, app-side OIDC), while the askBar's `/api/ask` endpoint is Shape C (API key against the platform, no user binding because the question doesn't need one).
+
+If you find yourself wanting to mix, that's fine — but declare each route's intent in the manifest explicitly, and document in your app's README which shape lives where. The shape isn't visible to a reader of `wip-app.yaml` from the outside; making it visible saves the next agent debugging a "why is this route un-protected?" mystery.
+
+#### One pragmatic note
+
+Today's `wip-app.yaml` doesn't carry an explicit `auth_mode` field — Shape A vs B is inferred from `routes[].auth_required` (true → A, false + app-side OIDC env vars → B). That works but it's implicit; a future schema addition may name the shape directly so the deploy-readiness check can verify it. Until then, document the intent in the manifest as a top-level comment so a reader doesn't have to guess.
+
+### 6.3 Gotchas — every one was discovered the hard way
 
 These bit real apps in real deployments. Internalise them before you ship.
 
@@ -534,7 +566,7 @@ Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
 | `WIP_API_KEY` | Runtime | env from manifest (`from_secret: api-key`) |
 | `OIDC_ISSUER` | Runtime | env (the *external* URL — `https://<hostname>:8443/dex`) |
 
-### 6.3 Common app failures
+### 6.4 Common app failures
 
 | Symptom | Probable cause | Fix |
 |---|---|---|
@@ -724,11 +756,11 @@ If using SSH stdio and the connection drops:
 | 404 on `/api/<svc>/...` calls | §3.2 Caddy `handle` vs `handle_path` | Use `handle`, not `handle_path` |
 | Health probe says "200" but the service isn't really up | §3.3 Caddy 200-on-unmatched | Validate by content, not just status code |
 | Env change didn't take effect | §7.2 Recreate, don't restart | `podman-compose down && podman-compose up -d` |
-| "unable to open database file" on Dex | §5.5 Container user mapping | `podman unshare chown 1001:1001 <data-dir>/dex` |
-| App returns 502 calling WIP from inside its container | §6.2 gotcha 2 | Use `http://wip-caddy:8080`, not `https://wip-caddy:8443` |
-| App's static assets return 404 with MIME-type errors | §6.2 gotcha 1 | Bake `VITE_BASE_PATH` at build time with `--build-arg` |
+| "unable to open database file" on Dex | §5.4 Container user mapping | `podman unshare chown 1001:1001 <data-dir>/dex` |
+| App returns 502 calling WIP from inside its container | §6.3 gotcha 2 | Use `http://wip-caddy:8080`, not `https://wip-caddy:8443` |
+| App's static assets return 404 with MIME-type errors | §6.3 gotcha 1 | Bake `VITE_BASE_PATH` at build time with `--build-arg` |
 | Non-privileged API key gets 403 on every call | §4.5 Namespace scoping | Add a `namespaces` field; or put the key in `wip-admins` / `wip-services` |
-| MongoDB won't start on a network filesystem | §5.4 Network storage | WiredTiger doesn't like some NFS configurations; prefer local storage for MongoDB |
+| MongoDB won't start on a network filesystem | §5.3 Network storage | WiredTiger doesn't like some NFS configurations; prefer local storage for MongoDB |
 
 ---
 
