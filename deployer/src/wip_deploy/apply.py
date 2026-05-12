@@ -346,6 +346,65 @@ def restart_compose_services(
         ) from e
 
 
+def up_compose_install(
+    *,
+    install_dir: Path,
+    wait: bool = True,
+    timeout_seconds: int = 120,
+) -> None:
+    """Bring up every service declared in the rendered docker-compose.yaml.
+
+    Counterpart to `restart_compose_services` and `rebuild_compose_services`
+    that operates on the WHOLE install — runs `compose up -d` without
+    rebuilding images or re-rendering the spec. Picks up containers
+    left in `exited` after a host reboot / podman-machine restart and
+    bounces them back to running. No state recomputation: the on-disk
+    docker-compose.yaml is the source of truth (CASE-331 Fix A).
+
+    Raises ApplyError if the install directory or compose file is
+    missing, or if `compose up` fails.
+    """
+    install_dir = Path(install_dir)
+    compose_file = install_dir / "docker-compose.yaml"
+    if not compose_file.is_file():
+        raise ApplyError(
+            f"no docker-compose.yaml under {install_dir}; run "
+            f"`wip-deploy install` first"
+        )
+
+    compose_cmd = _detect_compose_cmd()
+    _run_up(install_dir, compose_cmd, force_build=False)
+
+    if not wait:
+        return
+
+    expected = _healthcheck_container_names_from_compose(compose_file)
+    if not expected:
+        return
+
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        statuses = _compose_ps(install_dir, compose_cmd)
+        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
+        if not unhealthy:
+            return
+        time.sleep(2)
+
+
+def _healthcheck_container_names_from_compose(compose_file: Path) -> set[str]:
+    """Container names (`wip-<svc>`) for compose services that declare a healthcheck.
+
+    Used by `up_compose_install` to derive the wait set without
+    re-loading the spec/components/apps (CASE-331 Fix A — the on-disk
+    docker-compose.yaml is the source of truth for this path).
+    """
+    services = _services_in_compose(compose_file)
+    return {
+        f"wip-{svc}" for svc in services
+        if _service_has_healthcheck(compose_file, svc)
+    }
+
+
 def _services_in_compose(compose_file: Path) -> set[str]:
     """Read the service keys from a rendered docker-compose.yaml."""
     import yaml as _yaml

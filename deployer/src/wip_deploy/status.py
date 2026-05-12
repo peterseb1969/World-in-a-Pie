@@ -72,6 +72,31 @@ def read_compose_status(install_dir: Path) -> list[ServiceStatus]:
     return rows
 
 
+def split_services_and_apps(
+    rows: list[ServiceStatus], app_names: set[str]
+) -> tuple[list[ServiceStatus], list[ServiceStatus]]:
+    """Partition a status table into (services, apps) by container name.
+
+    Apps are containerised under `wip-<app-name>` per the convention
+    in the rendered compose. `app_names` is the set of declared app
+    names from `deployment.deployer-state.spec.apps` — i.e. names that
+    were configured by the most recent install. Any container that
+    matches `wip-<app_name>` for one of those names goes in the apps
+    bucket; the rest stay with services. CASE-331 Fix C — answers
+    "did the post-reboot bring-up include the apps?" from `status`
+    alone.
+    """
+    app_container_names = {f"wip-{n}" for n in app_names}
+    services: list[ServiceStatus] = []
+    apps: list[ServiceStatus] = []
+    for row in rows:
+        if row.name in app_container_names:
+            apps.append(row)
+        else:
+            services.append(row)
+    return services, apps
+
+
 # ────────────────────────────────────────────────────────────────────
 # K8s
 # ────────────────────────────────────────────────────────────────────
