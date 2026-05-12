@@ -1176,6 +1176,130 @@ def up(
 
 
 # ────────────────────────────────────────────────────────────────────
+# validate-manifest (CASE-353)
+#
+# Validates a single `wip-app.yaml` against the current WIP root's
+# discovered components/apps — schema (Pydantic on `App`) + references
+# (`from_component*`, `depends_on`, route collisions). The canonical
+# validator the `/deploy ready` slash command wraps; APP-YACs can run
+# it standalone too. Scope is schema + references only (no build
+# context, no env value resolution, no live cluster).
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command("validate-manifest")
+def validate_manifest_cmd(
+    manifest_path: Annotated[
+        Path,
+        typer.Argument(
+            help=(
+                "Path to a `wip-app.yaml` file, or a directory containing "
+                "one. The validator reads the file but never modifies it."
+            ),
+        ),
+    ],
+    repo_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-root",
+            help=(
+                "WIP repo root to discover components/apps against. "
+                "Defaults to the repo containing the running wip-deploy "
+                "installation."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Validate an external `wip-app.yaml` against the current WIP root.
+
+    The canonical answer to "would this manifest be accepted by the
+    deployer?" — without staging the manifest into the WIP repo first.
+    Use it from an APP-YAC's repo to verify a draft manifest before
+    asking an operator to integrate it.
+
+    Two layers of validation:
+
+      1. Schema — Pydantic validation on the `App` model. Catches
+         missing fields, wrong types, bad enum values.
+      2. References — names in `from_component*`, `depends_on`, and
+         route paths are checked against the WIP root's discovered
+         components and apps. Any reference that doesn't resolve is
+         flagged with the list of valid alternatives.
+
+    Out of scope (v1): build context, env value resolution
+    (`from_secret` accepts any non-empty name), live cluster state.
+
+    Exit codes:
+      0  Manifest passes schema + reference validation.
+      1  Validation failed (errors emitted to stderr).
+      2  Could not load the manifest (file missing, YAML parse error,
+         not a YAML mapping).
+
+    Examples:
+
+      wip-deploy validate-manifest /Users/peter/Development/WIP-KB/wip-app.yaml
+      wip-deploy validate-manifest /Users/peter/Development/WIP-KB
+      wip-deploy validate-manifest ./apps/react-console/wip-app.yaml --repo-root .
+    """
+    from wip_deploy.validate_manifest import (
+        ManifestLoadError,
+        resolve_manifest_path,
+        validate_manifest,
+    )
+
+    try:
+        resolved = resolve_manifest_path(manifest_path)
+    except ManifestLoadError as e:
+        typer.echo(f"error: {e.message}", err=True)
+        raise typer.Exit(2) from None
+
+    if repo_root is None:
+        try:
+            repo_root = find_repo_root()
+        except FileNotFoundError as e:
+            typer.echo(
+                f"error: cannot resolve WIP repo root — pass --repo-root: {e}",
+                err=True,
+            )
+            raise typer.Exit(2) from None
+    elif not repo_root.is_dir():
+        typer.echo(
+            f"error: --repo-root {repo_root} is not a directory",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        app_obj, errors = validate_manifest(resolved, repo_root)
+    except ManifestLoadError as e:
+        typer.echo(f"error: {e.message}", err=True)
+        raise typer.Exit(2) from None
+
+    if errors:
+        typer.echo(
+            typer.style(
+                f"✗ {resolved}: {len(errors)} validation error"
+                f"{'s' if len(errors) != 1 else ''}",
+                fg=typer.colors.RED,
+                bold=True,
+            ),
+            err=True,
+        )
+        for err in errors:
+            typer.echo(err.format(), err=True)
+        raise typer.Exit(1)
+
+    assert app_obj is not None  # errors empty → app populated
+    typer.echo(
+        typer.style(
+            f"✓ {resolved}: {app_obj.metadata.name!r} manifest is valid",
+            fg=typer.colors.GREEN,
+            bold=True,
+        )
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
 # add-app / remove-app / add-module / remove-module (CASE-313)
 #
 # Additive mutation verbs. Load the persisted deployment-state, mutate
