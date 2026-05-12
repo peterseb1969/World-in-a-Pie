@@ -638,6 +638,19 @@ def install(
             "--wait-timeout", help="Override spec.apply.timeout_seconds."
         ),
     ] = None,
+    reconcile: Annotated[
+        bool,
+        typer.Option(
+            "--reconcile",
+            help=(
+                "Allow this install to remove apps or optional modules "
+                "that were present in the previous install but absent "
+                "from the current invocation. Without this flag, an "
+                "install that would drop state aborts with an actionable "
+                "error listing the items at risk (CASE-331 Fix B)."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Build → validate → render → apply. The end-to-end install verb.
 
@@ -711,6 +724,24 @@ def install(
         deployment.spec.apply.timeout_seconds = wait_timeout
 
     target_dir = install_dir or _default_install_dir(name)
+
+    # CASE-331 Fix B — refuse to silently drop apps or optional modules
+    # that were in the previous install but absent from this invocation.
+    # The pre-CASE-331 behaviour: running `wip-deploy install` with
+    # reduced flags (e.g., omitting --app-source for an app that was
+    # previously installed) silently removed that state. Compare new
+    # spec against the persisted previous spec and abort with an
+    # actionable error if anything is going away — unless --reconcile
+    # is set, which is the deliberate "yes I really mean to drop these"
+    # opt-in.
+    previous = _try_load_previous_deployment(target_dir)
+    if previous is not None:
+        dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
+        if (dropped_apps or dropped_modules) and not reconcile:
+            _print_drop_warning_and_exit(
+                dropped_apps=dropped_apps,
+                dropped_modules=dropped_modules,
+            )
 
     # Preflight: catch port conflicts and stale containers before any work
     # happens. Only applies to compose/dev targets that bind host ports;
@@ -853,6 +884,7 @@ def status(
         format_table,
         read_compose_status,
         read_k8s_status,
+        split_services_and_apps,
     )
 
     if namespace is not None:
@@ -862,17 +894,52 @@ def status(
             typer.echo(f"error: {e}", err=True)
             raise typer.Exit(1) from e
         typer.echo(f"Namespace: {namespace}")
-    else:
-        resolved_dir = install_dir or _default_install_dir(name)
-        try:
-            rows = read_compose_status(resolved_dir)
-        except StatusError as e:
-            typer.echo(f"error: {e}", err=True)
-            raise typer.Exit(1) from e
-        typer.echo(f"Install dir: {resolved_dir}")
+        typer.echo("")
+        typer.echo(format_table(rows))
+        return
+
+    resolved_dir = install_dir or _default_install_dir(name)
+    try:
+        rows = read_compose_status(resolved_dir)
+    except StatusError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(1) from e
+    typer.echo(f"Install dir: {resolved_dir}")
+
+    # CASE-331 Fix C — separate services from apps so the table makes
+    # the "did the apps make it back up" question answerable from
+    # `wip-deploy status` alone. App names come from the persisted
+    # deployer-state; if the state file is missing or unreadable we
+    # fall back to the pre-CASE-331 single-table render.
+    previous = _try_load_previous_deployment(resolved_dir)
+    if previous is None:
+        typer.echo("")
+        typer.echo(format_table(rows))
+        return
+
+    enabled_app_names = {a.name for a in previous.spec.apps if a.enabled}
+    services_rows, apps_rows = split_services_and_apps(rows, enabled_app_names)
 
     typer.echo("")
-    typer.echo(format_table(rows))
+    typer.echo("Services:")
+    typer.echo(format_table(services_rows))
+
+    if enabled_app_names:
+        typer.echo("")
+        typer.echo("Apps:")
+        if apps_rows:
+            typer.echo(format_table(apps_rows))
+        else:
+            # State declares apps but none are running — surface the
+            # gap loudly. This is the post-reboot-without-apps shape
+            # the case body called out.
+            declared = ", ".join(sorted(enabled_app_names))
+            typer.echo(
+                typer.style(
+                    f"  ⚠ declared but not running: {declared}",
+                    fg=typer.colors.YELLOW,
+                )
+            )
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1030,6 +1097,79 @@ def restart(
     typer.echo(
         typer.style(
             f"✓ Restarted {restarted}", fg=typer.colors.GREEN, bold=True
+        )
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
+# up
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command()
+def up(
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Compose install directory. Defaults to "
+                "~/.wip-deploy/<name>/."
+            ),
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    no_wait: Annotated[
+        bool,
+        typer.Option("--no-wait", help="Skip waiting for healthy."),
+    ] = False,
+    wait_timeout: Annotated[
+        int,
+        typer.Option(
+            "--wait-timeout", help="Seconds to wait for healthy (default 120)."
+        ),
+    ] = 120,
+) -> None:
+    """Bring an existing install back to running, no spec recomputation.
+
+    Compose/dev only. Reads the rendered docker-compose.yaml under the
+    install directory and runs `compose up -d` against it — picks up
+    exited containers after a host reboot, laptop sleep, or
+    podman-machine restart without going through the full
+    `install` flow. No rebuild, no re-render, no risk of dropping
+    apps that weren't re-specified on the command line (CASE-331
+    Fix A; the install flow's destructive shape is the reason this
+    subcommand exists).
+
+    For Dockerfile / package.json edits use `wip-deploy rebuild`.
+    For spec or component-manifest edits use `wip-deploy install`.
+
+    Examples:
+
+      wip-deploy up
+      wip-deploy up --name wip-dev-local
+      wip-deploy up --name wip-dev-local --no-wait
+    """
+    from wip_deploy.apply import ApplyError, up_compose_install
+
+    name = _resolve_name(name)
+    target_dir = install_dir or _default_install_dir(name)
+
+    try:
+        up_compose_install(
+            install_dir=target_dir,
+            wait=not no_wait,
+            timeout_seconds=wait_timeout,
+        )
+    except ApplyError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    typer.echo(
+        typer.style(
+            f"✓ Brought up install at {target_dir}",
+            fg=typer.colors.GREEN,
+            bold=True,
         )
     )
 
@@ -1575,6 +1715,89 @@ def _load_deployment(install_dir: Path) -> Deployment:
     except Exception as e:
         typer.echo(f"error: {target} failed to deserialize: {e}", err=True)
         raise typer.Exit(2) from e
+
+
+def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
+    """Return the persisted Deployment, or None if absent / unreadable.
+
+    Forgiving counterpart to `_load_deployment` (which exits the process
+    on missing or invalid state). Used by the install flow's
+    CASE-331 Fix B drop-warning logic: if there's nothing to compare
+    against (first install, corrupt state file, schema mismatch), we
+    simply skip the comparison and proceed.
+    """
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    legacy = install_dir / "deployment.json"
+    if not target.exists() and legacy.exists():
+        target = legacy
+    if not target.exists():
+        return None
+    try:
+        payload = json.loads(target.read_text())
+    except json.JSONDecodeError:
+        return None
+    if payload.get("wip_deploy_format_version") != _DEPLOYMENT_JSON_VERSION:
+        return None
+    try:
+        return Deployment.model_validate(payload["deployment"])
+    except Exception:
+        return None
+
+
+def _diff_spec_for_drops(
+    previous: Deployment, current: Deployment
+) -> tuple[list[str], list[str]]:
+    """Return (apps_dropped, modules_dropped) when re-running install.
+
+    An app is "dropped" if it was enabled in the previous spec but is
+    either absent or disabled in the current one. A module is "dropped"
+    if it was in the previous `modules.optional` list but is absent from
+    the current one. (CASE-331 Fix B.)
+    """
+    prev_enabled_apps = {a.name for a in previous.spec.apps if a.enabled}
+    new_enabled_apps = {a.name for a in current.spec.apps if a.enabled}
+    dropped_apps = sorted(prev_enabled_apps - new_enabled_apps)
+
+    prev_modules = set(previous.spec.modules.optional)
+    new_modules = set(current.spec.modules.optional)
+    dropped_modules = sorted(prev_modules - new_modules)
+
+    return dropped_apps, dropped_modules
+
+
+def _print_drop_warning_and_exit(
+    *,
+    dropped_apps: list[str],
+    dropped_modules: list[str],
+) -> None:
+    """Emit the CASE-331 Fix B abort message and exit non-zero."""
+    typer.echo(
+        typer.style(
+            "✗ install aborted: this would remove state from the "
+            "previous install.",
+            fg=typer.colors.RED,
+            bold=True,
+        ),
+        err=True,
+    )
+    if dropped_apps:
+        typer.echo("", err=True)
+        typer.echo("  Apps to remove:", err=True)
+        for name in dropped_apps:
+            typer.echo(f"    - {name}", err=True)
+    if dropped_modules:
+        typer.echo("", err=True)
+        typer.echo("  Optional modules to remove:", err=True)
+        for name in dropped_modules:
+            typer.echo(f"    - {name}", err=True)
+    typer.echo("", err=True)
+    typer.echo(
+        "  If this is what you want, re-run with --reconcile. Otherwise "
+        "re-add the missing --app-source / --add flags so the previous "
+        "state is preserved.",
+        err=True,
+    )
+    raise typer.Exit(2)
 
 
 def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
