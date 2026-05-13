@@ -38,3 +38,11 @@ spec:
     command: ["sh", "-c", "curl -fsS -o /dev/null -w '%{http_code}' http://localhost:8080/ | grep -qE '^[0-9]{3}$'"]
     start_period_seconds: 5
 
+  # CASE-359: the router only routes to internal core services. In
+  # apps-only installs (suppress_core=True), there's nothing to route
+  # to — the router auto-deactivates. Apps that need a remote WIP
+  # in apps-only mode must use `from_spec: network.external_base_url`
+  # (CASE-358) instead of `from_component: router` for WIP_BASE_URL.
+  activation:
+    requires_core: true
+

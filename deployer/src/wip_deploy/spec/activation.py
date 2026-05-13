@@ -6,7 +6,9 @@ here — and nowhere else — prevents renderers and config generators from
 re-implementing it with subtle differences.
 
 Rules:
-  - category=core:           always active
+  - category=core:           active iff `modules.suppress_core` is False
+                             (CASE-359). True by default; flipped only
+                             for apps-only cross-host installs.
   - category=optional:       active iff name is in deployment.spec.modules.optional
   - category=infrastructure: active iff
         component.spec.activation is None, OR
@@ -24,7 +26,10 @@ def is_component_active(component: Component, deployment: Deployment) -> bool:
     cat = component.metadata.category
 
     if cat == "core":
-        return True
+        # CASE-359: apps-only installs deactivate core. Used for
+        # cross-host scenarios where this install's apps talk to a
+        # remote WIP via --remote-wip (CASE-358).
+        return not deployment.spec.modules.suppress_core
 
     if cat == "optional":
         return component.metadata.name in deployment.spec.modules.optional
@@ -52,5 +57,12 @@ def _activation_predicate_holds(
         and (
             predicate.requires_auth_gateway is None
             or spec.auth.gateway == predicate.requires_auth_gateway
+        )
+        and (
+            # CASE-359: requires_core=True means "this infrastructure
+            # exists to support core" (e.g., mongodb, router). When
+            # suppress_core is True, these auto-deactivate.
+            predicate.requires_core is None
+            or (not spec.modules.suppress_core) == predicate.requires_core
         )
     )

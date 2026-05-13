@@ -198,6 +198,19 @@ def resolve_env_source(
         return SecretRef(source.from_secret)
 
     if source.from_component is not None:
+        # CASE-359: the wip-router is the apps' handle to "the WIP
+        # backend URL." When apps-only suppresses it, the semantically-
+        # correct substitute is the deployment's external_base_url —
+        # which itself resolves to remote_wip_url (cross-host) or this
+        # install's _public_base (single-host fallback). This keeps app
+        # manifests that declare `from_component: router` for WIP_BASE_URL
+        # working in apps-only mode without per-app manifest edits.
+        if (
+            source.from_component == "router"
+            and source.from_component not in active_names
+            and deployment.spec.modules.suppress_core
+        ):
+            return Literal(ctx.network.external_base_url)
         target_c = _lookup_active_component(
             source.from_component, components_by_name, active_names, "from_component"
         )

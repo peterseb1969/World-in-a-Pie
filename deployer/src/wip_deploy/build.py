@@ -48,6 +48,12 @@ class BuildInputs:
     # CASE-358: URL of a remote WIP this install points at. Plumbs to
     # NetworkSpec.remote_wip_url. None for standard same-host installs.
     remote_wip_url: str | None = None
+    # CASE-359: apps-only install — suppress core + their infrastructure
+    # dependencies (mongodb, router). Used in cross-host scenarios where
+    # this install runs apps that talk to a remote WIP via remote_wip_url.
+    # When True, also flips auth.gateway=False + auth.mode=api-key-only
+    # (no Dex makes sense without core).
+    apps_only: bool = False
 
     # Compose platform
     compose_data_dir: Path | None = None
@@ -112,6 +118,26 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     for m in inputs.remove:
         if m in optional:
             optional.remove(m)
+
+    # CASE-359: apps-only flips suppress_core and implicitly disables
+    # auth.gateway + downgrades auth.mode to api-key-only (no Dex makes
+    # sense without core services to protect; cross-host apps-only
+    # installs are personal devices where /apps/* is publicly served).
+    if inputs.apps_only:
+        if inputs.add:
+            raise ValueError(
+                f"--apps-only cannot be combined with --add module(s) "
+                f"({', '.join(inputs.add)}). All optional WIP services "
+                f"have from_component: deps on core, which is suppressed "
+                f"in apps-only mode. Either drop --apps-only or drop --add."
+            )
+        # Preset's modules.optional list (mcp-server, reporting-sync,
+        # etc.) all need core. Clear them.
+        spec_dict["modules"]["optional"] = []
+        spec_dict["modules"]["suppress_core"] = True
+        spec_dict["auth"]["mode"] = "api-key-only"
+        spec_dict["auth"]["gateway"] = False
+        spec_dict["auth"]["users"] = []
 
     # --app → spec.apps (replaces preset's app list if any provided)
     if inputs.apps:
