@@ -14,7 +14,7 @@ spec:
     # Per-component tag override. Bumped when the deployer's global content
     # tag won't force a re-pull (Kubernetes IfNotPresent + cached digest).
     # First pin landed for CASE-291 (PUT-vs-PATCH safety-guard parity).
-    tag: v1.0.0
+    tag: wipkb-20260513
     build_context: .
 
   ports:
@@ -36,8 +36,18 @@ spec:
       # gateway injects — required for gateway-authenticated browser
       # flows (as opposed to raw API key callers).
       - {name: WIP_AUTH_TRUST_PROXY_HEADERS, source: {literal: "true"}}
+      # Derived from deployment.spec.auth.mode (CASE-361). api-key-only
+      # → api_key_only; oidc → jwt_only; hybrid → dual. Without this,
+      # wip-auth defaulted to api_key_only regardless of spec.auth.mode,
+      # making oidc/hybrid bearer flows silently inert.
+      - {name: WIP_AUTH_MODE, source: {from_spec: auth.wip_auth_mode}}
     optional:
       - {name: CORS_ORIGINS, source: {from_spec: network.cors_origins}}
+      # JWT issuer URL — internal Dex endpoint. Honored by wip-auth in
+      # jwt_only / dual modes; ignored in api_key_only. Declared optional
+      # so a future deployment without Dex (api-key-only) doesn't need
+      # to plumb a stub value. CASE-361.
+      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
       # Cascade target for namespace-delete (CASE-34/CASE-59). When
       # reporting-sync is active, Registry's namespace-delete flow
       # calls DELETE /api/reporting-sync/namespace/{prefix} to cascade

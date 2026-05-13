@@ -26,6 +26,15 @@ class SpecContextAuth:
     issuer_url_public: str  # URL browsers see
     issuer_url_internal: str  # URL the gateway uses server-to-server
     callback_url: str
+    # WIP_AUTH_MODE for backend services using the wip-auth library.
+    # Maps deployment.spec.auth.mode → wip-auth's runtime mode:
+    #   "api-key-only" → "api_key_only"
+    #   "oidc"         → "jwt_only"
+    #   "hybrid"       → "dual"
+    # Backend services in jwt_only/dual additionally need
+    # WIP_AUTH_JWT_ISSUER_URL — already exposed as issuer_url_internal
+    # above; manifests reference it via from_spec. CASE-361.
+    wip_auth_mode: str
 
 
 @dataclass(frozen=True)
@@ -135,14 +144,28 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
     )
 
 
+# auth.mode (deployment spec) → WIP_AUTH_MODE (wip-auth library env).
+# wip-auth uses underscored mode names (`api_key_only`, `jwt_only`,
+# `dual`); the deployment spec uses kebab-case (`api-key-only`, `oidc`,
+# `hybrid`). The mapping is fixed at three pairs and lives here so any
+# future mode-name change is in one place.
+_AUTH_MODE_TO_WIP_AUTH_MODE: dict[str, str] = {
+    "api-key-only": "api_key_only",
+    "oidc": "jwt_only",
+    "hybrid": "dual",
+}
+
+
 def _compute_auth(deployment: Deployment) -> SpecContextAuth:
     public_base = _public_base(deployment)
+    auth_mode = deployment.spec.auth.mode
     return SpecContextAuth(
         issuer_url_public=f"{public_base}/dex",
         # Internal Dex is on port 5556 inside the network, in the Dex
         # component; path prefix is /dex because Dex expects it.
         issuer_url_internal="http://wip-dex:5556/dex",
         callback_url=f"{public_base}/auth/callback",
+        wip_auth_mode=_AUTH_MODE_TO_WIP_AUTH_MODE[auth_mode],
     )
 
 
