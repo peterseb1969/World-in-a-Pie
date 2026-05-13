@@ -1218,6 +1218,98 @@ def up(
 
 
 # ────────────────────────────────────────────────────────────────────
+# register-app / unregister-app (CASE-356)
+#
+# Per-operator local-app-source registry at `~/.wip-deploy/apps/`.
+# Each entry is a one-key YAML file pointing at the app's local
+# checkout. `wip-deploy install --target dev` consults the directory
+# automatically; CLI `--app-source NAME=PATH` overrides on a per-
+# invocation basis.
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command("register-app")
+def register_app_cmd(
+    app_name: Annotated[
+        str,
+        typer.Argument(
+            help="App name (kebab-case, matches metadata.name in wip-app.yaml)."
+        ),
+    ],
+    path: Annotated[
+        Path,
+        typer.Option(
+            "--path",
+            help=(
+                "Absolute path to the app's source checkout. The directory "
+                "must exist. Used as the build context for `--target dev` "
+                "installs that enable this app."
+            ),
+        ),
+    ],
+) -> None:
+    """Register a local source path for an app (CASE-356 Phase 1).
+
+    Writes `~/.wip-deploy/apps/<name>.yaml`. Future `wip-deploy install
+    --target dev --app <name>` invocations discover the path automatically
+    — no need to re-type `--app-source NAME=PATH` on every install. CLI
+    `--app-source` still wins per invocation, useful for testing a
+    branch from a different checkout.
+
+    Idempotent: re-running with the same name overwrites the entry
+    (how you migrate a moved checkout). Operators can also edit the
+    YAML file by hand.
+
+    Examples:
+
+      wip-deploy register-app react-console --path /Users/peter/Development/WIP-ReactConsole
+      wip-deploy register-app kb --path /Users/peter/Development/WIP-KB
+    """
+    from wip_deploy.app_registry import AppRegistryError, register_app
+
+    try:
+        entry_file = register_app(app_name, path)
+    except AppRegistryError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+
+    typer.echo(
+        typer.style(
+            f"✓ Registered {app_name!r} → {path.expanduser().resolve()}\n"
+            f"  {entry_file}",
+            fg=typer.colors.GREEN,
+        )
+    )
+
+
+@app.command("unregister-app")
+def unregister_app_cmd(
+    app_name: Annotated[
+        str,
+        typer.Argument(help="App name to unregister."),
+    ],
+) -> None:
+    """Remove an app's local-source registration (CASE-356 Phase 1).
+
+    Deletes `~/.wip-deploy/apps/<name>.yaml`. Silent + idempotent
+    when the entry doesn't exist — safe to call repeatedly.
+
+    Examples:
+
+      wip-deploy unregister-app kb
+    """
+    from wip_deploy.app_registry import unregister_app
+
+    existed = unregister_app(app_name)
+    if existed:
+        typer.echo(
+            typer.style(f"✓ Unregistered {app_name!r}", fg=typer.colors.GREEN)
+        )
+    else:
+        typer.echo(f"⊙ {app_name!r} was not registered — no change.")
+
+
+# ────────────────────────────────────────────────────────────────────
 # validate-manifest (CASE-353)
 #
 # Validates a single `wip-app.yaml` against the current WIP root's
@@ -2092,6 +2184,34 @@ def _assemble(
     for reg_name in apps_from_registry:
         if reg_name not in apps:
             apps.append(reg_name)
+
+    # CASE-356: merge per-operator registry into app_sources. CLI
+    # `--app-source NAME=PATH` wins per invocation; registered paths
+    # back-fill for apps the CLI didn't override. Warn when both are
+    # set (different) so the operator knows the CLI is shadowing the
+    # registered path.
+    from wip_deploy.app_registry import read_registry
+    # Local name avoids shadowing the `registry` parameter (image registry URL).
+    app_path_registry = read_registry()
+    final_app_sources: dict[str, Path] = dict(app_sources)
+    for reg_name, reg_path in app_path_registry.items():
+        if reg_name not in apps:
+            # Registry entry for an app that's not enabled in this
+            # install — ignore. Registry holds machine state for ALL
+            # cloned apps; an install enables a subset.
+            continue
+        if reg_name in final_app_sources:
+            if final_app_sources[reg_name] != reg_path:
+                typer.echo(
+                    typer.style(
+                        f"⚠ --app-source override for {reg_name!r} shadows "
+                        f"registered path {reg_path}",
+                        fg=typer.colors.YELLOW,
+                    )
+                )
+            continue
+        final_app_sources[reg_name] = reg_path
+    app_sources = final_app_sources
 
     # Build
     inputs = BuildInputs(
