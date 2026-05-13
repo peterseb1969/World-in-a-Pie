@@ -19,6 +19,13 @@ class SpecContextNetwork:
     hostname: str
     cors_origins: str
     internal_base_url: str  # URL the gateway/apps use to reach Caddy internally
+    # CASE-358: external base URL of the WIP this deployment talks to.
+    # - When network.remote_wip_url is set → that URL verbatim (cross-host
+    #   case, e.g., Console-on-Mac wanting Pi's URL).
+    # - Otherwise → this install's own _public_base
+    #   (`https://<hostname>:<https_port>`, with default-port stripping).
+    # Apps reach this via `from_spec: network.external_base_url`.
+    external_base_url: str
 
 
 @dataclass(frozen=True)
@@ -137,10 +144,16 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
     # `from_spec: network.internal_base_url` — they should migrate.
     internal_base = "http://wip-router:8080"
 
+    # CASE-358: external_base_url — what cross-host apps need.
+    # When --remote-wip set the URL of a remote WIP install, that
+    # wins. Otherwise this install's own public URL.
+    external_base_url = net.remote_wip_url or external
+
     return SpecContextNetwork(
         hostname=net.hostname,
         cors_origins=cors,
         internal_base_url=internal_base,
+        external_base_url=external_base_url,
     )
 
 

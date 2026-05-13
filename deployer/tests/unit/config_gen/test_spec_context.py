@@ -83,7 +83,10 @@ class TestResolveFromSpec:
     def _simple_ctx(self) -> SpecContext:
         return SpecContext(
             network=SpecContextNetwork(
-                hostname="h", cors_origins="c", internal_base_url="u"
+                hostname="h",
+                cors_origins="c",
+                internal_base_url="u",
+                external_base_url="https://h",
             ),
             auth=SpecContextAuth(
                 issuer_url_public="pub",

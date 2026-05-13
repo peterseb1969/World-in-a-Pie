@@ -222,6 +222,24 @@ def _app_from_registry_opt() -> typer.models.OptionInfo:
     )
 
 
+def _remote_wip_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--remote-wip",
+        help=(
+            "URL of a remote WIP install this install's apps should "
+            "talk to (e.g., https://wip-pi.local:8443). Apps that "
+            "declare WIP_BASE_URL via `from_spec: network.external_base_url` "
+            "resolve to this URL instead of the local install's public "
+            "URL. Use for cross-host scenarios — Console-on-Mac pointing "
+            "at WIP-on-Pi. CASE-358. "
+            "NOTE: this only plumbs the URL; the local install still "
+            "deploys its full backend stack. An apps-only mode that "
+            "suppresses core services for cross-host is tracked in "
+            "CASE-359."
+        ),
+    )
+
+
 def _parse_app_sources_or_exit(raw: list[str]) -> dict[str, Path]:
     """CLI-facing wrapper around `_parse_app_sources` that reports parse
     errors via typer and exits 2 on failure."""
@@ -349,6 +367,7 @@ def validate(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -390,6 +409,7 @@ def validate(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        remote_wip_url=remote_wip,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -461,6 +481,7 @@ def show_spec(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -504,6 +525,7 @@ def show_spec(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        remote_wip_url=remote_wip,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -548,6 +570,7 @@ def render(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -595,6 +618,7 @@ def render(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        remote_wip_url=remote_wip,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -652,6 +676,7 @@ def install(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -745,6 +770,7 @@ def install(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        remote_wip_url=remote_wip,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -2302,6 +2328,7 @@ def _assemble(
     secrets_location: str | None,
     repo_root: Path | None,
     name: str,
+    remote_wip_url: str | None = None,
     skip_discovery: bool = False,
 ) -> tuple[Deployment, list, list]:  # type: ignore[type-arg]
     """Assemble the Deployment and, unless skipped, discover manifests.
@@ -2391,7 +2418,23 @@ def _assemble(
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
         secrets_location=secrets_location,
+        remote_wip_url=remote_wip_url,
     )
+
+    # CASE-358: surface the cross-host caveat. --remote-wip plumbs the URL
+    # but doesn't suppress local backend services yet (that's CASE-359).
+    # The yellow nudge tells the operator what they're getting today vs
+    # what's waiting on apps-only mode.
+    if remote_wip_url is not None:
+        typer.echo(
+            typer.style(
+                f"⚠ --remote-wip {remote_wip_url} plumbs the URL but the local "
+                "install still deploys its full backend stack. For a true "
+                "apps-only install pointed at a remote WIP, see CASE-359.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
+        )
 
     try:
         deployment = build_deployment(inputs)
