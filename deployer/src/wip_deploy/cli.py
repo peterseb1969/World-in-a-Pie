@@ -19,6 +19,11 @@ from wip_deploy import __version__
 from wip_deploy.apply import ApplyError, apply_compose, apply_k8s
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.discovery import discover, find_repo_root
+from wip_deploy.export_ca import (
+    TRUST_INSTRUCTIONS,
+    ExportCAError,
+    export_caddy_internal_ca,
+)
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
@@ -2016,6 +2021,153 @@ def _nuke_purge_all(
             fg=typer.colors.GREEN,
         )
     )
+
+
+# ────────────────────────────────────────────────────────────────────
+# export-ca (CASE-360)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command("export-ca")
+def export_ca(
+    name: Annotated[str | None, _name_opt()] = None,
+    out: Annotated[
+        Path | None,
+        typer.Option(
+            "--out",
+            help=(
+                "Write the CA to this file. When omitted, the PEM is "
+                "printed to stdout — handy for piping to `tee` or `openssl`."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Export the Caddy-managed internal CA so off-host clients can trust it.
+
+    `wip-deploy install --tls internal` (the compose/dev default) makes
+    Caddy generate a self-signed root CA the first time it serves HTTPS.
+    Same-host browsers accept it on first prompt; off-host clients
+    (curl, Node.js, embedded devices) reject it without an explicit
+    trust step. This verb extracts the CA so the operator can install
+    it into the target system's trust store.
+
+    The install must be running — the cert is read live from the
+    wip-caddy container, not from a host-side path.
+
+    Limitations:
+      - Only supported for installs with `--tls internal` (the default
+        for compose/dev). letsencrypt + external + self-signed paths
+        each have a different right answer — see `wip-deploy help`.
+      - k8s installs are not yet supported (they use an operator-
+        provided cert in a TLS Secret; the deployer doesn't generate
+        a CA).
+
+    Examples:
+
+      # Write to a file and follow the printed trust instructions
+      wip-deploy export-ca --out wip-pi.local.crt
+
+      # Print to stdout (pipe to a tool)
+      wip-deploy export-ca | openssl x509 -text -noout
+    """
+    name = _resolve_name(name)
+    install_dir = _default_install_dir(name)
+
+    if not install_dir.exists():
+        typer.echo(
+            typer.style(
+                f"✗ install dir does not exist: {install_dir}",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        typer.echo(
+            "  Run `wip-deploy install --name ...` first, or pass --name "
+            "to point at an existing install.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        deployment = _load_deployment(install_dir)
+    except typer.Exit:
+        raise  # _load_deployment already printed an actionable message
+    except Exception as e:
+        typer.echo(
+            typer.style(f"✗ could not load deployment spec: {e}", fg=typer.colors.RED),
+            err=True,
+        )
+        raise typer.Exit(2) from e
+
+    # Validate target/tls combination — the friendly-error matrix from
+    # the CASE-360 body. Each non-supported mode gets its own message
+    # pointing at the right place to look.
+    spec = deployment.spec
+    if spec.target == "k8s":
+        typer.echo(
+            typer.style(
+                "✗ export-ca is not supported for k8s installs.",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        typer.echo(
+            f"  K8s installs use an operator-provided TLS cert in the "
+            f"{spec.platform.k8s.tls_secret_name!r} Secret. "
+            "Export it with: kubectl get secret "
+            f"{spec.platform.k8s.tls_secret_name} -n {spec.platform.k8s.namespace} "
+            "-o jsonpath='{.data.tls\\.crt}' | base64 -d",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if spec.network.tls != "internal":
+        typer.echo(
+            typer.style(
+                f"✗ export-ca only applies to --tls internal installs. "
+                f"This install uses --tls {spec.network.tls!r}.",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        if spec.network.tls == "letsencrypt":
+            typer.echo(
+                "  letsencrypt issues a real certificate trusted by every "
+                "browser and OS — no CA export needed. The browser already "
+                "trusts the Let's Encrypt root.",
+                err=True,
+            )
+        elif spec.network.tls == "external":
+            typer.echo(
+                "  --tls external means TLS terminates upstream of Caddy. "
+                "The cert is your upstream terminator's responsibility — "
+                "ask it for its CA chain.",
+                err=True,
+            )
+        raise typer.Exit(2)
+
+    try:
+        pem = export_caddy_internal_ca()
+    except ExportCAError as e:
+        typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
+        raise typer.Exit(1) from e
+
+    if out is None:
+        # stdout target — write bytes directly so pipe-to-openssl works.
+        # typer.echo would add a trailing newline + apply text coercion.
+        import sys
+
+        sys.stdout.buffer.write(pem)
+        return
+
+    out.write_bytes(pem)
+    typer.echo(
+        typer.style(
+            f"✓ Wrote internal CA to {out}", fg=typer.colors.GREEN,
+        ),
+    )
+    typer.echo("")
+    typer.echo(TRUST_INSTRUCTIONS.format(out=out))
 
 
 def _confirm(prompt: str) -> bool:
