@@ -30,3 +30,10 @@ spec:
     timeout_seconds: 10
     start_period_seconds: 15
     retries: 5
+
+  # CASE-359: mongodb exists to store data for the core services
+  # (registry, def-store, template-store, document-store). When an
+  # apps-only install suppresses core, mongodb has no callers and
+  # auto-deactivates with this predicate.
+  activation:
+    requires_core: true

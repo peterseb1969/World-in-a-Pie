@@ -231,11 +231,23 @@ def _remote_wip_opt() -> typer.models.OptionInfo:
             "declare WIP_BASE_URL via `from_spec: network.external_base_url` "
             "resolve to this URL instead of the local install's public "
             "URL. Use for cross-host scenarios — Console-on-Mac pointing "
-            "at WIP-on-Pi. CASE-358. "
-            "NOTE: this only plumbs the URL; the local install still "
-            "deploys its full backend stack. An apps-only mode that "
-            "suppresses core services for cross-host is tracked in "
-            "CASE-359."
+            "at WIP-on-Pi. CASE-358. Compose with --apps-only (CASE-359) "
+            "for a true apps-only install with no local backend stack."
+        ),
+    )
+
+
+def _apps_only_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--apps-only",
+        help=(
+            "Install ONLY the named apps + Caddy — no core services, "
+            "no mongodb, no router, no Dex, no auth-gateway. Use for "
+            "cross-host scenarios where this install's apps talk to a "
+            "remote WIP via --remote-wip. Implies --auth-mode "
+            "api-key-only and --auth-gateway false (no Dex available "
+            "locally; /apps/* is publicly served — appropriate for a "
+            "personal device). Requires at least one --app. CASE-359."
         ),
     )
 
@@ -368,6 +380,7 @@ def validate(
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
+    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -410,6 +423,7 @@ def validate(
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
         remote_wip_url=remote_wip,
+        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -482,6 +496,7 @@ def show_spec(
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
+    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -526,6 +541,7 @@ def show_spec(
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
         remote_wip_url=remote_wip,
+        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -571,6 +587,7 @@ def render(
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
+    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -619,6 +636,7 @@ def render(
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
         remote_wip_url=remote_wip,
+        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -677,6 +695,7 @@ def install(
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
+    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -771,6 +790,7 @@ def install(
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
         remote_wip_url=remote_wip,
+        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -2329,6 +2349,7 @@ def _assemble(
     repo_root: Path | None,
     name: str,
     remote_wip_url: str | None = None,
+    apps_only: bool = False,
     skip_discovery: bool = False,
 ) -> tuple[Deployment, list, list]:  # type: ignore[type-arg]
     """Assemble the Deployment and, unless skipped, discover manifests.
@@ -2419,18 +2440,48 @@ def _assemble(
         secrets_backend=secrets_backend,
         secrets_location=secrets_location,
         remote_wip_url=remote_wip_url,
+        apps_only=apps_only,
     )
 
-    # CASE-358: surface the cross-host caveat. --remote-wip plumbs the URL
-    # but doesn't suppress local backend services yet (that's CASE-359).
-    # The yellow nudge tells the operator what they're getting today vs
-    # what's waiting on apps-only mode.
-    if remote_wip_url is not None:
+    # CASE-359 validation: apps-only requires at least one --app. An
+    # apps-only install with no apps is structurally useless — refuse
+    # before render to give a clear actionable message.
+    if apps_only and not apps:
+        typer.echo(
+            typer.style(
+                "✗ --apps-only requires at least one --app NAME. "
+                "Without apps, the install would deploy only Caddy "
+                "with no routes — nothing to serve.",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    # CASE-358 + CASE-359: when both are off, no warning. When only
+    # --remote-wip is set, point at --apps-only as the cleaner path.
+    # When only --apps-only is set, point at --remote-wip (apps will
+    # default external_base_url to localhost, which probably isn't
+    # what the operator wants).
+    if apps_only and remote_wip_url is None:
+        typer.echo(
+            typer.style(
+                "⚠ --apps-only without --remote-wip: apps that resolve "
+                "WIP_BASE_URL via `from_spec: network.external_base_url` "
+                "will point at this install's own hostname — which has "
+                "no WIP backend in apps-only mode. Pass --remote-wip "
+                "<URL> to point them at a real WIP install.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
+        )
+    elif remote_wip_url is not None and not apps_only:
         typer.echo(
             typer.style(
                 f"⚠ --remote-wip {remote_wip_url} plumbs the URL but the local "
                 "install still deploys its full backend stack. For a true "
-                "apps-only install pointed at a remote WIP, see CASE-359.",
+                "apps-only install pointed at a remote WIP, also pass "
+                "--apps-only (CASE-359).",
                 fg=typer.colors.YELLOW,
             ),
             err=True,

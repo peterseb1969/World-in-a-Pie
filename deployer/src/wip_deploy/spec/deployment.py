@@ -41,12 +41,20 @@ class ModulesSpec(WIPModel):
     """Optional components to include.
 
     Core components (registry, def-store, template-store, document-store)
-    and required infrastructure (mongodb) are always active and not listed
-    here. Valid values are the names of components with `category=optional`
-    in their manifest.
+    and required infrastructure (mongodb) are normally always active.
+    Valid `optional` values are names of components with
+    `category=optional` in their manifest.
+
+    `suppress_core` (CASE-359): when True, core components are
+    deactivated AND infrastructure components with
+    `activation.requires_core=True` (mongodb, router) auto-deactivate.
+    Used for apps-only installs that talk to a remote WIP via
+    `--remote-wip` (CASE-358). The typical apps-only command is
+    `wip-deploy install --apps-only --remote-wip <URL> --app <NAME>`.
     """
 
     optional: list[str] = Field(default_factory=list)
+    suppress_core: bool = False
 
     @field_validator("optional")
     @classmethod

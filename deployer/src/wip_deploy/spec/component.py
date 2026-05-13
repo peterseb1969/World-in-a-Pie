@@ -260,6 +260,14 @@ class ActivationSpec(WIPModel):
     requires_auth_gateway: bool | None = None
     """auth.gateway must equal this value. None = no requirement."""
 
+    requires_core: bool | None = None
+    """When True, requires at least one core component to be active.
+    Used by infrastructure that exists to support core (mongodb stores
+    core data; router proxies to core API endpoints). In apps-only
+    installs (CASE-359, `modules.suppress_core=True`), core is
+    deactivated → these dependencies auto-deactivate too. None = no
+    requirement (default)."""
+
 
 # ────────────────────────────────────────────────────────────────────
 # Image
