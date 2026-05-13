@@ -32,10 +32,15 @@ spec:
       - {name: REGISTRY_API_KEY, source: {from_secret: api-key}}
       - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
       - {name: DEF_STORE_API_KEY, source: {from_secret: api-key}}
+      # Derived from deployment.spec.auth.mode (CASE-361). See registry
+      # manifest for the full mapping rationale.
+      - {name: WIP_AUTH_MODE, source: {from_spec: auth.wip_auth_mode}}
     optional:
       # NATS is optional — only present when reporting or ingest module active.
       # Document-store gracefully skips publish when NATS_URL is empty.
       - {name: NATS_URL, source: {from_component: nats}}
+      # JWT issuer URL — honored in jwt_only / dual; ignored otherwise. CASE-361.
+      - {name: WIP_AUTH_JWT_ISSUER_URL, source: {from_spec: auth.issuer_url_internal}}
       # File storage — MinIO only present when files module active.
       - {name: WIP_FILE_STORAGE_ENABLED, source: {from_spec: features.files_enabled}}
       - {name: WIP_FILE_STORAGE_ENDPOINT, source: {from_component: minio}}

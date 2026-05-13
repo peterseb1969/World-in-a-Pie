@@ -89,6 +89,7 @@ class TestResolveFromSpec:
                 issuer_url_public="pub",
                 issuer_url_internal="int",
                 callback_url="cb",
+                wip_auth_mode="api_key_only",
             ),
             features=SpecContextFeatures(
                 files_enabled="true",
