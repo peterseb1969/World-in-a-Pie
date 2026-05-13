@@ -140,6 +140,29 @@ def build_sort_clauses(
     return [(field, direction), ("document_id", 1)]
 
 
+def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
+    """Set of `data.*` field names declared on a template.
+
+    Reads the template's `fields` list (inheritance-resolved by
+    template-store before this point — `get_template` defaults to
+    `resolve_inheritance=True`, so inherited `title`/`doc_status`
+    from a parent template counts). Used by the tier-2 peer-projection
+    auto-include (CASE-354) to gate `title`/`doc_status` inclusion
+    on whether the template actually has them.
+
+    Returns an empty set for malformed templates rather than raising —
+    the resolver caller treats missing fields as "auto-include doesn't
+    fire," which is the safe default.
+    """
+    out: set[str] = set()
+    for f in tpl.get("fields") or []:
+        if isinstance(f, dict):
+            name = f.get("name")
+            if isinstance(name, str):
+                out.add(name)
+    return out
+
+
 class DocumentService:
     """
     Service for document CRUD operations and upsert logic.
@@ -1179,12 +1202,27 @@ class DocumentService:
                 ns_permission_cache[ns] = await resolve_permission(identity, ns)
             return permission_sufficient(ns_permission_cache[ns], "read")
 
-        # Template-aware header_fields lookup (CASE-343).
-        # Collect unique peer template_ids, fetch each template once, cache
-        # the projection-paths list per template_id. Falls back to
-        # identity_fields when header_fields is empty/unset, then to the
-        # legacy {title, doc_status} pair when both are empty (preserves
-        # CASE-303's compact-default for legacy templates).
+        # Template-aware header_fields lookup (CASE-343, refined by
+        # CASE-354). Three-tier resolution per peer template:
+        #
+        #   1. `header_fields` (explicit) — tier 1, no auto-include.
+        #      Use this to opt out of auto-include too: setting
+        #      `header_fields=["case_number"]` projects identity ONLY.
+        #   2. `identity_fields` + auto-include `title`/`doc_status`
+        #      if the template declares those fields (tier 2, CASE-354).
+        #      The "if declared" guard reads inheritance-resolved
+        #      fields (get_template default resolves the chain) so
+        #      inherited title/doc_status counts. Applies uniformly
+        #      to entity and edge-type templates.
+        #   3. `["title", "doc_status"]` legacy compact default — tier 3,
+        #      fires only when both header_fields and identity_fields
+        #      are empty.
+        #
+        # Edge case: a template that sets `header_fields=[]` (explicitly
+        # empty, as opposed to absent) falls through to tier 2 today —
+        # the auto-include WILL fire. To project identity-only,
+        # populate `header_fields` with the desired field names
+        # explicitly (tier 1 wins).
         peer_template_ids: set[str] = {
             doc.template_id for doc in peer_lookup.values() if doc.template_id
         }
@@ -1198,10 +1236,25 @@ class DocumentService:
             if not tpl:
                 projection_paths_by_tid[tid] = ["title", "doc_status"]
                 continue
-            paths = tpl.get("header_fields") or tpl.get("identity_fields") or []
-            if not paths:
+
+            header_fields = tpl.get("header_fields") or []
+            identity_fields = tpl.get("identity_fields") or []
+
+            if header_fields:
+                # Tier 1 — explicit override wins, no auto-include.
+                paths = list(header_fields)
+            elif identity_fields:
+                # Tier 2 — identity + display-label sugar (CASE-354).
+                paths = list(identity_fields)
+                declared = _declared_field_names(tpl)
+                for extra in ("title", "doc_status"):
+                    if extra in declared and extra not in paths:
+                        paths.append(extra)
+            else:
+                # Tier 3 — legacy compact default.
                 paths = ["title", "doc_status"]
-            projection_paths_by_tid[tid] = list(paths)
+
+            projection_paths_by_tid[tid] = paths
 
         for item in items:
             data = item.data or {}

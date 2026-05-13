@@ -304,6 +304,71 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # --- CASE-354 tier-2 auto-include fixtures ---
+    # Entity templates with identity != title that DO declare title +
+    # doc_status. Exercises the CASE-354 refinement: tier-2 projection
+    # should auto-include title and doc_status when the template
+    # declares those fields, alongside identity_fields.
+    {
+        "legacy_key": "TPL-LESSON",
+        "value": "LESSON",
+        "label": "Lesson",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["lesson_id"],
+        # NO header_fields — falls through to tier 2.
+        "fields": [
+            {"name": "lesson_id", "label": "Lesson ID", "type": "string", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            {"name": "doc_status", "label": "Doc status", "type": "string", "mandatory": False},
+            {"name": "body", "label": "Body", "type": "string", "mandatory": False},
+        ],
+        "rules": [],
+    },
+    # Identity != title, title declared but doc_status NOT declared.
+    # Verifies the "if field declared" guard fires per-field.
+    {
+        "legacy_key": "TPL-LESSON-NO-STATUS",
+        "value": "LESSON_NO_STATUS",
+        "label": "Lesson (no status)",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["lesson_id"],
+        "fields": [
+            {"name": "lesson_id", "label": "Lesson ID", "type": "string", "mandatory": True},
+            {"name": "title", "label": "Title", "type": "string", "mandatory": False},
+            # NO doc_status field.
+        ],
+        "rules": [],
+    },
+    # Edge connecting LESSON ↔ LESSON_NO_STATUS so the CASE-354 tests can
+    # render either as the peer.
+    {
+        "legacy_key": "TPL-MENTIONS",
+        "value": "MENTIONS",
+        "label": "Mentions",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["source_ref", "target_ref"],
+        "usage": "relationship",
+        "source_templates": ["LESSON", "LESSON_NO_STATUS"],
+        "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+        "fields": [
+            {
+                "name": "source_ref", "label": "Source", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+                "mandatory": True,
+            },
+            {
+                "name": "target_ref", "label": "Target", "type": "reference",
+                "reference_type": "document",
+                "target_templates": ["LESSON", "LESSON_NO_STATUS"],
+                "mandatory": True,
+            },
+        ],
+        "rules": [],
+    },
 ]
 
 # Populated per-test by the client fixture after registering in real Registry.

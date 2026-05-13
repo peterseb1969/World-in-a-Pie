@@ -442,6 +442,99 @@ async def test_relationships_include_peers_falls_back_to_identity_fields(
     peer = items[0]["peer"]
     assert peer is not None
     # MOLECULE's identity_fields=['molecule_id']; fallback projects it.
+    # MOLECULE declares neither `title` nor `doc_status` as fields, so
+    # the CASE-354 auto-include doesn't fire — peer.data stays
+    # identity-only (no regression for opt-out templates).
     assert peer["data"] == {"molecule_id": "MOL-001"}
     # metadata stays None when no metadata.custom.* path is in the projection set
     assert peer.get("metadata") is None
+
+
+# ============================================================================
+# CASE-354 — tier-2 auto-include title + doc_status when declared
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_relationships_include_peers_tier2_auto_includes_title_and_doc_status(
+    client: AsyncClient, auth_headers: dict,
+):
+    """CASE-354: tier 2 auto-includes title + doc_status when the
+    template declares them, alongside identity_fields.
+
+    LESSON has identity_fields=['lesson_id'], no header_fields, and
+    declares both `title` and `doc_status` as fields. The peer
+    projection should carry all three — closes the regression that
+    UIs hit when identity != title and showed UUIDs in relationship
+    sidebars.
+    """
+    lesson1 = await _create_doc(client, auth_headers, "LESSON", {
+        "lesson_id": "L-001",
+        "title": "Strict identity beats clever identity",
+        "doc_status": "active",
+        "body": "irrelevant",
+    })
+    lesson2 = await _create_doc(client, auth_headers, "LESSON", {
+        "lesson_id": "L-002",
+        "title": "Validate before you assert",
+        "doc_status": "active",
+    })
+
+    await _create_doc(client, auth_headers, "MENTIONS", {
+        "source_ref": lesson1["document_id"],
+        "target_ref": lesson2["document_id"],
+    })
+
+    resp = await client.get(
+        f"{API}/documents/{lesson1['document_id']}/relationships?include=peers",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    peer = resp.json()["items"][0]["peer"]
+    assert peer is not None
+    assert peer["document_id"] == lesson2["document_id"]
+    # All three fields land in peer.data — identity + auto-included
+    # title + auto-included doc_status.
+    assert peer["data"] == {
+        "lesson_id": "L-002",
+        "title": "Validate before you assert",
+        "doc_status": "active",
+    }
+    # `body` is declared on the template but isn't part of identity or
+    # the auto-include set — must stay out.
+    assert "body" not in peer["data"]
+
+
+@pytest.mark.asyncio
+async def test_relationships_include_peers_tier2_only_title_when_doc_status_undeclared(
+    client: AsyncClient, auth_headers: dict,
+):
+    """CASE-354: the 'if field declared' guard fires per-field.
+
+    LESSON_NO_STATUS declares `title` but NOT `doc_status`. Tier 2
+    should auto-include title but NOT project a non-existent
+    doc_status key.
+    """
+    lite1 = await _create_doc(client, auth_headers, "LESSON_NO_STATUS", {
+        "lesson_id": "LITE-001", "title": "Lite first",
+    })
+    lite2 = await _create_doc(client, auth_headers, "LESSON_NO_STATUS", {
+        "lesson_id": "LITE-002", "title": "Lite second",
+    })
+
+    await _create_doc(client, auth_headers, "MENTIONS", {
+        "source_ref": lite1["document_id"],
+        "target_ref": lite2["document_id"],
+    })
+
+    resp = await client.get(
+        f"{API}/documents/{lite1['document_id']}/relationships?include=peers",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200
+    peer = resp.json()["items"][0]["peer"]
+    assert peer is not None
+    # Identity + auto-included title; `doc_status` was not declared on
+    # the template so it stays absent.
+    assert peer["data"] == {"lesson_id": "LITE-002", "title": "Lite second"}
+    assert "doc_status" not in peer["data"]
