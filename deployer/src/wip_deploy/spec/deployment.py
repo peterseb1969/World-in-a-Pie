@@ -180,11 +180,20 @@ class DevPlatform(WIPModel):
     mode: Literal["tilt", "simple"] = "tilt"
     source_mount: bool = True
     # CLI-provided map of app_name → local build-context path for
-    # hot-reload dev. Apps not in this dict use the registry image as
-    # usual. Populated from `--app-source NAME=PATH` (repeatable).
+    # hot-reload dev. Apps not in this dict, AND not in
+    # apps_from_registry, trip the CASE-355 loud-fail at render
+    # time. Populated from `--app-source NAME=PATH` (repeatable).
     # CASE-55: lets app developers iterate against a full WIP stack
     # without a push → rebuild → redeploy round-trip.
     app_sources: dict[str, Path] = Field(default_factory=dict)
+    # CLI-provided list of app names that should use the registry image
+    # in dev mode despite no local source. The explicit opt-in for the
+    # mixed-mode use case CASE-355 P2 named: most apps from local source,
+    # one or two from the registry image (e.g., a stable app you don't
+    # iterate on this session). Populated from `--app-from-registry NAME`
+    # (repeatable). Without this, dev installs fail loud on missing
+    # source rather than silently shipping a cached/registry copy.
+    apps_from_registry: list[str] = Field(default_factory=list)
 
 
 class PlatformSpec(WIPModel):
