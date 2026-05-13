@@ -361,6 +361,10 @@ def _dev_service_block(
     # local path (the app's own repo). Other apps fall back to the
     # registry image just like compose target.
     name = owner.metadata.name
+    dev_plat = deployment.spec.platform.dev
+    apps_from_registry: set[str] = (
+        set(dev_plat.apps_from_registry) if dev_plat is not None else set()
+    )
     if name in build_context_paths:
         block["build"] = {"context": build_context_paths[name]}
         if owner.spec.image.build_args:
@@ -387,6 +391,21 @@ def _dev_service_block(
             if owner.spec.image.build_args:
                 block["build"]["args"] = dict(owner.spec.image.build_args)
             block["image"] = f"{owner.spec.image.name}:dev"
+        elif isinstance(owner, App) and name not in apps_from_registry:
+            # CASE-355: dev mode means dev. An enabled app with no local
+            # source (no --app-source, no build_context) silently fell
+            # back to the registry image pre-CASE-355 — leading to
+            # stale-image installs the operator only noticed when a
+            # recent fix was absent. Refuse loudly. Operators who really
+            # want the registry image in dev opt in via
+            # --app-from-registry NAME.
+            raise ValueError(
+                f"app {name!r} is enabled but has no source for --target dev. "
+                f"Either: (a) pass --app-source {name}=<path-to-checkout> to "
+                f"bind-mount the app's source, (b) pass "
+                f"--app-from-registry {name} to explicitly opt into the "
+                f"registry image, or (c) disable the app and re-install."
+            )
         else:
             block["image"] = _image_ref(owner, deployment)
 

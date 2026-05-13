@@ -202,6 +202,21 @@ def _app_source_opt() -> typer.models.OptionInfo:
     )
 
 
+def _app_from_registry_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--app-from-registry",
+        help=(
+            "Dev-target only. Explicitly opt the named app into the "
+            "registry-image fallback in dev mode (CASE-355). Without "
+            "this, an enabled app with no --app-source and no local "
+            "build context fails the dev install loudly. Repeatable. "
+            "Example: --app-from-registry clintrial. "
+            "Implicitly enables the named app (no separate --app "
+            "needed). Ignored for target!=dev."
+        ),
+    )
+
+
 def _parse_app_sources_or_exit(raw: list[str]) -> dict[str, Path]:
     """CLI-facing wrapper around `_parse_app_sources` that reports parse
     errors via typer and exits 2 on failure."""
@@ -328,6 +343,7 @@ def validate(
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
+    app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -368,6 +384,7 @@ def validate(
         remove=remove,
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
+        apps_from_registry=list(app_from_registry),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -438,6 +455,7 @@ def show_spec(
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
+    app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -480,6 +498,7 @@ def show_spec(
         remove=remove,
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
+        apps_from_registry=list(app_from_registry),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -523,6 +542,7 @@ def render(
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
+    app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -569,6 +589,7 @@ def render(
         remove=remove,
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
+        apps_from_registry=list(app_from_registry),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -581,7 +602,16 @@ def render(
     install_dir = output_dir or _default_install_dir(name)
 
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
-    tree = _render_tree(deployment, components, apps_list, secrets)
+    # CASE-355: render-time errors (e.g. dev app without source) surface
+    # as a clean actionable message instead of a Python traceback.
+    try:
+        tree = _render_tree(deployment, components, apps_list, secrets)
+    except ValueError as e:
+        typer.echo(
+            typer.style(f"✗ render aborted: {e}", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        raise typer.Exit(2) from e
 
     install_dir.mkdir(parents=True, exist_ok=True)
     tree.write(install_dir)
@@ -616,6 +646,7 @@ def install(
     remove: Annotated[list[str], _remove_opt()] = [],
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
+    app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -708,6 +739,7 @@ def install(
         remove=remove,
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
+        apps_from_registry=list(app_from_registry),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -761,7 +793,17 @@ def install(
         legacy_state.unlink()
 
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
-    tree = _render_tree(deployment, components, apps_list, secrets)
+    # CASE-355: render-time errors (e.g., dev app without source) bubble
+    # as ValueError from the renderer. Surface them as a clean
+    # actionable message + exit 2, not as a traceback.
+    try:
+        tree = _render_tree(deployment, components, apps_list, secrets)
+    except ValueError as e:
+        typer.echo(
+            typer.style(f"✗ install aborted: {e}", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        raise typer.Exit(2) from e
 
     typer.echo(f"Install dir: {target_dir}")
     typer.echo(
@@ -1366,7 +1408,17 @@ def _apply_and_persist_mutation(
     _validate_or_exit(deployment, components, apps_list)
 
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
-    tree = _render_tree(deployment, components, apps_list, secrets)
+    # CASE-355: surface render-time errors cleanly through the additive
+    # verbs too — `add-app NAME` without --app-source on a dev install
+    # hits the same gate.
+    try:
+        tree = _render_tree(deployment, components, apps_list, secrets)
+    except ValueError as e:
+        typer.echo(
+            typer.style(f"✗ {action_label} aborted: {e}", fg=typer.colors.RED, bold=True),
+            err=True,
+        )
+        raise typer.Exit(2) from e
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     try:
@@ -1999,6 +2051,7 @@ def _assemble(
     remove: list[str],
     apps: list[str],
     app_sources: dict[str, Path],
+    apps_from_registry: list[str],
     auth_mode: str | None,
     auth_gateway: bool | None,
     secrets_backend: str | None,
@@ -2033,6 +2086,12 @@ def _assemble(
     for src_name in app_sources:
         if src_name not in apps:
             apps.append(src_name)
+    # CASE-355: same implicit-enable for --app-from-registry NAME. Opting
+    # an app into the registry-image fallback only makes sense for an
+    # app that's actually enabled, so we extend `apps` symmetrically.
+    for reg_name in apps_from_registry:
+        if reg_name not in apps:
+            apps.append(reg_name)
 
     # Build
     inputs = BuildInputs(
@@ -2055,6 +2114,7 @@ def _assemble(
         remove=remove,
         apps=apps,
         app_sources=app_sources,
+        apps_from_registry=list(apps_from_registry),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,

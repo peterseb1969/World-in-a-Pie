@@ -44,6 +44,7 @@ def _dev_deployment(
     apps: list[str] | None = None,
     source_mount: bool = True,
     app_sources: dict[str, Path] | None = None,
+    apps_from_registry: list[str] | None = None,
 ) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="dev-test"),
@@ -59,6 +60,7 @@ def _dev_deployment(
                     mode="simple",
                     source_mount=source_mount,
                     app_sources=app_sources or {},
+                    apps_from_registry=apps_from_registry or [],
                 )
             ),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
@@ -199,12 +201,17 @@ class TestBuildContext:
             for m in mounts
         ), f"router has no Caddyfile mount: {mounts}"
 
-    def test_app_without_source_override_uses_registry_image(
+    def test_app_in_apps_from_registry_uses_registry_image(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """Default behavior: apps use their registry image, no build block.
-        Backward compatibility — existing dev installs keep working."""
-        d = _dev_deployment(apps=["react-console"])
+        """CASE-355: apps explicitly opted into the registry-image fallback
+        via `apps_from_registry` get the registry image, no build block.
+        Pre-CASE-355 this was the silent default for any app without
+        --app-source; now it requires an explicit opt-in."""
+        d = _dev_deployment(
+            apps=["react-console"],
+            apps_from_registry=["react-console"],
+        )
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
             d, real_discovery.components, real_discovery.apps, s,
@@ -214,6 +221,21 @@ class TestBuildContext:
         rc = doc["services"]["react-console"]
         assert "build" not in rc
         assert "image" in rc
+
+    def test_app_without_source_and_not_in_apps_from_registry_raises(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """CASE-355: enabling an app with no --app-source and no
+        --app-from-registry opt-in raises a render-time error rather
+        than silently using a cached/registry image. The error message
+        names the three remediation paths so the operator can fix it."""
+        d = _dev_deployment(apps=["react-console"])  # no source, no opt-in
+        s = _secrets(tmp_path, d, real_discovery)
+        with pytest.raises(ValueError, match="'react-console' is enabled but has no source"):
+            render_dev_simple(
+                d, real_discovery.components, real_discovery.apps, s,
+                repo_root=REPO_ROOT,
+            )
 
     def test_app_source_override_emits_build_and_mount(
         self, tmp_path: Path, real_discovery: Discovery
@@ -307,10 +329,13 @@ class TestBuildContext:
     def test_no_override_uses_prod_port_even_with_dev_port_declared(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """Backward-compat: declaring a `dev` port in the manifest
-        must NOT affect routing when --app-source is absent. Default
-        behavior stays on the prod port."""
-        d = _dev_deployment(apps=["react-console"])  # no app_sources
+        """An app opted into the registry-image fallback (CASE-355) uses
+        the prod port, NOT the dev port — the `dev` port declaration in
+        the manifest only applies when --app-source is active."""
+        d = _dev_deployment(
+            apps=["react-console"],
+            apps_from_registry=["react-console"],
+        )
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
             d, real_discovery.components, real_discovery.apps, s,
@@ -373,10 +398,13 @@ class TestBuildContext:
     def test_no_override_does_not_add_vite_base_path(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """Without --app-source, the renderer must not inject
-        VITE_BASE_PATH — the registry image for the app bakes its own
-        base path, and adding one could conflict."""
-        d = _dev_deployment(apps=["react-console"])  # no app_sources
+        """An app on the registry-image fallback (CASE-355 opt-in) must
+        not have VITE_BASE_PATH injected — the registry image bakes its
+        own base path, and adding one could conflict."""
+        d = _dev_deployment(
+            apps=["react-console"],
+            apps_from_registry=["react-console"],
+        )
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
             d, real_discovery.components, real_discovery.apps, s,
@@ -389,9 +417,13 @@ class TestBuildContext:
     def test_no_override_preserves_manifest_node_env(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """Without --app-source, the manifest's NODE_ENV literal is
-        preserved (production for RC)."""
-        d = _dev_deployment(apps=["react-console"])  # no app_sources
+        """An app on the registry-image fallback (CASE-355 opt-in)
+        preserves the manifest's NODE_ENV literal (production for RC) —
+        only --app-source containers force NODE_ENV=development."""
+        d = _dev_deployment(
+            apps=["react-console"],
+            apps_from_registry=["react-console"],
+        )
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
             d, real_discovery.components, real_discovery.apps, s,

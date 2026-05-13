@@ -62,6 +62,11 @@ class BuildInputs:
     # Populated from `--app-source NAME=PATH` (repeatable). Applies only to
     # target=dev; ignored otherwise.
     app_sources: dict[str, Path] = field(default_factory=dict)
+    # CASE-355: explicit opt-in list of apps that should use the
+    # registry image in dev mode despite no local source. Populated from
+    # `--app-from-registry NAME` (repeatable). Applies only to
+    # target=dev; ignored otherwise.
+    apps_from_registry: list[str] = field(default_factory=list)
 
     # Images
     registry: str | None = None
@@ -176,6 +181,8 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
         dev_block: dict[str, Any] = {"mode": inputs.dev_mode}
         if inputs.app_sources:
             dev_block["app_sources"] = dict(inputs.app_sources)
+        if inputs.apps_from_registry:
+            dev_block["apps_from_registry"] = list(inputs.apps_from_registry)
         block["dev"] = dev_block
     else:
         raise ValueError(f"unknown target {inputs.target!r}")
