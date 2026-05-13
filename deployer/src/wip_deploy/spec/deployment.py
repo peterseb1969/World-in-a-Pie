@@ -128,6 +128,17 @@ class NetworkSpec(WIPModel):
     tls: TLSMode = "internal"
     https_port: int = Field(default=8443, ge=1, le=65535)
     http_port: int = Field(default=8080, ge=1, le=65535)
+    # CASE-358: URL of a remote WIP install this deployment talks to.
+    # When set, `SpecContext.network.external_base_url` resolves here
+    # instead of this install's own _public_base. Used by apps that
+    # need to reach a different WIP (e.g., Console-on-Mac → WIP-on-Pi).
+    # None on standard same-host installs.
+    #
+    # Does NOT override the local install's own hostname/ports — that
+    # would break Caddy binding and OIDC issuer URLs on the local
+    # install. Cross-host requires CASE-359 (apps-only) to suppress
+    # the local backend stack; this field is the URL-plumbing half.
+    remote_wip_url: str | None = Field(default=None)
 
     @model_validator(mode="after")
     def letsencrypt_requires_public_hostname(self) -> NetworkSpec:
@@ -138,6 +149,43 @@ class NetworkSpec(WIPModel):
                     f"tls=letsencrypt requires a public hostname; "
                     f"got {self.hostname!r}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def remote_wip_url_is_well_formed(self) -> NetworkSpec:
+        """remote_wip_url must be http(s)://<host>[:<port>] with no path/query.
+
+        We refuse trailing slashes, paths, and query strings because the
+        URL is concatenated with `/api/<svc>/...` paths downstream;
+        a trailing slash would yield `//api/...` which some servers
+        treat as a different resource than `/api/...`.
+        """
+        if self.remote_wip_url is None:
+            return self
+
+        from urllib.parse import urlparse
+
+        url = self.remote_wip_url
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"remote_wip_url must use http:// or https:// scheme; "
+                f"got {url!r}"
+            )
+        if not parsed.hostname:
+            raise ValueError(
+                f"remote_wip_url must include a hostname; got {url!r}"
+            )
+        if parsed.path and parsed.path != "":
+            raise ValueError(
+                f"remote_wip_url must not include a path; got {url!r} "
+                f"(strip the path — apps append their own /api/* paths)"
+            )
+        if parsed.query or parsed.fragment:
+            raise ValueError(
+                f"remote_wip_url must not include query or fragment; "
+                f"got {url!r}"
+            )
         return self
 
 
