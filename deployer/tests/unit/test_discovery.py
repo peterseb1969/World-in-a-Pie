@@ -45,8 +45,13 @@ class TestDiscoverReal:
         assert "router" in names
         assert len(result.components) >= 14
 
+        # apps/ is BE-YAC + APP-YAC shared territory — apps land here as
+        # they get registered. Check minimum-must-be-present + cardinality
+        # rather than an exact set (which churns every time a new app is
+        # added). Apps as of 2026-05-14: dnd, clintrial, react-console, wip-kb.
         app_names = {a.metadata.name for a in result.apps}
-        assert app_names == {"dnd", "clintrial", "react-console"}
+        assert {"dnd", "clintrial", "react-console"} <= app_names
+        assert len(result.apps) >= 3
 
     def test_discovers_infrastructure_components(self) -> None:
         result = discover(REPO_ROOT)

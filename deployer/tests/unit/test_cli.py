@@ -273,6 +273,19 @@ class TestVersion:
 class TestAppSourceFlag:
     """CASE-55: --app-source NAME=PATH for hot-reload dev against a full WIP stack."""
 
+    @pytest.fixture(autouse=True)
+    def isolated_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Path:
+        """Sandbox `Path.home()` so the CLI never touches the real
+        ~/.wip-deploy/. Without this, real-machine state in
+        ~/.wip-deploy/apps/ (the CASE-356 registry) leaks into tests
+        and trips the shadow-warning code path. CASE-366."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: fake_home)
+        return fake_home
+
     def test_parse_single(self, tmp_path: Path) -> None:
         from wip_deploy.cli import _parse_app_sources
         result = _parse_app_sources([f"rc={tmp_path}"])
