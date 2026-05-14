@@ -28,9 +28,12 @@ def _minimal_compose_inputs(**overrides: object) -> BuildInputs:
 
 
 class TestPresetApplies:
-    def test_standard_has_oidc_and_gateway(self) -> None:
+    def test_standard_has_hybrid_and_gateway(self) -> None:
+        # CASE-374: standard preset's auth.mode flipped from oidc to hybrid
+        # so cross-host API-key clients work out of the box. hybrid is
+        # strictly more permissive than oidc (accepts both JWTs and X-API-Key).
         d = build_deployment(_minimal_compose_inputs(preset="standard"))
-        assert d.spec.auth.mode == "oidc"
+        assert d.spec.auth.mode == "hybrid"
         assert d.spec.auth.gateway is True
 
     def test_headless_has_api_key_only_and_no_gateway(self) -> None:
@@ -218,7 +221,9 @@ class TestAuthOverrides:
             _minimal_compose_inputs(preset="standard", auth_gateway=False)
         )
         assert d.spec.auth.gateway is False
-        assert d.spec.auth.mode == "oidc"  # unchanged
+        # standard preset's default mode is "hybrid" (CASE-374) — unchanged
+        # by the gateway override, which is what this test verifies.
+        assert d.spec.auth.mode == "hybrid"
 
     def test_switch_to_api_key_only_clears_users(self) -> None:
         d = build_deployment(
