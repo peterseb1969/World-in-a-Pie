@@ -2402,12 +2402,18 @@ def _assemble(
             continue
         if reg_name in final_app_sources:
             if final_app_sources[reg_name] != reg_path:
+                # CASE-366: warnings on stderr, never stdout. Operators
+                # piping `--format json` into jq (and tests calling
+                # `json.loads(r.output)`) get a clean JSON payload;
+                # the warning is still visible on the terminal but on
+                # the right channel.
                 typer.echo(
                     typer.style(
                         f"⚠ --app-source override for {reg_name!r} shadows "
                         f"registered path {reg_path}",
                         fg=typer.colors.YELLOW,
-                    )
+                    ),
+                    err=True,
                 )
             continue
         final_app_sources[reg_name] = reg_path
