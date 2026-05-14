@@ -225,7 +225,7 @@ class TestShowSpec:
         parsed = yaml.safe_load(r.output)
         assert parsed["kind"] == "Deployment"
         assert parsed["spec"]["target"] == "compose"
-        assert parsed["spec"]["auth"]["mode"] == "oidc"
+        assert parsed["spec"]["auth"]["mode"] == "hybrid"  # CASE-374 default
 
     def test_json_output_is_parseable(self) -> None:
         import json
@@ -636,6 +636,7 @@ class TestStatusDiff:
         build still loads via --diff (read-fall-back), and the next
         install rewrites to the new filename + removes the legacy."""
         import json
+
         from wip_deploy.cli import _load_deployment, _persist_deployment
 
         # Simulate a stale install: legacy filename, no new filename.
