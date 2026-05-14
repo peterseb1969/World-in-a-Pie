@@ -651,6 +651,17 @@ Because this key is scoped to a single namespace (\`$DEV_NAMESPACE\`), WIP deriv
 
 **Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's \`docs/api-key-management.md\` for details.
 
+## The wip-deployable app contract
+
+**Read this before scaffolding any app code:** \`FR-YAC/papers/wip-deployable-app-contract.md\`. Four-line summary:
+
+1. **Source repo** needs \`Dockerfile.dev\` + correct \`vite.config.ts\` (\`server.host: '0.0.0.0'\`, dev proxy targets *your* Express port, not 3001). Client fetches use \`import.meta.env.BASE_URL\`, never bare paths.
+2. **WIP repo \`apps/<name>/wip-app.yaml\`** declares both http and dev ports, \`WIP_BASE_URL\` via \`from_component: router\`, \`APP_BASE_PATH\` literal, and a healthcheck that doesn't depend on WIP being reachable.
+3. **Verify** with \`wip-deploy install --target dev --app <name> --app-source <name>=~/Development/WIP-<name>\` — SPA must load at \`https://localhost:8443/apps/<name>/\` on the first try, container healthy, no manual env patching.
+4. **If something breaks**, find the failure signature in the paper's "What breaks when you skip step N" annex. Once \`/check-app-deployability\` ships (CASE-379 deliverable C), run it before considering your scaffold done.
+
+The contract is target-agnostic — compose, k8s, and apps-only installs satisfy the same contract. Synthesized 2026-05-14 from cases CASE-358/CASE-359/CASE-360/CASE-361/CASE-366/CASE-374/CASE-375/CASE-377/CASE-378.
+
 ## Process
 
 Follow the 4-phase development process.
