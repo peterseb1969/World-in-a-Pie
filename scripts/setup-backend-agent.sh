@@ -797,9 +797,14 @@ rm -f "$WIP_ROOT/.claude/commands/"*.md 2>/dev/null || true
 cp "$WIP_ROOT/docs/slash-commands/backend/"*.md "$WIP_ROOT/.claude/commands/"
 echo "   Copied: $(find "$WIP_ROOT/.claude/commands/" -maxdepth 1 -name '*.md' -type f | wc -l | tr -d ' ') commands"
 
-# --- 4b. Generate .claude/settings.local.json defaults (CASE-169) ---
-# 23 catchall bash patterns for routine non-destructive commands.
-# Avoids prompt-friction for every cat/sed/ls/etc. on a fresh YAC.
+# --- 4b. Generate .claude/settings.local.json defaults (CASE-169 + CASE-385) ---
+# 31 catchall bash patterns: 23 from CASE-169 (routine read-only file
+# inspection — cat/sed/grep/etc.) + 8 from CASE-385 (the commands
+# `/setup` itself runs — venv check, container-runtime probe, MCP
+# import test, wip-deploy operator surface, APP-YAC curl probe).
+# Goal: a fresh YAC's first `/setup` runs through all environment
+# checks with zero bash permission prompts, so time-to-productive
+# tracks the script wall-clock rather than human-approval latency.
 # File is gitignored; user customizations preserved on re-run.
 # find:* deliberately omitted — find -exec / -delete are destructive
 # and should be earned per session.
@@ -831,12 +836,20 @@ if [ ! -f "$WIP_ROOT/.claude/settings.local.json" ]; then
       "Bash(dirname:*)",
       "Bash(realpath:*)",
       "Bash(which:*)",
-      "Bash(type:*)"
+      "Bash(type:*)",
+      "Bash(test:*)",
+      "Bash(command:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(podman:*)",
+      "Bash(docker:*)",
+      "Bash(wip-deploy:*)",
+      "Bash(curl:*)"
     ]
   }
 }
 EOF
-    echo "   Written: .claude/settings.local.json (23 catchall patterns)"
+    echo "   Written: .claude/settings.local.json (31 catchall patterns)"
 else
     echo "   Skipped: .claude/settings.local.json already exists (preserved)"
 fi
