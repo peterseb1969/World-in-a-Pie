@@ -2070,6 +2070,134 @@ def _nuke_purge_all(
 
 
 # ────────────────────────────────────────────────────────────────────
+# check-app-deployability (CASE-379-C)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command("check-app-deployability")
+def check_app_deployability_cmd(
+    source_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Path to the app's source directory (where Dockerfile.dev "
+            "and package.json live).",
+        ),
+    ],
+    manifest: Annotated[
+        Path | None,
+        typer.Option(
+            "--manifest",
+            help=(
+                "Path to the app's wip-app.yaml. Auto-detected by reading "
+                "the source dir's package.json `name` field and matching "
+                "against apps/*/wip-app.yaml. Pass explicitly if "
+                "auto-detection fails."
+            ),
+        ),
+    ] = None,
+    repo_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--repo-root",
+            help=(
+                "Path to the World-in-a-Pie repo root. Defaults to the "
+                "auto-discovered root."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Check if an app source repo + its manifest satisfy the
+    wip-deployable-app contract (CASE-379).
+
+    The contract that today's CASE-375 debugging journey hit four
+    sequential gaps in. Run this BEFORE `wip-deploy add-app` to surface
+    the gaps mechanically — a few seconds vs the same gaps surfacing
+    in a crash-loop debugging session.
+
+    Exit codes:
+      0 — all checks passed; the app is wip-deployable
+      1 — at least one check failed; fix-hints printed per failure
+      2 — couldn't even start (source dir doesn't exist, etc.)
+
+    Examples:
+
+      # Most common — let auto-discovery find the manifest
+      wip-deploy check-app-deployability ~/Development/WIP-KB
+
+      # Explicit manifest (e.g., apps not yet registered in WIP repo)
+      wip-deploy check-app-deployability /path/to/src \\
+        --manifest /path/to/wip-app.yaml
+    """
+    from wip_deploy.check_app import check_app_deployability
+
+    if not source_dir.expanduser().exists():
+        typer.echo(
+            typer.style(
+                f"✗ source directory does not exist: {source_dir}",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        report = check_app_deployability(
+            source_dir=source_dir,
+            manifest_path=manifest,
+            repo_root=repo_root,
+        )
+    except FileNotFoundError as e:
+        typer.echo(
+            typer.style(f"✗ {e}", fg=typer.colors.RED), err=True,
+        )
+        raise typer.Exit(2) from e
+
+    typer.echo(f"Checking app source: {report.source_dir}")
+    if report.app_name:
+        typer.echo(f"  app name:  {report.app_name}")
+    if report.manifest_path:
+        typer.echo(f"  manifest:  {report.manifest_path}")
+    typer.echo("")
+
+    for r in report.results:
+        if r.passed:
+            typer.echo(
+                typer.style(f"  ✓ {r.name}", fg=typer.colors.GREEN)
+                + f"  {r.message}"
+            )
+        else:
+            typer.echo(
+                typer.style(f"  ✗ {r.name}", fg=typer.colors.RED)
+                + f"  {r.message}"
+            )
+            if r.fix_hint:
+                # Indent the hint so it visually belongs to the failed check.
+                for line in r.fix_hint.split("\n"):
+                    typer.echo(f"      {line}")
+
+    typer.echo("")
+    if report.ok:
+        typer.echo(
+            typer.style(
+                f"✓ {len(report.results)} check(s) passed. App is wip-deployable.",
+                fg=typer.colors.GREEN,
+                bold=True,
+            )
+        )
+        raise typer.Exit(0)
+
+    n_failed = len(report.failures)
+    typer.echo(
+        typer.style(
+            f"✗ {n_failed} of {len(report.results)} check(s) failed.",
+            fg=typer.colors.RED,
+            bold=True,
+        )
+    )
+    raise typer.Exit(1)
+
+
+# ────────────────────────────────────────────────────────────────────
 # export-ca (CASE-360)
 # ────────────────────────────────────────────────────────────────────
 
