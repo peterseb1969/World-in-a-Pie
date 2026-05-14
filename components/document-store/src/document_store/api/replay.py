@@ -10,6 +10,35 @@ from ..services.replay_service import get_replay_service
 router = APIRouter(prefix="/replay", tags=["Replay"])
 
 
+async def _enforce_replay_admin(session_id: str) -> dict:
+    """CASE-384 — look up a replay session and require admin permission
+    on its source namespace before pause/resume/cancel/get operations.
+
+    Returns the session dict so the caller doesn't double-fetch.
+    Raises HTTPException 404 if the session doesn't exist (same surface
+    as the previous behaviour for missing sessions).
+    """
+    service = get_replay_service()
+    session = service.get_session(session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Replay session {session_id} not found",
+        )
+    # Filter shape: session["filter"]["namespace"]. Defensive default to
+    # the empty string so a malformed session can't bypass auth via a
+    # missing field.
+    namespace = session.get("filter", {}).get("namespace", "")
+    if not namespace:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Replay session {session_id} has no namespace recorded",
+        )
+    identity = get_current_identity()
+    await check_namespace_permission(identity, namespace, "admin")
+    return session
+
+
 @router.post("/start", response_model=ReplaySessionResponse)
 async def start_replay(
     request: ReplayRequest,
@@ -52,11 +81,7 @@ async def get_replay_session(
     _auth=Depends(require_api_key),
 ):
     """Get the current state of a replay session."""
-    service = get_replay_service()
-    session = service.get_session(session_id)
-
-    if not session:
-        raise HTTPException(status_code=404, detail=f"Replay session {session_id} not found")
+    session = await _enforce_replay_admin(session_id)
 
     return ReplaySessionResponse(
         session_id=session["session_id"],
@@ -74,6 +99,7 @@ async def pause_replay(
     _auth=Depends(require_api_key),
 ):
     """Pause a running replay session."""
+    await _enforce_replay_admin(session_id)
     service = get_replay_service()
 
     success = await service.pause(session_id)
@@ -97,6 +123,7 @@ async def resume_replay(
     _auth=Depends(require_api_key),
 ):
     """Resume a paused replay session."""
+    await _enforce_replay_admin(session_id)
     service = get_replay_service()
 
     success = await service.resume(session_id)
@@ -120,6 +147,7 @@ async def cancel_replay(
     _auth=Depends(require_api_key),
 ):
     """Cancel a replay session and delete its NATS stream."""
+    await _enforce_replay_admin(session_id)
     service = get_replay_service()
 
     success = await service.cancel(session_id)

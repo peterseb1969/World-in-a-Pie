@@ -5,7 +5,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_or_404
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_or_404,
+)
 
 from ..services.import_export import ImportExportService
 from .auth import require_api_key
@@ -34,6 +39,15 @@ async def export_terminology(
     ontology relations (is_a, part_of, etc.) in JSON exports.
     """
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
+
+    # CASE-384 — gate export by read permission on the terminology's
+    # namespace. Without this, any authenticated key could exfiltrate
+    # any terminology by ID.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, existing.namespace, "read")
 
     try:
         language_list = languages.split(",") if languages else None
@@ -72,9 +86,17 @@ async def export_all_terminologies(
     api_key: str = Depends(require_api_key)
 ):
     """Export all terminologies with their terms."""
+    # CASE-384 — restrict to namespaces the caller can read. Superadmin
+    # gets None back from resolve_accessible_namespaces and the service
+    # treats that as "no filter" (all namespaces). Non-admin scoped keys
+    # get only their own namespaces' terminologies.
+    identity = get_current_identity()
+    accessible = await resolve_accessible_namespaces(identity)
+
     results = await ImportExportService.export_all_terminologies(
         format=format,
-        include_inactive=include_inactive
+        include_inactive=include_inactive,
+        namespaces=accessible,
     )
     return JSONResponse(content={"terminologies": results, "count": len(results)})
 
@@ -128,6 +150,22 @@ async def import_terminology(
 
     If you experience timeouts, try reducing `registry_batch_size` to 50 or lower.
     """
+    # CASE-384 — destination namespace lives in data.terminology.namespace.
+    # Require write on that namespace before importing. For CSV format
+    # the namespace may not yet be in the payload — fall through to the
+    # service's own validation; a misconfigured CSV import without
+    # namespace will still 400 there.
+    target_namespace: str | None = None
+    if isinstance(data, dict):
+        terminology_block = data.get("terminology")
+        if isinstance(terminology_block, dict):
+            ns_val = terminology_block.get("namespace")
+            if isinstance(ns_val, str):
+                target_namespace = ns_val
+    if target_namespace:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, target_namespace, "write")
+
     try:
         options = {
             "skip_duplicates": skip_duplicates,
@@ -245,6 +283,29 @@ async def import_from_url(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
+    # CASE-384 — URL imports don't expose the destination namespace at the
+    # API layer (it comes from the fetched payload). The service-side
+    # validation will surface 4xx if the payload is missing namespace,
+    # but we can't pre-authorise without fetching the URL ourselves —
+    # which would double the work. Conservative compromise: require the
+    # caller to be a privileged identity (admin/services group) until
+    # the service grows a "pre-flight namespace extraction" hook.
+    # Filed as a follow-up consideration in CASE-384.
+    from wip_auth.permissions import _is_superadmin
+    identity = get_current_identity()
+    if not _is_superadmin(identity):
+        # Non-admin URL imports are refused. Operators with scoped keys
+        # should fetch the URL locally, then call POST /import with the
+        # body so the namespace is visible at the API layer.
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "URL imports require admin privileges. Fetch the URL and "
+                "POST the body to /import-export/import to allow per-namespace "
+                "permission checking."
+            ),
+        )
+
     try:
         options = {
             "skip_duplicates": skip_duplicates,
