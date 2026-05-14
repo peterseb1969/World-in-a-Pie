@@ -147,6 +147,18 @@ class NetworkSpec(WIPModel):
     # install. Cross-host requires CASE-359 (apps-only) to suppress
     # the local backend stack; this field is the URL-plumbing half.
     remote_wip_url: str | None = Field(default=None)
+    # CASE-373: True when the install dir has a
+    # `secrets/external-ca.crt` file present, set by the install verb
+    # at render time. App containers get the file bind-mounted at
+    # `/etc/ssl/certs/external-ca.crt` plus an `NODE_EXTRA_CA_CERTS`
+    # env var. Backend containers (when present in the same install)
+    # do not need cross-host trust — the slot is app-only.
+    #
+    # This field is recordable spec — visible in `deployment.deployer-state`
+    # — so `wip-deploy status --diff` and post-hoc inspection both see it.
+    # The toggle is driven by the install verb, not user-facing CLI flags:
+    # if `wip-deploy import-bundle` wrote a CA, install picks it up.
+    external_ca_mount: bool = Field(default=False)
 
     @model_validator(mode="after")
     def letsencrypt_requires_public_hostname(self) -> NetworkSpec:
