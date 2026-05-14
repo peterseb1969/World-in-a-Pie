@@ -132,6 +132,12 @@ async def get_terminology(
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
+    # CASE-384 — enforce read permission on the entity's actual namespace.
+    # Returns 404 ("Namespace not found") on permission failure, which
+    # also prevents leaking which IDs exist in which namespaces.
+    identity = get_current_identity()
+    await check_namespace_permission(identity, result.namespace, "read")
+
     return result
 
 
@@ -148,6 +154,17 @@ async def update_terminologies(
     lookups by both old and new values.
     """
     await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
+
+    # CASE-384 — enforce write permission on each item's actual namespace.
+    # Bulk endpoints abort on the first permission failure (matches the
+    # existing bulk-create convention at line 46). Pre-fetching here adds
+    # one MongoDB call per item; cache amortises Registry calls.
+    identity = get_current_identity()
+    from ..models.terminology import Terminology as _T
+    for item in items:
+        existing = await _T.find_one({"terminology_id": item.terminology_id})
+        if existing:
+            await check_namespace_permission(identity, existing.namespace, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -189,6 +206,15 @@ async def get_terminology_dependencies(
         terminology_id, "terminology", namespace=None, param_name="terminology_id"
     )
 
+    # CASE-384 — even dependency metadata leaks information (it confirms
+    # the terminology exists in the namespace and lists template names
+    # referencing it). Gate by read permission on the entity's namespace.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
     except ValueError as e:
@@ -210,6 +236,15 @@ async def restore_terminology(
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace=None, param_name="terminology_id"
     )
+
+    # CASE-384 — restore is a mutation; require write on the terminology's
+    # namespace. Lookup the entity first to resolve the namespace, then
+    # check before restoring.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, existing.namespace, "write")
 
     result = await TerminologyService.restore_terminology(
         terminology_id=terminology_id,
@@ -233,6 +268,15 @@ async def delete_terminologies(
     Set force=true per item to delete even if templates reference it.
     """
     await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
+
+    # CASE-384 — enforce write permission on each item's namespace before
+    # any deletes happen. Aborts on first failure (matches bulk-create).
+    identity = get_current_identity()
+    from ..models.terminology import Terminology as _T
+    for item in items:
+        existing = await _T.find_one({"terminology_id": item.id})
+        if existing:
+            await check_namespace_permission(identity, existing.namespace, "write")
 
     results = []
     for i, item in enumerate(items):

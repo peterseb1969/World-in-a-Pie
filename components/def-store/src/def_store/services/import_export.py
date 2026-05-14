@@ -1,5 +1,6 @@
 """Import/Export service for terminologies and terms."""
 
+import contextlib
 import csv
 import io
 import json
@@ -11,8 +12,8 @@ from typing import Any
 
 from ..models.api_models import (
     BulkResultItem,
-    CreateTermRelationRequest,
     CreateTerminologyRequest,
+    CreateTermRelationRequest,
     CreateTermRequest,
 )
 from ..models.term import Term, TermTranslation
@@ -237,10 +238,22 @@ class ImportExportService:
     @staticmethod
     async def export_all_terminologies(
         format: str = "json",
-        include_inactive: bool = False
+        include_inactive: bool = False,
+        namespaces: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Export all terminologies."""
-        query = {} if include_inactive else {"status": "active"}
+        """Export all terminologies.
+
+        Args:
+            namespaces: When set, restrict the export to terminologies in
+                these namespaces. None means no namespace filter
+                (caller is superadmin or has equivalent access).
+                Added by CASE-384 so the API layer can pass the caller's
+                accessible-namespaces list without leaking entities the
+                caller has no permission on.
+        """
+        query: dict[str, Any] = {} if include_inactive else {"status": "active"}
+        if namespaces is not None:
+            query["namespace"] = {"$in": namespaces}
         terminologies = await Terminology.find(query).to_list()
 
         results = []
@@ -430,10 +443,8 @@ class ImportExportService:
                 "sort_order": int(row.get("sort_order", 0) or 0),
             }
             if row.get("metadata"):
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     term["metadata"] = json.loads(row["metadata"])
-                except json.JSONDecodeError:
-                    pass
 
             if term["value"]:
                 terms_data.append(term)

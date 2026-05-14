@@ -187,6 +187,10 @@ async def get_term(
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
         raise HTTPException(status_code=404, detail="Term not found")
+
+    # CASE-384 — gate read by the term's namespace.
+    identity = get_current_identity()
+    await check_namespace_permission(identity, result.namespace, "read")
     return result
 
 
@@ -203,6 +207,14 @@ async def update_terms(
     """Update one or more terms."""
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
+
+    # CASE-384 — enforce write on each term's namespace before mutating.
+    identity = get_current_identity()
+    from ..models.term import Term as _Term
+    for item in items:
+        existing = await _Term.find_one({"term_id": item.term_id})
+        if existing:
+            await check_namespace_permission(identity, existing.namespace, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -243,6 +255,15 @@ async def deprecate_terms(
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
     await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
 
+    # CASE-384 — deprecation is a mutation; require write on each term's
+    # namespace.
+    identity = get_current_identity()
+    from ..models.term import Term as _Term
+    for item in items:
+        existing = await _Term.find_one({"term_id": item.term_id})
+        if existing:
+            await check_namespace_permission(identity, existing.namespace, "write")
+
     results = []
     for i, item in enumerate(items):
         try:
@@ -273,6 +294,14 @@ async def delete_terms(
     """Soft-delete one or more terms (set status to inactive)."""
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "id", "term", namespace=namespace)
+
+    # CASE-384 — enforce write on each term's namespace before deleting.
+    identity = get_current_identity()
+    from ..models.term import Term as _Term
+    for item in items:
+        existing = await _Term.find_one({"term_id": item.id})
+        if existing:
+            await check_namespace_permission(identity, existing.namespace, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -340,6 +369,12 @@ async def validate_value(
             error="Terminology not found"
         )
 
+    # CASE-384 — validation reads from the terminology (returns matched
+    # terms, suggestions). Gate by read permission on the terminology's
+    # namespace.
+    identity = get_current_identity()
+    await check_namespace_permission(identity, terminology.namespace, "read")
+
     is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
         terminology_id=terminology.terminology_id,
         value=request.value
@@ -366,6 +401,9 @@ async def validate_values_bulk(
     api_key: str = Depends(require_api_key)
 ) -> BulkValidateResponse:
     """Validate multiple values at once."""
+    # CASE-384 — read permission is enforced per-item against the
+    # resolved terminology's namespace. See the per-item check below.
+    identity = get_current_identity()
     results = []
     valid_count = 0
     invalid_count = 0
@@ -403,6 +441,9 @@ async def validate_values_bulk(
             ))
             invalid_count += 1
             continue
+
+        # CASE-384 — gate per-item by read on the terminology's namespace.
+        await check_namespace_permission(identity, terminology.namespace, "read")
 
         is_valid, matched_term, matched_via, suggestion = await TerminologyService.validate_value(
             terminology_id=terminology.terminology_id,

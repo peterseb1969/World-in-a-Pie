@@ -7,8 +7,14 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import check_namespace_permission, get_current_identity, resolve_namespace_filter
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_namespace_filter,
+)
 from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
+from wip_auth.permissions import _is_superadmin
 
 from ..models.api_models import (
     BulkResponse,
@@ -498,7 +504,17 @@ async def list_orphan_files(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number to return"),
     _: str = Depends(require_api_key)
 ):
-    """List orphan files."""
+    """List orphan files. Admin-only (operational cleanup endpoint)."""
+    # CASE-384 — operational/maintenance endpoint that lists files across
+    # all namespaces. Restrict to superadmin; non-admin keys cannot
+    # enumerate files outside their own scope.
+    identity = get_current_identity()
+    if not _is_superadmin(identity):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="Orphan listing is an admin-only operation",
+        )
     service = get_file_service()
     return await service.find_orphans(older_than_hours=older_than_hours, limit=limit)
 
@@ -514,9 +530,16 @@ async def find_by_checksum(
     checksum: str,
     _: str = Depends(require_api_key)
 ):
-    """Find files by checksum."""
+    """Find files by checksum (within the caller's accessible namespaces)."""
+    # CASE-384 — restrict checksum search to namespaces the caller has
+    # access to. Superadmin gets None and the service treats that as
+    # no filter. Otherwise, only files in the caller's scoped namespaces
+    # are returned — cross-namespace checksum lookup would leak file
+    # existence to unauthorised callers.
+    identity = get_current_identity()
+    accessible = await resolve_accessible_namespaces(identity)
     service = get_file_service()
-    return await service.get_by_checksum(checksum)
+    return await service.get_by_checksum(checksum, namespaces=accessible)
 
 
 @router.get(
@@ -536,6 +559,14 @@ Detects:
 async def check_file_integrity(
     _: str = Depends(require_api_key)
 ):
-    """Check file integrity."""
+    """Check file integrity. Admin-only (system-wide operational check)."""
+    # CASE-384 — system-wide integrity check; restrict to superadmin.
+    identity = get_current_identity()
+    if not _is_superadmin(identity):
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=403,
+            detail="File integrity check is an admin-only operation",
+        )
     service = get_file_service()
     return await service.check_integrity()

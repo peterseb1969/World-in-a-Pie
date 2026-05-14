@@ -702,17 +702,27 @@ class FileService:
             issues=issues,
         )
 
-    async def get_by_checksum(self, checksum: str) -> list[FileResponse]:
+    async def get_by_checksum(
+        self,
+        checksum: str,
+        namespaces: list[str] | None = None,
+    ) -> list[FileResponse]:
         """
         Find files by checksum (for duplicate detection).
 
         Args:
             checksum: SHA-256 checksum
+            namespaces: When set, restrict the search to files in these
+                namespaces. None = no filter (superadmin). Added by
+                CASE-384 to prevent cross-namespace checksum leakage.
 
         Returns:
             List of files with matching checksum
         """
-        files = await File.find({"checksum": checksum}).to_list()
+        query: dict = {"checksum": checksum}
+        if namespaces is not None:
+            query["namespace"] = {"$in": namespaces}
+        files = await File.find(query).to_list()
         return [self._to_response(f) for f in files]
 
     @staticmethod
