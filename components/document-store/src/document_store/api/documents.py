@@ -138,6 +138,22 @@ async def patch_documents(
     # the whole batch.
     await resolve_bulk_ids(items, "document_id", "document", namespace=namespace)
 
+    # CASE-384 — enforce write permission on each document's actual
+    # namespace before mutating. Batched lookup: one find query over all
+    # document_ids in the bulk, then per-id permission check (cache
+    # amortises repeated namespaces). Aborts on first failure to match
+    # the bulk-create convention.
+    identity = get_current_identity()
+    from ..models.document import Document as _Doc
+    doc_ids = [item.document_id for item in items if item.document_id]
+    if doc_ids:
+        existing_docs = await _Doc.find({"document_id": {"$in": doc_ids}}).to_list()
+        id_to_namespace = {d.document_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.document_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
+
     service = get_document_service()
     result = await service.bulk_patch(items)
     await asyncio.sleep(get_throttle_delay())
