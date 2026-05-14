@@ -19,6 +19,14 @@ spec:
 
   ports:
     - {name: http, container_port: 3012}
+    # CASE-375: Vite dev-server. Used only when --app-source is active.
+    # The dev_simple renderer routes /apps/kb/* to this port instead of
+    # 3012 (which only serves the API/SSR in dev). Ignored on compose/k8s
+    # and on dev without the override. Default Vite port (5173) — note
+    # that react-console uses 5174 to avoid colliding with WIP-KB on a
+    # multi-app dev install; KB stays on 5173 since its dev port doesn't
+    # need to be unique on installs that don't run RC.
+    - {name: dev, container_port: 5173}
 
   env:
     required:
@@ -31,6 +39,13 @@ spec:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
       # when the key is unset.
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      # CASE-375: WIP-KB's query agent uses the MCP client; without
+      # MCP_URL it falls back to spawning `python -m wip_mcp` via
+      # stdio, which fails inside a Node.js container (no Python).
+      # Pragmatic v1: literal pointing at the well-known service
+      # name + port. The clean shape would be a `from_component_url`
+      # env source — separate platform case if/when adopted broadly.
+      - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
 
   routes:
     - {path: /apps/kb, auth_required: true}
