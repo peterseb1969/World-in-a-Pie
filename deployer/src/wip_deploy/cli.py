@@ -648,6 +648,12 @@ def render(
     _validate_or_exit(deployment, components, apps_list)
     install_dir = output_dir or _default_install_dir(name)
 
+    # CASE-373 — render mirrors install's auto-detection so the previewed
+    # tree matches what install would produce. Imported-bundle CA already
+    # in the target dir → flag flips, rendered compose gets the mount.
+    if (install_dir / "secrets" / "external-ca.crt").exists():
+        deployment.spec.network.external_ca_mount = True
+
     secrets = _ensure_secrets_via_spec(deployment, components, apps_list)
     # CASE-355: render-time errors (e.g. dev app without source) surface
     # as a clean actionable message instead of a Python traceback.
@@ -808,6 +814,16 @@ def install(
         deployment.spec.apply.timeout_seconds = wait_timeout
 
     target_dir = install_dir or _default_install_dir(name)
+
+    # CASE-373 — auto-mount external CA into app containers when a bundle
+    # has seeded one. `wip-deploy import-bundle` writes
+    # `<install_dir>/secrets/external-ca.crt`; this flag triggers the
+    # compose + dev renderers to bind-mount it + inject NODE_EXTRA_CA_CERTS.
+    # No CLI flag — the bundle's import is the trigger. If the file is
+    # removed (operator manually deleted it), this install re-renders
+    # without the mount.
+    if (target_dir / "secrets" / "external-ca.crt").exists():
+        deployment.spec.network.external_ca_mount = True
 
     # CASE-331 Fix B — refuse to silently drop apps or optional modules
     # that were in the previous install but absent from this invocation.
@@ -2342,6 +2358,194 @@ def export_ca(
     )
     typer.echo("")
     typer.echo(TRUST_INSTRUCTIONS.format(out=out))
+
+
+# ────────────────────────────────────────────────────────────────────
+# import-bundle (CASE-373 Phase 1)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.command("import-bundle")
+def import_bundle(
+    bundle_path: Annotated[
+        Path,
+        typer.Argument(
+            metavar="BUNDLE",
+            help=(
+                "Path to the BootstrapBundle YAML file (use '-' to read "
+                "from stdin)."
+            ),
+        ),
+    ],
+    name: Annotated[str | None, _name_opt()] = None,
+    update_ca_only: Annotated[
+        bool,
+        typer.Option(
+            "--update-ca-only",
+            help=(
+                "Refresh ~/.wip-deploy/<name>/secrets/external-ca.crt from "
+                "the bundle and exit. Does NOT touch the api-key or other "
+                "state. Use this when the cloud install rotates its CA "
+                "(see CASE-380)."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """Seed an apps-only install from a bootstrap bundle (CASE-373 Phase 1).
+
+    A *bootstrap bundle* is a single YAML file generated on the cloud side
+    that carries everything an apps-only install needs to connect to a
+    remote WIP: the external base URL, a scoped + time-limited API key,
+    and the cloud's internal CA cert. Today the bundle is hand-crafted
+    on the cloud (see deployer/docs/bootstrap-bundle.md); v1.5 ships a
+    Registry-side `wip-deploy export-bundle` wrapper.
+
+    This verb does NOT run the install — it only seeds state. After
+    import, the suggested install command is printed; the operator runs
+    it themselves.
+
+    Examples:
+
+      # Import a bundle file into ~/.wip-deploy/laptop-rc/
+      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc
+
+      # Read from stdin (handy for SSH-piped flows)
+      ssh cloud.example "cat laptop-rc.yaml" | wip-deploy import-bundle - --name laptop-rc
+
+      # Refresh just the CA (after the cloud rotates its internal CA)
+      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --update-ca-only
+    """
+    from wip_deploy.import_bundle import BundleParseError, parse_bundle
+
+    raw: bytes | Path
+    if str(bundle_path) == "-":
+        import sys
+
+        raw = sys.stdin.buffer.read()
+    else:
+        raw = bundle_path
+
+    try:
+        bundle = parse_bundle(raw)
+    except BundleParseError as e:
+        typer.echo(typer.style(f"✗ bundle invalid: {e}", fg=typer.colors.RED), err=True)
+        if e.path:
+            typer.echo(f"  (at {e.path})", err=True)
+        raise typer.Exit(2) from e
+
+    name = _resolve_name(name)
+    install_dir = _default_install_dir(name)
+    secrets_dir = install_dir / "secrets"
+    secrets_dir.mkdir(parents=True, exist_ok=True)
+
+    # Best-effort 0700 on the secrets dir — same convention as
+    # FileSecretBackend.persist().
+    import contextlib
+
+    with contextlib.suppress(NotImplementedError, OSError):
+        secrets_dir.chmod(0o700)
+
+    ca_path = secrets_dir / "external-ca.crt"
+    _write_secret(ca_path, bundle.ca_cert_pem)
+
+    if update_ca_only:
+        typer.echo(
+            typer.style(f"✓ Refreshed external CA at {ca_path}", fg=typer.colors.GREEN)
+        )
+        typer.echo(
+            f"  Fingerprint: {_pem_fingerprint(bundle.ca_cert_pem)}"
+        )
+        return
+
+    api_key_path = secrets_dir / "api-key"
+    _write_secret(api_key_path, bundle.api_key.value.encode() + b"\n")
+
+    # Audit trail — record where this state came from. Survives the
+    # apps-only install and gives future operators (or future-me) a
+    # paper trail. Distinct from deployment.deployer-state so the
+    # install dir stays self-describing.
+    bootstrap_state = {
+        "imported_from_bundle": {
+            "name": bundle.name,
+            "generated_at": bundle.generated_at.isoformat(),
+            "external_base_url": bundle.external_base_url,
+            "api_key": {
+                "name": bundle.api_key.name,
+                "scope": {
+                    "namespaces": list(bundle.api_key.scope.namespaces),
+                    "permissions": bundle.api_key.scope.permissions,
+                },
+                "expires_at": bundle.api_key.expires_at.isoformat(),
+            },
+            "suggested_apps": list(bundle.suggested_apps),
+        }
+    }
+    (install_dir / "bootstrap.yaml").write_text(
+        yaml.safe_dump(bootstrap_state, sort_keys=False)
+    )
+
+    typer.echo(
+        typer.style(f"✓ Imported bundle into {install_dir}", fg=typer.colors.GREEN)
+    )
+    typer.echo(f"  External base URL: {bundle.external_base_url}")
+    typer.echo(
+        f"  API key '{bundle.api_key.name}' "
+        f"(scope: {','.join(bundle.api_key.scope.namespaces)}, "
+        f"permissions: {bundle.api_key.scope.permissions}, "
+        f"expires: {bundle.api_key.expires_at.date().isoformat()})"
+    )
+    typer.echo(f"  CA fingerprint: {_pem_fingerprint(bundle.ca_cert_pem)}")
+    typer.echo("")
+    typer.echo("Suggested install command:")
+    apps_flags = "".join(f" --app {a}" for a in bundle.suggested_apps)
+    typer.echo(
+        f"  wip-deploy install --name {name} --target dev --apps-only \\"
+    )
+    typer.echo(
+        f"    --remote-wip {bundle.external_base_url}{apps_flags}"
+    )
+
+
+def _write_secret(path: Path, content: bytes) -> None:
+    """Write a secret file atomically-ish (write then chmod 0600).
+
+    Same convention as FileSecretBackend.persist() — 0600 best-effort,
+    Windows ACLs aren't covered. Caller owns dir creation.
+    """
+    import contextlib
+
+    path.write_bytes(content)
+    with contextlib.suppress(NotImplementedError, OSError):
+        path.chmod(0o600)
+
+
+def _pem_fingerprint(pem: bytes) -> str:
+    """Compute a short SHA-256 fingerprint of a PEM cert, for display.
+
+    Decodes the base64 between BEGIN/END markers so the fingerprint
+    matches what `openssl x509 -fingerprint -sha256` reports.
+    Returns the colon-separated hex form, truncated to 16 bytes for
+    terminal readability.
+    """
+    import base64
+    import hashlib
+    import re
+
+    # Strip headers + whitespace, base64-decode the body, hash the DER.
+    body_match = re.search(
+        rb"-----BEGIN CERTIFICATE-----\n(.+?)\n-----END CERTIFICATE-----",
+        pem,
+        re.DOTALL,
+    )
+    if not body_match:
+        return "<malformed>"
+    try:
+        der = base64.b64decode(body_match.group(1).replace(b"\n", b""))
+    except Exception:
+        return "<malformed>"
+    digest = hashlib.sha256(der).hexdigest()
+    short = digest[:32]  # 16 bytes / 32 hex chars
+    return ":".join(short[i:i + 2] for i in range(0, len(short), 2))
 
 
 def _confirm(prompt: str) -> bool:

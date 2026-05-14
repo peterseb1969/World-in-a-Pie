@@ -49,6 +49,12 @@ from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 
+# CASE-373 Phase 1 — bind-mount target inside app containers for the
+# imported external CA. The host side is install-dir-relative
+# (./secrets/external-ca.crt); the container side is wip-namespaced
+# under /etc/ssl/certs/ to keep it next to the standard CA bundle.
+_EXTERNAL_CA_CONTAINER_PATH = "/etc/ssl/certs/external-ca.crt"
+
 # ────────────────────────────────────────────────────────────────────
 # Main entry point
 # ────────────────────────────────────────────────────────────────────
@@ -217,6 +223,12 @@ def _service_block(
         pass
 
     environment = _environment_block(env)
+    # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
+    # pointing at the bind-mounted CA when an imported bundle has
+    # seeded `secrets/external-ca.crt`. Set on apps only; backend
+    # services on the same host don't need cross-host trust.
+    if is_app and deployment.spec.network.external_ca_mount:
+        environment["NODE_EXTRA_CA_CERTS"] = _EXTERNAL_CA_CONTAINER_PATH
     if environment:
         block["environment"] = environment
 
@@ -236,6 +248,13 @@ def _service_block(
         block["command"] = command[1:]
 
     volumes = _volumes_for(owner)
+    # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
+    # into app containers when the flag is set. Path is install-dir-
+    # relative because compose runs from there.
+    if is_app and deployment.spec.network.external_ca_mount:
+        volumes.append(
+            f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
+        )
     if volumes:
         block["volumes"] = volumes
 

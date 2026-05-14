@@ -43,6 +43,7 @@ from wip_deploy.config_gen import (
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
+    _EXTERNAL_CA_CONTAINER_PATH,
     _caddy_service_block,
     _collect_volumes,
     _command_for,
@@ -428,6 +429,12 @@ def _dev_service_block(
         base_path = environment.get("APP_BASE_PATH")
         if base_path and "VITE_BASE_PATH" not in environment:
             environment["VITE_BASE_PATH"] = base_path
+    # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
+    # pointing at the bind-mounted CA when an imported bundle has
+    # seeded `secrets/external-ca.crt`. Set on apps only (backend
+    # services on the same host don't need cross-host trust).
+    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
+        environment["NODE_EXTRA_CA_CERTS"] = _EXTERNAL_CA_CONTAINER_PATH
     # CASE-301: extend PYTHONPATH so the bind-mounted wip-auth source
     # shadows the build-baked site-packages copy. Without this, edits
     # to libs/wip-auth/ would only land via a full `wip-deploy install`
@@ -461,6 +468,13 @@ def _dev_service_block(
         enable_source_mount=source_mount,
         app_sources=app_sources,
     )
+    # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
+    # into app containers when the flag is set. Path is install-dir-
+    # relative because compose runs from there.
+    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
+        volumes.append(
+            f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
+        )
     if volumes:
         block["volumes"] = volumes
 
