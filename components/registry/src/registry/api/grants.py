@@ -36,6 +36,48 @@ def _is_superadmin(identity: UserIdentity) -> bool:
 _PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
 
 
+def _build_synthetic_identity(
+    *,
+    user_id: str,
+    email: str | None,
+    groups: list[str],
+    auth_method: str,
+    key_namespaces_header: str | None,
+) -> UserIdentity:
+    """Reconstruct the calling service's UserIdentity at the Registry side.
+
+    CASE-351: when the calling service forwards an api-key's namespace
+    scope via X-Key-Namespaces, that list must land on the synthetic
+    identity's `raw_claims["namespaces"]` so `_resolve_permission`'s
+    api_key branch can use it (lines 79-82 + 121-124).
+
+    Header absent → raw_claims=None, matching today's behaviour for
+    unscoped admin/services keys and for non-api_key identities.
+
+    Empty header (no namespaces in scope) is treated as an explicit
+    empty list, not an absent header — a key explicitly scoped to no
+    namespaces is meaningfully different from an unscoped key. (Today
+    no caller produces this shape, but the distinction is recorded
+    so future code can rely on it.)
+    """
+    raw_claims: dict | None = None
+    if key_namespaces_header is not None:
+        # Strip per-item whitespace from CSV; drop empty fragments so
+        # a stray comma in the header doesn't poison the list.
+        ns_list = [
+            ns.strip() for ns in key_namespaces_header.split(",") if ns.strip()
+        ]
+        raw_claims = {"namespaces": ns_list}
+    return UserIdentity(
+        user_id=user_id,
+        username=email or user_id,
+        email=email,
+        groups=groups,
+        auth_method=auth_method,
+        raw_claims=raw_claims,
+    )
+
+
 def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
     return GrantResponse(
         namespace=grant.namespace,
@@ -347,12 +389,17 @@ async def check_permission_internal(
     header_groups = request.headers.get("X-User-Groups")
     groups_str = header_groups or groups
     group_list = groups_str.split(",") if groups_str else []
-    synthetic = UserIdentity(
+    # CASE-351 — the calling service forwards the api-key's namespace
+    # scope so _resolve_permission's api_key branch can see the same
+    # scoping the calling service does. Absent header = unscoped key
+    # (admin/services) or non-api_key identity — both match existing
+    # behaviour.
+    synthetic = _build_synthetic_identity(
         user_id=user_id,
-        username=email or user_id,
         email=email,
         groups=group_list,
         auth_method=auth_method,
+        key_namespaces_header=request.headers.get("X-Key-Namespaces"),
     )
 
     perm = await _resolve_permission(synthetic, namespace)
@@ -387,12 +434,13 @@ async def accessible_namespaces_internal(
     header_groups = request.headers.get("X-User-Groups")
     groups_str = header_groups or groups
     group_list = groups_str.split(",") if groups_str else []
-    synthetic = UserIdentity(
+    # CASE-351 — see check_permission_internal for the rationale.
+    synthetic = _build_synthetic_identity(
         user_id=user_id,
-        username=email or user_id,
         email=email,
         groups=group_list,
         auth_method=auth_method,
+        key_namespaces_header=request.headers.get("X-Key-Namespaces"),
     )
 
     if _is_superadmin(synthetic):

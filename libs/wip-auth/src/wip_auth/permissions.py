@@ -107,6 +107,14 @@ async def _fetch_permission_from_registry(
     headers = {"X-API-Key": api_key}
     if identity.groups:
         headers["X-User-Groups"] = ",".join(identity.groups)
+    # CASE-351 — forward the api-key's namespace scope so the Registry's
+    # synthetic identity sees the same scoping the calling service does.
+    # Without this, the Registry treats every api_key call as unscoped
+    # and returns "none" for non-privileged keys. Header (not param)
+    # matches the existing X-User-Groups pattern.
+    key_namespaces = (identity.raw_claims or {}).get("namespaces")
+    if key_namespaces is not None:
+        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -246,6 +254,11 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
     headers = {"X-API-Key": api_key}
     if identity.groups:
         headers["X-User-Groups"] = ",".join(identity.groups)
+    # CASE-351 — forward the api-key's namespace scope (see sibling
+    # _fetch_permission_from_registry for the full rationale).
+    key_namespaces = (identity.raw_claims or {}).get("namespaces")
+    if key_namespaces is not None:
+        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
