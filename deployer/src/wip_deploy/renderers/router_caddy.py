@@ -32,14 +32,27 @@ def render_router_caddyfile(cfg: RouterConfig) -> str:
 
     for route in cfg.routes:
         backend = f"{route.backend_host}:{route.backend_port}"
-        out.write(f"    handle {route.path}/* {{\n")
-        if route.streaming:
-            out.write(f"        reverse_proxy {backend} {{\n")
-            out.write("            flush_interval -1\n")
-            out.write("        }\n")
-        else:
-            out.write(f"        reverse_proxy {backend}\n")
-        out.write("    }\n")
+        # CASE-378: emit a sibling bare-path handle when the route opts
+        # out of redirect (the /mcp pattern from CASE-312). Without it,
+        # `handle <path>/*` doesn't match the bare path; Caddy returns
+        # 200 + empty body; MCP client crashes with "Unexpected content
+        # type: null". For routes that DO redirect bare to trailing-
+        # slash (the /api/<svc>/* default), the bare match doesn't
+        # matter — apps always send a sub-path.
+        matchers: list[str] = []
+        if not route.redirect_bare_path:
+            matchers.append(route.path)
+        matchers.append(f"{route.path}/*")
+
+        for matcher in matchers:
+            out.write(f"    handle {matcher} {{\n")
+            if route.streaming:
+                out.write(f"        reverse_proxy {backend} {{\n")
+                out.write("            flush_interval -1\n")
+                out.write("        }\n")
+            else:
+                out.write(f"        reverse_proxy {backend}\n")
+            out.write("    }\n")
 
     out.write("}\n")
 

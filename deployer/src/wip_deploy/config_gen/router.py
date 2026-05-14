@@ -37,13 +37,27 @@ ROUTER_LISTEN_PORT = 8080
 
 @dataclass(frozen=True)
 class RouterRoute:
-    """One `handle <path>/* { reverse_proxy <backend> }` line in the
-    router's Caddyfile."""
+    """One `handle <path>[*] { reverse_proxy <backend> }` line in the
+    router's Caddyfile.
+
+    `redirect_bare_path=True` (the default for /api/<svc>/*): emit only
+    `handle <path>/*`. Apps + tools hit `/api/<svc>/<sub>` directly; the
+    bare path never matters.
+
+    `redirect_bare_path=False` (the /mcp pattern from CASE-312): emit
+    BOTH `handle <path>` AND `handle <path>/*`. The MCP StreamableHTTP
+    transport mounts at the bare path; routing only `/*` falls through
+    to Caddy's empty 200 → "Unexpected content type: null" → client crash.
+    """
 
     path: str
     backend_host: str  # short name, e.g. "wip-registry"
     backend_port: int
     streaming: bool
+    # CASE-378: bare-path handling. Mirrors compose_caddy.py's logic
+    # for the inner router. Default True keeps existing /api/* routes
+    # behavior; False is the /mcp case.
+    redirect_bare_path: bool = True
 
 
 @dataclass(frozen=True)
@@ -60,15 +74,16 @@ def generate_router_config(
     components: list[Component],
     apps: list[App],
 ) -> RouterConfig:
-    """Collect /api/* routes from active components and apps.
+    """Collect platform-service routes (/api/* + /mcp) for the router.
 
     App routes (/apps/*) aren't included — apps are the CALLERS of the
     router, not routees. The router exists to give apps a uniform
     entry point to the WIP service layer.
 
-    /mcp routes are excluded for now — the MCP server is browser-facing
-    via the main ingress, not an API aggregated through the router.
-    If an app ever needs SSR-proxied MCP access, flip the filter.
+    CASE-378: /mcp is now included. The router is the apps-side handle
+    for the WIP backend; MCP is part of that surface. Apps can set
+    MCP_URL to the router (e.g. http://wip-router:8080/mcp) the same
+    way they set WIP_BASE_URL.
     """
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
@@ -80,7 +95,9 @@ def generate_router_config(
         if c.metadata.name == "router":
             continue  # don't route the router to itself
         for r in c.spec.routes:
-            if not r.path.startswith("/api/"):
+            # /api/<svc>/* (platform services) + /mcp (MCP server) go
+            # through the router. /apps/* are caller routes; never routed.
+            if not (r.path.startswith("/api/") or r.path == "/mcp"):
                 continue
             port = _default_port(c)
             routes.append(RouterRoute(
@@ -88,6 +105,7 @@ def generate_router_config(
                 backend_host=f"wip-{c.metadata.name}",
                 backend_port=port.container_port,
                 streaming=r.streaming,
+                redirect_bare_path=r.redirect_bare_path,
             ))
 
     # Apps don't currently contribute /api/* routes, but guard against
@@ -104,6 +122,7 @@ def generate_router_config(
                 backend_host=f"wip-{a.metadata.name}",
                 backend_port=port.container_port,
                 streaming=r.streaming,
+                redirect_bare_path=r.redirect_bare_path,
             ))
 
     routes.sort(key=lambda r: (r.path, r.backend_host))
