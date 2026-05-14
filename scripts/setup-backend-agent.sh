@@ -499,7 +499,9 @@ The architecture is **spec → config_gen → per-target renderers.** The spec (
 
 **Testing.** `./scripts/wip-test.sh deployer` — 400+ tests over spec, config_gen, and renderers. Run before shipping any deployer change.
 
-**When a bug isn't in service code.** Routing failures, TLS failures, missing env vars, unroutable health checks, silent 200-with-empty-body from Caddy on unmatched paths — these live in `deployer/` or `components/<svc>/wip-component.yaml`, not service source. When a service seems healthy but unreachable, check the deployer's rendered output first.
+**When a bug isn't in service code.** Routing failures, TLS failures, missing env vars, unroutable health checks, silent 200-with-empty-body from Caddy on unmatched paths — these live in \`deployer/\` or \`components/<svc>/wip-component.yaml\`, not service source. When a service seems healthy but unreachable, check the deployer's rendered output first.
+
+**The wip-deployable app contract (APP-YAC-facing).** The contract that APP-YACs must satisfy to ship apps that work under \`wip-deploy install\` lives at \`FR-YAC/papers/wip-deployable-app-contract.md\`. Read it when extending the scaffold (\`--preset query\` and successors), reviewing app-side PRs that touch Dockerfile / vite.config / manifests, or filing platform invariants apps will rely on. The paper names CASE-374 (auth.mode preset), CASE-377 (MCP_ALLOWED_HOST), CASE-378 (\`/mcp\` router route) as platform invariants apps now count on — any platform change that touches those guarantees needs to be reflected in the paper.
 
 ---
 
