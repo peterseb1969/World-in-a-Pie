@@ -27,6 +27,14 @@ spec:
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
       - {name: MASTER_API_KEY, source: {from_secret: api-key}}
+      # CASE-377: DNS-rebinding protection allow-list. Without this the
+      # MCP server rejects same-network clients connecting via the
+      # container DNS name (e.g. WIP-KB at http://wip-mcp-server:8007/mcp)
+      # with HTTP 421 "Invalid Host header". Outer-Caddy-proxied calls
+      # work via Host normalization; same-network direct calls don't.
+      # Value matches the container hostname produced by the renderer
+      # (always `wip-<component-name>` per the compose/k8s naming contract).
+      - {name: MCP_ALLOWED_HOST, source: {literal: "wip-mcp-server"}}
     optional:
       # The 8 reporting-sync MCP tools (search, run_report_query,
       # get_table_view, list_report_tables, query_by_template,
