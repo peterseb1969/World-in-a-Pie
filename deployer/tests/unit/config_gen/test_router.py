@@ -82,18 +82,26 @@ class TestRouterConfig:
         )
         assert cfg.listen_port == ROUTER_LISTEN_PORT == 8080
 
-    def test_mcp_route_not_included(
+    def test_mcp_route_included(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
-        """/mcp is browser-facing via the main ingress, not aggregated
-        through the router. No app currently needs SSR-proxied MCP."""
+        """CASE-378: /mcp is now routed through the inner router so apps
+        that use `from_component: router` can reach MCP without hard-
+        coding wip-mcp-server. The bare-path-no-redirect case (CASE-312
+        signature) is also covered — see test_mcp_route_emits_bare_handle
+        in the renderer test below."""
         d = compose_deployment.model_copy(deep=True)
         d.spec.modules.optional = ["mcp-server"]
         cfg = generate_router_config(
             d, real_discovery.components, real_discovery.apps
         )
         paths = {r.path for r in cfg.routes}
-        assert "/mcp" not in paths
+        assert "/mcp" in paths
+        mcp_route = next(r for r in cfg.routes if r.path == "/mcp")
+        assert mcp_route.backend_host == "wip-mcp-server"
+        assert mcp_route.backend_port == 8007
+        # /mcp's manifest declares redirect_bare_path: false
+        assert mcp_route.redirect_bare_path is False
 
     def test_router_excluded_from_its_own_routes(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -149,6 +157,40 @@ class TestRouterCaddyfile:
         ds_start = caddyfile.index("handle /api/document-store/*")
         ds_block = caddyfile[ds_start : ds_start + 200]
         assert "flush_interval -1" in ds_block
+
+    def test_mcp_emits_bare_and_trailing_handles(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        """CASE-378: /mcp's redirect_bare_path=false means the renderer
+        must emit BOTH `handle /mcp` and `handle /mcp/*`. Without the
+        bare-path handler, callers hitting the bare URL get Caddy's
+        empty 200 (CASE-312 signature) and crash."""
+        d = compose_deployment.model_copy(deep=True)
+        d.spec.modules.optional = ["mcp-server"]
+        caddyfile = self._render(d, real_discovery)
+        assert "handle /mcp {" in caddyfile
+        assert "handle /mcp/* {" in caddyfile
+        # Both handles must reverse-proxy to mcp-server.
+        # Confirm by counting matches in /mcp-blocks.
+        mcp_count = caddyfile.count("reverse_proxy wip-mcp-server:8007")
+        assert mcp_count == 2, (
+            f"expected /mcp + /mcp/* both routing to mcp-server, "
+            f"got {mcp_count} matches"
+        )
+
+    def test_api_routes_emit_only_trailing_handle(
+        self, compose_deployment: Deployment, real_discovery: Discovery
+    ) -> None:
+        """CASE-378: /api/<svc>/* routes default `redirect_bare_path=True`,
+        so only `handle /api/<svc>/*` is emitted (no sibling bare-path
+        handle). This is the existing behavior — making sure the new
+        bare-path-emit logic only kicks in for redirect_bare_path=False
+        routes."""
+        caddyfile = self._render(compose_deployment, real_discovery)
+        # `handle /api/registry {` (bare) should NOT appear — only the
+        # trailing `handle /api/registry/* {` version.
+        assert "handle /api/registry {" not in caddyfile
+        assert "handle /api/registry/* {" in caddyfile
 
 
 class TestAppEnvResolution:
