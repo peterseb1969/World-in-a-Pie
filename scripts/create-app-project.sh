@@ -155,9 +155,16 @@ echo "2. Copying slash commands..."
 cp "$WIP_ROOT/docs/slash-commands/app-builder/"*.md "$APP_DIR/.claude/commands/"
 echo "   Copied: $(find "$APP_DIR/.claude/commands/" -maxdepth 1 -type f | wc -l | tr -d ' ') commands"
 
-# --- Generate .claude/settings.local.json defaults (CASE-169) ---
-# 23 catchall bash patterns for routine non-destructive commands.
-# Avoids prompt-friction for every cat/sed/ls/etc. on a fresh APP-YAC.
+# --- Generate .claude/settings.local.json defaults (CASE-169 + CASE-385) ---
+# 31 catchall bash patterns: 23 from CASE-169 (routine read-only file
+# inspection — cat/sed/grep/etc.) + 8 from CASE-385 tailored for
+# APP-YAC's /setup (node version check, npm deps check, container-
+# runtime probe, curl health probe, wip-deploy add-app surface).
+# Differs from backend's mirror by dropping python:*/python3:* (APP-YACs
+# are Node-stack) and adding node:*/npm:*.
+# Goal: a fresh APP-YAC's first `/setup` runs through environment
+# checks with zero bash permission prompts, so time-to-productive
+# tracks the script wall-clock rather than human-approval latency.
 # File is gitignored; user customizations preserved on re-run.
 # find:* deliberately omitted — find -exec / -delete are destructive
 # and should be earned per session.
@@ -189,12 +196,20 @@ if [ ! -f "$APP_DIR/.claude/settings.local.json" ]; then
       "Bash(dirname:*)",
       "Bash(realpath:*)",
       "Bash(which:*)",
-      "Bash(type:*)"
+      "Bash(type:*)",
+      "Bash(test:*)",
+      "Bash(command:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(podman:*)",
+      "Bash(docker:*)",
+      "Bash(wip-deploy:*)",
+      "Bash(curl:*)"
     ]
   }
 }
 EOF
-    echo "   Written: .claude/settings.local.json (23 catchall patterns)"
+    echo "   Written: .claude/settings.local.json (31 catchall patterns)"
 else
     echo "   Skipped: .claude/settings.local.json already exists (preserved)"
 fi
