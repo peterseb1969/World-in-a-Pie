@@ -208,13 +208,17 @@ async def update_terms(
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
 
-    # CASE-384 — enforce write on each term's namespace before mutating.
+    # CASE-384 — batched namespace lookup + permission check.
     identity = get_current_identity()
     from ..models.term import Term as _Term
-    for item in items:
-        existing = await _Term.find_one({"term_id": item.term_id})
-        if existing:
-            await check_namespace_permission(identity, existing.namespace, "write")
+    ids = [item.term_id for item in items if item.term_id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.term_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -255,14 +259,17 @@ async def deprecate_terms(
     await resolve_bulk_ids(items, "term_id", "term", namespace=namespace)
     await resolve_bulk_ids(items, "replaced_by_term_id", "term", namespace=namespace)
 
-    # CASE-384 — deprecation is a mutation; require write on each term's
-    # namespace.
+    # CASE-384 — batched namespace lookup + permission check.
     identity = get_current_identity()
     from ..models.term import Term as _Term
-    for item in items:
-        existing = await _Term.find_one({"term_id": item.term_id})
-        if existing:
-            await check_namespace_permission(identity, existing.namespace, "write")
+    ids = [item.term_id for item in items if item.term_id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.term_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -295,13 +302,17 @@ async def delete_terms(
     from wip_auth import resolve_bulk_ids
     await resolve_bulk_ids(items, "id", "term", namespace=namespace)
 
-    # CASE-384 — enforce write on each term's namespace before deleting.
+    # CASE-384 — batched namespace lookup + permission check.
     identity = get_current_identity()
     from ..models.term import Term as _Term
-    for item in items:
-        existing = await _Term.find_one({"term_id": item.id})
-        if existing:
-            await check_namespace_permission(identity, existing.namespace, "write")
+    ids = [item.id for item in items if item.id]
+    if ids:
+        existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):

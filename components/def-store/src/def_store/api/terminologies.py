@@ -156,15 +156,20 @@ async def update_terminologies(
     await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
 
     # CASE-384 — enforce write permission on each item's actual namespace.
-    # Bulk endpoints abort on the first permission failure (matches the
-    # existing bulk-create convention at line 46). Pre-fetching here adds
-    # one MongoDB call per item; cache amortises Registry calls.
+    # Batched lookup: one Mongo query over all terminology_ids, then
+    # per-id permission check. Saves N-1 round-trips on cross-namespace
+    # bulks vs. the original per-item find_one. Aborts on first failure
+    # to match the bulk-create convention.
     identity = get_current_identity()
     from ..models.terminology import Terminology as _T
-    for item in items:
-        existing = await _T.find_one({"terminology_id": item.terminology_id})
-        if existing:
-            await check_namespace_permission(identity, existing.namespace, "write")
+    ids = [item.terminology_id for item in items if item.terminology_id]
+    if ids:
+        existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.terminology_id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):
@@ -269,14 +274,18 @@ async def delete_terminologies(
     """
     await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
 
-    # CASE-384 — enforce write permission on each item's namespace before
-    # any deletes happen. Aborts on first failure (matches bulk-create).
+    # CASE-384 — batched namespace lookup + permission check, same shape
+    # as update_terminologies above.
     identity = get_current_identity()
     from ..models.terminology import Terminology as _T
-    for item in items:
-        existing = await _T.find_one({"terminology_id": item.id})
-        if existing:
-            await check_namespace_permission(identity, existing.namespace, "write")
+    ids = [item.id for item in items if item.id]
+    if ids:
+        existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
+        id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
+        for item in items:
+            ns = id_to_namespace.get(item.id)
+            if ns:
+                await check_namespace_permission(identity, ns, "write")
 
     results = []
     for i, item in enumerate(items):

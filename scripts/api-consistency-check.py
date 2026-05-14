@@ -63,6 +63,79 @@ EXEMPT_FUNCTIONS = {
 }
 
 
+# CASE-384 follow-up — permission-enforcement rule.
+#
+# Every endpoint that operates on namespaced platform data must reference
+# one of these helpers (called directly in the function body) OR declare
+# a `Depends(...)` on a recognised admin gate (PERMISSION_DEPENDS_NAMES).
+#
+# The check is syntactic. False positives are managed via the two
+# exemption mechanisms below — additions need a written rationale.
+PERMISSION_ENFORCEMENT_NAMES = frozenset({
+    "check_namespace_permission",
+    "resolve_namespace_filter",
+    "resolve_accessible_namespaces",
+    "_is_superadmin",
+    # Local helper wrappers that delegate to the canonical helpers.
+    # When a new wrapper lands, add the name here so the AST walker
+    # treats the wrapper-call as a valid gate without needing to
+    # recurse into module-local definitions.
+    "_enforce_replay_admin",        # document_store.api.replay
+})
+
+# Names that count as valid permission gates when they appear as the
+# callee inside `Depends(...)` on a function parameter's default. Used
+# by registry's api-key-management endpoints, which gate on admin
+# membership via FastAPI Depends rather than an inline call.
+PERMISSION_DEPENDS_NAMES = frozenset({
+    "require_admin_key",            # registry: admin-group-only gate
+})
+
+# Path-substring patterns. Endpoints whose full route matches one of
+# these are exempt from the permission-enforcement rule. The categories:
+#
+#   - Stateless utilities that don't touch namespaced data: /preview
+#     (parses operator-uploaded files), /validate (now gated, but kept
+#     here as a fallback because some validate endpoints in other
+#     services may be stateless).
+#   - Service health/info: /health, /stats, /count.
+#   - Bootstrap/initialisation: /initialize.
+#
+# Each addition needs a rationale recorded — exemptions accumulate
+# silently otherwise.
+PERMISSION_EXEMPT_PATH_PATTERNS = [
+    "/preview",       # Stateless file parsers (e.g., import preview)
+    "/health",        # Service health endpoints
+    "/stats",         # Service-wide statistics
+    "/count",         # Aggregate counters
+    "/initialize",    # Bootstrap operations (admin-by-deployment-context)
+]
+
+# Service-level exemptions. Whole components whose authorisation model
+# is fundamentally different from the namespace-permission model used by
+# def-store / document-store / template-store.
+#
+#   - registry: IS the permission authority. Its API surface operates on
+#     api-keys, grants, entries, synonyms, and search indices — none of
+#     which are "namespaced documents" in the per-app sense. Its
+#     enforcement model is admin-group membership (`wip-admins`,
+#     `wip-services`) checked inline via `_resolve_permission` against
+#     the calling identity. Excluding it here doesn't disable scrutiny;
+#     it just means the new rule wouldn't add useful signal to its
+#     existing audit.
+PERMISSION_EXEMPT_SERVICES = frozenset({
+    "registry",
+})
+
+# One-off function-name exemptions for the permission rule. Same shape
+# as EXEMPT_FUNCTIONS — keep the rationale literal so future readers
+# can re-evaluate when context changes.
+PERMISSION_EXEMPT_FUNCTIONS = {
+    # No entries yet. Add with care — the burden of proof is on the
+    # exemption, not on the enforcement.
+}
+
+
 def find_api_files(root: str) -> list[Path]:
     """Find all API route files."""
     pattern = Path(root) / "components" / "*" / "src" / "*" / "api" / "*.py"
@@ -133,6 +206,11 @@ class EndpointVisitor(ast.NodeVisitor):
                 self._check_write_endpoint(node, endpoint_info)
             elif method == "get":
                 self._check_get_endpoint(node, endpoint_info)
+
+            # CASE-384 follow-up — every endpoint (any method) must
+            # either call one of PERMISSION_ENFORCEMENT_NAMES or be on
+            # an exemption list.
+            self._check_permission_enforcement(node, endpoint_info)
 
     def _parse_decorator(self, decorator) -> tuple:
         """Parse @router.get("/path") style decorators."""
@@ -211,6 +289,76 @@ class EndpointVisitor(ast.NodeVisitor):
                 "rule": "bulk-first-request",
                 "message": f"{info['method'].upper()} {path}: write endpoint should accept List[...] body",
             })
+
+    def _check_permission_enforcement(self, node, info):
+        """CASE-384 follow-up — every endpoint must call into the auth
+        layer (or be explicitly exempt).
+
+        Looks for any Call node in the function body whose function name
+        matches PERMISSION_ENFORCEMENT_NAMES, or a Depends(...) on a
+        function in PERMISSION_DEPENDS_NAMES. Walks the full subtree so
+        the helper can be nested inside conditionals, try blocks, or
+        comprehensions — anywhere FastAPI would reach it during a request.
+
+        Exemption mechanisms:
+          1. Component-level: PERMISSION_EXEMPT_SERVICES (e.g., registry).
+          2. Path-substring against the full route — for stateless
+             utilities (/preview, /health, /stats, /count, /initialize).
+          3. One-off function-name entries with literal rationale.
+        """
+        path = info.get("path", "")
+        full_path = self.router_prefix + path
+        func_name = info.get("function", "")
+
+        # 0. Service-level exemption.
+        for part in Path(self.filepath).parts:
+            if part in PERMISSION_EXEMPT_SERVICES:
+                return
+
+        if any(p in full_path for p in PERMISSION_EXEMPT_PATH_PATTERNS):
+            return
+        if func_name in PERMISSION_EXEMPT_FUNCTIONS:
+            return
+
+        # 1. Depends-style gates on function arguments.
+        #    e.g. `_admin: str = Depends(require_admin_key)`. Walk every
+        #    argument default in the canonical FastAPI shapes (args,
+        #    kwonlyargs).
+        for default in list(node.args.defaults) + list(node.args.kw_defaults):
+            if default is None:
+                continue
+            if (
+                isinstance(default, ast.Call)
+                and isinstance(default.func, ast.Name)
+                and default.func.id == "Depends"
+                and default.args
+                and isinstance(default.args[0], ast.Name)
+                and default.args[0].id in PERMISSION_DEPENDS_NAMES
+            ):
+                return  # Endpoint is gated via Depends.
+
+        # 2. Walk the function body for any Call to a recognised helper.
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            called_name: str | None = None
+            if isinstance(inner.func, ast.Name):
+                called_name = inner.func.id
+            elif isinstance(inner.func, ast.Attribute):
+                called_name = inner.func.attr
+            if called_name in PERMISSION_ENFORCEMENT_NAMES:
+                return  # Endpoint is gated.
+
+        self.violations.append({
+            **info,
+            "rule": "permission-enforcement",
+            "message": (
+                f"{info['method'].upper()} {path}: endpoint does not call any "
+                f"namespace permission helper "
+                f"({sorted(PERMISSION_ENFORCEMENT_NAMES)}). "
+                f"Add a check or extend the exemption list with rationale."
+            ),
+        })
 
     def _check_get_endpoint(self, node, info):
         """Check that GET list endpoints have pagination parameters."""

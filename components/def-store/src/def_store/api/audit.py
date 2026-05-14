@@ -3,7 +3,12 @@
 
 from fastapi import APIRouter, Depends, Query
 
-from wip_auth import resolve_or_404
+from wip_auth import (
+    check_namespace_permission,
+    get_current_identity,
+    resolve_accessible_namespaces,
+    resolve_or_404,
+)
 
 from ..models.api_models import AuditLogEntry, AuditLogResponse
 from ..models.audit_log import TermAuditLog
@@ -42,6 +47,16 @@ async def get_term_audit_log(
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
     term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
+
+    # CASE-384 follow-up — audit logs are sensitive: they expose change
+    # history including previous_values + new_values. Gate by read on
+    # the term's namespace.
+    from ..models.term import Term as _Term
+    existing = await _Term.find_one({"term_id": term_id})
+    if existing:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     query = {"term_id": term_id}
 
     total = await TermAuditLog.find(query).count()
@@ -77,6 +92,14 @@ async def get_terminology_audit_log(
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
+
+    # CASE-384 follow-up — gate by read on the terminology's namespace.
+    from ..models.terminology import Terminology as _T
+    existing = await _T.find_one({"terminology_id": terminology_id})
+    if existing:
+        identity = get_current_identity()
+        await check_namespace_permission(identity, existing.namespace, "read")
+
     query = {"terminology_id": terminology_id}
     if action:
         query["action"] = action
@@ -111,9 +134,17 @@ async def get_recent_audit_log(
     _: str = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get recent audit log entries across all terminologies."""
-    query = {}
+    # CASE-384 follow-up — restrict to namespaces the caller can read.
+    # Superadmin gets None (no filter). Audit logs join to TermAuditLog
+    # which stores namespace on each row.
+    identity = get_current_identity()
+    accessible = await resolve_accessible_namespaces(identity)
+
+    query: dict = {}
     if action:
         query["action"] = action
+    if accessible is not None:
+        query["namespace"] = {"$in": accessible}
 
     total = await TermAuditLog.find(query).count()
     skip = (page - 1) * page_size
