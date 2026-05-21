@@ -15,7 +15,10 @@ spec:
     # First containerized build — refresh sequence joined with components
     # at wipkb-20260513 (BE-YAC-20260430-2000). Suffix bump on rebuild
     # since pull_policy: if-not-present caches by tag.
-    tag: wipkb-20260513c
+    # 2026-05-21 bump: picks up 7589c60 "BrowserRouter basename = BASE_URL
+    # for k8s mounting" (CASE-370 surface #10) and the May 13–14 deploy
+    # follow-ups (Dockerfile.dev, port harmonisation, vite host binding).
+    tag: wipkb-20260521
 
   ports:
     - {name: http, container_port: 3012}
