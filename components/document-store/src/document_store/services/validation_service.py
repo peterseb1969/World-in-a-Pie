@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from datetime import date, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
@@ -1922,10 +1922,10 @@ class ValidationService:
 
         if operator == "equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
-            return a == e
+            return cast(bool, a == e)
         elif operator == "not_equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
-            return a != e
+            return cast(bool, a != e)
         elif operator == "in":
             return actual_value in expected_value if expected_value else False
         elif operator == "not_in":

@@ -1,7 +1,7 @@
 """Client for communicating with the WIP Def-Store service."""
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -82,7 +82,7 @@ class DefStoreClient:
                         f"Failed to get terminology: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}")
 
@@ -146,7 +146,7 @@ class DefStoreClient:
                         f"Validation failed: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                return cast(dict[str, Any], response.json())
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}")
 
@@ -185,7 +185,7 @@ class DefStoreClient:
                     )
 
                 data = response.json()
-                return data.get("results", [])
+                return cast(list[dict[str, Any]], data.get("results", []))
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}")
 

@@ -11,7 +11,7 @@ the built-in terms.
 """
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from ..models.term import Term
 from ..models.terminology import Terminology, TerminologyMetadata
@@ -340,7 +340,7 @@ def get_time_unit_factor(term_value: str) -> int | None:
         if term_def["value"] == "_TIME_UNITS":
             for term in term_def["terms"]:
                 if term["value"] == term_value:
-                    return term["metadata"]["factor"]
+                    return cast(int | None, term["metadata"]["factor"])
     return None
 
 

@@ -22,7 +22,7 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -250,7 +250,7 @@ async def resolve_entity_id(
     if results and results[0].get("status") == "found":
         canonical_id = results[0]["entry_id"]
         _set_cached(cache_key, canonical_id)
-        return canonical_id
+        return cast(str, canonical_id)
 
     raise EntityNotFoundError(raw_id, entity_type)
 

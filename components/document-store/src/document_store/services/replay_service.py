@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class ReplayService:
         session = self._sessions.get(session_id)
         if not session:
             return None
-        return session.model_dump(mode="json")
+        return cast(dict[Any, Any] | None, session.model_dump(mode="json"))
 
     def list_sessions(self) -> list[dict]:
         """List all replay sessions."""

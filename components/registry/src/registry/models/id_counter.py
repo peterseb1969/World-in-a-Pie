@@ -8,6 +8,7 @@ findOneAndUpdate with $inc, which is atomic even under concurrent access.
 from beanie import Document
 from pydantic import Field
 from pymongo import IndexModel, ReturnDocument
+from typing import cast
 
 
 class IdCounter(Document):
@@ -36,7 +37,7 @@ class IdCounter(Document):
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
-        return result["seq"]
+        return cast(int, result["seq"])
 
     @classmethod
     async def set_if_higher(cls, counter_key: str, value: int) -> None:

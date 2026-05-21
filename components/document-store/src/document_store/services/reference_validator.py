@@ -8,7 +8,7 @@ all references in a document comply with the isolation rules.
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -45,7 +45,7 @@ class ReferenceValidator:
                 if response.status_code == 200:
                     ns_data = response.json()
                     self._namespace_cache[namespace] = ns_data
-                    return ns_data
+                    return cast(dict[str, Any] | None, ns_data)
                 elif response.status_code == 404:
                     # No namespace found - allow all references (open by default)
                     self._namespace_cache[namespace] = {"isolation_mode": "open"}

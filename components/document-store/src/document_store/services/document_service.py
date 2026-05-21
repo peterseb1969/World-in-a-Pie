@@ -5,7 +5,7 @@ import logging
 import math
 import time
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
@@ -1200,7 +1200,7 @@ class DocumentService:
                 return True  # service called without identity context — trust caller
             if ns not in ns_permission_cache:
                 ns_permission_cache[ns] = await resolve_permission(identity, ns)
-            return permission_sufficient(ns_permission_cache[ns], "read")
+            return cast(bool, permission_sufficient(ns_permission_cache[ns], "read"))
 
         # Template-aware header_fields lookup (CASE-343, refined by
         # CASE-354). Three-tier resolution per peer template:

@@ -14,6 +14,7 @@ Usage:
 """
 
 import logging
+from typing import cast
 
 from fastapi import HTTPException
 
@@ -35,7 +36,7 @@ def _derive_namespace_from_identity() -> str | None:
         return None
     namespaces = (identity.raw_claims or {}).get("namespaces")
     if isinstance(namespaces, list) and len(namespaces) == 1:
-        return namespaces[0]
+        return cast(str | None, namespaces[0])
     return None
 
 

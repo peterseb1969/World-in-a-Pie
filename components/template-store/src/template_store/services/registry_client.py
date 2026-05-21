@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -109,7 +109,7 @@ class RegistryClient:
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
 
-            return result["registry_id"]
+            return cast(str, result["registry_id"])
 
     async def register_templates_bulk(
         self,
@@ -157,7 +157,7 @@ class RegistryClient:
                 )
 
             data = response.json()
-            return data["results"]
+            return cast(list[dict[str, Any]], data["results"])
 
     async def add_synonym(
         self,
@@ -207,8 +207,8 @@ class RegistryClient:
             data = response.json()
             result = data.get("results", data) if isinstance(data, dict) else data
             if isinstance(result, list):
-                return result[0].get("status") == "added"
-            return result.get("results", [{}])[0].get("status") == "added"
+                return cast(bool, result[0].get("status") == "added")
+            return cast(bool, result.get("results", [{}])[0].get("status") == "added")
 
     async def register_auto_synonym(
         self,
@@ -294,7 +294,7 @@ class RegistryClient:
 
             data = response.json()
             if data["found"] > 0:
-                return data["results"][0].get("entry_id")
+                return cast(str | None, data["results"][0].get("entry_id"))
 
             return None
 
@@ -316,7 +316,7 @@ class RegistryClient:
                     f"Failed to hard-delete entry {entry_id}: {response.status_code} - {response.text}"
                 )
             data = response.json()
-            return data.get("succeeded", 0) > 0
+            return cast(bool, data.get("succeeded", 0) > 0)
 
     async def get_namespace_deletion_mode(self, namespace: str) -> str:
         """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
@@ -328,7 +328,7 @@ class RegistryClient:
             if response.status_code != 200:
                 logger.warning(f"Failed to fetch namespace {namespace}: {response.status_code}")
                 return "retain"
-            return response.json().get("deletion_mode", "retain")
+            return cast(str, response.json().get("deletion_mode", "retain"))
 
     async def health_check(self) -> bool:
         """Check if the Registry service is healthy."""

@@ -39,7 +39,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx as _httpx
 from wip_toolkit.client import WIPClient
@@ -143,7 +143,7 @@ def _percent_for_status(status: BackupJobStatus, event: ProgressEvent) -> float 
     """
     if event.phase == "error":
         return None
-    return event.percent
+    return cast(float | None, event.percent)
 
 
 async def _persist_event(job_id: str, event: ProgressEvent) -> None:

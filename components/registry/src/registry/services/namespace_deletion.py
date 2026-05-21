@@ -7,7 +7,7 @@ namespace deletion across MongoDB, MinIO, and PostgreSQL.
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -516,7 +516,7 @@ class NamespaceDeletionService:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("total_deleted", 0)
+                    return cast(int, data.get("total_deleted", 0))
                 elif resp.status_code == 404:
                     # Endpoint doesn't exist yet — skip gracefully
                     logger.warning(

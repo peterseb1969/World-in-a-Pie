@@ -5,6 +5,7 @@ Checks what depends on a template before allowing deactivation.
 """
 
 import os
+from typing import cast
 
 import httpx
 from pydantic import BaseModel, Field
@@ -119,7 +120,7 @@ class DependencyService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    return data.get("total", 0)
+                    return cast(int, data.get("total", 0))
                 return 0
         except Exception:
             raise

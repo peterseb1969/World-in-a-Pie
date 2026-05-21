@@ -1,7 +1,7 @@
 """HTTP client for forwarding requests to WIP REST APIs."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -62,7 +62,7 @@ class IngestHTTPClient:
 
     def _get_base_url(self, attr_name: str) -> str:
         """Get base URL from settings attribute."""
-        return getattr(settings, attr_name)
+        return cast(str, getattr(settings, attr_name))
 
     async def forward_request(
         self,
