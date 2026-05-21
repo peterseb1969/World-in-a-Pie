@@ -13,7 +13,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import httpx
@@ -49,7 +49,7 @@ class BatchSyncService:
                     timeout=30.0,
                 )
                 if response.status_code == 200:
-                    return response.json()
+                    return cast(dict[str, Any] | None, response.json())
                 logger.error(f"Failed to fetch template {template_id}: {response.status_code}")
                 return None
         except Exception as e:
@@ -66,7 +66,7 @@ class BatchSyncService:
                     timeout=30.0,
                 )
                 if response.status_code == 200:
-                    return response.json()
+                    return cast(dict[str, Any] | None, response.json())
                 logger.error(f"Failed to fetch template by code {template_value}: {response.status_code}")
                 return None
         except Exception as e:

@@ -4,6 +4,7 @@ Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
 from datetime import UTC, datetime
+from typing import cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -28,7 +29,7 @@ _PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 
 def _is_superadmin(identity: UserIdentity) -> bool:
     """Check if identity has superadmin access (wip-admins group)."""
-    return identity.has_any_group(["wip-admins"])
+    return cast(bool, identity.has_any_group(["wip-admins"]))
 
 
 # Groups whose API keys are allowed to have namespaces=None (all-namespace access).

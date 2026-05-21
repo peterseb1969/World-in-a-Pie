@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import httpx
@@ -69,7 +69,7 @@ class SyncWorker:
                 if response.status_code == 200:
                     template = response.json()
                     self._template_cache[template_id] = template
-                    return template
+                    return cast(dict[str, Any] | None, template)
                 elif response.status_code == 404:
                     logger.warning(f"Template {template_id} not found (404)")
                     return None

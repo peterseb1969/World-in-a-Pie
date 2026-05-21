@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -191,7 +191,7 @@ class DefStoreClient:
                 terminology["terms"] = all_terms
                 terminology["_lookup"] = self._build_term_lookup(all_terms)
 
-                return terminology
+                return cast(dict[str, Any] | None, terminology)
 
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}") from e
@@ -428,7 +428,7 @@ class DefStoreClient:
                         f"Failed to get term: {response.status_code} - {response.text}"
                     )
 
-                return response.json()
+                return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}") from e
 

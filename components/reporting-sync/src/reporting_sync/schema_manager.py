@@ -8,7 +8,7 @@ Responsibilities:
 """
 
 import logging
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import asyncpg
 
@@ -344,7 +344,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
     async def table_exists(self, table_name: str) -> bool:
         """Check if a table exists."""
         async with self.pool.acquire() as conn:
-            return await conn.fetchval(
+            return cast(bool, await conn.fetchval(
                 """
                 SELECT EXISTS (
                     SELECT FROM information_schema.tables
@@ -353,7 +353,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON "{table_name}"(ta
                 )
                 """,
                 table_name,
-            )
+            ))
 
     async def get_existing_columns(self, table_name: str) -> set[str]:
         """Get set of existing column names for a table."""

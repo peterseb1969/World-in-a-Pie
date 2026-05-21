@@ -6,7 +6,7 @@ defines how IDs are generated for each entity type.
 """
 
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from beanie import Document
 from pydantic import Field
@@ -73,7 +73,7 @@ class Namespace(Document):
             cfg = self.id_config[entity_type]
             if isinstance(cfg, dict):
                 return IdAlgorithmConfig(**cfg)
-            return cfg
+            return cast(IdAlgorithmConfig, cfg)
         return DEFAULT_ID_CONFIG.get(entity_type, IdAlgorithmConfig(algorithm="uuid7"))
 
     class Settings:

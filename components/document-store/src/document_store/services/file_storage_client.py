@@ -2,6 +2,7 @@
 
 import os
 from contextlib import asynccontextmanager
+from typing import cast
 
 from aiobotocore.session import get_session
 from botocore.exceptions import ClientError
@@ -133,7 +134,7 @@ class FileStorageClient:
                     Key=storage_key
                 )
                 async with response["Body"] as stream:
-                    return await stream.read()
+                    return cast(bytes, await stream.read())
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
@@ -263,7 +264,7 @@ class FileStorageClient:
                 if self.public_endpoint_url and self.public_endpoint_url != self.endpoint_url:
                     url = url.replace(self.endpoint_url, self.public_endpoint_url, 1)
 
-                return url
+                return cast(str, url)
         except ClientError as e:
             raise FileStorageError(f"Failed to generate download URL: {e}") from e
 

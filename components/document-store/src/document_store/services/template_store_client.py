@@ -2,7 +2,7 @@
 
 import os
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -163,7 +163,7 @@ class TemplateStoreClient:
                         if actual_version is not None:
                             self._template_cache[f"{template_id}:v{actual_version}"] = result
 
-                return result
+                return cast(dict[str, Any] | None, result)
         except httpx.RequestError as e:
             raise TemplateStoreError(f"Request failed: {e!s}") from e
 
@@ -280,7 +280,7 @@ class TemplateStoreClient:
                     )
 
                 data = response.json()
-                return data.get("items", [])
+                return cast(list[dict[str, Any]], data.get("items", []))
         except httpx.RequestError as e:
             raise TemplateStoreError(f"Request failed: {e!s}") from e
 
