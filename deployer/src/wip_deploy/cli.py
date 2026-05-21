@@ -149,7 +149,17 @@ def _data_dir_opt() -> typer.models.OptionInfo:
 
 
 def _namespace_opt() -> typer.models.OptionInfo:
-    return typer.Option("--namespace", help="K8s namespace.")
+    return typer.Option(
+        "--namespace",
+        help=(
+            "K8s namespace. Defaults to 'wip'. Bidirectional with --name: "
+            "passing --namespace X (without --name) auto-derives "
+            "--name X (install dir → ~/.wip-deploy/X/); passing --name X "
+            "(without --namespace) for --target k8s auto-derives the "
+            "namespace to X. Pass both explicitly to use different values "
+            "(e.g., --name prod-instance --namespace prod). (CASE-365)"
+        ),
+    )
 
 
 def _storage_class_opt() -> typer.models.OptionInfo:
@@ -323,7 +333,10 @@ def _name_opt() -> typer.models.OptionInfo:
             "(~/.wip-deploy/<name>/). When unspecified, defaults to "
             "the --namespace value for --target k8s, and to 'default' "
             "otherwise — so `--namespace wip-kb --target k8s` lands at "
-            "~/.wip-deploy/wip-kb/ without needing to pass --name twice."
+            "~/.wip-deploy/wip-kb/ without needing to pass --name twice. "
+            "Reciprocal (CASE-365): `--name wip-kb --target k8s` (without "
+            "--namespace) also sets the k8s namespace to wip-kb. Pass both "
+            "explicitly to use different values."
         ),
     )
 
@@ -351,6 +364,42 @@ def _resolve_name(
     if target == "k8s" and namespace:
         return namespace
     return "default"
+
+
+def _resolve_namespace(
+    name: str | None,
+    *,
+    target: str | None = None,
+    namespace: str = "wip",
+) -> str:
+    """Reciprocal of `_resolve_name`: back-derive `--namespace` from
+    `--name` for k8s installs (CASE-365).
+
+    The pre-existing one-directional rule (--namespace X without --name
+    → install dir at ~/.wip-deploy/X/) is intact. This adds the missing
+    other direction: --name X (without --namespace) for --target k8s
+    → k8s namespace becomes X.
+
+    Trigger conditions (all required):
+      - target == "k8s"
+      - namespace is at the literal default "wip"
+      - name is user-provided (not None) and not "wip"
+
+    Edge case: an operator who explicitly passes --namespace wip
+    alongside --name <X> will get namespace=X — Typer can't distinguish
+    "passed wip explicitly" from "took the default". The case body
+    accepts this trade-off; the explicit-wip-with-different-name case
+    is vanishingly rare and the loud-failure of "install completes in
+    the wrong namespace" today is worse than this corner.
+    """
+    if (
+        target == "k8s"
+        and namespace == "wip"
+        and name is not None
+        and name != "wip"
+    ):
+        return name
+    return namespace
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -401,6 +450,7 @@ def validate(
       wip-deploy validate --hostname wip.example.com --tls letsencrypt
     """
     hostname = _resolve_hostname(hostname, target)
+    namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
@@ -519,6 +569,7 @@ def show_spec(
       wip-deploy show-spec --target dev
     """
     hostname = _resolve_hostname(hostname, target)
+    namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
     deployment, _components, _apps = _assemble(
         preset=preset,
@@ -614,6 +665,7 @@ def render(
       wip-deploy render --target k8s --namespace wip
     """
     hostname = _resolve_hostname(hostname, target)
+    namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
@@ -774,6 +826,7 @@ def install(
         raise typer.Exit(2)
 
     hostname = _resolve_hostname(hostname, target)
+    namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
     deployment, components, apps_list = _assemble(
         preset=preset,
