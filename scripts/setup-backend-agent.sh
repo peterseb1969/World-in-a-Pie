@@ -145,35 +145,39 @@ else
     # support modern pyproject.toml build backends
     pip install --upgrade pip setuptools -q 2>/dev/null || true
 
-    # Install MCP server and its dependencies — this is critical for MCP connectivity
-    MCP_INSTALL_OK=false
-    if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
-        echo "   Installing MCP server dependencies..."
-        if pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>&1; then
-            MCP_INSTALL_OK=true
-            echo "   MCP server installed successfully"
-        fi
-    fi
-
-    if [ "$MCP_INSTALL_OK" = false ]; then
-        echo ""
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo "   !!  MCP SERVER INSTALL FAILED                          !!"
-        echo "   !!                                                     !!"
-        echo "   !!  Without this, Claude cannot connect to WIP.        !!"
-        echo "   !!  Fix manually:                                      !!"
-        echo "   !!    source .venv/bin/activate                        !!"
-        echo "   !!    pip install -e components/mcp-server/            !!"
-        echo "   !!                                                     !!"
-        echo "   !!  Then run /setup in Claude to verify.               !!"
-        echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        echo ""
-    fi
-
     # Install test dependencies
     pip install pytest ruff mypy -q 2>/dev/null || true
 
     echo "   Venv created"
+fi
+
+# Idempotent wip_mcp install. A pre-existing .venv may be incomplete — a
+# spawn-helper that creates .venv before setup runs, or an earlier setup that
+# half-failed, leaves the "venv exists" check above satisfied while wip_mcp is
+# still missing. The stdio MCP server then dies on import; Claude Code surfaces
+# that as "not connected" with no diagnostic.
+if ! "$VENV_PYTHON" -c "import wip_mcp" 2>/dev/null; then
+    if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
+        echo "   Installing MCP server dependencies (wip_mcp missing in venv)..."
+        if "$VENV_PYTHON" -m pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>&1; then
+            echo "   MCP server installed"
+        else
+            echo ""
+            echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo "   !!  MCP SERVER INSTALL FAILED                          !!"
+            echo "   !!                                                     !!"
+            echo "   !!  Without this, Claude cannot connect to WIP.        !!"
+            echo "   !!  Fix manually:                                      !!"
+            echo "   !!    source .venv/bin/activate                        !!"
+            echo "   !!    pip install -e components/mcp-server/            !!"
+            echo "   !!                                                     !!"
+            echo "   !!  Then run /setup in Claude to verify.               !!"
+            echo "   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+            echo ""
+        fi
+    else
+        echo "   WARNING: components/mcp-server/pyproject.toml missing; cannot install wip_mcp"
+    fi
 fi
 
 # --- 2. Generate .mcp.json ---
