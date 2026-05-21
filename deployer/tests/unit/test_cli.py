@@ -257,6 +257,60 @@ class TestShowSpec:
         # of module manifests. Discovery is skipped. So this succeeds.
         assert r.exit_code == 0, r.output
 
+    def test_k8s_name_without_namespace_back_derives_namespace(self) -> None:
+        """CASE-365: passing --name X --target k8s (without --namespace)
+        renders the deployment with k8s namespace=X, not the default 'wip'.
+
+        End-to-end through the CLI: the case body's exact reproducer
+        scenario, asserted on the assembled spec.
+        """
+        r = _invoke(
+            "show-spec",
+            "--preset", "standard",
+            "--target", "k8s",
+            "--hostname", "wip-kb.local",
+            "--name", "wip-kb",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert r.exit_code == 0, r.output
+        parsed = yaml.safe_load(r.output)
+        assert parsed["spec"]["platform"]["k8s"]["namespace"] == "wip-kb"
+
+    def test_k8s_namespace_only_still_works(self) -> None:
+        """CASE-365 regression: the original one-directional rule still
+        applies — --namespace X (without --name) → namespace=X."""
+        r = _invoke(
+            "show-spec",
+            "--preset", "standard",
+            "--target", "k8s",
+            "--hostname", "wip-kb.local",
+            "--namespace", "wip-kb",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert r.exit_code == 0, r.output
+        parsed = yaml.safe_load(r.output)
+        assert parsed["spec"]["platform"]["k8s"]["namespace"] == "wip-kb"
+        assert parsed["metadata"]["name"] == "wip-kb"
+
+    def test_k8s_name_and_namespace_diverge_explicitly(self) -> None:
+        """CASE-365 intentional-asymmetry: passing both --name foo
+        --namespace bar yields foo as install-dir name AND bar as
+        k8s namespace. Operators who want them to differ pass both
+        explicitly."""
+        r = _invoke(
+            "show-spec",
+            "--preset", "standard",
+            "--target", "k8s",
+            "--hostname", "wip-kb.local",
+            "--name", "foo",
+            "--namespace", "bar",
+            "--repo-root", str(REPO_ROOT),
+        )
+        assert r.exit_code == 0, r.output
+        parsed = yaml.safe_load(r.output)
+        assert parsed["metadata"]["name"] == "foo"
+        assert parsed["spec"]["platform"]["k8s"]["namespace"] == "bar"
+
 
 # ────────────────────────────────────────────────────────────────────
 # Root / version
@@ -436,6 +490,68 @@ class TestResolveName:
         # Verbs like rebuild/restart/nuke don't have target/namespace.
         from wip_deploy.cli import _resolve_name
         assert _resolve_name(None) == "default"
+
+
+class TestResolveNamespace:
+    """Reciprocal of TestResolveName (CASE-365). `--name X --target k8s`
+    without `--namespace` back-derives the namespace to X.
+
+    The pre-existing one-directional rule (--namespace → name) is
+    covered by TestResolveName above; this class covers the new
+    name → namespace direction.
+    """
+
+    def test_name_provided_default_namespace_k8s_back_derives(self) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        # The case body's exact reproducer scenario.
+        assert (
+            _resolve_namespace("wip-kb", target="k8s", namespace="wip")
+            == "wip-kb"
+        )
+
+    def test_name_provided_with_explicit_non_default_namespace_preserves(
+        self,
+    ) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        # Intentional asymmetry: --name foo --namespace bar.
+        assert (
+            _resolve_namespace("foo", target="k8s", namespace="bar") == "bar"
+        )
+
+    def test_name_unspecified_returns_namespace_unchanged(self) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        assert _resolve_namespace(None, target="k8s", namespace="wip") == "wip"
+        assert (
+            _resolve_namespace(None, target="k8s", namespace="wip-kb")
+            == "wip-kb"
+        )
+
+    def test_name_equals_wip_returns_namespace_unchanged(self) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        # --name wip with namespace=wip → no back-derivation (would be a
+        # no-op anyway; the guard skips the work).
+        assert _resolve_namespace("wip", target="k8s", namespace="wip") == "wip"
+
+    def test_non_k8s_target_returns_namespace_unchanged(self) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        # The reciprocal only fires for k8s — compose/dev installs have
+        # no concept of a k8s namespace.
+        assert (
+            _resolve_namespace("wip-kb", target="compose", namespace="wip")
+            == "wip"
+        )
+        assert (
+            _resolve_namespace("wip-kb", target="dev", namespace="wip")
+            == "wip"
+        )
+
+    def test_namespace_already_non_default_returns_unchanged(self) -> None:
+        from wip_deploy.cli import _resolve_namespace
+        # If the operator explicitly set namespace to something other
+        # than "wip", treat that as authoritative — don't second-guess.
+        assert (
+            _resolve_namespace("foo", target="k8s", namespace="bar") == "bar"
+        )
 
 
 class TestRestartVerb:
