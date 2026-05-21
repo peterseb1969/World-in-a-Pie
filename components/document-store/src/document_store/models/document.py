@@ -20,7 +20,7 @@ class DocumentMetadata(BaseModel):
     """Additional metadata for a document."""
 
     source_system: str | None = Field(
-        None,
+        default=None,
         description="System that created this document"
     )
     warnings: list[str] = Field(
@@ -67,7 +67,7 @@ class Document(BeanieDocument):
         description="Version of template used for validation"
     )
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT) for easier identification"
     )
 
@@ -119,14 +119,14 @@ class Document(BeanieDocument):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this document"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this document"
     )
 

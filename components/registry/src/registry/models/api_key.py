@@ -23,12 +23,12 @@ class StoredAPIKey(Document):
     key_hash: str = Field(..., description="Bcrypt hash of the plaintext key")
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
-    description: str | None = Field(None, description="What this key is for")
+    description: str | None = Field(default=None, description="What this key is for")
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime | None = Field(None, description="Expiration (None = never)")
+    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
     enabled: bool = Field(default=True, description="Whether the key is active")
     namespaces: list[str] | None = Field(
-        None, description="Namespace scope (None = unrestricted)"
+        default=None, description="Namespace scope (None = unrestricted)"
     )
     created_by: str = Field(
         default="system", description="Identity string of the admin who created this key"
@@ -57,10 +57,10 @@ class APIKeyCreateRequest(BaseModel):
     name: str = Field(..., description="Unique name for the key")
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
-    description: str | None = Field(None, description="What this key is for")
-    expires_at: datetime | None = Field(None, description="Expiration (None = never)")
+    description: str | None = Field(default=None, description="What this key is for")
+    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
     namespaces: list[str] | None = Field(
-        None, description="Namespace scope (None = unrestricted)"
+        default=None, description="Namespace scope (None = unrestricted)"
     )
 
 

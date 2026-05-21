@@ -34,17 +34,17 @@ class SearchResult(BaseModel):
 
     type: str = Field(..., description="Entity type: terminology, term, template, document")
     id: str = Field(..., description="Entity ID")
-    value: str | None = Field(None, description="Entity value (if applicable)")
-    label: str | None = Field(None, description="Entity label")
-    status: str | None = Field(None, description="Entity status")
-    description: str | None = Field(None, description="Brief description or context")
-    updated_at: datetime | None = Field(None, description="Last update time")
+    value: str | None = Field(default=None, description="Entity value (if applicable)")
+    label: str | None = Field(default=None, description="Entity label")
+    status: str | None = Field(default=None, description="Entity status")
+    description: str | None = Field(default=None, description="Brief description or context")
+    updated_at: datetime | None = Field(default=None, description="Last update time")
     score: float | None = Field(
-        None,
+        default=None,
         description="Relevance score (FTS only — ts_rank). Absent for substring matches.",
     )
     snippet: str | None = Field(
-        None,
+        default=None,
         description=(
             "Highlighted excerpt around match (FTS only — ts_headline). "
             "HTML by default with <b>...</b> around hits. Pass "
@@ -81,7 +81,7 @@ class SearchResponse(BaseModel):
 
     query: str
     mode: str | None = Field(
-        None,
+        default=None,
         description=(
             "Echo of the document-search mode used ('auto', 'fts', or "
             "'substring'). Informational only."
@@ -114,13 +114,13 @@ class SearchRequest(StrictModel):
 
     query: str = Field(..., min_length=1, description="Search string")
     types: list[str] | None = Field(
-        None,
+        default=None,
         description="Entity types to search: terminology, term, template, document, file"
     )
-    namespace: str | None = Field(None, description="Filter by namespace")
-    status: str | None = Field(None, description="Filter by status")
+    namespace: str | None = Field(default=None, description="Filter by namespace")
+    status: str | None = Field(default=None, description="Filter by status")
     template: str | None = Field(
-        None,
+        default=None,
         description=(
             "Restrict document search to a single template (by value). "
             "Other entity types ignore this filter."
@@ -168,7 +168,7 @@ class SearchRequest(StrictModel):
         ),
     )
     limit: int | None = Field(
-        None,
+        default=None,
         ge=1,
         le=100,
         description=(
@@ -223,11 +223,11 @@ class EntityReference(BaseModel):
 
     ref_type: str = Field(..., description="Type of reference: template, terminology, term")
     ref_id: str = Field(..., description="Referenced entity ID")
-    ref_value: str | None = Field(None, description="Referenced entity value")
-    ref_label: str | None = Field(None, description="Referenced entity label")
-    field_path: str | None = Field(None, description="Field that holds the reference")
+    ref_value: str | None = Field(default=None, description="Referenced entity value")
+    ref_label: str | None = Field(default=None, description="Referenced entity label")
+    field_path: str | None = Field(default=None, description="Field that holds the reference")
     status: str = Field(..., description="Reference status: valid, broken, inactive")
-    error: str | None = Field(None, description="Error message if broken")
+    error: str | None = Field(default=None, description="Error message if broken")
 
 
 class EntityDetails(BaseModel):
@@ -263,10 +263,10 @@ class IncomingReference(BaseModel):
 
     entity_type: str = Field(..., description="Type: document, template")
     entity_id: str = Field(..., description="ID of the referencing entity")
-    entity_value: str | None = Field(None, description="Value (for templates)")
-    entity_label: str | None = Field(None, description="Label or description")
-    entity_status: str | None = Field(None, description="Status of the referencing entity")
-    field_path: str | None = Field(None, description="Field containing the reference")
+    entity_value: str | None = Field(default=None, description="Value (for templates)")
+    entity_label: str | None = Field(default=None, description="Label or description")
+    entity_status: str | None = Field(default=None, description="Status of the referencing entity")
+    field_path: str | None = Field(default=None, description="Field containing the reference")
     reference_type: str = Field(..., description="How it references: uses_template, extends, terminology_ref, template_ref, term_ref")
 
 

@@ -26,15 +26,15 @@ class DocumentCreateRequest(StrictModel):
         description="Template ID to validate against"
     )
     template_version: int | None = Field(
-        None,
+        default=None,
         description="Specific template version to validate against (default: latest)"
     )
     document_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     version: int | None = Field(
-        None,
+        default=None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)"
     )
     namespace: str = Field(
@@ -46,15 +46,15 @@ class DocumentCreateRequest(StrictModel):
         description="Document content"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this document"
     )
     metadata: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Custom metadata"
     )
     synonyms: list[dict[str, Any]] | None = Field(
-        None,
+        default=None,
         description="Optional synonym composite keys to register for this document in the Registry"
     )
 
@@ -67,7 +67,7 @@ class DocumentResponse(BaseModel):
     template_id: str
     template_version: int
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str = ""
@@ -98,7 +98,7 @@ class DocumentResponse(BaseModel):
         description="Whether this is the latest version of the document"
     )
     latest_version: int | None = Field(
-        None,
+        default=None,
         description="The latest version number for this document_id"
     )
 
@@ -112,7 +112,7 @@ class DocumentCreateResponse(BaseModel):
     namespace: str
     template_id: str
     template_value: str | None = Field(
-        None,
+        default=None,
         description="Template value (e.g., PLANNED_VISIT)"
     )
     identity_hash: str = ""
@@ -122,7 +122,7 @@ class DocumentCreateResponse(BaseModel):
         description="True if this is a new document, False if it's a new version"
     )
     previous_version: int | None = Field(
-        None,
+        default=None,
         description="Previous version number if this is an update"
     )
     warnings: list[str] = Field(
@@ -144,7 +144,7 @@ class DocumentListResponse(BaseModel):
     page_size: int
     pages: int
     next_cursor: str | None = Field(
-        None,
+        default=None,
         description="Cursor for next page (MongoDB _id of last item). "
                     "Null on last page or when using offset pagination."
     )
@@ -206,11 +206,11 @@ class RelationshipItem(DocumentResponse):
 
     peer: PeerProjection | None = None
     peer_error_code: str | None = Field(
-        None,
+        default=None,
         description="Set when peer is null. Enum: not_found | forbidden."
     )
     peer_error: str | None = Field(
-        None,
+        default=None,
         description="Optional human-readable peer error message."
     )
 
@@ -251,7 +251,7 @@ class TraverseNode(BaseModel):
     namespace: str
     depth: int = Field(..., ge=0, le=10)
     via_relationship: str | None = Field(
-        None,
+        default=None,
         description="document_id of the relationship document that was traversed to reach this node (None for the seed)."
     )
     path: list[str] = Field(
@@ -329,7 +329,7 @@ class DocumentQueryRequest(StrictModel):
         description="Filter conditions (AND logic)"
     )
     template_id: str | None = Field(
-        None,
+        default=None,
         description="Filter by template ID"
     )
     status: DocumentStatus | None = Field(
@@ -384,7 +384,7 @@ class BulkResultItem(BaseModel):
     is_new: bool | None = None
     error: str | None = None
     error_code: str | None = Field(
-        None,
+        default=None,
         description="Machine-readable error code (e.g., 'not_found', 'validation_failed', 'concurrency_conflict')"
     )
     warnings: list[str] = Field(default_factory=list)
@@ -407,17 +407,17 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
+    version: int | None = Field(default=None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
     force: bool = Field(default=False, description="Force deletion even if referenced")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 class ArchiveItem(StrictModel):
     """Item in a bulk archive request."""
 
     id: str = Field(..., description="ID of document to archive")
-    archived_by: str | None = Field(None, description="User performing the archive")
+    archived_by: str | None = Field(default=None, description="User performing the archive")
 
 
 class PatchDocumentItem(StrictModel):
@@ -437,7 +437,7 @@ class PatchDocumentItem(StrictModel):
                     "Objects are deep-merged, arrays are replaced, null deletes a field."
     )
     if_match: int | None = Field(
-        None,
+        default=None,
         description="Expected current version. If provided and the current version "
                     "differs, the item fails with concurrency_conflict."
     )
@@ -451,7 +451,7 @@ class ValidationError(BaseModel):
     """A validation error."""
 
     field: str | None = Field(
-        None,
+        default=None,
         description="Field path with the error (e.g., 'data.name')"
     )
     code: str = Field(
@@ -463,7 +463,7 @@ class ValidationError(BaseModel):
         description="Human-readable error message"
     )
     details: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Additional error details"
     )
 
@@ -501,11 +501,11 @@ class ValidationResponse(BaseModel):
         description="Non-blocking warnings"
     )
     identity_hash: str | None = Field(
-        None,
+        default=None,
         description="Computed identity hash (if valid)"
     )
     template_version: int | None = Field(
-        None,
+        default=None,
         description="Template version used for validation"
     )
     term_references: list[dict[str, Any]] = Field(
@@ -530,7 +530,7 @@ class FileUploadMetadata(StrictModel):
     """Metadata to include with file upload."""
 
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the file"
     )
     tags: list[str] = Field(
@@ -538,7 +538,7 @@ class FileUploadMetadata(StrictModel):
         description="Searchable tags"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Classification category"
     )
     custom: dict[str, Any] = Field(
@@ -546,7 +546,7 @@ class FileUploadMetadata(StrictModel):
         description="Additional custom metadata fields"
     )
     allowed_templates: list[str] | None = Field(
-        None,
+        default=None,
         description="Template values that can reference this file (None = all)"
     )
 
@@ -555,23 +555,23 @@ class UpdateFileMetadataRequest(StrictModel):
     """Request to update file metadata."""
 
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the file"
     )
     tags: list[str] | None = Field(
-        None,
+        default=None,
         description="Searchable tags (replaces existing)"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Classification category"
     )
     custom: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Additional custom metadata fields (merges with existing)"
     )
     allowed_templates: list[str] | None = Field(
-        None,
+        default=None,
         description="Template values that can reference this file"
     )
 

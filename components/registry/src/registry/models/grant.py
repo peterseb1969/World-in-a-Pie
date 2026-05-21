@@ -34,7 +34,7 @@ class NamespaceGrant(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     expires_at: datetime | None = Field(
-        None, description="Optional expiration (None = never)"
+        default=None, description="Optional expiration (None = never)"
     )
 
     def is_expired(self) -> bool:

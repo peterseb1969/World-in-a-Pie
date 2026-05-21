@@ -30,7 +30,7 @@ class IntegrityIssue(BaseModel):
     template_value: str = Field(..., description="Template value")
     template_version: int = Field(..., description="Template version")
     field_path: str | None = Field(
-        None,
+        default=None,
         description="Field path (e.g., 'gender', 'addresses[].country')"
     )
     reference: str = Field(..., description="The reference value")

@@ -37,7 +37,7 @@ class IntegrityIssue(BaseModel):
     template_id: str = Field(..., description="Template ID of the document")
     version: int = Field(..., description="Document version")
     field_path: str | None = Field(
-        None,
+        default=None,
         description="Field path (e.g., 'gender', 'addresses[0].country')"
     )
     reference: str = Field(..., description="The reference value")

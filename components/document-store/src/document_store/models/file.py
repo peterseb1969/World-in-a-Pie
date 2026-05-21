@@ -24,7 +24,7 @@ class FileMetadata(BaseModel):
     """User-defined metadata for files."""
 
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the file"
     )
     tags: list[str] = Field(
@@ -32,7 +32,7 @@ class FileMetadata(BaseModel):
         description="Searchable tags"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Classification category"
     )
     custom: dict[str, Any] = Field(
@@ -106,7 +106,7 @@ class File(BeanieDocument):
 
     # Optional: restrict which templates can use this file
     allowed_templates: list[str] | None = Field(
-        None,
+        default=None,
         description="Template values that can reference this file (None = all)"
     )
 
@@ -116,15 +116,15 @@ class File(BeanieDocument):
         description="When the file was uploaded"
     )
     uploaded_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that uploaded this file"
     )
     updated_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the file metadata was last updated"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this file"
     )
 
@@ -187,6 +187,6 @@ class FileReference(BaseModel):
         description="File size in bytes (denormalized)"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="File description (denormalized from file metadata)"
     )

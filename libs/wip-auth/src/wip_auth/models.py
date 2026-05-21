@@ -16,15 +16,15 @@ class UserIdentity(BaseModel):
 
     user_id: str = Field(..., description="Unique identifier for the user/service")
     username: str = Field(..., description="Human-readable name for display")
-    email: str | None = Field(None, description="Email address (if available)")
+    email: str | None = Field(default=None, description="Email address (if available)")
     groups: list[str] = Field(default_factory=list, description="Group memberships for RBAC")
     auth_method: Literal["jwt", "api_key", "gateway_oidc", "none"] = Field(
         ..., description="How this identity was authenticated"
     )
 
     # Optional metadata
-    provider: str | None = Field(None, description="Auth provider name (e.g., 'authelia', 'authentik')")
-    raw_claims: dict | None = Field(None, description="Original JWT claims or API key metadata")
+    provider: str | None = Field(default=None, description="Auth provider name (e.g., 'authelia', 'authentik')")
+    raw_claims: dict | None = Field(default=None, description="Original JWT claims or API key metadata")
 
     @property
     def identity_string(self) -> str:
@@ -65,15 +65,15 @@ class APIKeyRecord(BaseModel):
     key_hash: str = Field(..., description="SHA-256 hash of the API key")
     owner: str = Field(default="system", description="Owner of this key (user or service)")
     groups: list[str] = Field(default_factory=list, description="Groups/roles for this key")
-    description: str | None = Field(None, description="Description of what this key is for")
-    created_at: datetime | None = Field(None, description="When the key was created")
-    last_used_at: datetime | None = Field(None, description="When the key was last used")
-    expires_at: datetime | None = Field(None, description="When the key expires (None = never)")
+    description: str | None = Field(default=None, description="Description of what this key is for")
+    created_at: datetime | None = Field(default=None, description="When the key was created")
+    last_used_at: datetime | None = Field(default=None, description="When the key was last used")
+    expires_at: datetime | None = Field(default=None, description="When the key expires (None = never)")
     enabled: bool = Field(default=True, description="Whether the key is active")
 
     # Optional: namespace-scoped permissions (for Registry compatibility)
     namespaces: list[str] | None = Field(
-        None,
+        default=None,
         description="If set, limits key to these namespaces only"
     )
 
@@ -88,6 +88,6 @@ class AuthResult(BaseModel):
     """Result of an authentication attempt."""
 
     success: bool = Field(..., description="Whether authentication succeeded")
-    identity: UserIdentity | None = Field(None, description="Identity if authenticated")
-    error: str | None = Field(None, description="Error message if failed")
-    error_code: str | None = Field(None, description="Machine-readable error code")
+    identity: UserIdentity | None = Field(default=None, description="Identity if authenticated")
+    error: str | None = Field(default=None, description="Error message if failed")
+    error_code: str | None = Field(default=None, description="Machine-readable error code")
