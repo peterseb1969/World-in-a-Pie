@@ -41,6 +41,27 @@ class TestPresetApplies:
         assert d.spec.auth.mode == "api-key-only"
         assert d.spec.auth.gateway is False
 
+    def test_core_has_api_key_only_and_no_gateway(self) -> None:
+        # CASE-367 acceptance: core has no gateway, so api-key-only is correct.
+        d = build_deployment(_minimal_compose_inputs(preset="core"))
+        assert d.spec.auth.mode == "api-key-only"
+        assert d.spec.auth.gateway is False
+
+    def test_full_has_hybrid_and_gateway(self) -> None:
+        # CASE-367: same fix shape as CASE-374's standard flip. `oidc`
+        # plumbs to WIP_AUTH_MODE=jwt_only and rejects X-API-Key; apps
+        # making server-side platform calls fail silently. hybrid is
+        # strictly more permissive than oidc (accepts both JWTs and X-API-Key).
+        d = build_deployment(_minimal_compose_inputs(preset="full"))
+        assert d.spec.auth.mode == "hybrid"
+        assert d.spec.auth.gateway is True
+
+    def test_analytics_has_hybrid_and_gateway(self) -> None:
+        # CASE-367: analytics has gateway: True and same bug shape as full.
+        d = build_deployment(_minimal_compose_inputs(preset="analytics"))
+        assert d.spec.auth.mode == "hybrid"
+        assert d.spec.auth.gateway is True
+
     def test_full_enables_reporting_files_ingest(self) -> None:
         d = build_deployment(_minimal_compose_inputs(preset="full"))
         opt = set(d.spec.modules.optional)
