@@ -14,7 +14,7 @@ spec:
     # Per-component tag override. Bumped when the deployer's global content
     # tag won't force a re-pull (Kubernetes IfNotPresent + cached digest).
     # First pin landed for CASE-291 (PUT-vs-PATCH safety-guard parity).
-    tag: wipkb-20260513
+    tag: wipkb-20260521
     build_context: .
 
   ports:
