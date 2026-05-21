@@ -29,7 +29,7 @@ class Condition(BaseModel):
         description="Comparison operator"
     )
     value: Any | None = Field(
-        None,
+        default=None,
         description="Value to compare (not needed for exists operators)"
     )
 
@@ -42,7 +42,7 @@ class ValidationRule(BaseModel):
         description="Type of validation rule"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Human-readable description of the rule"
     )
     conditions: list[Condition] = Field(
@@ -52,46 +52,46 @@ class ValidationRule(BaseModel):
 
     # For rules targeting a single field
     target_field: str | None = Field(
-        None,
+        default=None,
         description="Field affected by the rule"
     )
 
     # For mutual_exclusion: fields that are mutually exclusive
     target_fields: list[str] | None = Field(
-        None,
+        default=None,
         description="Fields affected (for mutual_exclusion)"
     )
 
     # For conditional_required
     required: bool | None = Field(
-        None,
+        default=None,
         description="For conditional_required: is field required?"
     )
 
     # For conditional_value
     allowed_values: list[Any] | None = Field(
-        None,
+        default=None,
         description="For conditional_value: allowed values"
     )
 
     # For pattern rule
     pattern: str | None = Field(
-        None,
+        default=None,
         description="For pattern: regex pattern"
     )
 
     # For range rule
     minimum: float | None = Field(
-        None,
+        default=None,
         description="For range: minimum value"
     )
     maximum: float | None = Field(
-        None,
+        default=None,
         description="For range: maximum value"
     )
 
     # Error message
     error_message: str | None = Field(
-        None,
+        default=None,
         description="Custom error message"
     )

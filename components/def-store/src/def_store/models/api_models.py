@@ -30,11 +30,11 @@ class CreateTerminologyRequest(StrictModel):
         description="Display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned terminology ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     namespace: str = Field(
@@ -58,11 +58,11 @@ class CreateTerminologyRequest(StrictModel):
         description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
     )
     metadata: TerminologyMetadata | None = Field(
-        None,
+        default=None,
         description="Additional metadata"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this terminology"
     )
 
@@ -71,39 +71,39 @@ class UpdateTerminologyRequest(StrictModel):
     """Request to update an existing terminology."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (triggers Registry synonym)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     case_sensitive: bool | None = Field(
-        None,
+        default=None,
         description="Update case sensitivity"
     )
     allow_multiple: bool | None = Field(
-        None,
+        default=None,
         description="Update multi-select setting"
     )
     extensible: bool | None = Field(
-        None,
+        default=None,
         description="Update extensibility"
     )
     mutable: bool | None = Field(
-        None,
+        default=None,
         description="Update mutability (only allowed when term_count is 0)"
     )
     metadata: TerminologyMetadata | None = Field(
-        None,
+        default=None,
         description="Update metadata"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this terminology"
     )
 
@@ -151,7 +151,7 @@ class CreateTermRequest(StrictModel):
         description="The value stored in documents (unique within terminology)"
     )
     term_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned term ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     aliases: list[str] = Field(
@@ -159,11 +159,11 @@ class CreateTermRequest(StrictModel):
         description="Alternative values that resolve to this term (e.g., ['MR.', 'mr'])"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="Display label for UI. Defaults to value if not provided."
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     sort_order: int = Field(
@@ -171,7 +171,7 @@ class CreateTermRequest(StrictModel):
         description="Sort order within terminology"
     )
     parent_term_id: str | None = Field(
-        None,
+        default=None,
         description="Parent term ID for hierarchical terms"
     )
     translations: list[TermTranslation] = Field(
@@ -183,7 +183,7 @@ class CreateTermRequest(StrictModel):
         description="Custom metadata"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this term"
     )
 
@@ -192,39 +192,39 @@ class UpdateTermRequest(StrictModel):
     """Request to update an existing term."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (unique within terminology)"
     )
     aliases: list[str] | None = Field(
-        None,
+        default=None,
         description="Update aliases (replaces existing list)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     sort_order: int | None = Field(
-        None,
+        default=None,
         description="New sort order"
     )
     parent_term_id: str | None = Field(
-        None,
+        default=None,
         description="New parent term ID"
     )
     translations: list[TermTranslation] | None = Field(
-        None,
+        default=None,
         description="Update translations"
     )
     metadata: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Update metadata (merged with existing)"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this term"
     )
 
@@ -237,11 +237,11 @@ class DeprecateTermRequest(StrictModel):
         description="Why this term is being deprecated"
     )
     replaced_by_term_id: str | None = Field(
-        None,
+        default=None,
         description="ID of the replacement term"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system deprecating this term"
     )
 
@@ -317,7 +317,7 @@ class DeleteItem(StrictModel):
     id: str = Field(..., description="ID of entity to delete")
     force: bool = Field(default=False, description="Force deletion even if dependencies exist")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 class UpdateTermItem(UpdateTermRequest):
@@ -388,11 +388,11 @@ class ValidateValueRequest(StrictModel):
     """Request to validate a value against a terminology."""
 
     terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Terminology ID (use this or terminology_value)"
     )
     terminology_value: str | None = Field(
-        None,
+        default=None,
         description="Terminology value (use this or id)"
     )
     value: str = Field(
@@ -410,11 +410,11 @@ class ValidateValueResponse(BaseModel):
     value: str
     matched_term: TermResponse | None = None
     matched_via: str | None = Field(
-        None,
+        default=None,
         description="How the match was made: 'value' or 'alias'"
     )
     suggestion: TermResponse | None = Field(
-        None,
+        default=None,
         description="Suggested term if value is close but not exact"
     )
     error: str | None = None
@@ -489,7 +489,7 @@ class CreateTermRelationRequest(StrictModel):
         description="Provenance, confidence, OWL axioms"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this relation"
     )
 

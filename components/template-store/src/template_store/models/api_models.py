@@ -31,15 +31,15 @@ class CreateTemplateRequest(StrictModel):
         description="Display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description"
     )
     template_id: str | None = Field(
-        None,
+        default=None,
         description="Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)"
     )
     version: int | None = Field(
-        None,
+        default=None,
         description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
     )
     namespace: str = Field(
@@ -47,11 +47,11 @@ class CreateTemplateRequest(StrictModel):
         description="Namespace for the template"
     )
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID for inheritance"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
     identity_fields: list[str] = Field(
@@ -91,15 +91,15 @@ class CreateTemplateRequest(StrictModel):
         description="Cross-field validation rules"
     )
     metadata: TemplateMetadata | None = Field(
-        None,
+        default=None,
         description="Additional metadata"
     )
     reporting: ReportingConfig | None = Field(
-        None,
+        default=None,
         description="Configuration for PostgreSQL reporting sync"
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system creating this template"
     )
     validate_references: bool = Field(
@@ -116,51 +116,51 @@ class UpdateTemplateRequest(StrictModel):
     """Request to update an existing template."""
 
     value: str | None = Field(
-        None,
+        default=None,
         description="New value (triggers Registry synonym)"
     )
     label: str | None = Field(
-        None,
+        default=None,
         description="New display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="New description"
     )
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID (changing creates new version)"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
     identity_fields: list[str] | None = Field(
-        None,
+        default=None,
         description="Update identity fields"
     )
     header_fields: list[str] | None = Field(
-        None,
+        default=None,
         description="Update peer-projection fields (CASE-343)"
     )
     fields: list[FieldDefinition] | None = Field(
-        None,
+        default=None,
         description="Update field definitions"
     )
     rules: list[ValidationRule] | None = Field(
-        None,
+        default=None,
         description="Update validation rules"
     )
     metadata: TemplateMetadata | None = Field(
-        None,
+        default=None,
         description="Update metadata"
     )
     reporting: ReportingConfig | None = Field(
-        None,
+        default=None,
         description="Update reporting configuration"
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system updating this template"
     )
 
@@ -214,7 +214,7 @@ class TemplateUpdateResponse(BaseModel):
         description="True if a new version was created, False if unchanged"
     )
     previous_version: int | None = Field(
-        None,
+        default=None,
         description="Previous version number if a new version was created"
     )
 
@@ -234,11 +234,11 @@ class BulkResultItem(BaseModel):
     is_new_version: bool | None = None
     error: str | None = None
     error_code: str | None = Field(
-        None,
+        default=None,
         description="Machine-readable error code (e.g. 'incompatible_schema')"
     )
     details: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate)"
     )
 
@@ -262,10 +262,10 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    version: int | None = Field(None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
+    version: int | None = Field(default=None, description="Specific version to delete (default: latest for soft-delete, all for hard-delete)")
     force: bool = Field(default=False, description="Force deletion even if documents exist")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
-    updated_by: str | None = Field(None, description="User performing deletion")
+    updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
 # =============================================================================

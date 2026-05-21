@@ -63,11 +63,11 @@ class TemplateMetadata(BaseModel):
     """Additional metadata for a template."""
 
     domain: str | None = Field(
-        None,
+        default=None,
         description="Business domain (e.g., 'hr', 'finance', 'healthcare')"
     )
     category: str | None = Field(
-        None,
+        default=None,
         description="Template category (e.g., 'master_data', 'transaction')"
     )
     tags: list[str] = Field(
@@ -118,7 +118,7 @@ class Template(Document):
         description="Display label (e.g., 'Person Template')"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description of the template's purpose"
     )
 
@@ -130,11 +130,11 @@ class Template(Document):
 
     # Inheritance
     extends: str | None = Field(
-        None,
+        default=None,
         description="Parent template ID for inheritance"
     )
     extends_version: int | None = Field(
-        None,
+        default=None,
         description="Pinned parent version (None = always use latest active parent version)"
     )
 
@@ -227,14 +227,14 @@ class Template(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this template"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this template"
     )
 

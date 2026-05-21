@@ -45,15 +45,15 @@ class TermRelation(Document):
 
     # Denormalized fields for query efficiency
     relation_value: str | None = Field(
-        None,
+        default=None,
         description="Denormalized relation type display value"
     )
     source_terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Denormalized source term's terminology ID"
     )
     target_terminology_id: str | None = Field(
-        None,
+        default=None,
         description="Denormalized target term's terminology ID"
     )
 
@@ -74,7 +74,7 @@ class TermRelation(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this relation"
     )
 

@@ -12,15 +12,15 @@ class TerminologyMetadata(BaseModel):
     """Additional metadata for a terminology."""
 
     source: str | None = Field(
-        None,
+        default=None,
         description="Source of the terminology (e.g., 'ISO 3166', 'internal')"
     )
     source_url: str | None = Field(
-        None,
+        default=None,
         description="URL to the source specification"
     )
     version: str | None = Field(
-        None,
+        default=None,
         description="Version of the terminology (e.g., '2024.1')"
     )
     language: str = Field(
@@ -70,7 +70,7 @@ class Terminology(Document):
         description="Display label (e.g., 'Document Status')"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description of the terminology's purpose"
     )
 
@@ -107,14 +107,14 @@ class Terminology(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this terminology"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this terminology"
     )
 

@@ -56,14 +56,14 @@ class Namespace(Document):
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User who created this namespace"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User who last updated this namespace"
     )
 

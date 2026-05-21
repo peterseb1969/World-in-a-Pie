@@ -21,7 +21,7 @@ class IdAlgorithmConfig(BaseModel):
         description="ID generation algorithm: uuid7, uuid4, prefixed, nanoid, pattern, any"
     )
     prefix: str | None = Field(
-        None,
+        default=None,
         description="Prefix for 'prefixed' algorithm (e.g., 'TERM-')"
     )
     pad: int = Field(
@@ -33,7 +33,7 @@ class IdAlgorithmConfig(BaseModel):
         description="Character length for 'nanoid' algorithm"
     )
     pattern: str | None = Field(
-        None,
+        default=None,
         description="Regex pattern for 'pattern' algorithm validation"
     )
 

@@ -43,7 +43,7 @@ class TermAuditLog(Document):
         description="When the change occurred"
     )
     changed_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that made the change"
     )
 
@@ -63,7 +63,7 @@ class TermAuditLog(Document):
 
     # Optional comment
     comment: str | None = Field(
-        None,
+        default=None,
         description="Optional comment explaining the change"
     )
 

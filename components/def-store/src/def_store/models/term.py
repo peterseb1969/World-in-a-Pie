@@ -20,7 +20,7 @@ class TermTranslation(BaseModel):
         description="Translated display label"
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Translated description"
     )
 
@@ -55,7 +55,7 @@ class Term(Document):
         description="ID of the parent terminology"
     )
     terminology_value: str | None = Field(
-        None,
+        default=None,
         description="Value of the parent terminology (e.g., 'GENDER'). Denormalized for efficient lookups."
     )
 
@@ -73,11 +73,11 @@ class Term(Document):
 
     # Display information
     label: str | None = Field(
-        None,
+        default=None,
         description="Display label for UI (e.g., 'Approved'). Defaults to value if not set."
     )
     description: str | None = Field(
-        None,
+        default=None,
         description="Detailed description of what this term means"
     )
 
@@ -87,7 +87,7 @@ class Term(Document):
         description="Sort order within the terminology"
     )
     parent_term_id: str | None = Field(
-        None,
+        default=None,
         description="Parent term ID for hierarchical terminologies"
     )
 
@@ -109,25 +109,25 @@ class Term(Document):
         description="Status: active, deprecated, inactive"
     )
     deprecated_reason: str | None = Field(
-        None,
+        default=None,
         description="Why this term was deprecated"
     )
     replaced_by_term_id: str | None = Field(
-        None,
+        default=None,
         description="ID of the term that replaces this one"
     )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     created_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that created this term"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
-        None,
+        default=None,
         description="User or system that last updated this term"
     )
 

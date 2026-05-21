@@ -877,8 +877,8 @@ class IntegrityIssue(BaseModel):
     severity: str
     source: str = Field(..., description="Source service (template-store or document-store)")
     entity_id: str = Field(..., description="ID of the entity with the issue")
-    entity_value: str | None = Field(None, description="Value of the entity (if applicable)")
-    field_path: str | None = Field(None, description="Field path")
+    entity_value: str | None = Field(default=None, description="Value of the entity (if applicable)")
+    field_path: str | None = Field(default=None, description="Field path")
     reference: str
     message: str
 

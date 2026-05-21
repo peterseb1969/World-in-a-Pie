@@ -69,21 +69,21 @@ class BackupJob(BeanieDocument):
         description="Current lifecycle status"
     )
     phase: str | None = Field(
-        None,
+        default=None,
         description="Current phase from the toolkit's ProgressEvent (e.g. 'phase_documents')"
     )
     percent: float | None = Field(
-        None,
+        default=None,
         ge=0.0,
         le=100.0,
         description="Progress percentage (0-100) from the latest event"
     )
     message: str | None = Field(
-        None,
+        default=None,
         description="Human-readable message from the latest event"
     )
     error: str | None = Field(
-        None,
+        default=None,
         description="Error message if status is 'failed'"
     )
 
@@ -93,21 +93,21 @@ class BackupJob(BeanieDocument):
         description="When the job was created"
     )
     started_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the worker started running the toolkit"
     )
     completed_at: datetime | None = Field(
-        None,
+        default=None,
         description="When the job reached a terminal status (complete or failed)"
     )
 
     # Archive tracking
     archive_path: str | None = Field(
-        None,
+        default=None,
         description="Local filesystem path of the produced (backup) or uploaded (restore) archive"
     )
     archive_size: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Archive size in bytes"
     )
@@ -155,7 +155,7 @@ class BackupProgressMessage(BaseModel):
     job_id: str = Field(..., description="The BackupJob.job_id this event belongs to")
     status: BackupJobStatus = Field(..., description="Current lifecycle status of the job")
     phase: str | None = Field(
-        None,
+        default=None,
         description=(
             "Current phase name — a free-form runtime convention shared "
             "between producer and consumer, not a schema contract. Phase "
@@ -163,24 +163,24 @@ class BackupProgressMessage(BaseModel):
         ),
     )
     percent: float | None = Field(
-        None,
+        default=None,
         ge=0.0,
         le=100.0,
         description="Progress percentage (0-100), if known",
     )
-    message: str | None = Field(None, description="Human-readable status message")
+    message: str | None = Field(default=None, description="Human-readable status message")
     current: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Items processed so far in the current phase (if applicable)",
     )
     total: int | None = Field(
-        None,
+        default=None,
         ge=0,
         description="Total items to process in the current phase (if applicable)",
     )
     details: dict[str, Any] | None = Field(
-        None,
+        default=None,
         description="Opaque per-phase details (counts, sizes, skipped entities)",
     )
 
@@ -212,7 +212,7 @@ class BackupRequest(BaseModel):
         False, description="Export only the latest version of each entity"
     )
     template_prefixes: list[str] | None = Field(
-        None,
+        default=None,
         description="Optional list of template_id prefixes to filter documents",
     )
     dry_run: bool = Field(
@@ -232,7 +232,7 @@ class RestoreRequest(BaseModel):
         description="'restore' (preserve IDs) or 'fresh' (generate new IDs)",
     )
     target_namespace: str | None = Field(
-        None,
+        default=None,
         description="Override target namespace (defaults to the archive's source namespace)",
     )
     register_synonyms: bool = Field(
