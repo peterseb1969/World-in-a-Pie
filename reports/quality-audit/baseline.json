@@ -1,18 +1,18 @@
 {
-  "generated": "2026-05-22T09:45:17.795688+00:00",
-  "commit": "6fc2595",
+  "generated": "2026-05-22T11:26:24.167886+00:00",
+  "commit": "59a7cf4",
   "dimensions": {
     "ruff": {
       "count": 64
     },
     "mypy": {
-      "count": 0
+      "count": 1
     },
     "vulture": {
       "count": 1
     },
     "eslint": {
-      "count": 0
+      "count": 2
     },
     "shellcheck": {
       "count": 76
@@ -22,6 +22,12 @@
     },
     "ts-prune": {
       "count": 0
+    },
+    "api-consistency": {
+      "count": 11
+    },
+    "radon-cc-c-plus": {
+      "count": 128
     }
   }
 }
