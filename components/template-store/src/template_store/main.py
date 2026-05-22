@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
 
     # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
     # yet on fresh k8s boot, node drain, pod reschedule.
@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning(f"Integrity check found {len(result.issues)} issues:")
             # Group issues by type
-            issue_counts = {}
+            issue_counts: dict[str, int] = {}
             for issue in result.issues:
                 issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
             for issue_type, count in issue_counts.items():

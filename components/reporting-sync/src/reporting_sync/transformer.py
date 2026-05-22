@@ -386,7 +386,7 @@ class DocumentTransformer:
         # Convert array format to dict for compatibility with existing flattening logic
         # Array format: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         # Dict format: {"gender": "019abc42-...", ...}
-        term_references = {}
+        term_references: dict[str, Any] = {}
         for ref in term_references_list:
             field_path = ref.get("field_path", "")
             term_id = ref.get("term_id", "")
@@ -402,7 +402,7 @@ class DocumentTransformer:
 
         # Convert file_references to dict for column mapping
         # Array format: [{"field_path": "photo", "file_id": "FILE-001", "filename": "...", "content_type": "..."}, ...]
-        file_references = {}
+        file_references: dict[str, Any] = {}
         for ref in file_references_list:
             field_path = ref.get("field_path", "")
             if field_path:

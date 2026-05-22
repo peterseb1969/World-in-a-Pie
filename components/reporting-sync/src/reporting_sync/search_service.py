@@ -1170,7 +1170,7 @@ class SearchService:
                     AND table_name LIKE 'doc_%'
                 """)
 
-                documents = []
+                documents: list[DocumentReference] = []
 
                 for table_row in tables:
                     table_name = table_row["table_name"]

@@ -1006,7 +1006,7 @@ async def aggregated_integrity_check(
     document_store_url = settings.document_store_url
     try:
         async with httpx.AsyncClient(timeout=doc_timeout) as client:
-            params: dict[str, Any] = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
+            params = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
             if document_status:
                 params["status"] = document_status
 

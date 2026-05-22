@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from beanie.odm.enums import SortDirection
 
@@ -940,7 +940,7 @@ class TerminologyService:
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
         )
-        return results
+        return cast(list[BulkResultItem], results)
 
     @staticmethod
     async def get_term(

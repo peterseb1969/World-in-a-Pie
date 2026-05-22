@@ -337,7 +337,7 @@ class DocumentService:
         self,
         request: DocumentCreateRequest,
         namespace: str,
-    ) -> tuple[DocumentCreateResponse, str | None]:
+    ) -> tuple[DocumentCreateResponse | None, str | None]:
         """
         Create or update a document.
 
@@ -696,6 +696,7 @@ class DocumentService:
                     version = latest[0].version + 1
                 else:
                     version += 1
+        raise RuntimeError(f"_insert_with_retry exhausted {max_retries} retries without returning or raising")
 
     async def _is_template_versioned(self, template_id: str) -> bool:
         """Read template.versioned. Defaults to True (legacy v1.x behaviour)
@@ -1287,7 +1288,7 @@ class DocumentService:
             # skipped (no error). Applied uniformly to entity templates
             # and edge types — both can declare header_fields.
             peer_data = peer_doc.data or {}
-            peer_metadata = peer_doc.metadata or {}
+            peer_metadata: dict[str, Any] = peer_doc.metadata.model_dump() if peer_doc.metadata else {}
             peer_metadata_custom = (
                 peer_metadata.get("custom", {})
                 if isinstance(peer_metadata, dict)
@@ -1992,7 +1993,7 @@ class DocumentService:
             settled = await asyncio.gather(*tasks, return_exceptions=True)
 
             for task_idx, entry in enumerate(settled):
-                if isinstance(entry, Exception):
+                if isinstance(entry, BaseException):
                     failed += 1
                     results.append(BulkResultItem(
                         index=task_idx, status="error", error=str(entry)

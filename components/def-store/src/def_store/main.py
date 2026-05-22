@@ -104,7 +104,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI}...")
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI)
 
     # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
     # yet on fresh k8s boot, node drain, pod reschedule.
