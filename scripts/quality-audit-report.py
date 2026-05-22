@@ -82,6 +82,25 @@ def get_api_consistency(raw_dir: Path) -> dict:
     return load_json(raw_dir / "api-consistency.json", {"total_violations": 0, "services": {}})
 
 
+def count_api_consistency(raw_dir: Path) -> int:
+    """Total violation count for baseline + CI gating (CASE-400).
+
+    Distinct from `get_api_consistency` which returns the full report dict
+    (used by the report-rendering path). This is the gate-side reader."""
+    data = load_json(raw_dir / "api-consistency.json", {"total_violations": 0})
+    return int(data.get("total_violations", 0))
+
+
+def count_radon_cc_high(raw_dir: Path) -> int:
+    """Count of functions with cyclomatic complexity rank C or worse — i.e.,
+    the high-complexity tail the audit's REPORT.md surfaces as a "Top N"
+    block (CASE-400). Radon's rank scale: A (1-5), B (6-10), C (11-20),
+    D (21-30), E (31-40), F (41+). Anything C+ is the gate-relevant set."""
+    return sum(
+        1 for item in get_radon(raw_dir) if item["rank"] not in ("A", "B")
+    )
+
+
 def get_radon(raw_dir: Path) -> list:
     data = load_json(raw_dir / "radon.json", {})
     items = []
@@ -506,6 +525,11 @@ def main():
                 "shellcheck": {"count": count_shellcheck(raw_dir)},
                 "vue-tsc": {"count": count_vue_tsc(raw_dir)},
                 "ts-prune": {"count": count_ts_prune(raw_dir)},
+                # CASE-400: api-consistency + radon CC>=C now gated. The
+                # audit always measured these; the baseline schema didn't
+                # include them, so regressions slid silently.
+                "api-consistency": {"count": count_api_consistency(raw_dir)},
+                "radon-cc-c-plus": {"count": count_radon_cc_high(raw_dir)},
             },
         }
         Path(args.baseline).write_text(json.dumps(new_baseline, indent=2) + "\n")
@@ -523,6 +547,9 @@ def main():
             ("shellcheck", count_shellcheck(raw_dir)),
             ("vue-tsc", count_vue_tsc(raw_dir)),
             ("ts-prune", count_ts_prune(raw_dir)),
+            # CASE-400: gate the two previously-measured-but-ungated dimensions.
+            ("api-consistency", count_api_consistency(raw_dir)),
+            ("radon-cc-c-plus", count_radon_cc_high(raw_dir)),
         ]
         for key, current in checks:
             bl = dims.get(key, {}).get("count")
