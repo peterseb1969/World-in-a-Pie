@@ -75,6 +75,7 @@ async def create_documents(
         if error:
             results = [BulkResultItem(index=0, status="error", error=error)]
         else:
+            assert response is not None  # paired with error: when error is None, response is set
             if response.is_new:
                 status = "created"
             elif response.previous_version is not None:

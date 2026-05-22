@@ -193,7 +193,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
     """
     registry = get_registry_client()
 
-    summary = {
+    summary: dict[str, Any] = {
         "terminologies_created": 0,
         "terminologies_existed": 0,
         "terms_created": 0,

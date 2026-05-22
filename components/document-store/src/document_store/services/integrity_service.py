@@ -292,7 +292,7 @@ async def check_all_documents(
             break
 
         for document in batch:
-            issues = []
+            issues: list[IntegrityIssue] = []
 
             # Always check template reference
             await check_template_reference(document.template_id, document, issues)

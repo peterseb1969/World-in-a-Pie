@@ -48,6 +48,7 @@ import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
@@ -286,7 +287,7 @@ async def list_jobs(
         query["namespace"] = namespace
     if status is not None:
         query["status"] = status
-    cursor = BackupJob.find(query).sort(-BackupJob.created_at).limit(limit)
+    cursor = BackupJob.find(query).sort([("created_at", SortDirection.DESCENDING)]).limit(limit)
     jobs = await cursor.to_list()
     # Filter to namespaces the caller can read (cheap for small limits).
     identity = get_current_identity()
