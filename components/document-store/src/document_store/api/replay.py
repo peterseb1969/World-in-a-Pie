@@ -107,6 +107,7 @@ async def pause_replay(
         raise HTTPException(status_code=400, detail="Cannot pause — session not running")
 
     session = service.get_session(session_id)
+    assert session is not None  # pause() succeeded → session exists
     return ReplaySessionResponse(
         session_id=session["session_id"],
         status=session["status"],
@@ -131,6 +132,7 @@ async def resume_replay(
         raise HTTPException(status_code=400, detail="Cannot resume — session not paused")
 
     session = service.get_session(session_id)
+    assert session is not None  # resume() succeeded → session exists
     return ReplaySessionResponse(
         session_id=session["session_id"],
         status=session["status"],
@@ -155,6 +157,7 @@ async def cancel_replay(
         raise HTTPException(status_code=404, detail=f"Replay session {session_id} not found")
 
     session = service.get_session(session_id)
+    assert session is not None  # cancel() succeeded → session exists
     return ReplaySessionResponse(
         session_id=session["session_id"],
         status=session["status"],

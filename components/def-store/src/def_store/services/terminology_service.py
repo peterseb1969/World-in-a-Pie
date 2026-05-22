@@ -3,6 +3,9 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Any
+
+from beanie.odm.enums import SortDirection
 
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
@@ -874,7 +877,7 @@ class TerminologyService:
                     },
                 )
                 for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
+                if (r := results[idx]) is not None and r.status == "created"
             ]
             if audit_entries:
                 await TermAuditLog.insert_many(audit_entries)
@@ -883,7 +886,7 @@ class TerminologyService:
             created_term_dicts = [
                 TerminologyService._term_to_event_dict(terms_to_insert[pos])
                 for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
+                if (r := results[idx]) is not None and r.status == "created"
             ]
             if created_term_dicts:
                 await publish_term_events_bulk(
@@ -907,7 +910,7 @@ class TerminologyService:
                     "created_by": actor,
                 }
                 for pos, idx in enumerate(insert_indices)
-                if results[idx] is not None and results[idx].status == "created"
+                if (r := results[idx]) is not None and r.status == "created"
             ]
             if synonym_items:
                 await client.register_auto_synonyms_bulk(synonym_items)
@@ -1004,7 +1007,7 @@ class TerminologyService:
         # Get paginated results
         skip = (page - 1) * page_size
         terms = await Term.find(query) \
-            .sort([("sort_order", 1), ("value", 1)]) \
+            .sort([("sort_order", SortDirection.ASCENDING), ("value", SortDirection.ASCENDING)]) \
             .skip(skip) \
             .limit(page_size) \
             .to_list()
@@ -1026,9 +1029,9 @@ class TerminologyService:
             return None
 
         # Track changes for audit log
-        changed_fields = []
-        previous_values = {}
-        new_values = {}
+        changed_fields: list[str] = []
+        previous_values: dict[str, Any] = {}
+        new_values: dict[str, Any] = {}
 
         # Check value uniqueness if value is changing
         if request.value is not None and request.value != term.value:

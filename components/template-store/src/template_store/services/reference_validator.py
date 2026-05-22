@@ -28,7 +28,7 @@ class ReferenceValidator:
 
     def __init__(self, registry_url: str | None = None, api_key: str | None = None):
         self.registry_url = registry_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
-        self.api_key = api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
+        self.api_key = cast(str, api_key or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
         self._namespace_cache: dict[str, dict[str, Any]] = {}
 
     async def _get_namespace(self, namespace: str) -> dict[str, Any] | None:

@@ -3,6 +3,7 @@
 import hashlib
 import math
 from datetime import UTC, datetime, timedelta
+from beanie.odm.enums import SortDirection
 
 import httpx
 
@@ -475,7 +476,7 @@ class FileService:
         # Fetch page
         skip = (page - 1) * page_size
         files = await File.find(query).skip(skip).limit(page_size).sort(
-            [("uploaded_at", -1)]
+            [("uploaded_at", SortDirection.DESCENDING)]
         ).to_list()
 
         return FileListResponse(

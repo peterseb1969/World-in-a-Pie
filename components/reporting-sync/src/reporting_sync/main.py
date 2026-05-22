@@ -126,6 +126,7 @@ async def run_alert_check_loop() -> None:
             # Quick postgres check
             if postgres_ok:
                 try:
+                    assert state.postgres_pool is not None  # narrowed by postgres_ok check above
                     async with state.postgres_pool.acquire() as conn:
                         await conn.fetchval("SELECT 1")
                 except Exception:
@@ -432,6 +433,7 @@ async def health_check() -> HealthResponse:
     # Quick postgres check
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -488,6 +490,7 @@ async def _postgres_live_check() -> bool:
     if not state.postgres_pool:
         return False
     try:
+        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
         async with state.postgres_pool.acquire() as conn:
             await asyncio.wait_for(conn.fetchval("SELECT 1"), timeout=1.0)
         return True
@@ -519,6 +522,7 @@ async def get_metrics() -> MetricsResponse:
     # Quick postgres check
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -592,6 +596,7 @@ async def test_alerts() -> dict[str, Any]:
 
     if postgres_ok:
         try:
+            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
             async with state.postgres_pool.acquire() as conn:
                 await conn.fetchval("SELECT 1")
         except Exception:
@@ -1350,6 +1355,7 @@ async def execute_query(body: ReportQuery):
     params = body.params
 
     try:
+        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
         async with state.postgres_pool.acquire() as conn:
             # Set statement timeout and read-only transaction
             await conn.execute(
@@ -1447,6 +1453,7 @@ async def export_table_csv(
     download_name = filename or f"{table}.csv"
 
     async def generate():
+        assert state.postgres_pool is not None
         async with state.postgres_pool.acquire() as conn:
             await conn.execute(f"SET statement_timeout = {timeout_seconds * 1000}")
             await conn.execute("SET default_transaction_read_only = on")
@@ -1474,6 +1481,7 @@ async def export_query_csv(body: CsvExportQuery):
         )
 
     async def generate():
+        assert state.postgres_pool is not None
         async with state.postgres_pool.acquire() as conn:
             await conn.execute(
                 f"SET statement_timeout = {body.timeout_seconds * 1000}"

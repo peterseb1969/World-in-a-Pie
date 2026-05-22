@@ -465,10 +465,10 @@ class NamespaceDeletionService:
         """Delete documents from a MongoDB collection."""
         motor_client = Namespace.get_motor_collection().database.client
         db_name = step.database or _registry_db_name()
-        db = motor_client[db_name]
+        db = motor_client[cast(str, db_name)]
         coll = db[step.collection]
         result = await coll.delete_many(step.filter)
-        return result.deleted_count
+        return cast(int, result.deleted_count)
 
     async def _exec_minio_step(self, step: DeletionStep) -> int:
         """Delete objects from MinIO via S3 API."""
