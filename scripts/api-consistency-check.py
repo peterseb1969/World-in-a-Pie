@@ -171,6 +171,80 @@ BULK_MODEL_CANONICAL_PATHS = frozenset({
 BULK_MODEL_NAME_PATTERN = re.compile(r"^(BulkResultItem|BulkResponse)$")
 
 
+# CASE-398 follow-up — registry-client-singleton rule.
+#
+# The Registry HTTP client is canonical at libs/wip-auth/src/wip_auth/
+# registry_client.py (RegistryClientBase). Per-component clients are thin
+# subclasses that add domain-specific wrappers (register_terminology /
+# register_template / generate_document_id). The canonical home owns the
+# universal infrastructure — auth headers, httpx construction with module-
+# level transport injection, health checks, hard-delete, namespace metadata.
+#
+# Allowed shapes in components/*/src/*/services/registry_client.py:
+#   - Subclass RegistryClientBase:
+#       from wip_auth.registry_client import RegistryClientBase
+#       class RegistryClient(RegistryClientBase): ...
+#   - Re-export aliases (rare; usually you want the subclass).
+#
+# Forbidden: a `class RegistryClient` defined outside the canonical home
+# that doesn't inherit from RegistryClientBase. That's the drift CASE-398
+# closed — 1300+ LOC of duplicated httpx setup across three services.
+REGISTRY_CLIENT_CANONICAL_PATH = "libs/wip-auth/src/wip_auth/registry_client.py"
+REGISTRY_CLIENT_CANONICAL_BASE = "RegistryClientBase"
+
+
+def _inherits_registry_client_base(cls: ast.ClassDef) -> bool:
+    """True if the class inherits from RegistryClientBase."""
+    for base in cls.bases:
+        if isinstance(base, ast.Name) and base.id == REGISTRY_CLIENT_CANONICAL_BASE:
+            return True
+        # Handle qualified names like wip_auth.registry_client.RegistryClientBase
+        if isinstance(base, ast.Attribute) and base.attr == REGISTRY_CLIENT_CANONICAL_BASE:
+            return True
+    return False
+
+
+def check_registry_client_singleton(filepath: Path, root: Path) -> list[dict]:
+    """Flag any `class RegistryClient` defined outside the canonical home
+    that doesn't inherit from RegistryClientBase. Re-exports / subclasses
+    are allowed; bare standalone definitions are forbidden."""
+    try:
+        rel = filepath.relative_to(root).as_posix()
+    except ValueError:
+        rel = filepath.as_posix()
+    if rel == REGISTRY_CLIENT_CANONICAL_PATH:
+        return []
+
+    try:
+        source = filepath.read_text()
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+
+    violations: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if node.name != "RegistryClient":
+            continue
+        if _inherits_registry_client_base(node):
+            continue
+        violations.append({
+            "file": rel,
+            "line": node.lineno,
+            "rule": "registry-client-singleton",
+            "class": node.name,
+            "message": (
+                f"class RegistryClient defined at {rel}:{node.lineno} outside "
+                f"the canonical home ({REGISTRY_CLIENT_CANONICAL_PATH}) and "
+                f"does not inherit from {REGISTRY_CLIENT_CANONICAL_BASE}. "
+                f"Components should subclass `RegistryClientBase` and add "
+                f"domain-specific methods on top. CASE-398."
+            ),
+        })
+    return violations
+
+
 def find_api_files(root: str) -> list[Path]:
     """Find all API route files."""
     pattern = Path(root) / "components" / "*" / "src" / "*" / "api" / "*.py"
@@ -596,6 +670,25 @@ def main():
         # alongside endpoint-rule ones.
         result["bulk_model_violations"] = bulk_violations
         result["total_violations"] = result.get("total_violations", 0) + len(bulk_violations)
+
+    # CASE-398 — registry-client-singleton rule (services files).
+    registry_violations: list[dict] = []
+    import glob as _glob
+    service_files: set[str] = set()
+    for pat in (
+        Path(args.root) / "components" / "*" / "src" / "*" / "services" / "*.py",
+        Path(args.root) / "libs" / "*" / "src" / "*" / "*.py",
+    ):
+        service_files.update(_glob.glob(str(pat)))
+    for svc_file in sorted(service_files):
+        if os.path.basename(svc_file) == "__init__.py":
+            continue
+        registry_violations.extend(
+            check_registry_client_singleton(Path(svc_file), root_path)
+        )
+    if registry_violations:
+        result["registry_client_violations"] = registry_violations
+        result["total_violations"] = result.get("total_violations", 0) + len(registry_violations)
 
     output = json.dumps(result, indent=2)
     if args.output == "-":

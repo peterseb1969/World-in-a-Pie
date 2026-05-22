@@ -653,11 +653,13 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     )
     set_auth_config(config)
 
-    # Wire real RegistryClient with transport injection
+    # Wire real RegistryClient with module-level transport injection
+    # (CASE-398: per-instance transport= kwarg is gone).
+    from document_store.services.registry_client import set_registry_transport
+    set_registry_transport(registry_transport)
     real_registry = RegistryClient(
         base_url="http://registry",
         api_key=os.environ["MASTER_API_KEY"],
-        transport=registry_transport,
     )
 
     # Wire real resolution with transport injection
@@ -720,6 +722,8 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
     # Cleanup
     set_resolve_transport(None)
+    from document_store.services.registry_client import clear_registry_transport
+    clear_registry_transport()
     clear_resolution_cache()
 
 

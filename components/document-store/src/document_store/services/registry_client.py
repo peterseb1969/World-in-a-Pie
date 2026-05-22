@@ -1,70 +1,44 @@
-"""Client for communicating with the WIP Registry service."""
+"""document-store-side Registry client.
+
+Per-domain thin wrapper around the canonical client in
+libs/wip-auth/src/wip_auth/registry_client.py. Adds document-specific
+ID-generation methods (generate_document_id, generate_document_ids_bulk)
+and an identifier-resolution helper that uses /api/registry/entries/lookup/by-id
+(distinct from the by-key endpoint def-store / template-store use).
+
+CASE-398 consolidated the universal infrastructure into the canonical
+base; what's left here is document-store-specific.
+"""
 
 import logging
-import os
 import uuid
 from typing import Any, cast
 
-import httpx
+from wip_auth.registry_client import (
+    RegistryClientBase,
+    RegistryError,
+    clear_registry_transport,
+    set_registry_transport,
+)
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "RegistryClient",
+    "RegistryError",
+    "clear_registry_transport",
+    "configure_registry_client",
+    "get_registry_client",
+    "set_registry_transport",
+]
 
-class RegistryClient:
+
+class RegistryClient(RegistryClientBase):
+    """document-store-facing Registry client.
+
+    Inherits universal infrastructure from RegistryClientBase. Adds
+    document-ID-generation wrappers below.
     """
-    Client for the WIP Registry service.
-
-    Handles UUID7 ID generation for documents.
-    Documents use UUID7 IDs for time-based ordering.
-
-    Stable ID semantics:
-    - With identity_fields: composite key = {identity_hash, template_id}
-      → Registry returns existing ID on match (is_new=False)
-    - Without identity_fields: empty composite key {}
-      → Registry always generates fresh ID (is_new=True)
-    """
-
-    def __init__(
-        self,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        timeout: float = 10.0,
-        transport: Any | None = None,
-    ):
-        """
-        Initialize the Registry client.
-
-        Args:
-            base_url: Registry API base URL (default from env)
-            api_key: API key for authentication (default from env)
-            timeout: Request timeout in seconds
-            transport: Optional httpx transport (for in-process testing)
-        """
-        self.base_url = base_url or os.getenv(
-            "REGISTRY_URL",
-            "http://localhost:8001"
-        )
-        self.api_key = cast(str, api_key or os.getenv(
-            "REGISTRY_API_KEY",
-            "dev_master_key_for_testing"
-        ))
-        self.timeout = timeout
-        self._transport = transport
-
-    def _get_headers(self) -> dict[str, str]:
-        """Get request headers with authentication."""
-        return {
-            "X-API-Key": self.api_key,
-            "Content-Type": "application/json"
-        }
-
-    def _make_client(self, timeout: float | None = None) -> httpx.AsyncClient:
-        """Create an httpx client, injecting transport when set."""
-        kwargs: dict[str, Any] = {"timeout": timeout or self.timeout}
-        if self._transport is not None:
-            kwargs["transport"] = self._transport
-            kwargs["base_url"] = self.base_url
-        return httpx.AsyncClient(**kwargs)
 
     async def generate_document_id(
         self,
@@ -75,32 +49,10 @@ class RegistryClient:
         created_by: str | None = None,
         entry_id: str | None = None,
     ) -> tuple[str, bool, str | None]:
-        """
-        Generate or retrieve a document ID from the Registry.
-
-        With identity_fields: sends identity_values to Registry which computes
-        identity_hash, injects it into composite_key for dedup, and creates a
-        synonym with the raw values.
-
-        Without identity_fields: uses empty composite key — Registry always
-        generates a fresh ID (unless entry_id is provided).
-
-        Args:
-            template_id: Template ID the document conforms to
-            identity_values: Raw identity field values (Registry computes hash)
-            has_identity_fields: Whether the template has identity fields
-            created_by: User or system creating this
-            namespace: Namespace for the document (default: wip)
-            entry_id: Pre-assigned ID (for restore/migration)
-
-        Returns:
-            Tuple of (document_id, is_new, identity_hash)
-
-        Raises:
-            RegistryError: If registration fails
-        """
-        composite_key = {"ns": namespace, "template_id": template_id} if has_identity_fields else {}
-
+        """Generate or retrieve a document ID. Returns (id, is_new, identity_hash)."""
+        composite_key: dict[str, Any] = (
+            {"ns": namespace, "template_id": template_id} if has_identity_fields else {}
+        )
         item: dict[str, Any] = {
             "namespace": namespace,
             "entity_type": "documents",
@@ -116,20 +68,16 @@ class RegistryClient:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=[item]
+                json=[item],
             )
-
             if response.status_code != 200:
                 raise RegistryError(
                     f"Failed to generate document ID: {response.status_code} - {response.text}"
                 )
-
             data = response.json()
             result = data["results"][0]
-
             if result["status"] == "error":
                 raise RegistryError(f"Registration error: {result.get('error')}")
-
             is_new = result["status"] == "created"
             identity_hash = result.get("identity_hash")
             return result["registry_id"], is_new, identity_hash
@@ -140,29 +88,12 @@ class RegistryClient:
         namespace: str,
         created_by: str | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Generate multiple document IDs from the Registry in a single call.
-
-        Items with has_identity_fields=True send identity_values for the Registry
-        to compute identity_hash, inject into composite_key, and create synonyms.
-        Items without use empty composite key.
-
-        Args:
-            items: List of dicts with identity_values, template_id, has_identity_fields
-            created_by: User or system creating these
-            namespace: Namespace for the documents (default: wip)
-
-        Returns:
-            List of registration results with IDs, status, and identity_hash
-
-        Raises:
-            RegistryError: If registration fails
-        """
-        registry_items = []
+        """Generate multiple document IDs in one request."""
+        registry_items: list[dict[str, Any]] = []
         for item in items:
             has_identity = item.get("has_identity_fields", True)
             if has_identity:
-                composite_key = {
+                composite_key: dict[str, Any] = {
                     "ns": namespace,
                     "template_id": item["template_id"],
                 }
@@ -187,14 +118,12 @@ class RegistryClient:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
-                json=registry_items
+                json=registry_items,
             )
-
             if response.status_code != 200:
                 raise RegistryError(
                     f"Failed to generate document IDs: {response.status_code} - {response.text}"
                 )
-
             data = response.json()
             return cast(list[dict[str, Any]], data["results"])
 
@@ -203,23 +132,9 @@ class RegistryClient:
         entry_id: str,
         namespace: str,
         entity_type: str,
-        synonyms: list[dict[str, Any]]
+        synonyms: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        """
-        Register synonyms for a registry entry via POST /api/registry/synonyms/add.
-
-        Args:
-            entry_id: The entry ID to add synonyms to
-            namespace: Namespace of the entry
-            entity_type: Entity type (e.g., 'documents')
-            synonyms: List of synonym composite key dicts
-
-        Returns:
-            List of synonym registration results
-
-        Raises:
-            RegistryError: If registration fails
-        """
+        """Register synonyms for a registry entry."""
         items = [
             {
                 "target_id": entry_id,
@@ -229,19 +144,16 @@ class RegistryClient:
             }
             for syn in synonyms
         ]
-
         async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
-                json=items
+                json=items,
             )
-
             if response.status_code != 200:
                 raise RegistryError(
                     f"Failed to add synonyms: {response.status_code} - {response.text}"
                 )
-
             return cast(list[dict[str, Any]], response.json())
 
     async def register_auto_synonym(
@@ -253,26 +165,14 @@ class RegistryClient:
         has_identity_fields: bool,
         created_by: str | None = None,
     ) -> None:
-        """
-        Register an auto-synonym for a document.
+        """Register a document auto-synonym.
 
-        For documents with identity fields: composite key includes template + identity_hash.
-        For documents without identity fields: composite key includes a portable UUID4.
-        Failure raises and prevents document creation.
-
-        Args:
-            document_id: The document's canonical ID
-            namespace: Document namespace
-            template_value: Template value (human-readable name)
-            identity_hash: Identity hash (for documents with identity fields)
-            has_identity_fields: Whether the template has identity fields
-            created_by: Creator identifier
-
-        Raises:
-            RegistryError: If auto-synonym registration fails
+        For documents with identity fields: composite key includes template +
+        identity_hash. Without: includes a portable UUID4. Failure raises and
+        prevents document creation.
         """
         if has_identity_fields and identity_hash:
-            composite_key = {
+            composite_key: dict[str, Any] = {
                 "ns": namespace,
                 "type": "document",
                 "template": template_value,
@@ -284,122 +184,46 @@ class RegistryClient:
                 "type": "document",
                 "portable_id": str(uuid.uuid4()),
             }
-
-        try:
-            async with self._make_client() as client:
-                response = await client.post(
-                    f"{self.base_url}/api/registry/synonyms/add",
-                    headers=self._get_headers(),
-                    json=[{
-                        "target_id": document_id,
-                        "synonym_namespace": namespace,
-                        "synonym_entity_type": "documents",
-                        "synonym_composite_key": composite_key,
-                        "created_by": created_by,
-                    }]
-                )
-                if response.status_code != 200:
-                    raise RegistryError(
-                        f"Failed to register auto-synonym for document {document_id}: {response.text}"
-                    )
-        except RegistryError:
-            raise
-        except Exception as e:
-            raise RegistryError(
-                f"Failed to register auto-synonym for document {document_id}: {e}"
-            ) from e
+        await self._register_auto_synonym(
+            target_id=document_id,
+            namespace=namespace,
+            entity_type="documents",
+            composite_key=composite_key,
+            created_by=created_by,
+        )
 
     async def resolve_identifier(
         self,
         namespace: str | None,
         entity_type: str | None,
-        value: str
+        value: str,
     ) -> str | None:
-        """
-        Resolve any identifier to a canonical entry_id via POST /api/registry/entries/lookup/by-id.
-
-        Uses the extended lookup which searches entry_id
-        and composite key values.
-
-        Args:
-            namespace: Namespace to search in (None = search all)
-            entity_type: Entity type to search in (None = search all)
-            value: The identifier value to resolve
-
-        Returns:
-            The resolved entry_id, or None if not found
-        """
-        lookup_item = {"entry_id": value}
+        """Resolve any identifier to a canonical entry_id via
+        POST /api/registry/entries/lookup/by-id. Distinct endpoint
+        from def-store/template-store's by-key lookup."""
+        lookup_item: dict[str, Any] = {"entry_id": value}
         if namespace:
             lookup_item["namespace"] = namespace
         if entity_type:
             lookup_item["entity_type"] = entity_type
-
         async with self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/lookup/by-id",
                 headers=self._get_headers(),
-                json=[lookup_item]
+                json=[lookup_item],
             )
-
             if response.status_code != 200:
                 return None
-
             data = response.json()
             results = data.get("results", [])
             if results and results[0].get("status") == "found":
-                return cast(str | None, results[0].get("entry_id"))
-
+                return cast("str | None", results[0].get("entry_id"))
             return None
 
-    async def hard_delete_entry(self, entry_id: str, updated_by: str | None = None) -> bool:
-        """Hard-delete a Registry entry. Returns True if deleted."""
-        async with self._make_client() as client:
-            response = await client.request(
-                "DELETE",
-                f"{self.base_url}/api/registry/entries",
-                headers=self._get_headers(),
-                json=[{
-                    "entry_id": entry_id,
-                    "hard_delete": True,
-                    "updated_by": updated_by,
-                }],
-            )
-            if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to hard-delete entry {entry_id}: {response.status_code} - {response.text}"
-                )
-            data = response.json()
-            return cast(bool, data.get("succeeded", 0) > 0)
 
-    async def get_namespace_deletion_mode(self, namespace: str) -> str:
-        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
-        async with self._make_client() as client:
-            response = await client.get(
-                f"{self.base_url}/api/registry/namespaces/{namespace}",
-                headers=self._get_headers(),
-            )
-            if response.status_code != 200:
-                logger.warning(f"Failed to fetch namespace {namespace}: {response.status_code}")
-                return "retain"
-            return cast(str, response.json().get("deletion_mode", "retain"))
-
-    async def health_check(self) -> bool:
-        """Check if the Registry service is healthy."""
-        try:
-            async with self._make_client(timeout=5.0) as client:
-                response = await client.get(f"{self.base_url}/health")
-                return response.status_code == 200
-        except Exception:
-            return False
+# ── Singleton ───────────────────────────────────────────────────────────────
 
 
-class RegistryError(Exception):
-    """Error communicating with the Registry service."""
-    pass
-
-
-# Singleton instance for convenience
 _client: RegistryClient | None = None
 
 
@@ -414,9 +238,12 @@ def get_registry_client() -> RegistryClient:
 def configure_registry_client(
     base_url: str | None = None,
     api_key: str | None = None,
-    transport: Any | None = None,
 ) -> RegistryClient:
-    """Configure and return the Registry client."""
+    """Configure the Registry client singleton.
+
+    Tests inject transport via set_registry_transport(...) at module scope
+    rather than per-instance transport= kwarg. CASE-398.
+    """
     global _client
-    _client = RegistryClient(base_url=base_url, api_key=api_key, transport=transport)
+    _client = RegistryClient(base_url=base_url, api_key=api_key)
     return _client
