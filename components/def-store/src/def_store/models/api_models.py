@@ -5,6 +5,16 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
+# Re-exported here under the def-store-facing names so existing callers
+# (def_store.api.terms etc.) keep working without re-defining the schema.
+from wip_auth.bulk_models import (
+    TerminologyTermBulkResponse as BulkResponse,  # noqa: F401
+)
+from wip_auth.bulk_models import (
+    TerminologyTermBulkResultItem as BulkResultItem,  # noqa: F401
+)
+
 from .term import TermTranslation
 from .terminology import TerminologyMetadata
 
@@ -285,13 +295,8 @@ class TermListResponse(BaseModel):
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================
-# Canonical models live in wip_auth.bulk_models (CASE-395). Local aliases
-# preserve the def-store-facing names without re-defining the schema.
-
-from wip_auth.bulk_models import (
-    TerminologyTermBulkResponse as BulkResponse,
-    TerminologyTermBulkResultItem as BulkResultItem,
-)
+# Canonical models live in wip_auth.bulk_models (CASE-395) — imported at
+# the top of this file and re-exported as BulkResponse / BulkResultItem.
 
 
 class UpdateTerminologyItem(UpdateTerminologyRequest):

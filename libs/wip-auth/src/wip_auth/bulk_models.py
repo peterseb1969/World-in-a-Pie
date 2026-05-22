@@ -116,12 +116,12 @@ class TerminologyTermBulkResponse(BulkResponseBase[TerminologyTermBulkResultItem
 
 
 __all__ = [
-    "BulkResultItemBase",
     "BulkResponseBase",
-    "DocumentBulkResultItem",
-    "TemplateBulkResultItem",
-    "TerminologyTermBulkResultItem",
+    "BulkResultItemBase",
     "DocumentBulkResponse",
+    "DocumentBulkResultItem",
     "TemplateBulkResponse",
+    "TemplateBulkResultItem",
     "TerminologyTermBulkResponse",
+    "TerminologyTermBulkResultItem",
 ]

@@ -276,9 +276,12 @@ def _inherits_canonical_bulk_base(cls: ast.ClassDef) -> bool:
         if isinstance(base, ast.Name) and base.id in BULK_MODEL_CANONICAL_BASE_NAMES:
             return True
         # e.g. BulkResponseBase[ItemT]
-        if isinstance(base, ast.Subscript) and isinstance(base.value, ast.Name):
-            if base.value.id in BULK_MODEL_CANONICAL_BASE_NAMES:
-                return True
+        if (
+            isinstance(base, ast.Subscript)
+            and isinstance(base.value, ast.Name)
+            and base.value.id in BULK_MODEL_CANONICAL_BASE_NAMES
+        ):
+            return True
     return False
 
 
