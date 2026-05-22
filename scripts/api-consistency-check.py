@@ -193,6 +193,95 @@ REGISTRY_CLIENT_CANONICAL_PATH = "libs/wip-auth/src/wip_auth/registry_client.py"
 REGISTRY_CLIENT_CANONICAL_BASE = "RegistryClientBase"
 
 
+# CASE-402 follow-up — identity-hash-canonical rule.
+#
+# The document-identity-hash algorithm is canonical at libs/wip-auth/src/
+# wip_auth/document_identity.py. Re-implementing it elsewhere drifts —
+# CASE-401 caught the docs out-of-sync; CASE-316 caught an external
+# loader out-of-sync (213/214 docs silently dropped). The case for a
+# rule is the same shape as CASE-395 + CASE-398: catch the divergence
+# before it gets weaponised by callers.
+#
+# Allowed shapes outside the canonical home:
+#   - Re-export aliases (rare):
+#       from wip_auth.document_identity import compute_identity_hash
+#   - Thin delegate wrappers — IdentityService in document-store is the
+#     example. These define `def compute_identity_hash(...)` but
+#     immediately call the lib. The rule below catches `def`s of the
+#     canonical function names; the delegate exemption keeps the
+#     wrapper legal.
+#
+# Forbidden: a fresh `def compute_identity_hash` / `def
+# compute_normalized_hash` whose body re-implements the JSON-canonical
+# SHA-256 logic. That's the drift CASE-402 closes.
+#
+# Implementation note: we scan FunctionDef + AsyncFunctionDef across the
+# whole repo and flag the canonical names anywhere except the canonical
+# home itself and the document-store delegate. A more refined check
+# could AST-walk the body for hashlib.sha256 calls, but the simpler
+# name-only rule is enough — false positives are exempted by name, false
+# negatives (someone implementing the same logic under a different name)
+# aren't caught by any name-based rule.
+IDENTITY_HASH_CANONICAL_PATH = "libs/wip-auth/src/wip_auth/document_identity.py"
+IDENTITY_HASH_CANONICAL_FUNCTION_NAMES = frozenset({
+    "compute_identity_hash",
+    "compute_normalized_hash",
+})
+
+# Files allowed to define the canonical function names *as delegates*.
+# The document-store IdentityService is the only such wrapper today;
+# every method delegates to wip_auth.document_identity. If a future
+# service legitimately needs a delegate, add it here with rationale.
+IDENTITY_HASH_DELEGATE_PATHS = frozenset({
+    "components/document-store/src/document_store/services/identity_service.py",
+})
+
+
+def check_identity_hash_canonical(filepath: Path, root: Path) -> list[dict]:
+    """Flag a top-level `def compute_identity_hash` / `def
+    compute_normalized_hash` outside the canonical home (or one of the
+    declared delegate paths).
+
+    Catches the failure mode where someone re-implements the algorithm
+    in a fresh location. Doesn't catch re-implementations under a
+    different name — those need a content-based check, out of scope here."""
+    try:
+        rel = filepath.relative_to(root).as_posix()
+    except ValueError:
+        rel = filepath.as_posix()
+    if rel == IDENTITY_HASH_CANONICAL_PATH:
+        return []
+    if rel in IDENTITY_HASH_DELEGATE_PATHS:
+        return []
+
+    try:
+        source = filepath.read_text()
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+
+    violations: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name not in IDENTITY_HASH_CANONICAL_FUNCTION_NAMES:
+            continue
+        violations.append({
+            "file": rel,
+            "line": node.lineno,
+            "rule": "identity-hash-canonical",
+            "function": node.name,
+            "message": (
+                f"def {node.name} defined at {rel}:{node.lineno} outside "
+                f"the canonical home ({IDENTITY_HASH_CANONICAL_PATH}). "
+                f"Import from wip_auth.document_identity instead, or add "
+                f"this path to IDENTITY_HASH_DELEGATE_PATHS with rationale "
+                f"if it must remain a delegate wrapper. CASE-402."
+            ),
+        })
+    return violations
+
+
 def _inherits_registry_client_base(cls: ast.ClassDef) -> bool:
     """True if the class inherits from RegistryClientBase."""
     for base in cls.bases:
@@ -692,6 +781,28 @@ def main():
     if registry_violations:
         result["registry_client_violations"] = registry_violations
         result["total_violations"] = result.get("total_violations", 0) + len(registry_violations)
+
+    # CASE-402 — identity-hash-canonical rule. Scans the same surface as
+    # the registry-client rule (component services + libs) but also covers
+    # scripts/, where external tooling tends to reimplement.
+    identity_hash_violations: list[dict] = []
+    identity_scan_files: set[str] = set()
+    for pat in (
+        Path(args.root) / "components" / "*" / "src" / "*" / "services" / "*.py",
+        Path(args.root) / "components" / "*" / "src" / "*" / "*.py",
+        Path(args.root) / "libs" / "*" / "src" / "*" / "*.py",
+        Path(args.root) / "scripts" / "*.py",
+    ):
+        identity_scan_files.update(_glob.glob(str(pat)))
+    for scan_file in sorted(identity_scan_files):
+        if os.path.basename(scan_file) == "__init__.py":
+            continue
+        identity_hash_violations.extend(
+            check_identity_hash_canonical(Path(scan_file), root_path)
+        )
+    if identity_hash_violations:
+        result["identity_hash_violations"] = identity_hash_violations
+        result["total_violations"] = result.get("total_violations", 0) + len(identity_hash_violations)
 
     output = json.dumps(result, indent=2)
     if args.output == "-":
