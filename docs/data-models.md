@@ -560,14 +560,16 @@ Cross-field validation rules:
 
 ```python
 class RuleType(str, Enum):
-    CONDITIONAL_REQUIRED = "conditional_required"
-    CONDITIONAL_VALUE = "conditional_value"
-    MUTUAL_EXCLUSION = "mutual_exclusion"
-    DEPENDENCY = "dependency"
+    CONDITIONAL_REQUIRED = "conditional_required"  # Field required if condition met
+    CONDITIONAL_VALUE = "conditional_value"        # Field value constrained by condition
+    MUTUAL_EXCLUSION = "mutual_exclusion"          # Only one of listed fields can have a value
+    DEPENDENCY = "dependency"                       # Field requires another field to be present
+    PATTERN = "pattern"                             # Regex validation against a field value
+    RANGE = "range"                                 # Numeric range validation (min/max bounds)
 
 
 class ValidationRule(BaseModel):
-    """A cross-field validation rule."""
+    """A cross-field or field-level validation rule."""
 
     type: RuleType
     description: str | None = None
@@ -1115,6 +1117,7 @@ The identity hash determines whether a newly submitted document is a new entity 
 
 ```python
 import hashlib
+import json
 
 def compute_identity_hash(
     data: dict[str, Any],
@@ -1124,25 +1127,23 @@ def compute_identity_hash(
     Compute a deterministic hash from identity fields.
 
     Algorithm:
-    1. Sort identity field names alphanumerically
-    2. Build normalized string: field1=value1|field2=value2|...
-    3. Hash with SHA-256
-    4. Return hex digest
+    1. Extract identity values into a dict keyed by field name.
+    2. JSON-serialize with sort_keys=True, no extra whitespace, ASCII escapes,
+       and default=str for non-JSON types (datetime, UUID, etc.).
+    3. SHA-256 hash the UTF-8 bytes of the canonical string.
+    4. Return hex digest.
     """
-    sorted_fields = sorted(identity_fields)
+    identity_values = {f: data.get(f) for f in identity_fields}
 
-    parts = []
-    for field in sorted_fields:
-        value = data.get(field, "")
-        if value is None:
-            value = ""
-        else:
-            value = str(value)
-        parts.append(f"{field}={value}")
+    canonical = json.dumps(
+        identity_values,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
 
-    normalized = "|".join(parts)
-
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 ```
 
 **Example:**
@@ -1153,15 +1154,14 @@ data = {
 }
 identity_fields = ["email"]
 
-# Normalized: "email=alice@example.com"
-# Result: sha256("email=alice@example.com")
+# Canonical string: '{"email":"alice@example.com"}'
 hash = compute_identity_hash(data, identity_fields)
-# → "a1b2c3d4e5f6..."
+# → "9327398c303b9282f3826f9d3a65a17c63d720e4ce06651dad2b3edfa2892697"
 ```
 
-> **Note:** Two hash modes exist:
-> - **Strict** (default): Values are serialized as-is via `str(value)`. Used for standard identity hashing.
-> - **Normalized**: Values are stripped and lowercased before hashing. Used for case-insensitive matching. Must be explicitly requested.
+> **Note:** Two identity-hash functions exist (separate methods, not modes of one):
+> - **`compute_identity_hash(data, identity_fields)`** — standard. Values pass through the JSON encoder with `default=str` for non-JSON types.
+> - **`compute_normalized_hash(data, identity_fields)`** — case-insensitive variant. Strings are stripped and lowercased before JSON serialization (lists/dicts recursively normalized). Used when callers need case-insensitive identity matching. Called explicitly; not selected by a flag.
 
 **Namespace scoping:** The identity hash itself covers only the identity field values. However, uniqueness is enforced per-namespace because the Registry's composite key includes `{namespace, identity_hash, template_id}`. This means two documents in different namespaces can share the same identity hash but receive different `document_id`s.
 
