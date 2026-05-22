@@ -285,24 +285,13 @@ class TermListResponse(BaseModel):
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================
+# Canonical models live in wip_auth.bulk_models (CASE-395). Local aliases
+# preserve the def-store-facing names without re-defining the schema.
 
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, deleted, skipped, error
-    id: str | None = None
-    value: str | None = None
-    error: str | None = None
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
+from wip_auth.bulk_models import (
+    TerminologyTermBulkResponse as BulkResponse,
+    TerminologyTermBulkResultItem as BulkResultItem,
+)
 
 
 class UpdateTerminologyItem(UpdateTerminologyRequest):

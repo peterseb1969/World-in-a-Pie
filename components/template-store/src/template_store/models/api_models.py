@@ -222,34 +222,13 @@ class TemplateUpdateResponse(BaseModel):
 # =============================================================================
 # BULK OPERATION MODELS
 # =============================================================================
+# Canonical models live in wip_auth.bulk_models (CASE-395). Local aliases
+# preserve the template-store-facing names without re-defining the schema.
 
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, unchanged, deleted, skipped, error
-    id: str | None = None
-    value: str | None = None
-    version: int | None = None
-    is_new_version: bool | None = None
-    error: str | None = None
-    error_code: str | None = Field(
-        default=None,
-        description="Machine-readable error code (e.g. 'incompatible_schema')"
-    )
-    details: dict[str, Any] | None = Field(
-        default=None,
-        description="Structured details for non-error statuses (e.g. compatibility diff for on_conflict=validate)"
-    )
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
+from wip_auth.bulk_models import (
+    TemplateBulkResponse as BulkResponse,
+    TemplateBulkResultItem as BulkResultItem,
+)
 
 
 class UpdateTemplateItem(UpdateTemplateRequest):
