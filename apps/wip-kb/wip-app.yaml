@@ -18,7 +18,9 @@ spec:
     # 2026-05-21 bump: picks up 7589c60 "BrowserRouter basename = BASE_URL
     # for k8s mounting" (CASE-370 surface #10) and the May 13–14 deploy
     # follow-ups (Dockerfile.dev, port harmonisation, vite host binding).
-    tag: wipkb-20260521
+    # 2026-05-22 bump: picks up 3fe40a2 "ui: relationship-graph peer
+    # enrichment — status borders, italic terminal, more-neighbors badge".
+    tag: wipkb-20260522
 
   ports:
     - {name: http, container_port: 3012}
