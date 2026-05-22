@@ -1115,6 +1115,8 @@ class DocumentEvent(BaseModel):
 
 The identity hash determines whether a newly submitted document is a new entity or a new version of an existing entity.
 
+> **Canonical source:** the algorithm below mirrors `libs/wip-auth/src/wip_auth/document_identity.py`. The contract test at `libs/wip-auth/tests/test_document_identity_contract.py` pins this doc's worked-example digest to the library's output — if the algorithm changes, the test fails and this section must be updated in the same change (CASE-402).
+
 ```python
 import hashlib
 import json
