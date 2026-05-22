@@ -465,10 +465,10 @@ class NamespaceDeletionService:
         """Delete documents from a MongoDB collection."""
         motor_client = Namespace.get_motor_collection().database.client
         db_name = step.database or _registry_db_name()
-        db = motor_client[cast(str, db_name)]
-        coll = db[step.collection]
-        result = await coll.delete_many(step.filter)
-        return cast(int, result.deleted_count)
+        db = motor_client[db_name]
+        coll = db[cast(str, step.collection)]
+        result = await coll.delete_many(cast(dict, step.filter) or {})
+        return result.deleted_count
 
     async def _exec_minio_step(self, step: DeletionStep) -> int:
         """Delete objects from MinIO via S3 API."""
@@ -489,8 +489,8 @@ class NamespaceDeletionService:
                         # Simple DELETE per object — works without complex S3 signing
                         # for internal MinIO with access key auth
                         resp = await client.delete(url, auth=(
-                            self._minio_access_key,
-                            self._minio_secret_key,
+                            cast(str, self._minio_access_key),
+                            cast(str, self._minio_secret_key),
                         ))
                         if resp.status_code in (200, 204, 404):
                             deleted += 1
@@ -508,7 +508,7 @@ class NamespaceDeletionService:
             return 0
 
         try:
-            api_key = os.getenv("API_KEY") or os.getenv("REGISTRY_API_KEY", "")
+            api_key = cast(str, os.getenv("API_KEY") or os.getenv("REGISTRY_API_KEY", ""))
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.delete(
                     f"{self._postgres_url}/api/reporting-sync/namespace/{namespace}",

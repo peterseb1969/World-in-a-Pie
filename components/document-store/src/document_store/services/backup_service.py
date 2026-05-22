@@ -74,7 +74,7 @@ async def _trigger_reporting_batch_sync(namespace: str) -> None:
     is a convenience layer, not a correctness dependency.
     """
     url = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
-    api_key = os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", "")
+    api_key = cast(str, os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
     try:
         async with _httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(
@@ -556,7 +556,7 @@ def make_direct_backup_runner(
         from .backup_engine import DirectBackupEngine
         from .file_storage_client import get_file_storage_client, is_file_storage_enabled
 
-        mongo_client = BackupJob.get_motor_collection().database.client
+        mongo_client = cast(Any, BackupJob.get_motor_collection().database.client)
         storage = get_file_storage_client() if is_file_storage_enabled() else None
         engine = DirectBackupEngine(mongo_client, storage, progress_callback)
         await engine.run_backup(
@@ -583,7 +583,7 @@ def make_direct_restore_runner(
         from .backup_engine import DirectRestoreEngine
         from .file_storage_client import get_file_storage_client, is_file_storage_enabled
 
-        mongo_client = BackupJob.get_motor_collection().database.client
+        mongo_client = cast(Any, BackupJob.get_motor_collection().database.client)
         storage = get_file_storage_client() if is_file_storage_enabled() else None
         engine = DirectRestoreEngine(mongo_client, storage, progress_callback)
         await engine.run_restore(

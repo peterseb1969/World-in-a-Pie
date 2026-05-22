@@ -124,7 +124,7 @@ class ValidationService:
         if cls._validation_count == 0:
             return {"validation_count": 0, "stages": {}}
 
-        stats = {
+        stats: dict[str, Any] = {
             "validation_count": cls._validation_count,
             "stages": {}
         }
@@ -1461,11 +1461,12 @@ class ValidationService:
                     cache[tpl_id] = []
                     continue
 
-                descendants = await client.get_template_descendants(template.get("template_id"))
+                descendants = await client.get_template_descendants(cast(str, template.get("template_id")))
+                desc_refs: list[str]
                 if version_strategy == "pinned":
-                    desc_refs = [d.get("template_id") for d in descendants if d.get("template_id")]
+                    desc_refs = [cast(str, d.get("template_id")) for d in descendants if d.get("template_id")]
                 else:
-                    desc_refs = [d.get("value") for d in descendants if d.get("value")]
+                    desc_refs = [cast(str, d.get("value")) for d in descendants if d.get("value")]
                 cache[tpl_id] = desc_refs
                 expanded.update(desc_refs)
             except TemplateStoreError:
@@ -1918,7 +1919,7 @@ class ValidationService:
         operator = condition.get("operator")
         expected_value = condition.get("value")
 
-        actual_value = IdentityService._get_nested_value(data, field)
+        actual_value = IdentityService._get_nested_value(data, cast(str, field))
 
         if operator == "equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
@@ -1959,7 +1960,7 @@ class ValidationService:
         if not self._check_conditions(data, conditions):
             return
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         if is_required and target_value is None:
             result.add_error(
@@ -1982,7 +1983,7 @@ class ValidationService:
         if not self._check_conditions(data, conditions):
             return
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         if target_value is not None and target_value not in allowed_values:
             result.add_error(
@@ -2022,7 +2023,7 @@ class ValidationService:
         conditions = rule.get("conditions", [])
         target_field = rule.get("target_field")
 
-        target_value = IdentityService._get_nested_value(data, target_field)
+        target_value = IdentityService._get_nested_value(data, cast(str, target_field))
 
         # If target field has value, check that dependency conditions are met
         if target_value is not None and not self._check_conditions(data, conditions):

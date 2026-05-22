@@ -295,7 +295,7 @@ class ImportService:
 
     def _remap_namespaces(self, item: dict[str, Any], ns_map: dict[str, str]) -> dict[str, Any]:
         """Remap namespace fields in an item."""
-        result = {}
+        result: dict[str, Any] = {}
         for key, value in item.items():
             if key == "namespace" and isinstance(value, str) and value in ns_map:
                 result[key] = ns_map[value]

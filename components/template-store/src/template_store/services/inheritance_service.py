@@ -259,7 +259,7 @@ class InheritanceService:
             if not results:
                 break
 
-            current_id = results[0].extends
+            current_id = results[0].extends or ""
 
         return False
 

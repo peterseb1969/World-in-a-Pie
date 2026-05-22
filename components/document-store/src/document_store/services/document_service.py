@@ -91,7 +91,7 @@ def build_sort_clauses(
     *,
     default_sort_by: str = "created_at",
     default_sort_order: str = "desc",
-) -> list[tuple[str, int]]:
+) -> list[tuple[str, SortDirection]]:
     """Build a list of (field, direction) sort clauses for Beanie / aggregation.
 
     Always appends ("document_id", 1) as a deterministic tiebreaker so
@@ -137,8 +137,8 @@ def build_sort_clauses(
             f"or data.<path> for template-declared sortable fields."
         )
 
-    direction = 1 if order == "asc" else -1
-    return [(field, direction), ("document_id", 1)]
+    direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
+    return [(field, direction), ("document_id", SortDirection.ASCENDING)]
 
 
 def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
@@ -185,7 +185,7 @@ class DocumentService:
         if cls._creation_count == 0:
             return {"creation_count": 0, "stages": {}}
 
-        stats = {
+        stats: dict[str, Any] = {
             "creation_count": cls._creation_count,
             "stages": {}
         }
@@ -1870,7 +1870,7 @@ class DocumentService:
 
     def _build_query(self, request: DocumentQueryRequest) -> dict[str, Any]:
         """Build MongoDB query from request."""
-        query = {}
+        query: dict[str, Any] = {}
 
         if request.template_id:
             query["template_id"] = request.template_id
@@ -2172,7 +2172,7 @@ class DocumentService:
                     ))
                     continue
 
-                document_id = registry_result.get("registry_id")
+                document_id = cast(str, registry_result["registry_id"])
                 identity_hash = validation_result.identity_hash
                 is_new_from_registry = registry_result.get("status") == "created"
 
@@ -2718,7 +2718,7 @@ class DocumentService:
                     document_id=current.document_id,
                     template_id=current.template_id,
                     template_version=current.template_version,
-                    template_value=current.template_value,
+                    template_value=cast(str, current.template_value),
                     identity_hash=current.identity_hash,  # invariant under PATCH
                     version=current.version + 1,
                     data=merged_data,

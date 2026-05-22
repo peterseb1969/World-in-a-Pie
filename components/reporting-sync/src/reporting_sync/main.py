@@ -356,6 +356,8 @@ async def lifespan(app: FastAPI):
 
     # Start the sync worker task if both connections are up
     if state.sync_status.connected_to_nats and state.sync_status.connected_to_postgres:
+        assert state.nats_client is not None  # narrowed by connected_to_nats
+        assert state.jetstream is not None  # narrowed by connected_to_nats
         state.sync_task = asyncio.create_task(
             run_sync_worker(
                 state.nats_client,
@@ -957,7 +959,7 @@ async def aggregated_integrity_check(
     template_store_url = settings.template_store_url
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            params = {"limit": template_limit}
+            params: dict[str, Any] = {"limit": template_limit}
             if template_status:
                 params["status"] = template_status
 
@@ -1004,7 +1006,7 @@ async def aggregated_integrity_check(
     document_store_url = settings.document_store_url
     try:
         async with httpx.AsyncClient(timeout=doc_timeout) as client:
-            params = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
+            params: dict[str, Any] = {"limit": document_limit, "check_term_refs": check_term_refs, "recent_first": recent_first}
             if document_status:
                 params["status"] = document_status
 
