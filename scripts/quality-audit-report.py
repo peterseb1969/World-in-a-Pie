@@ -10,7 +10,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -49,12 +49,12 @@ def count_shellcheck(raw_dir: Path) -> int:
 
 def count_vulture(raw_dir: Path) -> int:
     text = load_text(raw_dir / "vulture.txt")
-    return len([l for l in text.splitlines() if l.strip()]) if text else 0
+    return len([line for line in text.splitlines() if line.strip()]) if text else 0
 
 
 def count_ts_prune(raw_dir: Path) -> int:
     text = load_text(raw_dir / "ts-prune.txt")
-    return len([l for l in text.splitlines() if l.strip()]) if text else 0
+    return len([line for line in text.splitlines() if line.strip()]) if text else 0
 
 
 def count_mypy(raw_dir: Path) -> tuple[int, dict]:
@@ -171,7 +171,7 @@ def delta_str(count, baseline_count) -> str:
 def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
     """Generate the REPORT.md content."""
     sha = get_git_sha()
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     dims = baseline.get("dimensions", {}) if baseline else {}
 
     # Gather counts
@@ -263,7 +263,7 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
         w("")
         # Show top errors
         all_errors = []
-        for comp, data in mypy_details.items():
+        for _comp, data in mypy_details.items():
             for err in data.get("errors", [])[:5]:
                 all_errors.append(err)
         if all_errors:
@@ -367,8 +367,8 @@ def generate_report(raw_dir: Path, mode: str, baseline: dict | None) -> str:
                 w(f"**Python coverage failed for {len(failed_components)} component(s):** "
                   f"{', '.join(failed_components)}.")
                 w("")
-                w(f"See `raw/pytest-cov-<component>.stderr` for the per-component failure detail. "
-                  f"Common causes:")
+                w("See `raw/pytest-cov-<component>.stderr` for the per-component failure detail. "
+                  "Common causes:")
                 w("- `pytest-cov` plugin not installed (re-run with `--install-deps`)")
                 w("- Test containers not provisioned (Step 9 delegates to `wip-test.sh` which "
                   "auto-starts test-mongo/test-postgres/test-nats — if delegation is bypassed, "
@@ -515,7 +515,7 @@ def main():
     if args.update_baseline and args.baseline:
         dims = baseline.get("dimensions", {}) if baseline else {}
         new_baseline = {
-            "generated": datetime.now(timezone.utc).isoformat(),
+            "generated": datetime.now(UTC).isoformat(),
             "commit": get_git_sha(),
             "dimensions": {
                 "ruff": {"count": count_ruff(raw_dir)},
@@ -557,7 +557,7 @@ def main():
                 failures.append(f"{key}: {current} (baseline: {bl})")
 
         if failures:
-            print(f"CI FAILURE — regressions detected:", file=sys.stderr)
+            print("CI FAILURE — regressions detected:", file=sys.stderr)
             for f in failures:
                 print(f"  - {f}", file=sys.stderr)
             sys.exit(1)
