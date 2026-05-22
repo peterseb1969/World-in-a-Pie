@@ -18,7 +18,9 @@ from wip_deploy.nuke import (
     _looks_like_wip_pod,
     _looks_like_wip_volume,
     _networks_in_compose,
+    has_k8s_install,
     nuke_install_dir,
+    nuke_k8s_install_dir,
     nuke_purge_all,
 )
 
@@ -541,3 +543,194 @@ class TestPurgeAllImagesNetworks:
         assert report.images_removed == ["registry:dev"]
         assert report.networks_removed == ["wip-network"]
         assert rmi_calls == []
+
+
+# ────────────────────────────────────────────────────────────────────
+# k8s teardown (CASE-362)
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestNukeK8sInstallDir:
+    """`wip-deploy nuke --name <k8s-install>` teardown path. Mocks
+    `kubectl` so tests don't need a real cluster."""
+
+    def _make_install_dir(self, tmp_path: Path) -> Path:
+        d = tmp_path / "install"
+        d.mkdir()
+        # k8s installs render manifests, not docker-compose.yaml. The
+        # exact files don't matter for nuke_k8s_install_dir — it works
+        # off the namespace, not the files.
+        (d / "namespace.yaml").write_text("kind: Namespace\n")
+        return d
+
+    def test_basic_deletes_namespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            import subprocess
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir(tmp_path)
+        report = nuke_k8s_install_dir(install, namespace="wip-kb")
+
+        # Single kubectl invocation for the namespace delete.
+        assert any(
+            cmd[:4] == ["kubectl", "delete", "namespace", "wip-kb"]
+            for cmd in calls
+        )
+        assert report.k8s_namespace_removed == "wip-kb"
+        # No PV deletion in the default path.
+        assert report.k8s_pvs_removed == []
+        assert report.compose_down_ran is False
+
+    def test_remove_data_deletes_pvs_bound_to_namespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            import subprocess
+            stdout = ""
+            # The PV-list query returns the data shape jsonpath produces.
+            if cmd[:3] == ["kubectl", "get", "pv"]:
+                stdout = (
+                    "wip-kb\tpvc-mongo-001\n"
+                    "wip-kb\tpvc-postgres-002\n"
+                    "other-ns\tpvc-unrelated-003\n"
+                )
+            return subprocess.CompletedProcess(
+                cmd, returncode=0, stdout=stdout, stderr=""
+            )
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir(tmp_path)
+        report = nuke_k8s_install_dir(
+            install, namespace="wip-kb", remove_data=True
+        )
+
+        # PVs in the target namespace got deleted (other-ns one didn't).
+        assert report.k8s_pvs_removed == ["pvc-mongo-001", "pvc-postgres-002"]
+        # The namespace delete still ran.
+        assert report.k8s_namespace_removed == "wip-kb"
+        # The unrelated PV was never targeted.
+        assert not any(
+            cmd[:4] == ["kubectl", "delete", "pv", "pvc-unrelated-003"]
+            for cmd in calls
+        )
+
+    def test_remove_secrets_removes_file_backend_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import subprocess
+        monkeypatch.setattr(
+            "wip_deploy.nuke.subprocess.run",
+            lambda *a, **kw: subprocess.CompletedProcess(a, returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir(tmp_path)
+        secrets = tmp_path / "secrets"
+        secrets.mkdir()
+        (secrets / "api-key").write_text("value")
+
+        report = nuke_k8s_install_dir(
+            install,
+            namespace="wip-kb",
+            remove_secrets=True,
+            secrets_location=secrets,
+        )
+        assert not secrets.exists()
+        assert report.secrets_dir_removed == secrets
+
+    def test_missing_install_dir_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(NukeError, match="install dir does not exist"):
+            nuke_k8s_install_dir(
+                tmp_path / "nope", namespace="wip-kb"
+            )
+
+    def test_missing_kubectl_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # shutil.which returns None for kubectl → loud refusal.
+        monkeypatch.setattr(
+            "wip_deploy.nuke.shutil.which",
+            lambda cmd: None if cmd == "kubectl" else f"/usr/bin/{cmd}",
+        )
+        install = self._make_install_dir(tmp_path)
+        with pytest.raises(NukeError, match="kubectl is not available"):
+            nuke_k8s_install_dir(install, namespace="wip-kb")
+
+    def test_kubectl_delete_failure_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            import subprocess
+            if cmd[:3] == ["kubectl", "delete", "namespace"]:
+                raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        install = self._make_install_dir(tmp_path)
+        with pytest.raises(NukeError, match="kubectl delete namespace"):
+            nuke_k8s_install_dir(install, namespace="wip-kb")
+
+
+class TestHasK8sInstall:
+    """Detect any k8s install under `~/.wip-deploy/` (CASE-362's
+    --purge-all guard)."""
+
+    def _write_state(
+        self, install_dir: Path, target: str
+    ) -> None:
+        import json
+        install_dir.mkdir(parents=True, exist_ok=True)
+        (install_dir / "deployment.deployer-state").write_text(
+            json.dumps(
+                {
+                    "wip_deploy_format_version": 1,
+                    "deployment": {
+                        "metadata": {"name": install_dir.name},
+                        "spec": {"target": target},
+                    },
+                }
+            )
+        )
+
+    def test_empty_root_returns_false(self, tmp_path: Path) -> None:
+        assert has_k8s_install(tmp_path / "nope") is False
+
+    def test_only_compose_installs_returns_false(self, tmp_path: Path) -> None:
+        self._write_state(tmp_path / "wip-local", target="compose")
+        self._write_state(tmp_path / "wip-dev", target="dev")
+        assert has_k8s_install(tmp_path) is False
+
+    def test_one_k8s_install_returns_true(self, tmp_path: Path) -> None:
+        self._write_state(tmp_path / "wip-kb", target="k8s")
+        assert has_k8s_install(tmp_path) is True
+
+    def test_mixed_installs_returns_true(self, tmp_path: Path) -> None:
+        self._write_state(tmp_path / "wip-local", target="compose")
+        self._write_state(tmp_path / "wip-kb", target="k8s")
+        assert has_k8s_install(tmp_path) is True
+
+    def test_malformed_state_file_skipped(self, tmp_path: Path) -> None:
+        # Junk JSON in one dir shouldn't crash the scan.
+        (tmp_path / "broken").mkdir()
+        (tmp_path / "broken" / "deployment.deployer-state").write_text("not json")
+        self._write_state(tmp_path / "wip-kb", target="k8s")
+        assert has_k8s_install(tmp_path) is True
+
+    def test_missing_state_file_skipped(self, tmp_path: Path) -> None:
+        (tmp_path / "no-state").mkdir()
+        assert has_k8s_install(tmp_path) is False
