@@ -371,36 +371,13 @@ class DocumentQueryResponse(BaseModel):
 # ============================================================================
 # Bulk Operations
 # ============================================================================
+# Canonical models live in wip_auth.bulk_models (CASE-395). Local aliases
+# preserve the document-store-facing names without re-defining the schema.
 
-class BulkResultItem(BaseModel):
-    """Result of a bulk operation for a single item."""
-
-    index: int
-    status: str  # created, updated, unchanged, deleted, skipped, error
-    id: str | None = None
-    document_id: str | None = None
-    identity_hash: str | None = None
-    version: int | None = None
-    is_new: bool | None = None
-    error: str | None = None
-    error_code: str | None = Field(
-        default=None,
-        description="Machine-readable error code (e.g., 'not_found', 'validation_failed', 'concurrency_conflict')"
-    )
-    warnings: list[str] = Field(default_factory=list)
-
-
-class BulkResponse(BaseModel):
-    """Response for bulk operations."""
-
-    results: list[BulkResultItem]
-    total: int
-    succeeded: int
-    failed: int
-    timing: dict[str, float] | None = Field(
-        default=None,
-        description="Server-side timing breakdown in milliseconds"
-    )
+from wip_auth.bulk_models import (
+    DocumentBulkResponse as BulkResponse,
+    DocumentBulkResultItem as BulkResultItem,
+)
 
 
 class DeleteItem(StrictModel):

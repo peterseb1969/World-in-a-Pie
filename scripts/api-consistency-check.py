@@ -136,6 +136,41 @@ PERMISSION_EXEMPT_FUNCTIONS = {
 }
 
 
+# CASE-395 follow-up — bulk-result-item-canonical rule.
+#
+# Bulk-write response models are platform-universal per wip://conventions.
+# The canonical definitions live in libs/wip-auth/src/wip_auth/bulk_models.py
+# (BulkResultItemBase + per-domain subclasses). Component-side definitions
+# are forbidden — they drift, and 78 of 141 [call-arg] mypy errors in
+# commit 7b91c55 traced to exactly this drift.
+#
+# Allowed shapes in components/*/src/*/models/api_models.py:
+#   - Re-export aliases:
+#       from wip_auth.bulk_models import DocumentBulkResultItem as BulkResultItem
+#   - Subclasses inheriting from one of the canonical bases:
+#       class FooBulkResultItem(BulkResultItemBase): ...
+#
+# Forbidden: bare `class BulkResultItem(BaseModel)` definitions, which
+# is how the drift accumulated. The canonical home itself
+# (libs/wip-auth/src/wip_auth/bulk_models.py) is exempt — it IS the
+# canonical home.
+BULK_MODEL_CANONICAL_BASE_NAMES = frozenset({
+    "BulkResultItemBase",
+    "BulkResponseBase",
+})
+
+BULK_MODEL_CANONICAL_PATHS = frozenset({
+    "libs/wip-auth/src/wip_auth/bulk_models.py",
+})
+
+# Match the bare universal names only. Per-domain subclasses like
+# `DocumentBulkResultItem` or registry-specific `RegisterBulkResponse`
+# (different family — results are typed RegisterKeyResponse) are out of
+# scope. The drift this rule catches is the literal `class BulkResultItem`
+# / `class BulkResponse` shape — that's what CASE-395 found in three places.
+BULK_MODEL_NAME_PATTERN = re.compile(r"^(BulkResultItem|BulkResponse)$")
+
+
 def find_api_files(root: str) -> list[Path]:
     """Find all API route files."""
     pattern = Path(root) / "components" / "*" / "src" / "*" / "api" / "*.py"
@@ -145,6 +180,74 @@ def find_api_files(root: str) -> list[Path]:
     exclude = {"__init__.py", "auth.py", "namespaces.py"}
     return [Path(f) for f in sorted(files)
             if os.path.basename(f) not in exclude]
+
+
+def find_model_files(root: str) -> list[Path]:
+    """Find component-side model files that might (re)define bulk models."""
+    import glob
+    patterns = [
+        Path(root) / "components" / "*" / "src" / "*" / "models" / "*.py",
+        Path(root) / "libs" / "*" / "src" / "*" / "*.py",
+    ]
+    files: set[str] = set()
+    for p in patterns:
+        files.update(glob.glob(str(p)))
+    return sorted(Path(f) for f in files if os.path.basename(f) != "__init__.py")
+
+
+def _inherits_canonical_bulk_base(cls: ast.ClassDef) -> bool:
+    """True if the class inherits from BulkResultItemBase / BulkResponseBase
+    (directly or as a subscripted Generic)."""
+    for base in cls.bases:
+        if isinstance(base, ast.Name) and base.id in BULK_MODEL_CANONICAL_BASE_NAMES:
+            return True
+        # e.g. BulkResponseBase[ItemT]
+        if isinstance(base, ast.Subscript) and isinstance(base.value, ast.Name):
+            if base.value.id in BULK_MODEL_CANONICAL_BASE_NAMES:
+                return True
+    return False
+
+
+def check_bulk_model_canonicity(filepath: Path, root: Path) -> list[dict]:
+    """Flag any class whose name matches BulkResult{Item,Response} or
+    BulkResponse outside the canonical home, unless the class inherits
+    from BulkResultItemBase / BulkResponseBase."""
+    try:
+        rel = filepath.relative_to(root).as_posix()
+    except ValueError:
+        rel = filepath.as_posix()
+    if rel in BULK_MODEL_CANONICAL_PATHS:
+        return []  # The canonical home itself.
+
+    try:
+        source = filepath.read_text()
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+
+    violations: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not BULK_MODEL_NAME_PATTERN.search(node.name):
+            continue
+        if _inherits_canonical_bulk_base(node):
+            continue
+        violations.append({
+            "file": rel,
+            "line": node.lineno,
+            "rule": "bulk-result-item-canonical",
+            "class": node.name,
+            "message": (
+                f"class {node.name} defined outside the canonical home "
+                f"(libs/wip-auth/src/wip_auth/bulk_models.py) and does not "
+                f"inherit from BulkResultItemBase / BulkResponseBase. "
+                f"Use a re-export alias "
+                f"(`from wip_auth.bulk_models import X as {node.name}`) "
+                f"or inherit from a canonical base. CASE-395."
+            ),
+        })
+    return violations
 
 
 def _extract_router_prefix(tree: ast.Module) -> str:
@@ -482,6 +585,17 @@ def main():
                 for svc, data in sorted(results_by_service.items())
             },
         }
+
+    # CASE-395 — bulk-result-item-canonical rule (model files, not API files).
+    bulk_violations: list[dict] = []
+    root_path = Path(args.root).resolve()
+    for model_file in find_model_files(args.root):
+        bulk_violations.extend(check_bulk_model_canonicity(model_file, root_path))
+    if bulk_violations:
+        # Attach to result top-level so consumers can see model-rule violations
+        # alongside endpoint-rule ones.
+        result["bulk_model_violations"] = bulk_violations
+        result["total_violations"] = result.get("total_violations", 0) + len(bulk_violations)
 
     output = json.dumps(result, indent=2)
     if args.output == "-":
